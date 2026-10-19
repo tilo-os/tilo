@@ -94,10 +94,9 @@ def reached_packages(
         "--format",
         "{p}",
     ]
-    # desktop-model excludes the hack entirely; cargo tree rejects pruning a
-    # package absent from its graph. Only the drawn desktop needs this filter.
-    if package == "tilo-desktop":
-        command += ["--prune", "workspace-hack"]
+    # Both crates reach the hack (desktop-model through the resource layer's
+    # proc macro, whose host-side edge cargo tree shows for every target).
+    command += ["--prune", "workspace-hack"]
     if target:
         command += ["--target", target]
     if depth is not None:

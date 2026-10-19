@@ -88,6 +88,8 @@ required-features = ["test-support"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `render` stores the picture it answers with.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
+# The native process host lends the window the device content store.
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [lints]

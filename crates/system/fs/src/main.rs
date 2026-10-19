@@ -3732,7 +3732,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let durable_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
-        .with_document_content(tilo_content::ContentStore::for_app());
+        .with_document_content(tilo_content_device::for_app());
     let fs = if allow_legacy_record_migration {
         fs
     } else {
@@ -4146,7 +4146,7 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let document_content = tilo_content::ContentStore::for_app();
+    let document_content = tilo_content_device::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {

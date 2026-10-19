@@ -8,14 +8,17 @@
 //!
 //! This crate is that store, and the one supported way for an app to keep opaque bytes:
 //!
-//! - [`ContentStore`] is a cheap handle an app creates at startup ([`ContentStore::for_app`]) and
-//!   passes to whatever needs it; nothing here is process-global. Writes and reads stream
+//! - [`ContentStore`] is a cheap handle an app creates at startup (`tilo_content_device::for_app`)
+//!   and passes to whatever needs it; nothing here is process-global. Writes and reads stream
 //!   ([`ContentStore::put_reader`], [`ContentStore::open`]) and every read is verified against the
 //!   hash that named it.
 //! - [`ContentBackend`] is what a store runs on. The device content store behind the filesystem
-//!   daemon, reached through the capability the launcher hands the app (`DeviceBackend`), is what
-//!   makes content reach an app's other devices and collaborators; [`DirBackend`] keeps content
-//!   in a local directory for a process started without one.
+//!   daemon, reached through the capability the launcher hands the app
+//!   (`tilo_content_device::DeviceBackend`), is what makes content reach an app's other devices
+//!   and collaborators; [`DirBackend`] keeps content in a local directory for a process started
+//!   without one. The device backend lives in its own crate so this one depends on no daemon
+//!   protocol: the resource layer, and the low-level types it stores, can name content without
+//!   sitting above the filesystem.
 //! - [`ContentSource`] is the read side pure code takes (an exporter embedding images), and
 //!   [`ContentInputs`] is what pure code hands back (an importer that found images) for the caller
 //!   to persist. Neither does I/O of its own.
@@ -31,16 +34,12 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(all(unix, feature = "device"))]
-mod device;
 #[cfg(feature = "dir")]
 mod dir;
 #[cfg(feature = "dir")]
 mod files;
 mod memory;
 
-#[cfg(all(unix, feature = "device"))]
-pub use device::DeviceBackend;
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
 #[cfg(feature = "dir")]
@@ -50,7 +49,7 @@ pub use tilo_content_types::{
     ContentMeta, ImageFormat, image_format, image_size, sniff, valid_hash,
 };
 
-/// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
+/// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).
 #[cfg(feature = "dir")]
 const PAGE_STORE_OWNER: &str = "so.tilo.content";
 /// A page's largest content item and whole store: the page holds its app files in memory.
@@ -239,38 +238,20 @@ impl ContentStore {
         Self::new(MemoryBackend::default())
     }
 
-    /// The device content store, when the launcher handed this process its capability.
-    /// Every returned store shares the one connection. Returns `None` on hosts without
-    /// device transport or when the `device` feature is disabled; no storage fallback is opened.
-    pub fn device() -> Option<Self> {
-        #[cfg(all(unix, feature = "device"))]
-        {
-            device::store()
-        }
-        #[cfg(not(all(unix, feature = "device")))]
-        {
-            None
-        }
-    }
-
     /// Content in the directory `root`, created on first write.
     #[cfg(feature = "dir")]
     pub fn in_dir(root: impl Into<PathBuf>) -> Self {
         Self::new(DirBackend::new(root))
     }
 
-    /// The store an app uses unless it is handed another: the device content store when the
-    /// launcher handed this process its capability ([`ContentStore::device`]), otherwise the
-    /// session's shared directory when the host names one ([`SHARED_STORE_ENV`]), otherwise, where
-    /// files have no native path (a browser page), the profile's app files ([`FilesBackend`]),
-    /// otherwise `tilo/content` in the user's data directory. Content an earlier version kept in the cache
-    /// directory (`tilo/blobs`) still reads. With no usable directory at all, content is kept in
-    /// memory.
+    /// The store an app keeps on this machine when the launcher handed it no device content
+    /// store (`tilo_content_device::for_app` prefers that one): the session's shared directory
+    /// when the host names one ([`SHARED_STORE_ENV`]), otherwise, where files have no native path
+    /// (a browser page), the profile's app files ([`FilesBackend`]), otherwise `tilo/content` in
+    /// the user's data directory. Content an earlier version kept in the cache directory
+    /// (`tilo/blobs`) still reads. With no usable directory at all, content is kept in memory.
     #[cfg(feature = "dir")]
-    pub fn for_app() -> Self {
-        if let Some(device) = Self::device() {
-            return device;
-        }
+    pub fn local_for_app() -> Self {
         Self::for_app_with(&|name| std::env::var_os(name))
     }
 
@@ -496,9 +477,10 @@ impl ContentSource for ContentInputs {
     }
 }
 
-/// A reader that hashes what passes through and fails at the end if it was not `expected`.
+/// A reader that hashes what passes through and fails at the end if it was not `expected`: what
+/// a backend wraps a read from storage it does not trust in, so it returns a [`ContentReader`].
 #[cfg(feature = "dir")]
-pub(crate) struct Verifying<R> {
+pub struct Verifying<R> {
     inner: R,
     hasher: blake3::Hasher,
     expected: String,
@@ -507,7 +489,8 @@ pub(crate) struct Verifying<R> {
 
 #[cfg(feature = "dir")]
 impl<R> Verifying<R> {
-    pub(crate) fn new(inner: R, expected: &str) -> Self {
+    /// Verify what `inner` yields against the address `expected`.
+    pub fn new(inner: R, expected: &str) -> Self {
         Self {
             inner,
             hasher: blake3::Hasher::new(),
@@ -542,12 +525,3 @@ impl<R: Read> Read for Verifying<R> {
 #[cfg(test)]
 #[cfg(feature = "dir")]
 mod tests;
-
-#[cfg(test)]
-#[cfg(not(all(unix, feature = "device")))]
-mod device_api_tests {
-    #[test]
-    fn device_store_is_unavailable_without_device_transport() {
-        assert!(super::ContentStore::device().is_none());
-    }
-}

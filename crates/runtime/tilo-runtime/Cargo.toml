@@ -85,6 +85,8 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-owner-commit = { path = "../../collab/owner-commit" }
 # The content store app surfaces are read from.
 tilo-content = { path = "../../system/content" }
+# The apps' store: the device content store when the launcher handed one over.
+tilo-content-device = { path = "../../system/content-device" }
 # The relay session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

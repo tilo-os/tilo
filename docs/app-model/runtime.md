@@ -128,7 +128,7 @@ a `tilo_content::ContentStore` and let the resource name them by content
 hash. An action carries the hash, never the bytes.
 
 ```rust
-let content = tilo_content::ContentStore::for_app(); // once, at startup; pass it down
+let content = tilo_content_device::for_app();          // once, at startup; pass it down
 let hash = content.put(&bytes)?;                      // or put_reader(..) to stream
 dispatch(InsertImage { content: hash, .. });
 let bytes = content.read(&hash);                      // verified against the hash

@@ -1611,7 +1611,7 @@ collaboration channel (`runtime-collab`):
   the bytes on the window's route, a read of a missing hash asks for it and
   reads as `ContentState::Pending` until it is here, and arriving bytes are
   verified and kept. Apps reach it as `cx.content()`. A store an app opens
-  itself (`ContentStore::for_app()`) would bypass the route, so only the
+  itself (`tilo_content_device::for_app()`) would bypass the route, so only the
   hosts that lend the store call it (`tools/policy/check_app_content_store.py`).
 - *Host side.* Every host that runs the broker implements the verbs with one
   service, `tilo_action_broker::record_content::RouteContent`, over two

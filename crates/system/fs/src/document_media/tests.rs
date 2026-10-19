@@ -424,7 +424,7 @@ impl DeviceHarness {
         .unwrap();
         let client = launcher_connection(&socket, "room-1", "so.tilo.photos");
         let store = tilo_content::ContentStore::from_backend(Arc::new(
-            tilo_content::DeviceBackend::new(client),
+            tilo_content_device::DeviceBackend::new(client),
         ));
         Self {
             observed,

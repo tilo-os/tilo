@@ -190,7 +190,7 @@ word-processor = { path = "../../../apps/word-processor" }
 # editable document; which installed app opens it comes from the app
 # manifests, not from here.
 tilo-doc = { path = "../../doc/tilo-doc" }
-tilo-content = { path = "../../system/content", features = ["device"] }
+tilo-content = { path = "../../system/content" }
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 mime_guess.workspace = true

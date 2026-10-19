@@ -53,7 +53,7 @@ tilo-spellcheck = { path = "../../crates/text/spellcheck" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+tilo-content = { path = "../../crates/system/content", features = ["dir"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true

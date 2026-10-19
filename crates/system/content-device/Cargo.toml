@@ -1,0 +1,30 @@
+[package]
+name = "tilo-content-device"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The device content store: tilo-content over the filesystem daemon's blob capability"
+
+# The device backend is a client of the filesystem daemon, so it lives here and
+# not in `tilo-content`: content addressing stays free of the daemon's protocol
+# crates, and anything (the resource layer, the types it stores) can name
+# content without sitting above the filesystem.
+
+[dependencies]
+tilo-content = { version = "0.1.0", path = "../content" }
+tracing.workspace = true
+
+# The launcher hands the capability over a Unix socket; elsewhere (the web,
+# Windows) there is no device store and `for_app` keeps content locally.
+[target.'cfg(unix)'.dependencies]
+runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
