@@ -9,7 +9,11 @@ use ui::widget::{IconWidget, Image, Section, SectionHeader};
 fn source_name(application: &str, label: &str, native: bool) -> String {
     let application = super::super::review_source_label(application);
     let label = super::super::review_source_label(label);
-    if native && label == format!("{application} · {application}") {
+    let repeats_application = label
+        .strip_prefix(application.as_str())
+        .and_then(|rest| rest.strip_suffix(application.as_str()))
+        .is_some_and(|separator| separator.trim() == "·");
+    if native && repeats_application {
         application
     } else {
         label

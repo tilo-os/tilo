@@ -36,6 +36,11 @@
 # literal include's target to match an input. Paths built at runtime rely on
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
+#
+# A group's `requirement` (`{ cores = 1, memory = "1GiB" }`) is the cores and memory its
+# `suite-<group>` check in t.toml must be able to pass with, measured from its runs: the
+# 99th-percentile peak memory with half again as much room, and the 90th-percentile peak cores.
+# A group without one takes t.toml's `[defaults]`.
 
 # The archive smoke remains a prerequisite of t's image publication. Its
 # required hermetic contract runs the real shell with a stub archive runner.
@@ -53,21 +58,25 @@ by = "tools/tests/test_test_assets.py"
 
 [[group]]
 name = "android-runtime-supervisor"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "tools/android/test_sticky_entry.py"]
 suites = ["tools/android/test_sticky_entry.py"]
 
 [[group]]
 name = "headless-launch-preflight"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/headless-examples/spawn-headless.sh"]
 suites = ["scripts/headless-examples/test_spawn_headless.py"]
 
 [[group]]
 name = "chat-task-approval"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["apps/chat/"]
 suites = ["apps/chat/tests/test_agent_start_surface.py"]
 
 [[group]]
 name = "runtime-dependency-closure"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]
 
@@ -78,6 +87,7 @@ suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 
 [[group]]
 name = "release-trust"
+requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
@@ -86,6 +96,7 @@ suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
 name = "os"
+requirement = { cores = 2, memory = "2GiB" }
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
 # to the helper's own early return. test_service_candidate_bridge.py holds the
@@ -250,11 +261,13 @@ suites = [
 
 [[group]]
 name = "native-store-autoclear"
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["tools/ci/native-store-autoclear.py"]
 suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
@@ -268,6 +281,7 @@ suites = [
 
 [[group]]
 name = "pipewire-echo-cancel"
+requirement = { cores = 1, memory = "1GiB" }
 # The echo-cancelled microphone's PipeWire config, the node names and config
 # name the session uses for it, and the image COPY that installs it.
 inputs = [
@@ -278,6 +292,7 @@ suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
 name = "no-cisco-openh264"
+requirement = { cores = 1, memory = "1GiB" }
 # No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
 inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
@@ -285,6 +300,7 @@ suites = ["os/tests/test_no_cisco_openh264.py"]
 
 [[group]]
 name = "mount-source-cache-keys"
+requirement = { cores = 1, memory = "1GiB" }
 # A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
 # the kernel, a toolchain) keys its layer on that image's reference, so a local
 # Buildah build never reuses a layer installed from a previous snapshot.
@@ -293,6 +309,7 @@ suites = ["os/tests/test_mount_source_cache_keys.py"]
 
 [[group]]
 name = "dev-feature-targets"
+requirement = { cores = 1, memory = "1GiB" }
 # The dev features os/components.toml names, against the packages' manifests:
 # `pkg/feature` must reach the package, not a dependency of it named pkg.
 inputs = ["os/components.toml", "*Cargo.toml"]
@@ -300,6 +317,7 @@ suites = ["os/tests/dev_feature_targets.py"]
 
 [[group]]
 name = "containerfile-sources"
+requirement = { cores = 1, memory = "1GiB" }
 # Every host-side COPY source of every image Containerfile must exist, so a
 # move or deletion anywhere in the build context can break it.
 inputs = [
@@ -310,12 +328,14 @@ suites = ["os/tests/containerfile_sources.sh"]
 
 [[group]]
 name = "workspace-release"
+requirement = { cores = 1, memory = "1GiB" }
 # The image recipe's release command against every workspace binary target.
 inputs = ["os/", ".cargo/", "Cargo.toml", "*Cargo.toml", "*/src/main.rs", "*/src/bin/*"]
 suites = ["os/tests/native_release_bin_selection.py"]
 
 [[group]]
 name = "app-store"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "apps/", "Cargo.toml", "*Cargo.toml",
   "crates/packaging/install/", "crates/packaging/launcher/", "crates/packaging/runtime-bundle/",
@@ -325,21 +345,25 @@ suites = ["os/tests/app_store.sh"]
 
 [[group]]
 name = "system-extension"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/", "crates/system/system-extension/"]
 suites = ["os/tests/boot_pack_invariants.sh"]
 
 [[group]]
 name = "rollback"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/", "crates/system/tilo-rollback/"]
 suites = ["os/tests/esp_capacity.sh"]
 
 [[group]]
 name = "direct-boot-bundle"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/dev/export-direct-boot-bundle.sh", "os/dev/disk-image.sh", "os/tests/direct_boot_bundle_export.sh"]
 suites = ["os/tests/direct_boot_bundle_export.sh"]
 
 [[group]]
 name = "home-peer"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "apps/settings/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
 ]
@@ -347,6 +371,7 @@ suites = ["os/tests/home_peer_setup.sh"]
 
 [[group]]
 name = "app-publication"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/", "tools/"]
 suites = [
   "os/tests/parallel_package_uploads.sh",
@@ -356,6 +381,7 @@ suites = [
 
 [[group]]
 name = "printing"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
   "crates/session/shell/src/portal/", "crates/system/os-actions/", "crates/system/sandbox-core/",
@@ -364,11 +390,13 @@ suites = ["os/tests/printing_isolation.sh"]
 
 [[group]]
 name = "remote-capture"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["os/", "crates/session/shell/src/shell/remote_capture/"]
 suites = ["os/tests/remote_capture_image_contract.sh"]
 
 [[group]]
 name = "image-size"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/image-size-budget.toml", "os/tests/image_size_budget.py", "tools/perf/image_size.py",
   ".forgejo/workflows/build-image.yml",
@@ -377,6 +405,7 @@ suites = ["os/tests/test_image_size_budget.py"]
 
 [[group]]
 name = "windows"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
   "crates/session/shell/src/shell/windows_compat.rs",
@@ -392,27 +421,32 @@ suites = [
 
 [[group]]
 name = "kernel-signer"
+requirement = { cores = 1, memory = "1GiB" }
 # Projects tilo-crypto's manifest against the workspace for the kernel build.
 inputs = ["os/", "Cargo.toml", "crates/system/tilo-crypto/"]
 suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
 suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py"]
 
 [[group]]
 name = "native-qualification-storage"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/ci/native-stores.sh", "tools/ci/native-store-virtio.py", "tools/ci/disposable-native-vm.py", "tools/ci/test_native_store_virtio.py"]
 suites = ["tools/ci/test_native_store_virtio.py"]
 
 [[group]]
 name = "ntfs-helper"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/session/tilo-ntfs-helper/"]
 suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/session/tilo-ntfs-helper/tests/test_source_artifact.py"]
 
 [[group]]
 name = "dist"
+requirement = { cores = 2, memory = "1GiB" }
 inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
@@ -436,6 +470,7 @@ suites = [
 
 [[group]]
 name = "browser-tools"
+requirement = { cores = 2, memory = "1GiB" }
 inputs = [
   "scripts/browser/",
   "os/Containerfile",
@@ -481,6 +516,7 @@ suites = [
 
 [[group]]
 name = "perf-tools"
+requirement = { cores = 4, memory = "1GiB" }
 inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
@@ -551,6 +587,7 @@ suites = [
 
 [[group]]
 name = "developer-scripts"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "scripts/tests/", "scripts/app-launch-sweep.py",
   "scripts/headless-examples/",
@@ -566,11 +603,13 @@ suites = [
 
 [[group]]
 name = "vm-acceptance-tools"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/vm-acceptance/"]
 suites = ["scripts/vm-acceptance/tests/test_error_paths.py"]
 
 [[group]]
 name = "ux-bench"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/ux-bench/"]
 suites = [
   "scripts/ux-bench/test_suite.py",
@@ -579,6 +618,7 @@ suites = [
 
 [[group]]
 name = "platform-web"
+requirement = { cores = 1, memory = "1GiB" }
 # The portal crates' browser modules behind their wasm32 backends.
 inputs = [
   "crates/platform/tilo-clipboard/web/",
@@ -597,6 +637,7 @@ suites = [
 
 [[group]]
 name = "browser-compute-web"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/browser/tilo-browser-compute/", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs"]
 suites = [
   "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs",
@@ -615,6 +656,7 @@ reason = "requires live Chromium and browser storage; executed by the required a
 
 [[group]]
 name = "browser-runtime-web"
+requirement = { cores = 6, memory = "1GiB" }
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. The live transport suites load the MoQ library that check.yml
@@ -680,11 +722,13 @@ suites = [
 
 [[group]]
 name = "desktop-open-times"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
 name = "browser-auth-e2e"
+requirement = { cores = 1, memory = "1GiB" }
 # dev/auth-e2e.mjs reuses the browser qualification's bundle check and
 # drives Chrome through tools/web/chrome.mjs.
 inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
@@ -692,6 +736,7 @@ suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
 
 [[group]]
 name = "browser-benchmark-scripts"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["scripts/browser/"]
 suites = [
   "scripts/browser/benchmark-pages.test.mjs",
@@ -1910,6 +1955,7 @@ readers = ["crates/platform/tilo-pdf/build.rs"]
 
 [[group]]
 name = "browser-fixture-assets"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/web/fixture-assets.mjs", "tools/test-assets.py"]
 suites = ["tools/web/fixture-assets.test.mjs"]
 
@@ -1943,6 +1989,7 @@ reason = "runs the imager's Windows unit-test executable under Wine; needs the c
 
 [[group]]
 name = "cloud-rystic-ci"
+requirement = { cores = 1, memory = "1GiB" }
 inputs = ["tools/ci/rystic_ci.py", "tools/ci/run-rystic-ci.sh"]
 suites = ["tools/ci/test_rystic_ci.py"]
 

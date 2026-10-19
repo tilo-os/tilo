@@ -22,7 +22,10 @@ fn sandbox_or_skip() -> bool {
     if env_tools::sandbox::available() {
         true
     } else {
-        eprintln!("skipping: this host cannot run a bwrap build sandbox");
+        tilo_test_env::capability_unavailable(
+            tilo_test_env::Capability::UserNamespace,
+            format_args!("this host cannot run a bwrap build sandbox"),
+        );
         false
     }
 }

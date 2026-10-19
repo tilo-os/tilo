@@ -4567,13 +4567,7 @@ impl Widget for BrowserWidget {
         if self.browsing_mode.is_private()
             && let Some(rect) = self.find_rect("browser.toolbar")
         {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.overlay_medium,
-                None,
-                &rect,
-            );
+            ui::paint::fill_rect(scene, transform, rect, theme.tokens.colors.overlay_medium);
         }
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);

@@ -1974,11 +1974,11 @@ fn card_rect(host: Rect, state: &PeerSyncSnapshot, theme: &Theme) -> Rect {
 /// The height of "Pair a new device" with its link out: the heading, the
 /// code, the link chip, the three ways, the reassurance, the waiting line
 /// and the footer, with nothing left over below.
-const PAIRING_SHEET_HEIGHT: f64 = 576.0;
+const PAIRING_SHEET_HEIGHT: f64 = ui::tokens::Layout::BASE.pairing_sheet_height as f64;
 
 /// The side of the pairing code: large enough for a phone camera from
 /// arm's length.
-const PAIRING_QR_SIDE: f64 = 232.0;
+const PAIRING_QR_SIDE: f64 = ui::tokens::Layout::BASE.pairing_qr_side as f64;
 
 /// The pairing link as its chip shows it: the site, then an ellipsis for
 /// the secret rest.
@@ -2010,7 +2010,7 @@ const PAIRING_WAYS: [(ui::icons::Icon, &str, &str); 3] = [
 ];
 
 /// The side of a way's icon.
-const PAIRING_WAY_ICON: f64 = 18.0;
+const PAIRING_WAY_ICON: f64 = ui::tokens::Layout::BASE.avatar as f64;
 
 /// The column the ways and the reassurance share, centred under the code:
 /// its left edge, its width, and where the "how" text starts in it.

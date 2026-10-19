@@ -1434,10 +1434,13 @@ let mut renderer = require_capability!(
 ```
 
 It skips with a message where the capability is missing, and fails when
-`TILO_REQUIRE_<CAP>=1` (`GPU`, `AUDIO`, `MEDIA`, `FUSE`, `FANOTIFY`) says the
-environment provides it. CI test lanes set `TILO_REQUIRE_GPU` and
-`TILO_REQUIRE_AUDIO`, the FUSE lane `TILO_REQUIRE_FUSE`; `scripts/test-local.sh`
-sets the first two when llvmpipe and pulseaudio are installed. Existing
+`TILO_REQUIRE_<CAP>=1` (`GPU`, `AUDIO`, `MEDIA`, `FUSE`, `FANOTIFY`, `CHOWN`,
+`USERNS`) says the environment provides it. CI test lanes set `TILO_REQUIRE_GPU`
+and `TILO_REQUIRE_AUDIO`, the FUSE lane `TILO_REQUIRE_FUSE`; the
+`sandbox-host-ids` micro-VM lane sets `TILO_REQUIRE_CHOWN` and
+`TILO_REQUIRE_USERNS` for the fixtures that give files to another user or enter
+a user or mount namespace. `scripts/test-local.sh` sets the first two when
+llvmpipe and pulseaudio are installed. Existing
 `eprintln!("skipping …"); return;` sites move to the macro when their file is
 next changed.
 

@@ -195,17 +195,20 @@ impl ActionHost {
                 Some(&actor),
             ),
         };
+        // An action may commit changes and still return an error. The
+        // executor rolls back only its open transaction, so a committed edit
+        // survives the refusal; inspect the document before surfacing that
+        // error, or the surviving edit would leave history falsely signed.
+        if let Some((edits, heads)) = unsigned
+            && doc.get_heads() != heads
+        {
+            crate::local_document_action::note_unsigned_edit(&edits);
+        }
         let dispatched = result?;
         if let Some(observation) = observation
             && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
         {
             observation.finish(doc, &before, encoded.clone(), captured_context)?;
-        }
-        if let Some((edits, heads)) = unsigned
-            && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
-            && doc.get_heads() != heads
-        {
-            crate::local_document_action::note_unsigned_edit(&edits);
         }
         // Content from outside (fetched rows, a process's output) is nobody's
         // undo step: it opens no bracket and is left out of the open one.

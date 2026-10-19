@@ -739,6 +739,31 @@ mod tests {
         }
     }
 
+    #[derive(Debug, serde::Serialize)]
+    struct CommitThenRefuse;
+    impl tilo_actions::Action for CommitThenRefuse {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, "committed", "survives")?;
+            doc.commit();
+            Err(tilo_actions::ActionError::Refused(
+                "fixture refusal after commit".into(),
+            ))
+        }
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct WriteThenRefuse;
+    impl tilo_actions::Action for WriteThenRefuse {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, "pending", "discarded")?;
+            Err(tilo_actions::ActionError::Refused(
+                "fixture refusal before commit".into(),
+            ))
+        }
+    }
+
     #[test]
     fn only_a_recorded_edit_makes_unmanaged_history_unsigned() {
         let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
@@ -770,6 +795,59 @@ mod tests {
         assert_eq!(
             app.document_sync_status().as_deref(),
             Some(unsigned.as_str())
+        );
+    }
+
+    #[test]
+    fn a_refused_action_that_committed_an_edit_is_unsigned_history() {
+        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+        let mut doc = automerge::AutoCommit::new();
+        let mut host = crate::action_host::ActionHost::new();
+        let input = app.begin_local_input_capture();
+        assert!(
+            host.try_dispatch(&mut doc, "commit-then-refuse", &CommitThenRefuse)
+                .is_err()
+        );
+        drop(input);
+        assert!(
+            automerge::ReadDoc::get(&doc, &automerge::ROOT, "committed")
+                .unwrap()
+                .is_some(),
+            "the action's committed edit survives its refusal"
+        );
+        app.drain_local_input_capture();
+        let unsigned = crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned");
+        assert_eq!(
+            app.document_sync_status().as_deref(),
+            Some(unsigned.as_str()),
+            "a surviving unmanaged edit is unsigned history"
+        );
+    }
+
+    #[test]
+    fn a_refused_action_without_a_commit_leaves_history_silent() {
+        let mut app = App::new(crate::State::new(), Box::new(crate::widget::Text::new("")));
+        let mut doc = automerge::AutoCommit::new();
+        let mut host = crate::action_host::ActionHost::new();
+        let input = app.begin_local_input_capture();
+        assert!(
+            host.try_dispatch(&mut doc, "write-then-refuse", &WriteThenRefuse)
+                .is_err()
+        );
+        drop(input);
+        assert!(
+            automerge::ReadDoc::get(&doc, &automerge::ROOT, "pending")
+                .unwrap()
+                .is_none(),
+            "the executor rolled back the uncommitted write"
+        );
+        app.needs_sync = false;
+        app.drain_local_input_capture();
+        assert!(app.local_input_capture.failure.is_none());
+        assert!(app.document_sync_status().is_none());
+        assert!(
+            !app.needs_sync,
+            "a refused action that left no edit asks for no frame"
         );
     }
 

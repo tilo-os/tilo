@@ -84,7 +84,7 @@ pub(super) fn lanes(intervals: &[(i64, i64)]) -> Vec<Lane> {
 
 /// How far up from a block's bottom edge a press resizes it instead of
 /// moving it, in logical pixels.
-const RESIZE_GRIP: f64 = 6.0;
+const RESIZE_GRIP: f64 = ui::tokens::Layout::BASE.resize_grip as f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TimelineSpan {

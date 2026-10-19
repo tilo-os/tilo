@@ -164,7 +164,7 @@ check on main is `sign-dev-<name>`.
 
 `{dir}` is `/target/publish/<name>`, `{out}` the build's directory (`{dir}`, or `{dir}/<arch>`
 per architecture), `{arch}` and `{platform}` (`linux/amd64`) the architecture built. Any other
-field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `cpus`, `memory`,
+field of `[product.context]` and `[product.build]` (`inputs`, `requires`, `requirement`,
 `timeout_secs`, `needs`, `privileged`, `cargo_packages`, …) goes to the check as written; the
 generator adds the publishing scripts to `inputs`, `arch=<arch>` to `requires` and `default =
 false`, and writes `on`, `id_token` and the signing environment itself, so a product can't

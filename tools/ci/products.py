@@ -55,7 +55,7 @@ OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secre
 # The order fields appear in, as the hand-written checks of t.toml have them.
 FIELD_ORDER = ["name", "image", "run", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
                "optional_needs", "outputs", "pointers", "id_token", "env", "git", "requires",
-               "isolation", "privileged", "writable_sources", "cost", "cpus", "memory", "timeout_secs", "on",
+               "isolation", "privileged", "writable_sources", "cost", "requirement", "timeout_secs", "on",
                "default"]
 
 
@@ -435,8 +435,8 @@ class Product:
 
     def publish(self) -> dict[str, Any]:
         spec = fill(self.data.get("publish", {}), self.values(self.arches[0]))
-        if set(spec) - {"run", "inputs", "outputs", "pointers"}:
-            raise ProductError(f"{self.name}: publish takes run, inputs, outputs and pointers")
+        if set(spec) - {"run", "inputs", "outputs", "pointers", "requirement"}:
+            raise ProductError(f"{self.name}: publish takes run, inputs, outputs, pointers and requirement")
         if self.dev and self.release:
             channel = "any"
             on = [*self.dev_on, *self.release_on]
@@ -493,6 +493,8 @@ class Product:
             fields["env"] = {"TILO_RELEASE_OUT": self.release_dir}
         if "pointers" in spec:
             fields["pointers"] = spec["pointers"]
+        if "requirement" in spec:
+            fields["requirement"] = spec["requirement"]
         return fields
 
 

@@ -354,11 +354,11 @@ fn tokens(typed: &str, decimal_comma: bool) -> Option<Vec<Token>> {
                 out.push(Token::Op(c));
                 chars.next();
             }
-            '×' | 'x' => {
+            c if c == 'x' || ui::format::arithmetic_operator(c) == Some('*') => {
                 out.push(Token::Op('*'));
                 chars.next();
             }
-            '÷' | ':' => {
+            c if c == ':' || ui::format::arithmetic_operator(c) == Some('/') => {
                 out.push(Token::Op('/'));
                 chars.next();
             }

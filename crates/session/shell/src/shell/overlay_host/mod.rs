@@ -24828,15 +24828,16 @@ impl ShellOverlayHost {
         // the panel ground with its derived edge, never a ramp slot
         // (`neutral[1]` until 2026-09-17, S1-27), and ink chosen against
         // that ground rather than assumed.
-        let pill = RoundedRect::from_rect(rect, rect.height() / 2.0);
+        let radius = rect.height() / 2.0;
         let surface = ui::chrome::ChromeRole::Panel.surface(theme);
-        scene.fill(Fill::NonZero, transform, surface, None, &pill);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        ui::paint::fill_round(scene, transform, rect, radius, surface);
+        ui::paint::stroke_round(
+            scene,
             transform,
+            rect,
+            radius,
             ui::chrome::shell::panel_border(theme),
-            None,
-            &pill,
+            1.0,
         );
         text_renderer.draw_style(
             scene,
@@ -24935,19 +24936,13 @@ impl ShellOverlayHost {
             panel_radius,
             &theme.tokens.elevation.floating,
         );
-        scene.fill(
-            Fill::NonZero,
+        ui::paint::fill_shape(scene, transform, &panel_shape, role.surface(theme));
+        ui::paint::stroke_shape(
+            scene,
             transform,
-            role.surface(theme),
-            None,
             &panel_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
             ui::chrome::shell::panel_border(theme),
-            None,
-            &panel_shape,
+            1.0,
         );
         let title_style = theme.text(TextRole::Title);
         let title = t("guide-title");

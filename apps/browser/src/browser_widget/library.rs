@@ -68,7 +68,7 @@ impl BrowserWidget {
                 entry.title.as_str()
             };
             let detail = match when {
-                Some(when) => format!("{host} · {}", ui::clock::time_of_day(&when)),
+                Some(when) => format!("{host} — {}", ui::clock::time_of_day(&when)),
                 None => host,
             };
             let mut row = ListRow::new(format!("{id}.open"), title)

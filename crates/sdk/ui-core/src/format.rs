@@ -248,7 +248,8 @@ fn language_separators(locale: &str) -> (&'static str, char) {
 /// `digits` (ASCII digits only) with `separator` between each group of three.
 fn group_digits(digits: &str, separator: &str) -> String {
     let len = digits.len();
-    let mut out = String::with_capacity(len.saturating_add((len / 3).saturating_mul(separator.len())));
+    let mut out =
+        String::with_capacity(len.saturating_add((len / 3).saturating_mul(separator.len())));
     for (index, digit) in digits.chars().enumerate() {
         if index > 0 && len.saturating_sub(index).is_multiple_of(3) {
             out.push_str(separator);
@@ -354,7 +355,10 @@ pub fn day_range(start: NaiveDate, end: NaiveDate) -> String {
 /// `9:00 – 10:30`.
 #[must_use]
 pub fn range(start: &str, end: &str) -> String {
-    widget_format("format-range", &[("start", start.into()), ("end", end.into())])
+    widget_format(
+        "format-range",
+        &[("start", start.into()), ("end", end.into())],
+    )
 }
 
 /// A month in a tight space: `Jun 2026`.
@@ -659,6 +663,18 @@ pub fn capitalize_first(value: &str) -> String {
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
     })
+}
+
+/// The arithmetic operator a typed symbol stands for: a keypad shows the
+/// multiplication and division signs where the expression grammar uses `*`
+/// and `/`.
+#[must_use]
+pub fn arithmetic_operator(symbol: char) -> Option<char> {
+    match symbol {
+        '×' => Some('*'),
+        '÷' => Some('/'),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

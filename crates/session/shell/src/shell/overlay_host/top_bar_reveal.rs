@@ -28,7 +28,7 @@ use vello::kurbo::{Point, Rect};
 /// The display's top row of pixels. The pointer cannot travel past it, so a
 /// path that reaches it has stopped there, however fast it arrived; the
 /// edge model, which reads a stop from slowing samples, never sees one.
-const EDGE_ROW_PX: f64 = 1.0;
+const EDGE_ROW_PX: f64 = ui::tokens::Metrics::BASE.chrome_rule_px as f64;
 
 #[derive(Debug, Default)]
 pub(crate) struct TopBarReveal {
