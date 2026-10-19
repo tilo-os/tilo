@@ -162,6 +162,7 @@ pub mod doc_source;
 mod dx12_shader_cache;
 pub mod evdev;
 pub mod floating_surface;
+pub mod focus_visible;
 pub mod font_catalog;
 pub mod format;
 pub mod fullscreen;

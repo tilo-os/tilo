@@ -217,7 +217,9 @@ pub const FLOOR_HOVER_T: f32 = 0.65;
 pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
-    let fill = if lifted {
+    let fill = if state.active {
+        colors.selected_on(ground)
+    } else if state.pressed {
         colors.lift_on(ground, 1.0)
     } else if state.hover {
         colors.lift_on(ground, HOVER_LIFT_T)
@@ -349,22 +351,23 @@ pub fn lightness_step(a: Color, b: Color) -> f32 {
     (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
 }
 
-/// The opaque colour a chrome surface is built from, guaranteed to
-/// register against both the desktop and the window card (Bar/Panel share
-/// one material, and a Panel floats over app content).
+/// The opaque colour a chrome surface is built from: the floating level,
+/// `surfaces.overlay`, verbatim (`docs/design-language.md`, "Surfaces"). A
+/// floating surface separates by its level, its two-layer shadow and its
+/// inner hairline together, never by drifting off its level.
 ///
-/// `surfaces.overlay` is used verbatim where it separates, but not always:
-/// on high-contrast it's identical to the ground, and on light both it and
-/// `window_card` are `#ffffff` — painted verbatim there, a panel is the
-/// desktop with a faint line around it. Where it's swallowed, the ground
-/// is walked away from it (same luminance reasoning as
-/// [`Colors::hairline_on`]) until it clears both; [`PANEL_BORDER_ALPHA`]
-/// is the edge half of the same fix.
+/// High contrast is the exception: there the floating level is the ground
+/// itself, so the ground is walked away from it (same luminance reasoning
+/// as [`Colors::hairline_on`]) until it clears the desktop and the window;
+/// [`PANEL_BORDER_ALPHA`] is the edge half of the same fix.
 pub fn panel_ground(theme: &Theme) -> Color {
     use crate::a11y::relative_luminance;
     let colors = &theme.tokens.colors;
     let base = colors.surfaces.base;
     let declared = colors.surfaces.overlay;
+    if !colors.palette.high_contrast {
+        return declared;
+    }
     let grounds = [base, colors.surfaces.content];
     let clears = |c: Color| {
         grounds
@@ -394,19 +397,18 @@ pub fn panel_ground(theme: &Theme) -> Color {
     last
 }
 
-/// The edge around a floating [`ChromeRole::Panel`]. See
-/// [`PANEL_BORDER_ALPHA`].
+/// The edge of a floating [`ChromeRole::Panel`], stroked on its outermost
+/// pixel row: the design language's inner hairline (white at 7 % on a dark
+/// material, black at 8 % on a light one,
+/// [`crate::tokens::Elevation::floating_edge`]). High contrast draws the
+/// full-strength edge ([`PANEL_BORDER_ALPHA`]), where it is the only thing
+/// separating a panel.
 pub fn panel_border(theme: &Theme) -> Color {
-    // The full-strength edge is for high contrast, where it is the only thing
-    // separating a panel. Elsewhere the panel's ground, shadow and inner
-    // light edge already do; a bright line on top read as a frame drawn
-    // around the panel rather than its edge.
-    let alpha = if theme.tokens.colors.palette.high_contrast {
-        PANEL_BORDER_ALPHA
+    if theme.tokens.colors.palette.high_contrast {
+        Colors::hairline_on(theme.tokens.colors.surfaces.base, PANEL_BORDER_ALPHA)
     } else {
-        PANEL_BORDER_QUIET_ALPHA
-    };
-    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+        theme.tokens.elevation.floating_edge
+    }
 }
 
 /// The panel edge outside high contrast: about a sixth, so the edge reads as
@@ -447,9 +449,14 @@ pub fn panel_shadow(
     ring.extend(outer.path_elements(0.1));
     ring.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, transform, &ring);
-    let mut token = *e;
-    token.color = token.color.with_alpha_factor(intensity.clamp(0.0, 1.0));
-    crate::surface::shadow(scene, transform, rect, radius, &token);
+    crate::surface::floating_shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        intensity.clamp(0.0, 1.0),
+        theme,
+    );
     scene.pop_layer();
 }
 
@@ -708,7 +715,7 @@ mod tests {
         // Case `selection_never_uses_the_accent`.
         {
             for (name, theme) in themes() {
-                let accent = theme.tokens.colors.intent.inverted;
+                let accent = theme.tokens.colors.intent.accent;
                 for state in [
                     SelectionState::active(true),
                     SelectionState::new(false, true, false),
@@ -802,13 +809,29 @@ mod tests {
         }
 
         // Case `a_panel_separates_from_the_desktop_on_every_theme`:
-        // On high-contrast, `surfaces.overlay` is the same colour as the
-        // ground, so fill *or* edge must carry the separation — this asserts
-        // at least one does.
+        // A panel is the floating level, a visible lightness step off the
+        // desktop (over a light window, where both are near white, its
+        // shadow and hairline separate it); on high contrast, where the
+        // levels are one colour, fill *or* edge must carry the separation.
         {
             for (name, theme) in themes() {
                 let base = theme.tokens.colors.surfaces.base;
+                let content = theme.tokens.colors.surfaces.content;
                 let ground = panel_ground(&theme);
+                if !theme.tokens.colors.palette.high_contrast {
+                    assert_eq!(ground, theme.tokens.colors.surfaces.overlay, "{name}");
+                    assert!(
+                        lightness_step(ground, base) >= 0.03,
+                        "{name}: a panel is not a step off the desktop"
+                    );
+                    if theme.tokens.colors.palette.dark {
+                        assert!(
+                            lightness_step(ground, content) >= 0.03,
+                            "{name}: a panel is not a step off the window"
+                        );
+                    }
+                    continue;
+                }
                 let border = panel_border(&theme);
                 let fill_delta = (relative_luminance(ground) - relative_luminance(base)).abs();
                 // The border is translucent; composite it over the panel

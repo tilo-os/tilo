@@ -315,9 +315,9 @@ impl Theme {
     /// ([`crate::tokens::Colors::raised_on`]), so a control's face never
     /// sinks into a lighter panel. When `ground` has the other polarity
     /// from the palette (the near-black `media.letterbox` under a light
-    /// theme), the inverted fill is re-derived too: primary ink on that
-    /// ground as the fill and the ground as its label, so a `Primary`
-    /// button over media still reads as the inverted control. Every other
+    /// theme) and the emphasis is inverted, the primary fill is re-derived
+    /// too: primary ink on that ground as the fill and the ground as its
+    /// label, so a `Primary` button over media still reads. Every other
     /// token is unchanged.
     #[must_use]
     pub fn on_ground(&self, ground: Color) -> Self {
@@ -332,17 +332,19 @@ impl Theme {
         c.text_primary = on.ink;
         c.text_dim = on.ink_dim;
         c.text_tertiary = on.ink_tertiary;
-        c.intent.selection = c.lift_on(ground, 1.0);
+        c.intent.selection = c.selected_on(ground);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
+        c.intent.neutral_fill = crate::tokens::colors::mix8(ground, on.ink, 0.9);
         let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
         if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
         {
             // The same construction the palette uses on its own ground:
             // primary ink as the fill, hover 12 % of the way back toward
             // the ground, the ground as the label.
-            c.intent.inverted = on.ink;
-            c.intent.inverted_hover = crate::tokens::colors::over(on.ink, ground, 0.12);
-            c.intent.on_inverted = ground;
+            c.intent.accent = on.ink;
+            c.intent.accent_hover = crate::tokens::colors::over(on.ink, ground, 0.12);
+            c.intent.accent_pressed = crate::tokens::colors::over(on.ink, ground, 0.24);
+            c.intent.on_accent = ground;
         }
         theme
             .tokens
@@ -635,6 +637,39 @@ impl Theme {
         self
     }
 
+    /// The same theme at `density` (`crate::tokens::Density`): compact
+    /// scales the spacing rhythm by 0.75 and shortens rows to 28 / 44 / 52;
+    /// control heights and text stay. Set per window or per region (a
+    /// sidebar, a table): a data-heavy app lays its content region out with
+    /// `theme.with_density(Density::Compact)`.
+    #[must_use]
+    pub fn with_density(mut self, density: crate::tokens::Density) -> Self {
+        let from = self.tokens.density;
+        if from == density {
+            return self;
+        }
+        // Undo the old factor, then apply the new one: dividing first keeps
+        // a round trip exact.
+        let (undo, apply) = (from.rhythm_factor(), density.rhythm_factor());
+        let r = &mut self.tokens.spacing.rhythm;
+        for gap in [
+            &mut r.tight,
+            &mut r.related,
+            &mut r.sibling,
+            &mut r.section,
+            &mut r.group,
+        ] {
+            *gap = *gap / undo * apply;
+        }
+        let (was, now) = (from.rows(), density.rows());
+        let m = &mut self.tokens.metrics;
+        m.row_single = m.row_single / was.single * now.single;
+        m.row_double = m.row_double / was.double * now.double;
+        m.row_avatar = m.row_avatar / was.avatar * now.avatar;
+        self.tokens.density = density;
+        self
+    }
+
     fn multiply_dimensions(&mut self, factor: f32) {
         self.tokens.spacing = self.tokens.spacing.scaled(factor);
         self.tokens.metrics = self.tokens.metrics.scaled(factor);
@@ -769,28 +804,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_primary_control_on_a_flipped_ground_stays_inverted_and_legible() {
+    fn a_primary_control_on_a_flipped_ground_stays_legible() {
         use crate::a11y::contrast_ratio;
         for theme in [Theme::light(), Theme::dark()] {
             let letterbox = theme.tokens.colors.media.letterbox;
             let on = theme.on_ground(letterbox);
             let i = &on.tokens.colors.intent;
             assert!(
-                contrast_ratio(i.on_inverted, i.inverted) >= 4.5,
-                "the label on the inverted fill must read over media",
+                contrast_ratio(i.on_accent, i.accent) >= 4.5,
+                "the label on the primary fill must read over media",
             );
             assert!(
-                contrast_ratio(i.inverted, letterbox) >= 3.0,
-                "the inverted fill must stand off the media ground",
+                contrast_ratio(i.accent, letterbox) >= 3.0,
+                "the primary fill must stand off the media ground",
             );
-            assert_ne!(i.inverted, i.inverted_hover);
+            assert_ne!(i.accent, i.accent_hover);
         }
         // A ground of the palette's own polarity keeps the authored fill.
         let dark = Theme::dark();
         let sidebar = dark.tokens.colors.surfaces.sidebar;
         assert_eq!(
-            dark.on_ground(sidebar).tokens.colors.intent.inverted,
-            dark.tokens.colors.intent.inverted
+            dark.on_ground(sidebar).tokens.colors.intent.accent,
+            dark.tokens.colors.intent.accent
         );
     }
 
@@ -844,7 +879,7 @@ mod tests {
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let c = &t.tokens.colors;
                 assert_eq!(t.text_primary, c.text_primary, "{}", t.name);
-                assert_eq!(t.border_focus, c.intent.you, "{}", t.name);
+                assert_eq!(t.border_focus, c.intent.accent_ink, "{}", t.name);
                 assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
             }
             assert!(Theme::high_contrast().colors_are_forced());
@@ -905,7 +940,7 @@ mod tests {
                     let step = contrast_ratio(c.intent.selection, ground);
                     assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
                     assert_eq!(c.surfaces.raised, t.tokens.colors.surfaces.raised);
-                    assert_eq!(c.intent.inverted, t.tokens.colors.intent.inverted);
+                    assert_eq!(c.intent.accent, t.tokens.colors.intent.accent);
                 }
                 assert_eq!(
                     t.in_region(Region::Content).tokens.colors.intent.selection,
@@ -1244,7 +1279,7 @@ mod tests {
             assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
             assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
             assert_eq!(theme.tokens.selector, selector);
-            let fill = Oklch::from_color(theme.tokens.colors.intent.inverted);
+            let fill = Oklch::from_color(theme.tokens.colors.intent.accent);
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }
 

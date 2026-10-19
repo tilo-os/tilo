@@ -724,7 +724,7 @@ impl DatePicker {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.intent.inverted,
+                    tokens.colors.intent.accent,
                     None,
                     &disc,
                 );
@@ -745,7 +745,7 @@ impl DatePicker {
 
             let day_str = date.day().to_string();
             let color = if is_selected {
-                tokens.colors.intent.on_inverted
+                tokens.colors.intent.on_accent
             } else if is_in_view_month {
                 text_color
             } else {

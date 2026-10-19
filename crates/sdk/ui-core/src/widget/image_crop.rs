@@ -313,7 +313,7 @@ impl ImageCropEditor {
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            theme.tokens.colors.intent.inverted,
+            theme.tokens.colors.intent.accent_ink,
             None,
             &crop,
         );
@@ -333,7 +333,7 @@ impl ImageCropEditor {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.inverted,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &handle,
             );

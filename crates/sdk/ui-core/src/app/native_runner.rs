@@ -1641,6 +1641,7 @@ impl AppHandler {
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
     ) -> bool {
+        crate::focus_visible::note(&event);
         native_input_isolation::dispatch(
             self.native_input_route_isolation,
             origin,

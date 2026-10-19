@@ -1066,7 +1066,7 @@ impl WorkspaceSettings {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.intent.inverted,
+            colors.intent.accent,
             None,
             &identity_card,
         );
@@ -1334,7 +1334,7 @@ fn draw_pane_intro(
         transform,
         icon_rect.inset(-9.0),
         icon,
-        colors.intent.inverted_hover,
+        colors.intent.accent_hover,
         LUCIDE_DEFAULT_STROKE_PX,
     );
     let detail_style = tokens.typography.style(TextRole::Caption);
@@ -1478,8 +1478,8 @@ fn subject_tint(label: &str, theme: &Theme) -> Color {
         .fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize
         % 4;
     match bucket {
-        0 => colors.intent.inverted,
-        1 => colors.intent.inverted_hover,
+        0 => colors.intent.accent,
+        1 => colors.intent.accent_hover,
         2 => colors.semantic.info,
         _ => colors.semantic.success,
     }
@@ -2973,7 +2973,7 @@ fn draw_member_role_chip(
     let chip_tint = if structural_owner {
         colors.semantic.success
     } else {
-        colors.intent.inverted
+        colors.intent.accent
     };
     let chip_alpha = if role_interactive || structural_owner {
         1.0

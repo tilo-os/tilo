@@ -688,7 +688,7 @@ impl Table {
             &Stroke::new(1.5),
             transform,
             if hovered {
-                theme.tokens.colors.intent.inverted
+                theme.tokens.colors.intent.accent_ink
             } else {
                 crate::surface::edge_on(box_color)
             },
@@ -701,7 +701,7 @@ impl Table {
             transform,
             Point::new(c.x - 34.0, c.y),
             6.0,
-            theme.tokens.colors.intent.inverted,
+            theme.tokens.colors.intent.accent_ink,
             2.0,
         );
         #[allow(
@@ -835,7 +835,7 @@ impl Table {
             y1: gb,
         } = grid.body;
         let tk = &theme.tokens;
-        let accent = theme.tokens.colors.intent.inverted;
+        let accent = theme.tokens.colors.intent.accent_ink;
         // The glyph inside a gutter affordance is a mark on a themed chip, so
         // it is derived against that chip rather than assumed to be white: on
         // the high-contrast accent white lands a hair under the non-text floor,

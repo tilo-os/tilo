@@ -176,7 +176,7 @@ impl ThemeDocument {
             id: id.into(),
             name: name.into(),
             palette,
-            emphasis: Emphasis::Inverted,
+            emphasis: Emphasis::stock_for(&palette),
             presence: palette.stock_presence(),
             shape: ThemeShape {
                 window_radius: crate::tokens::Radii::WINDOW,

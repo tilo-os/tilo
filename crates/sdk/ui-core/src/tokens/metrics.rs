@@ -127,6 +127,21 @@ pub struct Metrics {
     /// How far a row must be swiped sideways before letting go commits its
     /// swipe action rather than springing back.
     pub swipe_commit: f32,
+    /// A one-line list row ([`super::Density::rows`]).
+    pub row_single: f32,
+    /// A list row with a title and a secondary line.
+    pub row_double: f32,
+    /// A list row led by a 40 px avatar or icon.
+    pub row_avatar: f32,
+    /// A glyph in a row or a control: Lucide at 16.
+    pub icon_control: f32,
+    /// The leading app or location icon of a bar.
+    pub icon_bar: f32,
+    /// An avatar leading a one-line row.
+    pub avatar_inline: f32,
+    /// An avatar leading a two-line row: the row grows to
+    /// [`Self::row_avatar`].
+    pub avatar_row: f32,
 }
 
 impl Metrics {
@@ -172,6 +187,13 @@ impl Metrics {
         wheel_line: 60.0,
         scroll_thumb: 8.0,
         swipe_commit: 88.0,
+        row_single: super::Density::Comfortable.rows().single,
+        row_double: super::Density::Comfortable.rows().double,
+        row_avatar: super::Density::Comfortable.rows().avatar,
+        icon_control: 16.0,
+        icon_bar: 20.0,
+        avatar_inline: 24.0,
+        avatar_row: 40.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -213,6 +235,8 @@ impl Metrics {
         self.icon_sm *= factor;
         self.icon_md *= factor;
         self.icon_lg *= factor;
+        self.icon_control *= factor;
+        self.icon_bar *= factor;
         self
     }
 
@@ -261,6 +285,13 @@ impl Metrics {
             wheel_line: self.wheel_line * factor,
             scroll_thumb: self.scroll_thumb * factor,
             swipe_commit: self.swipe_commit * factor,
+            row_single: self.row_single * factor,
+            row_double: self.row_double * factor,
+            row_avatar: self.row_avatar * factor,
+            icon_control: self.icon_control * factor,
+            icon_bar: self.icon_bar * factor,
+            avatar_inline: self.avatar_inline * factor,
+            avatar_row: self.avatar_row * factor,
         }
     }
 }

@@ -61,7 +61,8 @@ impl BarStanding {
 /// The desktop's bar: every bar control is [`BAR_CONTROL_PX`] (24) with an
 /// `s1` of air above and below, so the bar is 32 logical pixels (64 at scale
 /// 2). At 24 it read cramped and out of balance with the windows' bars
-/// below it. The bar's controls run to the screen's top edge, where a
+/// below it. The controls are the design system's bar control
+/// (`ui::widget::BarControlFace`) at the bar's control height. The bar's controls run to the screen's top edge, where a
 /// pointer cannot overshoot them, so their targets keep the pointer floor
 /// through their own hit rects rather than a taller bar. Unscaled `BASE`
 /// values because layout sizes its node from this constant before any theme
@@ -102,13 +103,12 @@ const AVATAR_STEP: f64 = 20.0;
 /// the content is centred in the band.
 const CENTER_INSET_PX: f64 = 12.0;
 
-/// Diameter of the small Lucide glyph beside the workspace name (the
-/// chevron opening its menu).
-const SMALL_GLYPH_PX: f64 = 12.0;
+/// Diameter of the Lucide glyph beside the workspace name (the chevron
+/// opening its menu): a control's 16.
+const SMALL_GLYPH_PX: f64 = 16.0;
 
-
-/// Diameter of the bar's larger glyphs: the status icons.
-const BAR_GLYPH_PX: f64 = 14.0;
+/// Diameter of the bar's status glyphs: a control's 16.
+const BAR_GLYPH_PX: f64 = 16.0;
 
 #[cfg(test)]
 #[allow(
@@ -239,6 +239,8 @@ struct CacheFingerprint {
     strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     own: Option<crate::chrome::OwnChip>,
+    /// The bar control under the pointer: it lifts.
+    hovered_control: Option<&'static str>,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -685,17 +687,11 @@ fn until_next_time_bucket(since_epoch: Duration, bucket_secs: u64) -> Duration {
     bucket.saturating_sub(into)
 }
 
-/// A selector on the bar. The bar has no surface of its own: its selectors
-/// stand on the desktop ground, so they lift off that.
-fn bar_selector_body(
-    theme: &Theme,
-    state: ui::chrome::SelectionState,
-) -> ui::chrome::SelectionTier {
-    ui::chrome::selector_tier(theme, state, theme.tokens.colors.surfaces.base)
-}
-
-/// Paint a selector on the bar at `shape` in `state`, through the one
-/// selector painter.
+/// Paint a bar control's lift at `shape` in `state`: the design system's
+/// bar control ([`ui::widget::BarControlFace::fill`]), plain at rest, half a
+/// lift under the pointer, a whole lift while pressed or open. The bar has
+/// no surface of its own: its controls stand on the desktop ground and lift
+/// off that.
 fn paint_bar_selector(
     scene: &mut Scene,
     transform: Affine,
@@ -703,13 +699,13 @@ fn paint_bar_selector(
     state: ui::chrome::SelectionState,
     theme: &Theme,
 ) {
-    ui::chrome::paint_selector(
-        scene,
-        transform,
-        shape,
-        ui::chrome::SelectorRole::Item(&bar_selector_body(theme, state)),
-        theme,
-    );
+    let face = ui::widget::BarControlFace::new("")
+        .open(state.active)
+        .pressed(state.pressed)
+        .hovered(state.hover);
+    if let Some(fill) = face.fill(theme, theme.tokens.colors.surfaces.base) {
+        scene.fill(Fill::NonZero, transform, fill, None, shape);
+    }
 }
 
 /// Per-frame sizing + palette snapshot for the tray pill, computed once
@@ -977,7 +973,20 @@ impl TopBarChrome {
             strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             own: self.own_chip(),
+            hovered_control: self.hovered_control(),
         }
+    }
+
+    /// The bar control under the pointer, from the hit rects the last paint
+    /// laid down: plain at rest, it lifts while the pointer is over it.
+    fn hovered_control(&self) -> Option<&'static str> {
+        let point = self.last_cursor?;
+        if !self.rect.contains(point) {
+            return None;
+        }
+        self.control_targets()
+            .into_iter()
+            .find(|target| self.control_rect(target).contains(point))
     }
 
     fn app_tray_revision(&self) -> u64 {
@@ -1524,7 +1533,13 @@ impl TopBarChrome {
                             if workspace.id == tree.active {
                                 tab.title.clone()
                             } else {
-                                format!("{} › {}", workspace.name, tab.title)
+                                t_args(
+                                    "topbar-sharing-window-in-workspace",
+                                    &[
+                                        ("window", tab.title.as_str().into()),
+                                        ("workspace", workspace.name.as_str().into()),
+                                    ],
+                                )
                             }
                         },
                     )
@@ -1868,18 +1883,17 @@ impl TopBarChrome {
             x + control,
             center_y + control / 2.0,
         );
-        if open {
-            paint_bar_selector(
-                scene,
-                transform,
-                &RoundedRect::from_rect(
-                    self.tilo_mark_rect,
-                    ui::chrome::ChromeRole::Selector.radius(theme, control),
-                ),
-                ui::chrome::SelectionState::active(true),
-                theme,
-            );
-        }
+        paint_bar_selector(
+            scene,
+            transform,
+            &RoundedRect::from_rect(self.tilo_mark_rect, f64::from(theme.tokens.radii.control)),
+            ui::chrome::SelectionState::new(
+                open,
+                self.hovered_control() == Some(Self::CONTROL_TILO_MARK),
+                false,
+            ),
+            theme,
+        );
         let side = f64::from(theme.tokens.metrics.icon_md);
         paint_tilo_mark(
             scene,
@@ -1967,64 +1981,44 @@ impl TopBarChrome {
             None,
             &ws_text_style.clone().with_weight(ws_weight),
         );
-        let ws_y = center_y - f64::from(ws_h) / 2.0;
         // A bar control's height, grown with its label at a large text
         // scale (as `ControlSize` grows), never taller than the bar.
         let pill_h = BAR_CONTROL_PX
             .max((f64::from(ws_h) + f64::from(tokens.spacing.s1) / 2.0).ceil())
             .min(self.rect.height().max(BAR_CONTROL_PX));
+        // A bar control: the workspace name and its chevron, plain at rest,
+        // lifting under the pointer and while its menu is open.
+        let workspace_lens_open = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
+        let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
+        let hovered = self.hovered_control() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
+        let face = ui::widget::BarControlFace::new(&name)
+            .label(&ws_label)
+            .trailing(Self::WORKSPACE_MENU_ICON)
+            .open(workspace_lens_open)
+            .hovered(hovered);
+        let pill_w = face.width(text_renderer, theme);
         let ws_pill_outer = Rect::new(
             x - pad,
             center_y - pill_h / 2.0,
-            x + f64::from(ws_w) + pill_chrome - pad,
+            x - pad + pill_w,
             center_y + pill_h / 2.0,
         );
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
         }
-        // Plain at rest, like every control on the bar: the workspace name
-        // and its chevron. It lifts while its menu is open.
-        let workspace_lens_open = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
-        if workspace_lens_open {
-            let pill = RoundedRect::from_rect(
-                ws_pill_outer,
-                f64::from(theme.tokens.radii.control),
-            );
-            paint_bar_selector(
-                scene,
-                transform,
-                &pill,
-                ui::chrome::SelectionState::active(true),
-                theme,
-            );
-        }
-        text_renderer.draw_style(
-            scene,
-            &ws_label,
-            colors.text_primary,
-            at(transform, (x, ws_y)),
-            None,
-            &ws_text_style.clone().with_weight(ws_weight),
-        );
-        let chevron_x = x + f64::from(ws_w) + pad;
-        let chevron_rect = Rect::new(
+        let ground = colors.surfaces.base;
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        face.paint(&mut ctx, ws_pill_outer, ground);
+        let chevron_x = x + f64::from(ws_w) + f64::from(tokens.metrics.icon_label_gap);
+        self.ws_chevron_rect = Rect::new(
             chevron_x,
             center_y - chevron / 2.0,
             chevron_x + chevron,
             center_y + chevron / 2.0,
-        );
-        self.ws_chevron_rect = chevron_rect;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            chevron_rect,
-            Self::WORKSPACE_MENU_ICON,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
 
@@ -2297,7 +2291,21 @@ impl TopBarChrome {
         );
         // Plain at rest, like every control on the bar: the status glyphs
         // stand on the bar itself.
-        let tray = RoundedRect::from_rect(self.tray_pill_rect, f64::from(theme.tokens.radii.control));
+        let tray =
+            RoundedRect::from_rect(self.tray_pill_rect, f64::from(theme.tokens.radii.control));
+        // The status cluster is one bar control: it lifts under the
+        // pointer.
+        paint_bar_selector(
+            scene,
+            transform,
+            &tray,
+            ui::chrome::SelectionState::new(
+                false,
+                self.hovered_control() == Some(Self::CONTROL_QUICK_SETTINGS),
+                false,
+            ),
+            theme,
+        );
         // At 3% the user needs to notice the whole control, not just read
         // the glyph.
         if self.status.battery_is_critical() {
@@ -2814,7 +2822,7 @@ impl TopBarChrome {
                 .collaborator_colors
                 .get(i)
                 .copied()
-                .unwrap_or(colors.intent.inverted);
+                .unwrap_or(colors.intent.you);
             if self.collaborator_agents.get(i).copied().unwrap_or(false) {
                 // Software is never drawn as a person: the shared agent mark,
                 // seated on the same ring so the stack still separates.
@@ -2926,7 +2934,7 @@ impl TopBarChrome {
         let color = if controllers > 0 {
             colors.semantic.warning
         } else {
-            colors.intent.inverted
+            colors.intent.accent_ink
         };
         let style = tokens.typography.style(TextRole::Caption);
         let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
@@ -3351,60 +3359,23 @@ impl TopBarChrome {
         let Some(headline) = self.activity_headline.as_deref() else {
             return String::new();
         };
-        let full = if self.activity_unread == 0 {
-            headline.to_string()
-        } else {
-            t_args(
-                "topbar-activity-unread",
-                &[
-                    ("headline", headline.into()),
-                    ("count", self.activity_unread.into()),
-                ],
-            )
-        };
-        let (full_width, _) = text_renderer.measure_style(
-            &full,
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
-        );
+        // The headline alone: the unread count is the badge's, never joined
+        // into the sentence, and clicking the pill opens the activity.
+        let medium = style.clone().with_weight(TextWeight::Medium);
+        let (full_width, _) = text_renderer.measure_style(headline, None, &medium);
         if full_width <= max_width {
-            return full;
-        }
-
-        // The primary activity says what happened; the unread count already
-        // has a numeric badge, and clicking this pill opens the focused
-        // Room Activity detail. Prefer the entire primary sentence plus an
-        // explicit detail chevron over eliding its last words to preserve
-        // the trailing count in a compact top bar.
-        let detail = format!("{headline}  ›");
-        let (detail_width, _) = text_renderer.measure_style(
-            &detail,
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
-        );
-        if detail_width <= max_width {
-            return detail;
+            return headline.to_string();
         }
         // Aggregate activity sometimes lists its examples after a colon
-        // (for example, the workspace names just recorded). Keep the
-        // complete event/count clause and make the detail route explicit
-        // instead of cutting it part-way through an example list.
+        // (the workspaces just recorded). Keep the whole event clause rather
+        // than cutting part-way through the examples.
         if let Some((summary, _examples)) = headline.split_once(':') {
-            let compact = format!("{summary}  ›");
-            let (compact_width, _) = text_renderer.measure_style(
-                &compact,
-                None,
-                &style.clone().with_weight(TextWeight::Medium),
-            );
+            let (compact_width, _) = text_renderer.measure_style(summary, None, &medium);
             if compact_width <= max_width {
-                return compact;
+                return summary.to_string();
             }
         }
-        text_renderer.elide_to_width_style(
-            headline,
-            max_width,
-            &style.clone().with_weight(TextWeight::Medium),
-        )
+        text_renderer.elide_to_width_style(headline, max_width, &medium)
     }
 
     fn draw_activity_badge(
@@ -3423,19 +3394,25 @@ impl TopBarChrome {
             self.avatar_stack_rect.x1 - 2.0,
             self.avatar_stack_rect.y0 + 2.0,
         );
+        // An unread count is filled in the person's own colour.
+        let fill = theme.tokens.colors.intent.you;
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.inverted,
+            fill,
             None,
             &vello::kurbo::Circle::new(center, radius),
         );
         let style = theme.text(TextRole::Caption);
         let (w, h) = text_renderer.measure_style(&label, None, &style);
+        let ink = theme
+            .tokens
+            .colors
+            .readable_on(fill, theme.tokens.colors.text_primary);
         text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.colors.text_primary,
+            ink,
             at(
                 transform,
                 (center.x - f64::from(w) / 2.0, center.y - f64::from(h) / 2.0),
@@ -4729,6 +4706,9 @@ impl Widget for TopBarChrome {
         if self.presence() != self.cache_fp.presence {
             return true;
         }
+        if self.hovered_control() != self.cache_fp.hovered_control {
+            return true;
+        }
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
             return true;
@@ -5385,8 +5365,7 @@ mod tests {
         let label = bar.activity_display_label(&mut renderer, &style, max_width);
         let (width, _) =
             renderer.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
-        // The lane is symmetric and wider now, so the unread count fits
-        // after the full sentence instead of a bare chevron.
+        // The headline alone, whole: the unread count is the badge's.
         assert!(
             label.starts_with("ada · 2 permission changes"),
             "the full sentence survives: {label:?}"
@@ -6333,7 +6312,7 @@ mod tests {
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
         let name = bar.control_name(TopBarChrome::CONTROL_COLLABORATORS);
         assert!(
-            name.contains("scribe (agent): can control Private › Draft"),
+            name.contains("scribe (agent): can control Draft in Private"),
             "{name}"
         );
         assert!(!name.contains("unidentified session"), "{name}");

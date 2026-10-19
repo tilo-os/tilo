@@ -581,7 +581,7 @@ impl VideoEditorApp {
             tf,
             tag_rect,
             f64::from(theme.tokens.radii.detail),
-            c.intent.inverted,
+            c.intent.accent,
         );
         text(
             scene,
@@ -589,7 +589,7 @@ impl VideoEditorApp {
             tf,
             &tag,
             &caption(theme).numeric().strong(),
-            c.intent.on_inverted,
+            c.intent.on_accent,
             tag_rect.x0 + S1,
             tag_rect.y0,
         );

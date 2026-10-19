@@ -155,7 +155,13 @@ pub fn paint_find_match(
         use crate::color_compat::ColorCompat;
         let strong = intent.selection_tint.with_alpha_factor(2.0);
         scene.fill(Fill::NonZero, transform, strong, None, &shape);
-        scene.stroke(&Stroke::new(1.5), transform, intent.you, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            intent.accent_ink,
+            None,
+            &shape,
+        );
     } else {
         scene.fill(
             Fill::NonZero,

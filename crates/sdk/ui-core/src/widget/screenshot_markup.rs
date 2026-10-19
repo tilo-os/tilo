@@ -911,9 +911,9 @@ impl Widget for ScreenshotMarkup {
                     Fill::NonZero,
                     transform,
                     if id == "save" {
-                        c.intent.inverted
+                        c.intent.accent
                     } else if selected {
-                        c.intent.inverted_hover.with_alpha_factor(0.22)
+                        c.intent.accent_hover.with_alpha_factor(0.22)
                     } else {
                         c.lift(0.72)
                     },
@@ -996,7 +996,7 @@ impl Widget for ScreenshotMarkup {
                 icon_rect,
                 icon,
                 if id == "save" {
-                    c.intent.on_inverted
+                    c.intent.on_accent
                 } else {
                     c.text_primary
                 },
@@ -1013,7 +1013,7 @@ impl Widget for ScreenshotMarkup {
                 tr.draw_style(
                     scene,
                     "Save",
-                    c.intent.on_inverted,
+                    c.intent.on_accent,
                     transform.pre_translate(
                         (r.x0 + 30.0, r.center().y - f64::from(save_h) / 2.0).into(),
                     ),

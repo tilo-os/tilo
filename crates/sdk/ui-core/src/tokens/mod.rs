@@ -1,5 +1,6 @@
 pub mod colors;
 pub mod contrast;
+pub mod density;
 pub mod elevation;
 pub mod layout;
 pub mod metrics;
@@ -18,6 +19,7 @@ pub use colors::{
     PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, Wash, WashStrength,
     dark_overlays, light_overlays,
 };
+pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Shadow};
 pub use layout::Layout;
 pub use metrics::Metrics;
@@ -58,6 +60,9 @@ pub struct Tokens {
     /// What a docked selector strip stands on and how its items are lit
     /// (`crate::chrome::paint_selector`).
     pub selector: SelectorFinish,
+    /// The density these tokens are at; [`crate::Theme::with_density`]
+    /// moves it.
+    pub density: Density,
 }
 
 impl Tokens {
@@ -90,6 +95,7 @@ impl Tokens {
             } else {
                 SelectorFinish::STOCK
             },
+            density: Density::Comfortable,
         }
     }
 

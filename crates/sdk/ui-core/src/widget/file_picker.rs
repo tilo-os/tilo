@@ -2850,12 +2850,7 @@ impl FilePicker {
                 else {
                     continue;
                 };
-                meta(
-                    scene,
-                    &crate::format::timestamp(&when),
-                    date_x0,
-                    false,
-                );
+                meta(scene, &crate::format::timestamp(&when), date_x0, false);
             }
         }
 

@@ -1912,7 +1912,7 @@ impl CommandPalette {
         let chip_text_style = theme.text(TextRole::Caption);
 
         let active = FilterChipLook {
-            body: theme.tokens.colors.intent.inverted,
+            body: theme.tokens.colors.intent.accent,
             edge: None,
             text: theme.tokens.colors.text_primary,
         };
@@ -2193,7 +2193,7 @@ impl CommandPalette {
             );
             let ink = colors.ink_on(
                 Self::row_ground(theme, selected),
-                colors.intent.inverted,
+                colors.text_primary,
                 SMALL_TEXT_MIN_CONTRAST,
             );
             text_renderer.draw_style(
@@ -2449,11 +2449,9 @@ impl CommandPalette {
                     if room <= fact_gap {
                         break;
                     }
-                    let shown = ctx.text.elide_to_width_style(
-                        fact,
-                        f32_of_f64(room),
-                        &desc_style,
-                    );
+                    let shown = ctx
+                        .text
+                        .elide_to_width_style(fact, f32_of_f64(room), &desc_style);
                     let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
                     let marks = if label_marks.is_empty() {
                         self.match_ranges(&shown)
@@ -2766,7 +2764,7 @@ impl CommandPalette {
 /// produces — the two values must stay equal.
 
 const ROW_HEIGHT: f64 = 36.0;
-const TWO_LINE_ROW_HEIGHT: f64 = 48.0;
+const TWO_LINE_ROW_HEIGHT: f64 = 52.0;
 const HEADER_HEIGHT: f64 = 24.0;
 /// What a secret's characters are painted as.
 const MASK: char = '\u{2022}';
@@ -2836,18 +2834,21 @@ impl Widget for CommandPalette {
         // paints the card's shadow, fading it in with the card.
         crate::widget::floating_surface::paint_card_body(scene, transform, self.rect, theme);
 
-        // The query row is the card's own first row, not a field boxed inside
-        // the card: one surface, one edge. Results, when there are any, are
-        // set off from it by a hairline across the card.
+        // A floating panel whose header slot holds the query field,
+        // embedded: the card's own first row, not a field boxed inside it.
+        // Results, when there are any, are set off from it by the panel's
+        // hairline under the header.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        if !self.shows_field_only() {
-            let y = row_rect.y1 + (row_rect.y0 - self.rect.y0).min(8.0);
-            let rule = vello::kurbo::Line::new((self.rect.x0, y), (self.rect.x1, y));
-            scene.stroke(
-                &Stroke::new(1.0),
+        let panel = crate::widget::FloatingPanelFace::new()
+            .header(row_rect.height())
+            .body_empty(self.shows_field_only())
+            .layout(self.rect, theme);
+        if let Some(rule) = panel.rule {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
                 transform,
-                crate::chrome::chrome_hairline(theme),
+                crate::surface::edge_on(crate::chrome::panel_ground(theme)),
                 None,
                 &rule,
             );

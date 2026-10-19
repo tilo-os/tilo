@@ -574,10 +574,10 @@ impl Slider {
         // Capsule ends: the radius is the track's own half-height, so it
         // follows a taller track instead of a literal that once matched one.
         let track_radius = track_rect.height() / 2.0;
-        // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
-        // slot) with an edge derived from itself; the filled half is accent.
-        let unfilled = theme.tokens.colors.intent.selection;
-        let filled = theme.tokens.colors.intent.inverted;
+        // The unfilled half is the raised well; the filled half is strong
+        // neutral ink. A value is not an on state, and not the accent.
+        let unfilled = theme.tokens.colors.surfaces.raised;
+        let filled = theme.tokens.colors.intent.neutral_fill;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -585,13 +585,6 @@ impl Slider {
             unfilled,
             None,
             &track_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            crate::surface::edge_on(unfilled),
-            None,
-            &crate::surface::edge_outline(track_rect, track_radius),
         );
 
         // Filled portion of the track.
@@ -668,7 +661,7 @@ impl Slider {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &Circle::new(knob_center, knob_radius + 2.0),
             );
@@ -691,7 +684,7 @@ fn thumb_colors(
     if crate::widget::toggle::light_material(colors) {
         let ring =
             crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
-        (colors.surfaces.raised, ring)
+        (colors.surfaces.overlay, ring)
     } else {
         let ring = crate::widget::toggle::ink_across(&[filled], colors.surfaces.content, floor);
         (colors.text_primary, ring)
@@ -1167,13 +1160,13 @@ mod tests {
             &SliderFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), 0.5),
         );
         let colors = &theme.tokens.colors;
-        let raised = colors.surfaces.raised;
+        let raised = colors.surfaces.overlay;
         let ring = crate::widget::toggle::ink_across(
-            &[colors.intent.inverted, colors.intent.selection],
+            &[colors.intent.neutral_fill, colors.surfaces.raised],
             colors.text_tertiary,
             crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
-        for ground in [colors.intent.inverted, colors.intent.selection] {
+        for ground in [colors.intent.neutral_fill, colors.surfaces.raised] {
             assert!(
                 crate::a11y::contrast_ratio(ring, ground)
                     >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
@@ -1189,7 +1182,7 @@ mod tests {
     fn the_dark_thumb_is_primary_ink_and_ringed() {
         let theme = Theme::dark();
         let colors = &theme.tokens.colors;
-        let (filled, unfilled) = (colors.intent.inverted, colors.intent.selection);
+        let (filled, unfilled) = (colors.intent.neutral_fill, colors.surfaces.raised);
         let (fill, ring) = thumb_colors(&theme, filled, unfilled);
         assert_eq!(fill, colors.text_primary);
         let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;

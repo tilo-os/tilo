@@ -156,6 +156,9 @@ pub struct SearchField {
     applied: Option<String>,
     /// The placeholder as written; the input shows it elided to its width.
     placeholder: String,
+    /// Standing in a floating panel's header: no fill, no outline
+    /// ([`crate::widget::primitives::FloatingPanel`]).
+    embedded: bool,
 }
 
 impl SearchField {
@@ -204,6 +207,7 @@ impl SearchField {
             size: ControlSize::Regular,
             applied: None,
             placeholder: "Search".to_owned(),
+            embedded: false,
         }
     }
 
@@ -306,6 +310,13 @@ impl SearchField {
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.leading = icon;
         self
+    }
+
+    /// Stand in a floating panel's header: no fill and no outline of its
+    /// own. [`crate::widget::primitives::FloatingPanel`] sets it on a field
+    /// placed in its header slot.
+    pub fn set_embedded(&mut self, embedded: bool) {
+        self.embedded = embedded;
     }
 
     #[must_use]
@@ -539,6 +550,14 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     crate::provides!(dyn crate::widget::controls::ActionControls, SearchField);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
@@ -632,24 +651,28 @@ impl Widget for SearchField {
             self.scope_token_rect = Rect::ZERO;
             return;
         }
-        let focused = self.input.is_focused();
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        let fill = theme.tokens.colors.surfaces.raised;
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-        // Rest edge derived from the field (HIG §9.5); focus is the user's
-        // colour, on one half-pixel-inset outline.
-        let border = if focused {
-            theme.border_focus
-        } else {
-            crate::surface::edge_on(fill)
-        };
-        scene.stroke(
-            &Stroke::new(if focused { 1.5 } else { 1.0 }),
-            transform,
-            border,
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
+        // A raised well with no edge, the caret its focus; embedded in a
+        // floating panel's header it takes neither fill nor outline: the
+        // panel is its surface.
+        if !self.embedded {
+            let shape = RoundedRect::from_rect(self.rect, radius);
+            let fill = theme.tokens.colors.surfaces.raised;
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+            if theme.colors_are_forced() {
+                let focused = self.input.is_focused();
+                scene.stroke(
+                    &Stroke::new(if focused { 2.0 } else { 1.0 }),
+                    transform,
+                    if focused {
+                        theme.border_focus
+                    } else {
+                        crate::surface::edge_on(fill)
+                    },
+                    None,
+                    &crate::surface::edge_outline(self.rect, radius),
+                );
+            }
+        }
 
         let icon_rect = Rect::from_center_size(
             Point::new(self.rect.x0 + ICON_GUTTER / 2.0, self.rect.center().y),

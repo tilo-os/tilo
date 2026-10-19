@@ -1350,7 +1350,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.tokens.colors.intent.inverted,
+        theme.tokens.colors.text_primary,
         None,
         &body,
     );
@@ -1360,7 +1360,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.stroke(
         &Stroke::new((5.0 * layout.scale).max(1.0)),
         Affine::IDENTITY,
-        theme.tokens.colors.intent.inverted,
+        theme.tokens.colors.text_primary,
         None,
         &shackle,
     );
@@ -1758,11 +1758,11 @@ mod tests {
         // Phase `lock_error_status_is_concise_and_preserves_retry_guidance`.
         assert_eq!(
             lock_error_status("Incorrect username or password"),
-            "Sign-in failed · Enter your password to try again"
+            "Sign-in failed. Enter your password again."
         );
         assert_eq!(
             lock_error_status(UNAVAILABLE_MSG),
-            "Can't verify · Enter your password to try again"
+            "Can't verify your password. Enter it again."
         );
         // Phase `lock_error_status_stays_on_one_line_at_1280_by_800`.
         {

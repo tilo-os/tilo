@@ -67,7 +67,7 @@ impl QueryInk {
             text: colors.text_primary,
             placeholder: colors.text_dim,
             selection: colors.intent.selection_tint,
-            caret: colors.intent.you,
+            caret: colors.intent.accent_ink,
         }
     }
 }

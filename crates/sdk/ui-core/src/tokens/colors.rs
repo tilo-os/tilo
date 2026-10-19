@@ -10,14 +10,16 @@
 //!
 //! - [`PresencePalette`]: twelve hues at equal lightness and chroma, one per
 //!   participant, so nobody looks more important than anybody else;
-//! - [`Intents::you`]: the local person's own presence colour, which is
-//!   their focus ring, caret and text-selection tint;
+//! - [`Intents::you`]: the local person's own presence colour;
+//! - the accent ([`Intents::accent`], [`Intents::accent_ink`]): one hue, by
+//!   default the person's own colour ([`Emphasis::You`]), for primary
+//!   actions, links, the focus ring, the caret, the text selection and the
+//!   selected row's tint;
+//! - the on state ([`Intents::on_state`]): green, for what is switched on;
 //! - [`SemanticColors`]: muted status (danger, warning, success, info).
 //!
-//! There is no brand accent. A primary action is an *inverted* control
-//! ([`Intents::inverted`] under [`Intents::on_inverted`]); a selection is a
-//! *lift* ([`Intents::selection`]). A theme whose [`Emphasis`] is tinted
-//! gives those two one hue; nothing else gains colour.
+//! Nothing else gains colour: hover, grips, window edges, icons at rest,
+//! sliders and progress are neutral.
 //!
 //! Every colour here is derived from a [`Palette`] (what a theme document
 //! says) in [`Colors::as_authored`]; [`Colors::of_palette`] then repairs any
@@ -73,6 +75,14 @@ pub(crate) fn composite(over: Color, ground: Color) -> Color {
 /// count as visible — deliberately far below any text threshold, since it
 /// only has to catch a wash landing within rounding distance of its surface.
 pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
+
+/// How far a floating surface's inner hairline (white at 7 % on a dark
+/// material, black at 8 % on a light one, `docs/design-language.md`,
+/// "Surfaces") moves its fill. Quieter than [`HAIRLINE_MIN_DELTA`] by
+/// design: a floating surface separates by its level, its two-layer shadow
+/// and this hairline together, and a brighter line read as a frame drawn
+/// around the panel.
+pub const FLOATING_EDGE_MIN_DELTA: f64 = 0.01;
 /// Weight of the focused window's neutral edge over the desktop ground.
 const FOCUSED_WINDOW_EDGE_ALPHA: u8 = 168;
 
@@ -248,30 +258,52 @@ pub struct SemanticColors {
     pub info: Color,
 }
 
-/// What controls paint with, by intent rather than by hue.
+/// What controls paint with, by intent rather than by hue
+/// (`docs/design-language.md`, "Colour roles"). Nothing outside these roles
+/// gets colour: the accent is for primary actions, links, the focus ring,
+/// the caret, the text selection and the selected row's tint; the on state
+/// is for a switch, a checked box or radio, an active tile, a "connected"
+/// dot. Hover, resize grips, window edges, icons at rest, sliders and
+/// progress stay neutral.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Intents {
-    /// Fill of a primary action, a switch that is on, a checked box, a
-    /// slider's filled track. Under [`Emphasis::Inverted`] (the default) it
-    /// is primary ink, inverted onto the control; under
-    /// [`Emphasis::Tinted`] it is the theme's one tint.
-    pub inverted: Color,
-    /// [`Self::inverted`] under the pointer or while pressed: one step back
-    /// toward the content surface.
-    pub inverted_hover: Color,
-    /// Label and glyph on an [`Self::inverted`] fill: the content surface.
-    pub on_inverted: Color,
+    /// Fill of a primary action: the accent hue at a lightness its label
+    /// reads on ([`Emphasis::You`] and [`Emphasis::Tinted`]), or primary ink
+    /// inverted onto the control under [`Emphasis::Inverted`].
+    pub accent: Color,
+    /// [`Self::accent`] under the pointer: a step away from its label, so
+    /// hover only ever adds contrast.
+    pub accent_hover: Color,
+    /// [`Self::accent`] while pressed: a step past the rest fill the other
+    /// way from hover, so a press never reads as a hover.
+    pub accent_pressed: Color,
+    /// Label and glyph on an [`Self::accent`] fill.
+    pub on_accent: Color,
+    /// The accent as ink and as a mark on a surface: a link, the focus
+    /// ring, the caret, the text-selection wash. Clears body-text contrast
+    /// on the window.
+    pub accent_ink: Color,
+    /// Fill of a control that is on: a switch's track, a checked box or
+    /// radio, an active Quick Settings tile, a "connected" dot. Green, the
+    /// colour people read as "on"; state, not status, and never the accent.
+    pub on_state: Color,
+    /// The knob or mark standing on [`Self::on_state`].
+    pub on_state_mark: Color,
+    /// A value that is neither on nor an action: a slider's filled track,
+    /// a progress bar, a gauge, a spinner, a chart's default series. Strong
+    /// neutral ink (primary ink at 90 % over the window).
+    pub neutral_fill: Color,
     /// A selected row, tab or segment on the content surface: one surface
-    /// step, colourless unless the emphasis is tinted. Other grounds lift
-    /// with [`Colors::lift_on`].
+    /// step, faintly the accent (colourless under [`Emphasis::Inverted`]).
+    /// Other grounds lift with [`Colors::lift_on`].
     pub selection: Color,
     /// Halfway to [`Self::selection`]: an unselected row under the pointer.
     pub selection_hover: Color,
-    /// The local person's presence colour: their focus ring, text caret and
-    /// the colour collaborators see their cursor in.
+    /// The local person's presence colour: the colour collaborators see
+    /// their cursor, caret and selection in.
     pub you: Color,
-    /// Text-selection wash: [`Self::you`] at low alpha, painted under the
-    /// selected glyphs.
+    /// Text-selection wash: [`Self::accent_ink`] at low alpha, painted under
+    /// the selected glyphs.
     pub selection_tint: Color,
 }
 
@@ -669,17 +701,47 @@ fn high_contrast_overlays(ink: u8) -> OverlayTiers {
     (w(51), w(77), w(110), w(153), w(217))
 }
 
-/// OKLCH lightness and chroma of the tinted emphasis fill on a palette of
-/// each polarity: light enough on dark palettes (and dark enough on light
-/// ones) that the content surface reads as its label.
-fn tinted_fill(palette: &Palette) -> Tone {
+/// The accent fill on a palette, as `(rest, hover, pressed)` lightness, one
+/// chroma, and whether its label is white (else the window ground). On the
+/// stock grounds the label is white, so every fill stays dark enough for
+/// white to read on it (WCAG AA) at every hue while standing off the window
+/// (3:1); hover and press step away from the label. A lifted dark ladder
+/// (Soft) has no such band, so its accent is light with the window ground
+/// as its label. High contrast keeps the window ground as the label, at AAA.
+fn accent_fill(palette: &Palette) -> ([f32; 3], f32, bool) {
     match (palette.dark, palette.high_contrast) {
-        (true, false) => Tone::new(0.72, 0.13),
-        (false, false) => Tone::new(0.50, 0.13),
-        (true, true) => Tone::new(0.86, 0.12),
-        (false, true) => Tone::new(0.36, 0.13),
+        (true, false) if palette.surfaces.content <= 0.20 => ([0.525, 0.495, 0.465], 0.15, true),
+        (true, false) => ([0.72, 0.76, 0.68], 0.13, false),
+        (false, false) => ([0.50, 0.465, 0.43], 0.15, true),
+        (true, true) => ([0.86, 0.90, 0.82], 0.12, false),
+        (false, true) => ([0.36, 0.32, 0.29], 0.13, false),
     }
 }
+
+/// Lightness of [`Intents::accent_ink`]: the presence tone on dark, a step
+/// darker on light so a link reads as body text on the window.
+fn accent_ink_lightness(palette: &Palette, presence: Tone) -> f32 {
+    if palette.dark {
+        presence.lightness
+    } else {
+        presence.lightness.min(0.52)
+    }
+}
+
+/// The on-state green's lightness and chroma on a palette of each polarity:
+/// light enough to read as green on the window, dark enough that a white
+/// knob stands on it (WCAG 1.4.11).
+fn on_state_tone(palette: &Palette) -> Tone {
+    match (palette.dark, palette.high_contrast) {
+        (true, false) => Tone::new(0.62, 0.15),
+        (false, false) => Tone::new(0.58, 0.15),
+        (true, true) => Tone::new(0.52, 0.15),
+        (false, true) => Tone::new(0.50, 0.15),
+    }
+}
+
+/// The OKLCH hue of the on state: green.
+pub const ON_STATE_HUE: f32 = 150.0;
 
 impl Colors {
     /// The whole colour token set for a palette, as authored: nothing is
@@ -698,6 +760,7 @@ impl Colors {
         let content = n(ladder.content);
         let overlay = n(ladder.overlay);
         let primary = n(palette.ink.primary);
+        let presence_tone = presence;
         let presence = PresencePalette::new(presence.lightness, presence.chroma);
         let [danger, warning, success, info] = {
             let tones = palette.status.in_hue_order();
@@ -725,31 +788,58 @@ impl Colors {
             (false, true) => Color::BLACK,
         };
         let you_colour = presence.hue(you);
-        let (inverted, inverted_hover, lift_chroma, lift_hue) = match emphasis {
-            Emphasis::Inverted => {
-                let hover = oklch(
-                    palette.ink.primary + (ladder.content - palette.ink.primary) * 0.12,
-                    chroma,
-                    hue,
-                );
-                (primary, hover, chroma, hue)
-            }
-            Emphasis::Tinted { hue: tint } => {
-                let tint = tint.rem_euclid(360.0);
-                let fill = tinted_fill(palette);
-                // Under the pointer a tinted fill moves away from its label,
-                // so hover only ever adds contrast.
-                let hover =
-                    (fill.lightness - (ladder.content - fill.lightness) * 0.08).clamp(0.0, 1.0);
-                (
-                    oklch(fill.lightness, fill.chroma, tint),
-                    oklch(hover, fill.chroma, tint),
-                    TINTED_LIFT_CHROMA,
-                    tint,
-                )
-            }
+        let accent_hue = match emphasis {
+            Emphasis::Inverted => None,
+            Emphasis::You => Some(you.degrees()),
+            Emphasis::Tinted { hue: tint } => Some(tint.rem_euclid(360.0)),
         };
-        let lift = |t: f32| oklch(ladder.content + palette.lift() * t, lift_chroma, lift_hue);
+        let (accent, accent_hover, accent_pressed, on_accent, accent_ink, lift_chroma, lift_hue) =
+            match accent_hue {
+                None => {
+                    let hover = oklch(
+                        palette.ink.primary + (ladder.content - palette.ink.primary) * 0.12,
+                        chroma,
+                        hue,
+                    );
+                    let pressed = oklch(
+                        palette.ink.primary + (ladder.content - palette.ink.primary) * 0.24,
+                        chroma,
+                        hue,
+                    );
+                    let ink = oklch(
+                        accent_ink_lightness(palette, presence_tone),
+                        presence.chroma,
+                        you.degrees(),
+                    );
+                    (primary, hover, pressed, content, ink, chroma, hue)
+                }
+                Some(accent_hue) => {
+                    let ([rest, hover, pressed], fill_chroma, white_label) = accent_fill(palette);
+                    let label = if white_label { Color::WHITE } else { content };
+                    (
+                        oklch(rest, fill_chroma, accent_hue),
+                        oklch(hover, fill_chroma, accent_hue),
+                        oklch(pressed, fill_chroma, accent_hue),
+                        label,
+                        oklch(
+                            accent_ink_lightness(palette, presence_tone),
+                            presence.chroma,
+                            accent_hue,
+                        ),
+                        TINTED_LIFT_CHROMA,
+                        accent_hue,
+                    )
+                }
+            };
+        let on_state = on_state_tone(palette);
+        let lift = |t: f32, tinted: bool| {
+            let (c, h) = if tinted {
+                (lift_chroma, lift_hue)
+            } else {
+                (chroma, hue)
+            };
+            oklch(ladder.content + palette.lift() * t, c, h)
+        };
         let opaque = palette.high_contrast;
         let ramp = palette.ramp();
         Self {
@@ -782,13 +872,18 @@ impl Colors {
                 content_edge,
             },
             intent: Intents {
-                inverted,
-                inverted_hover,
-                on_inverted: content,
-                selection: lift(1.0),
-                selection_hover: lift(0.5),
+                accent,
+                accent_hover,
+                accent_pressed,
+                on_accent,
+                accent_ink,
+                on_state: oklch(on_state.lightness, on_state.chroma, ON_STATE_HUE),
+                on_state_mark: Color::WHITE,
+                neutral_fill: mix8(content, primary, 0.9),
+                selection: lift(1.0, true),
+                selection_hover: lift(0.5, false),
                 you: you_colour,
-                selection_tint: Self::selection_tint_of(you_colour),
+                selection_tint: Self::selection_tint_of(accent_ink),
             },
             presence,
             media: MediaColors::new(hue),
@@ -796,7 +891,7 @@ impl Colors {
             text_dim: n(palette.ink.secondary),
             text_tertiary: n(palette.ink.tertiary),
             border_standard: n(palette.border()),
-            border_focus: you_colour,
+            border_focus: accent_ink,
             overlay_subtle: subtle,
             overlay_medium: medium,
             overlay_strong: strong,
@@ -822,13 +917,13 @@ impl Colors {
         colors
     }
 
-    /// A palette with its stock presence tone, inverted emphasis and the
+    /// A palette with its stock presence tone, its stock emphasis and the
     /// default person's colour.
     #[must_use]
     pub fn stock(palette: &Palette) -> Self {
         Self::of_palette(
             palette,
-            Emphasis::Inverted,
+            Emphasis::stock_for(palette),
             palette.stock_presence(),
             PresenceHue::Blue,
         )
@@ -874,14 +969,30 @@ impl Colors {
         next
     }
 
-    /// Make `hue` the person's colour: focus ring, caret and text-selection
-    /// tint, painted at this palette's presence lightness and chroma.
+    /// Make `hue` the person's colour, painted at this palette's presence
+    /// lightness and chroma. Under [`Emphasis::You`] it is the accent too,
+    /// so primary actions, the focus ring, the caret and the selection take
+    /// it.
     pub fn set_you(&mut self, hue: PresenceHue) {
-        let you = self.presence.hue(hue);
+        if self.emphasis == Emphasis::You {
+            let presence = Tone::new(self.presence.lightness, self.presence.chroma);
+            let mut next = Self::of_palette(&self.palette, self.emphasis, presence, hue);
+            next.set_material(
+                self.surfaces.material_blur_px,
+                self.surfaces.material_opacity,
+            );
+            *self = next;
+            return;
+        }
         self.you = hue;
-        self.intent.you = you;
-        self.intent.selection_tint = Self::selection_tint_of(you);
-        self.border_focus = you;
+        self.intent.you = self.presence.hue(hue);
+        if self.emphasis == Emphasis::Inverted {
+            let ink = Oklch::from_color(self.intent.accent_ink);
+            let ink = oklch(ink.l, self.presence.chroma, hue.degrees());
+            self.intent.accent_ink = ink;
+            self.intent.selection_tint = Self::selection_tint_of(ink);
+            self.border_focus = ink;
+        }
     }
 
     /// The floating material: backdrop blur (logical pixels) and the
@@ -901,10 +1012,10 @@ impl Colors {
         with_alpha(you, 82)
     }
 
-    /// The selection lift on any `ground`: `t` 1.0 is one surface step
+    /// The neutral lift on any `ground`: `t` 1.0 is one surface step
     /// (lighter on a dark palette, darker on a light one), 0.5 the hover
-    /// halfway. Colourless under inverted emphasis; faintly the tint under
-    /// tinted emphasis.
+    /// halfway. Hover and press are lifts and never take the accent; a
+    /// selected row takes it through [`Self::selected_on`].
     ///
     /// The step goes the palette's way unless the ground has no room for a
     /// whole step there (a white well on a dark palette, a near-black one on
@@ -913,13 +1024,7 @@ impl Colors {
     #[must_use]
     pub fn lift_on(&self, ground: Color, t: f32) -> Color {
         let g = Oklch::from_color(ground);
-        let (chroma, hue) = match self.emphasis {
-            Emphasis::Inverted => {
-                let (hue, chroma) = self.palette.temperature();
-                (chroma, hue)
-            }
-            Emphasis::Tinted { hue } => (TINTED_LIFT_CHROMA, hue),
-        };
+        let (hue, chroma) = self.palette.temperature();
         let step = self.palette.lift();
         let step = if (0.0..=1.0).contains(&(g.l + step)) {
             step
@@ -927,6 +1032,30 @@ impl Colors {
             -step
         };
         oklch(g.l + step * t, chroma, hue)
+    }
+
+    /// The selected row's lift on `ground`: one surface step, faintly the
+    /// accent hue (neutral under [`Emphasis::Inverted`]).
+    #[must_use]
+    pub fn selected_on(&self, ground: Color) -> Color {
+        let lift = self.lift_on(ground, 1.0);
+        match self.accent_hue() {
+            Some(hue) => {
+                let o = Oklch::from_color(lift);
+                oklch(o.l, TINTED_LIFT_CHROMA, hue)
+            }
+            None => lift,
+        }
+    }
+
+    /// The accent's hue, or `None` under [`Emphasis::Inverted`].
+    #[must_use]
+    pub fn accent_hue(&self) -> Option<f32> {
+        match self.emphasis {
+            Emphasis::Inverted => None,
+            Emphasis::You => Some(self.you.degrees()),
+            Emphasis::Tinted { hue } => Some(hue.rem_euclid(360.0)),
+        }
     }
 
     /// A status wash of `tone` over `ground`: an added or removed line, a
@@ -969,16 +1098,6 @@ impl Colors {
     const WASH_REST: f32 = 0.16;
     /// How much of it a selected wash carries over the lift.
     const WASH_SELECTED: f32 = 0.30;
-
-    /// [`Intents::inverted`] while pressed: the hover step taken twice, so
-    /// a press reads past the hover instead of matching it.
-    #[must_use]
-    pub fn inverted_pressed(&self) -> Color {
-        let rest = Oklch::from_color(self.intent.inverted);
-        let hover = Oklch::from_color(self.intent.inverted_hover);
-        let l = (hover.l + (hover.l - rest.l)).clamp(0.0, 1.0);
-        oklch(l, hover.c, hover.h)
-    }
 
     /// What [`Surfaces::raised`] is on `ground`: the raised tier itself
     /// while it stands off `ground` the same way it stands off the content
@@ -1381,7 +1500,7 @@ mod tests {
             let table = [
                 (
                     Palette::dark(),
-                    [0.16, 0.215, 0.195, 0.235, 0.265, 0.285],
+                    [0.14, 0.19, 0.165, 0.165, 0.235, 0.225],
                     [0.96, 0.76, 0.62],
                 ),
                 (
@@ -1391,7 +1510,7 @@ mod tests {
                 ),
                 (
                     Palette::light(),
-                    [0.90, 0.995, 0.965, 0.975, 1.0, 1.0],
+                    [0.90, 0.995, 0.965, 0.965, 0.95, 1.0],
                     [0.18, 0.43, 0.56],
                 ),
             ];
@@ -1454,14 +1573,18 @@ mod tests {
                 }
             }
         }
-        // phase: the_default_dark_is_pure_grey
+        // phase: the_default_carries_a_cool_temperature_not_a_colour
         {
-            let c = Colors::dark();
-            for (name, colour) in surfaces(&c) {
-                assert!(
-                    colour.r() == colour.g() && colour.g() == colour.b(),
-                    "{name} is {colour:?}"
-                );
+            for c in [Colors::dark(), Colors::light()] {
+                for (name, colour) in surfaces(&c) {
+                    let o = Oklch::from_color(colour);
+                    assert!(o.c <= 0.010, "{name} has chroma {:.4}", o.c);
+                    if o.c >= 0.004 && o.l > 0.1 && o.l < 0.97 {
+                        let d = (o.h - 260.0).rem_euclid(360.0);
+                        let d = d.min(360.0 - d);
+                        assert!(d <= 30.0, "{name} is at hue {:.0}, not cool", o.h);
+                    }
+                }
             }
         }
         // phase: regions_separate_from_content_by_tone_or_by_an_edge
@@ -1496,7 +1619,7 @@ mod tests {
                 }
             }
         }
-        // phase: floating_chrome_walks_lighter_than_the_window_on_dark
+        // phase: floating_chrome_stands_lighter_than_the_window_on_dark
         {
             for (label, palette) in palettes() {
                 if !palette.dark || palette.high_contrast {
@@ -1506,11 +1629,7 @@ mod tests {
                     let c = at_hue(&palette, hue);
                     let l = |x: Color| Oklch::from_color(x).l;
                     let s = &c.surfaces;
-                    for (name, under) in [
-                        ("base", s.base),
-                        ("content", s.content),
-                        ("raised", s.raised),
-                    ] {
+                    for (name, under) in [("base", s.base), ("content", s.content)] {
                         assert!(
                             l(s.overlay) > l(under),
                             "{label}@{hue}: overlay is not lighter than {name}"
@@ -1528,29 +1647,32 @@ mod tests {
                 let c = Colors::stock(&palette);
                 let l = |x: Color| Oklch::from_color(x).l;
                 let s = &c.surfaces;
-                let order = if palette.dark {
-                    [
-                        s.base,
-                        s.sidebar,
-                        s.content,
-                        s.inspector,
-                        s.raised,
-                        s.overlay,
-                    ]
+                // Dark: ground, region (recessed), window, then the raised
+                // wells and floating chrome above it. Light: ground, region,
+                // the raised well, then the window, and floating as the one
+                // white. Sidebar and inspector are one level.
+                let order: &[Color] = if palette.dark {
+                    &[s.base, s.sidebar, s.content, s.overlay]
                 } else {
-                    [
-                        s.base,
-                        s.sidebar,
-                        s.inspector,
-                        s.content,
-                        s.raised,
-                        s.overlay,
-                    ]
+                    &[s.base, s.sidebar, s.raised, s.content, s.overlay]
                 };
                 for pair in order.windows(2) {
                     if let [a, b] = pair {
                         assert!(l(*a) <= l(*b), "{label}: surfaces out of order");
                     }
+                }
+                if palette.dark {
+                    assert!(
+                        l(s.raised) > l(s.content),
+                        "{label}: raised over the window"
+                    );
+                }
+                if label == "dark" || label == "light" {
+                    assert_eq!(
+                        rgba(s.sidebar),
+                        rgba(s.inspector),
+                        "{label}: one region level"
+                    );
                 }
             }
         }
@@ -1561,7 +1683,7 @@ mod tests {
         for (label, palette) in palettes() {
             for hue in std::iter::once(None).chain(hues().map(Some)) {
                 let palette = Palette { hue, ..palette };
-                let mut emphases = vec![Emphasis::Inverted];
+                let mut emphases = vec![Emphasis::Inverted, Emphasis::You];
                 emphases.extend(hues().map(|tint| Emphasis::Tinted { hue: tint }));
                 for emphasis in emphases {
                     let authored = Colors::as_authored(
@@ -1588,7 +1710,11 @@ mod tests {
     #[test]
     fn hover_states_sit_between_rest_and_selected() {
         for (label, palette) in palettes() {
-            for emphasis in [Emphasis::Inverted, Emphasis::Tinted { hue: 150.0 }] {
+            for emphasis in [
+                Emphasis::Inverted,
+                Emphasis::You,
+                Emphasis::Tinted { hue: 150.0 },
+            ] {
                 let c = Colors::of_palette(
                     &palette,
                     emphasis,
@@ -1610,24 +1736,64 @@ mod tests {
     }
 
     #[test]
-    fn tinted_emphasis_colours_actions_and_selection_and_nothing_else() {
-        let tinted = Colors::of_palette(
-            &Palette::dark(),
-            Emphasis::Tinted { hue: 150.0 },
-            Palette::dark().stock_presence(),
-            PresenceHue::Blue,
-        );
-        let plain = Colors::dark();
-        let fill = Oklch::from_color(tinted.intent.inverted);
-        assert!(fill.c > 0.08, "the primary fill carries the tint");
-        assert!((fill.h - 150.0).abs() < 6.0, "at its hue: {:.0}", fill.h);
+    fn the_accent_colours_actions_and_selection_and_nothing_else() {
+        let of = |emphasis| {
+            Colors::of_palette(
+                &Palette::dark(),
+                emphasis,
+                Palette::dark().stock_presence(),
+                PresenceHue::Blue,
+            )
+        };
+        let tinted = of(Emphasis::Tinted { hue: 30.0 });
+        let plain = of(Emphasis::Inverted);
+        let fill = Oklch::from_color(tinted.intent.accent);
+        assert!(fill.c > 0.08, "the primary fill carries the accent");
+        assert!((fill.h - 30.0).abs() < 6.0, "at its hue: {:.0}", fill.h);
         let lift = Oklch::from_color(tinted.intent.selection);
         assert!(lift.c > 0.02, "the selection lift is tinted");
         assert_eq!(rgba(tinted.surfaces.content), rgba(plain.surfaces.content));
         assert_eq!(rgba(tinted.text_primary), rgba(plain.text_primary));
         assert_eq!(rgba(tinted.intent.you), rgba(plain.intent.you));
-        let plain_fill = Oklch::from_color(plain.intent.inverted);
-        assert!(plain_fill.c < 0.005, "inverted emphasis has no hue");
+        assert_eq!(
+            rgba(tinted.intent.on_state),
+            rgba(plain.intent.on_state),
+            "the on state is green whatever the accent"
+        );
+        let plain_fill = Oklch::from_color(plain.intent.accent);
+        assert!(plain_fill.c < 0.01, "inverted emphasis has no hue");
+        // The default accent is the person's own colour.
+        let stock = Colors::dark();
+        assert_eq!(stock.emphasis, Emphasis::You);
+        let you = Oklch::from_color(stock.intent.accent);
+        let blue = PresenceHue::Blue.degrees();
+        let d = (you.h - blue).rem_euclid(360.0);
+        assert!(d.min(360.0 - d) <= 12.0, "accent hue {:.0}", you.h);
+        let on = Oklch::from_color(stock.intent.on_state);
+        assert!(
+            (on.h - ON_STATE_HUE).abs() < 8.0 && on.c > 0.1,
+            "on is green"
+        );
+    }
+
+    #[test]
+    fn primary_labels_on_dark_and_light_are_white_and_read() {
+        for palette in [Palette::dark(), Palette::light()] {
+            for you in PresenceHue::ALL {
+                let c = Colors::as_authored(&palette, Emphasis::You, palette.stock_presence(), you);
+                assert_eq!(rgba(c.intent.on_accent), [255, 255, 255, 255]);
+                for fill in [
+                    c.intent.accent,
+                    c.intent.accent_hover,
+                    c.intent.accent_pressed,
+                ] {
+                    let r = contrast_ratio(c.intent.on_accent, fill);
+                    assert!(r >= 4.5, "{you:?}: label {r:.2}:1");
+                }
+                let mark = contrast_ratio(c.intent.on_state_mark, c.intent.on_state);
+                assert!(mark >= 3.0, "the knob on the on state is {mark:.2}:1");
+            }
+        }
     }
 
     #[test]
@@ -1752,43 +1918,49 @@ mod tests {
         }
         // phase: a_neutral_palette_shows_no_temperature
         {
-            let grey = Colors::dark();
+            let grey = Colors::stock(&Palette {
+                hue: None,
+                chroma: 0.0,
+                ..Palette::dark()
+            });
             let warm = grey.with_neutral_hue(40.0);
             assert_eq!(rgba(warm.surfaces.content), rgba(grey.surfaces.content));
             assert_eq!(warm.palette.hue, grey.palette.hue);
         }
-        // phase: light_is_pure_grey_until_a_workspace_gives_it_a_hue
+        // phase: a_workspace_moves_the_stock_temperature_to_its_hue
         {
             let light = Colors::light();
-            for (name, surface) in [
-                ("base", light.surfaces.base),
-                ("content", light.surfaces.content),
-                ("sidebar", light.surfaces.sidebar),
-                ("ink", light.text_primary),
-            ] {
-                let rgb = rgba(surface);
-                assert!(
-                    rgb[0] == rgb[1] && rgb[1] == rgb[2],
-                    "{name} is pure grey without a workspace hue: {rgb:?}"
-                );
-            }
             let warm = light.with_neutral_hue(40.0);
             let h = Oklch::from_color(warm.surfaces.base);
-            assert!(h.c > 0.005, "a known hue adds temperature");
+            assert!(h.c > 0.003, "a known hue keeps the temperature");
             assert!((h.h - 40.0).abs() <= 25.0, "base hue {:.0}", h.h);
+            assert_ne!(rgba(warm.surfaces.base), rgba(light.surfaces.base));
         }
-        // phase: your_colour_is_focus_caret_and_selection
+        // phase: your_colour_is_the_accent_focus_caret_and_selection
         {
             let mut c = Colors::light();
             c.set_you(PresenceHue::Teal);
             assert_eq!(c.you, PresenceHue::Teal);
-            assert_eq!(rgba(c.border_focus), rgba(c.intent.you));
             assert_eq!(rgba(c.intent.you), rgba(c.presence.hue(PresenceHue::Teal)));
+            assert_eq!(rgba(c.border_focus), rgba(c.intent.accent_ink));
+            let teal = PresenceHue::Teal.degrees();
+            for (name, colour) in [
+                ("accent", c.intent.accent),
+                ("accent ink", c.intent.accent_ink),
+            ] {
+                let o = Oklch::from_color(colour);
+                let d = (o.h - teal).rem_euclid(360.0);
+                assert!(d.min(360.0 - d) <= 12.0, "{name} is at hue {:.0}", o.h);
+            }
             assert_eq!(c.intent.selection_tint.a(), 82);
             let tint = c.intent.selection_tint;
             assert_eq!(
                 [tint.r(), tint.g(), tint.b()],
-                [c.intent.you.r(), c.intent.you.g(), c.intent.you.b()]
+                [
+                    c.intent.accent_ink.r(),
+                    c.intent.accent_ink.g(),
+                    c.intent.accent_ink.b()
+                ]
             );
             let seen = composite(tint, c.surfaces.content);
             let r = contrast_ratio(c.text_primary, seen);
@@ -1928,7 +2100,7 @@ mod tests {
             let c = Colors::stock(&palette);
             for (kind, body, content) in [
                 ("neutral", c.surfaces.raised, c.text_primary),
-                ("inverted", c.intent.inverted, c.intent.on_inverted),
+                ("accent", c.intent.accent, c.intent.on_accent),
             ] {
                 let before = contrast_ratio(content, body);
                 let after = contrast_ratio(
@@ -1995,19 +2167,3 @@ mod tests {
         assert_eq!(rgba(media.guide.with_alpha(1.0)), rgba(media.ink));
     }
 }
-
-
-/// The fill of a control that is on (a switch's track, a checked box, an
-/// active quick setting): green, the colour people read as "on". Status
-/// colours stay for status; this is state.
-#[must_use]
-pub fn active_fill(colors: &Colors) -> Color {
-    if crate::a11y::relative_luminance(colors.surfaces.content) > 0.5 {
-        oklch(0.58, 0.15, 150.0)
-    } else {
-        oklch(0.62, 0.15, 150.0)
-    }
-}
-
-/// The knob or mark standing on [`active_fill`].
-pub const ACTIVE_KNOB: Color = Color::from_rgba8(255, 255, 255, 255);

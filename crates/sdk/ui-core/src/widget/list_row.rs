@@ -193,8 +193,10 @@ impl RowMetrics {
         let metrics = &theme.tokens.metrics;
         Self {
             bleed: row_bleed(theme),
-            pad_y: f64::from(spacing.s2),
-            min_height: f64::from(metrics.min_pointer_target + spacing.s2),
+            // The row's height comes from its kind (36 / 52 / 64, compact
+            // 28 / 44 / 52); the text keeps a tight inset inside it.
+            pad_y: f64::from(spacing.rhythm.tight),
+            min_height: f64::from(metrics.row_single),
             column_gap: f64::from(spacing.s3),
             title: theme.text(TextRole::Body),
             title_strong: theme.text(TextRole::Body).strong(),
@@ -204,7 +206,7 @@ impl RowMetrics {
             badge: theme.text(TextRole::Caption).strong(),
             value_body: theme.text(TextRole::Body).numeric(),
             value_title: theme.text(TextRole::Title).numeric(),
-            icon: f64::from(metrics.icon_md),
+            icon: f64::from(metrics.icon_control),
             mark: f64::from(metrics.icon_sm),
             action: f64::from(metrics.bar_control_height),
             action_gap: f64::from(spacing.s1),
@@ -224,10 +226,23 @@ impl RowMetrics {
     fn avatar(theme: &Theme, extra_lines: bool) -> f64 {
         let metrics = &theme.tokens.metrics;
         if extra_lines {
-            f64::from(metrics.min_pointer_target)
+            f64::from(metrics.avatar_row)
         } else {
-            f64::from(metrics.icon_lg)
+            f64::from(metrics.avatar_inline)
         }
+    }
+
+    /// The least a row is tall: one line 36, a title and a secondary line
+    /// 52, a row led by a 40 px avatar 64 (28 / 44 / 52 compact).
+    fn min_height_for(theme: &Theme, extra_lines: bool, big_leading: bool) -> f64 {
+        let metrics = &theme.tokens.metrics;
+        f64::from(if extra_lines && big_leading {
+            metrics.row_avatar
+        } else if extra_lines {
+            metrics.row_double
+        } else {
+            metrics.row_single
+        })
     }
 }
 
@@ -711,8 +726,14 @@ impl<'a> ListRowFace<'a> {
             }
             _ => 0.0,
         };
+        let big_leading = matches!(
+            self.leading,
+            Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Media(..))
+        );
+        let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
+            .max(m.min_height);
         (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
-            .max(m.min_height)
+            .max(min)
             .ceil()
     }
 
@@ -955,11 +976,13 @@ impl<'a> ListRowFace<'a> {
 
         let lifted = self.selected || self.interaction.pressed;
         let hovered = self.interaction.hovered && !self.interaction.disabled;
+        // Selected takes the accent's tint; a press is the neutral lift.
+        let pressed = self.interaction.pressed && !self.selected;
         paint_row_selection_joined(
             ctx.scene,
             ctx.transform,
             frame_row,
-            SelectionState::new(lifted, hovered, false),
+            SelectionState::new(self.selected, hovered, pressed),
             ground,
             theme,
             if self.selected {

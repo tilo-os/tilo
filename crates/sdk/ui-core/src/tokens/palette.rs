@@ -3,8 +3,8 @@
 //!
 //! A [`Palette`] is a temperature (one OKLCH hue and a chroma at or below
 //! [`NEUTRAL_MAX_CHROMA`]), a lightness ladder for the six surfaces, three
-//! ink tiers and four muted status tones. [`Emphasis`] decides how primary
-//! actions, selection and "on" states show. [`Tone`] sets the lightness and
+//! ink tiers and four muted status tones. [`Emphasis`] decides which hue
+//! the accent takes. [`Tone`] sets the lightness and
 //! chroma of the presence palette, whose twelve hues never move. Everything
 //! else ([`crate::tokens::Colors`]) is derived from these numbers in one
 //! place, so a palette can only say what the design language lets it say.
@@ -117,20 +117,27 @@ pub struct Palette {
     pub status: StatusTones,
 }
 
-/// How primary actions, selection and "on" states show.
+/// Which hue the accent takes: primary actions, the selected row's lift
+/// tint, links, the focus ring, the caret and the text selection
+/// (`docs/design-language.md`, "Colour roles"). An "on" state is never the
+/// accent; it is the on-state green ([`crate::tokens::Intents::on_state`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Emphasis {
-    /// A primary action is primary ink with the content surface as its
-    /// label; a selection is a colourless lift. The default.
+    /// The accent is the person's own colour, the one their cursor has for
+    /// collaborators. The default.
     #[default]
-    Inverted,
-    /// One hue for people who want an accent: primary actions, switches
-    /// that are on and the selection lift take it.
+    You,
+    /// The accent is one chosen hue (Appearance).
     Tinted { hue: f32 },
+    /// No accent: a primary action is primary ink with the window ground as
+    /// its label, and a selection is a colourless lift. For people who want
+    /// a monochrome desktop, and for high contrast.
+    Inverted,
 }
 
-/// Chroma of the selection lift under [`Emphasis::Tinted`].
+/// Chroma of the selection lift under an accent ([`Emphasis::You`] and
+/// [`Emphasis::Tinted`]).
 pub const TINTED_LIFT_CHROMA: f32 = 0.035;
 
 const DARK_STATUS: StatusTones = StatusTones {
@@ -147,14 +154,25 @@ const LIGHT_STATUS: StatusTones = StatusTones {
     info: Tone::new(0.52, 0.11),
 };
 
+/// The five levels of the dark material (`docs/design-language.md`,
+/// "Surfaces"): ground, window, region (recessed, so sidebar and inspector
+/// alike), raised and floating. Each level is a step the eye registers on
+/// its own; a child never paints its parent's level.
 const DARK_LADDER: SurfaceLadder = SurfaceLadder {
-    base: 0.16,
-    content: 0.215,
-    sidebar: 0.195,
-    inspector: 0.235,
-    raised: 0.265,
-    overlay: 0.285,
+    base: 0.14,
+    content: 0.19,
+    sidebar: 0.165,
+    inspector: 0.165,
+    raised: 0.235,
+    overlay: 0.225,
 };
+
+/// The stock neutral temperature: a cool hue at a whisper of chroma, so
+/// the material reads as considered rather than as sterile grey, never as
+/// grey-blue.
+pub const STOCK_HUE: f32 = 260.0;
+/// See [`STOCK_HUE`].
+pub const STOCK_CHROMA: f32 = 0.006;
 
 const DARK_INK: InkLadder = InkLadder {
     primary: 0.96,
@@ -163,14 +181,14 @@ const DARK_INK: InkLadder = InkLadder {
 };
 
 impl Palette {
-    /// The default: the dark ladder in pure neutral grey.
+    /// The default: the dark ladder at the stock cool temperature.
     #[must_use]
     pub const fn dark() -> Self {
         Self {
             dark: true,
             high_contrast: false,
-            hue: None,
-            chroma: 0.0,
+            hue: Some(STOCK_HUE),
+            chroma: STOCK_CHROMA,
             surfaces: DARK_LADDER,
             ink: DARK_INK,
             status: DARK_STATUS,
@@ -222,22 +240,22 @@ impl Palette {
         }
     }
 
-    /// The light ladder. It has no hue of its own: pure grey until the
-    /// workspace it is shown in gives it a temperature, which its chroma
-    /// then carries.
+    /// The light ladder at the stock cool temperature. Raised is a well
+    /// darker than the window (a field, a segmented track, a secondary
+    /// button); floating is the one white surface.
     #[must_use]
     pub const fn light() -> Self {
         Self {
             dark: false,
             high_contrast: false,
-            hue: None,
-            chroma: NEUTRAL_MAX_CHROMA,
+            hue: Some(STOCK_HUE),
+            chroma: STOCK_CHROMA,
             surfaces: SurfaceLadder {
                 base: 0.90,
                 content: 0.995,
                 sidebar: 0.965,
-                inspector: 0.975,
-                raised: 1.0,
+                inspector: 0.965,
+                raised: 0.95,
                 overlay: 1.0,
             },
             ink: InkLadder {
@@ -383,7 +401,7 @@ impl Palette {
     pub(crate) fn lift(&self) -> f32 {
         match (self.dark, self.high_contrast) {
             (true, false) => 0.10,
-            (false, false) => -0.09,
+            (false, false) => -0.07,
             (true, true) => 0.30,
             (false, true) => -0.15,
         }
@@ -449,12 +467,24 @@ impl Default for Tone {
 }
 
 impl Emphasis {
+    /// The emphasis a palette ships with: the person's colour as the
+    /// accent, except on high contrast, where the accent is primary ink so
+    /// every pairing holds at AAA.
+    #[must_use]
+    pub const fn stock_for(palette: &Palette) -> Self {
+        if palette.high_contrast {
+            Self::Inverted
+        } else {
+            Self::You
+        }
+    }
+
     /// # Errors
     ///
     /// A non-finite tint hue.
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
-            Self::Inverted => Ok(()),
+            Self::Inverted | Self::You => Ok(()),
             Self::Tinted { hue } if hue.is_finite() => Ok(()),
             Self::Tinted { .. } => Err("invalid emphasis hue"),
         }
@@ -502,22 +532,55 @@ mod tests {
             assert_eq!(palette.validate(), Ok(()), "{palette:?}");
             assert_eq!(palette.stock_presence().validate_presence(), Ok(()));
         }
-        assert!(
-            Palette::dark().chroma.abs() < f32::EPSILON,
-            "dark is neutral"
-        );
-        assert!((Palette::light().chroma - 0.010).abs() < f32::EPSILON);
-        assert_eq!(Palette::light().hue, None, "light has no hue of its own");
+        // The stock temperature: cool, a whisper of chroma, on both
+        // polarities; a workspace moves its hue, never its chroma.
+        for stock in [Palette::dark(), Palette::light()] {
+            assert_eq!(stock.hue, Some(260.0));
+            assert!((stock.chroma - 0.006).abs() < f32::EPSILON);
+            assert_eq!(stock.temperature(), (260.0, 0.006));
+        }
+        let grey = Palette {
+            hue: None,
+            ..Palette::light()
+        };
         assert_eq!(
-            Palette::light().temperature(),
+            grey.temperature(),
             (0.0, 0.0),
-            "without a hue the light ladder is pure grey"
+            "without a hue the ladder is pure grey"
         );
         let warm = Palette {
             hue: Some(400.0),
+            chroma: 0.010,
             ..Palette::light()
         };
         assert_eq!(warm.temperature(), (40.0, 0.010));
+        // Five levels with real separation: the region recesses below the
+        // window, raised and floating stand above it on dark; on light the
+        // raised well sits below the window and floating is the one white.
+        let dark = Palette::dark().surfaces;
+        assert_eq!(
+            [
+                dark.base,
+                dark.content,
+                dark.sidebar,
+                dark.inspector,
+                dark.raised,
+                dark.overlay
+            ],
+            [0.14, 0.19, 0.165, 0.165, 0.235, 0.225]
+        );
+        let light = Palette::light().surfaces;
+        assert_eq!(
+            [
+                light.base,
+                light.content,
+                light.sidebar,
+                light.inspector,
+                light.raised,
+                light.overlay
+            ],
+            [0.90, 0.995, 0.965, 0.965, 0.95, 1.0]
+        );
         let soft = Palette::dark_soft().surfaces;
         assert_eq!(
             [
@@ -553,5 +616,12 @@ mod tests {
         let back: Emphasis =
             serde_json::from_value(serde_json::json!({"kind": "inverted"})).unwrap();
         assert_eq!(back, Emphasis::Inverted);
+        let you: Emphasis = serde_json::from_value(serde_json::json!({"kind": "you"})).unwrap();
+        assert_eq!(you, Emphasis::You);
+        assert_eq!(
+            Emphasis::default(),
+            Emphasis::You,
+            "the accent is your colour"
+        );
     }
 }

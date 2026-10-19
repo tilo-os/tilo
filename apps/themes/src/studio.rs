@@ -156,9 +156,15 @@ pub struct Theme {
     pub surfaces: Surfaces,
     pub ink: Ink,
     pub status: Status,
-    /// The hue primary actions, selection and on states are tinted with;
-    /// none shows them inverted.
+    /// The accent's hue for primary actions, links, focus and the
+    /// selection; none takes the person's own colour.
     pub tint: Option<f64>,
+    /// No accent at all: primary actions are inverted ink and the selection
+    /// is a colourless lift. A theme written before this choice existed
+    /// keeps its tint, and one without a tint takes the person's colour,
+    /// the new default; picking monochrome brings the old look back.
+    #[model(default = false)]
+    pub monochrome: bool,
     pub presence: Presence,
     /// Window radius
     pub window_radius: f64,
@@ -215,9 +221,10 @@ impl Theme {
                 info: StatusTone::of(palette.status.info),
             },
             tint: match document.emphasis {
-                Emphasis::Inverted => None,
+                Emphasis::Inverted | Emphasis::You => None,
                 Emphasis::Tinted { hue } => Some(f64::from(hue)),
             },
+            monochrome: document.emphasis == Emphasis::Inverted,
             presence: Presence {
                 lightness: f64::from(document.presence.lightness),
                 chroma: f64::from(document.presence.chroma),
@@ -272,11 +279,12 @@ impl Theme {
                 self.name.trim().to_owned()
             },
             palette: self.palette(),
-            emphasis: self
-                .tint
-                .map_or(Emphasis::Inverted, |hue| Emphasis::Tinted {
-                    hue: narrow(hue),
-                }),
+            emphasis: if self.monochrome {
+                Emphasis::Inverted
+            } else {
+                self.tint
+                    .map_or(Emphasis::You, |hue| Emphasis::Tinted { hue: narrow(hue) })
+            },
             presence: Tone::new(
                 narrow(self.presence.lightness),
                 narrow(self.presence.chroma),
@@ -608,8 +616,15 @@ mod tests {
         edit(&mut studio, &paths.tint.set(None)).unwrap();
         assert_eq!(
             theme(&studio, &id).document("mine").emphasis,
+            Emphasis::You,
+            "no chosen hue: the accent is the person's colour"
+        );
+        edit(&mut studio, &paths.monochrome.set(true)).unwrap();
+        assert_eq!(
+            theme(&studio, &id).document("mine").emphasis,
             Emphasis::Inverted
         );
+        edit(&mut studio, &paths.monochrome.set(false)).unwrap();
 
         studio
             .apply(Studio::SWITCH_POLARITY.with((id.clone(), false)))

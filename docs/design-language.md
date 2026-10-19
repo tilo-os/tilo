@@ -7,10 +7,11 @@ Where the two disagree, this document wins and the HIG is corrected.
 ## The idea
 
 Tilo is shared live state: people, agents and devices working in one
-workspace. The interface is a quiet, near-colourless material, and **colour
-means that someone is there or that something is happening**. Collaborator
-and agent presence, live/recording/syncing state, and the user's own content
-(photos, album art, calendars) carry all the chroma. Nothing else does.
+workspace. The interface is a quiet material with a cool temperature, and
+**colour has a role or it is not there**: the person's accent marks what
+they act on, green marks what is on, presence hues mark other people, muted
+status tones mark status, and the user's own content (photos, album art,
+calendars) carries its own. Nothing else gets colour.
 
 Coherence comes from the toolkit, not from discipline. Apps say what a thing
 *is* (a list, a section, a form, a primary action, a destructive action) and
@@ -32,73 +33,76 @@ no appearance to get wrong.
 
 ## Colour
 
-All neutrals are defined in OKLCH and share one hue, so a theme or a
-workspace can shift their temperature without breaking contrast.
+### Roles, and nothing else gets colour
 
-**Neutral material.** Chroma stays at or below 0.010.
-
-| Token | Dark L | Light L | Use |
+| Role | Colour | Used for | Never used for |
 |---|---|---|---|
-| `surfaces.base` | 0.16 | 0.90 | Desktop ground behind tiles |
-| `surfaces.content` | 0.215 | 0.995 | The window ground: every app, owned by the framework |
-| `surfaces.sidebar` | 0.195 | 0.965 | Navigation region of a window |
-| `surfaces.inspector` | 0.235 | 0.975 | Detail/inspector region |
-| `surfaces.raised` | 0.265 | 1.0 | Fields, wells and objects inside content |
-| `surfaces.overlay` | 0.285 | 1.0 | Floating chrome (menus, popovers, palette, sheets) |
+| On state | green `intent.on_state` (OKLCH 0.62/0.15/150 dark, 0.58/0.15/150 light), white knob or mark | a switch's track, a checked checkbox or radio, an active Quick Settings tile, a "connected" dot | sliders, selection, buttons |
+| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint | hover, resize grips, window edges, icons at rest, borders |
+| Presence | the twelve presence hues | other people: avatars, cursors, their selection, what they are doing | anything that is not a person |
+| Status | muted danger, warning, success, info (C ≤ 0.13) | status text, badges, a destructive button's label | decoration |
+| Neutral | everything else | surfaces, ink, icons, hairlines, sliders and progress (`intent.neutral_fill`) | — |
 
-Ink on the content surface: primary L 0.96 / 0.18, secondary 0.76 / 0.43,
-tertiary 0.62 / 0.56 (dark / light). Every pairing meets WCAG AA for its role,
-and the existing contrast tests enforce it.
+- **Focus ring:** keyboard focus only (`ui::focus_visible`), on every
+  focusable control. A pointer press never shows it. A text field's focus is
+  its caret.
+- **Window edge resize grip:** neutral ink at rest, primary ink while
+  dragging; never the accent.
+- **Slider:** strong neutral ink on a raised track. A value is not an on
+  state.
+- **Buttons:** primary is the accent fill with a white label; secondary the
+  raised level; quiet (`ButtonRole::Plain`) has no fill and lifts on hover;
+  destructive is secondary with a danger label, filled only inside the
+  confirmation step, where Return is still the safe answer.
+- **Lifts:** hover and press are neutral lifts of the ground they stand on;
+  only a *selected* row, tab or segment carries the accent's faint tint
+  (`Colors::selected_on`). A menu's armed row is the neutral lift.
+- **Monochrome:** `Emphasis::Inverted` keeps the old colourless look for
+  those who want it: primary ink as the primary fill, colourless selection.
+  High contrast uses it.
 
-**Default chroma.** The default dark theme is pure neutral (chroma 0). The
-default light theme has no hue of its own: it is pure neutral until the
-workspace it is shown in gives it one, and then carries chroma 0.010 at that
-hue.
+### Surfaces: five levels with real separation
 
-**Dark presets.** Three more dark palettes ship as presets with the same
-contract:
+All neutrals are OKLCH lightnesses at one hue, so a theme or a workspace can
+shift their temperature without moving contrast. The stock temperature is
+hue 260 at chroma 0.006: cool, not grey-blue. Chroma never exceeds 0.010.
 
-| Preset | Hue / chroma | Lightness |
-|---|---|---|
-| Cool | 255 / 0.008 | As in the table |
-| Warm graphite | 60 / 0.006 | As in the table |
-| Soft | 270 / 0.003 | Lifted: base 0.19, content 0.25, sidebar 0.228, raised 0.30, overlay 0.32 |
+| Level | Token | Dark L | Light L | Edge | Shadow |
+|---|---|---|---|---|---|
+| Ground (desktop) | `surfaces.base` | 0.14 | 0.90 | — | — |
+| Window (app content) | `surfaces.content` | 0.19 | 0.995 | the window edge hairline | soft: y 2, blur 16, 0.28 dark / 0.10 light |
+| Region (sidebar, inspector) | `surfaces.sidebar`, `surfaces.inspector` | 0.165 (recessed) | 0.965 | none: the step separates | — |
+| Raised (field wells, segmented tracks, secondary buttons, objects) | `surfaces.raised` | 0.235 | 0.95 (a darker well on light) | none | — |
+| Floating (menu, popover, palette, sheet, Quick Settings, tooltip) | `surfaces.overlay` | 0.225, material when blurred | 1.0 | 1 px inner hairline, white 7 % dark / black 8 % light | two layers: y 1 blur 2 (0.30 / 0.08) and y 12 blur 32 (0.38 / 0.14) |
 
-**Workspace temperature.** Each workspace derives the neutral hue (never more
-chroma) from its wallpaper. Switching workspaces feels like entering a
-different room. A palette with chroma 0 shows no temperature. There is no
-fallback hue: a grey wallpaper, a window shown without a shell and a capture
-stay pure neutral. The shell gives the temperature to its own chrome and to
-every app window in that workspace.
+Ink on the window: primary L 0.96 / 0.18, secondary 0.76 / 0.43, tertiary
+0.62 / 0.56 (dark / light). Every pairing meets WCAG AA for its role, and
+the contrast tests (`tokens::contrast`) enforce it.
 
-**No brand accent.**
-- A primary action is an *inverted* control: primary ink as its fill and the
-  content surface as its label.
-- A selected row, tab or segment is a *lift* (HIG §9.3): one surface step plus
-  primary ink, with no hue. The armed row of a menu is the same lift, one
-  and a half steps off its floating panel so it reads at a glance and stays
-  quiet.
-- A switch that is on uses the inverted fill.
-- Links are primary ink with an underline.
+A child never paints a surface of its parent's level, and never a raised
+surface inside a raised one; `ui::widget::Surface` refuses to.
 
-**Your colour.** The local user's presence colour is their focus ring, text
-caret and text-selection tint, the same colour their cursor has for
-collaborators. Their presence carries it to every collaborator's machine;
-until they choose one, it derives from their stable identity, so every
-machine shows the same colour. Each collaborator's and agent's colour marks their presence,
-cursor, selection and attribution. Unread counts, mentions and anything
-else that wants the person's attention are filled in their colour too,
-the same mark in a sidebar and on a badge.
+**Dark presets.** Cool (255 / 0.008), Warm graphite (60 / 0.006) and Soft
+(270 / 0.003, lifted: base 0.19, content 0.25, region 0.228, raised 0.30,
+floating 0.32; its accent is light with a dark label) keep the contract.
+
+**Workspace temperature.** Each workspace derives the neutral hue (never
+more chroma) from its wallpaper, so switching workspaces feels like entering
+a different room. A grey wallpaper keeps the stock temperature.
+
+**Your colour.** The local person's presence colour is what collaborators
+see their cursor in; by default it is also their accent. Until they choose
+one, it derives from their stable identity, so every machine shows the same.
+Each collaborator's and agent's colour marks their presence, cursor,
+selection and attribution. Unread counts and mentions are filled in the
+person's colour too.
 
 **Presence palette.** Twelve hues at equal OKLCH lightness and chroma (dark
-L 0.74 C 0.14; light L 0.58 C 0.15) that differ in hue only, so no participant
-looks more important than another.
+L 0.74 C 0.14; light L 0.58 C 0.15) that differ in hue only, so no
+participant looks more important than another.
 
-**Status.** Danger, warning and success exist only for status. They are muted
-(C ≤ 0.13) and never used as decoration. Danger red means an error or a
-failure, never unread, new or live. A destructive button uses danger ink
-on a neutral control and is filled only inside the confirmation step, where
-Return is still the safe answer (Cancel), never the destructive one.
+**Status.** Danger, warning and success exist only for status. Danger red
+means an error or a failure, never unread, new or live.
 
 ## Shape
 
@@ -125,9 +129,9 @@ separated by space and type weight, not boxes. A card exists only for an
 *object*: something you can open, move, share or drag. Settings, form sections
 and stats are not cards.
 
-**Elevation.** Tiles have no shadow; their separation is the ground contrast
-plus the window edge. Only floating things cast a shadow: one soft, wide
-shadow plus, on dark themes, a 1 px light inner edge.
+**Elevation.** A window tile casts one soft shadow onto the ground; a
+floating thing casts two (a tight contact layer and a wide one) and draws a
+1 px inner hairline. Bars, cards and selected controls cast none.
 
 ## Material and transparency
 
@@ -209,12 +213,22 @@ sidebar into a floating drawer instead of squeezing content.
 
 ## Space and density
 
-- The 4 px spacing scale (`s1`–`s16`) is unchanged.
-- The content gutter is 24 and the gap between groups is 24–32.
-- Rows are 40 high by default (Regular) and 32 in Compact density.
-- Control heights are 28 (Small), 32 (Regular) and 40 (Large).
-- Density is a system or per-app preference that the toolkit applies. Apps do
-  not cram by hand.
+- Spacing is the 4 px rhythm used by role, never by number
+  (`spacing.rhythm`): `tight` (4) inside a control, `related` (8) within a
+  cluster, `sibling` (12) between rows and clusters, `section` (16) as card
+  and panel padding and between sections, `group` (24) between groups and as
+  the page gutter.
+- Control heights are 28 (Small: bar controls, window controls), 32
+  (Regular: buttons, fields, segmented) and 40 (Large: primary actions in
+  sheets, Quick Settings tiles' minimum).
+- Rows are 36 (one line), 52 (title and secondary line) and 64 (led by a
+  40 px avatar or icon); icon-to-text is `sibling`.
+- The top bar is 32 high; the window bar follows `window bar`; 4 px separate
+  them.
+- **Density** is a token mode (`tokens::Density`, `Theme::with_density`) set
+  per window or per region: compact scales the rhythm by 0.75 and rows to
+  28 / 44 / 52; control heights and text stay. Data-heavy regions (Monitor,
+  the Files list view, tables) choose compact. Apps do not cram by hand.
 - Reading and forms are bounded to a readable width. Canvases, tables, maps
   and media use the full width.
 
@@ -227,9 +241,9 @@ distribution, user, workspace and accessibility layers. A theme can set:
 
 - **Palette:** neutral hue and chroma, the surface lightness ladder, ink
   tiers, and status colours.
-- **Emphasis:** how primary actions, selection and "on" states show. The
-  default is *inverted*; a theme may choose *tinted* with one hue, which
-  restores an accent for people who want one.
+- **Emphasis:** which hue the accent takes. The default is the person's own
+  colour; a theme may choose one hue (*tinted*) or none (*inverted*, the
+  monochrome look). The on state is green whatever the emphasis.
 - **Presence:** lightness and chroma of the presence palette (hues stay evenly
   spaced so participants remain equal).
 - **Shape:** the window radius; every other radius derives concentrically.
@@ -244,8 +258,43 @@ the theme: you pick it once and every device and collaborator sees the same.
 
 ## Icons
 
-One icon set (`ui::icons`), 1.5 px stroke on a 20 px grid, in ink colours. No
-emoji or Unicode glyphs as icons.
+One icon set (`ui::icons`, Lucide), 1.5 px stroke, in ink colours: 16 in rows
+and controls, 20 as a bar's leading app icon. Icons rest in secondary ink and
+turn primary on hover or while active. No emoji or Unicode glyphs as icons
+(arrows, check marks, crosses, dots, stars); `tools/policy/check_primitives.py`
+and `check_copy_language.py` refuse them.
+
+## Primitives
+
+Each primitive owns its padding, radius, colour and motion; callers pass
+content, never geometry or colour (`ui::widget::primitives`).
+
+| Primitive | Is |
+|---|---|
+| `Surface(level)`, `paint_surface` | one of the five levels with its edge and shadow; children ask `SurfaceLevel::inner_radius` for a concentric radius |
+| `FloatingPanel`, `FloatingPanelFace` | header slot, body, footer slot; a field in the header renders embedded; a hairline under the header only while the body holds something |
+| `TextStack` | title (Body or Label, medium), secondary (Caption, secondary ink), tertiary; fixed gaps |
+| `Facts` | separate facts (icon and text) with space between, dropping the lowest priority first; never a joined string |
+| `PropertyList` | label and value pairs |
+| `KeyHintsFace` | drawn keycaps and what they do |
+| `Breadcrumb` | drawn chevrons between segments |
+| `Button(role)` | primary, secondary, quiet, destructive |
+| `IconButton` | square, small or default; its constructor requires the accessible name, which is its tooltip |
+| `BarControlFace` | the top bar's and window bars' control: plain at rest, lifts on hover and while open, 28 high |
+| `Chip` | people, tags and filters only |
+| `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
+| `ToggleGroup` (segmented) | raised track, item-radius thumb |
+| `Slider` | neutral fill on a raised track |
+| `ListRow` | leading icon 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
+| `DisclosureRow` | a row whose chevron turns and whose body opens in place on `motion::Disclose`; one open at a time in a `DisclosureGroup` |
+| `Section` | an optional heading and rows, separated from the next by space, never boxed |
+| `EmptyState`, `Banner`, toast | on the tokens |
+
+A card is only for an object (a person, a file, a device), never for a group
+of settings. `tools/policy/check_primitives.py` refuses, in
+`crates/session/` and `apps/`, hand-painted rounded rects with text,
+separator-glyph joins and symbol icons in string literals, and raw colour
+literals.
 
 ## Motion
 
@@ -271,8 +320,9 @@ These rules are the ones that keep generated filler out.
 - No taglines or subtitles under headings. Compositions have no subtitle slot;
   a description exists only when it tells the user something they need to act.
 - An app never titles its own window. The OS chrome names the app.
-- No all-caps labels and no `A · B · C` metadata chains. Use a secondary line,
-  a `PropertyList` or columns.
+- No all-caps labels and no facts joined with "·", "•", "|", "—", "–" or
+  " / ". Use a secondary line, `Facts`, a `PropertyList`, key hints or
+  columns.
 - Sentence case everywhere.
 - A button names what happens ("Delete message", not "OK").
 - Empty states have one sentence and at most one action.

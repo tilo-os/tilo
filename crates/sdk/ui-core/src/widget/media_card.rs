@@ -776,7 +776,7 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             ctx.scene.fill(
                 Fill::NonZero,
                 ctx.transform,
-                colors.intent.inverted,
+                colors.intent.neutral_fill,
                 None,
                 &Rect::new(
                     track.x0,

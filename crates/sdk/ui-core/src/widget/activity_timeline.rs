@@ -1692,7 +1692,7 @@ fn draw_chip(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.intent.inverted,
+            colors.intent.accent,
             None,
             &shape,
         );
@@ -1705,7 +1705,7 @@ fn draw_chip(
     // Ink chosen against the face it sits on: `text_primary` is near-black
     // on the light preset and vanished on its blue accent.
     let ink = if accent {
-        colors.intent.on_inverted
+        colors.intent.on_accent
     } else {
         colors.text_primary
     };
@@ -2033,7 +2033,7 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.intent.inverted_hover,
+                theme.tokens.colors.intent.accent_hover,
                 None,
                 &edge,
             );
@@ -2423,7 +2423,7 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.intent.inverted,
+                colors.text_tertiary,
                 None,
                 &spine,
             );
@@ -2515,7 +2515,7 @@ impl ActivityTimeline {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        colors.intent.inverted_hover,
+                        colors.intent.accent_hover,
                         None,
                         &Circle::new(Point::new(dot_x, title_y + f64::from(h) / 2.0), 3.0),
                     );

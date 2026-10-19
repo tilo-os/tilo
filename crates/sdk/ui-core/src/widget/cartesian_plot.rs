@@ -2935,7 +2935,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                with_alpha(theme.tokens.colors.intent.inverted, 42),
+                with_alpha(theme.tokens.colors.intent.accent_ink, 42),
                 None,
                 &brush,
             );

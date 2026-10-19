@@ -369,7 +369,7 @@ impl NameField {
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            colors.intent.inverted_hover,
+            colors.intent.accent_hover,
             None,
             &Line::new(
                 Point::new(caret.x0, caret.y0),

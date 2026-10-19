@@ -331,7 +331,6 @@ impl Widget for Breadcrumb {
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let accent = theme.tokens.colors.intent.inverted;
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
@@ -367,7 +366,7 @@ impl Widget for Breadcrumb {
             // menu (it latches hover only then).
             let color = match orig {
                 Some(idx) if idx == active_origin => text_primary,
-                _ if Some(i) == self.hover_idx => accent,
+                _ if Some(i) == self.hover_idx => text_primary,
                 _ => text_dim,
             };
             if orig.is_none() {

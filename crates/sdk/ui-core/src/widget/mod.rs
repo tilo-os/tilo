@@ -3147,8 +3147,8 @@ pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
     });
     found
 }
-pub mod window_header;
 pub mod window_controls;
+pub mod window_header;
 pub use nav_shell::{
     ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
@@ -3269,7 +3269,13 @@ pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
+pub mod primitives;
 pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use primitives::{
+    BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, Fact, Facts, FactsFace,
+    FloatingPanel, FloatingPanelFace, FloatingPanelLayout, IconButton, KeyHint, KeyHintsFace,
+    Surface, SurfaceLevel, TextStack, TextStackFace, paint_surface,
+};
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry, ask_agent_entry};
 pub(crate) mod block_editor_table;

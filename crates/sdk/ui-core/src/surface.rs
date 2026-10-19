@@ -684,10 +684,11 @@ pub fn card_on(
 /// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
 /// the floating material ([`crate::floating_surface::Material::Floating`],
 /// the blurred backdrop under a panel-ground tint, opaque where blur is
-/// unavailable) with the [`crate::chrome::panel_border`] edge on a crisp
-/// inset outline — HIG §9.5's Panel row, so an app never spells the fill +
-/// stroke pair itself. Rows inside it use [`separator`] with an `s3` inset
-/// and [`crate::chrome::selection_tier_on`] against the panel ground.
+/// unavailable) with its 1 px inner hairline ([`floating_edge`]) — HIG
+/// §9.5's Panel row, so an app never spells the fill + stroke pair itself.
+/// Rows inside it use [`separator`] with an `s3` inset and
+/// [`crate::chrome::selection_tier_on`] against the panel ground. The
+/// shadow is [`floating_shadow`], painted first by the caller.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -700,42 +701,53 @@ pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, them
         crate::floating_surface::Material::Floating,
         theme,
     );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        crate::chrome::panel_border(theme),
-        None,
-        &edge_outline(rect, radius),
-    );
     floating_edge(scene, transform, rect, radius, theme);
 }
 
-/// The 1 px light edge a floating surface carries just inside its outline
-/// on a dark material ([`crate::tokens::Elevation::floating_edge`]); nothing
-/// on a light one. Paint it after the surface's body and border, at the
-/// surface's own radius: the edge's radius is concentric with it.
+/// The two-layer shadow of a floating surface: the tight contact layer
+/// that defines its edge, under the wide layer that reads as distance
+/// ([`crate::tokens::Elevation::contact`], [`crate::tokens::Elevation::floating`]),
+/// both along the surface's own rounded outline. `alpha` scales both, for
+/// a surface still arriving.
+pub fn floating_shadow(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    alpha: f32,
+    theme: &Theme,
+) {
+    let elevation = &theme.tokens.elevation;
+    for layer in [elevation.contact, elevation.floating] {
+        shadow(
+            scene,
+            transform,
+            rect,
+            radius,
+            &layer.with_alpha_scaled(alpha),
+        );
+    }
+}
+
+/// The 1 px inner hairline a floating surface carries on its outermost
+/// pixel row ([`crate::chrome::panel_border`]): white at 7 % on a dark
+/// material, black at 8 % on a light one, full strength on high contrast.
+/// Paint it after the surface's body, at the surface's own radius.
 pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
-    let edge = theme.tokens.elevation.floating_edge;
+    let edge = crate::chrome::panel_border(theme);
     if edge.a() == 0 {
         return;
     }
-    const INSET: f64 = 1.5;
-    let inner = snap(rect).inset(-INSET);
-    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+    let rect = snap(rect);
+    if rect.width() <= 1.0 || rect.height() <= 1.0 {
         return;
     }
-    let radii = &theme.tokens.radii;
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a corner radius in logical pixels; f32 holds it exactly at UI scales"
-    )]
-    let inner_radius = radii.concentric(radius as f32, INSET as f32);
     scene.stroke(
         &Stroke::new(1.0),
         transform,
         edge,
         None,
-        &RoundedRect::from_rect(inner, f64::from(inner_radius)),
+        &edge_outline(rect, radius),
     );
 }
 
@@ -1078,10 +1090,16 @@ mod tests {
             ] {
                 let ground = crate::chrome::panel_ground(&theme);
                 let border = crate::chrome::panel_border(&theme);
-                assert!(
-                    edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{name}: the panel border must register on the panel ground"
-                );
+                if theme.tokens.colors.palette.high_contrast {
+                    assert!(
+                        edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{name}: the panel border must register on the panel ground"
+                    );
+                } else {
+                    // The design language's inner hairline, exactly.
+                    assert_eq!(border, theme.tokens.elevation.floating_edge, "{name}");
+                    assert!(edge_delta(border, ground) > 0.005, "{name}: it registers");
+                }
             }
             // Degenerate rects paint nothing rather than a stray hairline.
             let mut scene = Scene::new();

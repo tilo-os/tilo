@@ -2847,7 +2847,7 @@ impl CaptureStudio {
     fn selection_color(&self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self.mode {
-            CaptureMode::Screenshot => c.intent.inverted_hover,
+            CaptureMode::Screenshot => c.intent.accent_hover,
             CaptureMode::Recording => c.semantic.danger,
             CaptureMode::Pip => c.semantic.info,
         }
@@ -3162,7 +3162,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let active = seconds > 0;
         let fill = if active {
-            colors.intent.inverted
+            colors.intent.on_state
         } else if hovered {
             colors.lift(0.72)
         } else {
@@ -3257,7 +3257,7 @@ impl CaptureStudio {
                 Fill::NonZero,
                 t,
                 if hovered {
-                    c.intent.inverted_hover
+                    c.intent.accent_hover
                 } else {
                     c.text_primary
                 },
@@ -3267,7 +3267,7 @@ impl CaptureStudio {
             scene.stroke(
                 &Stroke::new(1.5),
                 t,
-                c.intent.inverted,
+                c.intent.accent,
                 None,
                 &RoundedRect::from_rect(handle, radius),
             );
@@ -3308,7 +3308,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let accent = match armed.intent.mode {
             CaptureMode::Recording => colors.semantic.danger,
-            CaptureMode::Screenshot => colors.intent.inverted_hover,
+            CaptureMode::Screenshot => colors.intent.accent_hover,
             CaptureMode::Pip => colors.semantic.info,
         };
         surface::shadow(
@@ -4290,7 +4290,7 @@ impl CaptureStudio {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.intent.inverted_hover.with_alpha_factor(0.30 * alpha),
+            colors.intent.accent_hover.with_alpha_factor(0.30 * alpha),
             None,
             &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
         );
@@ -4330,7 +4330,7 @@ impl CaptureStudio {
             if preview_hovered {
                 colors
                     .intent
-                    .inverted_hover
+                    .accent_hover
                     .with_alpha_factor(0.72 * content_alpha)
             } else {
                 crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
@@ -4428,7 +4428,7 @@ impl CaptureStudio {
                 if send_active {
                     colors
                         .intent
-                        .inverted_hover
+                        .accent_hover
                         .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
@@ -4451,12 +4451,12 @@ impl CaptureStudio {
                 if self.screenshot_pin_pending {
                     colors
                         .intent
-                        .inverted_hover
+                        .accent_hover
                         .with_alpha_factor(0.28 * content_alpha)
                 } else if pin_hovered {
                     colors
                         .intent
-                        .inverted_hover
+                        .accent_hover
                         .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
@@ -4470,10 +4470,7 @@ impl CaptureStudio {
                 pin.inset(-6.0),
                 Icon::Pin,
                 if self.screenshot_pin_pending {
-                    colors
-                        .intent
-                        .inverted_hover
-                        .with_alpha_factor(content_alpha)
+                    colors.intent.accent_hover.with_alpha_factor(content_alpha)
                 } else {
                     colors.text_dim.with_alpha_factor(content_alpha)
                 },
@@ -4486,7 +4483,7 @@ impl CaptureStudio {
                 if copy_hovered {
                     colors
                         .intent
-                        .inverted_hover
+                        .accent_hover
                         .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
@@ -4509,7 +4506,7 @@ impl CaptureStudio {
                 if hovered {
                     colors
                         .intent
-                        .inverted_hover
+                        .accent_hover
                         .with_alpha_factor(0.20 * content_alpha)
                 } else {
                     colors.lift(0.35).with_alpha_factor(content_alpha)
@@ -4835,7 +4832,7 @@ impl Widget for CaptureStudio {
         let c = &theme.tokens.colors;
         let selection_color = self.selection_color(theme);
         let active_control_fill = match self.mode {
-            CaptureMode::Screenshot => c.intent.inverted,
+            CaptureMode::Screenshot => c.intent.accent,
             CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
             CaptureMode::Pip => c.semantic.info.with_alpha_factor(0.32),
         };
@@ -5040,7 +5037,7 @@ impl Widget for CaptureStudio {
             self.mode == CaptureMode::Screenshot,
             m0.contains(self.cursor),
             Icon::Camera,
-            c.intent.inverted,
+            c.intent.accent,
         );
         Self::symbol_button(
             s,

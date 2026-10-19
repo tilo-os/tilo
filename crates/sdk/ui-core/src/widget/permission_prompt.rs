@@ -373,7 +373,7 @@ fn draw_button(
     let shape = RoundedRect::from_rect(rect, radius);
 
     let mut bg = if state.primary {
-        theme.tokens.colors.intent.inverted
+        theme.tokens.colors.intent.accent
     } else if state.hover {
         theme
             .tokens
@@ -521,7 +521,7 @@ impl Widget for PermissionPrompt {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    theme.tokens.colors.intent.inverted,
+                    theme.tokens.colors.intent.accent,
                     None,
                     &icon_shape,
                 );

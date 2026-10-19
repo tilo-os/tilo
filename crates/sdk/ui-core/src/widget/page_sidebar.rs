@@ -782,7 +782,7 @@ impl PageSidebar {
             scene.stroke(
                 &Stroke::new(2.0),
                 base,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &RoundedRect::from_rect(ghost, radius),
             );
@@ -799,7 +799,7 @@ impl PageSidebar {
             scene.stroke(
                 &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0),
                 base,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &RoundedRect::from_rect(self.list_vp.inset(-inset), radius),
             );
@@ -915,7 +915,7 @@ impl PageSidebar {
             scene.fill(
                 Fill::NonZero,
                 base,
-                c.intent.you,
+                c.intent.accent_ink,
                 None,
                 &vello::kurbo::Circle::new(centre, d / 2.0),
             );

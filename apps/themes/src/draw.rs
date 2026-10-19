@@ -178,20 +178,20 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     );
     paint.fill(
         &RoundedRect::from_rect(track, track.height() / 2.0),
-        colors.intent.inverted,
+        colors.intent.neutral_fill,
     );
     paint.fill(
         &Circle::new((track.x1 - 9.0, track.center().y), 7.0),
-        colors.intent.on_inverted,
+        colors.intent.on_accent,
     );
 
     top = field.y1 + gutter;
     let primary = Rect::new(left, top, left + 96.0, top + 30.0);
-    paint.fill(&rounded(primary, radii.control), colors.intent.inverted);
+    paint.fill(&rounded(primary, radii.control), colors.intent.accent);
     paint.label(
         "Share",
         TextRole::Label,
-        colors.intent.on_inverted,
+        colors.intent.on_accent,
         Point::new(primary.x0 + 28.0, primary.y0 + 7.0),
     );
     let secondary = Rect::new(primary.x1 + inset, top, primary.x1 + 96.0, top + 30.0);

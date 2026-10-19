@@ -527,9 +527,21 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         "themes-emphasis-kind",
                         choice(
                             cx,
-                            ["Tinted", "Inverted"],
+                            ["Accent", "Monochrome"],
+                            theme.monochrome.clone(),
+                            [false, true],
+                        ),
+                    )
+                    .with_trailing_control(),
+                )
+                .field(
+                    Field::new(
+                        "themes-accent",
+                        choice(
+                            cx,
+                            ["Your colour", "Chosen hue"],
                             theme.tint.clone(),
-                            [Some(150.0), None],
+                            [None, Some(150.0)],
                         ),
                     )
                     .with_trailing_control(),

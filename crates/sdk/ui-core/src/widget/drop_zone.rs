@@ -149,7 +149,7 @@ impl<'a> DropZoneFace<'a> {
                 None,
                 &shape,
             );
-            (colors.intent.you, m.rule * 2.0)
+            (colors.intent.accent_ink, m.rule * 2.0)
         } else {
             (crate::surface::edge_on(ground), m.rule)
         };
@@ -169,7 +169,7 @@ impl<'a> DropZoneFace<'a> {
         }
         let mut y = rect.center().y - block / 2.0;
         let icon_ink = if self.drag_over {
-            colors.intent.you
+            colors.intent.accent_ink
         } else {
             theme.text_tertiary
         };

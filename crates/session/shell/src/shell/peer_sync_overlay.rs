@@ -1625,7 +1625,7 @@ impl PeerSyncOverlay {
         ];
         for (index, line) in lines.iter().enumerate() {
             let color = if index == 4 {
-                colors.intent.inverted
+                colors.intent.accent
             } else {
                 colors.text_primary
             };
@@ -2267,7 +2267,7 @@ fn draw_naming(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.intent.inverted,
+        colors.intent.accent,
         None,
         &rr,
     );
@@ -2314,7 +2314,7 @@ fn draw_naming(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.intent.inverted,
+        colors.intent.accent,
         None,
         &Rect::new(caret_x, field.y0 + s2, caret_x + caret_w, field.y1 - s2),
     );

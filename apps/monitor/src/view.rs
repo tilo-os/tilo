@@ -365,7 +365,9 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     let sorts = Rc::clone(shared);
     let activations = Rc::clone(shared);
     let menus = Rc::clone(shared);
+    // A data-heavy region: the process list runs at compact density.
     let table = DataTable::new(columns)
+        .compact()
         .with_id("monitor.processes")
         .with_accessible_name("Processes")
         .selectable(true)
@@ -1152,7 +1154,7 @@ fn level_gauge(label: impl Into<String>, reading: String, frac: f32, theme: &The
     Box::new(
         BarGauge::new(frac)
             .with_label(label, reading)
-            .with_color(theme.tokens.colors.intent.inverted),
+            .with_color(theme.tokens.colors.intent.neutral_fill),
     )
 }
 
@@ -1410,7 +1412,7 @@ impl ResourcesPane {
 
     fn rebuild(&mut self, theme: &Theme) {
         let colors = &theme.tokens.colors;
-        let key = (colors.presence.series(0), colors.intent.inverted);
+        let key = (colors.presence.series(0), colors.intent.neutral_fill);
         if self.built_with == Some(key) && self.page.is_some() {
             return;
         }

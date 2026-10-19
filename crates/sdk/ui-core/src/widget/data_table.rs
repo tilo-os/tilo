@@ -1849,14 +1849,10 @@ impl<Row> DataTable<Row> {
         };
         self.row_type = Some(RowType {
             line,
-            default_pad: f64::from(tokens.spacing.s2),
+            default_pad: f64::from(tokens.spacing.rhythm.tight),
             authored_pad: f64::from(tokens.spacing.s1),
         });
-        self.default_row_h = f64::from(if self.compact {
-            tokens.metrics.min_pointer_target
-        } else {
-            tokens.metrics.min_pointer_target + tokens.spacing.s2
-        });
+        self.default_row_h = table_row_floor(theme, self.compact);
         self.gutter = f64::from(tokens.metrics.scrollbar_gutter);
         self.bleed = crate::chrome::row_bleed(theme);
         self.refresh_row_estimate();
@@ -4398,11 +4394,7 @@ impl<'a> DataTableFace<'a> {
     /// One row's height.
     pub fn row_height(&self, theme: &Theme) -> f64 {
         let tokens = &theme.tokens;
-        let floor = f64::from(if self.compact {
-            tokens.metrics.min_pointer_target
-        } else {
-            tokens.metrics.min_pointer_target + tokens.spacing.s2
-        });
+        let floor = table_row_floor(theme, self.compact);
         if self.two_line {
             return text_band(
                 floor,
@@ -4713,6 +4705,20 @@ mod tier_tests {
 
         tier_on_is_plain_hairline_on_ordinary_grounds();
         tiers_keep_their_order_and_register_on_black();
+    }
+}
+
+/// The least a one-line table row is tall: the theme's single-row height
+/// (36, or 28 at compact density, `tokens::Density`). A compact table is a
+/// table laid out at compact density whatever its window's density.
+fn table_row_floor(theme: &Theme, compact: bool) -> f64 {
+    let metrics = &theme.tokens.metrics;
+    if compact && theme.tokens.density == crate::tokens::Density::Comfortable {
+        let rows = crate::tokens::Density::Compact.rows();
+        let comfy = crate::tokens::Density::Comfortable.rows();
+        f64::from(metrics.row_single / comfy.single * rows.single)
+    } else {
+        f64::from(metrics.row_single)
     }
 }
 
@@ -6762,27 +6768,23 @@ mod content_edge_tests {
     }
 
     #[test]
-    fn rows_are_forty_regular_and_thirty_two_compact() {
+    fn rows_are_the_density_rows_thirty_six_and_twenty_eight_compact() {
         let theme = Theme::dark();
-        let metrics = theme.tokens.metrics;
         let mut regular = DataTable::new(vec![name_col()]);
         regular.set_rows(items(2));
         let _ = settle(&mut regular, 300.0, 400.0);
-        assert_eq!(
-            regular.viewport.item_height(0),
-            Some(f64::from(
-                metrics.min_pointer_target + theme.tokens.spacing.s2
-            ))
-        );
+        assert_eq!(regular.viewport.item_height(0), Some(36.0));
         let mut compact = DataTable::new(vec![name_col()]).compact();
         compact.set_rows(items(2));
         let _ = settle(&mut compact, 300.0, 400.0);
-        assert_eq!(
-            compact.viewport.item_height(0),
-            Some(f64::from(metrics.min_pointer_target))
-        );
+        assert_eq!(compact.viewport.item_height(0), Some(28.0));
         let face = DataTableFace::new(&[], &[]);
-        assert!((face.row_height(&theme) - 40.0).abs() < 0.01);
+        assert!((face.row_height(&theme) - 36.0).abs() < 0.01);
+        let dense = theme.clone().with_density(crate::tokens::Density::Compact);
+        assert!(
+            (face.row_height(&dense) - 28.0).abs() < 0.01,
+            "a compact region"
+        );
         assert!((DataTableFace::header_height(&theme) - regular.header_height()).abs() < 0.01);
         // A two-line row holds a body line over a caption one; a table
         // without its header starts its rows at the top.

@@ -219,7 +219,7 @@ guide-row-this-guide = This guide
 guide-row-windows = Windows
 guide-row-tabs = Tabs
 guide-row-move-tab = Move tab
-guide-row-maximize = Maximize / restore
+guide-row-maximize = Maximize or restore
 guide-row-strips = Strips
 guide-row-workspaces = Workspaces
 guide-row-move-group = Move group
@@ -402,7 +402,7 @@ portal-grant-session = Allow for this session
 portal-grant-always = Always allow in this workspace
 portal-grant-deny = Deny
 portal-confirm-title = { $who } wants to act for you
-portal-confirm-detail = { $risk } · only this once; nothing is remembered
+portal-confirm-detail = { $risk }. Only this once; nothing is remembered.
 portal-moderation-report = Send this report once with your signing identity
 portal-moderation-appeal = Send this appeal once with your signing identity
 portal-moderation-destination = Destination
@@ -422,8 +422,8 @@ portal-usb-reason = Select devices individually; read-write can modify a device.
 portal-usb-resource = Space or click toggles a row. Access ends on release or disconnect.
 portal-usb-confirm = Allow selected
 portal-usb-unnamed-device = USB device
-portal-usb-row-read-write = { $device } — Read and write
-portal-usb-row-read-only = { $device } — Read only
+portal-usb-row-read-write = Read and write
+portal-usb-row-read-only = Read only
 portal-account-title = Share your identity?
 portal-account-reason = The app is asking for your name and account identifier.
 portal-account-resource = Your selected identity for this workspace
@@ -731,7 +731,7 @@ agent-door-withdrawn = The request was withdrawn before anyone answered it.
 agent-door-declined = The person at this desktop declined this connection.
 
 # The shortcut-guide pill in the display corner
-help-pill = Help  F1 · Super+?
+help-pill = Help
 
 # Workspace overview panel
 overview-go-to = Go to
@@ -744,7 +744,7 @@ overview-share-with-many = { $count ->
         [one] { $first } and { $count } other
        *[other] { $first } and { $count } others
     }
-overview-share-can-edit = { $with } · can edit
+overview-share-can-edit = { $with } can edit
 overview-new-workspace = New workspace
 overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
@@ -760,7 +760,7 @@ a11y-leave-workspace = Leave { $name }
 
 # Following someone's view
 follow-label = Following { $person }
-follow-detail = Your view · everyone here can see this
+follow-detail = Your view. Everyone here can see it.
 follow-stop = Stop
 
 # Search filter chips
@@ -961,7 +961,7 @@ osd-touchpad-on = Touchpad on
 osd-touchpad-off = Touchpad off
 osd-magnifier-off = Magnifier off
 osd-magnifier = Magnifier { $zoom }
-osd-pointer-held = Pointer held by app · { $chord } releases
+osd-pointer-held = The app holds the pointer. { $chord } releases it.
 osd-pointer-released = Pointer released
 osd-mouse-keys-on = Mouse keys on
 osd-mouse-keys-off = Mouse keys off
@@ -1020,7 +1020,7 @@ capture-live-areas = { $count ->
     [one] { $count } live area
    *[other] { $count } live areas
 }
-capture-pinned-title = Screenshot · { $width } × { $height }
+capture-pinned-title = Screenshot ({ $width } × { $height })
 
 # What a drag is carrying
 drag-image = Image
@@ -1121,8 +1121,8 @@ lock-screen-prompt-elsewhere = Password prompt is on the primary display
 lock-screen-enter-password = Enter password
 lock-screen-verifying = Verifying…
 lock-screen-press-enter = Press Enter to unlock
-lock-screen-cannot-verify = Can't verify · Enter your password to try again
-lock-screen-sign-in-failed = Sign-in failed · Enter your password to try again
+lock-screen-cannot-verify = Can't verify your password. Enter it again.
+lock-screen-sign-in-failed = Sign-in failed. Enter your password again.
 
 # Bluetooth pairing prompt
 bluetooth-prompt-title-confirm-passkey = Does { $device } show this code?
@@ -1131,7 +1131,7 @@ bluetooth-prompt-title-request-passkey = Enter the code shown on { $device }
 bluetooth-prompt-title-request-pin = Enter the PIN for { $device }
 bluetooth-prompt-title-confirm-pairing = Pair with { $device }?
 bluetooth-prompt-title-authorize-service = Let { $device } connect?
-bluetooth-prompt-explain-confirm-passkey = Compare it with the code on the other device. If they differ, something else is trying to pair — say no.
+bluetooth-prompt-explain-confirm-passkey = Compare it with the code on the other device. If they differ, something else is trying to pair, so say no.
 bluetooth-prompt-explain-display = Enter this code on the other device to finish pairing.
 bluetooth-prompt-explain-request = The code is shown on the device you are pairing. Many keyboards ask you to type it and press Enter.
 bluetooth-prompt-explain-confirm-pairing = This device cannot show a code to compare, so there is nothing to check against. Only continue if you started this pairing yourself.
@@ -1185,8 +1185,8 @@ speaker-group-summary = { $total ->
    *[other] { $ready } of { $total } speakers ready
 }
 speaker-group-summary-waiting = { $total ->
-    [one] { $ready } of 1 speaker ready · { $waiting } waiting for approval
-   *[other] { $ready } of { $total } speakers ready · { $waiting } waiting for approval
+    [one] { $ready } of 1 speaker ready, { $waiting } waiting for approval
+   *[other] { $ready } of { $total } speakers ready, { $waiting } waiting for approval
 }
 
 # A remote input, as the $input of a sentence
@@ -1330,7 +1330,7 @@ search-app-action-launches = { $resource } · { $app } · launches application
 search-session-logout = Log out of Tilo
 search-session-logout-detail = End this desktop session cleanly and return to the display manager
 search-session-unsaved-work = An app has unsaved work
-search-session-inhibited = { $reason } — close the app or finish its work first.
+search-session-inhibited = { $reason }. Close the app or finish its work first.
 search-session-not-offered = This session shares the computer with another desktop, which owns its power.
 
 # Search: shortcuts
@@ -1598,8 +1598,8 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 search-action-tab-close-failed = Can't close this tab
 search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
-search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
-search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
+search-action-enrollment-copied = Device setup code copied. It expires in { $minutes } min.
+search-action-home-server-copied = Home-server setup code copied. It expires in { $minutes } min.
 search-action-enrollment-copy-failed = Could not copy the setup code to the clipboard
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
@@ -2108,7 +2108,7 @@ shell-document-unavailable = Document unavailable
 shell-named-document-unavailable = { $name } unavailable
 shell-path-open-failed = Cannot open { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
-editor-hint-disk-conflict = File changed on disk — unsaved edits preserved
+editor-hint-disk-conflict = File changed on disk. Your unsaved edits are kept.
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
 notes-empty-title = This note is empty
 notes-empty-body = Jot anything here. Changes are saved as you type.
@@ -2211,7 +2211,7 @@ shortcut-step-continue = Continue
 shortcut-step-yes = Yes
 shortcut-step-no = No
 shortcut-trigger-failed = The shortcut didn't run
-osd-keys-captured = App receives all keys · { $chord } restores shortcuts
+osd-keys-captured = The app receives all keys. { $chord } restores shortcuts.
 osd-keys-released = Shortcuts restored
 osd-pad-mode = Tablet mode { $mode } of { $modes }
 pad-map-hint = Shown while the button is held
@@ -2338,7 +2338,7 @@ clock-sync-failure-no-reply = the other device did not answer clock sync
 now-playing-speakers-playing = Playing on { $group }
 now-playing-speakers-connecting = { $group }: connecting…
 now-playing-speakers-syncing = { $group }: syncing clocks…
-now-playing-speakers-clock-failed = { $group }: can't play in time — { $reason }
+now-playing-speakers-clock-failed = { $group } can't play in time: { $reason }
 speaker-calibration-reason-not-heard = no sweep stood out of the noise there
 speaker-calibration-reason-not-allowed = that device has not allowed its microphone
 speaker-calibration-reason-out-of-window = the request reached that device too late
@@ -2526,8 +2526,8 @@ dictation-title = Dictation
 dictation-consent = Record your microphone for this dictation? Audio stays on this device.
 dictation-preparing = Checking the focused editable field…
 dictation-loading = Loading local recognition. The microphone is off.
-dictation-listening = Microphone on · Speak, then finish to insert.
-dictation-finishing = Microphone off · Finishing your text…
+dictation-listening = Microphone on. Speak, then finish to insert.
+dictation-finishing = Microphone off. Finishing your text…
 dictation-stopping = Stopping dictation…
 dictation-editable-required = Focus an editable field. Passwords cannot receive dictation.
 dictation-unsupported-field = Dictation is not supported in terminal fields yet. Focus another editable field.
@@ -2678,7 +2678,7 @@ display-remote-title = Display { $number }: { $name } on { $device }
 display-remote-row = { $status } · { $title }
 display-remote-row-description = Include this screen in your shared display layout
 display-remote-offline = Offline
-display-remote-offline-excluded = Offline · Not in layout
+display-remote-offline-excluded = Offline, not in the layout
 display-remote-switched-off = Switched off on its device
 display-remote-in-layout = In layout
 display-remote-out-of-layout = Not in layout
@@ -2691,8 +2691,8 @@ search-action-shared-display-include = Set shared display inclusion
 search-action-shared-display-include-subtitle = Include or exclude one certified output without granting input access
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
-activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
-activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
+activity-morning-empty = Morning sources: choose a resource in Explore, then Details. Up to eight sources; none connect automatically.
+activity-morning-description = Chosen morning sources: provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = This source isn't available here
 activity-morning-source-unnamed = Chosen source
 activity-morning-source = { $source }, last activity { $time } · may be out of date

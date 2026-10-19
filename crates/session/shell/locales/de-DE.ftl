@@ -57,7 +57,7 @@ display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
 display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
 display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
 display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
@@ -222,7 +222,7 @@ guide-row-this-guide = Diese Hilfe
 guide-row-windows = Fenster
 guide-row-tabs = Tabs
 guide-row-move-tab = Tab verschieben
-guide-row-maximize = Maximieren / wiederherstellen
+guide-row-maximize = Maximieren oder wiederherstellen
 guide-row-strips = Leisten
 guide-row-workspaces = Arbeitsbereiche
 guide-row-move-group = Gruppe verschieben
@@ -405,7 +405,7 @@ portal-grant-session = Für diese Sitzung erlauben
 portal-grant-always = In diesem Arbeitsbereich immer erlauben
 portal-grant-deny = Ablehnen
 portal-confirm-title = { $who } möchte für dich handeln
-portal-confirm-detail = { $risk } · nur dieses eine Mal; nichts wird gespeichert
+portal-confirm-detail = { $risk }. Nur dieses eine Mal; nichts wird gespeichert.
 portal-moderation-report = Diese Meldung einmal mit deiner Signieridentität senden
 portal-moderation-appeal = Diesen Einspruch einmal mit deiner Signieridentität senden
 portal-moderation-destination = Ziel
@@ -425,8 +425,8 @@ portal-usb-reason = Wähle Geräte einzeln aus; mit Lese- und Schreibzugriff kan
 portal-usb-resource = Leertaste oder Klick schaltet eine Zeile um. Der Zugriff endet beim Freigeben oder Trennen.
 portal-usb-confirm = Auswahl erlauben
 portal-usb-unnamed-device = USB-Gerät
-portal-usb-row-read-write = { $device } — Lesen und Schreiben
-portal-usb-row-read-only = { $device } — Nur lesen
+portal-usb-row-read-write = Lesen und Schreiben
+portal-usb-row-read-only = Nur lesen
 portal-account-title = Deine Identität teilen?
 portal-account-reason = Die App fragt nach deinem Namen und deiner Kontokennung.
 portal-account-resource = Deine ausgewählte Identität für diesen Arbeitsbereich
@@ -734,7 +734,7 @@ agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantw
 agent-door-declined = Die Person an diesem Desktop hat diese Verbindung abgelehnt.
 
 # Die Hilfe-Pille in der Bildschirmecke
-help-pill = Hilfe  F1 · Super+?
+help-pill = Hilfe
 
 # Arbeitsbereichsübersicht
 overview-go-to = Wechseln zu
@@ -747,7 +747,7 @@ overview-share-with-many = { $count ->
         [one] { $first } und { $count } weitere Person
        *[other] { $first } und { $count } weitere Personen
     }
-overview-share-can-edit = { $with } · darf bearbeiten
+overview-share-can-edit = { $with } darf bearbeiten
 overview-new-workspace = Neuer Arbeitsbereich
 overview-join-workspace = Einem Arbeitsbereich beitreten…
 overview-leave-workspace = Verlassen
@@ -763,7 +763,7 @@ a11y-leave-workspace = { $name } verlassen
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }
-follow-detail = Deine Ansicht · alle hier sehen das
+follow-detail = Deine Ansicht. Alle hier sehen sie.
 follow-stop = Beenden
 
 # Filterchips der Suche
@@ -964,7 +964,7 @@ osd-touchpad-on = Touchpad an
 osd-touchpad-off = Touchpad aus
 osd-magnifier-off = Bildschirmlupe aus
 osd-magnifier = Bildschirmlupe { $zoom }
-osd-pointer-held = Zeiger von App gehalten · { $chord } gibt ihn frei
+osd-pointer-held = Die App hält den Zeiger. { $chord } gibt ihn frei.
 osd-pointer-released = Zeiger freigegeben
 osd-mouse-keys-on = Maustasten an
 osd-mouse-keys-off = Maustasten aus
@@ -1023,7 +1023,7 @@ capture-live-areas = { $count ->
     [one] { $count } Live-Bereich
    *[other] { $count } Live-Bereiche
 }
-capture-pinned-title = Screenshot · { $width } × { $height }
+capture-pinned-title = Screenshot ({ $width } × { $height })
 
 # What a drag is carrying
 drag-image = Bild
@@ -1124,8 +1124,8 @@ lock-screen-prompt-elsewhere = Die Passwortabfrage ist auf dem Hauptbildschirm
 lock-screen-enter-password = Passwort eingeben
 lock-screen-verifying = Wird geprüft …
 lock-screen-press-enter = Zum Entsperren Eingabetaste drücken
-lock-screen-cannot-verify = Prüfung nicht möglich · Gib dein Passwort erneut ein
-lock-screen-sign-in-failed = Anmeldung fehlgeschlagen · Gib dein Passwort erneut ein
+lock-screen-cannot-verify = Passwort kann nicht geprüft werden. Gib es erneut ein.
+lock-screen-sign-in-failed = Anmeldung fehlgeschlagen. Gib dein Passwort erneut ein.
 
 # Bluetooth-Kopplungsdialog
 bluetooth-prompt-title-confirm-passkey = Zeigt { $device } diesen Code an?
@@ -1134,7 +1134,7 @@ bluetooth-prompt-title-request-passkey = Gib den auf { $device } angezeigten Cod
 bluetooth-prompt-title-request-pin = Gib die PIN für { $device } ein
 bluetooth-prompt-title-confirm-pairing = Mit { $device } koppeln?
 bluetooth-prompt-title-authorize-service = { $device } verbinden lassen?
-bluetooth-prompt-explain-confirm-passkey = Vergleiche ihn mit dem Code auf dem anderen Gerät. Wenn sie sich unterscheiden, versucht etwas anderes, sich zu koppeln – lehne dann ab.
+bluetooth-prompt-explain-confirm-passkey = Vergleiche ihn mit dem Code auf dem anderen Gerät. Wenn sie sich unterscheiden, versucht etwas anderes, sich zu koppeln. Lehne dann ab.
 bluetooth-prompt-explain-display = Gib diesen Code auf dem anderen Gerät ein, um die Kopplung abzuschließen.
 bluetooth-prompt-explain-request = Der Code wird auf dem Gerät angezeigt, das du koppelst. Viele Tastaturen verlangen, dass du ihn eintippst und die Eingabetaste drückst.
 bluetooth-prompt-explain-confirm-pairing = Dieses Gerät kann keinen Code zum Vergleichen anzeigen, es gibt also nichts zu prüfen. Fahre nur fort, wenn du diese Kopplung selbst gestartet hast.
@@ -1188,8 +1188,8 @@ speaker-group-summary = { $total ->
    *[other] { $ready } von { $total } Lautsprechern bereit
 }
 speaker-group-summary-waiting = { $total ->
-    [one] { $ready } von 1 Lautsprecher bereit · Freigabe ausstehend: { $waiting }
-   *[other] { $ready } von { $total } Lautsprechern bereit · Freigabe ausstehend: { $waiting }
+    [one] { $ready } von 1 Lautsprecher bereit, { $waiting } warten auf Freigabe
+   *[other] { $ready } von { $total } Lautsprechern bereit, { $waiting } warten auf Freigabe
 }
 
 # Eine entfernte Eingabe, als $input eines Satzes
@@ -1314,7 +1314,7 @@ search-app-action-launches = { $resource } · { $app } · startet die Anwendung
 search-session-logout = Von Tilo abmelden
 search-session-logout-detail = Diese Desktop-Sitzung sauber beenden und zur Anmeldung zurückkehren
 search-session-unsaved-work = Eine App hat ungesicherte Arbeit
-search-session-inhibited = { $reason } – schließe die App oder beende zuerst ihre Arbeit.
+search-session-inhibited = { $reason }. Schließe die App oder beende zuerst ihre Arbeit.
 search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen Desktop, der seine Energieverwaltung steuert.
 
 # Suche: Kurzbefehle
@@ -1582,8 +1582,8 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
-search-action-enrollment-copied = Geräte-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
-search-action-home-server-copied = Heimserver-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
+search-action-enrollment-copied = Geräte-Einrichtungscode kopiert. Er läuft in { $minutes } Min. ab.
+search-action-home-server-copied = Heimserver-Einrichtungscode kopiert. Er läuft in { $minutes } Min. ab.
 search-action-enrollment-copy-failed = Der Einrichtungscode konnte nicht in die Zwischenablage kopiert werden
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
@@ -2092,7 +2092,7 @@ shell-document-unavailable = Dokument nicht verfügbar
 shell-named-document-unavailable = { $name } nicht verfügbar
 shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
-editor-hint-disk-conflict = Datei auf dem Datenträger geändert – ungespeicherte Änderungen bleiben erhalten
+editor-hint-disk-conflict = Datei auf dem Datenträger geändert. Ungespeicherte Änderungen bleiben erhalten.
 editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
 notes-empty-title = Diese Notiz ist leer
 notes-empty-body = Schreib hier, was du willst. Änderungen werden beim Tippen gespeichert.
@@ -2195,7 +2195,7 @@ shortcut-step-continue = Weiter
 shortcut-step-yes = Ja
 shortcut-step-no = Nein
 shortcut-trigger-failed = Der Kurzbefehl wurde nicht ausgeführt
-osd-keys-captured = Die App empfängt alle Tasten · { $chord } stellt die Tastenkürzel wieder her
+osd-keys-captured = Die App empfängt alle Tasten. { $chord } stellt die Tastenkürzel wieder her.
 osd-keys-released = Tastenkürzel wiederhergestellt
 osd-pad-mode = Tablett-Modus { $mode } von { $modes }
 pad-map-hint = Wird angezeigt, solange die Taste gedrückt ist
@@ -2322,7 +2322,7 @@ clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht ge
 now-playing-speakers-playing = Spielt auf { $group }
 now-playing-speakers-connecting = { $group }: verbindet…
 now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
-now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
+now-playing-speakers-clock-failed = { $group } kann nicht synchron spielen: { $reason }
 speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
 speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
 speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
@@ -2517,8 +2517,8 @@ dictation-title = Diktat
 dictation-consent = Mikrofon für dieses Diktat aufnehmen? Audio bleibt auf diesem Gerät.
 dictation-preparing = Aktives Eingabefeld wird geprüft…
 dictation-loading = Lokale Spracherkennung wird geladen. Das Mikrofon ist aus.
-dictation-listening = Mikrofon an · Sprechen und zum Einfügen beenden.
-dictation-finishing = Mikrofon aus · Text wird fertiggestellt…
+dictation-listening = Mikrofon an. Sprechen und zum Einfügen beenden.
+dictation-finishing = Mikrofon aus. Text wird fertiggestellt…
 dictation-stopping = Diktat wird angehalten…
 dictation-editable-required = Ein Eingabefeld fokussieren. Passwörter erlauben kein Diktat.
 dictation-unsupported-field = Diktate werden in Terminalfeldern noch nicht unterstützt. Ein anderes Eingabefeld fokussieren.
@@ -2668,7 +2668,7 @@ display-remote-title = Bildschirm { $number }: { $name } auf { $device }
 display-remote-row = { $status } · { $title }
 display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
 display-remote-offline = Offline
-display-remote-offline-excluded = Offline · Nicht im Layout
+display-remote-offline-excluded = Offline, nicht in der Anordnung
 display-remote-switched-off = Auf dem Gerät ausgeschaltet
 display-remote-in-layout = Im Layout
 display-remote-out-of-layout = Nicht im Layout
@@ -2681,8 +2681,8 @@ search-action-shared-display-include = Gemeinsame Display-Teilnahme festlegen
 search-action-shared-display-include-subtitle = Einen bestätigten Ausgang aufnehmen oder ausschließen, ohne Eingabezugriff zu gewähren
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
-activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
-activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
+activity-morning-empty = Morgenquellen: Ressource unter Erkunden, dann Details auswählen. Bis zu acht Quellen; keine verbindet sich automatisch.
+activity-morning-description = Ausgewählte Morgenquellen: Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
 activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
 activity-morning-source-unnamed = Gewählte Quelle
 activity-morning-source = { $source }, letzte Aktivität { $time } · möglicherweise nicht aktuell

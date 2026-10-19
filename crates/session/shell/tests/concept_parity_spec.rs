@@ -185,7 +185,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // Assert on the theme's own accent, not a literal fill count: counting
         // indigo-500 pixels incentivized a decorative second fill over a fix.
-        let accent = theme.tokens.colors.intent.inverted;
+        let accent = theme.tokens.colors.intent.accent;
         let acc = accent.to_rgba8();
         let count_accent = |fills: &[(u8, u8, u8, u8)]| {
             fills
@@ -612,7 +612,7 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
 
         // Assert the theme's own accent — no theme's accent need equal the
         // mockup's literal indigo-500.
-        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
+        let accent = theme.tokens.colors.intent.accent.to_rgba8();
         let has_accent = contains_color_close(&fills, (accent.r, accent.g, accent.b), 4);
         let has_slate_600_fill = contains_color_close(&fills, (71, 85, 105), 4);
 
@@ -712,7 +712,7 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
              indigo fills, open={open_indigo_count}, delta={added_indigo}. \
              Audit row `concept-coverage.md:22,132-139`: 'no `bg-white` filled \
              ramp — just `accent[5]` (indigo) bars'. Fix: swap \
-             `colors.intent.inverted` for `colors.text_primary` (white in dark theme) \
+             `colors.intent.accent` for `colors.text_primary` (white in dark theme) \
              in the slider-fill paint call in `draw_quick_settings`."
         );
     }

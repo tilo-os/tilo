@@ -14,6 +14,7 @@ registry::scenario_modules! {
     content_shots, "content_shots.rs", "content composites: rows, cards, media, stats, states";
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
+    design_gallery, "design_gallery_shots.rs", "every design-system primitive in every state, dark and light";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
     floating_surface_shots, "floating_surface_shots.rs", "soft floating call and navigation surfaces";
     gallery_harness, "gallery_harness_shots.rs", "gallery in a FrameHarness, dark and light, PNG + inspection";

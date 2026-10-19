@@ -1445,7 +1445,7 @@ mod tests {
         );
         assert_eq!(
             pane.task_execution_notice(automated).as_deref(),
-            Some("Agent runtime not connected · this task has not started")
+            Some("The agent runtime is not connected, so this task has not started.")
         );
     }
 
@@ -3272,7 +3272,7 @@ mod tests {
                 ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
             let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
             assert_ne!(
-                active.fill, theme.tokens.colors.intent.inverted,
+                active.fill, theme.tokens.colors.intent.accent,
                 "{}: not an accent wash",
                 theme.name
             );

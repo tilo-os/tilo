@@ -60,7 +60,7 @@ pub fn configure_presentation(
 ) -> tilo_ui::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
     inputs.theme.tokens.typography = inputs.theme.tokens.typography.clone().with_base_size(19.0);
-    inputs.theme.tokens.colors.intent.inverted = inputs.theme.status_success;
+    inputs.theme.tokens.colors.intent.accent = inputs.theme.status_success;
     inputs.theme = inputs
         .theme
         .with_ui_scale(1.25)
@@ -77,7 +77,7 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.ui_scale, ui_scale);
     assert_eq!(theme.name, "explicit presentation");
     assert!(theme.reduce_motion);
-    assert_eq!(theme.tokens.colors.intent.inverted, theme.status_success);
+    assert_eq!(theme.tokens.colors.intent.accent, theme.status_success);
     assert!(
         (theme.tokens.typography.size(TextRole::Body) - 19.0 * ui_scale * scale).abs() < 0.0001
     );

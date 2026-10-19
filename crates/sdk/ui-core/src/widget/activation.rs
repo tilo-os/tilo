@@ -37,6 +37,10 @@ pub fn paint_focus_ring(
     radius: f64,
     theme: &crate::theme::Theme,
 ) {
+    // Keyboard focus only: a click that focused the surface shows nothing.
+    if !crate::focus_visible::shown() {
+        return;
+    }
     scene.stroke(
         &Stroke::new(2.0),
         transform,

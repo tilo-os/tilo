@@ -78,10 +78,10 @@ fn assert_edge_registers(rgba: &[u8], panel: Rect, name: &str, surface: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{surface}/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
+        delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
         "{surface}/{name}: edge {edge:?} does not register against fill {inside:?} \
          (Δlum={delta:.4} < {})",
-        tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
+        tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
     );
 }
 
