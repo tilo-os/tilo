@@ -3391,6 +3391,9 @@ secrets = ["TAPP_PUBLISHER_IDENTITY"]
 [[check]]
 name = "nested-session"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
+# A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
+# gate them), so dead code somewhere on main does not cost everyone the nested session.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=x86_64"]
@@ -3476,6 +3479,9 @@ default = false
 [[check]]
 name = "nested-session-arm64"
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
+# A development desktop to run, not a lint gate: warnings stay warnings (clippy and the tests
+# gate them), so dead code somewhere on main does not cost everyone the nested session.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["apps/**", "crates/**", "vendor/**", "dist/apps/**", "dist/dev/nested-session-build.sh", "os/scripts/build-thin-apps.sh", "tools/apps/**", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/nested-session/**"]
 requires = ["arch=arm64"]

@@ -1635,6 +1635,15 @@ through the printed `tilo-control` line (`actions invoke`, `key`, `type`,
 `click-at`, `read APP`, and `snapshot FILE`, which renders the 1280x800 output,
 or `TILO_HEADLESS_SIZE`). Use it for scripted and agent end-to-end runs.
 
+Run it on the host itself, not in a toolbox or another container: a Tilo
+desktop admits a Wayland client it did not launch only when the client shares
+its user and mount namespaces (anything else could be a sandboxed app reaching
+past its launch), so a container's nested window is refused with "Connection
+reset by peer", and the script says so before it starts. Nothing it runs needs
+a toolchain or a package the host lacks; each shell gets a private D-Bus from
+`dist/dev/session-bus.sh`, with the build's own `dbus-daemon` where the host
+has none (Tilo OS runs the user bus on dbus-broker).
+
 On the first start the script makes the Home workspace a native room: agent
 tasks act with a room's native authority, and the throwaway person has no
 second device to govern one. It runs the packaged-desktop governor fixture,
@@ -1643,6 +1652,32 @@ redeems it at boot; `logs/native.log` says when the room is native. Later
 starts restore it from the saved desktop, and `--fresh-desktop` enrols a new
 one. Admit an agent to the room (`so.tilo.desktop` `add-agent`) before queuing
 tasks for it.
+
+### Two people in one workspace: a nested pair
+
+To try collaboration on one machine (presence, shared apps, roles), start two
+nested sessions with two throwaway identities in one shared workspace:
+
+```bash
+dist/dev/nested-pair.sh                          # two windows, side by side
+dist/dev/nested-pair.sh --apps "notes chat"      # fewer apps, faster to package
+dist/dev/nested-pair.sh --headless               # no windows; tilo-control only
+dist/dev/nested-pair.sh --fresh                  # new identities
+```
+
+Session A (`~/.local/state/tilo-nested-pair/a`) starts as `nested-session.sh`
+does and enrols a new Home workspace through the governor fixture, which also
+issues an invitation into it (`nested-session.sh --invite-guest FILE`) and
+keeps answering joins while A runs. Session B (`.../b`) redeems it at startup
+(`nested-session.sh --join FILE`): B's active workspace is A's Home workspace,
+B an editor in it. The script prints a `tilo-control` line for each session;
+closing either window or Ctrl-C stops both. Identities persist between runs;
+each run shares a new workspace.
+
+What works today: both sessions' active workspace is the same room, and B is
+a member of it (B lists A as its owner). Live sync and presence between the
+two do not flow yet: the invitations carry the governor fixture's address,
+which answers joins only, so neither session reaches the other's replica.
 
 ### Edit → build → log into your own build
 

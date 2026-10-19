@@ -2,8 +2,9 @@
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
 # model gateway, tilo-control, the native-room governor fixture), the thin
-# apps, the shared runtime library they link and its engines, and the Rust
-# standard library that runtime was linked against.
+# apps, the shared runtime library they link and its engines, the Rust
+# standard library that runtime was linked against, and a dbus-daemon for
+# hosts that have none.
 #
 # t.toml's `nested-session` check runs it on a t node, and the session script
 # downloads its output with `t outputs nested-session`. The thin apps and
@@ -79,4 +80,11 @@ needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \
     | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
 [[ -n $needed_std ]] || { echo "libruntime_dylib.so links no libstd" >&2; exit 1; }
 cp -p "$(rustc --print target-libdir)/$needed_std" "$out/thin-app/"
+# The session's private D-Bus: Tilo OS hosts run their user bus on
+# dbus-broker and carry no dbus-daemon, which the nested session starts one
+# of per shell (dist/dev/session-bus.sh). The builder's is the same Fedora
+# release's and links only libraries every Tilo host has.
+if dbus_daemon=$(command -v dbus-daemon); then
+    cp -pL "$dbus_daemon" "$out/bin/dbus-daemon"
+fi
 printf 'staged the nested session in %s\n' "$out"
