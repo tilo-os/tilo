@@ -119,7 +119,11 @@ fn sign_moderation_mutation(
         },
         key,
     )?;
-    assert_eq!(request.actor_role, role);
+    if request.actor_role != role {
+        return Err(registry_types::ModerationWireError::InvalidOperation(
+            format!("signed as {:?}, expected {role:?}", request.actor_role),
+        ));
+    }
     Ok(request)
 }
 

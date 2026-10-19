@@ -343,7 +343,8 @@ fn holds_files_of(root: &Path, uid: u32, depth: usize) -> bool {
             let Ok(entries) = std::fs::read_dir(&path) else {
                 continue;
             };
-            pending.extend(entries.flatten().map(|entry| (entry.path(), level + 1)));
+            let next = level.saturating_add(1);
+            pending.extend(entries.flatten().map(|entry| (entry.path(), next)));
         }
     }
     false
