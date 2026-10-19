@@ -3789,6 +3789,14 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
+            // The root draws in the component's wake scope, as the live
+            // window draws in the App's: a wake raised while drawing (the
+            // area read Settings starts once it has drawn) reaches the next
+            // frame instead of no one.
+            let _wake = self
+                .component_wake
+                .as_ref()
+                .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
             self.presence
                 .with_permissions(self.permissions.clone(), || {
                     self.root.draw(
@@ -8336,9 +8344,10 @@ impl FrameHarness {
     }
 
     /// Move the pointer to `(x, y)` and press+release the left button — the
-    /// three events a click produces, in order.
+    /// three events a click produces, in order. Each is judged once
+    /// dispatched, as [`Self::send`] judges it: a move that changed nothing
+    /// a frame reads leaves its frame quiet, as hover does in the live App.
     pub fn click_at(&mut self, x: f64, y: f64) {
-        self.invalidate_local();
         self.pump_component_wakes();
         self.send(&crate::synthetic_input::cursor_moved(
             x * self.input_scale,

@@ -225,11 +225,14 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
 
     // Any change still reaches its own frame: a click into a window syncs
     // the windows and publishes undo on the frame that shows it.
+    // The move onto the window changes nothing a frame reads, so its frame
+    // is a pan frame too and replays the windows; the press draws them again
+    // before it reaches a widget.
     let ((), rows) = observe(|| harness.click_at(300.0, 450.0));
     assert_eq!(
         calls(&rows, "ui.settle_replayed_draws"),
-        1,
-        "the replayed windows are drawn again before the click: {rows:?}"
+        2,
+        "the replayed windows are drawn again before the move and the press: {rows:?}"
     );
     assert!(
         calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,
