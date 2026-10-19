@@ -709,6 +709,17 @@ impl TubeApp {
         results
     }
 
+    /// Open on the results for `query`, as typing it into the search field
+    /// and pressing Enter does: a launch from desktop search ("Search
+    /// YouTube for cats"). The search runs on the first frame, once the
+    /// window can be woken by its results.
+    #[must_use]
+    pub fn searching(self, query: &str) -> Self {
+        self.search_query.set(query.to_owned());
+        action::push(&self.bus, Action::SubmitSearch);
+        self
+    }
+
     #[must_use]
     pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
         self.model.search_query = query.to_string();
