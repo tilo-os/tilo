@@ -605,9 +605,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             whole: #whole,
             items: #items,
         }));
-        builds.push(match &options.default {
-            Some(default) => quote!(#ident: #table::take_or::<#ty>(source, || #default)?),
-            None => quote!(#ident: #table::take::<#ty>(source)?),
+        builds.push(if let Some(default) = &options.default {
+            quote!(#ident: #table::take_or::<#ty>(source, || #default)?)
+        } else {
+            quote!(#ident: #table::take::<#ty>(source)?)
         });
         reach.push(quote!(#index => ::core::option::Option::Some(&value.#ident),));
         reach_mut.push(quote!(#index => ::core::option::Option::Some(&mut value.#ident),));

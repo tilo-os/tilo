@@ -30,6 +30,10 @@ use super::app::{
 use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
+/// What interactions cost an app on the UI thread, phase by phase.
+#[cfg(feature = "test-support")]
+pub mod perf;
+
 const INSTANCE: u64 = 7;
 /// The room a test opens the app in unless it names one.
 const TEST_ROOM: &str = "test-workspace";
