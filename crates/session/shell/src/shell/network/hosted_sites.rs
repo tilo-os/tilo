@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
-use crate::shell::state::RoomId;
+use crate::shell::state::{RoomId, WorkspaceId};
 
 /// How long establishing a connection to a site or host may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -47,6 +47,10 @@ pub(super) struct HostedRoom {
     /// The host's device key (hex) when the room was joined: a host that
     /// answers with another was set up again.
     pub host: Option<String>,
+    /// The app the site's workspace opens in (`so.tilo.chat`), as its
+    /// entry names it: the person arrives in it once the join installs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -54,6 +58,39 @@ struct HostedRooms {
     rooms: BTreeMap<String, HostedRoom>,
     /// Sites whose workspace the person left: never joined again unasked.
     left: BTreeSet<String>,
+}
+
+/// Where joining a site's workspace stands, while this session joins it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JoinProgress {
+    /// Its host admitted this device; the workspace installs once its
+    /// enrollment completes.
+    Joining,
+    /// It was not joined, and why, in the person's words.
+    Failed(String),
+}
+
+/// A site's workspace this session is joining or failed to join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteJoinState {
+    /// Its room.
+    pub room: RoomId,
+    /// The site it is the workspace of, as its listing names it.
+    pub site: Option<String>,
+    /// The workspace slot it installs into, while there is one.
+    pub workspace: Option<WorkspaceId>,
+    /// Where it stands.
+    pub progress: JoinProgress,
+}
+
+/// A site's workspace whose join just installed: the person arrives in it,
+/// in the app its site names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arrival {
+    /// Its room.
+    pub room: RoomId,
+    /// The app it opens in, once.
+    pub app: Option<String>,
 }
 
 /// The rooms held through a site, kept beside the rest of the peer state.
@@ -64,6 +101,10 @@ pub(super) struct State {
     /// The community site this computer follows, once it does: its
     /// workspace is named as the community's.
     community: std::sync::OnceLock<String>,
+    /// The site workspaces this session is joining, or failed to.
+    joins: Mutex<BTreeMap<RoomId, SiteJoinState>>,
+    /// Joins installed since chrome last looked.
+    arrivals: Mutex<Vec<Arrival>>,
 }
 
 impl State {
@@ -77,8 +118,40 @@ impl State {
         Self {
             path: Some(path),
             rooms: Mutex::new(rooms),
-            community: std::sync::OnceLock::new(),
+            ..Self::default()
         }
+    }
+
+    /// Say where joining `room` stands now.
+    pub(super) fn set_join(&self, state: SiteJoinState) {
+        self.joins.lock_recover().insert(state.room, state);
+    }
+
+    /// Joining `room` is over: it installed, or the person left it.
+    pub(super) fn end_join(&self, room: RoomId) -> Option<SiteJoinState> {
+        self.joins.lock_recover().remove(&room)
+    }
+
+    /// Where joining `room` stands, while it does.
+    pub(super) fn join_of(&self, room: RoomId) -> Option<SiteJoinState> {
+        self.joins.lock_recover().get(&room).cloned()
+    }
+
+    /// Every join this session runs or failed.
+    pub(super) fn joins(&self) -> Vec<SiteJoinState> {
+        self.joins.lock_recover().values().cloned().collect()
+    }
+
+    /// `room`'s join installed: the person arrives in it.
+    pub(super) fn arrive(&self, room: RoomId) {
+        self.end_join(room);
+        let app = self.hosted(room).and_then(|hosted| hosted.app);
+        self.arrivals.lock_recover().push(Arrival { room, app });
+    }
+
+    /// The joins installed since this was last asked.
+    pub(super) fn take_arrivals(&self) -> Vec<Arrival> {
+        std::mem::take(&mut *self.arrivals.lock_recover())
     }
 
     /// The origin of `room`'s host, when this computer reaches it over HTTPS.
@@ -281,6 +354,8 @@ pub(crate) struct SiteWorkspace {
     pub admission: Option<url::Url>,
     /// The site's directory of public workspaces, when it names one.
     pub directory: Option<url::Url>,
+    /// The app the workspace opens in, when the site names one.
+    pub app: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +380,8 @@ struct HomeJson {
     name: String,
     host: HostJson,
     admission: Option<String>,
+    /// The app the workspace opens in (`so.tilo.chat`).
+    app: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -404,7 +481,22 @@ fn home_workspace(
         origin: origin.origin().ascii_serialization(),
         admission,
         directory,
+        app: home.app.as_deref().and_then(app_id),
     })
+}
+
+/// `text` as an app id a site may name (`so.tilo.chat`): dotted lowercase
+/// segments of letters, digits and `-`. Anything else names no app.
+fn app_id(text: &str) -> Option<String> {
+    let text = text.trim();
+    let segment = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    };
+    (text.len() <= 128 && text.contains('.') && text.split('.').all(segment))
+        .then(|| text.to_owned())
 }
 
 /// The public workspaces the directory at `directory` lists. Every
@@ -553,6 +645,32 @@ mod tests {
     }
 
     #[test]
+    fn a_sites_home_names_the_app_it_opens_in_and_nothing_else_is_an_app() {
+        let entry = site_entry("tilo.coffee").unwrap();
+        let home = |app: Option<&str>| HomeJson {
+            name: "Lounge".into(),
+            host: HostJson {
+                origin: "https://eu1.tilo.coffee".into(),
+            },
+            admission: Some("https://eu1.tilo.coffee/".into()),
+            app: app.map(str::to_owned),
+        };
+        let read = |app| home_workspace(&entry, home(app), None).unwrap().app;
+        assert_eq!(read(Some("so.tilo.chat")).as_deref(), Some("so.tilo.chat"));
+        assert_eq!(read(None), None);
+        for refused in [
+            "",
+            "chat",
+            "../so.tilo.chat",
+            "so.tilo.Chat",
+            "so..chat",
+            "so.tilo/chat",
+        ] {
+            assert_eq!(read(Some(refused)), None, "{refused}");
+        }
+    }
+
+    #[test]
     fn hosted_rooms_are_kept_across_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let room = RoomId::new();
@@ -566,6 +684,7 @@ mod tests {
                     origin: "https://eu1.example".into(),
                     site: Some(site.to_string()),
                     host: None,
+                    app: Some("so.tilo.chat".into()),
                 },
             )
             .unwrap();
@@ -575,6 +694,14 @@ mod tests {
             Some("https://eu1.example")
         );
         assert_eq!(reopened.room_of_site(&site), Some(room));
+        assert_eq!(
+            reopened
+                .hosted(room)
+                .and_then(|hosted| hosted.app)
+                .as_deref(),
+            Some("so.tilo.chat"),
+            "the app the site's workspace opens in is kept"
+        );
         state.set_left(&site, true).unwrap();
         assert!(State::open(dir.path()).left(&site));
         state.forget(room).unwrap();

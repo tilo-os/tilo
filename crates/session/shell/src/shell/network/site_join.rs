@@ -2,7 +2,9 @@
 //! the site's admission door, then the host's workspace join exchange over
 //! HTTPS ([`super::hosted_sites`]).
 
-use super::hosted_sites::{self, HostHttp, HostedRoom, SiteError, SiteWorkspace};
+use super::hosted_sites::{
+    self, Arrival, HostHttp, HostedRoom, JoinProgress, SiteError, SiteJoinState, SiteWorkspace,
+};
 use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
@@ -20,6 +22,18 @@ pub struct SiteRoom {
     /// Joined from a directory of public workspaces: its door takes
     /// reports.
     pub public: bool,
+}
+
+/// One redemption of a site workspace's invitation into a slot.
+struct SiteEnrollment<'a> {
+    room: RoomId,
+    /// The workspace slot it installs into.
+    local: WorkspaceId,
+    /// The invitation, as text.
+    invitation: &'a str,
+    via: Via,
+    /// The slot was made for this join, and goes when it fails.
+    placeholder: bool,
 }
 
 /// Where joining a site's workspace stands once it was asked for.
@@ -129,6 +143,39 @@ impl ShellNetwork {
                     enrollment,
                 });
             }
+            // A join whose exchange or installation failed keeps its proof
+            // in its slot, and the host has admitted that proof: it is
+            // retried exactly, never by a second admission into a second
+            // slot, which the retained proof refuses.
+            let retained = self
+                .pending_host_room(room)
+                .map_err(SiteError::Refused)?
+                .filter(|(local, _)| {
+                    tree.read()
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.id == *local)
+                });
+            if let Some((local, invitation)) = retained {
+                let origin = self
+                    .hosted_sites
+                    .origin(room)
+                    .ok_or_else(|| SiteError::Refused("the workspace's host is unknown".into()))?;
+                let http = HostHttp::new(&origin).map_err(SiteError::Unreachable)?;
+                tracing::info!(%room, name = %site.name, "joining a site's workspace again with its retained proof");
+                return self.enroll_site(
+                    site,
+                    SiteEnrollment {
+                        room,
+                        local,
+                        invitation: &invitation,
+                        via: Via::Https { http, door: None },
+                        placeholder: false,
+                    },
+                    background,
+                );
+            }
         }
         let (user, name) = self.site_person()?;
         let answer = runtime.block_on(hosted_sites::admit(site, user, &name))?;
@@ -164,6 +211,7 @@ impl ShellNetwork {
                     origin: answer.origin.clone(),
                     site: Some(site.entry.to_string()),
                     host: Some(hex::encode(host)),
+                    app: site.app.clone(),
                 },
             )
             .map_err(SiteError::Refused)?;
@@ -175,21 +223,169 @@ impl ShellNetwork {
             }),
         };
         let local = tree.write().append_empty_workspace(&site.name);
-        match self.accept_invitation_via(local, &answer.invitation, via) {
+        tracing::info!(%room, name = %site.name, "joining a site's workspace");
+        self.enroll_site(
+            site,
+            SiteEnrollment {
+                room,
+                local,
+                invitation: &answer.invitation,
+                via,
+                placeholder: true,
+            },
+            background,
+        )
+    }
+
+    /// Redeem `enrollment`'s invitation into its slot, and say that the
+    /// site's workspace is joining; its enrollment installs in the
+    /// `background`, else by its caller.
+    fn enroll_site(
+        &self,
+        site: &SiteWorkspace,
+        enrollment: SiteEnrollment<'_>,
+        background: bool,
+    ) -> Result<SiteJoin, SiteError> {
+        let SiteEnrollment {
+            room,
+            local,
+            invitation,
+            via,
+            placeholder,
+        } = enrollment;
+        let joining = |progress| SiteJoinState {
+            room,
+            site: Some(site.entry.to_string()),
+            workspace: Some(local),
+            progress,
+        };
+        match self.accept_invitation_via(local, invitation, via) {
             Ok(PeerSyncResponse::EnrollmentPending { id }) => {
                 self.finish_when_enrolled(room, id, background)
                     .map_err(SiteError::Refused)?;
-                tracing::info!(%room, name = %site.name, "joining a site's workspace");
+                self.hosted_sites.set_join(joining(JoinProgress::Joining));
                 Ok(SiteJoin::Enrolling {
                     room,
                     local,
                     enrollment: id,
                 })
             }
-            Ok(_) => Ok(SiteJoin::Held { room }),
+            Ok(_) => {
+                self.hosted_sites.end_join(room);
+                Ok(SiteJoin::Held { room })
+            }
             Err(error) => {
-                tree.write().delete_workspace(local);
+                tracing::error!(%room, name = %site.name, %error, "a site's workspace was not joined");
+                let mut failed = joining(JoinProgress::Failed(error.clone()));
+                if placeholder {
+                    self.remove_placeholder(local, room);
+                    failed.workspace = None;
+                }
+                self.hosted_sites.set_join(failed);
                 Err(SiteError::Refused(error))
+            }
+        }
+    }
+
+    /// Take away `local`, the empty workspace a join into `room` made, unless
+    /// the room installed into it after all.
+    pub(super) fn remove_placeholder(&self, local: WorkspaceId, room: RoomId) {
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let mut tree = replica.tree.write();
+        let unjoined = tree
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.id == local && workspace.room != room);
+        if unjoined {
+            tree.delete_workspace(local);
+        }
+    }
+
+    /// Where the joins of site workspaces this session runs stand: each
+    /// joining, or failed and why.
+    pub(crate) fn site_joins(&self) -> Vec<SiteJoinState> {
+        self.hosted_sites.joins()
+    }
+
+    /// The site workspaces whose joins installed since this was last asked:
+    /// chrome brings the person into each, in the app its site names.
+    pub(crate) fn take_arrivals(&self) -> Vec<Arrival> {
+        self.hosted_sites.take_arrivals()
+    }
+
+    /// Open the app `arrival`'s site names in the workspace its join
+    /// installed: where the person arrives, once. Waits on the launch.
+    ///
+    /// # Errors
+    ///
+    /// When the workspace is gone or the app did not open.
+    pub(crate) fn open_arrival(&self, arrival: &Arrival) -> Result<(), String> {
+        let Some(app) = arrival.app.as_deref() else {
+            return Ok(());
+        };
+        let tree = self
+            .replica
+            .lock()
+            .map_err(|_| "the workspaces are unavailable")?
+            .tree
+            .clone();
+        let workspace = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == arrival.room)
+            .cloned()
+            .ok_or("the joined workspace is gone")?;
+        let launcher = crate::shell::broker_services::NativeLauncher(Some(tree), None);
+        tilo_action_broker::services::LauncherServices::launch(
+            &launcher,
+            app,
+            &workspace,
+            None,
+            &tilo_action_broker::services::LaunchPlace::Focus,
+        )
+    }
+
+    /// An enrollment into `room`'s slot `local` ended: installed, or failed
+    /// with its error, which is logged as the failure it is. A workspace
+    /// held through the web that installed is arrived in; a site's that
+    /// failed says why, and keeps its slot only while the slot retains the
+    /// proof a retry redeems.
+    pub(super) fn enrollment_ended(
+        &self,
+        room: RoomId,
+        local: WorkspaceId,
+        outcome: Result<(), String>,
+    ) {
+        match outcome {
+            Ok(()) => {
+                if self.hosted_sites.hosted(room).is_some() {
+                    self.hosted_sites.arrive(room);
+                }
+            }
+            Err(error) => {
+                tracing::error!(%room, %error, "a workspace was not enrolled");
+                let Some(mut state) = self.hosted_sites.join_of(room) else {
+                    return;
+                };
+                let retained = self
+                    .native_owner()
+                    .ok()
+                    .and_then(|owner| owner.pending_enrollment(room).ok().flatten())
+                    .is_some_and(|pending| {
+                        pending.target_workspace() == Some(local)
+                            && pending.status() == tilo_joined_room::PendingEnrollmentStatus::Active
+                    });
+                if !retained {
+                    self.remove_placeholder(local, room);
+                    state.workspace = None;
+                }
+                state.progress = JoinProgress::Failed(error);
+                self.hosted_sites.set_join(state);
             }
         }
     }
@@ -247,6 +443,7 @@ impl ShellNetwork {
         if self.hosted_sites.hosted(room).is_none() {
             return Err("that workspace is not held through the web".into());
         }
+        self.hosted_sites.end_join(room);
         match self.site_of_room(room) {
             // A site's workspace is remembered as left, and with it the
             // membership this device keeps, for Join again.

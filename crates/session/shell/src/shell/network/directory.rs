@@ -335,6 +335,7 @@ impl ShellNetwork {
             origin: door.origin().ascii_serialization(),
             admission: Some(door),
             directory: None,
+            app: None,
         };
         self.join_site_workspace(&workspace, true)
             .map_err(|error| error.to_string())
@@ -629,6 +630,7 @@ mod tests {
             origin: "https://rooms.tilo.coffee".into(),
             admission: Some(url::Url::parse("https://rooms.tilo.coffee/").unwrap()),
             directory: None,
+            app: None,
         };
         let listed = home_listing(&home);
         assert!(listed.entry.community);

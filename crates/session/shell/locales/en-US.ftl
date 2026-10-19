@@ -3122,7 +3122,10 @@ directory-open = Open
 directory-joining = Joining…
 directory-join-named = Join { $name }
 directory-open-named = Open { $name }
-directory-community = { $name } · { $host }'s own
+directory-community-tag = { $host }'s own
+directory-try-again = Try again
+directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
+directory-join-failed-line = Didn't join: { $error }
 directory-here-now = { $count } here now
 directory-active-today = Active today
 directory-active-week = Active this week
@@ -3140,3 +3143,7 @@ directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
 directory-moved = { $name } moved to your host, so anyone can find and join it.
+arrival-others = { $count ->
+    [one] and 1 other
+   *[other] and { $count } others
+}

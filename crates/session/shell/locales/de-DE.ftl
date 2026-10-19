@@ -3079,7 +3079,10 @@ directory-open = Öffnen
 directory-joining = Wird beigetreten…
 directory-join-named = { $name } beitreten
 directory-open-named = { $name } öffnen
-directory-community = { $name } · der eigene von { $host }
+directory-community-tag = von { $host }
+directory-try-again = Erneut versuchen
+directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
+directory-join-failed-line = Nicht beigetreten: { $error }
 directory-here-now = { $count } gerade hier
 directory-active-today = Heute aktiv
 directory-active-week = Diese Woche aktiv
@@ -3097,3 +3100,7 @@ directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
 directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.
+arrival-others = { $count ->
+    [one] und 1 weitere Person
+   *[other] und { $count } weitere
+}
