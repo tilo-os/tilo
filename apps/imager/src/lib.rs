@@ -107,7 +107,6 @@ pub mod customize_image;
 pub mod handoff;
 mod helpers;
 mod host;
-#[cfg(target_os = "linux")]
 mod media_capacity;
 #[cfg(target_os = "linux")]
 pub mod media_layout;

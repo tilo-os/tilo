@@ -151,7 +151,7 @@ impl Record {
         self.prepared_browser.as_ref()
     }
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn browser_expectation(&self) -> Option<()> {
+    pub(super) fn browser_expectation(&self) -> Option<&super::prepared_setup::NoBrowserTransfer> {
         None
     }
     pub fn step(&self, step: Step) -> Option<&StepRecord> {
@@ -504,7 +504,6 @@ impl RecordStore {
         expected: &crate::model::PreparedSetupExpectation,
     ) -> Result<Vec<u8>, String> {
         let artifact = super::prepared_setup::PreparedArtifact {
-            #[cfg(target_os = "linux")]
             browser: None,
             source_path: self
                 .prepared_path(id)?

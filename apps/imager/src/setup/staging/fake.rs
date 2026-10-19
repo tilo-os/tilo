@@ -603,7 +603,6 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         world.request.prepared_setup = Some(super::super::prepared_setup::PreparedArtifact {
-            #[cfg(target_os = "linux")]
             browser: None,
             source_path: path.to_str().unwrap().into(),
             expectation: crate::model::PreparedSetupExpectation {

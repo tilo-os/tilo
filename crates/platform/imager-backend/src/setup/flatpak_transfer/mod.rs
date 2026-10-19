@@ -20,6 +20,9 @@ pub mod offline_original;
 pub mod portable;
 #[cfg(target_os = "linux")]
 pub use handoff::{HandoffInventory, ReadOnlySource, SourceScopedRunner};
+/// No inventory exists where the Linux handoff does not.
+#[cfg(not(target_os = "linux"))]
+pub enum HandoffInventory {}
 mod native;
 mod repository;
 #[cfg(target_os = "linux")]

@@ -2,15 +2,15 @@
 #[cfg(test)]
 mod tests;
 use super::helper::ReviewedSource;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, feature = "test-support", target_os = "linux"))]
 use super::{
     JobResult,
     helper::{HelperPhase, HelperProgress, progress_fraction},
     read_exact_fill,
 };
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, feature = "test-support", target_os = "linux"))]
 use crate::media_model::PROFILE_BLOCK_SIZE;
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, feature = "test-support", target_os = "linux"))]
 use std::io::{self, Seek, SeekFrom, Write};
 
 #[cfg(target_os = "linux")]
@@ -34,7 +34,7 @@ pub struct DescriptorWriteRequest {
 
 /// The app supplies only profile encoding and migration policy. All raw I/O,
 /// digest validation, GPT commitment, synchronization and read-back live here.
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(any(test, feature = "test-support", target_os = "linux"))]
 #[allow(
     clippy::too_many_lines,
     reason = "the held descriptor remains borrowed through one linear copy, layout, and profile transaction"

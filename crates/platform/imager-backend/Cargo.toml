@@ -61,6 +61,7 @@ uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../../session/install-profile-model" }
 workspace-hack = { version = "0.1" }
+tilo-paths = { path = "../../platform/tilo-paths" }
 
 [target.'cfg(unix)'.dependencies]
 tilo-files = { path = "../../platform/tilo-files" }
@@ -76,7 +77,6 @@ rusqlite = { version = "0.37.0", features = ["bundled"] }
 leveldb-sys = { version = "=2.0.9", features = ["snappy"], optional = true }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 tilo-install-helpers = { path = "../../system/install-helpers", optional = true }
-tilo-paths = { path = "../../platform/tilo-paths" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }

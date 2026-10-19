@@ -14,14 +14,12 @@ fn invalid() -> io::Error {
 /// or constructed from an app action's JSON. The private declaration preserves
 /// the selected authenticated release proof until its exact image is held.
 #[derive(Clone, Debug)]
-#[cfg(target_os = "linux")]
 pub(crate) struct ReviewedOriginalImage {
     #[cfg(all(target_os = "linux", feature = "installation"))]
     source: crate::model::Source,
     proof: ConsumerCapability,
     applications: Option<super::applications_admission::ConsumerCapability>,
 }
-#[cfg(target_os = "linux")]
 impl ReviewedOriginalImage {
     pub(crate) fn review(
         source: &crate::model::Source,

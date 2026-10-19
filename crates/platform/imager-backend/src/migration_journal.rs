@@ -114,7 +114,6 @@ pub fn persistence_result<T>(
         }
     })
 }
-#[cfg(any(target_os = "linux", test))]
 pub fn persistence_description(error: &io::Error) -> String {
     if let Some(failure) = error
         .get_ref()
