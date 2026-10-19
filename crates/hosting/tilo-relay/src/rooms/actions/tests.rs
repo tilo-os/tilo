@@ -581,3 +581,102 @@ async fn a_host_without_apps_answers_only_its_rooms_governance() {
         }
     );
 }
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions"
+    )
+)]
+async fn a_member_who_may_install_bots_asks_the_rooms_host_for_one_and_takes_it_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = view_read_relay(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms().unwrap();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let standup = json!({ "entry": "so.tilo.bots.standup", "version": "1.2.0" });
+
+    // An Editor by role alone is neither offered a bot nor runs the request.
+    assert!(
+        !offered(&host, workspace, &caller(&ada))
+            .await
+            .iter()
+            .any(|verb| verb == super::REQUEST_BOT)
+    );
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &caller(&ada),
+            request(&room, super::REQUEST_BOT, standup.clone()),
+        )
+        .await,
+        Err(ActionHostError::UnknownAction)
+    ));
+    assert!(rooms.bot_requests(&room).await.unwrap().is_empty());
+
+    // Let install bots, Ada asks the room's host for one: every member reads
+    // the request in the room's governance, and the host follows it.
+    grant(rooms, &room, &owner, &ada, governance::INSTALL_BOT).await;
+    assert!(
+        offered(&host, workspace, &caller(&ada))
+            .await
+            .iter()
+            .any(|verb| verb == super::REQUEST_BOT)
+    );
+    invoke(
+        &host,
+        workspace,
+        &caller(&ada),
+        request(&room, super::REQUEST_BOT, standup),
+    )
+    .await
+    .unwrap();
+    let requests = rooms.bot_requests(&room).await.unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].request.entry, "so.tilo.bots.standup");
+    assert_eq!(requests[0].request.version, "1.2.0");
+    assert_eq!(requests[0].requested_by, hex::encode(ada.user_public_key));
+
+    // Taking it back needs uninstalling bots, which the owner has.
+    let withdraw = json!({ "entry": "so.tilo.bots.standup" });
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &caller(&ada),
+            request(&room, super::WITHDRAW_BOT_REQUEST, withdraw.clone()),
+        )
+        .await,
+        Err(ActionHostError::UnknownAction)
+    ));
+    invoke(
+        &host,
+        workspace,
+        &caller(&owner),
+        request(&room, super::WITHDRAW_BOT_REQUEST, withdraw),
+    )
+    .await
+    .unwrap();
+    assert!(rooms.bot_requests(&room).await.unwrap().is_empty());
+
+    // A request names a directory entry and a version, nothing else.
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &caller(&owner),
+            request(
+                &room,
+                super::REQUEST_BOT,
+                json!({ "entry": "../standup", "version": "1.2.0" })
+            ),
+        )
+        .await,
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+    relay.shutdown().await;
+}
