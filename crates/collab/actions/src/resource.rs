@@ -2454,6 +2454,28 @@ mod tests {
         assert_eq!(sole(serde_json::json!({"n": 1})), None);
     }
 
+    /// The public parts constructor only names an address and carries the
+    /// caller's arguments. It does not resolve the resource, run the action
+    /// or mark the request as authorized; the host does all three.
+    #[test]
+    fn control_invocation_from_parts_is_an_inert_address_and_arguments() {
+        let arguments = serde_json::json!({"title": "Plan"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let invocation =
+            ControlInvocation::from_parts("notes.note:1", "edit-title", arguments.clone());
+        assert_eq!(
+            invocation.address,
+            ActionAddress::new("notes.note:1", "edit-title")
+        );
+        assert_eq!(invocation.arguments, arguments);
+        assert_eq!(
+            ActionAddress::parse(&invocation.address.encode()),
+            Some(invocation.address)
+        );
+    }
+
     #[test]
     fn continuation_keys_preserve_tuple_boundaries_and_clone_by_value() {
         let first = ContinuationKey::new("scope", [b"ab".as_slice(), b"c".as_slice()]);
