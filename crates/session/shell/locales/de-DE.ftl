@@ -89,8 +89,15 @@ display-identify-unnamed = Bildschirm { $number }
 
 # Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
 overview-windows-title = Fenster in diesem Arbeitsbereich
-overview-windows-description = Zuletzt verwendete zuerst. Links und Rechts wechseln zwischen ihnen, Enter öffnet eines. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
+overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
+overview-strips-title = Leisten in diesem Arbeitsbereich
+overview-strip-empty = Keine Fenster
+overview-strip-rename = Umbenennen
+overview-strip-move-up = Nach oben
+overview-strip-move-down = Nach unten
+overview-strip-move-failed = Diese Leiste lässt sich nicht verschieben
+overview-strip-rename-failed = Diese Leiste lässt sich nicht umbenennen
 
 # Feste Tastenkombinationen der Shell, wie Tastaturhilfe und Tastaturübersicht sie nennen
 shortcut-screenshot = Bildschirmfoto
@@ -2190,6 +2197,8 @@ search-action-strip-rename = Diese Leiste umbenennen
 search-action-strip-rename-subtitle = Der Leiste mit dem Fokus einen Namen geben
 search-action-strip-invalid-name = Gib einen Leistennamen mit 1 bis 48 Zeichen ohne Steuerzeichen ein.
 search-action-strip-rename-missing = Diese Leiste gibt es in diesem Arbeitsbereich nicht.
+search-action-strip-move = Leiste verschieben
+search-action-strip-move-subtitle = Eine Leiste dieses Arbeitsbereichs weiter nach oben oder unten setzen
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.
@@ -2931,6 +2940,7 @@ search-kw-workspace-previous = vorheriger arbeitsbereich, arbeitsbereich wechsel
 search-kw-workspace-next = nächster arbeitsbereich, arbeitsbereich wechseln, desktop wechseln
 search-kw-strip-create = neue leiste, leiste hinzufügen, zeile hinzufügen, leiste erstellen, streifen
 search-kw-strip-rename = leiste umbenennen, leiste benennen, leistenname, zeile benennen
+search-kw-strip-move = leiste verschieben, leisten ordnen, leiste nach oben, leiste nach unten, zeilen umsortieren
 search-kw-tab-previous = vorheriger tab, linker tab, zurück
 search-kw-tab-next = nächster tab, rechter tab, weiter
 search-kw-group-move-left = fenster verschieben, anordnen, links

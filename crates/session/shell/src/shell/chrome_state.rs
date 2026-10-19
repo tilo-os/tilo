@@ -2990,6 +2990,27 @@ impl ChromeState {
         Ok(())
     }
 
+    /// Move `strip` of the active workspace to just before `before`, or to
+    /// the bottom of the stack when `before` is `None`.
+    ///
+    /// # Errors
+    ///
+    /// The model's refusal: either strip is gone, or `strip` is another
+    /// device's.
+    pub fn move_strip(
+        &mut self,
+        strip: crate::shell::state::StripId,
+        before: Option<crate::shell::state::StripId>,
+    ) -> Result<(), String> {
+        let command = tilo_desktop_model::commands::DesktopCommand::MoveStrip {
+            strip: strip.raw(),
+            before: before.map(|id| id.raw()),
+        };
+        self.tree_mut().commit_strip_command(&command)?;
+        self.bump();
+        Ok(())
+    }
+
     /// The strip with focus in the active workspace: the stamped one, else
     /// the first.
     pub fn focused_strip_id(&self) -> Option<crate::shell::state::StripId> {

@@ -86,8 +86,15 @@ display-identify-unnamed = Display { $number }
 
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
-overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
+overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
 overview-window-move-failed = Can't move this window
+overview-strips-title = Strips in this workspace
+overview-strip-empty = No windows
+overview-strip-rename = Rename
+overview-strip-move-up = Move up
+overview-strip-move-down = Move down
+overview-strip-move-failed = Can't move this strip
+overview-strip-rename-failed = Can't rename this strip
 
 # Fixed shell chords, as the shortcut guide and the keyboard map name them
 shortcut-screenshot = Screenshot
@@ -2206,6 +2213,8 @@ search-action-strip-rename = Rename this strip
 search-action-strip-rename-subtitle = Give the focused strip a name
 search-action-strip-invalid-name = Enter a strip name of 1 to 48 characters without control characters.
 search-action-strip-rename-missing = There is no such strip in this workspace.
+search-action-strip-move = Move a strip
+search-action-strip-move-subtitle = Put a strip of this workspace higher or lower in its stack
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
@@ -2974,6 +2983,7 @@ search-kw-workspace-previous = previous workspace, switch workspace, back, deskt
 search-kw-workspace-next = next workspace, switch workspace, desktop
 search-kw-strip-create = new strip, add strip, add row, new lane, create strip
 search-kw-strip-rename = rename strip, name strip, strip name, label row
+search-kw-strip-move = move strip, reorder strips, strip up, strip down, rearrange rows
 search-kw-tab-previous = previous tab, left tab, back
 search-kw-tab-next = next tab, right tab, forward
 search-kw-group-move-left = move window, arrange, reorder, left
