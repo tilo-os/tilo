@@ -738,7 +738,7 @@ fn run_with_args_with_attachment(
     // before anything else can, in every mode that was handed one (live,
     // headless drives, captures); the app's store is that device store.
     #[cfg(feature = "native")]
-    let _ = tilo_content::ContentStore::device();
+    let _ = tilo_content_device::device();
     let args = parse_args_extended(
         raw_args,
         spec.allowed_flags,

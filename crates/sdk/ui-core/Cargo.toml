@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content-device", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # X11 windows (winit's X11 backend) and the X11 clipboard, for development
 # builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
 # `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
@@ -147,8 +147,11 @@ tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
-# build; the unix `native` build adds the launcher's device store below.
+# build.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+# The `native` build takes the launcher's content-store capability at launch
+# (`launch.rs`).
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device", optional = true }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
@@ -319,8 +322,6 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 
 [target.'cfg(unix)'.dependencies]
-# Takes the launcher's content-store capability at launch (`launch.rs`).
-tilo-content = { version = "0.1.0", path = "../../system/content", optional = true, features = ["device"] }
 # Session-bus client for `priority-contacts`; runs on the workspace's tokio.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 

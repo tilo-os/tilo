@@ -6,7 +6,7 @@
 //! cache sits in front of the daemon so content drawn every frame is not read over the socket
 //! every frame.
 //!
-//! The capability is one inherited descriptor, taken once per process: [`ContentStore::device`]
+//! The capability is one inherited descriptor, taken once per process: [`crate::device()`]
 //! hands out stores over that one connection.
 
 use std::collections::{BTreeMap, HashMap};
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
 
-use crate::{
+use tilo_content::{
     ContentBackend, ContentError, ContentReader, ContentState, ContentStore, Stored, Verifying,
     valid_hash,
 };

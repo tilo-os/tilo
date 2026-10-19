@@ -33,7 +33,7 @@ pub const CONSENT_HELPER_ARG: &str = "--device-consent";
 fn run<S: RuntimeServices>() -> io::Result<()> {
     // The app surfaces changes are decided against live in the content store
     // the apps this runtime hosts keep their content in.
-    let content = tilo_content::ContentStore::for_app();
+    let content = tilo_content_device::for_app();
     tilo_action_broker::decide_receipt_against_surfaces(move |_, hash| content.read(hash));
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     #[cfg(target_os = "macos")]

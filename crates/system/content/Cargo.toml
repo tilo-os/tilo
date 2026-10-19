@@ -9,15 +9,13 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-# Content in a local directory (`DirBackend`, `ContentStore::in_dir`, `ContentStore::for_app`).
+# Content in a local directory (`DirBackend`, `ContentStore::in_dir`, `ContentStore::local_for_app`).
 # Code that only names content (documents, codecs) turns it off and needs no file system.
-# `device` is not a default: it is a Tilo service client, which the native
-# runner (`tilo-ui/native`) and apps enable; on the web it adds nothing.
+# The device content store, a client of the filesystem daemon, is not here but in
+# `tilo-content-device`: this crate must stay below the daemon's protocol crates,
+# which the resource layer's stored types sit beneath.
 default = ["dir"]
 dir = ["dep:tilo-advisory-lock", "dep:tilo-clock", "dep:tilo-files", "dep:tilo-paths"]
-# The device content store through the launcher's capability (`ContentStore::device`), which
-# `ContentStore::for_app` prefers when the process was handed one. Unix only.
-device = ["dir", "dep:runtime-fs"]
 
 [dependencies]
 tilo-content-types = { version = "0.1.0", path = "../content-types" }
@@ -29,11 +27,6 @@ tracing.workspace = true
 # Where files have no native path (a browser page), content in the profile's app files.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths", optional = true }
-
-# The device store's client exists only where the launcher hands one over, so
-# an app selecting `device` still builds for the web, where it adds nothing.
-[target.'cfg(unix)'.dependencies]
-runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

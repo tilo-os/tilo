@@ -312,6 +312,7 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-content",
+ "tilo-content-device",
  "tilo-model-gateway",
  "tilo-test-env",
  "tilo-user-identity",
@@ -1443,8 +1444,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
- "tilo-automerge-fork",
  "tilo-files",
+ "tilo-resource",
  "url",
  "uuid",
  "workspace-hack",
@@ -2463,6 +2464,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-resource",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
@@ -16379,6 +16381,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-content",
+ "tilo-content-device",
  "tilo-feedback",
  "tilo-files",
  "tilo-history",
@@ -16929,6 +16932,7 @@ name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tilo-automerge-fork",
  "tilo-resource",
  "uuid",
  "workspace-hack",
@@ -16949,7 +16953,6 @@ name = "tilo-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "runtime-fs",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",
@@ -16966,6 +16969,16 @@ version = "0.1.0"
 dependencies = [
  "adblock",
  "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-content-device"
+version = "0.1.0"
+dependencies = [
+ "runtime-fs",
+ "tilo-content",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -17412,6 +17425,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-feedback-review",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -17551,6 +17565,7 @@ dependencies = [
  "tilo-clock",
  "tilo-cloud-files",
  "tilo-content",
+ "tilo-content-device",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-endpoint-reachability",
@@ -18582,6 +18597,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-resource",
  "uuid",
  "workspace-hack",
 ]
@@ -19075,6 +19091,7 @@ dependencies = [
  "tilo-capture",
  "tilo-clock",
  "tilo-content",
+ "tilo-content-device",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-dialogs",
@@ -19563,6 +19580,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-content-blocker",
+ "tilo-content-device",
  "tilo-cpu-raster",
  "tilo-desktop-model",
  "tilo-doc",

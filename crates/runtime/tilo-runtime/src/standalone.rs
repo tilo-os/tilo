@@ -860,7 +860,7 @@ impl tilo_identity_host::broker::PersonRecordKinds for AttachedSurfaces {
         {
             // Changes are decided against the surface their op names, read
             // from the content store as a package's is.
-            if let Err(error) = tilo_content::ContentStore::for_app().put(surface) {
+            if let Err(error) = tilo_content_device::for_app().put(surface) {
                 tracing::warn!(%error, app_id, "the development surface could not be stored");
                 return;
             }
