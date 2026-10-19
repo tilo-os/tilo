@@ -39,6 +39,8 @@ fn chrome_governance(id: &str) -> Option<&'static str> {
         "agent.remove" => roles::governance::REVOKE,
         "peer.invite" | "peer.invite.named" | "peer.connect" => roles::governance::INVITE,
         "workspace.publish" | "workspace.unpublish" => roles::governance::SETTINGS,
+        "bot.add" => roles::governance::INSTALL_BOT,
+        "bot.remove" => roles::governance::UNINSTALL_BOT,
         id if id.starts_with("invitation.") => roles::governance::INVITE,
         _ => return None,
     })

@@ -366,7 +366,14 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         .chain(item.remove_action());
     for action in actions {
         let spec = StoreEffect::package(action, item).bound();
-        let spec = if let Some((code, reason)) = item.unavailable_action(action) {
+        let spec = if action == ActionKind::AddBot {
+            // A bot is added by the workspace it runs in: the workspace's
+            // Add a bot is the door, which the Store's button prepares.
+            spec.unavailable(
+                "added_by_the_workspace",
+                ui::i18n!("store-bot-add-elsewhere"),
+            )
+        } else if let Some((code, reason)) = item.unavailable_action(action) {
             spec.unavailable(code, reason)
         } else {
             needing_flatpak(spec, action, flatpak_available, error)
@@ -3432,8 +3439,10 @@ mod tests {
         );
         assert!(visible.contains("When a record changes"));
         assert!(visible.contains("so.tilo.discord"));
-        assert!(visible.contains("May post under other names and avatars. Always labelled BOT."));
-        assert!(visible.contains("Add to a room"));
+        assert!(
+            visible.contains("May post under other names and avatars. Always tagged as a bot.")
+        );
+        assert!(visible.contains("Add to this workspace"));
         assert!(
             !visible.contains("\"Open\""),
             "a bot is never opened as an app"

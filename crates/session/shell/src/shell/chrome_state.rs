@@ -1420,6 +1420,25 @@ impl ChromeState {
         });
     }
 
+    /// Ask the active workspace for a bot, or take the request back. The
+    /// room's governance decides whether this person may; its change brings
+    /// the bot list along.
+    pub fn ask_active_workspace_for_bot(&mut self, ask: crate::shell::network::BotAsk) -> bool {
+        let Some(room) = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
+            return false;
+        };
+        self.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::AskForBot {
+            room,
+            ask,
+        });
+        true
+    }
+
     pub(crate) fn complete_peer_sync_request(
         &mut self,
         request_id: u64,

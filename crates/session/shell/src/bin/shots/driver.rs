@@ -1270,6 +1270,48 @@ impl ShellDriver {
         }
     }
 
+    /// The room's bots as its governance would list them: Standup, which a
+    /// member asked the room's host for and which is here now, and a
+    /// bridge the room's operator runs.
+    fn seed_room_bots_for_shots(&self) {
+        use shell::shell::state::Collaborator;
+        let standup_device = "5d".repeat(32);
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        let st = handle.borrow();
+        let mut tree = st.tree_mut();
+        if let Some(workspace) = tree.desktop.active_workspace_mut() {
+            workspace.bots = vec![
+                tilo_desktop_model::RoomBot {
+                    name: "Standup".into(),
+                    installation: Some("1b7e3c2a-58d4-4f0e-9a61-2c8d0b5e7f13".into()),
+                    device: Some(standup_device.clone()),
+                    entry: Some("so.tilo.bots.standup".into()),
+                    version: Some("1.2.0".into()),
+                    added_by: owner,
+                    requested: true,
+                    paused: false,
+                },
+                tilo_desktop_model::RoomBot {
+                    name: "Discord bridge".into(),
+                    installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
+                    device: Some("6e".repeat(32)),
+                    entry: None,
+                    version: None,
+                    added_by: "operator".into(),
+                    requested: false,
+                    paused: true,
+                },
+            ];
+            workspace
+                .collaborators
+                .retain(|row| row.id != standup_device);
+            workspace
+                .collaborators
+                .push(Collaborator::new(standup_device, "Standup").with_session(11));
+        }
+    }
+
     pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
         self.host_mut().seed_inferred_status_for_shots(text);
         let actor = {
@@ -2764,6 +2806,7 @@ impl ShellDriver {
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
         self.seed_agent_member_for_shots();
+        self.seed_room_bots_for_shots();
         self.with_chrome(|st| {
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Agents;
@@ -2817,6 +2860,7 @@ impl ShellDriver {
     fn scene_collaborators(&mut self) {
         self.seed_shared_room();
         self.seed_agent_member_for_shots();
+        self.seed_room_bots_for_shots();
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();

@@ -49,6 +49,9 @@ pub fn effect(effect: &StoreEffect) -> Option<ActionBinding<()>> {
 
 /// A control carrying out `action` on `item`.
 pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>> {
+    if action == ActionKind::AddBot {
+        return add_bot(item);
+    }
     let effect = StoreEffect::package(action, item);
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
@@ -57,6 +60,22 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
         self::effect(&effect)
     }
 }
+
+/// A control preparing the workspace's Add a bot for `item`, a directory
+/// bot: the system search opens on it with the bot filled in, and the person
+/// confirms it there. Bots run in workspaces, so the workspace adds them.
+pub fn add_bot(item: &StoreItem) -> Option<ActionBinding<()>> {
+    let bot = item.bot.as_ref()?;
+    Some(ui::search::open_search_binding(
+        &ui::search::SearchRequest::offering(
+            ADD_BOT_ACTION,
+            [("entry", item.id.clone()), ("version", bot.version.clone())],
+        ),
+    ))
+}
+
+/// The system's action that asks a workspace's host to run a bot.
+const ADD_BOT_ACTION: &str = "bot.add";
 
 /// A control starting a report about `item`.
 pub fn draft_report(item: &StoreItem) -> Option<ActionBinding<()>> {

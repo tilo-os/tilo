@@ -682,6 +682,11 @@ pub struct ShellOverlayHost {
     /// callback) lets the last step perform the same strict
     /// `ActionArgs::bind_json` as scripts.
     param_flow: Option<palette_flow::ParamFlow>,
+    /// A system action an app prepared for the person (the Store's Add to
+    /// this workspace), with the label the palette was opened on: picking
+    /// that row starts it with the app's arguments, and the person answers
+    /// the rest, its confirmation among them.
+    palette_offer: Option<(ui::search::SearchOffer, String)>,
     /// A file row whose other actions the palette is listing (Alt+Enter),
     /// with the query to give back.
     secondary_flow: Option<(crate::shell::search::SearchResult, String)>,
@@ -1349,6 +1354,11 @@ pub enum PeerSyncAction {
     },
     /// Ask whether the workspace `room` is public, for its settings.
     ReadPublication { room: crate::shell::state::RoomId },
+    /// Ask the workspace `room` for a bot, or take the request back.
+    AskForBot {
+        room: crate::shell::state::RoomId,
+        ask: crate::shell::network::BotAsk,
+    },
     /// Open "Pair a new device" and make its link.
     PairDevice,
     /// User invoked `/connect`. Opens the token-input prompt
@@ -1366,6 +1376,9 @@ pub enum PeerSyncAction {
         request: PeerSyncRequest,
     },
 }
+
+/// The Store's list of bots, which room settings' Add a bot opens.
+const STORE_BOTS_LINK: &str = "tilo-store:bots";
 
 /// Row id of one of a file's other actions (Alt+Enter).
 const SECONDARY_PREFIX: &str = "secondary:";
@@ -2703,6 +2716,7 @@ impl ShellOverlayHost {
             app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
             param_flow: None,
+            palette_offer: None,
             secondary_flow: None,
             expanded_kinds: Vec::new(),
             more_rows: Vec::new(),
@@ -4773,6 +4787,18 @@ impl ShellOverlayHost {
                     state.bump();
                 }
             }
+            // The room's governance answers with the bot list itself, as
+            // its change reaches this device; only a refusal is said here.
+            (PeerSyncRequest::AskForBot { ask, .. }, Err(error)) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let title = match ask {
+                        crate::shell::network::BotAsk::Add { .. } => t("bots-add-failed"),
+                        crate::shell::network::BotAsk::Remove { .. } => t("bots-remove-failed"),
+                    };
+                    chrome.borrow_mut().push_warning_notification(title, &error);
+                }
+            }
+            (PeerSyncRequest::AskForBot { .. }, Ok(_)) => {}
             (PeerSyncRequest::ReportWorkspace { .. }, outcome) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
@@ -5003,6 +5029,10 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::Publish { room, listing } => {
                     self.dispatch_directory(PeerSyncRequest::Publish { room, listing });
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
+                }
+                PeerSyncAction::AskForBot { room, ask } => {
+                    self.dispatch_directory(PeerSyncRequest::AskForBot { room, ask });
                     self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::ReadPublication { room } => {
@@ -9536,6 +9566,19 @@ impl ShellOverlayHost {
         chrome
             .borrow_mut()
             .focus_tab(workspace, strip, group, source_tab);
+        if let Some(offer) = &request.offer
+            && let Some(label) =
+                crate::shell::search::providers::actions::app_offerable_label(&offer.action)
+        {
+            if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
+                self.open_palette_with_scope(SearchScope::All);
+            }
+            self.palette.set_query(&label);
+            self.palette_offer = Some((offer.clone(), label));
+            self.last_search_query = "\0app-offer\0".into();
+            self.palette_visible = true;
+            return;
+        }
         let resource_scope = request.resource_scope().and_then(|scope| {
             let state = chrome.borrow();
             let app_id = state.tab_app_id(strip, group, source_tab)?;
@@ -9573,6 +9616,8 @@ impl ShellOverlayHost {
     /// typed query. `ActiveApp` degrades to `All` when no tab is focused.
     fn open_palette_with_scope(&mut self, scope: crate::shell::chrome_state::SearchScope) {
         use crate::shell::chrome_state::SearchScope;
+        // An app's prepared action belongs to the search it opened.
+        self.palette_offer = None;
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
                 .chrome
@@ -11018,6 +11063,24 @@ impl ShellOverlayHost {
                 values.insert(inline.name, inline.value);
             } else if let serde_json::Value::String(text) = inline.value {
                 prefill = Some((inline.name, text));
+            }
+        }
+        // The row an app prepared, picked from the search it opened: its
+        // arguments, never the person's confirmation, which they give here.
+        if let Some((offer, label)) = self.palette_offer.take()
+            && result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+            && result.id == offer.action
+            && query == label
+        {
+            for (name, value) in offer.arguments {
+                if name != "confirm"
+                    && result
+                        .params
+                        .iter()
+                        .any(|param| param.name.as_ref() == name)
+                {
+                    values.insert(name, serde_json::Value::String(value));
+                }
             }
         }
         let pending = palette_flow::missing_params(&result.params, &values);
@@ -19605,6 +19668,33 @@ impl ShellOverlayHost {
                     self.palette
                         .set_query(&crate::shell::i18n::t("search-action-agent-invite"));
                     self.last_search_query = "\0agent-onboarding\0".to_string();
+                }
+            }
+            // Bots are found where apps are: the Store's bots, whose page
+            // adds one to this workspace.
+            WorkspaceSettingsOutcome::AddBot => {
+                if let Some(chrome) = self.chrome.clone() {
+                    if let Err(error) =
+                        crate::shell::uri_open::open_in_workspace(STORE_BOTS_LINK, &chrome)
+                    {
+                        chrome.borrow_mut().push_warning_notification(
+                            crate::shell::i18n::t("bots-add-failed"),
+                            error.user_message(),
+                        );
+                    } else {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                }
+            }
+            WorkspaceSettingsOutcome::RemoveBot(entry) => {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.ask_active_workspace_for_bot(crate::shell::network::BotAsk::Remove {
+                        entry,
+                    });
+                    state.bump();
                 }
             }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
