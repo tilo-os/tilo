@@ -940,8 +940,7 @@ pub struct ChatApp {
     /// The picture tiles the last frame drew: whose camera or screen, and
     /// their size in device pixels. What the call is asked to deliver, each
     /// at the layer that fits its tile.
-    pub(crate) picture_tiles:
-        std::cell::RefCell<Vec<(String, ui::native_media::PictureSource, (f64, f64))>>,
+    pub(crate) picture_tiles: std::cell::RefCell<Vec<PictureTile>>,
     /// A video call was started: the camera turns on once the call is live.
     pub(crate) camera_on_live: bool,
 
@@ -955,6 +954,10 @@ pub struct ChatApp {
     pub(crate) host_focused: bool,
     pub(crate) external_services: bool,
 }
+
+/// A picture tile a frame drew: whose camera or screen, and its size in
+/// device pixels.
+pub(crate) type PictureTile = (String, ui::native_media::PictureSource, (f64, f64));
 
 /// Native external services are explicit; browser peer transport is installed later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

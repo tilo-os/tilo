@@ -338,30 +338,17 @@ impl ChatApp {
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
                 return Err("Browser navigation requires the owning host".into());
             }
-            ChatEffect::JoinCall { channel } => {
-                let channel_id = channel.clone();
-                self.native_voice_command(&channel, Command::Join { channel_id })?;
-            }
-            ChatEffect::LeaveCall { channel } => {
-                self.native_voice_command(&channel, Command::Leave)?;
-            }
-            ChatEffect::Mute { channel } => {
-                self.native_voice_command(&channel, Command::SetMuted { muted: true })?;
-            }
-            ChatEffect::Unmute { channel } => {
-                self.native_voice_command(&channel, Command::SetMuted { muted: false })?;
-            }
-            ChatEffect::CameraOn { channel } => {
-                self.native_voice_command(&channel, Command::SetCamera { on: true })?;
-            }
-            ChatEffect::CameraOff { channel } => {
-                self.native_voice_command(&channel, Command::SetCamera { on: false })?;
-            }
-            ChatEffect::ShareScreen { channel } => {
-                self.native_voice_command(&channel, Command::SetScreen { on: true })?;
-            }
-            ChatEffect::StopSharingScreen { channel } => {
-                self.native_voice_command(&channel, Command::SetScreen { on: false })?;
+            effect @ (ChatEffect::JoinCall { .. }
+            | ChatEffect::LeaveCall { .. }
+            | ChatEffect::Mute { .. }
+            | ChatEffect::Unmute { .. }
+            | ChatEffect::CameraOn { .. }
+            | ChatEffect::CameraOff { .. }
+            | ChatEffect::ShareScreen { .. }
+            | ChatEffect::StopSharingScreen { .. }) => {
+                if let Some((channel, command)) = voice_command_of(effect) {
+                    self.native_voice_command(&channel, command)?;
+                }
             }
             ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
             ChatEffect::StartCall => self.start_call(None)?,
@@ -1117,6 +1104,25 @@ fn opening(anchor: &str) -> Option<ChatEffect> {
         "feedback" => ChatEffect::RevealMessage {
             message: crate::feedback::message_id(&id),
         },
+        _ => return None,
+    })
+}
+
+/// The call command a call-control effect asks of the channel it names;
+/// none for any other effect.
+fn voice_command_of(effect: ChatEffect) -> Option<(String, Command)> {
+    Some(match effect {
+        ChatEffect::JoinCall { channel } => {
+            let channel_id = channel.clone();
+            (channel, Command::Join { channel_id })
+        }
+        ChatEffect::LeaveCall { channel } => (channel, Command::Leave),
+        ChatEffect::Mute { channel } => (channel, Command::SetMuted { muted: true }),
+        ChatEffect::Unmute { channel } => (channel, Command::SetMuted { muted: false }),
+        ChatEffect::CameraOn { channel } => (channel, Command::SetCamera { on: true }),
+        ChatEffect::CameraOff { channel } => (channel, Command::SetCamera { on: false }),
+        ChatEffect::ShareScreen { channel } => (channel, Command::SetScreen { on: true }),
+        ChatEffect::StopSharingScreen { channel } => (channel, Command::SetScreen { on: false }),
         _ => return None,
     })
 }
