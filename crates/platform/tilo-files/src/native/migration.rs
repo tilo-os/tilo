@@ -130,7 +130,7 @@ impl Format {
                 oldest: self.oldest,
             });
         }
-        let first = usize::try_from(stored - self.oldest).unwrap_or(usize::MAX);
+        let first = usize::try_from(stored.saturating_sub(self.oldest)).unwrap_or(usize::MAX);
         for (offset, step) in self.steps.iter().enumerate().skip(first) {
             let from = self
                 .oldest
@@ -190,6 +190,10 @@ impl Format {
 ///
 /// When the format is not whole, has no step from the previous version, or
 /// the step or `reads` refuses.
+#[allow(
+    clippy::panic,
+    reason = "an assertion other crates' tests call; failing is its whole answer"
+)]
 pub fn assert_step_reads_previous(format: &Format, previous: &[u8], reads: impl Fn(&[u8])) {
     assert!(
         format.is_whole(),
@@ -202,7 +206,7 @@ pub fn assert_step_reads_previous(format: &Format, previous: &[u8], reads: impl 
         format.name
     );
     let migrated = format
-        .migrate(previous.to_vec(), format.version - 1)
+        .migrate(previous.to_vec(), format.version.saturating_sub(1))
         .unwrap_or_else(|error| panic!("{error}"));
     reads(&migrated);
 }
@@ -211,6 +215,10 @@ pub fn assert_step_reads_previous(format: &Format, previous: &[u8], reads: impl 
 mod tests {
     use super::*;
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "a migration step's signature: steps may refuse"
+    )]
     fn add_tail(mut bytes: Vec<u8>) -> Result<Vec<u8>, String> {
         bytes.push(b'+');
         Ok(bytes)

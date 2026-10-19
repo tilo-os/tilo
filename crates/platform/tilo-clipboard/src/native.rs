@@ -181,7 +181,7 @@ impl ClipboardBackend for NativeClipboard {
         if local_only(target) {
             return self.local.text(target);
         }
-        if let Some(text) = system::text(target) {
+        if let SystemText::Read(text) = system::text(target) {
             return text;
         }
         warn_fallback_once("paste");
@@ -225,6 +225,16 @@ impl ClipboardBackend for NativeClipboard {
     }
 }
 
+/// What reading the non-Wayland system clipboard found.
+enum SystemText {
+    /// There is no system clipboard to read here.
+    Unavailable,
+    /// The clipboard was read: its text, or `None` when it holds none. A
+    /// Linux build without `x11` has no such clipboard to read.
+    #[cfg_attr(all(target_os = "linux", not(feature = "x11")), allow(dead_code))]
+    Read(Option<String>),
+}
+
 /// The system clipboard of a process that is not a Wayland client, through
 /// `arboard`: X11 (with the `x11` feature), `NSPasteboard`, the Windows
 /// clipboard.
@@ -254,10 +264,12 @@ mod system {
         set_arboard_secret_text(&mut handle, text)
     }
 
-    /// `None` when there is no system clipboard to read; else what it holds.
-    pub(super) fn text(target: ClipboardTarget) -> Option<Option<String>> {
-        let mut handle = arboard_clipboard()?.lock().ok()?;
-        Some(arboard_text(&mut handle, target))
+    /// What the system clipboard holds, or that there is none to read.
+    pub(super) fn text(target: ClipboardTarget) -> super::SystemText {
+        let Some(mut handle) = arboard_clipboard().and_then(|cb| cb.lock().ok()) else {
+            return super::SystemText::Unavailable;
+        };
+        super::SystemText::Read(arboard_text(&mut handle, target))
     }
 
     /// `rgba` is already checked against the dimensions.
@@ -413,8 +425,8 @@ mod system {
     }
 
     /// No system clipboard to read.
-    pub(super) fn text(_target: ClipboardTarget) -> Option<Option<String>> {
-        None
+    pub(super) fn text(_target: ClipboardTarget) -> super::SystemText {
+        super::SystemText::Unavailable
     }
 
     pub(super) fn set_image(_width: usize, _height: usize, _rgba: &[u8]) -> bool {

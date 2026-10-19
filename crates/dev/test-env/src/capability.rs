@@ -214,7 +214,7 @@ pub fn bubblewrap() -> std::io::Result<()> {
 #[cfg(target_os = "linux")]
 fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
     let mut child = std::process::Command::new(program).args(args).spawn()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let started = std::time::Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
             return if status.success() {
@@ -225,7 +225,7 @@ fn namespace(program: &str, args: &[&str]) -> std::io::Result<()> {
                 )))
             };
         }
-        if std::time::Instant::now() >= deadline {
+        if started.elapsed() >= std::time::Duration::from_secs(10) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::new(

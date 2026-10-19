@@ -254,7 +254,8 @@ pub(crate) fn decode(phrase: &str) -> Result<Vec<u8>, MnemonicError> {
     }
     let mut bits = Vec::with_capacity(words.len().saturating_mul(BITS_PER_WORD));
     for (at, word) in words.iter().enumerate() {
-        let index = index_of(word).ok_or(MnemonicError::UnknownWord(at.saturating_add(1)))?;
+        let index =
+            index_of(word).ok_or_else(|| MnemonicError::UnknownWord(at.saturating_add(1)))?;
         bits.extend(
             (0..WORD_SHIFTS)
                 .rev()

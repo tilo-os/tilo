@@ -2,7 +2,7 @@
 //! service-session vocabulary and the engine helper's launch boundary.
 //!
 //! It has no profile capture and no optional features. The shared app
-//! runtime (`libruntime_dylib.so`) links this crate; capture, with SQLite,
+//! runtime (`libruntime_dylib.so`) links this crate; capture, with `SQLite`,
 //! stays in `browser-continuity`, linked only by the apps that capture.
 
 pub mod engine_host;
