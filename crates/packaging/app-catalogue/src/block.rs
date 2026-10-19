@@ -122,12 +122,12 @@ impl BlockList {
     #[must_use]
     pub fn load_from(person: Option<&Path>, device: Option<&Path>) -> Self {
         let mut list = Self::empty();
-        if let Some(file) = person.and_then(|path| read_json::<PersonFile>(path)) {
+        if let Some(file) = person.and_then(read_json::<PersonFile>) {
             for app in &file.blocked {
                 list.add(app, Blocker::Person);
             }
         }
-        if let Some(file) = device.and_then(|path| read_json::<PolicyFile>(path)) {
+        if let Some(file) = device.and_then(read_json::<PolicyFile>) {
             let admin = file.admin.trim().to_owned();
             for app in &file.blocked {
                 list.add(
