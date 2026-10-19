@@ -83,6 +83,34 @@ class ClippyCheckCacheTests(unittest.TestCase):
             receipt = json.loads((tree / "target/ci/clippy-head-inputs.json").read_text())
             self.assertEqual(receipt["cargo_exit_code"], 101)
 
+    def test_a_package_tested_with_extra_features_is_also_checked_as_it_ships(self) -> None:
+        # The Imager's tests and lints cover the installation; its default
+        # build, the Tilo app, is checked on its own too, tests included.
+        with tempfile.TemporaryDirectory() as folder:
+            tree = Path(folder)
+            (tree / "tools/ci").mkdir(parents=True)
+            shutil.copy(SCRIPT, tree / "tools/ci/clippy-check.sh")
+            shutil.copy(ROOT / "tools/ci/package_features.py", tree / "tools/ci/package_features.py")
+            bin_dir = tree / "bin"
+            bin_dir.mkdir()
+            calls = tree / "clippy-calls"
+            (bin_dir / "cargo").write_text(
+                "#!/usr/bin/env bash\n"
+                f'[ "$1" = clippy ] && echo "$*" >> "{calls}"\n'
+                "exit 0\n")
+            (bin_dir / "git").write_text("#!/usr/bin/env bash\necho head\n")
+            for tool in ("cargo", "git"):
+                (bin_dir / tool).chmod(0o755)
+            env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+            subprocess.run(["bash", str(tree / "tools/ci/clippy-check.sh"), "-p", "imager"],
+                           env=env, check=True, capture_output=True)
+            runs = calls.read_text().splitlines()
+            self.assertEqual(len(runs), 2, runs)
+            self.assertIn("--features imager/installation", runs[0])
+            self.assertIn("--all-targets", runs[1])
+            self.assertIn("-p imager", runs[1])
+            self.assertNotIn("--features", runs[1])
+
 
 if __name__ == "__main__":
     unittest.main()
