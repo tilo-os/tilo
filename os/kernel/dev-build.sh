@@ -124,6 +124,8 @@ run() {
     -v "$cache/out:/work/out" \
     -v "$repo/os/kernel/config-fragments:/work/kernel-config:ro" \
     -v "$repo/os/kernel/patches:/work/kernel-patches:ro" \
+    -v "$repo/os/kernel/patches.toml:/work/kernel-patches.toml:ro" \
+    -v "$repo/os/kernel/check-patches.py:/work/check-patches.py:ro" \
     -v "$repo/os/kernel/build-support.sh:/work/kernel-build-support.sh:ro" \
     -v "$repo/os/kernel/cc-wrapper.sh:/work/kernel-cc-wrapper.sh:ro" \
     -v "$repo/os/kernel/check-signing-identity.py:/work/check-signing-identity.py:ro" \
