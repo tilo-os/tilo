@@ -45,18 +45,7 @@ fn acl(path: &Path, name: &'static std::ffi::CStr) -> Vec<u8> {
 }
 
 fn set_acl(path: &Path, value: &str) {
-    let result = Command::new("setfacl")
-        .arg("-m")
-        .arg(value)
-        .arg("--")
-        .arg(path)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    crate::portable_transfer::acl::fixture::modify(path, value);
 }
 
 fn dataset(home: &Path) -> PathBuf {

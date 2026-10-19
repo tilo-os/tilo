@@ -288,6 +288,174 @@ pub(crate) fn set_test_acl(path: &std::path::Path, default: bool, text: &[u8]) -
     Ok(())
 }
 
+/// Kernel POSIX ACLs for tests, written and read as raw extended attributes
+/// so fixtures need neither the acl command-line tools nor the code under test.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use std::{
+        io,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+        path::Path,
+    };
+
+    const ACCESS: &std::ffi::CStr = c"system.posix_acl_access";
+    const DEFAULT: &std::ffi::CStr = c"system.posix_acl_default";
+    const USER_OBJ: u16 = 0x01;
+    const GROUP_OBJ: u16 = 0x04;
+    const MASK: u16 = 0x10;
+    const OTHER: u16 = 0x20;
+
+    fn c_path(path: &Path) -> std::ffi::CString {
+        std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    /// The raw attribute, or `None` when the file has none.
+    fn raw(path: &Path, name: &std::ffi::CStr) -> Option<Vec<u8>> {
+        let path = c_path(path);
+        let mut bytes = vec![0u8; 65536];
+        // SAFETY: live C strings and a writable buffer of the given length.
+        let length = unsafe {
+            libc::getxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        if length < 0 {
+            let error = io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::ENODATA),
+                "read ACL: {error}"
+            );
+            return None;
+        }
+        bytes.truncate(usize::try_from(length).unwrap());
+        Some(bytes)
+    }
+
+    fn entries(bytes: &[u8]) -> Vec<(u16, u16, u32)> {
+        assert_eq!(bytes[..4], 2u32.to_le_bytes(), "ACL version");
+        bytes[4..]
+            .chunks_exact(8)
+            .map(|e| {
+                (
+                    u16::from_le_bytes([e[0], e[1]]),
+                    u16::from_le_bytes([e[2], e[3]]),
+                    u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+                )
+            })
+            .collect()
+    }
+
+    fn write(path: &Path, name: &std::ffi::CStr, mut entries: Vec<(u16, u16, u32)>) {
+        entries.sort_unstable();
+        let mut bytes = 2u32.to_le_bytes().to_vec();
+        for (tag, permissions, id) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(permissions.to_le_bytes());
+            bytes.extend(id.to_le_bytes());
+        }
+        let path = c_path(path);
+        // SAFETY: live C strings and the encoded ACL.
+        let result = unsafe {
+            libc::setxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                0,
+            )
+        };
+        assert_eq!(result, 0, "write ACL: {}", io::Error::last_os_error());
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode()
+    }
+
+    /// `setfacl -m` for owner, group, mask and other entries: `spec` is a
+    /// comma-separated list such as `u::rwx,g::r-x,m::---,o::---,d:m::r-x`.
+    pub(crate) fn modify(path: &Path, spec: &str) {
+        let mut access = raw(path, ACCESS).map_or_else(
+            || {
+                let mode = mode(path);
+                let bits = |shift: u32| u16::try_from((mode >> shift) & 7).unwrap();
+                vec![
+                    (USER_OBJ, bits(6), u32::MAX),
+                    (GROUP_OBJ, bits(3), u32::MAX),
+                    (OTHER, bits(0), u32::MAX),
+                ]
+            },
+            |bytes| entries(&bytes),
+        );
+        let mut default = raw(path, DEFAULT).map_or_else(Vec::new, |bytes| entries(&bytes));
+        let (mut access_changed, mut default_changed) = (false, false);
+        for item in spec.split(',') {
+            let (target, item) = if let Some(item) = item.strip_prefix("d:") {
+                default_changed = true;
+                (&mut default, item)
+            } else {
+                access_changed = true;
+                (&mut access, item)
+            };
+            let (tag, permissions) = item.split_once("::").expect("unnamed ACL entry");
+            let tag = match tag {
+                "u" => USER_OBJ,
+                "g" => GROUP_OBJ,
+                "m" => MASK,
+                "o" => OTHER,
+                other => panic!("unsupported ACL entry {other}"),
+            };
+            let bits = permissions.as_bytes();
+            assert_eq!(bits.len(), 3, "ACL permissions {permissions}");
+            let value = u16::from(bits[0] == b'r') * 4
+                + u16::from(bits[1] == b'w') * 2
+                + u16::from(bits[2] == b'x');
+            target.retain(|&(existing, _, _)| existing != tag);
+            target.push((tag, value, u32::MAX));
+        }
+        if access_changed {
+            write(path, ACCESS, access);
+        }
+        if default_changed {
+            write(path, DEFAULT, default);
+        }
+    }
+
+    /// `setfacl -b -k`: the file keeps only its owner, group and other
+    /// permissions, the group's being its ACL group entry.
+    pub(crate) fn remove(path: &Path) {
+        let cpath = c_path(path);
+        if let Some(bytes) = raw(path, ACCESS) {
+            let group = entries(&bytes)
+                .into_iter()
+                .find(|&(tag, _, _)| tag == GROUP_OBJ)
+                .map_or(0, |(_, permissions, _)| u32::from(permissions));
+            // SAFETY: live C strings.
+            assert_eq!(
+                unsafe { libc::removexattr(cpath.as_ptr(), ACCESS.as_ptr()) },
+                0
+            );
+            let mode = mode(path) & !0o070 | group << 3;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        if raw(path, DEFAULT).is_some() {
+            // SAFETY: live C strings.
+            assert_eq!(
+                unsafe { libc::removexattr(cpath.as_ptr(), DEFAULT.as_ptr()) },
+                0
+            );
+        }
+    }
+
+    /// What `getfacl` reports: the permission bits and both raw ACLs.
+    pub(crate) fn state(path: &Path) -> (u32, Option<Vec<u8>>, Option<Vec<u8>>) {
+        (mode(path) & 0o7777, raw(path, ACCESS), raw(path, DEFAULT))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,15 +496,10 @@ mod tests {
         let target = temp.path().join("target");
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&target).unwrap();
-        let status = std::process::Command::new("/usr/bin/setfacl")
-            .args([
-                "-m",
-                "u::rwx,g::r-x,m::r-x,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
-            ])
-            .arg(&source)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        fixture::modify(
+            &source,
+            "u::rwx,g::r-x,m::r-x,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
+        );
         let source_file = File::open(&source).unwrap();
         let target_file = File::open(&target).unwrap();
         copy(
@@ -346,15 +509,7 @@ mod tests {
             source_file.metadata().unwrap().mode() & 0o777,
         )
         .unwrap();
-        let acl = |path: &Path| {
-            let result = std::process::Command::new("/usr/bin/getfacl")
-                .args(["-cpn"])
-                .arg(path)
-                .output()
-                .unwrap();
-            assert!(result.status.success());
-            result.stdout
-        };
+        let acl = fixture::state;
         assert_eq!(acl(&source), acl(&target));
         copy(
             &source_file,
@@ -363,14 +518,7 @@ mod tests {
             source_file.metadata().unwrap().mode() & 0o777,
         )
         .unwrap();
-        assert!(
-            std::process::Command::new("/usr/bin/setfacl")
-                .args(["-m", "m::---"])
-                .arg(&target)
-                .status()
-                .unwrap()
-                .success()
-        );
+        fixture::modify(&target, "m::---");
         assert!(
             copy(
                 &source_file,
@@ -380,14 +528,7 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            std::process::Command::new("/usr/bin/setfacl")
-                .args(["-b", "-k"])
-                .arg(&source)
-                .status()
-                .unwrap()
-                .success()
-        );
+        fixture::remove(&source);
         copy(
             &source_file,
             &target_file,
@@ -397,7 +538,6 @@ mod tests {
         .unwrap();
         assert_eq!(acl(&source), acl(&target));
     }
-    use std::path::Path;
 }
 
 #[cfg(test)]
@@ -414,16 +554,9 @@ mod private_root_tests {
             std::fs::create_dir(path).unwrap();
         }
         for path in [&paths[0], &paths[2]] {
-            assert!(
-                std::process::Command::new("/usr/bin/setfacl")
-                    .args([
-                        "-m",
-                        "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---"
-                    ])
-                    .arg(path)
-                    .status()
-                    .unwrap()
-                    .success()
+            fixture::modify(
+                path,
+                "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
             );
         }
         let source = File::open(&paths[0]).unwrap();
@@ -433,15 +566,7 @@ mod private_root_tests {
         copy(&source, &target, false, 0o700).unwrap();
         verify_private_root(&target, &original).unwrap();
         copy(&source, &target, true, 0o700).unwrap();
-        let get = |path: &std::path::Path| {
-            let value = std::process::Command::new("/usr/bin/getfacl")
-                .args(["-cpn"])
-                .arg(path)
-                .output()
-                .unwrap();
-            assert!(value.status.success());
-            value.stdout
-        };
+        let get = fixture::state;
         assert_eq!(get(&paths[1]), get(&paths[2]));
         assert_eq!(target.metadata().unwrap().mode() & 0o777, 0o700);
         assert_eq!(

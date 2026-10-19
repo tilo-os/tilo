@@ -93,21 +93,13 @@ fn portable_home_roundtrip_preserves_data_and_never_stages_plaintext() {
         },
         0
     );
-    assert!(
-        std::process::Command::new("/usr/bin/setfacl")
-            .args(["-m", "u::rwx,g::r-x,m::r-x,o::---"])
-            .arg(source.join("script"))
-            .status()
-            .unwrap()
-            .success()
+    crate::portable_transfer::acl::fixture::modify(
+        &source.join("script"),
+        "u::rwx,g::r-x,m::r-x,o::---",
     );
-    assert!(
-        std::process::Command::new("/usr/bin/setfacl")
-            .args(["-m", "d:u::rwx,d:g::r-x,d:m::r-x,d:o::---"])
-            .arg(source.join(".var/app"))
-            .status()
-            .unwrap()
-            .success()
+    crate::portable_transfer::acl::fixture::modify(
+        &source.join(".var/app"),
+        "d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
     );
     let native_name = std::ffi::OsString::from_vec(vec![b'n', 0xff]);
     fs::write(source.join(&native_name), b"native filename").unwrap();
@@ -115,16 +107,9 @@ fn portable_home_roundtrip_preserves_data_and_never_stages_plaintext() {
     std::os::unix::fs::symlink("../../outside", source.join("literal-link")).unwrap();
     let _runtime_socket =
         std::os::unix::net::UnixListener::bind(source.join("agent.sock")).unwrap();
-    assert!(
-        std::process::Command::new("/usr/bin/setfacl")
-            .args([
-                "-m",
-                "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---"
-            ])
-            .arg(&source)
-            .status()
-            .unwrap()
-            .success()
+    crate::portable_transfer::acl::fixture::modify(
+        &source,
+        "u::rwx,g::r-x,m::r-x,o::r-x,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
     );
     let package = root.join("migration.sealed");
     let cancel = AtomicBool::new(false);
@@ -164,30 +149,16 @@ fn portable_home_roundtrip_preserves_data_and_never_stages_plaintext() {
         )
         .unwrap();
     for relative in ["script", ".var/app", ".var/app/account"] {
-        let acl = |path: &Path| {
-            let output = std::process::Command::new("/usr/bin/getfacl")
-                .args(["-cpn"])
-                .arg(path)
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-            output.stdout
-        };
-        assert_eq!(acl(&source.join(relative)), acl(&tree.root.join(relative)));
+        assert_eq!(
+            crate::portable_transfer::acl::fixture::state(&source.join(relative)),
+            crate::portable_transfer::acl::fixture::state(&tree.root.join(relative))
+        );
     }
     assert_eq!(
         fs::metadata(&tree.root).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    let default_acl = |path: &Path| {
-        let output = std::process::Command::new("/usr/bin/getfacl")
-            .args(["-cpdn"])
-            .arg(path)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        output.stdout
-    };
+    let default_acl = |path: &Path| crate::portable_transfer::acl::fixture::state(path).2;
     assert_eq!(default_acl(&source), default_acl(&tree.root));
     assert_eq!(tree.purpose, Purpose::Home);
     assert!(tree.info.entries >= 6);
