@@ -251,6 +251,7 @@ impl Mounted {
         self.code
             .app
             .surface_frame(&LocalSurface, &mut ui::vello::Scene::new());
+        super::cold_code::assert_no_refused_action(&self.code.app);
         self.code.app.refresh_semantic_tree();
     }
 

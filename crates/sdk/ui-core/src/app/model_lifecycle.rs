@@ -95,6 +95,14 @@ impl super::App {
         self.native_input_snapshot()
     }
 
+    /// Why the session action host last refused one of this window's
+    /// invocations outright, if it has: a refused action never runs, so a
+    /// fixture waiting for its effect fails on this at once.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled_refused_action_for_test(&self) -> Option<&str> {
+        self.actions.refused_broker_receipt.as_deref()
+    }
+
     /// Independently sample the existing owner and read gates for diagnosis.
     /// These observations never admit a mutation or acknowledge a capture.
     /// A missing owner or refused guard is reported as an unavailable merge phase.
