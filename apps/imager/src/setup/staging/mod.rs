@@ -30,7 +30,7 @@ pub mod record;
 #[cfg(any(windows, test))]
 pub mod windows;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "installation"))]
 pub(crate) mod fake;
 
 /// Every start and size is aligned to this many bytes.

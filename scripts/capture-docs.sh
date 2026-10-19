@@ -37,7 +37,7 @@ out="$(mkdir -p "$out" && cd "$out" && pwd)"
 mkdir -p "$out/imager" "$out/onboarding"
 
 if ((build)); then
-  cargo build --release -p imager --bin imager
+  cargo build --release -p imager --bin imager --features installation
   cargo build --release -p shell --example onboarding_shots
 fi
 

@@ -523,7 +523,7 @@ fn run_job_file_bound(
             }
         },
         {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", feature = "installation"))]
             {
                 crate::setup::portable_home_media::payload_capacity_for_free_bytes
             }
@@ -534,6 +534,10 @@ fn run_job_file_bound(
                         "Migration data provisioning requires Linux",
                     ))
                 }
+            }
+            #[cfg(all(target_os = "linux", not(feature = "installation")))]
+            {
+                |_| Err(installation_medium_refused())
             }
         },
         || {
@@ -593,7 +597,11 @@ struct AppWriteSetup<'a> {
 }
 impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     fn output_preflight(&self) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(feature = "installation")))]
+        if self.req.offline_layout.is_some() {
+            return Err(installation_medium_refused());
+        }
+        #[cfg(all(target_os = "linux", feature = "installation"))]
         if let Some(layout) = &self.req.offline_layout {
             return self
                 .authenticated_caller
@@ -658,7 +666,11 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     }
 
     fn provision_after_write(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(feature = "installation")))]
+        if self.req.offline_layout.is_some() {
+            return Err(installation_medium_refused());
+        }
+        #[cfg(all(target_os = "linux", feature = "installation"))]
         if let Some(pending) = &self.req.offline_layout {
             return self
                 .authenticated_caller
@@ -1003,7 +1015,11 @@ pub fn spawn_job(
 }
 
 fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(feature = "installation")))]
+    if req.offline_layout.is_some() {
+        return Err(installation_medium_refused());
+    }
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     if let Some(pending) = &req.offline_layout {
         imager_backend::write::pending::validate_pending_source_disks(
             &req.target,
@@ -1023,6 +1039,12 @@ fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
+    #[cfg(not(feature = "installation"))]
+    if req.offline_layout.is_some() {
+        let _ = device;
+        return Err(installation_medium_refused());
+    }
+    #[cfg(feature = "installation")]
     if let Some(pending) = &req.offline_layout {
         imager_backend::write::pending::validate_pending_descriptor(
             &req.target,
@@ -1037,6 +1059,17 @@ fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io
         )?;
     }
     Ok(())
+}
+
+/// A request that lays out a prepared installation medium (original files
+/// carried to the new system) needs the installation; the Tilo app's writer
+/// writes images and refuses it before touching the drive.
+#[cfg(all(target_os = "linux", not(feature = "installation")))]
+fn installation_medium_refused() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Preparing an installation medium needs the Tilo Installer download",
+    )
 }
 
 #[cfg(test)]

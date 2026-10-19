@@ -85,7 +85,7 @@ jq -e --arg sha "$manifest_sha256" --arg arch "$arch" \
   "$work/catalog"/tilo-installer-catalog-v*.json >/dev/null || die "merged catalog does not name the bundle"
 python3 "$repo/apps/imager/packaging/release-catalog.py" "$work/catalog" --copy-to "$catalog"
 
-(cd "$repo" && cargo build --release --locked -p imager --bin imager)
+(cd "$repo" && cargo build --release --locked -p imager --bin imager --features installation)
 binary="$repo/target/release/imager"
 [ -x "$binary" ] || die "cargo did not produce $binary"
 # The embedded catalog is plain JSON inside the binary; prove it is this one.

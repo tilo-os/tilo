@@ -290,6 +290,7 @@ impl ImagerApp {
     pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
     }
+    #[cfg(feature = "installation")]
     pub(crate) fn with_prepared_media(
         mut self,
         prepared: Option<std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>>,
@@ -304,6 +305,7 @@ impl ImagerApp {
         self
     }
 
+    #[cfg(feature = "installation")]
     pub(crate) fn with_original_source(
         mut self,
         source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
@@ -312,6 +314,7 @@ impl ImagerApp {
         self
     }
 
+    #[cfg(feature = "installation")]
     pub(crate) fn with_preparation_navigation(
         mut self,
         navigation: crate::setup::journey::prepared_media::Navigation,
@@ -336,11 +339,11 @@ impl ImagerApp {
             self.goto(Step::Source);
         }
     }
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "installation"))]
     pub(crate) fn start_changed_home_fixture(&mut self, root: PathBuf) {
         self.prepared_delivery.start_changed_home_fixture(root);
     }
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "installation"))]
     pub(crate) fn review_media_inputs_fixture(
         &mut self,
         image: PathBuf,
@@ -353,7 +356,7 @@ impl ImagerApp {
         self.goto(Step::Drive);
         Ok(Effected::done())
     }
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, target_os = "linux", feature = "installation"))]
     pub(crate) fn validate_prepared_source_fixture(&self) -> std::io::Result<()> {
         self.prepared_delivery
             .artifact()
@@ -2571,7 +2574,7 @@ impl ImagerApp {
     ) -> EffectAnswer {
         match effect {
             ImagerEffect::CompleteOfflineMigration { device, password } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(all(target_os = "linux", feature = "installation"))]
                 {
                     if self
                         .write_preflight
@@ -2646,7 +2649,7 @@ impl ImagerApp {
                         },
                     ))
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(all(target_os = "linux", feature = "installation")))]
                 {
                     let _ = (device, password);
                     Err(crate::setup::strings::t(
@@ -4083,7 +4086,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn begin_write_refuses_actual_protected_preparation_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
@@ -4190,7 +4193,7 @@ mod tests {
         assert!(app.job_control.is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn begin_write_refuses_actual_selected_apps_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
@@ -4228,7 +4231,7 @@ mod tests {
         assert!(app.prepared_delivery.artifact().is_some());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn begin_write_refuses_actual_home_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
@@ -4299,7 +4302,7 @@ mod tests {
         assert!(app.job_control.is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     fn guided_profile_media_fixture(
         root: &std::path::Path,
     ) -> (
@@ -4346,7 +4349,7 @@ mod tests {
         (prepared, public)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn prepared_guided_drive_continues_with_authenticated_profile_without_customize() {
         use crate::setup::prepared_setup;
@@ -5219,7 +5222,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn original_preparation_uses_headless_action_and_blocks_unprepared_write() {
         use std::os::unix::fs::PermissionsExt;
