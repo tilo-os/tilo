@@ -421,8 +421,10 @@ impl Participation {
         let now = tilo_clock::try_unix_now_ns().ok_or("clock precedes the epoch")?;
         let mut state = self.state.lock();
         let grant = state.grant.as_ref().ok_or("no grant")?;
-        let route = (grant.directions.publish && grant.publication.is_some())
-            || (grant.directions.subscribe && !grant.subscriptions.is_empty());
+        // A listener hears the call, whoever is in it now: alone in it, its
+        // carrier is up for the first person who joins.
+        let route =
+            (grant.directions.publish && grant.publication.is_some()) || grant.directions.subscribe;
         if !route || grant.expires_at_ns <= now {
             return Ok(None);
         }
@@ -451,7 +453,8 @@ impl Participation {
     }
 
     /// Whether the current carrier's scope is no longer the one the current
-    /// grant admits (the roster or directions changed).
+    /// grant admits (its directions changed). Who is in the call is not part
+    /// of a carrier's scope: people joining and leaving never replace it.
     #[must_use]
     pub fn stale(&self) -> bool {
         let state = self.state.lock();
@@ -579,6 +582,10 @@ impl Drop for Participation {
 }
 
 impl ClientAuthority for Participation {
+    fn revision(&self) -> u64 {
+        Participation::revision(self)
+    }
+
     fn current(&self, scope: &ConnectionScope, direction: Direction, name: &str) -> bool {
         let carrier = self.state.lock().carrier.clone();
         if carrier.as_ref() != Some(scope) {
@@ -590,8 +597,14 @@ impl ClientAuthority for Participation {
             }
             match direction {
                 Direction::Publish if scope.publication.as_deref() == Some(name) => Ok(()),
+                // The call itself: the carrier may hear it.
+                Direction::Subscribe if scope.subscription_prefix.as_deref() == Some(name) => {
+                    Ok(())
+                }
+                // One participant: heard while the current grant names them.
                 Direction::Subscribe
-                    if scope.subscriptions.iter().any(|allowed| allowed == name) =>
+                    if scope.subscription_prefix.is_some()
+                        && grant.subscriptions.iter().any(|allowed| allowed == name) =>
                 {
                     Ok(())
                 }
@@ -614,12 +627,18 @@ fn scope(grant: &VoiceGrant, generation: u64) -> ConnectionScope {
             .publish
             .then(|| grant.publication.clone())
             .flatten(),
-        subscriptions: if grant.directions.subscribe {
-            grant.subscriptions.clone()
-        } else {
-            Vec::new()
-        },
+        subscription_prefix: grant.directions.subscribe.then(|| call_prefix(&grant.call)),
     }
+}
+
+/// The namespace component every publication of `call` lies beneath.
+fn call_prefix(call: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    call.iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
 }
 
 /// Whether carrier `scope` is still the one `grant` admits.

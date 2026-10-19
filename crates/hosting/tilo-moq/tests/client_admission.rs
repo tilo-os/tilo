@@ -1,6 +1,7 @@
 //! The native client reports Live only after the relay admitted the session
 //! (the relay answers the admission preface only after host admission), and
-//! hears a replacement publisher on the same namespace.
+//! hears a publisher that leaves and returns on the same carrier, without
+//! being replaced itself.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -25,7 +26,11 @@ use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Sta
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
 
 fn name(byte: char) -> String {
-    format!("{}/{}", "a".repeat(64), byte.to_string().repeat(64))
+    format!("{}/{}", call(), byte.to_string().repeat(64))
+}
+
+fn call() -> String {
+    "a".repeat(64)
 }
 
 struct Permit {
@@ -76,7 +81,7 @@ async fn observe(admit: bool) -> Vec<Status> {
                 owner_epoch: [1; 32],
                 carrier_generation: 1,
                 publication: Some(name('b')),
-                subscriptions: vec![name('c')],
+                subscription_prefix: Some(call()),
             },
             authorization: b"proof".to_vec(),
         },
@@ -128,10 +133,10 @@ impl RelayAuthority for Roles {
 }
 
 fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
-    let (publication, subscriptions) = if proof == b"pub-b" {
-        (Some(name('b')), vec![])
+    let (publication, subscription_prefix) = if proof == b"pub-b" {
+        (Some(name('b')), None)
     } else {
-        (Some(name('c')), vec![name('b')])
+        (Some(name('c')), Some(call()))
     };
     Client::start(
         Connection {
@@ -141,7 +146,7 @@ fn start(relay: &LoopbackRelay, proof: &[u8], generation: u64) -> Client {
                 owner_epoch: [1; 32],
                 carrier_generation: generation,
                 publication,
-                subscriptions,
+                subscription_prefix,
             },
             authorization: proof.to_vec(),
         },
@@ -183,7 +188,7 @@ async fn received(client: &Client) -> tilo_moq::client::ReceivedOpus {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_replacement_publisher_is_heard_from_its_first_object() {
+async fn a_publisher_that_leaves_and_returns_is_heard_again_on_the_same_carrier() {
     let relay = LoopbackRelay::start(Arc::new(Roles)).unwrap();
     let listener = start(&relay, b"sub", 1);
     let publisher = start(&relay, b"pub-b", 1);
@@ -191,31 +196,47 @@ async fn a_replacement_publisher_is_heard_from_its_first_object() {
     until_live(&publisher).await;
     publisher.enable_publication().unwrap();
     publisher.try_send(opus(0)).unwrap();
-    assert_eq!(received(&listener).await.object.timestamp, 0);
+    let first = received(&listener).await;
+    assert_eq!(first.object.timestamp, 0);
+    assert_eq!(first.publisher.incarnation, 1);
+    let revision = listener.publications_revision();
     publisher.close();
+    // The publisher's leaving ends only its publication: the listener's
+    // carrier stays up for everyone else.
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
-        while listener.status() == Status::Live {
+        while listener.publications_revision() == revision {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
     .await
-    .expect("publisher loss observed");
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    .expect("the publication's end observed");
+    assert_eq!(
+        listener.status(),
+        Status::Live,
+        "the listener is not replaced"
+    );
     let replacement = start(&relay, b"pub-b", 2);
-    let fresh = start(&relay, b"sub", 2);
     until_live(&replacement).await;
-    until_live(&fresh).await;
     replacement.enable_publication().unwrap();
-    replacement.try_send(opus(10 * 960)).unwrap();
     let object = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
-            if let Some(value) = fresh.try_recv() {
+            // Its sequence restarts at zero: a new incarnation, heard from
+            // its first object.
+            let _ = replacement.try_send(opus(10 * 960));
+            if let Some(value) = listener.try_recv() {
                 return value;
             }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("replacement not heard: relay {:?}", relay.counters()));
+    .unwrap_or_else(|_| {
+        panic!(
+            "returning publisher not heard: relay {:?}",
+            relay.counters()
+        )
+    });
     assert_eq!(object.object.timestamp, 10 * 960);
+    assert!(object.publisher.incarnation >= 2, "a new incarnation");
+    assert_eq!(listener.status(), Status::Live);
 }

@@ -13,7 +13,7 @@ use crate::portal::{
     PortalCaller, PromptQueueHandle,
 };
 use runtime_collab::native_media::{
-    Command, Input, Inventory, Issue, Request, Roster, Snapshot, State,
+    Command, Input, Inventory, Issue, Request, Roster, Snapshot, State, WATCH_HOLD,
 };
 use std::collections::BTreeMap;
 use std::sync::{
@@ -51,6 +51,12 @@ pub(crate) trait MediaFactory: Send + Sync {
     /// knows none.
     fn rosters(&self, _target: CallTarget) -> Rosters {
         Box::pin(async { Vec::new() })
+    }
+    /// Woken whenever a room's call list may have changed, so a voice
+    /// channel shows a join or leave at once. A factory without a room has
+    /// none.
+    fn rosters_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
     }
 }
 
@@ -119,6 +125,16 @@ pub(crate) trait MediaSession: Send {
     fn pause_capture(&mut self);
     fn stop_capture(&mut self);
     fn close(&mut self);
+    /// Advances whenever who the call hears talking changes. Cheap: read on
+    /// every tick.
+    fn speaking_revision(&self) -> u64 {
+        0
+    }
+    /// The people the call hears talking now (person ids, sorted, distinct),
+    /// this device's person among them while its microphone is heard.
+    fn speaking(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 type Backend = Arc<Mutex<Box<dyn MediaSession>>>;
@@ -185,6 +201,18 @@ struct Entry {
     microphone_on_join: bool,
     /// The call went live with the microphone wanted: ask for it.
     unmute_due: bool,
+    /// What the last tick saw of the call, to wake watchers when it changes.
+    seen: Option<Seen>,
+}
+/// What a watcher of a call sees change between ticks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Seen {
+    state: State,
+    muted: bool,
+    issue: Option<Issue>,
+    capturing: bool,
+    asking: bool,
+    speaking: u64,
 }
 #[derive(Default)]
 struct Calls {
@@ -211,6 +239,8 @@ struct Shared {
     preferences: CallPreferences,
     /// The rosters of each caller's record, as last heard.
     rosters: Mutex<BTreeMap<(String, String, String), Vec<Roster>>>,
+    /// Woken whenever a status may have changed: what a `Watch` waits on.
+    changed: tokio::sync::Notify,
 }
 #[derive(Clone)]
 pub(crate) struct NativeMediaService(Arc<Shared>);
@@ -232,6 +262,7 @@ impl NativeMediaService {
             output_disabled: AtomicBool::new(false),
             preferences: CallPreferences::default(),
             rosters: Mutex::new(BTreeMap::new()),
+            changed: tokio::sync::Notify::new(),
         });
         let weak = Arc::downgrade(&shared);
         let listener: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -302,7 +333,7 @@ impl NativeMediaService {
                 .calls
                 .lock()
                 .map_err(|_| "native media unavailable")?;
-            if !matches!(command, Command::Status) {
+            if !matches!(command, Command::Status | Command::Watch { .. }) {
                 let floor = calls.floors.get(&key).copied().unwrap_or(0);
                 if intent <= floor {
                     return Err("stale native media intent".into());
@@ -354,7 +385,7 @@ impl NativeMediaService {
         }
         match command {
             Command::Join { channel_id } => self.join(caller, channel_id, intent),
-            Command::Status => {
+            Command::Status | Command::Watch { .. } => {
                 let calls = self
                     .0
                     .calls
@@ -474,6 +505,7 @@ impl NativeMediaService {
                 worker: None,
                 microphone_on_join: !self.0.preferences.join_muted(),
                 unmute_due: false,
+                seen: None,
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -597,6 +629,65 @@ impl NativeMediaService {
         Ok(self.0.snapshot(entry))
     }
 }
+impl NativeMediaService {
+    /// Answer once the caller's status differs from the one at `seen`, or
+    /// after [`WATCH_HOLD`]: who joins, leaves and talks reaches the app the
+    /// moment it happens, with one question outstanding instead of a poll.
+    fn watch(
+        &self,
+        caller: Caller,
+        seen: u64,
+        route: (String, String, String),
+    ) -> NativeMediaFuture {
+        let service = self.clone();
+        let rosters_changed = self
+            .0
+            .factory
+            .get()
+            .and_then(|factory| factory.rosters_changed());
+        Box::pin(async move {
+            let key = caller.key();
+            let start = tokio::time::Instant::now();
+            let hold = start.checked_add(WATCH_HOLD).unwrap_or(start);
+            let mut refresh = true;
+            loop {
+                // Both wakers are registered before the status is read, so
+                // a change between the read and the wait is not missed.
+                let changed = service.0.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let signal = rosters_changed
+                    .as_deref()
+                    .map(tokio::sync::Notify::notified);
+                tokio::pin!(signal);
+                if let Some(signal) = signal.as_mut().as_pin_mut() {
+                    signal.enable();
+                }
+                let rosters = async {
+                    match signal.as_mut().as_pin_mut() {
+                        Some(signal) => signal.await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::pin!(rosters);
+                let snapshot =
+                    service.command_for(caller.clone(), Request::new(Command::Status))?;
+                let snapshot = service.0.finish(snapshot, &key, &route, refresh);
+                refresh = false;
+                if snapshot.revision != seen || tokio::time::Instant::now() >= hold {
+                    return Ok(snapshot);
+                }
+                tokio::select! {
+                    () = &mut changed => {}
+                    // The room's calls changed: ask for this record's rosters,
+                    // whose arrival wakes `changed`.
+                    () = &mut rosters => refresh = true,
+                    () = tokio::time::sleep_until(hold) => {}
+                }
+            }
+        })
+    }
+}
 impl NativeMediaServices for NativeMediaService {
     fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture {
         // Device stop and generation invalidation happen in this synchronous
@@ -608,26 +699,26 @@ impl NativeMediaServices for NativeMediaService {
             Command::SetMuted { muted: false } => "unmute",
             Command::SelectInput { .. } => "select_input",
             Command::Status => "status",
+            Command::Watch { .. } => "watch",
         };
         let route = (
             context.workspace_id().to_owned(),
             context.app_id().to_owned(),
             context.record_id().to_owned(),
         );
+        if let (true, Command::Watch { revision }) = (request.dispatch_valid(), &request.command) {
+            return self.watch(context.into(), *revision, route);
+        }
+        let caller: Caller = context.into();
+        let key = caller.key();
         let result = if request.dispatch_valid() {
-            self.command_for(context.into(), request)
+            self.command_for(caller, request)
         } else {
             Err("invalid native media command".into())
         };
-        // What a voice channel shows, joined or not: the rosters last heard
-        // for this record, refreshed for the next reply.
-        let result = result.map(|mut snapshot| {
-            if snapshot.state != State::Unavailable {
-                snapshot.rosters = self.0.rosters_of(&route);
-                self.0.refresh_rosters(route);
-            }
-            snapshot
-        });
+        let result = result.map(|snapshot| self.0.finish(snapshot, &key, &route, true));
+        // An effect may have changed what a watcher of this call sees.
+        self.0.changed.notify_waiters();
         if let Err(error) = &result {
             let category = match error.as_str() {
                 "local call not ready" => "call_not_ready",
@@ -657,6 +748,37 @@ impl NativeMediaServices for NativeMediaService {
 }
 
 impl Shared {
+    /// Complete a reply: what a voice channel shows, joined or not (the
+    /// rosters last heard for this record, asked again when `refresh`), who
+    /// the caller's call hears talking, and the revision a `Watch` waits
+    /// past.
+    fn finish(
+        self: &Arc<Self>,
+        mut snapshot: Snapshot,
+        key: &Key,
+        route: &(String, String, String),
+        refresh: bool,
+    ) -> Snapshot {
+        if snapshot.state != State::Unavailable {
+            snapshot.rosters = self.rosters_of(route);
+            if refresh {
+                self.refresh_rosters(route.clone());
+            }
+        }
+        if snapshot.state == State::Live {
+            let backend = self.calls.lock().ok().and_then(|calls| {
+                calls
+                    .entries
+                    .get(key)
+                    .and_then(|entry| entry.backend.clone())
+            });
+            snapshot.speaking = backend
+                .and_then(|backend| backend.lock().ok().map(|backend| backend.speaking()))
+                .unwrap_or_default();
+        }
+        snapshot.revision = revision_of(&snapshot);
+        snapshot
+    }
     fn rosters_of(&self, route: &(String, String, String)) -> Vec<Roster> {
         self.rosters
             .lock_recover()
@@ -681,7 +803,10 @@ impl Shared {
         runtime.spawn(async move {
             let rosters = rosters.await;
             if let Some(shared) = weak.upgrade() {
-                shared.rosters.lock_recover().insert(route, rosters);
+                let before = shared.rosters.lock_recover().insert(route, rosters.clone());
+                if before.as_ref() != Some(&rosters) {
+                    shared.changed.notify_waiters();
+                }
             }
         });
     }
@@ -1087,12 +1212,35 @@ impl Shared {
                     _ => self.stop_capture(entry),
                 }
                 entry.snapshot.state = state;
+                let speaking = entry
+                    .backend
+                    .as_ref()
+                    .and_then(|backend| {
+                        backend
+                            .lock()
+                            .ok()
+                            .map(|backend| backend.speaking_revision())
+                    })
+                    .unwrap_or_default();
+                let seen = Some(Seen {
+                    state,
+                    muted: entry.snapshot.muted,
+                    issue: entry.snapshot.issue,
+                    capturing: entry.capture.is_some(),
+                    asking: entry.pending.is_some(),
+                    speaking,
+                });
+                if entry.seen != seen {
+                    entry.seen = seen;
+                    self.changed.notify_waiters();
+                }
                 true
             }
             Err(issue) => {
                 self.stop_entry(entry);
                 entry.snapshot.state = State::Ended;
                 entry.snapshot.issue = Some(issue);
+                self.changed.notify_waiters();
                 false
             }
         }
@@ -1160,6 +1308,19 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
         drop(shared);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+/// The revision of `snapshot`'s content: it changes whenever anything a
+/// watcher sees changes. Never zero, which a watcher sends before it has any.
+fn revision_of(snapshot: &Snapshot) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(&Snapshot {
+        revision: 0,
+        ..snapshot.clone()
+    })
+    .unwrap_or_default()
+    .hash(&mut hasher);
+    hasher.finish().max(1)
 }
 fn idle() -> Snapshot {
     Snapshot {

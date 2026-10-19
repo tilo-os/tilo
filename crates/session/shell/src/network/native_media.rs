@@ -56,6 +56,8 @@ enum Operation {
     Rosters {
         owner: NativeWorkspaceOwner,
         target: CallTarget,
+        /// Woken whenever the room's call list changes from now on.
+        signal: Arc<tokio::sync::Notify>,
     },
 }
 enum Reply {

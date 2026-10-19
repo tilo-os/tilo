@@ -137,7 +137,11 @@ pub(super) async fn handle_voice(
         Envelope::VoiceCalls { .. } => Some(Envelope::VoiceCallList {
             workspace_id,
             result: match &rooms {
-                Some((rooms, room)) => rooms.voice_calls(room, peer).await,
+                Some((rooms, room)) => {
+                    rooms
+                        .voice_calls(room, peer, session.outbound.clone())
+                        .await
+                }
                 None => Err(refusal.into()),
             },
         }),

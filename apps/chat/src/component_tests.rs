@@ -51,10 +51,10 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
             ui::collaboration::CollabRequest::NativeMediaCommand {
                 request_id,
                 command,
-            } if matches!(command.command, Command::Status) => Some(request_id),
+            } if matches!(command.command, Command::Watch { .. }) => Some(request_id),
             _ => None,
         })
-        .expect("the portable Chat surface polls its real media host");
+        .expect("the portable Chat surface watches its real media host");
     let mut idle = Snapshot::unavailable();
     idle.state = State::Idle;
     idle.issue = None;

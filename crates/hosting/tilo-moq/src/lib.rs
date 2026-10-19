@@ -1,7 +1,8 @@
-//! Native `MoQ` adapters for Tilo voice and live presence: the tilo-voice/1
-//! object profile and, behind `relay`, `moq-lite` relays and clients over
+//! Native `MoQ` adapters for Tilo calls and live presence: the tilo-voice/1
+//! and tilo-video/1 object profiles and, behind `relay`, `moq-lite` relays and clients over
 //! WebTransport (see [`carrier`] for the session layout).
 
+pub mod video;
 pub mod voice;
 
 #[cfg(feature = "tls")]

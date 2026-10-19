@@ -8,7 +8,7 @@ fn connection() -> Connection {
             owner_epoch: [1; 32],
             carrier_generation: 1,
             publication: Some(format!("{}/{}", "01".repeat(32), "02".repeat(32))),
-            subscriptions: vec![],
+            subscription_prefix: None,
         },
         authorization: vec![1],
     }
@@ -37,14 +37,31 @@ fn inert_connection_validates_raw_endpoint_and_closed_voice_scope_only() {
         connection.scope.publication = Some(name.into());
         assert!(validate(&connection).is_err());
     }
+    // The carrier hears the call its publication is in, and nothing else.
     let mut altered = connection();
-    altered
-        .scope
-        .subscriptions
-        .push(altered.scope.publication.clone().unwrap());
-    assert!(validate(&altered).is_err());
-    altered.scope.subscriptions = vec![format!("{}/{}", "03".repeat(32), "04".repeat(32))];
-    assert!(validate(&altered).is_err());
+    altered.scope.subscription_prefix = Some("01".repeat(32));
+    assert!(validate(&altered).is_ok());
+    altered.scope.publication = None;
+    assert!(
+        validate(&altered).is_ok(),
+        "a listener without a publication"
+    );
+    for prefix in [
+        "03".repeat(32),
+        "0".repeat(64),
+        "01".repeat(31),
+        "AB".repeat(32),
+    ] {
+        let mut altered = connection();
+        altered.scope.subscription_prefix = Some(prefix.clone());
+        assert!(validate(&altered).is_err(), "{prefix}");
+    }
+    altered = connection();
+    altered.scope.publication = None;
+    assert!(
+        validate(&altered).is_err(),
+        "a carrier that neither speaks nor hears"
+    );
     altered = connection();
     altered.authorization = vec![1; crate::relay::MAX_AUTHORIZATION_BYTES + 1];
     assert!(validate(&altered).is_err());
@@ -151,10 +168,21 @@ fn live_shared() -> Shared {
             track: None,
             groups: VecDeque::new(),
             received: BTreeMap::new(),
+            reading: BTreeMap::from([(NAME.to_owned(), 1)]),
+            reading_revision: 1,
+            pictures_out: BTreeMap::new(),
+            pictures_revision: 0,
+            shown: BTreeMap::new(),
+            pictures_in: BTreeMap::new(),
             counters: Counters::default(),
         }),
     }
 }
+
+const READING: Reading<'static> = Reading {
+    name: NAME,
+    incarnation: 1,
+};
 
 #[tokio::test]
 async fn a_two_second_dtx_pause_counts_no_dropped_frames_on_either_carrier_form() {
@@ -174,7 +202,7 @@ async fn a_two_second_dtx_pause_counts_no_dropped_frames_on_either_carrier_form(
     for (sequence, frame, grouped) in sent {
         assert!(deliver(
             &shared,
-            NAME,
+            READING,
             sequence / voice::FRAMES_PER_GROUP,
             grouped,
             object(sequence, frame),
@@ -194,7 +222,7 @@ async fn a_grouped_frame_past_its_read_budget_is_counted_once() {
     for sequence in 10..14 {
         assert!(deliver(
             &shared,
-            NAME,
+            READING,
             2,
             true,
             object(sequence, sequence),
@@ -204,7 +232,7 @@ async fn a_grouped_frame_past_its_read_budget_is_counted_once() {
     // Frame 14 arrives after its group's budget; frame 15 opens the next
     // group. The late frame is one drop, not also a gap before frame 15.
     assert!(drop_late(&shared, &object(14, 14), &last));
-    assert!(deliver(&shared, NAME, 3, true, object(15, 15), &last));
+    assert!(deliver(&shared, READING, 3, true, object(15, 15), &last));
     let counters = shared.state.lock().unwrap().counters;
     assert_eq!(counters.received, 5);
     assert_eq!(counters.late_dropped, 1);
@@ -250,7 +278,7 @@ async fn a_new_group_keeps_the_previous_unexpired_tail() {
         .await
         .unwrap();
     let last = Mutex::new(None);
-    let receiving = receive_groups(&shared, NAME, subscriber, &last);
+    let receiving = receive_groups(&shared, READING, subscriber, &last);
     tokio::pin!(receiving);
     let mut received = Vec::new();
     let mut next_group = 0_u64;
@@ -318,4 +346,27 @@ async fn a_new_group_keeps_the_previous_unexpired_tail() {
     assert_eq!(counters.late_dropped, 0);
     assert_eq!(counters.duplicate_dropped, 0);
     assert_eq!(counters.capacity_dropped, 0);
+}
+
+#[tokio::test]
+async fn a_publication_no_longer_read_delivers_nothing_more() {
+    let shared = live_shared();
+    let last = Mutex::new(None);
+    assert!(deliver(&shared, READING, 0, true, object(0, 0), &last));
+    // Its publisher left and came back: the carrier reads it afresh.
+    shared
+        .state
+        .lock()
+        .unwrap()
+        .reading
+        .insert(NAME.to_owned(), 2);
+    assert!(
+        !deliver(&shared, READING, 0, true, object(1, 1), &last),
+        "the earlier incarnation's reader stops"
+    );
+    let queued: Vec<_> = shared.state.lock().unwrap().received[NAME]
+        .iter()
+        .map(|frame| frame.publisher.incarnation)
+        .collect();
+    assert_eq!(queued, [1]);
 }

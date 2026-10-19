@@ -1,6 +1,6 @@
 //! Bounded control lane on the same admitted channel, independent of document RPCs.
 use super::{CollabEvent, InboundBridge};
-use runtime_collab::native_media::{Command, Request, Snapshot};
+use runtime_collab::native_media::{Command, Request, Snapshot, WATCH_HOLD};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -11,6 +11,8 @@ use tokio::sync::Notify;
 const MAX_PENDING: usize = 8;
 const MAX_ROUTES: usize = 16;
 const DEADLINE: Duration = Duration::from_secs(2);
+/// A watch is held by the service up to [`WATCH_HOLD`]; past this it is lost.
+const WATCH_DEADLINE: Duration = WATCH_HOLD.saturating_add(DEADLINE);
 #[derive(Default)]
 struct RouteFloor {
     intent: u64,
@@ -81,7 +83,7 @@ impl Sender {
             request.command,
             Command::Leave | Command::SetMuted { muted: true }
         );
-        let effect = !matches!(request.command, Command::Status);
+        let effect = !matches!(request.command, Command::Status | Command::Watch { .. });
         let Ok(mut queue) = self.0.queue.lock() else {
             return false;
         };
@@ -370,14 +372,20 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                     );
                     continue;
                 }
+                // A held watch has its own lane: a status read or an effect
+                // never cancels it, and a newer watch replaces it.
+                let watch = matches!(job.request.command, Command::Watch { .. });
                 let task_key = (
                     job.route.clone(),
                     if job.priority {
                         2
+                    } else if watch {
+                        3
                     } else {
                         u8::from(job.request.intent != 0)
                     },
                 );
+                let deadline = if watch { WATCH_DEADLINE } else { DEADLINE };
                 if job.priority
                     && let Some(old) = tasks.0.remove(&(job.route.clone(), 1))
                 {
@@ -403,7 +411,7 @@ pub(super) fn start(receiver: Receiver, routes: Routes) -> Worker {
                 let task = tokio::task::spawn_local(async move {
                     let _pending = pending;
                     let result =
-                        tokio::time::timeout(DEADLINE, channel.native_media_command(&job.request))
+                        tokio::time::timeout(deadline, channel.native_media_command(&job.request))
                             .await
                             .map_err(|_| "native media command timed out".to_string())
                             .and_then(|result| {

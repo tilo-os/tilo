@@ -23,6 +23,8 @@ pub(crate) struct Factory {
     owner: NativeWorkspaceOwner,
     devices: Arc<devices::Devices>,
     runtime: tokio::runtime::Handle,
+    /// Woken by the network actor whenever a room's call list changes.
+    rosters_changed: Arc<tokio::sync::Notify>,
 }
 impl Factory {
     pub(crate) fn new(
@@ -36,6 +38,7 @@ impl Factory {
             owner,
             devices: devices::Devices::start(broker, &runtime),
             runtime,
+            rosters_changed: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -43,12 +46,25 @@ impl MediaFactory for Factory {
     fn rosters(&self, target: CallTarget) -> crate::shell::native_media::Rosters {
         let commands = self.commands.clone();
         let owner = self.owner.clone();
+        let signal = self.rosters_changed.clone();
         Box::pin(async move {
-            match command(&commands, Operation::Rosters { owner, target }).await {
+            match command(
+                &commands,
+                Operation::Rosters {
+                    owner,
+                    target,
+                    signal,
+                },
+            )
+            .await
+            {
                 Ok(Reply::Rosters(rosters)) => rosters,
                 _ => Vec::new(),
             }
         })
+    }
+    fn rosters_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.rosters_changed.clone())
     }
     #[allow(
         clippy::significant_drop_tightening,
@@ -135,6 +151,8 @@ impl MediaFactory for Factory {
                     first_packet_diagnosed: false,
                     next_audio_diagnostic: Instant::now(),
                     publishers: Vec::new(),
+                    publications_revision: None,
+                    heard: Heard::default(),
                 }) as Box<dyn MediaSession>)
             }));
             (&mut preparing.0).await.map_err(|_| Issue::Unavailable)?
@@ -421,6 +439,27 @@ fn installation_fence(
     })
 }
 
+/// Who the call hears talking, as of the last tick.
+#[derive(Default, PartialEq, Eq)]
+struct Heard {
+    /// The other participants' namespaces, sorted.
+    others: Vec<String>,
+    /// This device's microphone.
+    own: bool,
+    /// Advances whenever the two above change.
+    revision: u64,
+}
+impl Heard {
+    fn update(&mut self, mut others: Vec<String>, own: bool) {
+        others.sort();
+        if others != self.others || own != self.own {
+            self.others = others;
+            self.own = own;
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+}
+
 struct Session {
     runtime: Arc<Running>,
     devices: Arc<devices::Devices>,
@@ -433,6 +472,9 @@ struct Session {
     first_packet_diagnosed: bool,
     next_audio_diagnostic: Instant,
     publishers: Vec<voice::PublicationId>,
+    /// The carrier's reading revision the decoders were last matched to.
+    publications_revision: Option<u64>,
+    heard: Heard,
 }
 impl Session {
     // False requests guarded recovery from a nonterminal owner fence.
@@ -524,6 +566,30 @@ impl Session {
             self.audio.remove_publisher(&publisher);
         }
         self.decoded_generation = None;
+        self.publications_revision = None;
+        self.heard.update(Vec::new(), false);
+    }
+    /// Drop the playout and decoder of every publication the carrier no
+    /// longer reads: someone left, or came back as a new incarnation.
+    fn retire_departed(&mut self, client: &Client) {
+        let revision = client.publications_revision();
+        if self.publications_revision == Some(revision) {
+            return;
+        }
+        self.publications_revision = Some(revision);
+        let reading = client.publications();
+        let audio = &mut self.audio;
+        self.publishers.retain(|publisher| {
+            let read = reading.iter().any(|current| {
+                current.namespace == publisher.namespace
+                    && current.carrier_generation == publisher.carrier_generation
+                    && current.incarnation == publisher.incarnation
+            });
+            if !read {
+                audio.remove_publisher(publisher);
+            }
+            read
+        });
     }
 }
 impl MediaSession for Session {
@@ -658,8 +724,12 @@ impl MediaSession for Session {
             let publisher = voice::PublicationId {
                 namespace: frame.publisher.namespace,
                 carrier_generation: frame.publisher.carrier_generation,
+                incarnation: frame.publisher.incarnation,
             };
             if !self.publishers.contains(&publisher) {
+                // A returning publisher's new incarnation replaces its last.
+                self.publishers
+                    .retain(|known| known.namespace != publisher.namespace);
                 self.publishers.push(publisher.clone());
             }
             self.audio
@@ -680,10 +750,27 @@ impl MediaSession for Session {
                     Issue::TransportFailed
                 })?;
         }
-        self.audio
-            .playout(Instant::now())
-            .map_err(|_| Issue::Unavailable)?;
+        self.retire_departed(&client);
+        let now = Instant::now();
+        self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
+        let others = self
+            .audio
+            .heard(now)
+            .into_iter()
+            .map(|publisher| publisher.namespace)
+            .collect();
+        let own = self.audio.capture_heard(now);
+        self.heard.update(others, own);
         Ok(CallState::Live)
+    }
+    fn speaking_revision(&self) -> u64 {
+        self.heard.revision
+    }
+    fn speaking(&self) -> Vec<String> {
+        if self.heard.others.is_empty() && !self.heard.own {
+            return Vec::new();
+        }
+        authority::speakers(&self.runtime.ticket, &self.heard.others, self.heard.own)
     }
     fn inventory(&self) -> Inventory {
         if self.audio.output_ready()
