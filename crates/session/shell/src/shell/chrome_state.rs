@@ -523,6 +523,11 @@ pub struct QuickSettingsState {
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
     pub radio_change_pending: bool,
+    /// The radio change under way, so its tile says "Turning on…" or
+    /// "Turning off…" until the machine answers.
+    pub radio_change: Option<os_actions::RadioChange>,
+    /// Why Wi-Fi is not in the state last asked for, until the next change.
+    pub wifi_problem: Option<crate::shell::quick_settings::radio::WifiProblem>,
     /// Last discovery failure, kept separate from an honest empty result.
     pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
@@ -611,6 +616,8 @@ impl Default for QuickSettingsState {
             wifi_networks: Vec::new(),
             wifi_scanning: false,
             radio_change_pending: false,
+            radio_change: None,
+            wifi_problem: None,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
@@ -653,6 +660,8 @@ impl QuickSettingsState {
             wifi_networks: Vec::new(),
             wifi_scanning: false,
             radio_change_pending: false,
+            radio_change: None,
+            wifi_problem: None,
             wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),

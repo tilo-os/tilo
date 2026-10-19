@@ -62,6 +62,7 @@ pub mod power;
 pub mod printing;
 pub mod privacy;
 mod process;
+pub mod rfkill;
 pub mod session;
 pub mod time;
 pub mod users;
@@ -118,8 +119,8 @@ pub use network::{
     inspect_certificate, link_status_from_state, list_hotspot_clients, list_saved_network_profiles,
     list_vpn_connections, list_wifi_networks, portable_wifi_profile_secret, scan_wifi,
     set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
-    set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired, wifi_from_radios,
-    wireless_link_quality_pct,
+    set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wifi_radio, set_wired,
+    wifi_change_outcome, wifi_from_radios, wireless_link_quality_pct,
 };
 pub use orientation::{
     AccelSample, DeviceOrientation, OrientationTracker, RotationControl, has_accelerometer,
@@ -173,8 +174,11 @@ pub(crate) fn block_on<T>(
 }
 
 /// A radio operation prepared on the owning session thread and executed by
-/// its worker. It carries no borrowed dispatcher or credential.
-pub type RadioWork = Box<dyn FnOnce() -> Result<(), String> + Send>;
+/// its worker. It carries no borrowed dispatcher or credential. Its result
+/// is the radios as read back after the change, when the dispatcher reads
+/// them (`None` for one that cannot), so a caller shows the machine's state
+/// rather than its own request.
+pub type RadioWork = Box<dyn FnOnce() -> Result<Option<RadioState>, String> + Send>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RadioChange {
@@ -191,6 +195,30 @@ impl RadioChange {
         match self {
             Self::Wifi(enabled) => dispatcher.set_wifi(enabled),
             Self::Airplane(enabled) => dispatcher.set_airplane_mode(enabled),
+        }
+    }
+
+    /// Execute it and read the radios back: see
+    /// [`Dispatcher::apply_radio_change`].
+    ///
+    /// # Errors
+    /// Returns the dispatcher's original radio-operation refusal.
+    pub fn run(self, dispatcher: &dyn Dispatcher) -> Result<Option<RadioState>, String> {
+        dispatcher.apply_radio_change(self)
+    }
+
+    /// Whether `radios`, read after this change, show it happened; if not,
+    /// why. A dispatcher that reported success may still have left a radio
+    /// held off by a switch.
+    ///
+    /// # Errors
+    /// Returns the reason the radios are not in the requested state.
+    pub fn outcome(self, radios: &RadioState) -> Result<(), String> {
+        match self {
+            Self::Wifi(enabled) => network::wifi_change_outcome(enabled, radios),
+            Self::Airplane(enabled) if radios.airplane_mode == enabled => Ok(()),
+            Self::Airplane(true) => Err("a radio stayed on".into()),
+            Self::Airplane(false) => network::wifi_change_outcome(true, radios),
         }
     }
 }
@@ -239,6 +267,20 @@ pub trait Dispatcher {
     /// the production dispatcher always provides worker-safe operations.
     fn prepare_radio_change(&self, _change: RadioChange) -> Option<RadioWork> {
         None
+    }
+    /// Make a radio change and read the radios back afterwards. A dispatcher
+    /// that cannot read them returns `None`, and its caller reads them
+    /// separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the dispatcher's refusal of the change.
+    fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
+        match change {
+            RadioChange::Wifi(enabled) => self.set_wifi(enabled),
+            RadioChange::Airplane(enabled) => self.set_airplane_mode(enabled),
+        }
+        .map(|()| None)
     }
 
     /// Enable or disable the Bluetooth radio.
@@ -379,7 +421,16 @@ pub struct RealDispatcher;
 
 impl Dispatcher for RealDispatcher {
     fn prepare_radio_change(&self, change: RadioChange) -> Option<RadioWork> {
-        Some(Box::new(move || change.execute(&Self)))
+        Some(Box::new(move || Self.apply_radio_change(change)))
+    }
+    fn apply_radio_change(&self, change: RadioChange) -> Result<Option<RadioState>, String> {
+        match change {
+            RadioChange::Wifi(enabled) => network::set_wifi_radio(enabled).map(Some),
+            RadioChange::Airplane(enabled) => {
+                network::set_airplane_mode(enabled)?;
+                network::get_radio_state().map(Some)
+            }
+        }
     }
 
     fn set_brightness(&self, pct: f32) -> Result<(), String> {

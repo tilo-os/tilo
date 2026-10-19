@@ -147,4 +147,4 @@ mod tests {
     }
 }
 
-pub(crate) mod radio;
+pub mod radio;

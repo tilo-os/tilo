@@ -352,6 +352,11 @@ qs-wifi-hotspot-a11y = WLAN-Hotspot
 qs-wifi-hotspot-sharing = Diese Verbindung wird geteilt
 qs-wifi-hotspot-turn-on = WLAN-Hotspot einschalten
 qs-wifi-hotspot-turn-off = WLAN-Hotspot ausschalten
+qs-turning-on = Wird eingeschaltet …
+qs-turning-off = Wird ausgeschaltet …
+qs-wifi-problem-hardware-switch = Mit dem Hardwareschalter aus
+qs-wifi-problem-stayed-off = Ließ sich nicht einschalten
+qs-wifi-problem-failed = WLAN ließ sich nicht ändern
 
 # Schnelleinstellungen: Bluetooth
 qs-bluetooth-empty = Keine Geräte gefunden

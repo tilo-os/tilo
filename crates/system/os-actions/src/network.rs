@@ -22,7 +22,11 @@ const WIFI_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 pub struct RadioState {
     pub airplane_mode: bool,
     pub wifi_available: bool,
+    /// Whether the Wi-Fi radio is really on: `NetworkManager` has it enabled
+    /// *and* no kill switch blocks it. Not the last request.
     pub wifi_enabled: bool,
+    /// A physical switch holds Wi-Fi off; no program can turn it on.
+    pub wifi_hardware_blocked: bool,
     pub wwan_available: bool,
     pub wwan_enabled: bool,
     pub hotspot_active: bool,
@@ -43,6 +47,10 @@ pub struct VpnConnectionInfo {
 /// Returns an error message if `nmcli` is not installed or the radio/device status query
 /// fails.
 pub fn get_radio_state() -> Result<RadioState, String> {
+    SystemRadio.radio_state()
+}
+
+fn nmcli_radio_state() -> Result<RadioState, String> {
     let radios = run_capture("nmcli", &["-t", "-f", "WIFI,WWAN", "radio"])?;
     let devices = run_capture("nmcli", &["-t", "-f", "TYPE,STATE", "device", "status"])?;
     let active = run_capture(
@@ -51,6 +59,18 @@ pub fn get_radio_state() -> Result<RadioState, String> {
     )
     .unwrap_or_default();
     Ok(parse_radio_state(&radios, &devices, &active))
+}
+
+/// `NetworkManager`'s view of the radios, corrected by the kernel's kill
+/// switches: a radio a switch blocks is off whatever `NetworkManager`'s own
+/// flag says, and a hard block is named so the person learns why.
+fn with_kill_switches(mut radios: RadioState, wlan: crate::rfkill::RfkillState) -> RadioState {
+    if wlan.present {
+        radios.wifi_enabled &= wlan.allows();
+        radios.wifi_hardware_blocked = wlan.hard_blocked;
+        radios.airplane_mode = every_radio_off(&radios);
+    }
+    radios
 }
 
 fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
@@ -66,16 +86,23 @@ fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
         fields.first().is_some_and(|v| v == HOTSPOT_PROFILE)
             && fields.get(1).is_some_and(|v| v == "802-11-wireless")
     });
-    RadioState {
-        airplane_mode: (wifi_available || wwan_available)
-            && (!wifi_available || !wifi_enabled)
-            && (!wwan_available || !wwan_enabled),
+    let mut radios = RadioState {
         wifi_available,
         wifi_enabled,
         wwan_available,
         wwan_enabled,
         hotspot_active,
-    }
+        ..RadioState::default()
+    };
+    radios.airplane_mode = every_radio_off(&radios);
+    radios
+}
+
+/// Airplane mode as `NetworkManager` has it: every radio there is, off.
+fn every_radio_off(radios: &RadioState) -> bool {
+    (radios.wifi_available || radios.wwan_available)
+        && (!radios.wifi_available || !radios.wifi_enabled)
+        && (!radios.wwan_available || !radios.wwan_enabled)
 }
 
 /// Where the kernel lists its device classes.
@@ -142,8 +169,9 @@ pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
         run("nmcli", &["radio", "all", "off"])
     } else {
         // Restore radios individually so Bluetooth remains owned by BlueZ and
-        // NetworkManager never changes an unrelated subsystem.
-        run("nmcli", &["radio", "wifi", "on"])?;
+        // NetworkManager never changes an unrelated subsystem. Wi-Fi comes
+        // back through the one path that also lifts a kill switch.
+        set_wifi_radio(true)?;
         let _ = run("nmcli", &["radio", "wwan", "on"]);
         Ok(())
     }
@@ -401,14 +429,112 @@ pub struct WifiNetworkInfo {
     pub connected: bool,
 }
 
-/// Toggle the Wi-Fi radio on or off via `nmcli radio wifi on|off`.
+/// Turn the Wi-Fi radio on or off, and say how it really stands afterwards.
+///
+/// Wi-Fi is off while either of two layers holds it: `NetworkManager`'s
+/// "wireless enabled" flag, or a kill switch in the kernel. Setting only the
+/// flag is not enough to turn it on: a soft block left by another program,
+/// a platform key or a restored boot state keeps the radio off while
+/// `NetworkManager` reports success. Turning on therefore lifts the soft
+/// block as well; a hard block (a physical switch) cannot be lifted and is
+/// reported in the returned state.
+///
+/// The result is read back after the change: the radio's state, never the
+/// request. A caller compares it with what it asked for.
 ///
 /// # Errors
 ///
-/// Returns an error message if `nmcli` is not installed or the command fails.
+/// Returns an error message when `NetworkManager` cannot be asked (`nmcli`
+/// missing or refusing) or its state cannot be read back.
+pub fn set_wifi_radio(enabled: bool) -> Result<RadioState, String> {
+    set_wifi_radio_with(&SystemRadio, enabled)
+}
+
+/// Toggle the Wi-Fi radio; succeeds only when the radio really ended up in
+/// the requested state. See [`set_wifi_radio`].
+///
+/// # Errors
+///
+/// Returns why the radio did not change: `NetworkManager` refused, or a
+/// switch holds the radio off.
 pub fn set_wifi(enabled: bool) -> Result<(), String> {
-    let state = if enabled { "on" } else { "off" };
-    run("nmcli", &["radio", "wifi", state])
+    let radios = set_wifi_radio(enabled)?;
+    wifi_change_outcome(enabled, &radios)
+}
+
+/// Whether `radios`, read after asking for Wi-Fi `enabled`, shows that it
+/// happened; otherwise why not.
+///
+/// # Errors
+///
+/// Returns the reason the radio is not in the requested state.
+pub fn wifi_change_outcome(enabled: bool, radios: &RadioState) -> Result<(), String> {
+    if radios.wifi_enabled == enabled {
+        Ok(())
+    } else if enabled && radios.wifi_hardware_blocked {
+        Err("Wi-Fi is switched off with the hardware switch".into())
+    } else if enabled {
+        Err("Wi-Fi stayed off".into())
+    } else {
+        Err("Wi-Fi stayed on".into())
+    }
+}
+
+/// The two layers that hold Wi-Fi on or off, behind one seam so the
+/// sequence in [`set_wifi_radio_with`] is tested against a fake
+/// `NetworkManager` and kernel.
+trait WifiRadioHost {
+    /// The kernel's kill switches for Wi-Fi.
+    fn kill_switches(&self) -> crate::rfkill::RfkillState;
+    /// Lift the soft blocks on Wi-Fi.
+    fn lift_soft_block(&self) -> Result<(), String>;
+    /// Set `NetworkManager`'s "wireless enabled" flag.
+    fn set_wireless_enabled(&self, enabled: bool) -> Result<(), String>;
+    /// The radios as they stand now.
+    fn radio_state(&self) -> Result<RadioState, String>;
+}
+
+/// The machine: `nmcli` for `NetworkManager`, sysfs and `/dev/rfkill` for the
+/// kernel.
+struct SystemRadio;
+
+impl WifiRadioHost for SystemRadio {
+    fn kill_switches(&self) -> crate::rfkill::RfkillState {
+        crate::rfkill::state(crate::rfkill::RadioKind::Wlan)
+    }
+    fn lift_soft_block(&self) -> Result<(), String> {
+        crate::rfkill::unblock(crate::rfkill::RadioKind::Wlan)
+    }
+    fn set_wireless_enabled(&self, enabled: bool) -> Result<(), String> {
+        run(
+            "nmcli",
+            &["radio", "wifi", if enabled { "on" } else { "off" }],
+        )
+    }
+    fn radio_state(&self) -> Result<RadioState, String> {
+        Ok(with_kill_switches(
+            nmcli_radio_state()?,
+            self.kill_switches(),
+        ))
+    }
+}
+
+fn set_wifi_radio_with(host: &dyn WifiRadioHost, enabled: bool) -> Result<RadioState, String> {
+    if enabled {
+        let switches = host.kill_switches();
+        if switches.soft_blocked {
+            // `NetworkManager` lifts a soft block itself when its flag goes
+            // from off to on, but not when the flag is already on and
+            // another program blocked the radio underneath it. Lifting it
+            // here covers both; if this session may not, `NetworkManager`
+            // still tries, and the read-back below tells the truth.
+            if let Err(error) = host.lift_soft_block() {
+                tracing::warn!(target: "tilo::os_actions", %error, "could not lift the Wi-Fi soft block");
+            }
+        }
+    }
+    host.set_wireless_enabled(enabled)?;
+    host.radio_state()
 }
 
 /// Read the Wi-Fi radio state. `nmcli radio wifi` prints `enabled` or `disabled` on stdout.
@@ -2440,5 +2566,140 @@ mod radio_presence_tests {
             has_wwan_modem_in(bare.path()),
             "a WWAN device with no interface yet"
         );
+    }
+}
+
+#[cfg(test)]
+mod wifi_radio_tests {
+    use super::*;
+    use crate::rfkill::RfkillState;
+    use std::cell::{Cell, RefCell};
+
+    /// `NetworkManager` and the kernel as far as Wi-Fi on/off goes. Like
+    /// `NetworkManager`, turning its flag off soft-blocks the radio, and
+    /// turning it from off to on lifts that block; a flag that is already on
+    /// is left alone, whatever blocks the radio underneath it.
+    struct FakeNm {
+        flag: Cell<bool>,
+        soft: Cell<bool>,
+        hard: Cell<bool>,
+        /// Whether this session may write `/dev/rfkill`.
+        may_unblock: bool,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl FakeNm {
+        fn on() -> Self {
+            Self {
+                flag: Cell::new(true),
+                soft: Cell::new(false),
+                hard: Cell::new(false),
+                may_unblock: true,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl WifiRadioHost for FakeNm {
+        fn kill_switches(&self) -> RfkillState {
+            RfkillState {
+                present: true,
+                soft_blocked: self.soft.get(),
+                hard_blocked: self.hard.get(),
+            }
+        }
+        fn lift_soft_block(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("rfkill unblock wlan".into());
+            if !self.may_unblock {
+                return Err("/dev/rfkill: Permission denied".into());
+            }
+            self.soft.set(false);
+            Ok(())
+        }
+        fn set_wireless_enabled(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!(
+                "nmcli radio wifi {}",
+                if enabled { "on" } else { "off" }
+            ));
+            let was = self.flag.replace(enabled);
+            if !enabled {
+                self.soft.set(true);
+            } else if !was {
+                self.soft.set(false);
+            }
+            Ok(())
+        }
+        fn radio_state(&self) -> Result<RadioState, String> {
+            let nm = RadioState {
+                wifi_available: true,
+                wifi_enabled: self.flag.get(),
+                ..RadioState::default()
+            };
+            Ok(with_kill_switches(nm, self.kill_switches()))
+        }
+    }
+
+    #[test]
+    fn off_on_off_on_each_lands_in_the_state_asked_for() {
+        let nm = FakeNm::on();
+        for enabled in [false, true, false, true] {
+            let radios = set_wifi_radio_with(&nm, enabled).unwrap();
+            assert_eq!(radios.wifi_enabled, enabled, "after asking for {enabled}");
+            assert_eq!(wifi_change_outcome(enabled, &radios), Ok(()));
+        }
+    }
+
+    #[test]
+    fn turning_on_lifts_a_block_another_program_left_under_an_enabled_flag() {
+        // `rfkill block wlan`, a platform key or a restored boot state:
+        // NetworkManager's flag is still on, so setting it again changes
+        // nothing, and the radio stayed off.
+        let nm = FakeNm::on();
+        nm.soft.set(true);
+        assert!(!nm.radio_state().unwrap().wifi_enabled, "read as off");
+        let radios = set_wifi_radio_with(&nm, true).unwrap();
+        assert!(radios.wifi_enabled);
+        assert_eq!(
+            nm.calls.borrow().as_slice(),
+            ["rfkill unblock wlan", "nmcli radio wifi on"]
+        );
+    }
+
+    #[test]
+    fn a_radio_that_stays_off_is_reported_off_with_the_reason() {
+        let nm = FakeNm {
+            may_unblock: false,
+            ..FakeNm::on()
+        };
+        nm.soft.set(true);
+        let radios = set_wifi_radio_with(&nm, true).unwrap();
+        assert!(!radios.wifi_enabled, "the read-back, not the request");
+        assert_eq!(
+            wifi_change_outcome(true, &radios),
+            Err("Wi-Fi stayed off".into())
+        );
+
+        let nm = FakeNm::on();
+        set_wifi_radio_with(&nm, false).unwrap();
+        nm.hard.set(true);
+        let radios = set_wifi_radio_with(&nm, true).unwrap();
+        assert!(!radios.wifi_enabled && radios.wifi_hardware_blocked);
+        assert_eq!(
+            wifi_change_outcome(true, &radios),
+            Err("Wi-Fi is switched off with the hardware switch".into())
+        );
+        nm.hard.set(false);
+        let radios = set_wifi_radio_with(&nm, true).unwrap();
+        assert!(radios.wifi_enabled && !radios.wifi_hardware_blocked);
+    }
+
+    #[test]
+    fn without_a_kill_switch_networkmanagers_flag_is_the_state() {
+        let nm = RadioState {
+            wifi_available: true,
+            wifi_enabled: true,
+            ..RadioState::default()
+        };
+        assert_eq!(with_kill_switches(nm.clone(), RfkillState::default()), nm);
     }
 }
