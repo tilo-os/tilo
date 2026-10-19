@@ -206,6 +206,52 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     assert!(!missing.child.wait().unwrap().success());
 }
 
+// USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
+/// The room process settles the apps it is told to let members write
+/// through at every start, and remembers which it let, so an app taken out
+/// of its list on a later start is withdrawn (the room's side of it is
+/// `governed_rooms::app_authorship`).
+#[test]
+fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_restarts() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let authored = || -> Vec<String> {
+        serde_json::from_slice(
+            &std::fs::read(state.join("relay").join("authored-apps.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    let started = |extra: &[&str]| {
+        let room = start_with(&state, &root_file, &secrets, extra).unwrap();
+        let RoomEvent::Started { room: Some(id), .. } =
+            room.next(|e| matches!(e, RoomEvent::Started { .. }))
+        else {
+            panic!("no governed room announced")
+        };
+        (room, id)
+    };
+
+    let (room, id) = started(&["--author-app", "so.tilo.chat"]);
+    room.stop();
+    assert_eq!(authored(), ["so.tilo.chat"]);
+
+    let (room, again) = started(&["--author-app", "so.tilo.chat"]);
+    room.stop();
+    assert_eq!(again, id);
+    assert_eq!(
+        authored(),
+        ["so.tilo.chat"],
+        "the same start settles the same"
+    );
+
+    let (room, _) = started(&[]);
+    room.stop();
+    assert!(authored().is_empty(), "an app no longer named is withdrawn");
+}
+
 /// The room starts with a welcome note and a canvas, and a reset keeps a
 /// snapshot of each before putting the starting content back.
 #[cfg(feature = "agents")]

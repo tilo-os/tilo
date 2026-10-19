@@ -90,3 +90,73 @@ async fn the_hosts_person_grants_app_authorship_through_the_hosts_action() {
     );
     relay.shutdown().await;
 }
+
+// USER REQUIREMENT (2026-10-19): "Joined members of a community's public home room get authorship for the room's home app (Chat) by default. The host can configure otherwise, but the default is that they can talk."
+/// The persistent room's host settles its apps' authorship at every start
+/// (`--author-app`): what it settled survives a restart, settling the same
+/// again changes nothing, and an app the host takes out of its list stops
+/// authoring the room for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settled_app_authorship_survives_a_restart_and_is_withdrawn_for_good() {
+    use std::collections::BTreeSet;
+    const CHAT: &str = "so.tilo.chat";
+    let alice = TestUser::fresh("Lounge host's person");
+    let host = alice.enrol("lounge-host", DeviceCapabilities::host());
+    let scratch = tempfile::tempdir().unwrap();
+    let chat = BTreeSet::from([CHAT.to_owned()]);
+    let none = BTreeSet::new();
+
+    let relay = start(scratch.path(), &alice, &host).await;
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    assert!(rooms.app_authors(&room).await.unwrap().is_empty());
+    assert!(
+        rooms
+            .settle_app_authorship(&room, &host.cert, &chat, &none)
+            .await
+            .unwrap()
+    );
+    assert_eq!(rooms.app_authors(&room).await.unwrap(), chat);
+    relay.shutdown().await;
+
+    // The next start settles the same: the room already holds it.
+    let relay = start(scratch.path(), &alice, &host).await;
+    let rooms = relay.rooms().unwrap();
+    assert_eq!(
+        rooms.app_authors(&room).await.unwrap(),
+        chat,
+        "the grant is the room's governance, kept across a restart"
+    );
+    assert!(
+        !rooms
+            .settle_app_authorship(&room, &host.cert, &chat, &none)
+            .await
+            .unwrap(),
+        "settling what the room holds commits nothing"
+    );
+    // The host configured otherwise: Chat stops authoring.
+    assert!(
+        rooms
+            .settle_app_authorship(&room, &host.cert, &none, &chat)
+            .await
+            .unwrap()
+    );
+    assert!(rooms.app_authors(&room).await.unwrap().is_empty());
+    relay.shutdown().await;
+
+    let relay = start(scratch.path(), &alice, &host).await;
+    let rooms = relay.rooms().unwrap();
+    assert!(
+        rooms.app_authors(&room).await.unwrap().is_empty(),
+        "a withdrawn authorship stays withdrawn after a restart"
+    );
+    // And the host can give it back.
+    assert!(
+        rooms
+            .settle_app_authorship(&room, &host.cert, &chat, &none)
+            .await
+            .unwrap()
+    );
+    assert_eq!(rooms.app_authors(&room).await.unwrap(), chat);
+    relay.shutdown().await;
+}
