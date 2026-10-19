@@ -288,53 +288,10 @@ impl JitterBuffer {
             self.stats.late = self.stats.late.saturating_add(1);
             return Ok(());
         }
+        if !self.admit_publisher(&frame, now)? {
+            return Ok(());
+        }
         let name = frame.publisher.namespace.clone();
-        if let Some(existing) = self.publishers.get(&name) {
-            if frame.publisher.carrier_generation < existing.id.carrier_generation {
-                return Err(AudioError::Revoked);
-            }
-            if frame.publisher.carrier_generation > existing.id.carrier_generation {
-                self.publishers.remove(&name);
-            }
-        }
-        if !self.publishers.contains_key(&name) {
-            if self.publishers.len() >= MAX_PUBLISHERS {
-                let quiet = self
-                    .publishers
-                    .iter()
-                    .filter(|(_, publisher)| {
-                        publisher.active_until <= now && publisher.frames.is_empty()
-                    })
-                    .min_by_key(|(_, publisher)| publisher.last_receive)
-                    .map(|(name, _)| name.clone());
-                let Some(quiet) = quiet else {
-                    // Every slot is speaking: this voice waits for one.
-                    self.stats.overruns = self.stats.overruns.saturating_add(1);
-                    return Ok(());
-                };
-                self.publishers.remove(&quiet);
-            }
-            self.publishers.insert(
-                name.clone(),
-                Publisher {
-                    id: frame.publisher.clone(),
-                    frames: BTreeMap::new(),
-                    base_timestamp: frame.timestamp_48k,
-                    next_sequence: frame.sequence,
-                    next_timestamp: frame.timestamp_48k,
-                    next_play: frame
-                        .received_at
-                        .checked_add(Duration::from_millis(60))
-                        .unwrap_or(frame.received_at),
-                    last_receive: frame.received_at,
-                    last_timestamp: frame.timestamp_48k,
-                    active_until: frame.expires_at,
-                    jitter_ms: 0.0,
-                    target_ms: 60,
-                    applied_target_ms: 60,
-                },
-            );
-        }
         let publisher = self
             .publishers
             .get_mut(&name)
@@ -385,6 +342,61 @@ impl JitterBuffer {
         publisher.active_until = publisher.active_until.max(frame.expires_at);
         publisher.frames.insert(frame.timestamp_48k, frame);
         Ok(())
+    }
+
+    /// Find or make `frame`'s publisher slot: a newer carrier generation
+    /// replaces the old slot, and a new voice takes the quietest idle slot
+    /// when all are taken. `false` when every slot is speaking, so this
+    /// voice waits for one.
+    fn admit_publisher(&mut self, frame: &ReceivedOpus, now: Instant) -> Result<bool, AudioError> {
+        let name = &frame.publisher.namespace;
+        if let Some(existing) = self.publishers.get(name) {
+            if frame.publisher.carrier_generation < existing.id.carrier_generation {
+                return Err(AudioError::Revoked);
+            }
+            if frame.publisher.carrier_generation > existing.id.carrier_generation {
+                self.publishers.remove(name);
+            }
+        }
+        if !self.publishers.contains_key(name) {
+            if self.publishers.len() >= MAX_PUBLISHERS {
+                let quiet = self
+                    .publishers
+                    .iter()
+                    .filter(|(_, publisher)| {
+                        publisher.active_until <= now && publisher.frames.is_empty()
+                    })
+                    .min_by_key(|(_, publisher)| publisher.last_receive)
+                    .map(|(idle, _)| idle.clone());
+                let Some(quiet) = quiet else {
+                    // Every slot is speaking: this voice waits for one.
+                    self.stats.overruns = self.stats.overruns.saturating_add(1);
+                    return Ok(false);
+                };
+                self.publishers.remove(&quiet);
+            }
+            self.publishers.insert(
+                name.clone(),
+                Publisher {
+                    id: frame.publisher.clone(),
+                    frames: BTreeMap::new(),
+                    base_timestamp: frame.timestamp_48k,
+                    next_sequence: frame.sequence,
+                    next_timestamp: frame.timestamp_48k,
+                    next_play: frame
+                        .received_at
+                        .checked_add(Duration::from_millis(60))
+                        .unwrap_or(frame.received_at),
+                    last_receive: frame.received_at,
+                    last_timestamp: frame.timestamp_48k,
+                    active_until: frame.expires_at,
+                    jitter_ms: 0.0,
+                    target_ms: 60,
+                    applied_target_ms: 60,
+                },
+            );
+        }
+        Ok(true)
     }
 
     pub fn poll(&mut self, now: Instant) -> Vec<PlayoutFrame> {
