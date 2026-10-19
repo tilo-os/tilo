@@ -330,10 +330,11 @@ where
         .map_err(|error| match error {
             CanonicalFrameError::Io(error) => error,
             CanonicalFrameError::Encode(error) => std::io::Error::other(error),
-            CanonicalFrameError::Empty
-            | CanonicalFrameError::TooLarge(_)
-            | CanonicalFrameError::Decode(_) => {
-                std::io::Error::other("recipient control response exceeds its bound")
+            CanonicalFrameError::TooLarge(len) => std::io::Error::other(format!(
+                "recipient control frame of {len} bytes exceeds its bound"
+            )),
+            CanonicalFrameError::Empty | CanonicalFrameError::Decode(_) => {
+                std::io::Error::other("recipient control frame exceeds its bound")
             }
         })?;
     writer.flush().await
@@ -364,9 +365,9 @@ pub async fn read_recipient_control_response(
         .await
         .map_err(|error| match error {
             CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::TooLarge(_) => {
-                std::io::Error::other("recipient control response too large")
-            }
+            CanonicalFrameError::TooLarge(len) => std::io::Error::other(format!(
+                "recipient control response of {len} bytes is over its bound"
+            )),
             CanonicalFrameError::Empty
             | CanonicalFrameError::Decode(_)
             | CanonicalFrameError::Encode(_) => {
