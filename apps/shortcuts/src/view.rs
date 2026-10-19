@@ -1353,7 +1353,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                 .push(Box::new(
                     Text::new(&input.name).with_kind(TextKind::Identifier),
                 ))
-                .push(Box::new(caption(editor::param_type_name(input.ty))))
+                .push(Box::new(caption(editor::param_type_label(input.ty))))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(remove)),
         ));
@@ -1378,15 +1378,28 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                     .with_accessible_name("shortcuts-input-name")
                     .with_placeholder("shortcuts-input-name"),
             ))
-            .push(Box::new(
-                Dropdown::from_state(
+            .push(Box::new({
+                // The stored value stays the type's name; the choice reads
+                // as words.
+                let mut types = Dropdown::from_state(
                     INPUT_TYPES.iter().map(|ty| (*ty).to_owned()).collect(),
                     &kind,
                 )
                 .with_id("new-input-type")
                 .with_accessible_name("shortcuts-input-type")
-                .control_size(FIELD_HEIGHT),
-            ))
+                .control_size(FIELD_HEIGHT);
+                types.set_value_options(
+                    INPUT_TYPES
+                        .iter()
+                        .map(|ty| {
+                            let label =
+                                crate::model::param_type(ty).map_or(*ty, editor::param_type_label);
+                            ((*ty).to_owned(), label.to_owned())
+                        })
+                        .collect(),
+                );
+                types
+            }))
             .push(Box::new(add)),
     ));
     Box::new(Section::titled(ui::i18n!("shortcuts-inputs"), items))

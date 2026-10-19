@@ -723,7 +723,7 @@ pub const INPUT_TYPES: [&str; 6] = [
     "resource",
 ];
 
-fn param_type(kind: &str) -> Option<ParamType> {
+pub(crate) fn param_type(kind: &str) -> Option<ParamType> {
     Some(match kind {
         "text" => ParamType::Text,
         "number" => ParamType::Number,
