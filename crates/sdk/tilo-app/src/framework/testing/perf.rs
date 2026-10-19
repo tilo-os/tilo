@@ -64,9 +64,9 @@ impl Report {
     /// Calls per step of the scope `phase`, rounded down.
     #[must_use]
     pub fn phase_calls(&self, phase: &str) -> usize {
-        self.phases
-            .get(phase)
-            .map_or(0, |(_, calls)| calls / self.samples.len().max(1))
+        self.phases.get(phase).map_or(0, |(_, calls)| {
+            calls.checked_div(self.samples.len()).unwrap_or(*calls)
+        })
     }
 
     fn quantile(&self, q: f64) -> u64 {

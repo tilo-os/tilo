@@ -425,7 +425,7 @@ pub(crate) fn spawn(
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
-    let mut worker = Worker {
+    let worker = Worker {
         window,
         opaque: !transparent,
         wake,

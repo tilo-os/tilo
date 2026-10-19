@@ -2271,6 +2271,21 @@ impl TopBarChrome {
         );
     }
 
+    /// The tray's status glyph slots: volume, network link and battery
+    /// when known, and one bell slot (the unread count rides beside it, and
+    /// quiet mode silences it).
+    fn tray_slot_count(&self) -> usize {
+        [
+            self.status.volume.is_some(),
+            self.status.link.is_some(),
+            self.status.battery_percent().is_some(),
+            self.bell.unread > 0 || self.bell.quiet,
+        ]
+        .into_iter()
+        .filter(|shown| *shown)
+        .count()
+    }
+
     /// Sizes the tray pill, paints its body + the critical-battery
     /// highlight, and returns the layout the icon helpers reuse.
     fn draw_tray_pill_body(
@@ -2306,29 +2321,12 @@ impl TopBarChrome {
             0.0
         };
 
-        let has_volume = self.status.volume.is_some();
-        let has_link = self.status.link.is_some();
-        let battery_pct = self.status.battery_percent();
-        let pct_label = battery_pct.map(|p| format!("{p}%"));
+        let pct_label = self.status.battery_percent().map(|p| format!("{p}%"));
         let pct_strong = pct_style.clone().with_weight(TextWeight::Semibold);
         let pct_w = pct_label.as_ref().map_or(0.0, |s| {
             f64::from(text_renderer.measure_style(s, None, &pct_strong).0)
         });
-        let mut slots = 0usize;
-        if has_volume {
-            slots = slots.saturating_add(1);
-        }
-        if has_link {
-            slots = slots.saturating_add(1);
-        }
-        if battery_pct.is_some() {
-            slots = slots.saturating_add(1);
-        }
-        // One bell slot: the unread count rides beside it, and quiet mode
-        // silences it.
-        if self.bell.unread > 0 || self.bell.quiet {
-            slots = slots.saturating_add(1);
-        }
+        let slots = self.tray_slot_count();
         let mut tray_w = if slots == 0 {
             // Still the quick-settings trigger, so keep one slot for
             // the settings glyph.
