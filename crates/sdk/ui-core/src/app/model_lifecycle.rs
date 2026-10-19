@@ -202,6 +202,9 @@ impl super::App {
             self.collaboration.manager.publish_action_directory(app_id);
         }
         self.broadcast_doc_delta();
+        // What search finds can move with the model (a refreshed vault, a
+        // timer): the session's index follows it here too, not only on input.
+        self.publish_search_index();
         self.finish_model_directory_refresh(directory);
         if report.published {
             self.actions.hosted.publication = self.hosted_publication_stamp();
