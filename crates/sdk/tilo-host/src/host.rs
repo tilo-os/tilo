@@ -222,7 +222,7 @@ struct NoScreenCapture;
 impl ScreenCaptureProvider for NoScreenCapture {
     fn request(&self, _request: ScreenCaptureRequest) -> ScreenCaptureChannel {
         answered(ScreenCaptureOutcome::Unavailable(
-            "screen capture is unavailable in this host".to_string(),
+            "Screen capture isn't available here".to_string(),
         ))
     }
 }

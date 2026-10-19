@@ -84,7 +84,7 @@ impl MediaLane {
                         widget,
                         &CollabEvent::RealtimeCommandResult {
                             request_id,
-                            result: Err("continuity is unavailable in this host".into()),
+                            result: Err("Continuing on another device isn't available here".into()),
                         },
                     );
                 } else if let CollabRequest::NativeMediaCommand {

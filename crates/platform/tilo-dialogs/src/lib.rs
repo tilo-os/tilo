@@ -217,7 +217,7 @@ pub fn unavailable_opener() -> Arc<dyn UriOpener> {
     Arc::new(UnavailableOpener)
 }
 
-const UNAVAILABLE: &str = "file choosing is unavailable in this host";
+const UNAVAILABLE: &str = "Choosing files isn't available here";
 
 struct UnavailableFilePicker;
 
@@ -251,7 +251,7 @@ impl UriOpener for UnavailableOpener {
     fn open(&self, _uri: &str) -> std::io::Result<()> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "opening URIs is unavailable in this host",
+            "Opening links isn't available here",
         ))
     }
 }
