@@ -1740,8 +1740,8 @@ impl FrameHarness {
     /// root marked it handled. Nothing is laid out until the next frame,
     /// which rebuilds only if the root reports a structural change.
     pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
-        crate::focus_visible::note(event);
         self.invalidate_local();
+        crate::focus_visible::note(event);
         let modifiers = self.modifiers;
         self.dispatch_to_root_with(event, &modifiers)
     }
@@ -1764,8 +1764,8 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
-        crate::motion::note_input(event);
         self.invalidate_local();
+        crate::motion::note_input(event);
         self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
             tracing::warn!(
@@ -4858,9 +4858,9 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        self.invalidate_local();
         // An action performed for someone lands at once (`motion`).
         crate::motion::note_source(crate::tokens::MotionSource::Action);
-        self.invalidate_local();
         self.settle_replayed_draws();
         use crate::accesskit_bridge::A11yTarget;
         self.pump_component_wakes_checked()
@@ -5160,9 +5160,9 @@ impl FrameHarness {
         semantic_target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        self.invalidate_local();
         // An action performed for someone lands at once (`motion`).
         crate::motion::note_source(crate::tokens::MotionSource::Action);
-        self.invalidate_local();
         use crate::a11y::Action as SemanticAction;
         use automerge::transaction::Transactable;
         self.pump_component_wakes_checked()
@@ -5993,8 +5993,8 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
-        crate::motion::note_input(event);
         self.invalidate_local();
+        crate::motion::note_input(event);
         if self.pump_component_wakes_checked().is_err() {
             return;
         }
@@ -6562,6 +6562,7 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.call_on_as(resource, action, arguments, false)
     }
 
@@ -6576,6 +6577,7 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.call_on_as(resource, action, arguments, true)
     }
 
@@ -6604,6 +6606,7 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.call_on_instance_as(instance, resource, action, arguments, false)
     }
 
@@ -6618,6 +6621,7 @@ impl FrameHarness {
         action: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.call_on_instance_as(instance, resource, action, arguments, true)
     }
 
@@ -6658,6 +6662,7 @@ impl FrameHarness {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         self.invoke_action(
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,

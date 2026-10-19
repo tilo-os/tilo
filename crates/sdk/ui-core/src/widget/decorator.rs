@@ -331,6 +331,7 @@ decorator_trait! {
     }
 
     ref {
+        fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
         #[doc(hidden)]
         fn resets_callback_binding() -> bool;
         #[doc(hidden)]
@@ -411,6 +412,7 @@ decorator_trait! {
     }
 
     mut {
+        fn set_full_bleed(full_bleed: bool);
         #[doc(hidden)]
         #[allow(
             private_interfaces,

@@ -280,6 +280,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "settle_replayed_draws",
             "draws again a frame that only moved laid-out content, as a polled frame would",
         ),
+        (
+            "take_text_shape_stats",
+            "drains the text renderer's shaping counters",
+        ),
         ("take_profile_samples", "drains the profiler"),
         ("clear_profile_samples", "drains the profiler"),
     ];

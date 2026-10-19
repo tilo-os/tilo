@@ -543,6 +543,6 @@ mod tests {
 
         use crate::widget::activity_timeline::ChipKind;
         assert_eq!(ChipKind::Governance.label(), "Zugriff");
-        assert_eq!(EntryKind::Text.label(), "Text / Struktur");
+        assert_eq!(EntryKind::Text.label(), "Text und Struktur");
     }
 }
