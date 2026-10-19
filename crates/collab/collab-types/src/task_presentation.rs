@@ -23,7 +23,9 @@ pub struct TaskPresentation {
     pub run: String,
     pub sequence: u64,
     /// Host-authored first receipt time. Sender values are never trusted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Always written: postcard carries commands holding this and is not
+    /// self-describing, so a skipped field shifts every later one.
+    #[serde(default)]
     pub received_at: Option<i64>,
     pub text: String,
     pub reasoning: String,
