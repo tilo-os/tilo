@@ -404,6 +404,10 @@ pub enum DialError {
         /// The host's version.
         theirs: u32,
     },
+    /// The host closed the stream without answering this device's hello:
+    /// it refused this device, or it predates versioned handshakes. After a
+    /// few of these in a row, [`probe_version`] tells which.
+    NoAnswer(String),
     /// Anything else, in words for the log; dialing again may succeed.
     Failed(String),
 }
@@ -416,6 +420,9 @@ impl std::fmt::Display for DialError {
                 "the host speaks peer protocol {theirs}, this device {}",
                 neighbour_wire::PEER_PROTOCOL_VERSION
             ),
+            Self::NoAnswer(reason) => {
+                write!(f, "the host closed the stream without answering: {reason}")
+            }
             Self::Failed(reason) => f.write_str(reason),
         }
     }
@@ -443,10 +450,49 @@ impl From<DialError> for String {
 
 impl From<tilo_relay_session::ClientError> for DialError {
     fn from(error: tilo_relay_session::ClientError) -> Self {
+        if let tilo_relay_session::ClientError::NoHandshakeAnswer(reason) = error {
+            return Self::NoAnswer(reason);
+        }
         match error.peer_version() {
             Some(theirs) => Self::PeerVersion { theirs },
             None => Self::Failed(error.to_string()),
         }
+    }
+}
+
+/// How many dials in a row the room's host may close without answering
+/// before [`probe_version`] asks whether it predates versioned handshakes.
+pub const UNANSWERED_BEFORE_PROBE: u32 = 3;
+
+/// The peer protocol version of the host `hint` pins, when a probe shows it
+/// is not this device's: a host that predates versioned handshakes reads as
+/// [`tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL`]. `None` when the
+/// host speaks this device's version (it refused this device instead), or
+/// the probe could not tell.
+pub async fn probe_version(
+    endpoint: &iroh::Endpoint,
+    hint: &TransportHint,
+    cert: &DeviceCert,
+) -> Option<u32> {
+    let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).ok()?;
+    let probe = tokio::time::timeout(
+        Duration::from_secs(10),
+        RelayClient::probe_handshake_version(endpoint, payload.endpoint_addr.clone(), cert),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    match probe {
+        tilo_relay_session::client::HandshakeProbe::Unversioned => {
+            Some(tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL)
+        }
+        tilo_relay_session::client::HandshakeProbe::Versioned(theirs)
+            if theirs != neighbour_wire::PEER_PROTOCOL_VERSION =>
+        {
+            Some(theirs)
+        }
+        tilo_relay_session::client::HandshakeProbe::Versioned(_)
+        | tilo_relay_session::client::HandshakeProbe::Unknown => None,
     }
 }
 

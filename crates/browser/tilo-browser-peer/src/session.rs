@@ -3173,6 +3173,9 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
+        // A host that turns a device away closes the handshake stream
+        // without a word.
+        ClientError::NoHandshakeAnswer(reason) => LinkError::Refused(reason),
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the
         // next frame read.

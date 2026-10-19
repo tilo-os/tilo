@@ -228,6 +228,7 @@ pub mod profiling;
 pub mod query_text;
 pub mod raster;
 pub mod realtime_continuity;
+pub mod room_sync;
 pub mod standalone_history_pane;
 pub mod storage;
 #[cfg(any(test, feature = "ux-bench"))]

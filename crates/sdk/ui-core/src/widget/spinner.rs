@@ -63,6 +63,15 @@ impl Spinner {
         Self::with_size(DEFAULT_SIZE_PX)
     }
 
+    /// A spinner whose turn started at `start`: one drawn afresh each frame
+    /// keeps turning from there instead of restarting.
+    pub(crate) fn started_at(start: Instant) -> Self {
+        Self {
+            start,
+            ..Self::new()
+        }
+    }
+
     pub fn with_size(size: f32) -> Self {
         Self {
             size,

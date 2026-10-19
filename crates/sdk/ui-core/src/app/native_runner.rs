@@ -3077,6 +3077,9 @@ impl AppHandler {
         let draw_phase = slow_event::phase("draw");
         let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         drop(draw_phase);
+        // An empty state waiting for its room's first sync turns a spinner
+        // no widget's damage covers (`crate::room_sync`): a new pose repaints.
+        full_redraw_required |= crate::room_sync::take_spinner_stepped();
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
         // The tooltip's material blurs what is under it, which repaints this

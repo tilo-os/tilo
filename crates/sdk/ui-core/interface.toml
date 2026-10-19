@@ -11,6 +11,7 @@ encoding = "json"
 served_to_apps = true
 sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
+    "crates/sdk/ui-core/src/room_sync.rs",
     "crates/sdk/ui-core/src/window_toolbar.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",
@@ -157,6 +158,7 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceHostMessage::adopted.rect" = "[f64; 4]"
 "FloatingSurfaceHostMessage::appearance" = "struct"
 "FloatingSurfaceHostMessage::appearance.network_status" = "Option<HostNetworkStatus> optional"
+"FloatingSurfaceHostMessage::appearance.room_sync" = "Option<RoomSync> optional"
 "FloatingSurfaceHostMessage::appearance.theme" = "Option<ThemeDocument> optional"
 "FloatingSurfaceHostMessage::appearance.workspace_hue" = "Option<f32> optional"
 "FloatingSurfaceHostMessage::appearance.your_colour" = "Option<String> optional"
@@ -302,6 +304,15 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "Palette.ink" = "InkLadder"
 "Palette.status" = "StatusTones"
 "Palette.surfaces" = "SurfaceLadder"
+"RoomSync" = "struct"
+"RoomSync.state" = "RoomSyncState"
+"RoomSync.workspace" = "String optional"
+"RoomSyncState" = "enum external"
+"RoomSyncState::connecting" = "unit"
+"RoomSyncState::device_needs_update" = "unit"
+"RoomSyncState::host_needs_update" = "unit"
+"RoomSyncState::never_synced" = "unit"
+"RoomSyncState::synced" = "unit"
 "SearchCount" = "struct"
 "SearchCount.shown" = "u32"
 "SearchCount.total" = "u32"

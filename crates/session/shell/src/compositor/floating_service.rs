@@ -421,6 +421,7 @@ struct DeliveredAppearance {
     window: ui::WindowAppearance,
     theme: ui::theme::ThemeDocument,
     network: Option<HostNetworkStatus>,
+    room: Option<ui::room_sync::RoomSync>,
 }
 
 impl AppearanceDelivery {
@@ -441,25 +442,48 @@ impl AppearanceDelivery {
         appearance_of: impl Fn(&str) -> ui::WindowAppearance,
         theme: &ui::Theme,
         network: HostNetworkStatus,
+        send: impl FnMut(u64, &FloatingSurfaceHostMessage),
+    ) {
+        self.publish_with_rooms(appearance_of, |_| None, theme, network, send);
+    }
+
+    /// [`Self::publish`], with where the room of each window stands with
+    /// its host (`room_of` its app id, [`ui::room_sync`]).
+    pub fn publish_with_rooms(
+        &mut self,
+        appearance_of: impl Fn(&str) -> ui::WindowAppearance,
+        room_of: impl Fn(&str) -> Option<ui::room_sync::RoomSync>,
+        theme: &ui::Theme,
+        network: HostNetworkStatus,
         mut send: impl FnMut(u64, &FloatingSurfaceHostMessage),
     ) {
         for (connection, (app_id, network_allowed, told)) in &mut self.told {
             let network = network_allowed.then_some(network);
             let appearance = appearance_of(app_id);
+            let room = room_of(app_id);
             if told.as_ref().is_none_or(|last| {
-                last.window != appearance || last.theme != theme.document || last.network != network
+                last.window != appearance
+                    || last.theme != theme.document
+                    || last.network != network
+                    || last.room != room
             }) {
                 let mut message =
                     FloatingSurfaceHostMessage::appearance_with_theme(&appearance, theme);
-                if let FloatingSurfaceHostMessage::Appearance { network_status, .. } = &mut message
+                if let FloatingSurfaceHostMessage::Appearance {
+                    network_status,
+                    room_sync,
+                    ..
+                } = &mut message
                 {
                     *network_status = network;
+                    room_sync.clone_from(&room);
                 }
                 send(*connection, &message);
                 *told = Some(DeliveredAppearance {
                     window: appearance,
                     theme: theme.document.clone(),
                     network,
+                    room,
                 });
             }
         }

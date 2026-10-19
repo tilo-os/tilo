@@ -2327,6 +2327,8 @@ impl ActorState {
     /// The host at `peer` subscribed this device to `ws`: refresh what its
     /// native session holds and send the requests that waited for it.
     fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+        // The host caught this device up: the room holds what it holds.
+        crate::shell::room_sync::synced(ws);
         self.request_native_refresh(ws);
         for request in self.room_governance.ready_for(ws, peer) {
             self.send_to_host(request, peer);
