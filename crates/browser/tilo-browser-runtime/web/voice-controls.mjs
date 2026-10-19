@@ -5,6 +5,12 @@
  * Joining a voice channel is being in its call with the microphone on, as
  * on a Tilo device, unless the person last chose to be muted: that choice
  * is remembered (`preferences`). The browser asks for the microphone itself.
+ *
+ * The camera and a shared screen work as on a Tilo device: the person turns
+ * them on in the call (the browser asks for them), everyone learns who shows
+ * what from the room's call list (`cameras`, `screens` in each roster), the
+ * app says which pictures it shows (`show`) and collects them (`pictures`),
+ * coded, to decode itself.
  */
 const services = new WeakMap();
 const ROSTER_REFRESH_MS = 1000;
@@ -12,6 +18,8 @@ const ROSTER_REFRESH_MS = 1000;
  * `WATCH_HOLD`), and how often a held watch looks again. */
 const WATCH_HOLD_MS = 20000;
 const WATCH_LOOK_MS = 100;
+/** How long a pictures collection is held before it is answered empty (`PICTURES_HOLD`). */
+const PICTURES_HOLD_MS = 5000;
 const JOIN_MUTED_KEY = 'tilo.calls.joinMuted';
 
 /** The person's remembered mute choice, in this browser's storage. */
@@ -40,13 +48,25 @@ export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const people = channels.get(call.channel) ?? new Set();
-    for (const participant of call.participants ?? []) if (participant.user) people.add(participant.user);
-    channels.set(call.channel, people);
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set()};
+    for (const participant of call.participants ?? []) {
+      if (!participant.user) continue;
+      roster.people.add(participant.user);
+      if (participant.camera) roster.cameras.add(participant.user);
+      if (participant.screen) roster.screens.add(participant.user);
+    }
+    channels.set(call.channel, roster);
   }
-  return [...channels].filter(([, people]) => people.size > 0)
+  const sorted = set => [...set].sort();
+  return [...channels].filter(([, roster]) => roster.people.size > 0)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([channel_id, people]) => ({channel_id, people: [...people].sort()}));
+    .map(([channel_id, roster]) => {
+      const out = {channel_id, people: sorted(roster.people)};
+      // Written only when someone shows something, as the native service does.
+      if (roster.cameras.size) out.cameras = sorted(roster.cameras);
+      if (roster.screens.size) out.screens = sorted(roster.screens);
+      return out;
+    });
 }
 
 export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
@@ -70,11 +90,15 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
     const next = JSON.stringify([publication, publishers]);
     if (next !== inventory) {inventory = next; revision++;}
     const input = state.inputId || 'default';
-    return {version: 1, state: ({connecting: 'joining', ended: 'ended'})[state.phase] ?? state.phase,
+    const status = {version: 1, state: ({connecting: 'joining', ended: 'ended'})[state.phase] ?? state.phase,
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? 'session_ended' : null,
       inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
+    if (live && state.camera) status.camera = true;
+    if (live && state.screen) status.screen = true;
+    if (live && state.videoIssue) status.issue = state.videoIssue;
+    return status;
   }
   const stamped = status => ({...status, revision: revisionOf(status)});
   return {
@@ -102,6 +126,22 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
           await wait(WATCH_LOOK_MS);
         }
       }
+      // Collected as they arrive, or after the hold: the pictures of what
+      // the app shows.
+      if (command.op === 'pictures') {
+        if (owner !== route || !voice.call.takePictures) return stamped({...status(), state: owner === route ? status().state : 'idle'});
+        const until = clock.now() + PICTURES_HOLD_MS;
+        for (;;) {
+          const taken = voice.call.takePictures(command.after);
+          const live = voice.call.state.phase === 'live';
+          if (taken.pictures.length || !live || clock.now() >= until) {
+            const answer = {...status(), rosters: [], pictures: taken.pictures};
+            if (taken.cursor) answer.pictures_cursor = taken.cursor;
+            return answer;
+          }
+          await (voice.call.waitPictures?.(Math.max(0, until - clock.now())) ?? wait(WATCH_LOOK_MS));
+        }
+      }
       if (owner && owner !== route && command.op !== 'join') throw new Error('this route does not own the active call');
       if (command.op === 'join') {
         const ticket = ++generation;
@@ -125,6 +165,14 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         await voice.call.setMuted(command.muted);
       } else if (command.op === 'select_input') {
         await voice.call.selectInput(command.input_id);
+      } else if (command.op === 'set_camera' || command.op === 'set_screen') {
+        if (command.on && !gesture()) throw new Error(`${command.op === 'set_camera' ? 'the camera' : 'sharing a screen'} requires a user gesture`);
+        if (command.on && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('pictures require a live publishing grant');
+        if (!voice.call.setVideo) throw new Error('this browser cannot show pictures');
+        await voice.call.setVideo(command.op === 'set_camera' ? 'camera' : 'screen', command.on);
+      } else if (command.op === 'show') {
+        voice.call.showPictures?.(command.pictures ?? []);
+        return stamped({...snapshot(), rosters: rosters()});
       } else throw new Error('unsupported local media command');
       // Enumeration never prompts; update labels after consent without
       // delaying a stop command's completion.

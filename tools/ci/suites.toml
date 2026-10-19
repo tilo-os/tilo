@@ -710,6 +710,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs",
@@ -717,6 +718,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs",
   "crates/browser/tilo-browser-runtime/web/voice.test.mjs",
 ]
 

@@ -382,6 +382,10 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
+    /// Turn this person's camera on or off in the call.
+    CallCamera,
+    /// Share this person's screen in the call, or stop.
+    CallScreen,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (the channel sidebar).
@@ -450,6 +454,8 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
+            Self::CallCamera => "chat.call-camera".into(),
+            Self::CallScreen => "chat.call-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
             Self::CallExpand => "chat.call-expand".into(),
             Self::CallLeave => "chat.call-leave".into(),
@@ -917,19 +923,27 @@ pub struct ChatApp {
     /// while they look elsewhere.
     mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
 
-    /// Latest decoded RGBA frame per remote peer id, shown in that peer's call
-    /// tile (camera or screen-share). The native voice path carries no video,
-    /// so nothing fills it today and a tile shows the honest placeholder; it
-    /// never fabricates a picture.
+    /// Latest decoded camera picture per person, shown in their call tile
+    /// (this person's own among them, in the host tile). Only ever holds a
+    /// picture the call delivered and [`Self::call_pictures`] decoded; a tile
+    /// without one shows the person, never a made-up picture.
     pub(crate) remote_frames: HashMap<String, vello::peniko::ImageData>,
 
-    /// Latest decoded RGBA **screen-share** frame per remote peer id, kept
-    /// separate from their camera frame so a peer can share their screen and
-    /// keep their camera on at once — the screen fills the featured stage tile,
-    /// the camera stays in that peer's filmstrip cell. The native voice path
-    /// carries no video, so it stays empty and the featured tile shows the
-    /// honest "connecting" placeholder rather than a fabricated feed.
+    /// Latest decoded **screen-share** picture per person, kept separate
+    /// from their camera picture so a person can share their screen and keep
+    /// their camera on at once: the screen fills the featured stage tile, the
+    /// camera stays in their filmstrip cell. Until the first picture arrives
+    /// the stage says whose screen it waits for.
     pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
+    /// Decodes the call's pictures, off the UI thread.
+    pub(crate) call_pictures: ui::call_pictures::CallPictures,
+    /// The picture tiles the last frame drew: whose camera or screen, and
+    /// their size in device pixels. What the call is asked to deliver, each
+    /// at the layer that fits its tile.
+    pub(crate) picture_tiles:
+        std::cell::RefCell<Vec<(String, ui::native_media::PictureSource, (f64, f64))>>,
+    /// A video call was started: the camera turns on once the call is live.
+    pub(crate) camera_on_live: bool,
 
     /// The latest call/media problem to show in the call chrome (a refused
     /// control, a native voice issue, or no connected media transport).
@@ -1182,6 +1196,9 @@ impl ChatApp {
             mention_alerts: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
+            call_pictures: ui::call_pictures::CallPictures::new(),
+            picture_tiles: std::cell::RefCell::new(Vec::new()),
+            camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
             synced: None,
@@ -1642,6 +1659,7 @@ impl ChatApp {
                 self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
                     channel_id: "c_huddle".into(),
                     people: vec!["u_aria".to_owned(), "u_milo".to_owned()],
+                    ..Default::default()
                 }];
                 self.refresh_native_streams();
             }
@@ -1666,10 +1684,28 @@ impl ChatApp {
                 if scenario != "lounge" {
                     huddle.push("u_devon".to_owned());
                 }
+                // Cameras on, and Sora sharing her screen, as the room says.
+                let video = scenario != "lounge" && scenario != "lounge-call";
+                let cameras: Vec<String> = if video {
+                    vec![
+                        "u_aria".to_owned(),
+                        "u_devon".to_owned(),
+                        "u_milo".to_owned(),
+                    ]
+                } else {
+                    Vec::new()
+                };
+                let screens: Vec<String> = if scenario == "lounge-share" {
+                    vec!["u_sora".to_owned()]
+                } else {
+                    Vec::new()
+                };
                 self.native_voice.snapshot.rosters = vec![
                     ui::native_media::Roster {
                         channel_id: "c_huddle".into(),
                         people: huddle,
+                        cameras: cameras.clone(),
+                        screens: screens.clone(),
                     },
                     ui::native_media::Roster {
                         channel_id: "c_standup".into(),
@@ -1678,26 +1714,30 @@ impl ChatApp {
                         } else {
                             Vec::new()
                         },
+                        ..Default::default()
                     },
                 ];
                 // Aria is talking: her face rings wherever it shows.
                 self.native_voice.snapshot.speaking = vec!["u_aria".to_owned()];
                 self.refresh_native_streams();
-                // Cameras on, and Sora sharing her screen: demo pictures in
-                // the tiles a decoded picture takes over.
-                if scenario != "lounge" && scenario != "lounge-call" {
-                    for (index, person) in ["u_aria", "u_milo", "u_devon"].into_iter().enumerate() {
-                        if let Some(picture) =
-                            crate::images::demo_picture(&format!("camera-{index}"))
-                        {
-                            self.remote_frames.insert(person.to_owned(), picture);
-                        }
-                    }
+                // Their pictures: a moving test picture each, coded and
+                // decoded exactly as a call's pictures are, so the tiles show
+                // real decoded frames.
+                for (variant, person) in (0_u8..).zip(&cameras) {
+                    self.call_pictures.feed_test_pattern(
+                        person,
+                        ui::native_media::PictureSource::Camera,
+                        (640, 360),
+                        variant,
+                    );
                 }
-                if scenario == "lounge-share"
-                    && let Some(screen) = crate::images::demo_picture("screen")
-                {
-                    self.remote_screens.insert("u_sora".to_owned(), screen);
+                for person in &screens {
+                    self.call_pictures.feed_test_pattern(
+                        person,
+                        ui::native_media::PictureSource::Screen,
+                        (1280, 720),
+                        3,
+                    );
                 }
                 self.refresh_native_streams();
             }
@@ -3906,6 +3946,10 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.muted,
                     ),
+                    Hit::CallCamera => ("Camera".into(), Role::ToggleButton, !self.call.audio_only),
+                    Hit::CallScreen => {
+                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
+                    }
                     Hit::CallParticipantsToggle => (
                         "Show call participants".into(),
                         Role::ToggleButton,
@@ -4056,6 +4100,7 @@ impl Collaborative for ChatApp {
                     .take_collab_requests(),
             );
         }
+        self.native_voice.video.wanted = self.wanted_pictures();
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
         if before != self.native_voice.snapshot.state {
@@ -4089,6 +4134,10 @@ impl Collaborative for ChatApp {
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
                 if self.native_voice.complete(*request_id, result) {
                     self.project_native_voice();
+                }
+                let arrived = std::mem::take(&mut self.native_voice.video.arrived);
+                if !arrived.is_empty() {
+                    self.call_pictures.receive(arrived);
                 }
             }
             ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
@@ -4692,6 +4741,7 @@ impl Widget for ChatApp {
         }
         self.sync_composers(doc);
         self.request_visible_images();
+        self.sync_call_pictures();
         // Native capture/transport belongs to the shell's lease-bound service.
     }
 
@@ -4840,6 +4890,8 @@ impl Widget for ChatApp {
         self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
+        // The picture tiles this frame draws note themselves again.
+        self.picture_tiles.borrow_mut().clear();
 
         // The conversation stands on the window ground the framework painted.
         // A pushed thread owns the narrow page, including its input targets.
@@ -5307,9 +5359,10 @@ impl Widget for ChatApp {
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
     }
 
-    /// Attachment thumbnails still decoding: a capture waits for them.
+    /// Attachment thumbnails or call pictures still decoding: a capture
+    /// waits for them.
     fn has_pending_visual_work(&self) -> bool {
-        !self.images.is_idle()
+        !self.images.is_idle() || self.call_pictures.pending() > 0
     }
 
     fn needs_redraw(&self) -> bool {

@@ -1,7 +1,7 @@
 use super::{
     Arc, AtomicBool, AtomicU64, CallTarget, Client, Command, Duration, Instant, Mutex,
     NativeWorkspaceOwner, OPEN_DEADLINE, Operation, Ordering, Reply, Ticket, Weak, authority,
-    devices, observer,
+    devices, observer, video,
 };
 use crate::{
     network::NetCmd,
@@ -12,7 +12,10 @@ use media::voice::{
     self,
     gst::{CaptureSource, CaptureStop, ObservedOutput, VoiceAudio},
 };
-use runtime_collab::native_media::{Inventory, Issue, State as CallState};
+use runtime_collab::native_media::{
+    Inventory, Issue, Picture, PictureSource, Shown, State as CallState,
+};
+use std::collections::BTreeSet;
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
 use tilo_relay_protocol::voice::HEARTBEAT;
@@ -25,6 +28,8 @@ pub(crate) struct Factory {
     runtime: tokio::runtime::Handle,
     /// Woken by the network actor whenever a room's call list changes.
     rosters_changed: Arc<tokio::sync::Notify>,
+    /// Where a call's camera pictures come from.
+    camera: video::CameraChoice,
 }
 impl Factory {
     pub(crate) fn new(
@@ -39,6 +44,7 @@ impl Factory {
             devices: devices::Devices::start(broker, &runtime),
             runtime,
             rosters_changed: Arc::new(tokio::sync::Notify::new()),
+            camera: video::CameraChoice::from_env(),
         }
     }
 }
@@ -76,6 +82,7 @@ impl MediaFactory for Factory {
         let owner = self.owner.clone();
         let devices = self.devices.clone();
         let runtime = self.runtime.clone();
+        let camera = self.camera.clone();
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
                 // From here until the call ends the observations it reads
@@ -153,6 +160,10 @@ impl MediaFactory for Factory {
                     publishers: Vec::new(),
                     publications_revision: None,
                     heard: Heard::default(),
+                    video: Video {
+                        choice: camera,
+                        ..Video::default()
+                    },
                 }) as Box<dyn MediaSession>)
             }));
             (&mut preparing.0).await.map_err(|_| Issue::Unavailable)?
@@ -475,6 +486,34 @@ struct Session {
     /// The carrier's reading revision the decoders were last matched to.
     publications_revision: Option<u64>,
     heard: Heard,
+    video: Video,
+}
+
+/// The call's pictures: what this device shows, what the app shows of the
+/// others, and what arrived for it.
+#[derive(Default)]
+struct Video {
+    choice: video::CameraChoice,
+    camera: Option<video::Publisher>,
+    screen: Option<video::Publisher>,
+    /// What the app shows, by person.
+    shown: Vec<Shown>,
+    /// The carrier and grant revision `shown` was last applied to.
+    applied: Option<(usize, u64)>,
+    /// The publications asked for pictures at that time.
+    showing: BTreeSet<String>,
+    /// This device's person, as the grant names them.
+    own: Option<String>,
+    inbox: video::Inbox,
+}
+impl Video {
+    /// What this device shows now, as the governor is told.
+    const fn showing(&self) -> tilo_relay_protocol::voice::Showing {
+        tilo_relay_protocol::voice::Showing {
+            camera: self.camera.is_some(),
+            screen: self.screen.is_some(),
+        }
+    }
 }
 impl Session {
     // False requests guarded recovery from a nonterminal owner fence.
@@ -568,6 +607,139 @@ impl Session {
         self.decoded_generation = None;
         self.publications_revision = None;
         self.heard.update(Vec::new(), false);
+        // A new carrier is asked for the shown pictures afresh, and every
+        // stream starts over at a keyframe.
+        self.video.applied = None;
+        self.video.showing.clear();
+        self.video.inbox.clear();
+    }
+    /// Ask the carrier for the pictures the app shows, by the publications
+    /// of the people it shows, whenever the carrier or its grant changed;
+    /// then move what arrived into the inbox, named by person.
+    fn video_tick(&mut self, client: &Arc<Client>) {
+        let carrier = Arc::as_ptr(client) as usize;
+        let ticket = &self.runtime.ticket;
+        let revision = ticket.revision();
+        if self.video.applied != Some((carrier, revision)) {
+            let shown = &self.video.shown;
+            let (wanted, own) = ticket
+                .inspect_current(|_, grant| {
+                    let mut wanted: std::collections::BTreeMap<String, Vec<_>> =
+                        std::collections::BTreeMap::new();
+                    let mut own = None;
+                    for participant in &grant.participants {
+                        if grant.publication.as_ref() == Some(&participant.namespace) {
+                            own = Some(hex::encode(participant.user_public_key));
+                            continue;
+                        }
+                        let person = hex::encode(participant.user_public_key);
+                        let tracks: Vec<_> = shown
+                            .iter()
+                            .filter(|shown| shown.person == person)
+                            .map(|shown| {
+                                (video::source_of(shown.source), video::layer_of(shown.layer))
+                            })
+                            .collect();
+                        if !tracks.is_empty() {
+                            wanted.insert(participant.namespace.clone(), tracks);
+                        }
+                    }
+                    Ok((wanted, own))
+                })
+                .unwrap_or_default();
+            // This person's own camera tile is fed on this device.
+            let own_layer = own.as_ref().and_then(|own| {
+                shown
+                    .iter()
+                    .find(|shown| &shown.person == own && shown.source == PictureSource::Camera)
+                    .map(|shown| video::layer_of(shown.layer))
+            });
+            if let Some(camera) = &self.video.camera {
+                camera.preview().set(own_layer);
+            }
+            self.video.own = own;
+            for namespace in &self.video.showing {
+                if !wanted.contains_key(namespace) {
+                    client.show(namespace, &[]);
+                }
+            }
+            for (namespace, tracks) in &wanted {
+                client.show(namespace, tracks);
+            }
+            self.video.showing = wanted.into_keys().collect();
+            self.video.applied = Some((carrier, revision));
+        }
+        if let (Some(camera), Some(own)) = (&self.video.camera, &self.video.own) {
+            const OWN: &str = "own/camera";
+            let (objects, gap) = camera.preview().take();
+            if gap {
+                self.video.inbox.behind(OWN, PictureSource::Camera);
+            }
+            for object in objects {
+                if let Ok(bytes) = object.encode() {
+                    self.video.inbox.admit(
+                        Picture {
+                            person: own.clone(),
+                            stream: OWN.into(),
+                            source: PictureSource::Camera,
+                            object: bytes,
+                        },
+                        object.keyframe,
+                    );
+                }
+            }
+        }
+        for _ in 0..video::RECEIVE_PER_TICK {
+            let Some(received) = client.try_recv_picture() else {
+                break;
+            };
+            let namespace = &received.publisher.namespace;
+            let Some(person) = ticket
+                .inspect_current(|_, grant| {
+                    Ok(grant
+                        .participants
+                        .iter()
+                        .find(|participant| &participant.namespace == namespace)
+                        .map(|participant| hex::encode(participant.user_public_key)))
+                })
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let Ok(object) = received.object.encode() else {
+                continue;
+            };
+            let keyframe = received.object.keyframe;
+            self.video.inbox.admit(
+                Picture {
+                    person,
+                    stream: format!(
+                        "{namespace}/{}/{}",
+                        received.publisher.carrier_generation, received.publisher.incarnation
+                    ),
+                    source: video::picture_source(received.source),
+                    object,
+                },
+                keyframe,
+            );
+        }
+    }
+    /// Tell the governor what this device shows, off the call's tick.
+    fn say_showing(&self) {
+        let ticket = self.runtime.ticket.clone();
+        let commands = self.runtime.commands.clone();
+        let showing = self.video.showing();
+        self.runtime.executor.spawn(async move {
+            if let Err(error) = command(&commands, Operation::Show { ticket, showing }).await {
+                tracing::debug!(%error, "the call was not told what this device shows");
+            }
+        });
+    }
+    /// The carrier the call sends on now, for an encoder thread.
+    fn current_client(&self) -> video::CurrentClient {
+        let running = Arc::downgrade(&self.runtime);
+        Arc::new(move || running.upgrade()?.client.lock().clone())
     }
     /// Drop the playout and decoder of every publication the carrier no
     /// longer reads: someone left, or came back as a new incarnation.
@@ -751,6 +923,7 @@ impl MediaSession for Session {
                 })?;
         }
         self.retire_departed(&client);
+        self.video_tick(&client);
         let now = Instant::now();
         self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
         let others = self
@@ -901,8 +1074,76 @@ impl MediaSession for Session {
         }
         self.audio.stop_capture();
     }
+    fn start_video(&mut self, source: PictureSource) -> Result<(), Issue> {
+        let running = self.runtime.client.lock().clone();
+        if running.is_none_or(|client| client.status() != Status::Live) {
+            return Err(Issue::TransportFailed);
+        }
+        let slot = match source {
+            PictureSource::Camera => &self.video.camera,
+            PictureSource::Screen => &self.video.screen,
+        };
+        if slot.is_some() {
+            return Ok(());
+        }
+        let current = self.current_client();
+        let publisher = match source {
+            PictureSource::Camera => video::Publisher::camera(&self.video.choice, current),
+            PictureSource::Screen => video::Publisher::screen(current),
+        }
+        .map_err(|error| {
+            tracing::warn!(?source, %error, "the call's picture did not start");
+            match source {
+                PictureSource::Camera => Issue::CameraLost,
+                PictureSource::Screen => Issue::ScreenLost,
+            }
+        })?;
+        match source {
+            PictureSource::Camera => self.video.camera = Some(publisher),
+            PictureSource::Screen => self.video.screen = Some(publisher),
+        }
+        // The own tile's picture is set up with the next tick.
+        self.video.applied = None;
+        self.say_showing();
+        Ok(())
+    }
+    fn stop_video(&mut self, source: PictureSource) {
+        let stopped = match source {
+            PictureSource::Camera => self.video.camera.take(),
+            PictureSource::Screen => self.video.screen.take(),
+        };
+        if stopped.is_some() {
+            self.say_showing();
+        }
+    }
+    fn video_lost(&mut self) -> Option<PictureSource> {
+        if self
+            .video
+            .camera
+            .as_ref()
+            .is_some_and(video::Publisher::failed)
+        {
+            self.stop_video(PictureSource::Camera);
+            return Some(PictureSource::Camera);
+        }
+        None
+    }
+    fn show(&mut self, shown: Vec<Shown>) {
+        if self.video.shown != shown {
+            self.video.shown = shown;
+            self.video.applied = None;
+        }
+    }
+    fn take_pictures(&mut self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
+        self.video.inbox.take(after, budget)
+    }
+    fn pictures_signal(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.video.inbox.signal())
+    }
     fn close(&mut self) {
         self.stop_capture();
+        self.video.camera = None;
+        self.video.screen = None;
         let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.runtime.ticket.stop();
         let task = self.runtime.task.lock().take();

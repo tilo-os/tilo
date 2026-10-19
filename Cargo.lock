@@ -13268,6 +13268,7 @@ dependencies = [
 name = "runtime-collab"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "browser-continuity-core",
  "capnp",

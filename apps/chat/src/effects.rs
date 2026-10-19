@@ -58,14 +58,6 @@ pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<Resource
     }
 }
 
-/// Why `start-video-call` is unavailable and refused: calls carry
-/// microphone audio only.
-pub(crate) const VIDEO_CALL_UNAVAILABLE: &str = "voice_only";
-
-pub(crate) fn video_call_unavailable_reason() -> String {
-    crate::i18n::t("chat-start-video-call-unavailable")
-}
-
 /// Chat's effects. See the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "chat.effects")]
@@ -199,6 +191,24 @@ pub enum ChatEffect {
     /// Unmute
     #[effect(row, device_only)]
     Unmute { channel: String },
+    /// Turn camera on
+    ///
+    /// Shows this person's camera to everyone in the call; asked for
+    /// through the normal permission prompt.
+    #[effect(row, device_only)]
+    CameraOn { channel: String },
+    /// Turn camera off
+    #[effect(row, idempotent, device_only)]
+    CameraOff { channel: String },
+    /// Share screen
+    ///
+    /// Shows this person's screen to everyone in the call; asked for
+    /// through the normal permission prompt.
+    #[effect(row, device_only)]
+    ShareScreen { channel: String },
+    /// Stop sharing screen
+    #[effect(row, idempotent, device_only)]
+    StopSharingScreen { channel: String },
     /// Call status
     ///
     /// Requests a refresh and returns the last reported service state.
@@ -213,7 +223,8 @@ pub enum ChatEffect {
     StartCall,
     /// Start a video call
     ///
-    /// Refused: calls carry microphone audio only.
+    /// Starts a call as Start a call does, with the camera on once it is
+    /// live.
     #[effect(idempotent, device_only)]
     StartVideoCall,
     /// Select microphone
@@ -340,9 +351,33 @@ impl ChatApp {
             ChatEffect::Unmute { channel } => {
                 self.native_voice_command(&channel, Command::SetMuted { muted: false })?;
             }
+            ChatEffect::CameraOn { channel } => {
+                self.native_voice_command(&channel, Command::SetCamera { on: true })?;
+            }
+            ChatEffect::CameraOff { channel } => {
+                self.native_voice_command(&channel, Command::SetCamera { on: false })?;
+            }
+            ChatEffect::ShareScreen { channel } => {
+                self.native_voice_command(&channel, Command::SetScreen { on: true })?;
+            }
+            ChatEffect::StopSharingScreen { channel } => {
+                self.native_voice_command(&channel, Command::SetScreen { on: false })?;
+            }
             ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
             ChatEffect::StartCall => self.start_call(None)?,
-            ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
+            ChatEffect::StartVideoCall => {
+                self.start_call(None)?;
+                if self.native_voice.snapshot.state == ui::native_media::State::Live
+                    && let Some(channel) = self.native_voice.channel.clone()
+                {
+                    if !self.call.audio_only {
+                        return Ok(Effected::done());
+                    }
+                    self.native_voice_command(&channel, Command::SetCamera { on: true })?;
+                } else {
+                    self.camera_on_live = true;
+                }
+            }
             ChatEffect::SelectInput { channel, input } => {
                 self.select_voice_input(&channel, &input)?;
             }
@@ -499,12 +534,7 @@ impl ChatApp {
 
     /// The effects this window cannot run right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        let video = EffectStatus::unavailable(
-            ChatEffect::START_VIDEO_CALL,
-            VIDEO_CALL_UNAVAILABLE,
-            video_call_unavailable_reason(),
-        );
-        let mut unavailable = vec![video];
+        let mut unavailable = Vec::new();
         if !self.direct_agent_is_available()
             || !self
                 .direct_agent_tasks()
@@ -528,6 +558,9 @@ impl ChatApp {
             let reason = reason.as_str();
             unavailable.extend([
                 EffectStatus::unavailable(ChatEffect::START_CALL, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::START_VIDEO_CALL, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::CAMERA_ON, "no_services", reason),
+                EffectStatus::unavailable(ChatEffect::SHARE_SCREEN, "no_services", reason),
                 EffectStatus::unavailable(ChatEffect::JOIN_CALL, "no_services", reason),
                 EffectStatus::unavailable(ChatEffect::UNMUTE, "no_services", reason),
                 EffectStatus::unavailable(ChatEffect::SELECT_INPUT, "no_services", reason),
@@ -931,6 +964,18 @@ impl ChatApp {
                     channel: channel_id(),
                 })
                 .effect(&ChatEffect::Unmute {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::CameraOn {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::CameraOff {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::ShareScreen {
+                    channel: channel_id(),
+                })
+                .effect(&ChatEffect::StopSharingScreen {
                     channel: channel_id(),
                 })
                 .effect(&ChatEffect::CallStatus {

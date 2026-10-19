@@ -39,6 +39,9 @@ webview-adblock = ["tilo-runner-native?/webview-adblock"]
 x11 = ["tilo-runner-native?/x11"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
+# The real-time video decoder behind `ui::call_pictures` (GStreamer): an app
+# that shows a call's pictures turns it on.
+realtime-video = ["ui-core/realtime-video"]
 mpris = ["tilo-runner-native?/mpris"]
 # The session's priority contacts over the desktop bus.
 priority-contacts = ["tilo-runner-native?/priority-contacts"]

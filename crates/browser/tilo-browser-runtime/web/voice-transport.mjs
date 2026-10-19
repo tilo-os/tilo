@@ -22,6 +22,7 @@
 import {createMediaQueue} from './voice-buffers.mjs';
 import {MOQ_PROTOCOL, MediaAdmissionError, openCarrier} from './moq-carrier.mjs';
 import {decodeVoiceBundle, encodeVoiceBundle, encodeVoiceObject} from './voice-profile.mjs';
+import {publishPictures, receivePictures} from './voice-video.mjs';
 
 export const VOICE_PATH = '/moq/voice';
 export const AUDIO_TRACK = 'audio';
@@ -167,6 +168,7 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
     let closed = false;
     let broadcast;
     let audioTrack;
+    let pictureReader;
     let group;
     let groupFrames = 0;
     let groupTimer;
@@ -208,6 +210,7 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       for (const cleanup of [...cleanups]) { try { cleanup(); } catch {} }
       cleanups.clear();
       finishGroup();
+      pictureReader?.close();
       safeClose(audioTrack);
       safeClose(broadcast);
       safeClose(connection);
@@ -402,11 +405,30 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       return cleanup;
     }
 
+    /**
+     * Publish `stream`'s pictures as `source` on this carrier's broadcast
+     * (web/voice-video.mjs `publishPictures`); returns `{stop}`.
+     */
+    function publishPicturesOf({source, stream, environment, ownLayer, own, onEnded}) {
+      if (closed || !broadcast) throw new Error('this carrier does not publish');
+      return publishPictures({moq, broadcast, source, stream, environment, ownLayer, own, onEnded, report});
+    }
+
+    /** Read exactly the picture tracks `wanted` (`[{publisher, source,
+     * layer}]`) into `deliver(publisher, source, bytes, keyframe)`. */
+    function showPictures(wanted, deliver) {
+      if (closed || !directions.subscribe) return;
+      pictureReader ??= receivePictures({moq, incoming, call: grant.call, deliver, report});
+      pictureReader.show(wanted);
+    }
+
     return {
       participation: grant.participation,
       directions,
       publish,
       subscribe,
+      publishPictures: publishPicturesOf,
+      showPictures,
       stats: () => ({...stats}),
       close,
       closed: closedPromise,

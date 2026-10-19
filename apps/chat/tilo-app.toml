@@ -87,3 +87,10 @@ action    = "start-call"
 label     = "Start a call"
 kind      = "outside"
 operation = "effect"
+
+[[offers]]
+resource  = "chat.workspace"
+action    = "start-video-call"
+label     = "Start a video call"
+kind      = "outside"
+operation = "effect"

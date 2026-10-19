@@ -5,6 +5,14 @@
 //! theirs and remembered ([`CallPreferences`]). The microphone itself is
 //! asked for through the normal permission prompt, once for as long as the
 //! person allows it there, and while it captures the system shows it.
+//!
+//! The camera and a shared screen work the same way: turned on in the call
+//! by the person, asked for through the normal prompt (camera, screen
+//! sharing), shown as capturing while they are on, and switched off with the
+//! call. Everyone in the call learns who shows what from the room
+//! (`Roster::cameras`, `Roster::screens`); the app says which of those
+//! pictures it shows and at what size ([`Command::Show`]) and collects them
+//! ([`Command::Pictures`]).
 use super::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
 use super::realtime_session::VerifiedAppRegistration;
 use crate::portal::capture_broker::BorrowedCaptureHandle;
@@ -13,7 +21,8 @@ use crate::portal::{
     PortalCaller, PromptQueueHandle,
 };
 use runtime_collab::native_media::{
-    Command, Input, Inventory, Issue, Request, Roster, Snapshot, State, WATCH_HOLD,
+    Command, Input, Inventory, Issue, PICTURES_HOLD, Picture, PictureSource, Request, Roster,
+    Shown, Snapshot, State, WATCH_HOLD,
 };
 use std::collections::BTreeMap;
 use std::sync::{
@@ -28,6 +37,12 @@ use tilo_lock::MutexRecover as _;
 
 const MAX_CALLS: usize = 16;
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Picture bytes one [`Command::Pictures`] answer carries at most (beyond
+/// its first picture): within the wire bound once in base64.
+const PICTURE_BUDGET: usize = 600 * 1024;
+/// How often a call's capture leases are renewed while it lasts: well
+/// within their term ([`crate::portal::capture_broker::CAPTURE_LEASE_TTL`]).
+const LEASE_RENEWAL: Duration = Duration::from_secs(60);
 
 /// Inert exact lookup input. A factory must independently consult its real
 /// current native owner; these strings are not media authority.
@@ -135,6 +150,29 @@ pub(crate) trait MediaSession: Send {
     fn speaking(&self) -> Vec<String> {
         Vec::new()
     }
+    /// Start publishing `source` (the camera, the screen), after the
+    /// person allowed it.
+    fn start_video(&mut self, _source: PictureSource) -> Result<(), Issue> {
+        Err(Issue::Unavailable)
+    }
+    /// Stop publishing `source` at once.
+    fn stop_video(&mut self, _source: PictureSource) {}
+    /// A published source that ended on its own (the camera went away),
+    /// once, already stopped.
+    fn video_lost(&mut self) -> Option<PictureSource> {
+        None
+    }
+    /// The pictures the app shows of the others now.
+    fn show(&mut self, _shown: Vec<Shown>) {}
+    /// The pictures received after `after`, up to `budget` bytes but at
+    /// least one, and where the next collection continues.
+    fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
+        (Vec::new(), after)
+    }
+    /// Woken whenever a picture arrives.
+    fn pictures_signal(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 type Backend = Arc<Mutex<Box<dyn MediaSession>>>;
@@ -186,6 +224,13 @@ struct Pending {
     key: String,
     task: tokio::task::AbortHandle,
 }
+/// A camera or screen the call publishes, under its capture lease.
+struct VideoLease {
+    lease: CaptureLeaseId,
+    /// Cleared when the lease is revoked (the person took the permission
+    /// back, the kind was switched off): the next tick stops the source.
+    current: Arc<AtomicBool>,
+}
 struct Entry {
     intent: u64,
     generation: u64,
@@ -203,6 +248,12 @@ struct Entry {
     unmute_due: bool,
     /// What the last tick saw of the call, to wake watchers when it changes.
     seen: Option<Seen>,
+    /// The camera and screen this call publishes.
+    video: BTreeMap<PictureSource, VideoLease>,
+    /// A camera or screen waiting for the person's answer.
+    video_pending: BTreeMap<PictureSource, Pending>,
+    /// When the capture leases are renewed next.
+    renew_at: Instant,
 }
 /// What a watcher of a call sees change between ticks.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -213,6 +264,8 @@ struct Seen {
     capturing: bool,
     asking: bool,
     speaking: u64,
+    camera: bool,
+    screen: bool,
 }
 #[derive(Default)]
 struct Calls {
@@ -326,14 +379,24 @@ impl NativeMediaService {
         }
         let key = caller.key();
         let intent = request.intent;
+        let carries_intent = request.carries_intent();
         let command = request.command;
+        // The microphone's prompt answers only the microphone's commands: a
+        // camera turned on meanwhile does not cancel it.
+        let microphone = matches!(
+            command,
+            Command::Join { .. }
+                | Command::SetMuted { .. }
+                | Command::SelectInput { .. }
+                | Command::Leave
+        );
         {
             let mut calls = self
                 .0
                 .calls
                 .lock()
                 .map_err(|_| "native media unavailable")?;
-            if !matches!(command, Command::Status | Command::Watch { .. }) {
+            if carries_intent {
                 let floor = calls.floors.get(&key).copied().unwrap_or(0);
                 if intent <= floor {
                     return Err("stale native media intent".into());
@@ -343,14 +406,19 @@ impl NativeMediaService {
                 }
                 calls.floors.insert(key.clone(), intent);
                 if let Some(entry) = calls.entries.get_mut(&key) {
-                    entry.intent = intent;
-                    if let Some(pending) = entry.pending.take() {
+                    // A call's intent is its latest join or microphone
+                    // command: a camera turned on meanwhile supersedes
+                    // neither the join nor the microphone's answer.
+                    if microphone {
+                        entry.intent = intent;
+                    }
+                    if let Some(pending) = entry.pending.take_if(|_| microphone) {
                         pending.task.abort();
                         if let Some(consent) = self.0.consent.get() {
                             consent.prompts.cancel_enqueued_request(&pending.key);
                         }
                     }
-                    if entry.backend.is_none() {
+                    if entry.backend.is_none() && microphone {
                         if let Some(worker) = entry.worker.take() {
                             worker.abort();
                         }
@@ -375,6 +443,19 @@ impl NativeMediaService {
                 self.0.stop_capture(entry);
                 return Ok(self.0.snapshot(entry));
             }
+            // Turning a camera or a screen off is immediate.
+            let off = match command {
+                Command::SetCamera { on: false } => Some(PictureSource::Camera),
+                Command::SetScreen { on: false } => Some(PictureSource::Screen),
+                _ => None,
+            };
+            if let Some(source) = off {
+                let Some(entry) = calls.entries.get_mut(&key) else {
+                    return Ok(idle());
+                };
+                self.0.stop_video(entry, source);
+                return Ok(self.0.snapshot(entry));
+            }
         }
         (caller.current)()?;
         if self.0.output_disabled.load(Ordering::Acquire) {
@@ -397,6 +478,22 @@ impl NativeMediaService {
                     .map_or_else(idle, |entry| self.0.snapshot(entry)))
             }
             Command::SetMuted { muted: false } => self.request_capture(&key, intent),
+            Command::SetCamera { on: true } => self.request_video(&key, PictureSource::Camera),
+            Command::SetScreen { on: true } => self.request_video(&key, PictureSource::Screen),
+            Command::Show { pictures } => {
+                let calls = self
+                    .0
+                    .calls
+                    .lock()
+                    .map_err(|_| "native media unavailable")?;
+                let Some(entry) = calls.entries.get(&key) else {
+                    return Ok(idle());
+                };
+                if let Some(backend) = &entry.backend {
+                    backend.lock_recover().show(pictures);
+                }
+                Ok(self.0.snapshot(entry))
+            }
             Command::SelectInput { input_id } => {
                 let unmuted = {
                     let mut calls = self
@@ -430,9 +527,11 @@ impl NativeMediaService {
                         .snapshot(calls.entries.get(&key).ok_or("no local call")?))
                 }
             }
-            Command::Leave | Command::SetMuted { muted: true } => {
-                Err("native media intent already handled".into())
-            }
+            Command::Leave
+            | Command::SetMuted { muted: true }
+            | Command::SetCamera { on: false }
+            | Command::SetScreen { on: false } => Err("native media intent already handled".into()),
+            Command::Pictures { .. } => Err("pictures are collected on their own lane".into()),
         }
     }
 
@@ -506,6 +605,11 @@ impl NativeMediaService {
                 microphone_on_join: !self.0.preferences.join_muted(),
                 unmute_due: false,
                 seen: None,
+                video: BTreeMap::new(),
+                video_pending: BTreeMap::new(),
+                renew_at: Instant::now()
+                    .checked_add(LEASE_RENEWAL)
+                    .unwrap_or_else(Instant::now),
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -630,6 +734,192 @@ impl NativeMediaService {
     }
 }
 impl NativeMediaService {
+    /// Turn `source` on in the call: through the normal permission prompt
+    /// (camera, screen sharing) unless the person allowed this app in this
+    /// room for the session or always.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`entry` borrows from the calls guard until the returned snapshot"
+    )]
+    fn request_video(&self, key: &Key, source: PictureSource) -> Result<Snapshot, String> {
+        let consent = self.0.consent.get().ok_or("native consent unavailable")?;
+        let mut calls = self
+            .0
+            .calls
+            .lock()
+            .map_err(|_| "native media unavailable")?;
+        // Camera and screen commands carry an intent past the call's; the
+        // floor already refused a stale one.
+        let entry = calls
+            .entries
+            .get_mut(key)
+            .ok_or("stale native media intent")?;
+        if !entry.permit.is_current() {
+            return Err("local call not ready".into());
+        }
+        (entry.caller.current)()?;
+        if entry.snapshot.state != State::Live
+            || entry.video.contains_key(&source)
+            || entry.video_pending.contains_key(&source)
+        {
+            return Ok(self.0.snapshot(entry));
+        }
+        let tree = consent.grants.tree_handle();
+        let workspace = tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == entry.caller.workspace)
+            .map(|workspace| workspace.id)
+            .ok_or("local workspace unavailable")?;
+        let caller = PortalCaller::new(workspace, entry.caller.app.clone());
+        let token = format!("native-media-{}", uuid::Uuid::new_v4());
+        let (kind, capability) = video_capability(source, super::state::GRANT_ONCE);
+        let remembered = consent.grants.lookup(&caller, kind).is_some_and(|scope| {
+            matches!(
+                scope,
+                super::state::GRANT_ALWAYS | super::state::GRANT_SESSION
+            )
+        });
+        let reply = (!remembered).then(|| {
+            consent
+                .prompts
+                .enqueue_for_request(caller.clone(), capability, token.clone())
+        });
+        let grants = consent.grants.clone();
+        let weak = Arc::downgrade(&self.0);
+        let task_key = key.clone();
+        let task_token = token.clone();
+        let generation = entry.generation;
+        let task = tokio::spawn(async move {
+            let approved = match reply {
+                None => true,
+                Some(reply) => {
+                    let outcome = tokio::time::timeout(CONSENT_TIMEOUT, reply)
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
+                    if let Some(scope) = outcome
+                        .and_then(crate::portal::PromptOutcome::to_scope)
+                        .filter(|scope| {
+                            matches!(
+                                *scope,
+                                super::state::GRANT_ALWAYS | super::state::GRANT_SESSION
+                            )
+                        })
+                    {
+                        grants.insert_portal_consent(&caller, &video_capability(source, scope).1);
+                    }
+                    outcome.is_some_and(crate::portal::PromptOutcome::is_allowed)
+                }
+            };
+            if let Some(shared) = weak.upgrade() {
+                shared.finish_video(&task_key, generation, &task_token, source, approved);
+                shared.changed.notify_waiters();
+            }
+        });
+        entry.video_pending.insert(
+            source,
+            Pending {
+                key: token,
+                task: task.abort_handle(),
+            },
+        );
+        entry.snapshot.issue = None;
+        Ok(self.0.snapshot(entry))
+    }
+
+    /// Hand the caller the pictures of what it shows that arrived after
+    /// `after`, as soon as there are any or after [`PICTURES_HOLD`].
+    fn pictures(&self, caller: Caller, after: u64) -> NativeMediaFuture {
+        let service = self.clone();
+        Box::pin(async move {
+            let key = caller.key();
+            let start = tokio::time::Instant::now();
+            let hold = start.checked_add(PICTURES_HOLD).unwrap_or(start);
+            loop {
+                (caller.current)()?;
+                let changed = service.0.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let (state, backend) = {
+                    let calls = service
+                        .0
+                        .calls
+                        .lock()
+                        .map_err(|_| "native media unavailable")?;
+                    let entry = calls.entries.get(&key);
+                    (
+                        entry.map_or(State::Idle, |entry| entry.snapshot.state),
+                        entry.and_then(|entry| entry.backend.clone()),
+                    )
+                };
+                let signal = backend
+                    .as_ref()
+                    .and_then(|backend| backend.lock_recover().pictures_signal());
+                let arrived = signal.as_deref().map(tokio::sync::Notify::notified);
+                tokio::pin!(arrived);
+                if let Some(arrived) = arrived.as_mut().as_pin_mut() {
+                    arrived.enable();
+                }
+                let (pictures, cursor) = backend.as_ref().map_or_else(
+                    || (Vec::new(), after),
+                    |backend| backend.lock_recover().take_pictures(after, PICTURE_BUDGET),
+                );
+                let ended = matches!(state, State::Idle | State::Ended | State::Unavailable);
+                if !pictures.is_empty() || ended || tokio::time::Instant::now() >= hold {
+                    return Ok(Snapshot {
+                        state,
+                        issue: None,
+                        pictures,
+                        pictures_cursor: cursor,
+                        ..idle()
+                    });
+                }
+                let arrival = async {
+                    match arrived.as_mut().as_pin_mut() {
+                        Some(arrived) => arrived.await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    () = arrival => {}
+                    // The call went live, or ended.
+                    () = &mut changed => {}
+                    () = tokio::time::sleep_until(hold) => {}
+                }
+            }
+        })
+    }
+}
+
+/// Why `source` is off: the person did not allow it.
+const fn denied(source: PictureSource) -> Issue {
+    match source {
+        PictureSource::Camera => Issue::CameraDenied,
+        PictureSource::Screen => Issue::ScreenDenied,
+    }
+}
+
+/// The permission a call's `source` is asked for under, at `scope`.
+fn video_capability(
+    source: PictureSource,
+    scope: super::state::GrantScope,
+) -> (crate::portal::CapabilityKind, super::state::Capability) {
+    match source {
+        PictureSource::Camera => (
+            crate::portal::CapabilityKind::Camera,
+            super::state::Capability::Camera { scope },
+        ),
+        PictureSource::Screen => (
+            crate::portal::CapabilityKind::Screencast,
+            super::state::Capability::Screencast { scope },
+        ),
+    }
+}
+
+impl NativeMediaService {
     /// Answer once the caller's status differs from the one at `seen`, or
     /// after [`WATCH_HOLD`]: who joins, leaves and talks reaches the app the
     /// moment it happens, with one question outstanding instead of a poll.
@@ -700,6 +990,12 @@ impl NativeMediaServices for NativeMediaService {
             Command::SelectInput { .. } => "select_input",
             Command::Status => "status",
             Command::Watch { .. } => "watch",
+            Command::SetCamera { on: true } => "camera_on",
+            Command::SetCamera { on: false } => "camera_off",
+            Command::SetScreen { on: true } => "screen_on",
+            Command::SetScreen { on: false } => "screen_off",
+            Command::Show { .. } => "show",
+            Command::Pictures { .. } => "pictures",
         };
         let route = (
             context.workspace_id().to_owned(),
@@ -708,6 +1004,9 @@ impl NativeMediaServices for NativeMediaService {
         );
         if let (true, Command::Watch { revision }) = (request.dispatch_valid(), &request.command) {
             return self.watch(context.into(), *revision, route);
+        }
+        if let (true, Command::Pictures { after }) = (request.dispatch_valid(), &request.command) {
+            return self.pictures(context.into(), *after);
         }
         let caller: Caller = context.into();
         let key = caller.key();
@@ -815,6 +1114,8 @@ impl Shared {
             .store(policy.disable_sound_output, Ordering::Release);
         if let Ok(mut capture) = self.capture.lock() {
             capture.set_kill_switch(CaptureKind::Microphone, policy.disable_microphone);
+            // A camera switched off revokes its leases; the next tick stops it.
+            capture.set_kill_switch(CaptureKind::Camera, policy.disable_camera);
         }
         if policy.disable_sound_output {
             self.stop_all();
@@ -875,6 +1176,13 @@ impl Shared {
         if !entry.permit.is_current() {
             return ended();
         }
+        // What this person shows: only within a call.
+        let in_call = !matches!(
+            snapshot.state,
+            State::Unavailable | State::Idle | State::Ended
+        );
+        snapshot.camera = in_call && entry.video.contains_key(&PictureSource::Camera);
+        snapshot.screen = in_call && entry.video.contains_key(&PictureSource::Screen);
         if snapshot.state == State::Live {
             let (inventory, capture_ready) = entry
                 .backend
@@ -923,8 +1231,30 @@ impl Shared {
         entry.snapshot.muted = true;
         entry.snapshot.capture_active = false;
     }
+    /// Stop publishing `source` and give up its capture lease; a camera or
+    /// screen still waiting for the person's answer is not asked for any
+    /// more.
+    fn stop_video(&self, entry: &mut Entry, source: PictureSource) {
+        if let Some(pending) = entry.video_pending.remove(&source) {
+            pending.task.abort();
+            if let Some(consent) = self.consent.get() {
+                consent.prompts.cancel_enqueued_request(&pending.key);
+            }
+        }
+        if let Some(video) = entry.video.remove(&source) {
+            video.current.store(false, Ordering::Release);
+            if let Some(backend) = &entry.backend {
+                backend.lock_recover().stop_video(source);
+            }
+            if let Ok(mut broker) = self.capture.lock() {
+                broker.release(video.lease);
+            }
+        }
+    }
     fn stop_entry(&self, entry: &mut Entry) {
         self.stop_capture(entry);
+        self.stop_video(entry, PictureSource::Camera);
+        self.stop_video(entry, PictureSource::Screen);
         if let Some(worker) = entry.worker.take() {
             worker.abort();
         }
@@ -987,9 +1317,6 @@ impl Shared {
         let result = permit
             .while_current(|| -> Result<Capture, Issue> {
                 let now = Instant::now();
-                let deadline = now
-                    .checked_add(crate::portal::capture_broker::CAPTURE_LEASE_TTL)
-                    .ok_or(Issue::Unavailable)?;
                 let mut broker = self.capture.lock().map_err(|_| Issue::Unavailable)?;
                 let auth = broker
                     .authorize(&entry.binding, &source, CaptureKind::Microphone, now)
@@ -999,8 +1326,10 @@ impl Shared {
                     .map_err(|_| Issue::PermissionDenied)?;
                 let current = Arc::new(AtomicBool::new(true));
                 let checked = Arc::clone(&current);
+                // The lease is renewed for as long as the call lasts; its
+                // revocation or expiry clears `current`.
                 let fence: Arc<dyn Fn() -> bool + Send + Sync> =
-                    Arc::new(move || checked.load(Ordering::Acquire) && Instant::now() < deadline);
+                    Arc::new(move || checked.load(Ordering::Acquire));
                 let result = match broker.resolve(lease, &entry.binding, now) {
                     Ok(handle @ BorrowedCaptureHandle::PipeWireNode(_)) => backend
                         .lock()
@@ -1057,6 +1386,136 @@ impl Shared {
                 entry.snapshot.muted = true;
                 entry.snapshot.issue = Some(issue);
             }
+        }
+    }
+    /// The person answered the prompt for `source`: on approval, take a
+    /// capture lease (what shows the system's capture indicator) and start
+    /// publishing.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the broker guard covers lease release on every failure path"
+    )]
+    fn finish_video(
+        &self,
+        key: &Key,
+        generation: u64,
+        token: &str,
+        source: PictureSource,
+        approved: bool,
+    ) {
+        let Ok(mut calls) = self.calls.lock() else {
+            return;
+        };
+        let Some(entry) = calls.entries.get_mut(key).filter(|entry| {
+            entry.generation == generation
+                && entry
+                    .video_pending
+                    .get(&source)
+                    .is_some_and(|pending| pending.key == token)
+        }) else {
+            return;
+        };
+        entry.video_pending.remove(&source);
+        if let Some(consent) = self.consent.get() {
+            consent.prompts.cancel_enqueued_request(token);
+        }
+        if !approved {
+            entry.snapshot.issue = Some(denied(source));
+            return;
+        }
+        if (entry.caller.current)().is_err() || entry.snapshot.state != State::Live {
+            entry.snapshot.issue = Some(Issue::Stale);
+            return;
+        }
+        let Some(backend) = entry.backend.clone() else {
+            return;
+        };
+        let (kind, source_id) = match source {
+            PictureSource::Camera => (CaptureKind::Camera, "default-camera"),
+            PictureSource::Screen => (CaptureKind::Screen, "primary-display"),
+        };
+        let permit = entry.permit.clone();
+        let result = permit
+            .while_current(|| -> Result<VideoLease, Issue> {
+                let now = Instant::now();
+                let lease = {
+                    let mut broker = self.capture.lock().map_err(|_| Issue::Unavailable)?;
+                    let auth = broker
+                        .authorize(&entry.binding, source_id, kind, now)
+                        .map_err(|_| denied(source))?;
+                    broker
+                        .acquire(auth, &entry.binding, source_id, kind, now)
+                        .map_err(|_| denied(source))?
+                };
+                // The camera starts without the broker held.
+                let started = backend.lock_recover().start_video(source);
+                let Ok(mut broker) = self.capture.lock() else {
+                    backend.lock_recover().stop_video(source);
+                    return Err(Issue::Unavailable);
+                };
+                if let Err(issue) = started {
+                    broker.release(lease);
+                    return Err(issue);
+                }
+                let current = Arc::new(AtomicBool::new(true));
+                let revoked = Arc::clone(&current);
+                if broker
+                    .stop_on_revoke(
+                        lease,
+                        &entry.binding,
+                        now,
+                        Arc::new(move || revoked.store(false, Ordering::Release)),
+                    )
+                    .is_err()
+                {
+                    backend.lock_recover().stop_video(source);
+                    broker.release(lease);
+                    return Err(denied(source));
+                }
+                Ok(VideoLease { lease, current })
+            })
+            .unwrap_or(Err(Issue::SessionEnded));
+        match result {
+            Ok(video) => {
+                entry.video.insert(source, video);
+                entry.snapshot.issue = None;
+            }
+            Err(issue) => entry.snapshot.issue = Some(issue),
+        }
+    }
+    /// Stop each published source whose lease was revoked or that ended on
+    /// its own, and renew the call's capture leases when they are due.
+    fn tend_video(&self, entry: &mut Entry, now: Instant) {
+        let revoked: Vec<PictureSource> = entry
+            .video
+            .iter()
+            .filter(|(_, video)| !video.current.load(Ordering::Acquire))
+            .map(|(source, _)| *source)
+            .collect();
+        let lost = entry
+            .backend
+            .as_ref()
+            .and_then(|backend| backend.lock_recover().video_lost());
+        for source in revoked.into_iter().chain(lost) {
+            self.stop_video(entry, source);
+            entry.snapshot.issue = Some(match source {
+                PictureSource::Camera => Issue::CameraLost,
+                PictureSource::Screen => Issue::ScreenLost,
+            });
+        }
+        if now < entry.renew_at {
+            return;
+        }
+        entry.renew_at = now.checked_add(LEASE_RENEWAL).unwrap_or(now);
+        let Ok(mut broker) = self.capture.lock() else {
+            return;
+        };
+        // A lease that cannot be renewed was revoked: its stop already ran.
+        for video in entry.video.values() {
+            let _ = broker.renew(video.lease, &entry.binding, now);
+        }
+        if let Some(capture) = &entry.capture {
+            let _ = broker.renew(capture.lease, &entry.binding, now);
         }
     }
     fn pause_capture(entry: &mut Entry) {
@@ -1198,8 +1657,12 @@ impl Shared {
         match result {
             Ok(state) => {
                 match state {
-                    State::Reconnecting => Self::pause_capture(entry),
+                    State::Reconnecting => {
+                        Self::pause_capture(entry);
+                        self.tend_video(entry, now);
+                    }
                     State::Live => {
+                        self.tend_video(entry, now);
                         self.resume_capture(entry);
                         if entry.microphone_on_join
                             && entry.capture.is_none()
@@ -1209,7 +1672,11 @@ impl Shared {
                             entry.unmute_due = true;
                         }
                     }
-                    _ => self.stop_capture(entry),
+                    _ => {
+                        self.stop_capture(entry);
+                        self.stop_video(entry, PictureSource::Camera);
+                        self.stop_video(entry, PictureSource::Screen);
+                    }
                 }
                 entry.snapshot.state = state;
                 let speaking = entry
@@ -1229,6 +1696,8 @@ impl Shared {
                     capturing: entry.capture.is_some(),
                     asking: entry.pending.is_some(),
                     speaking,
+                    camera: entry.video.contains_key(&PictureSource::Camera),
+                    screen: entry.video.contains_key(&PictureSource::Screen),
                 });
                 if entry.seen != seen {
                     entry.seen = seen;

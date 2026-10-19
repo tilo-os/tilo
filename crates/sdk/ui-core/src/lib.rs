@@ -135,6 +135,7 @@ pub mod app;
 pub mod app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
+pub mod call_pictures;
 pub mod caps_lock;
 pub mod chart_palette;
 pub mod charts;

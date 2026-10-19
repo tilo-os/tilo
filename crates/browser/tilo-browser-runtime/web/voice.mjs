@@ -13,13 +13,18 @@
  *   do not survive a new network;
  * - the microphone and playback (web/voice-audio.mjs): muting stops the
  *   microphone and the publication, a grant that may not publish mutes;
- * - who is speaking, from the levels the audio thread measures.
+ * - who is speaking, from the levels the audio thread measures;
+ * - the camera and a shared screen (web/voice-video.mjs): published on the
+ *   carrier while on, again on each new carrier, and told to the host
+ *   (`signalling.show`); and the pictures of others the app shows, read off
+ *   the carrier into an inbox the app collects from.
  *
  * `signalling` is the session side: `{join(call), leave(), onEvent(listener)}`
  * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
  * reason}` (`peer.voice` in peer.mjs adapts the wasm peer).
  */
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
+import {createPictureInbox, openSource} from './voice-video.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
 import {MediaAdmissionError} from './moq-carrier.mjs';
 
@@ -41,6 +46,7 @@ export function createVoiceCall({
   environment = globalThis,
   clock = {},
   onReport = () => {},
+  open = source => openSource(source, environment),
 } = {}) {
   if (!signalling) throw new TypeError('voice signalling is required');
   const now = clock.now ?? (() => performance.now());
@@ -63,9 +69,18 @@ export function createVoiceCall({
   let capturePaused = false;
   let generation = 0;
   const speaking = new Map();
+  /** The camera and screen streams this person shows, by source. */
+  const streams = new Map();
+  /** Their publishers on the current carrier, by source. */
+  const publishers = new Map();
+  /** What the app shows: `[{person, source, layer}]`. */
+  let shown = [];
+  /** The layer this person's own camera tile shows, if any. */
+  let ownLayer = null;
+  const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null};
+    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => { state = {...state, ...change}; emit(); };
@@ -79,6 +94,8 @@ export function createVoiceCall({
       device: participant.device,
       user: participant.user,
       publishes: participant.publishes,
+      camera: participant.camera === true,
+      screen: participant.screen === true,
       self: participant.namespace === own,
       speaking: (speaking.get(participant.namespace.split('/')[1]) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
@@ -152,11 +169,103 @@ export function createVoiceCall({
     synchronizeCapture(true);
   }
 
+  /** Publish every shown source on the current carrier. */
+  function publishVideo() {
+    if (!carrier?.publishPictures) return;
+    for (const [source, stream] of streams) {
+      if (publishers.has(source)) continue;
+      try {
+        publishers.set(source, carrier.publishPictures({
+          source,
+          stream,
+          environment,
+          ownLayer: () => (source === 'camera' ? ownLayer : null),
+          own: (layer, object, keyframe) => {
+            const self = participants().find(participant => participant.self);
+            if (self) inbox.admit({person: self.user, stream: 'own/camera', source, object}, keyframe);
+          },
+          // The person ended it in the browser's own controls.
+          onEnded: () => { void setVideo(source, false); },
+        }));
+      } catch (error) {
+        report({type: 'video-publish-error', error});
+      }
+    }
+  }
+
+  function unpublishVideo() {
+    for (const publisher of publishers.values()) publisher.stop({keepStream: true});
+    publishers.clear();
+  }
+
+  /** Read the pictures the app shows of the others, by their publications. */
+  function applyShown() {
+    if (!carrier?.showPictures || !grant) return;
+    const others = participants().filter(participant => !participant.self && participant.publishes);
+    const wanted = [];
+    for (const item of shown) {
+      for (const participant of others) {
+        if (participant.user === item.person) wanted.push({publisher: participant.namespace.split('/')[1], source: item.source, layer: item.layer});
+      }
+    }
+    const carrierAt = generation;
+    carrier.showPictures(wanted, (publisher, source, object, keyframe) => {
+      const person = participants().find(participant => participant.namespace === `${grant?.call}/${publisher}`)?.user;
+      if (person) inbox.admit({person, stream: `${publisher}/${carrierAt}`, source, object}, keyframe);
+    });
+  }
+
+  function tellShowing() {
+    try { signalling.show?.(streams.has('camera'), streams.has('screen')); } catch (error) { report({type: 'voice-signalling-error', error}); }
+  }
+
+  function stopVideo() {
+    unpublishVideo();
+    for (const stream of streams.values()) for (const track of stream.getTracks()) track.stop();
+    streams.clear();
+    shown = [];
+    ownLayer = null;
+    inbox.clear();
+  }
+
+  /** Turn `source` (`camera`, `screen`) on or off in the call. */
+  async function setVideo(source, on) {
+    if (!on) {
+      publishers.get(source)?.stop();
+      publishers.delete(source);
+      const stream = streams.get(source);
+      streams.delete(source);
+      for (const track of stream?.getTracks() ?? []) track.stop();
+      tellShowing();
+      update({[source]: false});
+      return;
+    }
+    if (streams.has(source)) return;
+    const call = state.call;
+    let stream;
+    try {
+      stream = await open(source);
+    } catch (error) {
+      report({type: 'video-source-error', error});
+      update({videoIssue: source === 'camera' ? 'camera_denied' : 'screen_denied'});
+      return;
+    }
+    if (state.call !== call || state.phase !== 'live' || streams.has(source)) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+    streams.set(source, stream);
+    publishVideo();
+    tellShowing();
+    update({[source]: true, videoIssue: null});
+  }
+
   function closeCarrier(pause = true) {
     if (retryTimer !== undefined) clearTimer(retryTimer);
     retryTimer = undefined;
     connecting?.abort();
     connecting = undefined;
+    unpublishVideo();
     const current = carrier;
     if (current && pause) pauseCapture();
     carrier = undefined;
@@ -188,6 +297,8 @@ export function createVoiceCall({
       });
       update({phase: 'live', carrier: 'open', reason: null});
       if (capturePaused) {capturePaused = false; synchronizeCapture(state.muted);}
+      publishVideo();
+      applyShown();
       // A lost signalling connection must not retain audio after the
       // authenticated carrier says this grant no longer has authority.
       void session.authorityLost?.then(() => {
@@ -237,6 +348,8 @@ export function createVoiceCall({
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
     update({canPublish, muted: canPublish ? state.muted : true, participants: participants()});
     connect();
+    // Someone joined or left: the shown pictures follow their publications.
+    applyShown();
   }
 
   function ended(call, reason) {
@@ -256,6 +369,7 @@ export function createVoiceCall({
     generation++;
     grant = undefined;
     speaking.clear();
+    stopVideo();
     const session = audioSession;
     audioSession = undefined;
     audioController?.abort();
@@ -305,6 +419,19 @@ export function createVoiceCall({
       update({muted: wantMuted});
       await (audioSession ?? await audioStarting)?.setMuted(wantMuted || capturePaused);
     },
+    /** Turn the camera or a shared screen on or off in the call. */
+    setVideo,
+    /** The pictures the app shows: `[{person, source, layer}]`. */
+    showPictures(pictures) {
+      shown = pictures.filter(item => !participants().some(participant => participant.self && participant.user === item.person));
+      const self = participants().find(participant => participant.self);
+      ownLayer = pictures.find(item => item.source === 'camera' && item.person === self?.user)?.layer ?? null;
+      applyShown();
+    },
+    /** The pictures received after `after`: `{pictures, cursor}`, objects in base64. */
+    takePictures: (after, budget) => inbox.take(after, budget),
+    /** Resolves when a picture arrives or `ms` passed. */
+    waitPictures: ms => inbox.wait(ms),
     /** The microphones to choose from. Labels appear once the page may use one. */
     inputs: () => audioInputs(environment),
     async selectInput(deviceId) {

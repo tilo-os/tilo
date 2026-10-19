@@ -21,6 +21,10 @@ chat-call-undeafen = Undeafen
 chat-call-audio-only = Audio only
 chat-call-collapse = Collapse
 chat-call-leave = Leave
+chat-call-camera-on = Camera
+chat-call-camera-off = Stop camera
+chat-call-share-screen = Share screen
+chat-call-stop-sharing = Stop sharing
 
 # Emoji picker: its title when inserting into the composer or reacting to a
 # message, the search field's placeholder and the grid's section headings.
@@ -47,6 +51,10 @@ chat-call-issue-capture-failed = Microphone could not start
 chat-call-issue-transport-failed = Call disconnected
 chat-call-issue-session-ended = Call ended
 chat-call-issue-stale = Call session expired
+chat-call-issue-camera-denied = Camera permission was denied
+chat-call-issue-camera-lost = Camera stopped
+chat-call-issue-screen-denied = Screen sharing was not allowed
+chat-call-issue-screen-lost = Screen sharing stopped
 
 chat-call-title = Call: { $channel }
 chat-call-open = Open call conversation
@@ -74,7 +82,6 @@ chat-call-stream-status = { $count } audio streams · { $status }
 # "Plan a meeting", the palette, agents). Video is published but unavailable.
 chat-start-call = Start a call
 chat-start-video-call = Start a video call
-chat-start-video-call-unavailable = Calls are voice-only for now; video is not supported yet
 
 # Durable evidence attached to an agent's reply; availability comes from presence.
 chat-agent-work-taken = Request accepted

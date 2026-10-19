@@ -20,6 +20,9 @@
 //! is present but cannot actually run, so a selection that reads as hardware
 //! has been observed to work.
 //!
+//! [`capture`] feeds a call: the camera, or a moving test picture, as NV12
+//! frames for the encoder.
+//!
 //! [`CodecCapabilities`] and [`negotiate`] decide which codec two or more
 //! peers should use: AV1, then VP9, when the sender can encode it in hardware
 //! and every receiver can decode it in hardware; otherwise H.264.
@@ -33,8 +36,14 @@ use std::time::Duration;
 
 pub use crate::hw::realtime::{CodecElement, CodecFamily, CodecTier, RealtimePolicy, StreamCodec};
 
+pub mod capture;
 #[cfg(gst_realtime)]
 mod gst_impl;
+/// The page's decoder: WebCodecs.
+#[cfg(web_page)]
+mod web_decoder;
+#[cfg(web_page)]
+pub use web_decoder::RealtimeDecoder;
 
 #[cfg(all(gst_realtime, unix))]
 pub use gst_impl::upload_to_dmabuf;
@@ -681,10 +690,9 @@ fn leb128(data: &[u8]) -> Option<(u64, usize)> {
 /// Real-time media without `GStreamer`: every constructor says so.
 #[cfg(not(gst_realtime))]
 mod unavailable {
-    use super::{
-        CodecCapabilities, DecodedPicture, DecoderConfig, EncodedUnit, EncoderConfig, InputFrame,
-        RealtimeError,
-    };
+    use super::{CodecCapabilities, EncodedUnit, EncoderConfig, InputFrame, RealtimeError};
+    #[cfg(not(web_page))]
+    use super::{DecodedPicture, DecoderConfig};
     use crate::hw::realtime::CodecElement;
     use std::time::Duration;
 
@@ -739,11 +747,13 @@ mod unavailable {
     }
 
     /// Placeholder for builds without `--features realtime`.
+    #[cfg(not(web_page))]
     #[derive(Debug)]
     pub struct RealtimeDecoder {
         never: Never,
     }
 
+    #[cfg(not(web_page))]
     impl RealtimeDecoder {
         /// # Errors
         ///
@@ -807,8 +817,10 @@ mod unavailable {
     pub fn rescan_registry() {}
 }
 
+#[cfg(all(not(gst_realtime), not(web_page)))]
+pub use unavailable::RealtimeDecoder;
 #[cfg(not(gst_realtime))]
-pub use unavailable::{RealtimeDecoder, RealtimeEncoder, local_capabilities, rescan_registry};
+pub use unavailable::{RealtimeEncoder, local_capabilities, rescan_registry};
 
 #[cfg(test)]
 mod tests {

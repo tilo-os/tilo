@@ -608,6 +608,31 @@ impl CaptureBroker {
         })
     }
 
+    /// Keep a lease that is still current for another [`CAPTURE_LEASE_TTL`]
+    /// from `now`: a capture the person allowed lasts as long as the session
+    /// it was allowed for, not [`CAPTURE_LEASE_TTL`] past its start.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a lease that expired, was revoked or released,
+    /// belongs to another binding, or whose kind is switched off.
+    pub fn renew(
+        &mut self,
+        lease_id: CaptureLeaseId,
+        binding: &CaptureSessionBinding,
+        now: Instant,
+    ) -> Result<(), CaptureBrokerError> {
+        self.resolve(lease_id, binding, now)?;
+        let lease = self
+            .leases
+            .get_mut(&lease_id)
+            .ok_or(CaptureBrokerError::InvalidLease)?;
+        lease.expires_at = now
+            .checked_add(CAPTURE_LEASE_TTL)
+            .unwrap_or(lease.expires_at);
+        Ok(())
+    }
+
     pub fn release(&mut self, lease_id: CaptureLeaseId) -> bool {
         self.revoke_one(lease_id, CaptureRevocation::Released)
     }
@@ -1044,6 +1069,45 @@ mod tests {
             };
             assert_eq!(fd.as_raw_fd(), expected);
         }
+    }
+
+    #[test]
+    fn a_renewed_lease_outlives_its_first_term_and_a_revoked_one_cannot_be_renewed() {
+        let mut broker = broker();
+        let owner = binding("meet", "work", "call");
+        let start = Instant::now();
+        let auth = broker
+            .authorize(&owner, "camera-front", CaptureKind::Camera, start)
+            .unwrap();
+        let lease = broker
+            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, start)
+            .unwrap();
+        let halfway = start + CAPTURE_LEASE_TTL / 2;
+        broker.renew(lease, &owner, halfway).unwrap();
+        let past_first_term = start + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+        broker.reap_expired(past_first_term);
+        assert!(
+            broker.resolve(lease, &owner, past_first_term).is_ok(),
+            "a renewed lease lasts past its first term"
+        );
+        let other = binding("meet", "work", "other-call");
+        assert!(broker.renew(lease, &other, past_first_term).is_err());
+        let far = past_first_term + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+        broker.reap_expired(far);
+        assert!(
+            broker.renew(lease, &owner, far).is_err(),
+            "an expired lease stays expired"
+        );
+
+        // Switching the camera off ends its leases for good.
+        let auth = broker
+            .authorize(&owner, "camera-front", CaptureKind::Camera, far)
+            .unwrap();
+        let lease = broker
+            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, far)
+            .unwrap();
+        broker.set_kill_switch(CaptureKind::Camera, true);
+        assert!(broker.renew(lease, &owner, far).is_err());
     }
 
     #[test]

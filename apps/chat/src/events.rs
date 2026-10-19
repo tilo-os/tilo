@@ -370,7 +370,12 @@ impl ChatApp {
             self.hit_at(self.last_mouse).filter(|hit| {
                 matches!(
                     hit,
-                    Hit::CallParticipantsToggle | Hit::CallMute | Hit::CallExpand | Hit::CallLeave
+                    Hit::CallParticipantsToggle
+                        | Hit::CallMute
+                        | Hit::CallCamera
+                        | Hit::CallScreen
+                        | Hit::CallExpand
+                        | Hit::CallLeave
                 )
             })
         };
@@ -999,6 +1004,8 @@ impl ChatApp {
                     self.media_error = Some(error);
                 }
             }
+            Hit::CallCamera => self.toggle_call_picture(ui::native_media::PictureSource::Camera),
+            Hit::CallScreen => self.toggle_call_picture(ui::native_media::PictureSource::Screen),
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -2314,6 +2321,7 @@ mod tests {
             snapshot.rosters = vec![ui::native_media::Roster {
                 channel_id: channel.into(),
                 people: (1..=count).map(|index| format!("{index:064x}")).collect(),
+                ..Default::default()
             }];
         }
         assert!(snapshot.valid());
@@ -5473,16 +5481,50 @@ mod tests {
     }
 
     #[test]
-    fn start_video_call_is_refused_because_calls_are_voice_only() {
+    fn a_video_call_turns_the_camera_on_once_the_call_is_live() {
         let (mut app, mut doc) = app_with_doc();
         let before = doc.save();
-        let error = app
-            .answer_effect(crate::effects::ChatEffect::StartVideoCall)
-            .expect_err("video calls are refused");
-        assert_eq!(error, crate::effects::video_call_unavailable_reason());
-        assert!(!app.call.active);
-        assert!(voice_joins(&mut app).is_empty());
-        assert_eq!(doc.save(), before);
+        app.answer_effect(crate::effects::ChatEffect::StartVideoCall)
+            .expect("a video call starts");
+        assert!(app.call.active);
+        let joins: Vec<u64> = {
+            use ui::widget::Collaborative as _;
+            app.take_collab_requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    ui::collaboration::CollabRequest::NativeMediaCommand {
+                        request_id,
+                        command,
+                    } if matches!(command.command, ui::native_media::Command::Join { .. }) => {
+                        Some(request_id)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(joins.len(), 1, "it joins the voice channel");
+        assert!(app.camera_on_live, "the camera waits for the call");
+        let mut live = ui::native_media::Snapshot::unavailable();
+        live.state = ui::native_media::State::Live;
+        live.issue = None;
+        app.native_voice.complete(joins[0], &Ok(live));
+        app.project_native_voice();
+        assert!(!app.camera_on_live);
+        let requests = app.native_voice.take_requests(ui::time::now());
+        assert!(
+            requests.iter().any(|request| matches!(
+                request,
+                ui::collaboration::CollabRequest::NativeMediaCommand {
+                    command: ui::native_media::Request {
+                        command: ui::native_media::Command::SetCamera { on: true },
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "the camera is asked for once the call is live"
+        );
+        assert_eq!(doc.save(), before, "a call writes nothing into the room");
     }
 
     /// Answer every voice request with the broker's reply when this app has

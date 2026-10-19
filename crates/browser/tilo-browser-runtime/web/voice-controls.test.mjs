@@ -201,3 +201,50 @@ test('a watch answers when someone joins the room\'s call, and holds while nothi
   assert.equal(stale.revision, answered.revision, 'an out-of-date watcher is answered at once');
   assert.equal(looks, 3);
 });
+
+test('the camera and a shared screen turn on in a live call from a gesture, and the room says who shows what', async () => {
+  const f = fixture();
+  const video = [];
+  f.voice.call.setVideo = async (source, on) => { video.push([source, on]); f.state[source] = on; };
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  // Not before the call is live.
+  await assert.rejects(f.controls.execute(f.request({op: 'set_camera', on: true})), /live/);
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  const on = await f.controls.execute(f.request({op: 'set_camera', on: true}));
+  assert.deepEqual(video, [['camera', true]]);
+  assert.equal(on.camera, true);
+  assert.equal(on.screen, undefined, 'written only when set');
+  await f.controls.execute(f.request({op: 'set_screen', on: true}));
+  await f.controls.execute(f.request({op: 'set_camera', on: false}));
+  assert.deepEqual(video.slice(1), [['screen', true], ['camera', false]]);
+  const controls = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
+  await assert.rejects(controls.execute(f.request({op: 'set_screen', on: true})), /gesture/);
+
+  const ana = 'a'.repeat(64);
+  const ben = 'b'.repeat(64);
+  f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
+    participants: [{user: ana, camera: true}, {user: ben, screen: true}]}];
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}]);
+});
+
+test('the app says what it shows and collects the pictures as they arrive', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  const shown = [];
+  let queued = [];
+  f.voice.call.showPictures = pictures => shown.push(pictures);
+  f.voice.call.takePictures = after => {
+    const pictures = queued;
+    queued = [];
+    return {pictures, cursor: after + pictures.length};
+  };
+  f.voice.call.waitPictures = async () => { queued = [{person: 'a'.repeat(64), stream: 's', source: 'camera', object: 'AQABAf+A'}]; };
+  const pictures = [{person: 'a'.repeat(64), source: 'camera', layer: 'mid'}];
+  await f.controls.execute(f.request({op: 'show', pictures}));
+  assert.deepEqual(shown, [pictures]);
+  const answer = await f.controls.execute(f.request({op: 'pictures', after: 0}));
+  assert.equal(answer.pictures.length, 1);
+  assert.equal(answer.pictures_cursor, 1);
+  assert.equal(answer.state, 'live');
+});

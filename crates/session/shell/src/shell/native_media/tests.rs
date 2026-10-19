@@ -20,6 +20,14 @@ struct Device {
     /// Who the controlled call hears talking, and its revision.
     speaking: Mutex<Vec<String>>,
     speaking_revision: std::sync::atomic::AtomicU64,
+    /// The sources the controlled call publishes, and how often each started.
+    video: Mutex<Vec<PictureSource>>,
+    video_starts: AtomicUsize,
+    /// What the app shows, as the call was last told.
+    shown: Mutex<Vec<Shown>>,
+    /// Pictures waiting for the app.
+    pictures: Mutex<Vec<Picture>>,
+    arrived: Arc<tokio::sync::Notify>,
 }
 struct BackendFixture(Arc<Device>);
 impl MediaSession for BackendFixture {
@@ -73,6 +81,25 @@ impl MediaSession for BackendFixture {
     }
     fn speaking(&self) -> Vec<String> {
         self.0.speaking.lock().unwrap().clone()
+    }
+    fn start_video(&mut self, source: PictureSource) -> Result<(), Issue> {
+        self.0.video_starts.fetch_add(1, Ordering::SeqCst);
+        self.0.video.lock().unwrap().push(source);
+        Ok(())
+    }
+    fn stop_video(&mut self, source: PictureSource) {
+        self.0.video.lock().unwrap().retain(|on| *on != source);
+    }
+    fn show(&mut self, shown: Vec<Shown>) {
+        *self.0.shown.lock().unwrap() = shown;
+    }
+    fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
+        let pictures = std::mem::take(&mut *self.0.pictures.lock().unwrap());
+        let cursor = after.saturating_add(u64::try_from(pictures.len()).unwrap());
+        (pictures, cursor)
+    }
+    fn pictures_signal(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.0.arrived.clone())
     }
 }
 struct Factory(Arc<Device>);
@@ -163,7 +190,7 @@ impl Fixture {
     }
     fn request(&self, command: Command) -> Request {
         let mut request = Request::new(command);
-        if !matches!(request.command, Command::Status) {
+        if request.carries_intent() {
             request.intent = self.next.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         }
         request
@@ -827,4 +854,190 @@ async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_cha
         .unwrap();
     assert_eq!(answered.speaking, vec![ana]);
     assert_ne!(answered.revision, seen.revision);
+}
+
+impl Fixture {
+    /// A camera and a screen the broker knows, as the system's defaults.
+    fn with_camera_and_screen(self) -> Self {
+        let broker = self.service.capture_broker();
+        let mut broker = broker.lock().unwrap();
+        for (id, kind) in [
+            ("default-camera", CaptureKind::Camera),
+            ("primary-display", CaptureKind::Screen),
+        ] {
+            broker
+                .register_source(id, "Default", kind, LocalCaptureHandle::SystemDefault(kind))
+                .unwrap();
+        }
+        drop(broker);
+        self
+    }
+    async fn video_started(&self, count: usize) {
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            if self.device.video_starts.load(Ordering::SeqCst) >= count {
+                return;
+            }
+        }
+        panic!("the approved picture did not start");
+    }
+}
+
+#[tokio::test]
+async fn the_camera_turns_on_through_the_normal_prompt_shows_as_capturing_and_turns_off_at_once() {
+    let fixture = Fixture::new().with_camera_and_screen();
+    fixture.join().await;
+    let asked = fixture.command(Command::SetCamera { on: true });
+    assert!(!asked.camera, "nothing shows before the person answers");
+    let prompt = fixture
+        .prompts
+        .drain()
+        .pop()
+        .expect("the camera is asked for");
+    assert!(matches!(
+        prompt.capability,
+        super::super::state::Capability::Camera { .. }
+    ));
+    prompt.reply.send(PromptOutcome::AllowOnce).unwrap();
+    fixture.video_started(1).await;
+    let on = fixture.command(Command::Status);
+    assert!(on.camera && !on.screen);
+    // While it is on, the camera is captured under a lease: what the system
+    // shows as capturing.
+    let events = fixture
+        .service
+        .capture_broker()
+        .lock()
+        .unwrap()
+        .take_privacy_events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        crate::portal::capture_broker::CapturePrivacyEvent::Started {
+            kind: CaptureKind::Camera,
+            ..
+        }
+    )));
+    let off = fixture.command(Command::SetCamera { on: false });
+    assert!(!off.camera);
+    assert!(fixture.device.video.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_camera_refused_at_the_prompt_stays_off_and_says_so() {
+    let fixture = Fixture::new().with_camera_and_screen();
+    fixture.join().await;
+    fixture.command(Command::SetScreen { on: true });
+    let prompt = fixture
+        .prompts
+        .drain()
+        .pop()
+        .expect("screen sharing is asked for");
+    assert!(matches!(
+        prompt.capability,
+        super::super::state::Capability::Screencast { .. }
+    ));
+    prompt.reply.send(PromptOutcome::Deny).unwrap();
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    let status = fixture.command(Command::Status);
+    assert!(!status.screen);
+    assert_eq!(status.issue, Some(Issue::ScreenDenied));
+    assert_eq!(fixture.device.video_starts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn turning_the_camera_on_never_cancels_the_microphones_prompt_or_the_join() {
+    let fixture = Fixture::new().with_camera_and_screen();
+    fixture.join().await;
+    fixture.command(Command::SetMuted { muted: false });
+    fixture.command(Command::SetCamera { on: true });
+    let prompts = fixture.prompts.drain();
+    assert_eq!(prompts.len(), 2, "both are asked for, side by side");
+    for prompt in prompts {
+        prompt.reply.send(PromptOutcome::AllowOnce).unwrap();
+    }
+    fixture.video_started(1).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+        if fixture.device.starts.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+    }
+    assert_eq!(
+        fixture.device.starts.load(Ordering::SeqCst),
+        1,
+        "the microphone started"
+    );
+    assert!(fixture.command(Command::Status).camera);
+}
+
+#[tokio::test]
+async fn a_camera_switched_off_by_policy_stops_with_the_next_tick() {
+    let fixture = Fixture::new().with_camera_and_screen();
+    fixture.join().await;
+    fixture.command(Command::SetCamera { on: true });
+    fixture
+        .prompts
+        .drain()
+        .pop()
+        .unwrap()
+        .reply
+        .send(PromptOutcome::AllowOnce)
+        .unwrap();
+    fixture.video_started(1).await;
+    fixture
+        .service
+        .0
+        .apply_privacy(&crate::portal::lockdown::LockdownPolicy {
+            disable_camera: true,
+            ..Default::default()
+        });
+    fixture.tick();
+    let status = fixture.command(Command::Status);
+    assert!(!status.camera);
+    assert_eq!(status.issue, Some(Issue::CameraLost));
+    assert!(fixture.device.video.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_app_says_what_it_shows_and_collects_pictures_as_they_arrive() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    let shown = vec![Shown {
+        person: "ab".repeat(32),
+        source: PictureSource::Camera,
+        layer: runtime_collab::native_media::PictureLayer::Mid,
+    }];
+    let showing = fixture
+        .service
+        .command_for(
+            fixture.caller.clone(),
+            fixture.request(Command::Show {
+                pictures: shown.clone(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(showing.state, State::Live);
+    assert_eq!(*fixture.device.shown.lock().unwrap(), shown);
+
+    // A collection waits for a picture, and is answered the moment one
+    // arrives.
+    let waiting = fixture.service.pictures(fixture.caller.clone(), 0);
+    let device = fixture.device.clone();
+    let arrive = async move {
+        tokio::task::yield_now().await;
+        device.pictures.lock().unwrap().push(Picture {
+            person: "ab".repeat(32),
+            stream: "s".into(),
+            source: PictureSource::Camera,
+            object: vec![1; 40],
+        });
+        device.arrived.notify_waiters();
+    };
+    let (answer, ()) = tokio::join!(waiting, arrive);
+    let answer = answer.unwrap();
+    assert_eq!(answer.pictures.len(), 1);
+    assert_eq!(answer.pictures_cursor, 1);
+    assert!(answer.valid());
 }
