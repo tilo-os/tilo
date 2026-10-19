@@ -849,18 +849,6 @@ def test_only_module_files(dependency: Path) -> set[Path]:
     return excluded
 
 
-def production_dependency_code(dependency: Path) -> str:
-    """The dependency's shipping sources, with test-only items blanked."""
-    excluded = test_only_module_files(dependency)
-    sources: list[str] = []
-    for source in sorted((dependency / "src").rglob("*.rs")):
-        relative = source.relative_to(dependency).as_posix()
-        if is_test_source(relative) or source.resolve() in excluded:
-            continue
-        sources.append(production_code(source.read_text(encoding="utf-8")))
-    return "\n".join(sources)
-
-
 def definition_tail(body: str) -> str:
     """The expression a `definition()` returns, without a trailing semicolon."""
     tail = body.strip()
@@ -869,13 +857,13 @@ def definition_tail(body: str) -> str:
     return tail
 
 
-def definition_app_type(body: str) -> str | None:
-    """The `ResourceApp` type a canonical production `definition()` builds."""
+def definition_app_path(body: str) -> str | None:
+    """The `ResourceApp` path a canonical production `definition()` builds."""
     tail = definition_tail(body)
     for pattern in (DEFINITION_BUILT_IN, DEFINITION_FRAMEWORK):
         match = pattern.fullmatch(tail)
         if match is not None:
-            return rust_type_name(match.group("app"))
+            return re.sub(r"\s+", "", match.group("app"))
     return None
 
 
@@ -934,28 +922,192 @@ def reexported_definition_module(items: str) -> list[str] | None:
 
 
 def module_source(crate_dir: Path, segments: list[str]) -> Path | None:
-    """The source file a module path names, if it exists."""
+    """The one source file a module path names, if it exists unambiguously."""
     source = crate_dir / "src"
     if not segments:
-        return source / "lib.rs"
+        root = source / "lib.rs"
+        return root if root.is_file() else None
     base = source.joinpath(*segments)
-    for candidate in (base.with_suffix(".rs"), base / "mod.rs"):
-        if candidate.is_file():
-            return candidate
-    return None
+    candidates = [
+        candidate
+        for candidate in (base.with_suffix(".rs"), base / "mod.rs")
+        if candidate.is_file()
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
-def exported_definition_body(crate_dir: Path) -> str | None:
-    """The body of the crate root's exported `definition()`, if unambiguous."""
+def module_segments(source: Path, crate_dir: Path) -> list[str] | None:
+    """The module path of `source` from the crate root."""
+    try:
+        relative = source.resolve().relative_to((crate_dir / "src").resolve())
+    except ValueError:
+        return None
+    if relative.name in {"lib.rs", "main.rs"}:
+        return [] if relative.parent == Path() else None
+    if relative.name == "mod.rs":
+        return list(relative.parent.parts)
+    if relative.suffix != ".rs":
+        return None
+    return list(relative.with_suffix("").parts)
+
+
+def split_path(path: str) -> list[str]:
+    """The identifiers in a Rust path, without whitespace."""
+    return [part for part in re.split(r"\s*::\s*", path.strip()) if part]
+
+
+def module_path_source(
+    crate_dir: Path, source: Path, segments: list[str]
+) -> Path | None:
+    """The module file a path written in `source` names.
+
+    A path is qualified from the crate root (`crate`), the current module
+    (`self`), its parents (`super`) or, for the plain form, either a child of
+    the current module or the crate root. Two different resolutions are
+    ambiguous: the caller gets nothing rather than one of them.
+    """
+    if not segments:
+        return source
+    base = module_segments(source, crate_dir)
+    if base is None:
+        return None
+    head = segments[0]
+    if head == "crate":
+        return module_source(crate_dir, segments[1:])
+    if head == "self":
+        return module_source(crate_dir, base + segments[1:])
+    if head == "super":
+        rest = list(segments)
+        while rest and rest[0] == "super":
+            if not base:
+                return None
+            base = base[:-1]
+            rest = rest[1:]
+        return module_source(crate_dir, base + rest)
+    local = module_source(crate_dir, base + segments)
+    absolute = module_source(crate_dir, segments)
+    if local is not None and absolute is not None:
+        if local.resolve() != absolute.resolve():
+            return None
+    return local or absolute
+
+
+USE_DECLARATION = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:\s*\([^)]*\))?\s+)?use\s+([^;]+);"
+)
+
+
+def use_origins(code: str) -> dict[str, list[list[str]]]:
+    """The target paths a module's top-level `use` declarations give each name."""
+    origins: dict[str, list[list[str]]] = {}
+    for match in USE_DECLARATION.finditer(code):
+        if brace_depth(code, match.start()) != 0:
+            continue
+        expression = " ".join(match.group(1).split()).lstrip(":")
+        prefix: list[str] = []
+        if "{" in expression:
+            if not expression.endswith("}"):
+                continue
+            head, group = expression.split("{", 1)
+            prefix = split_path(head.rstrip(":"))
+            items = group[:-1].split(",")
+        else:
+            items = [expression]
+        for item in items:
+            item = item.strip()
+            if not item or item in {"self", "*"}:
+                continue
+            local = None
+            if " as " in item:
+                item, local = [part.strip() for part in item.split(" as ", 1)]
+            target = split_path(item)
+            if not target:
+                continue
+            origins.setdefault(local or target[-1], []).append(prefix + target)
+    return origins
+
+
+def imported_type(
+    crate_dir: Path, source: Path, name: str
+) -> tuple[Path, str] | None:
+    """The one shipping type a top-level import names, in its own module."""
+    code = production_code(source.read_text(encoding="utf-8"))
+    origins = use_origins(code).get(name, [])
+    if len(origins) != 1 or not origins[0]:
+        return None
+    target = origins[0]
+    module = module_path_source(crate_dir, source, target[:-1])
+    return (module, target[-1]) if module is not None else None
+
+
+def definition_host_source(
+    crate_dir: Path, definition_source: Path, app_path: str
+) -> tuple[Path, str] | None:
+    """The module and type a definition's built host names, if unambiguous."""
+    segments = split_path(app_path)
+    if not segments:
+        return None
+    if len(segments) == 1:
+        imported = imported_type(crate_dir, definition_source, segments[0])
+        return imported or (definition_source, segments[0])
+    module = module_path_source(crate_dir, definition_source, segments[:-1])
+    return (module, segments[-1]) if module is not None else None
+
+
+def resource_provider_source(
+    crate_dir: Path, host_source: Path, resource_path: str
+) -> tuple[Path, str] | None:
+    """The module and type an associated resource names, if unambiguous."""
+    segments = split_path(resource_path)
+    if not segments:
+        return None
+    if len(segments) == 1:
+        imported = imported_type(crate_dir, host_source, segments[0])
+        return imported or (host_source, segments[0])
+    module = module_path_source(crate_dir, host_source, segments[:-1])
+    return (module, segments[-1]) if module is not None else None
+
+
+def shipping_source(source: Path, dependency: Path, excluded: set[Path]) -> bool:
+    """Whether `source` is production code of `dependency`."""
+    try:
+        relative = source.resolve().relative_to(dependency.resolve()).as_posix()
+    except ValueError:
+        return False
+    return not is_test_source(relative) and source.resolve() not in excluded
+
+
+def top_level_resource_app_impls(code: str, app_type: str) -> list[re.Match]:
+    """The `ResourceApp` impls for `app_type` declared in this module itself."""
+    return [
+        match
+        for match in RESOURCE_APP_IMPL.finditer(code)
+        if brace_depth(code, match.start()) == 0
+        and rust_type_name(match.group(1)) == app_type
+    ]
+
+
+def declared_resource_names(code: str) -> set[str]:
+    """Types this module itself declares as a framework resource."""
+    names: set[str] = set()
+    for pattern in (RESOURCE_IMPL, RESOURCE_ATTRIBUTE):
+        for match in pattern.finditer(code):
+            if brace_depth(code, match.start()) == 0:
+                names.add(rust_type_name(match.group(1)))
+    return names
+
+
+def exported_definition(crate_dir: Path) -> tuple[Path, str] | None:
+    """The source and body of the crate root's exported `definition()`."""
     root = crate_dir / "src" / "lib.rs"
     if not root.is_file():
         return None
     code = production_code(root.read_text(encoding="utf-8"))
-    bodies: list[str] = []
+    bodies: list[tuple[Path, str]] = []
     test_only = test_only_module_files(crate_dir)
     direct = top_level_definition_body(code)
     if direct is not None:
-        bodies.append(direct)
+        bodies.append((root, direct))
     for match in PUBLIC_USE.finditer(code):
         if brace_depth(code, match.start()) != 0:
             continue
@@ -972,33 +1124,8 @@ def exported_definition_body(crate_dir: Path) -> str | None:
             continue
         body = top_level_definition_body(production_code(source.read_text(encoding="utf-8")))
         if body is not None:
-            bodies.append(body)
+            bodies.append((source, body))
     return bodies[0] if len(bodies) == 1 else None
-
-
-def resource_app_resource(code: str, app_type: str) -> str | None:
-    """The associated resource type of the `ResourceApp` impl for `app_type`."""
-    for match in RESOURCE_APP_IMPL.finditer(code):
-        if rust_type_name(match.group(1)) != app_type:
-            continue
-        body = brace_body(code, match.start()) or ""
-        resource = ASSOCIATED_RESOURCE.search(body)
-        if resource is not None:
-            return rust_type_name(resource.group(1))
-    return None
-
-
-def declares_resource(code: str, resource: str) -> bool:
-    """Whether `resource` itself carries the framework's resource declaration."""
-    if any(
-        rust_type_name(match.group(1)) == resource
-        for match in RESOURCE_IMPL.finditer(code)
-    ):
-        return True
-    return any(
-        rust_type_name(match.group(1)) == resource
-        for match in RESOURCE_ATTRIBUTE.finditer(code)
-    )
 
 
 def shared_framework_host(
@@ -1015,15 +1142,18 @@ def shared_framework_host(
     `definition()` must return exactly one delegation, and the dependency
     root's exported `definition()` must return exactly one canonical
     `built_in_definition!` or `framework::definition::<..>()` tail that
-    builds the re-exported host. That host's `ResourceApp` impl must name a
-    resource, and that resource must carry the declaration. Anything else —
-    an unused construction, another statement, a private namesake, `type
-    Resource = Unrelated`, an unrelated `#[resource]` or a test-only impl —
-    publishes nothing.
+    builds the re-exported host.
+
+    The built host's module is resolved from that tail, and only that module
+    may declare its `ResourceApp` impl and the associated resource's
+    declaration. A same-named host or resource in another module, an
+    ambiguous path or import, or a test-only module publishes nothing. The
+    app root must re-export exactly the host the definition builds.
     """
-    body = exported_definition_body(app_dir)
-    if body is None:
+    definition = exported_definition(app_dir)
+    if definition is None:
         return False
+    _, body = definition
     delegated = definition_delegate(body)
     if delegated is None:
         return False
@@ -1045,15 +1175,42 @@ def shared_framework_host(
             source = dependency / "src"
             if not source.is_dir():
                 continue
-            definition = exported_definition_body(dependency)
+            definition = exported_definition(dependency)
             if definition is None:
                 continue
-            app_type = definition_app_type(definition)
-            if app_type is None or (not glob and app_type not in names):
+            definition_source, definition_body = definition
+            app_path = definition_app_path(definition_body)
+            if app_path is None:
                 continue
-            production = production_dependency_code(dependency)
-            resource = resource_app_resource(production, app_type)
-            if resource is None or not declares_resource(production, resource):
+            app_type = rust_type_name(app_path)
+            if not glob and app_type not in names:
+                continue
+            host = definition_host_source(dependency, definition_source, app_path)
+            if host is None:
+                continue
+            host_source, host_type = host
+            excluded = test_only_module_files(dependency)
+            if not shipping_source(host_source, dependency, excluded):
+                continue
+            host_code = production_code(host_source.read_text(encoding="utf-8"))
+            impls = top_level_resource_app_impls(host_code, host_type)
+            if len(impls) != 1:
+                continue
+            resource = ASSOCIATED_RESOURCE.search(
+                brace_body(host_code, impls[0].start()) or ""
+            )
+            if resource is None:
+                continue
+            provider = resource_provider_source(
+                dependency, host_source, resource.group(1)
+            )
+            if provider is None:
+                continue
+            resource_source, resource_type = provider
+            if not shipping_source(resource_source, dependency, excluded):
+                continue
+            resource_code = production_code(resource_source.read_text(encoding="utf-8"))
+            if resource_type not in declared_resource_names(resource_code):
                 continue
             return True
     return False
