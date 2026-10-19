@@ -474,6 +474,34 @@ impl FilesProvider {
         }
     }
 
+    /// A provider over a home already walked, holding these `~/…` paths,
+    /// each changed just now, and no content index: what a query meets
+    /// once the walk is done, without a walk.
+    #[cfg(test)]
+    pub(crate) fn with_walked_names(names: &[&str]) -> Self {
+        let home = PathBuf::from("/home/tester");
+        let entries = names
+            .iter()
+            .map(|display| NameEntry {
+                path: PathBuf::from(display.replacen('~', "/home/tester", 1)),
+                facts: NameFacts::new(display, Some(SystemTime::now())),
+                display: (*display).to_owned(),
+                is_dir: false,
+            })
+            .collect();
+        let ready = OnceLock::new();
+        let _ = ready.set(());
+        let tantivy = OnceLock::new();
+        let _ = tantivy.set(None);
+        Self {
+            home,
+            name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
+            tantivy,
+            ready,
+            watch: OnceLock::new(),
+        }
+    }
+
     /// Open the content index and kick the background name walk once.
     /// Users who query before the walk finishes get only the content index.
     fn ensure_ready(&self) {
