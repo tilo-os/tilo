@@ -6,6 +6,11 @@ Type=oneshot
 # Same rule as the system update: nothing is fetched over a connection the
 # owner asked to spare (os/usr/libexec/tilo-update-policy-check).
 ExecCondition=/usr/libexec/tilo-update-policy-check
+# Flathub's catalogue metadata, which search and the Store read from
+# Flatpak's cache (crates/packaging/app-catalogue). Metadata only: nothing is
+# installed or updated, and a device without Flathub skips it. First,
+# so an app update that fails does not leave the catalogue stale.
+ExecStart=-/usr/bin/flatpak update --appstream --noninteractive
 # Every installed app to the newest build this system can run; a build for
 # other interface versions is never offered (docs/architecture/compatibility.md).
 ExecStart=/usr/bin/app update
