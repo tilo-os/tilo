@@ -94,6 +94,17 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
+/// How an author is shown: a person's face in their colour, or the agent
+/// mark for software acting for someone.
+fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
+    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short);
+    if author.relation == crate::widget::history::AuthorRelation::Software {
+        face.glyph(crate::icons::Icon::Bot)
+    } else {
+        face.presence(colour)
+    }
+}
+
 /// Top edge that centres one line of `size`-px text on `center_y`. The line
 /// box the renderer paints is `line_height × size` — a quarter taller than
 /// the font size at the default 1.25 — and it carries the accessibility text
@@ -324,6 +335,12 @@ pub struct ActivityTimeline {
     /// matches what was actually painted.
     chip_rects: Vec<(ChipKind, Rect)>,
     author_pill_rect: Rect,
+    /// The strip filters by who made the changes ([`Self::set_filters_people`]):
+    /// Everyone, then each person and agent in the history.
+    filters_people: bool,
+    /// The people chips as painted: the author each narrows to (`None` for
+    /// Everyone) and its hit rect.
+    people_chip_rects: Vec<(Option<String>, Rect)>,
     /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
     /// theme-less hit-test accessors can grow a chip's target to it.
     min_pointer_target: f64,
@@ -387,6 +404,8 @@ impl ActivityTimeline {
             newest_first: true,
             chip_rects: Vec::new(),
             author_pill_rect: Rect::ZERO,
+            filters_people: false,
+            people_chip_rects: Vec::new(),
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             show_author_pill: true,
             show_day_headings: false,
@@ -547,6 +566,59 @@ impl ActivityTimeline {
             self.draws_own_surface = draws;
             self.dirty = true;
         }
+    }
+
+    /// Filter by who made the changes instead of by what kind they are: the
+    /// strip shows Everyone, then each person and each agent in the history,
+    /// and choosing one shows only their changes.
+    pub fn set_filters_people(&mut self, people: bool) {
+        if self.filters_people != people {
+            self.filters_people = people;
+            self.dirty = true;
+        }
+    }
+
+    /// Show only `author`'s changes, or everyone's (`None`).
+    pub fn filter_by_author(&mut self, author: Option<&str>) {
+        let authors: Vec<String> = author.map(str::to_owned).into_iter().collect();
+        if self.filter.authors != authors {
+            self.filter.authors = authors;
+            self.rebuild();
+            self.dirty = true;
+        }
+    }
+
+    /// Who made the changes in this history, each once: people first, then
+    /// agents, each in the order their latest change is listed.
+    pub fn people(&self) -> Vec<HistoryAuthor> {
+        let mut people: Vec<HistoryAuthor> = Vec::new();
+        let mut agents: Vec<HistoryAuthor> = Vec::new();
+        let mut order: Vec<usize> = (0..self.entries.len()).collect();
+        if self.newest_first {
+            order.sort_by_key(|&i| std::cmp::Reverse(self.entries.get(i).map(|e| e.timestamp)));
+        }
+        for index in order {
+            let Some(entry) = self.entries.get(index) else {
+                continue;
+            };
+            if entry.is_genesis() || entry.author.name.trim().is_empty() {
+                continue;
+            }
+            let seen = people
+                .iter()
+                .chain(agents.iter())
+                .any(|known| known.name == entry.author.name);
+            if seen {
+                continue;
+            }
+            if entry.author.relation == crate::widget::history::AuthorRelation::Software {
+                agents.push(entry.author.clone());
+            } else {
+                people.push(entry.author.clone());
+            }
+        }
+        people.extend(agents);
+        people
     }
 
     /// In the words the host's own control uses.
@@ -946,6 +1018,11 @@ impl ActivityTimeline {
     /// Proportional to the pane with a floor so a name is never squeezed to
     /// nothing.
     fn author_slot_w(&self) -> f64 {
+        if self.filters_people {
+            // One document's History names people by first name and agents
+            // by their own: the summary takes the room.
+            return 96.0;
+        }
         (self.rect.width() * 0.32).clamp(84.0, AUTHOR_SLOT_W)
     }
 
@@ -1914,7 +1991,7 @@ impl ActivityTimeline {
         let dot_x = if entry.is_genesis() {
             row.x0 + 8.0 + AVATAR_DIAM / 2.0
         } else {
-            Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry)
+            Self::draw_row_avatar(ctx, row, cy, entry)
         };
 
         // Reserved only when hovered — reserving it on every row cost the
@@ -1941,33 +2018,20 @@ impl ActivityTimeline {
         self.draw_row_trailing(ctx, &layout, entry, now);
     }
 
-    /// The avatar dot; returns its center x so the author cluster can start
-    /// just past it.
-    fn draw_row_avatar(
-        scene: &mut Scene,
-        transform: Affine,
-        row: Rect,
-        cy: f64,
-        entry: &HistoryEntry,
-    ) -> f64 {
+    /// The author's face; returns its center x so the author cluster can
+    /// start just past it. A person is their round face in their colour;
+    /// software acting for someone (an agent, a Shortcut, an app) is the
+    /// agent mark on a square, as it shows everywhere else.
+    fn draw_row_avatar(ctx: &mut PaintCtx<'_>, row: Rect, cy: f64, entry: &HistoryEntry) -> f64 {
         let (r, g, b) = entry.author.rgb();
-        let dot_color = Color::from_rgba8(r, g, b, 255);
         let dot_x = row.x0 + 8.0 + AVATAR_DIAM / 2.0;
-        // A person is a filled dot in their colour; software acting for
-        // someone (an agent, a Shortcut, an app) is a ring.
-        if entry.author.relation == crate::widget::history::AuthorRelation::Software {
-            let ring = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0 - 0.75);
-            scene.stroke(&Stroke::new(1.5), transform, dot_color, None, &ring);
-        } else {
-            let dot = Circle::new(Point::new(dot_x, cy), AVATAR_DIAM / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                dot_color,
-                None,
-                &dot,
-            );
-        }
+        let face = Rect::new(
+            dot_x - AVATAR_DIAM / 2.0,
+            cy - AVATAR_DIAM / 2.0,
+            dot_x + AVATAR_DIAM / 2.0,
+            cy + AVATAR_DIAM / 2.0,
+        );
+        author_face(&entry.author, Color::from_rgb8(r, g, b)).paint(ctx, face);
         dot_x
     }
 
@@ -2101,9 +2165,14 @@ impl ActivityTimeline {
             (label, width)
         });
         let chip_reserve = bot_chip.as_ref().map_or(0.0, |(_, width)| width + 6.0);
+        let shown = match &entry.author.attribution {
+            // An agent's own name; its row's place in the History says for whom.
+            Some(who) if self.filters_people => who.actor_name.as_str(),
+            _ => entry.author.name.as_str(),
+        };
         let name = fit_text(
             text_renderer,
-            entry.author.name.as_str(),
+            shown,
             text_style,
             (slot_end - x - chip_reserve).max(24.0),
         );
@@ -2165,17 +2234,23 @@ impl ActivityTimeline {
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
-        let glyph = entry.entry_kind.glyph();
-        let line_top = text_top(text_renderer, text_style, cy);
-        text_renderer.draw_style(
+        // What kind of change it was, as an icon of the set.
+        let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+        crate::icons::draw_icon(
             scene,
-            glyph,
+            transform,
+            Rect::new(
+                glyph_x,
+                cy - icon_side / 2.0,
+                glyph_x + icon_side,
+                cy + icon_side / 2.0,
+            ),
+            entry.entry_kind.icon(),
             theme.tokens.colors.text_dim,
-            transform.pre_translate((glyph_x, line_top).into()),
-            None,
-            text_style,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
+        let line_top = text_top(text_renderer, text_style, cy);
         let summary_x = glyph_x + 24.0;
         let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET;
         let (summary_owned, is_redacted_row): (String, bool) =
@@ -2190,7 +2265,14 @@ impl ActivityTimeline {
                     true,
                 )
             } else {
-                let summary = Self::entry_breadcrumb(entry).map_or_else(
+                let breadcrumb = if self.filters_people {
+                    // One document's History: every change is of this app and
+                    // this document, so naming them is noise.
+                    None
+                } else {
+                    Self::entry_breadcrumb(entry)
+                };
+                let summary = breadcrumb.map_or_else(
                     || entry.summary.clone(),
                     |breadcrumb| format!("{breadcrumb} · {}", entry.summary),
                 );
@@ -2576,10 +2658,14 @@ impl ActivityTimeline {
         let meta_style = theme.text(TextRole::Caption);
         let rel = format_relative_time(rg.last_time, now);
         let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
-        // Author dots sit between the subtitle and the timestamp; reserve them.
-        let dots = rg.authors.len().min(3);
-        let dots_w = if dots > 0 {
-            f64_of_usize(dots) * 10.0 + 6.0
+        // The faces of who worked in the band sit between the subtitle and
+        // the timestamp; reserve them.
+        let faces = rg.authors.len().min(3);
+        // A face is a row's avatar; neighbours overlap by the related gap.
+        let face_d = AVATAR_DIAM;
+        let overlap = f64::from(theme.tokens.spacing.s1);
+        let dots_w = if faces > 0 {
+            face_d + f64_of_usize(faces - 1) * (face_d - overlap) + 6.0
         } else {
             0.0
         };
@@ -2613,19 +2699,24 @@ impl ActivityTimeline {
             &meta_style,
         );
 
-        // Author dots, packed tight, on the meta line's measured centre.
-        let dot_cy = meta_y + f64::from(rel_h) / 2.0;
-        let mut dx = row.x1 - TRAILING_INSET - 8.0 - f64::from(rel_w);
+        // Their faces, overlapping, on the meta line's measured centre: each
+        // in their own colour, as presence shows them.
+        let face_cy = meta_y + f64::from(rel_h) / 2.0;
+        let mut x1 = row.x1 - TRAILING_INSET - 6.0 - f64::from(rel_w);
+        let ground = theme.tokens.colors.surfaces.inspector;
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for a in rg.authors.iter().take(3) {
             let (r, g, b) = a.rgb();
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                Color::from_rgba8(r, g, b, 255),
-                None,
-                &Circle::new(Point::new(dx, dot_cy), 4.0),
+            let face = Rect::new(
+                x1 - face_d,
+                face_cy - face_d / 2.0,
+                x1,
+                face_cy + face_d / 2.0,
             );
-            dx -= 10.0;
+            author_face(a, Color::from_rgb8(r, g, b))
+                .ringed_on(ground)
+                .paint(&mut ctx, face);
+            x1 -= face_d - overlap;
         }
     }
 
@@ -2712,6 +2803,13 @@ impl ActivityTimeline {
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
         // with what was just painted.
         self.chip_rects.clear();
+        self.people_chip_rects.clear();
+        if self.filters_people {
+            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+            self.draw_people_chips(&mut ctx, &paint);
+            self.author_pill_rect = Rect::ZERO;
+            return;
+        }
 
         // The author pill is anchored right when this standalone widget owns
         // people filtering. RoomActivity can supply that control itself.
@@ -2800,6 +2898,54 @@ impl ActivityTimeline {
         }
     }
 
+    /// Everyone, then a chip per person and agent: a person's in their
+    /// colour, an agent's with the agent mark. Chips that do not fit are
+    /// left out rather than squeezed.
+    fn draw_people_chips(&mut self, ctx: &mut PaintCtx<'_>, paint: &FilterStripPaint) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let &FilterStripPaint { strip, chip_h } = paint;
+        let cy = f64::midpoint(strip.y0, strip.y1);
+        let chosen = self.filter.authors.first().cloned();
+        let everyone = crate::i18n!("history-chip-all");
+        let mut chips: Vec<(Option<String>, String, crate::widget::ChipLead)> =
+            vec![(None, everyone, crate::widget::ChipLead::None)];
+        for author in self.people() {
+            let lead = if author.relation == crate::widget::history::AuthorRelation::Software {
+                crate::widget::ChipLead::Glyph(crate::icons::Icon::Bot)
+            } else {
+                let (r, g, b) = author.rgb();
+                crate::widget::ChipLead::Face(Color::from_rgb8(r, g, b))
+            };
+            // An agent's chip names the agent itself; its rows say for whom.
+            let label = author
+                .attribution
+                .as_ref()
+                .map_or_else(|| author.name.clone(), |who| who.actor_name.clone());
+            chips.push((Some(author.name.clone()), label, lead));
+        }
+        let mut x = strip.x0;
+        for (author, label, lead) in chips {
+            let chip_w =
+                crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);
+            if x + chip_w > strip.x1 && !self.people_chip_rects.is_empty() {
+                break;
+            }
+            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+            self.people_chip_rects
+                .push((author.clone(), self.hit_rect_within(chip_rect, strip)));
+            crate::widget::ChipFace::new(chip_rect, &label)
+                .lead(lead)
+                .selected(author == chosen)
+                .paint(scene, transform, text_renderer, theme);
+            x += chip_w + CHIP_GAP;
+        }
+    }
+
     /// The right-anchored `author:...` pill.
     fn draw_author_pill(
         &mut self,
@@ -2834,6 +2980,11 @@ impl ActivityTimeline {
     ) {
         self.name_selection_rect = Rect::ZERO;
         self.clear_selection_rect = Rect::ZERO;
+        // A document's History previews the selected change in place and
+        // says what it is, with its way back, in the panel's foot.
+        if self.filters_people && self.preview_selection {
+            return;
+        }
         let Some((a, b)) = self.selection else {
             return;
         };
@@ -3665,6 +3816,16 @@ impl ActivityTimeline {
     }
 
     fn handle_click_in_filter_strip(&mut self, handled: &mut bool) {
+        if let Some((author, _)) = self
+            .people_chip_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(self.last_cursor))
+            .cloned()
+        {
+            self.filter_by_author(author.as_deref());
+            *handled = true;
+            return;
+        }
         for (kind, rect) in &self.chip_rects {
             if rect.contains(self.last_cursor) {
                 if self.active_chip != *kind {

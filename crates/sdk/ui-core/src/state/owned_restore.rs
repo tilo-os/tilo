@@ -44,9 +44,9 @@ pub(crate) struct ReviewedRestore<'a> {
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
     restore: &ReviewedRestore<'_>,
-    authority: &PermissionContext,
-    author: &UserId,
+    (authority, author): (&PermissionContext, &UserId),
     now: u64,
+    extent: RestoreExtent<'_>,
 ) -> Result<OwnedActionReceipt, String> {
     use crate::history_mode::HistorySourceRegistration;
     let ReviewedRestore {
@@ -68,7 +68,7 @@ pub(crate) fn restore_reviewed_history(
     if resource != review.resource() {
         return Err("This review belongs to a different document.".into());
     }
-    let document = source
+    let mut document = source
         .document(&state.doc)
         .map_err(|_| "This document is no longer available.")?;
     controller
@@ -82,10 +82,24 @@ pub(crate) fn restore_reviewed_history(
             }
             _ => "This review no longer matches the selected document version.".to_owned(),
         })?;
+    // Restoring just the selected changes takes back what they did, each on
+    // its own, and leaves everything written since: no schema is consulted,
+    // since nothing but those changes' own effects is touched.
+    let changes = match extent {
+        RestoreExtent::Whole => None,
+        RestoreExtent::Changes(entries) => {
+            let changes = crate::history_source::revert::changes_of_entries(&mut document, entries);
+            if changes.is_empty() {
+                return Err("This change is no longer in the document.".into());
+            }
+            Some(changes)
+        }
+    };
     // With a registered content schema only the declared content returns;
     // without one the whole document returns to the selected version, the
     // way `git revert` of every later change would.
     let prepared = schema
+        .filter(|_| changes.is_none())
         .map(|schema| {
             crate::history_mode::restore::prepare_content_restore(
                 &document,
@@ -96,13 +110,17 @@ pub(crate) fn restore_reviewed_history(
             .map_err(|_| crate::i18n::I18nManager::lookup_plain("history-restore-unsupported"))
         })
         .transpose()?;
-    let write = prepared.as_ref().map_or(
-        RestoreWrite::WholeDocument {
+    let write = match (&changes, prepared.as_ref()) {
+        (Some(changes), _) => RestoreWrite::Changes {
+            current: review.reviewed_live_heads(),
+            changes,
+        },
+        (None, Some(prepared)) => RestoreWrite::Content(prepared),
+        (None, None) => RestoreWrite::WholeDocument {
             current: review.reviewed_live_heads(),
             target: review.selected_heads(),
         },
-        RestoreWrite::Content,
-    );
+    };
     let context = tilo_actions::ActionContext::for_resource(
         review.resource().record_id.as_str(),
         "document",
@@ -301,14 +319,30 @@ pub(crate) enum RestoreWrite<'a> {
         current: &'a [ChangeHash],
         target: &'a [ChangeHash],
     },
+    /// Take back exactly these changes (each with the actor whose work it
+    /// is, newest first), each on its own, as one forward change: whatever
+    /// anyone wrote since stays.
+    Changes {
+        current: &'a [ChangeHash],
+        changes: &'a [(ChangeHash, String)],
+    },
 }
 impl RestoreWrite<'_> {
     pub(crate) fn current_heads(&self) -> &[ChangeHash] {
         match self {
             Self::Content(prepared) => prepared.current_heads(),
-            Self::WholeDocument { current, .. } => current,
+            Self::WholeDocument { current, .. } | Self::Changes { current, .. } => current,
         }
     }
+}
+
+/// How much of a selected version a reviewed restore brings back.
+#[derive(Clone, Copy)]
+pub(crate) enum RestoreExtent<'a> {
+    /// The whole version.
+    Whole,
+    /// Only what these selected changes did, taken back on their own.
+    Changes(&'a [crate::widget::HistoryEntryId]),
 }
 
 /// Exclusive loan of the original document and its own undo log. Its only
@@ -365,6 +399,19 @@ impl<'a> OwnedContentAction<'a> {
                 .map_err(OwnedRestoreError::Engine)?,
             RestoreWrite::WholeDocument { current, target } => {
                 super::write_revert_patches(self.doc, current, target);
+                if self.doc.pending_ops() > 0 {
+                    RestoreOutcome::Changed
+                } else {
+                    RestoreOutcome::Unchanged
+                }
+            }
+            RestoreWrite::Changes { changes, .. } => {
+                crate::history_source::revert::revert_changes(
+                    self.doc,
+                    changes,
+                    &crate::history_source::AuthorDirectory::default(),
+                )
+                .map_err(|_| OwnedRestoreError::EngineContract)?;
                 if self.doc.pending_ops() > 0 {
                     RestoreOutcome::Changed
                 } else {

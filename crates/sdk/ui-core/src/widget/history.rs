@@ -461,6 +461,22 @@ impl EntryKind {
 
     /// Its row glyph: text symbols stay legible without an emoji font.
     #[must_use]
+    /// The icon a history row draws for this kind of change.
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Text => Icon::Type,
+            Self::Move => Icon::ArrowUpDown,
+            Self::Details => Icon::Pencil,
+            Self::Comment => Icon::MessageSquare,
+            Self::Delete => Icon::Trash2,
+            Self::Restore => Icon::RotateCcw,
+            Self::Access => Icon::Shield,
+            Self::Compaction => Icon::Scissors,
+            Self::Redaction => Icon::EyeOff,
+        }
+    }
+
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Text => "\u{00b1}",    // ±
