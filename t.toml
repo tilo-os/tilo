@@ -3338,6 +3338,52 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh): runs the `tilo-vm layer-pack`
+# command the builder left in .tilo-vm-pack/args.json against the uploaded worktree, on a node of
+# the device's architecture, and keeps the framed layer as the output the builder downloads and
+# streams to the device. Each request carries its own source inventory, so nothing is cached here;
+# layer-pack reuses a layer the device already holds by itself.
+[[check]]
+name = "tilo-vm-pack-x86_64"
+run = """
+mapfile -t argv < <(python3 -c 'import json; [print(a) for a in json.load(open(".tilo-vm-pack/args.json"))]')
+rm -rf /target/tilo-vm-pack && mkdir -p /target/tilo-vm-pack
+cargo run --locked -p tilo-vm --bin tilo-vm -- "${argv[@]}" > /target/tilo-vm-pack/layer.txt
+"""
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "32GiB" }
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
+# `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh): runs the `tilo-vm layer-pack`
+# command the builder left in .tilo-vm-pack/args.json against the uploaded worktree, on a node of
+# the device's architecture, and keeps the framed layer as the output the builder downloads and
+# streams to the device. Each request carries its own source inventory, so nothing is cached here;
+# layer-pack reuses a layer the device already holds by itself.
+[[check]]
+name = "tilo-vm-pack-arm64"
+run = """
+mapfile -t argv < <(python3 -c 'import json; [print(a) for a in json.load(open(".tilo-vm-pack/args.json"))]')
+rm -rf /target/tilo-vm-pack && mkdir -p /target/tilo-vm-pack
+cargo run --locked -p tilo-vm --bin tilo-vm -- "${argv[@]}" > /target/tilo-vm-pack/layer.txt
+"""
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=arm64"]
+requirement = { cores = 16, memory = "32GiB" }
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 # The same build for an arm64 machine (a Snapdragon laptop): its binaries run only there.
 [[check]]
 name = "nested-session-arm64"

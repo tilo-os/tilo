@@ -195,11 +195,12 @@ work on a device too, beside the device's session.
 
   ```toml
   [remote_builders]
-  aarch64 = ["remote-cargo", "--on-builder"]
+  aarch64 = ["dist/dev/t-builder.sh", "aarch64"]   # t's aarch64 nodes build it
   ```
 
   ```sh
   tilo-vm swap --slot device shell                    # builds on the aarch64 builder, streams to the device
+  tilo-vm swap --slot device apps+runtime             # the whole app collection and runtime, the same way
   tilo-vm swap --slot device shell --builder remote   # the same, said explicitly
   ```
 
