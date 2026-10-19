@@ -200,6 +200,16 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                              'add { from = "@manifest/usr/libexec/tilo-session", '
                              'to = "/usr/libexec/tilo-session", mode = "0755" } to shell files; '
                              'shell-only swaps can otherwise recover locked under an older wrapper.')
+            declaration = next((entry for entry in component.files
+                                if entry.to == "/usr/share/tilo/system-interfaces.toml"), None)
+            if (declaration is None
+                    or declaration.source != "@manifest/usr/share/tilo/system-interfaces.toml"
+                    or declaration.optional or str(declaration.mode) != "0644"):
+                report.error(where, "shell must ship the system-interface declaration it reads",
+                             'add { from = "@manifest/usr/share/tilo/system-interfaces.toml", '
+                             'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to shell files; '
+                             'a shell swapped onto an older image otherwise reads a declaration '
+                             'in another format and judges no app.')
         if component.scenario and not (report.repo / component.scenario).is_file():
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "
                          "which does not exist",

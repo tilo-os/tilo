@@ -642,23 +642,41 @@ pub fn protect_session() {
     }
 }
 
-/// `busctl` arguments for `RealtimeKit`'s `MakeThreadRealtime`.
-#[must_use]
-pub fn rtkit_args(tid: u64, priority: i32) -> Vec<String> {
+/// The `busctl` arguments of one `RealtimeKit` call on thread `tid` of
+/// process `pid`.
+///
+/// `RealtimeKit` resolves a thread id without a pid in the *caller's*
+/// process. The caller here is the `busctl` child, which has no such thread,
+/// so the plain `MakeThread*` methods fail with "No such file or directory";
+/// the `WithPID` forms name the process. The `--` ends busctl's options: a
+/// negative nice value is otherwise read as an option (`invalid option -- '8'`).
+fn rtkit_call_args(method: &str, signature: &str, ids: (u32, u64), value: i32) -> Vec<String> {
+    let (pid, tid) = ids;
     [
         "--system",
         "--timeout=2",
+        "--",
         "call",
         "org.freedesktop.RealtimeKit1",
         "/org/freedesktop/RealtimeKit1",
         "org.freedesktop.RealtimeKit1",
-        "MakeThreadRealtime",
-        "tu",
     ]
     .map(String::from)
     .into_iter()
-    .chain([tid.to_string(), priority.to_string()])
+    .chain([
+        method.to_string(),
+        signature.to_string(),
+        pid.to_string(),
+        tid.to_string(),
+        value.to_string(),
+    ])
     .collect()
+}
+
+/// `busctl` arguments for `RealtimeKit`'s `MakeThreadRealtimeWithPID`.
+#[must_use]
+pub fn rtkit_args(pid: u32, tid: u64, priority: i32) -> Vec<String> {
+    rtkit_call_args("MakeThreadRealtimeWithPID", "ttu", (pid, tid), priority)
 }
 
 /// Put the calling thread in `SCHED_RR` at `priority`, with reset-on-fork so
@@ -703,7 +721,7 @@ pub fn request_realtime(priority: i32) {
     let _ = std::thread::Builder::new()
         .name("tilo-rtkit".into())
         .spawn(move || {
-            if let Err(error) = run_busctl(&rtkit_args(tid, priority)) {
+            if let Err(error) = run_busctl(&rtkit_args(std::process::id(), tid, priority)) {
                 eprintln!("tilo-priority: realtime for thread {tid}: {error}");
             }
         });
@@ -780,23 +798,10 @@ fn current_tid() -> u64 {
     u64::try_from(unsafe { libc::gettid() }).unwrap_or(0)
 }
 
-/// `busctl` arguments for `RealtimeKit`'s `MakeThreadHighPriority`.
+/// `busctl` arguments for `RealtimeKit`'s `MakeThreadHighPriorityWithPID`.
 #[must_use]
-pub fn rtkit_nice_args(tid: u64, nice: i32) -> Vec<String> {
-    [
-        "--system",
-        "--timeout=2",
-        "call",
-        "org.freedesktop.RealtimeKit1",
-        "/org/freedesktop/RealtimeKit1",
-        "org.freedesktop.RealtimeKit1",
-        "MakeThreadHighPriority",
-        "ti",
-    ]
-    .map(String::from)
-    .into_iter()
-    .chain([tid.to_string(), nice.to_string()])
-    .collect()
+pub fn rtkit_nice_args(pid: u32, tid: u64, nice: i32) -> Vec<String> {
+    rtkit_call_args("MakeThreadHighPriorityWithPID", "tti", (pid, tid), nice)
 }
 
 /// Give the calling thread a better nice value, directly or through
@@ -826,7 +831,7 @@ pub fn request_main_loop_nice(nice: i32) {
     let _ = std::thread::Builder::new()
         .name("tilo-rtkit".into())
         .spawn(move || {
-            if let Err(error) = run_busctl(&rtkit_nice_args(tid, nice)) {
+            if let Err(error) = run_busctl(&rtkit_nice_args(std::process::id(), tid, nice)) {
                 eprintln!("tilo-priority: nice {nice} for thread {tid}: {error}");
             }
         });
@@ -1285,13 +1290,44 @@ mod tests {
                 "avoid",
             ]
         );
-        assert_eq!(
-            rtkit_args(77, 5)[6..],
-            ["MakeThreadRealtime", "tu", "77", "5"]
+    }
+
+    /// busctl reads a negative nice value as an option unless `--` ends the
+    /// options first, and RealtimeKit looks a bare thread id up in the
+    /// calling process (busctl's own), so every call names the pid.
+    #[test]
+    fn realtime_kit_calls_end_options_and_name_the_process() {
+        let nice = rtkit_nice_args(4242, 77, -8);
+        let end = nice
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("options end");
+        assert!(
+            nice[end + 1..].iter().all(|arg| arg != "--system"),
+            "every option comes before `--`: {nice:?}"
         );
         assert_eq!(
-            rtkit_nice_args(77, -8)[6..],
-            ["MakeThreadHighPriority", "ti", "77", "-8"]
+            nice[end + 1..],
+            [
+                "call",
+                "org.freedesktop.RealtimeKit1",
+                "/org/freedesktop/RealtimeKit1",
+                "org.freedesktop.RealtimeKit1",
+                "MakeThreadHighPriorityWithPID",
+                "tti",
+                "4242",
+                "77",
+                "-8",
+            ]
+        );
+        let realtime = rtkit_args(4242, 77, 5);
+        let end = realtime
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("options end");
+        assert_eq!(
+            realtime[end + 5..],
+            ["MakeThreadRealtimeWithPID", "ttu", "4242", "77", "5"]
         );
     }
 }

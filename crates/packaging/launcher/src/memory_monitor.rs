@@ -33,6 +33,13 @@ pub const SYSTEM_PRESSURE: &str = "/proc/pressure/memory";
 /// window. Unprivileged triggers need a window of whole 2 s.
 pub const TRIGGER: &str = "some 150000 2000000";
 
+/// [`TRIGGER`] as written to a pressure file, NUL-terminated. The kernel's
+/// `/proc/pressure/*` writer overwrites the last byte written with a NUL, so
+/// an unterminated string loses its last digit: a 200 ms window, below the
+/// 500 ms minimum, refused with `EINVAL`. A cgroup's `memory.pressure` reads
+/// the string up to the NUL, so the same bytes arm both.
+const TRIGGER_WRITTEN: &[u8] = b"some 150000 2000000\0";
+
 /// Samples a second while pressure is up.
 pub const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -284,7 +291,7 @@ fn arm(path: &Path) -> io::Result<OwnedFd> {
         .write(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)?;
-    file.write_all(TRIGGER.as_bytes())?;
+    file.write_all(TRIGGER_WRITTEN)?;
     Ok(OwnedFd::from(file))
 }
 
@@ -597,5 +604,29 @@ mod tests {
             "low 0\nhigh 0\nmax 0\noom 1\noom_kill 4\noom_group_kill 1\n",
         );
         assert_eq!(shared.take_end(app.path()), Some(Cause::Kernel));
+    }
+
+    /// The machine's pressure file keeps every byte written but the last,
+    /// which it replaces with a NUL; what it parses must be the trigger.
+    #[test]
+    fn the_written_trigger_survives_the_kernel_dropping_its_last_byte() {
+        let (last, kept) = TRIGGER_WRITTEN.split_last().expect("not empty");
+        assert_eq!(*last, 0);
+        assert_eq!(kept, TRIGGER.as_bytes());
+    }
+
+    /// Arming the machine-wide file never fails as malformed. A host may
+    /// refuse an unprivileged trigger outright or have no PSI, but a refused
+    /// trigger string (`EINVAL`) is this code's fault.
+    #[test]
+    fn the_machine_wide_trigger_is_never_refused_as_malformed() {
+        match arm(Path::new(SYSTEM_PRESSURE)) {
+            Ok(_) => {}
+            Err(error) => assert_ne!(
+                error.raw_os_error(),
+                Some(libc::EINVAL),
+                "the kernel refused the trigger string: {error}"
+            ),
+        }
     }
 }

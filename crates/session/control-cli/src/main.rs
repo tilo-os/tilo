@@ -844,8 +844,8 @@ fn parse_action_invocation<'a>(
         ));
     }
     Ok(Command::ActionsInvoke {
-        provider: provider.clone(),
-        id: id.clone(),
+        provider: id_from_printed(provider),
+        id: id_from_printed(id),
         args_json,
         args_stdin,
         device,
@@ -1316,27 +1316,8 @@ fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
         println!("no actions exported for this query");
         return 0;
     }
-    // Address first: the `(provider, id)` pair is the thing a
-    // caller passes back to `actions invoke`, so it leads.
-    let width = actions
-        .iter()
-        .filter_map(|a| {
-            let p = a.get("provider").and_then(|v| v.as_str())?;
-            let i = a.get("id").and_then(|v| v.as_str())?;
-            Some(p.len().saturating_add(i.len()).saturating_add(1))
-        })
-        .max()
-        .unwrap_or(0);
-    for entry in &actions {
-        let provider = entry
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("?");
-        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let address = format!("{provider}:{id}");
-        println!("{address:<width$}  {kind:<12}  {title}");
+    for line in action_rows(&actions) {
+        println!("{line}");
     }
     if let Some(next) = answer.get("next_cursor").and_then(|v| v.as_str()) {
         let total = answer.get("total").and_then(serde_json::Value::as_u64);
@@ -1347,6 +1328,98 @@ fn print_actions_list(response: &serde_json::Value, json: bool) -> u8 {
         );
     }
     0
+}
+
+/// The table rows of `actions list`: `PROVIDER:ID  KIND  TITLE`, aligned.
+///
+/// Address first: the `(provider, id)` pair is the thing a caller passes
+/// back to `actions invoke`, so it leads. Ids are machine keys that join
+/// their parts with control characters (`U+001F`); a terminal draws those
+/// as nothing, so the parts and the columns ran together. They print as
+/// [`printable_id`] escapes, which `actions invoke` takes back.
+fn action_rows(actions: &[serde_json::Value]) -> Vec<String> {
+    let rows: Vec<(String, &str, &str)> = actions
+        .iter()
+        .map(|entry| {
+            let field = |key: &str| entry.get(key).and_then(serde_json::Value::as_str);
+            let address = format!(
+                "{}:{}",
+                printable_id(field("provider").unwrap_or("?")),
+                printable_id(field("id").unwrap_or("?"))
+            );
+            (
+                address,
+                field("kind").unwrap_or(""),
+                field("title").unwrap_or(""),
+            )
+        })
+        .collect();
+    let width = rows
+        .iter()
+        .map(|(address, _, _)| address.chars().count())
+        .max()
+        .unwrap_or(0);
+    let kind_width = rows
+        .iter()
+        .map(|(_, kind, _)| kind.chars().count())
+        .max()
+        .unwrap_or(0);
+    rows.iter()
+        .map(|(address, kind, title)| {
+            format!("{address:<width$}  {kind:<kind_width$}  {title}")
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// `id` with every control character written as `\xHH`, so a terminal
+/// shows each part and a person can copy it back into `actions invoke`.
+fn printable_id(id: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    if !id.chars().any(char::is_control) {
+        return std::borrow::Cow::Borrowed(id);
+    }
+    let mut out = String::with_capacity(id.len().saturating_add(8));
+    for ch in id.chars() {
+        // Every control character is below U+0100, so two digits name it.
+        if ch.is_control() {
+            let _ = write!(out, "\\x{:02x}", u32::from(ch));
+        } else {
+            out.push(ch);
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// [`printable_id`] undone: `\xHH` of a control character back to the
+/// character. Ids never hold such text themselves, so a raw id (from
+/// `--json`) passes through unchanged.
+fn id_from_printed(printed: &str) -> String {
+    let mut out = String::with_capacity(printed.len());
+    let mut chars = printed.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let mut ahead = chars.clone();
+            let escaped = (ahead.next() == Some('x'))
+                .then(|| Some([ahead.next()?, ahead.next()?]))
+                .flatten()
+                .and_then(|[high, low]| {
+                    high.to_digit(16)?
+                        .checked_mul(16)?
+                        .checked_add(low.to_digit(16)?)
+                })
+                .and_then(char::from_u32)
+                .filter(|decoded| decoded.is_control());
+            if let Some(decoded) = escaped {
+                out.push(decoded);
+                chars = ahead;
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
@@ -1700,6 +1773,57 @@ mod tests {
     //! socket protocol itself is covered in
     //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
+
+    /// Ids join their parts with U+001F, which a terminal draws as nothing:
+    /// the table ran the parts and the columns together. Each part shows,
+    /// the columns line up, and what is shown invokes the same action.
+    #[test]
+    fn actions_list_shows_every_part_of_an_id_in_aligned_columns_and_invoke_takes_it_back() {
+        let id = "so.tilo.chat\u{1f}read\u{1f}tilo.history\u{1f}\u{1f}history.open";
+        let actions = [
+            serde_json::json!({
+                "provider": "app-actions", "id": id, "kind": "action", "title": "History"
+            }),
+            serde_json::json!({
+                "provider": "settings", "id": "wifi", "kind": "application", "title": "Wi-Fi"
+            }),
+        ];
+        let rows = action_rows(&actions);
+        assert!(
+            rows.iter().all(|row| !row.chars().any(char::is_control)),
+            "{rows:?}"
+        );
+        let printed = r"app-actions:so.tilo.chat\x1fread\x1ftilo.history\x1f\x1fhistory.open";
+        assert!(rows[0].starts_with(printed), "{rows:?}");
+        let kind_column = |row: &str, kind: &str| row.find(kind).expect("kind shown");
+        assert_eq!(
+            kind_column(&rows[0], " action"),
+            kind_column(&rows[1], " application"),
+            "{rows:?}"
+        );
+        let title_column = |row: &str, title: &str| row.find(title).expect("title shown");
+        assert_eq!(
+            title_column(&rows[0], "History"),
+            title_column(&rows[1], "Wi-Fi"),
+            "{rows:?}"
+        );
+
+        let (provider, shown_id) = printed.split_once(':').expect("an address");
+        let invoked = parse(&["actions", "invoke", provider, shown_id]).unwrap();
+        let Command::ActionsInvoke {
+            provider: invoked_provider,
+            id: invoked_id,
+            ..
+        } = invoked.command
+        else {
+            panic!("an invocation");
+        };
+        assert_eq!(invoked_provider, "app-actions");
+        assert_eq!(invoked_id, id);
+        // A raw id, as `--json` gives it, passes through unchanged.
+        let raw = parse(&["actions", "invoke", "app-actions", id]).unwrap();
+        assert!(matches!(raw.command, Command::ActionsInvoke { id: raw_id, .. } if raw_id == id));
+    }
 
     #[test]
     fn programmatic_discovery_is_explicit_and_uses_the_normal_actions_wire() {
