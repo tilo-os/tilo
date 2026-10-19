@@ -285,7 +285,7 @@ impl ActorState {
         hint: TransportHint,
         certificate: DeviceCert,
         continuity: u64,
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
     ) {
         let Some(route) = self
             .native_routes
@@ -308,15 +308,32 @@ impl ActorState {
         {
             return;
         }
+        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint) else {
+            return;
+        };
         let session = match *result {
             Ok(session) => session,
+            // The room's host speaks another peer protocol version: the
+            // room cannot sync until one side updates, which the person
+            // is told, rather than holding a room that silently stays empty.
+            Err(tilo_joined_room::session::DialError::PeerVersion { theirs }) => {
+                tracing::warn!(
+                    ws,
+                    theirs,
+                    ours = neighbour_wire::PEER_PROTOCOL_VERSION,
+                    "the room's host speaks another peer protocol version"
+                );
+                crate::shell::collaborator_versions::note(
+                    payload.endpoint_addr.id.to_string(),
+                    String::new(),
+                    theirs,
+                );
+                return;
+            }
             Err(error) => {
                 tracing::debug!(%error, ws, "native host dial failed; retrying");
                 return;
             }
-        };
-        let Ok((payload, _)) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint) else {
-            return;
         };
         let host = payload.endpoint_addr.id;
         let scope = Arc::new(Scope::new(

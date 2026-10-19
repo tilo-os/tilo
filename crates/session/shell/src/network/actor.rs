@@ -578,7 +578,7 @@ enum InternalEvent {
         hint: Box<tilo_peer_state::join::TransportHint>,
         certificate: DeviceCert,
         continuity: u64,
-        result: Box<Result<RelayCoeditSession, String>>,
+        result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
     },
     ActionClosed {
         ws: WorkspaceId,

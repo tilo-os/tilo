@@ -109,6 +109,9 @@ async fn call_raw(
     }
 }
 
+/// The handshake route a session starts on, with this device's hello.
+const HELLO_ROUTE: &str = "/session";
+
 /// A handshake route: its `403` carries the host's [`SessionRefusal`]. Any
 /// other refusal, or one whose body is no refusal, came from something in
 /// front of the host (a proxy, a captive portal), which says nothing about
@@ -135,6 +138,12 @@ async fn handshake_raw(
             Ok((theirs, _)) => Err(LinkError::PeerVersion { theirs }),
             Err(_) => Err(LinkError::Unavailable("status 409".into())),
         },
+        // A host at any version reads a hello's leading version, so one that
+        // cannot read this device's hello at all predates versioned
+        // handshakes: it is behind, and has to update before they sync.
+        400 if route == HELLO_ROUTE => Err(LinkError::PeerVersion {
+            theirs: tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL,
+        }),
         _ => Err(LinkError::Unavailable(format!("status {status}"))),
     }
 }
@@ -430,7 +439,7 @@ impl HttpsLink {
         let challenge: SessionChallenge = postcard::from_bytes(
             &handshake_raw(
                 client.as_ref(),
-                "/session",
+                HELLO_ROUTE,
                 encode(&Hello::new(cert.clone(), client_nonce))?,
             )
             .await?,
@@ -658,4 +667,61 @@ async fn poll_pump(
         ack = page.cursor.or(ack);
     }
     end.send_replace(true);
+}
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    /// A host that answers every request with `status` and `body`.
+    struct Answers(u16, Vec<u8>);
+
+    impl HttpClient for Answers {
+        fn post(&self, _: &str, _: Option<&str>, _: Vec<u8>) -> HttpFuture<'_> {
+            let answer = (self.0, self.1.clone());
+            Box::pin(async move { Ok(answer) })
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
+    #[tokio::test]
+    async fn a_host_that_cannot_read_this_devices_hello_is_behind_not_unreachable() {
+        // What a relay from before versioned handshakes answered a v6 hello
+        // with (eu1.tilo.coffee at 8fca8fe781, 2026-10-19).
+        let unversioned = Answers(400, b"malformed body".to_vec());
+        let refused = handshake_raw(&unversioned, HELLO_ROUTE, Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            LinkError::PeerVersion {
+                theirs: tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL
+            }
+        );
+        assert!(!tilo_relay_protocol::auth::this_device_is_behind(
+            tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL
+        ));
+        // A versioned host names its version.
+        let versioned = Answers(409, postcard::to_allocvec(&5_u32).unwrap());
+        assert_eq!(
+            handshake_raw(&versioned, HELLO_ROUTE, Vec::new())
+                .await
+                .unwrap_err(),
+            LinkError::PeerVersion { theirs: 5 }
+        );
+        // A host that read the hello is at this version: a later malformed
+        // step, or a failing host, is no version mismatch.
+        assert!(matches!(
+            handshake_raw(&unversioned, "/session/finish", Vec::new())
+                .await
+                .unwrap_err(),
+            LinkError::Unavailable(_)
+        ));
+        assert!(matches!(
+            handshake_raw(&Answers(503, Vec::new()), HELLO_ROUTE, Vec::new())
+                .await
+                .unwrap_err(),
+            LinkError::Unavailable(_)
+        ));
+    }
 }

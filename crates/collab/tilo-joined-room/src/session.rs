@@ -393,12 +393,71 @@ impl Input {
     }
 }
 
+/// Why dialing a room's host did not give a session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DialError {
+    /// The host speaks peer protocol `theirs`, not this device's: they do
+    /// not sync until the one behind has updated, which the person is told
+    /// (docs/architecture/compatibility.md). Dialing again changes nothing
+    /// until then.
+    PeerVersion {
+        /// The host's version.
+        theirs: u32,
+    },
+    /// Anything else, in words for the log; dialing again may succeed.
+    Failed(String),
+}
+
+impl std::fmt::Display for DialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PeerVersion { theirs } => write!(
+                f,
+                "the host speaks peer protocol {theirs}, this device {}",
+                neighbour_wire::PEER_PROTOCOL_VERSION
+            ),
+            Self::Failed(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for DialError {}
+
+impl From<String> for DialError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl From<&str> for DialError {
+    fn from(reason: &str) -> Self {
+        Self::Failed(reason.to_owned())
+    }
+}
+
+impl From<DialError> for String {
+    fn from(error: DialError) -> Self {
+        error.to_string()
+    }
+}
+
+impl From<tilo_relay_session::ClientError> for DialError {
+    fn from(error: tilo_relay_session::ClientError) -> Self {
+        match error.peer_version() {
+            Some(theirs) => Self::PeerVersion { theirs },
+            None => Self::Failed(error.to_string()),
+        }
+    }
+}
+
 /// Dial the host `hint` pins for workspace `ws` and join its co-edit
 /// session as `cert`.
 ///
 /// # Errors
 /// The hint does not authenticate for `ws`, the host authenticates as
-/// another certificate, or the connection fails or takes over 10 seconds.
+/// another certificate or speaks another peer protocol version
+/// ([`DialError::PeerVersion`]), or the connection fails or takes over 10
+/// seconds.
 pub async fn dial(
     endpoint: iroh::Endpoint,
     ws: u64,
@@ -406,7 +465,7 @@ pub async fn dial(
     cert: DeviceCert,
     key: SigningKey,
     revocations: RevocationList,
-) -> Result<RelayCoeditSession, String> {
+) -> Result<RelayCoeditSession, DialError> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (payload, trust) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
             .map_err(|e| e.to_string())?;
@@ -440,14 +499,15 @@ pub async fn dial(
                 .await
             }
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(DialError::from)?;
         if client.relay_peer.cert != hint.host {
             return Err("native relay authenticated a different host certificate".into());
         }
-        RelayCoeditSession::join(client, ws, own_device).map_err(|e| e.to_string())
+        RelayCoeditSession::join(client, ws, own_device)
+            .map_err(|error| DialError::Failed(error.to_string()))
     })
     .await
-    .map_err(|_| "native relay connection timed out".to_string())?
+    .map_err(|_| DialError::from("native relay connection timed out"))?
 }
 
 /// [`dial`] the host `hint` pins over its HTTPS routes behind `http`: a
@@ -465,7 +525,7 @@ pub async fn dial_https(
     cert: DeviceCert,
     key: SigningKey,
     revocations: RevocationList,
-) -> Result<RelayCoeditSession, String> {
+) -> Result<RelayCoeditSession, DialError> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let (payload, trust) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
             .map_err(|e| e.to_string())?;
@@ -479,12 +539,48 @@ pub async fn dial_https(
         let client =
             RelayClient::connect_https(http, hint.host.device_public_key, cert, &key, revocations)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(DialError::from)?;
         if client.relay_peer.cert != hint.host {
             return Err("native relay authenticated a different host certificate".into());
         }
-        RelayCoeditSession::join(client, ws, own_device).map_err(|e| e.to_string())
+        RelayCoeditSession::join(client, ws, own_device)
+            .map_err(|error| DialError::Failed(error.to_string()))
     })
     .await
-    .map_err(|_| "native relay connection timed out".to_string())?
+    .map_err(|_| DialError::from("native relay connection timed out"))?
+}
+
+#[cfg(test)]
+mod dial_error_tests {
+    use super::DialError;
+    use tilo_relay_session::ClientError;
+
+    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
+    #[test]
+    fn a_host_at_another_version_stays_a_version_mismatch_through_the_dial() {
+        let behind = neighbour_wire::PEER_PROTOCOL_VERSION - 1;
+        assert_eq!(
+            DialError::from(ClientError::PeerVersion { theirs: behind }),
+            DialError::PeerVersion { theirs: behind }
+        );
+        // Over a site's HTTPS routes, from a host that predates versioned
+        // handshakes too.
+        let unversioned = tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL;
+        assert_eq!(
+            DialError::from(ClientError::Https(
+                tilo_relay_client::LinkError::PeerVersion {
+                    theirs: unversioned
+                }
+            )),
+            DialError::PeerVersion {
+                theirs: unversioned
+            }
+        );
+        assert!(matches!(
+            DialError::from(ClientError::Https(
+                tilo_relay_client::LinkError::Unavailable("status 503".into())
+            )),
+            DialError::Failed(_)
+        ));
+    }
 }
