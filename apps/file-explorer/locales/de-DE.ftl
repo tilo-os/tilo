@@ -102,7 +102,7 @@ files-property-history = Verlauf: { $versions } { $versions ->
    *[other] Konflikte
 }
 files-properties-collab-summary = Datei- und Freigabedetails
-files-availability-title = Verfügbarkeit — { $name }
+files-availability-title = Verfügbarkeit von { $name }
 files-availability-title-short = Verfügbarkeit…
 files-not-stored = Nicht auf diesem Gerät gespeichert
 files-partly-stored = Teilweise gespeichert ({ $bytes } Byte)
@@ -193,7 +193,7 @@ files-grant-exhausted = aufgebraucht
 files-no-expiry = läuft nicht ab
 files-expires = läuft am { $time } ab
 files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
-files-sharing-title = Freigabe — { $name }
+files-sharing-title = { $name } freigeben
 files-certified-devices = { $person }, Geräte: { $devices }
 files-certified-device-detail = { $device }, Schlüssel { $fingerprint }, { $capabilities }, ausgestellt { $issued }, { $expiry }
 files-device-cap-own = verwaltet Arbeitsbereiche
@@ -232,7 +232,7 @@ files-conflict-line = Konflikt { $conflict }: { $count } { $count ->
 }, { $state }
 files-conflict-resolve-hint = Über das Kontextmenü lösen: Aktuelle behalten oder Andere verwenden
 files-conflict-unsupported-hint = „Beide behalten“ und „Zusammenführen“ sind für diese Datei noch nicht verfügbar
-files-history-title = Versionsverlauf — { $name }
+files-history-title = Versionsverlauf von { $name }
 files-history-summary = { $versions } { $versions ->
     [one] Version
    *[other] Versionen
@@ -248,12 +248,12 @@ files-keeping-current = Die aktuelle Version wird beibehalten…
 files-applying-other = Die andere Version wird angewendet…
 files-merging-versions = Nicht überlappende Änderungen werden sicher zusammengeführt…
 files-merge-review-menu = Zusammenführung prüfen
-files-merge-review-title = Zusammenführung prüfen — { $name }
+files-merge-review-title = Zusammenführung von { $name } prüfen
 files-merge-review-summary = Es wurden noch keine Änderungen vorgenommen
 files-merge-review-checking = Die beiden Versionen werden verglichen …
 files-merge-review-checking-detail = Währenddessen ändert sich nichts.
 files-merge-review-safe = Sicher zusammenführbar
-files-merge-review-needs-review = Prüfung nötig — es wird nichts zusammengeführt
+files-merge-review-needs-review = Prüfung nötig. Es wird nichts zusammengeführt.
 files-merge-review-unavailable = Die Versionen lassen sich gerade nicht vergleichen. Aktualisiere die Datei und vergleiche sie im Versionsverlauf.
 files-merge-review-no-apply = Behalte beide oder wähle eine, nachdem du sie verglichen hast.
 files-merge-review-incoming = Eingehende Version von Gerät { $device }
@@ -438,7 +438,7 @@ files-property-pages = Seiten: { $count }
 files-property-codec = Codec: { $codec }
 files-property-container = Container: { $container }
 files-property-unknown = Unbekannt
-files-properties-title = Eigenschaften — { $name }
+files-properties-title = Eigenschaften von { $name }
 files-properties-summary = Dateisystemmetadaten
 
 ## Ergebnisse gewöhnlicher Vorgänge
@@ -645,7 +645,7 @@ files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt 
 files-user-trash-unavailable = Dein Papierkorb ist in diesem Arbeitsbereich nicht verfügbar.
 
 files-mounted-converted = Schreibgeschütztes konvertiertes Cloud-Dokument
-files-mounted-source = { $source } · schreibgeschützte konvertierte Ansicht
+files-mounted-source = { $source }, eine schreibgeschützte konvertierte Ansicht
 files-mounted-readonly = Schreibgeschützt konvertiert
 files-mounted-open = Schreibgeschützte Konvertierung öffnen
 files-mounted-copy = Unabhängige bearbeitbare Kopie erstellen…

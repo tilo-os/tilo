@@ -1,18 +1,2 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
-de notes-help-back-forward glyph
-de notes-help-block-indent glyph
-de notes-help-block-move glyph
-de notes-help-code-indent glyph
-de notes-help-headings glyph
-de notes-help-note-indent glyph
-de notes-help-note-move glyph
-de notes-help-outline-indent glyph
-en-US notes-help-back-forward glyph
-en-US notes-help-block-indent glyph
-en-US notes-help-block-move glyph
-en-US notes-help-code-indent glyph
-en-US notes-help-headings glyph
-en-US notes-help-note-indent glyph
-en-US notes-help-note-move glyph
-en-US notes-help-outline-indent glyph
