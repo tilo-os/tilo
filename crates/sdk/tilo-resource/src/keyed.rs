@@ -41,11 +41,9 @@ use automerge::{ObjId, ObjType, ReadDoc, Value};
 use crate::action::{ActionCx, Refusal};
 use crate::collection::Id;
 use crate::cow::Shared;
-use crate::delta::Delta;
+use crate::delta::{Delta, Touch};
 use crate::model::LocatedAt as _;
-use crate::model::{
-    Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key, write_key_changed,
-};
+use crate::model::{Doc, Model, ModelError, Slot, edit_whole, read_key, refresh_key};
 use crate::path::{Edit, EditOp, Path, Segment};
 
 /// An item of a [`Keyed`] or an [`Ordered`](crate::Ordered): what it is
@@ -598,27 +596,12 @@ impl ItemStorage for ById {
         Ok(items)
     }
 
-    #[inline(never)]
     fn store<T: Model + Identified>(
         items: &[T],
         doc: &mut Doc,
         slot: Slot<'_>,
     ) -> Result<(), ModelError> {
-        let map = slot.object(doc, ObjType::Map)?;
-        let keys: std::collections::HashSet<String> = items
-            .iter()
-            .map(|item| item.id().as_str().to_owned())
-            .collect();
-        let stale: Vec<String> = doc.keys(&map).filter(|key| !keys.contains(key)).collect();
-        for key in stale {
-            doc.delete(&map, key.as_str())?;
-        }
-        for item in items {
-            let id = item.id();
-            item.store(doc, Slot::Key(&map, id.as_str()))
-                .located(id.as_str())?;
-        }
-        Ok(())
+        store_by_id_in(T::TABLE, &Rows(items), doc, slot)
     }
 
     #[inline(never)]
@@ -684,28 +667,50 @@ impl ItemStorage for ById {
         Ok(())
     }
 
-    #[inline(never)]
     fn diff<T: Model + Identified, R>(
         before: &[T],
         after: &[T],
         path: &[Segment],
         out: &mut Vec<Edit<R>>,
     ) {
-        let after_ids: Vec<Id> = after.iter().map(Identified::id).collect();
-        let before_ids = removed_and_changed(before, after, &after_ids, path, out);
-        let held: HashSet<&Id> = before_ids.iter().collect();
-        for (item, id) in after.iter().zip(after_ids) {
-            if !held.contains(&id) {
-                out.push(Edit::new(
-                    path.to_vec(),
-                    EditOp::InsertItem {
-                        id: Some(id),
-                        at: 0,
-                        value: item.to_json(),
-                    },
-                ));
-            }
+        let mut found = Vec::new();
+        diff_by_id_in(T::TABLE, (&Rows(before), &Rows(after)), path, &mut found);
+        out.extend(found.into_iter().map(Edit::retyped));
+    }
+}
+
+/// [`ById::diff`] over items whose type `table` describes, compiled once for
+/// every item type.
+#[inline(never)]
+fn diff_by_id_in(
+    table: &'static crate::table::ModelTable,
+    (before, after): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    path: &[Segment],
+    out: &mut Vec<Edit<()>>,
+) {
+    let after_ids: Vec<Id> = (0..after.count())
+        .filter_map(|at| Some(after.item(at)?.0))
+        .collect();
+    let before_ids = removed_and_changed_in(table, (before, after), &after_ids, path, out);
+    let held: HashSet<&Id> = before_ids.iter().collect();
+    for (at, id) in after_ids.iter().enumerate() {
+        if held.contains(id) {
+            continue;
         }
+        let Some((_, item)) = after.item(at) else {
+            continue;
+        };
+        out.push(Edit::new(
+            path.to_vec(),
+            EditOp::InsertItem {
+                id: Some(id.clone()),
+                at: 0,
+                value: (table.ops.to_json)(table, item),
+            },
+        ));
     }
 }
 
@@ -758,18 +763,45 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     path: &[Segment],
     out: &mut Vec<Edit<R>>,
 ) -> Vec<Id> {
+    let mut found = Vec::new();
+    let before_ids = removed_and_changed_in(
+        T::TABLE,
+        (&Rows(before), &Rows(after)),
+        after_ids,
+        path,
+        &mut found,
+    );
+    out.extend(found.into_iter().map(Edit::retyped));
+    before_ids
+}
+
+/// [`removed_and_changed`] over items whose type `table` describes, compiled
+/// once for every item type.
+#[inline(never)]
+fn removed_and_changed_in(
+    table: &'static crate::table::ModelTable,
+    (before, after): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    after_ids: &[Id],
+    path: &[Segment],
+    out: &mut Vec<Edit<()>>,
+) -> Vec<Id> {
     let mut found: HashMap<&str, usize> = HashMap::with_capacity(after_ids.len());
     for (at, id) in after_ids.iter().enumerate() {
         found.entry(id.as_str()).or_insert(at);
     }
-    let mut before_ids = Vec::with_capacity(before.len());
-    for item in before {
-        let id = item.id();
-        match found.get(id.as_str()).and_then(|at| after.get(*at)) {
-            Some(next) => {
+    let mut before_ids = Vec::with_capacity(before.count());
+    for at in 0..before.count() {
+        let Some((id, item)) = before.item(at) else {
+            continue;
+        };
+        match found.get(id.as_str()).and_then(|at| after.item(*at)) {
+            Some((_, next)) => {
                 let mut at = path.to_vec();
                 at.push(Segment::Item(id.clone()));
-                item.diff(next, &at, out);
+                (table.ops.diff)(table, item, next, &at, out);
             }
             None => out.push(Edit::new(
                 path.to_vec(),
@@ -781,12 +813,27 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     before_ids
 }
 
+/// Items as the type-erased list the functions compiled once read.
+struct Rows<'a, T>(&'a [T]);
+
+impl<T: Identified + 'static> crate::collection::ItemList for Rows<'_, T> {
+    fn count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn item(&self, at: usize) -> Option<(Id, &dyn std::any::Any)> {
+        let item = self.0.get(at)?;
+        Some((item.id(), item as &dyn std::any::Any))
+    }
+}
+
 /// The items of `changes` that changed in place and kept their ids, by
 /// position, with their id: `None` when one changed its id, as then items
 /// left and came, which only comparing them all can tell.
-fn kept_ids<T: Identified>(
-    before: &[T],
-    after: &[T],
+#[inline(never)]
+fn kept_ids(
+    before: &dyn crate::collection::ItemList,
+    after: &dyn crate::collection::ItemList,
     changes: Changes<'_>,
 ) -> Option<Vec<(usize, Id)>> {
     let mut kept = Vec::with_capacity(changes.changed.len());
@@ -795,8 +842,8 @@ fn kept_ids<T: Identified>(
             // Added since: written whole.
             break;
         }
-        let id = before.get(at)?.id();
-        if after.get(at)?.id() != id {
+        let (id, _) = before.item(at)?;
+        if after.item(at)?.0 != id {
             return None;
         }
         kept.push((at, id));
@@ -817,25 +864,53 @@ fn diff_changed<T: Model + Identified, R>(
     path: &[Segment],
     out: &mut Vec<Edit<R>>,
 ) -> bool {
+    let mut found = Vec::new();
+    let diffed = diff_changed_in(
+        T::TABLE,
+        (&Rows(before), &Rows(after)),
+        changes,
+        arranged,
+        (path, &mut found),
+    );
+    out.extend(found.into_iter().map(Edit::retyped));
+    diffed
+}
+
+/// [`diff_changed`] over items whose type `table` describes, compiled once
+/// for every item type.
+#[inline(never)]
+fn diff_changed_in(
+    table: &'static crate::table::ModelTable,
+    (before, after): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    changes: Changes<'_>,
+    arranged: bool,
+    (path, out): (&[Segment], &mut Vec<Edit<()>>),
+) -> bool {
     let Some(kept) = kept_ids(before, after, changes) else {
         return false;
     };
     let mut at = Vec::with_capacity(path.len().saturating_add(1));
     at.extend_from_slice(path);
     for (position, id) in kept {
-        if let (Some(was), Some(now)) = (before.get(position), after.get(position)) {
+        if let (Some((_, was)), Some((_, now))) = (before.item(position), after.item(position)) {
             at.push(Segment::Item(id));
-            was.diff(now, &at, out);
+            (table.ops.diff)(table, was, now, &at, out);
             at.pop();
         }
     }
-    for (index, item) in after.iter().enumerate().skip(changes.copied) {
+    for index in changes.copied..after.count() {
+        let Some((id, item)) = after.item(index) else {
+            continue;
+        };
         out.push(Edit::new(
             path.to_vec(),
             EditOp::InsertItem {
-                id: Some(item.id()),
+                id: Some(id),
                 at: if arranged { index } else { 0 },
-                value: item.to_json(),
+                value: (table.ops.to_json)(table, item),
             },
         ));
     }
@@ -856,24 +931,46 @@ fn store_by_id_changed<T: Model + Identified, S>(
     (doc, slot): (&mut Doc, Slot<'_>),
     dirty: &Delta,
 ) -> Result<(), ModelError> {
+    store_by_id_changed_in(
+        T::TABLE,
+        &|id| items.position_of(id),
+        (&Rows(now), &Rows(was)),
+        changes,
+        (doc, slot, dirty),
+    )
+}
+
+/// [`store_by_id_changed`] over items whose type `table` describes, compiled
+/// once for every item type.
+#[inline(never)]
+fn store_by_id_changed_in(
+    table: &'static crate::table::ModelTable,
+    position_of: &dyn Fn(&Id) -> Option<usize>,
+    (now, was): (
+        &dyn crate::collection::ItemList,
+        &dyn crate::collection::ItemList,
+    ),
+    changes: Changes<'_>,
+    (doc, slot, dirty): (&mut Doc, Slot<'_>, &Delta),
+) -> Result<(), ModelError> {
     // A slot holding no map yet is written whole, as is a map someone else
     // changed otherwise than item by item, or items that left and came.
     let Some((Value::Object(ObjType::Map), map)) = slot.current(doc)? else {
-        return ById::store(now, doc, slot);
+        return store_by_id_in(table, now, doc, slot);
     };
     let touched = dirty.under(&map);
     let kept = match kept_ids(was, now, changes) {
         Some(kept) if !touched.is_all() => kept,
-        _ => return ById::store(now, doc, slot),
+        _ => return store_by_id_in(table, now, doc, slot),
     };
     // What to write: the items changed and added, and those someone else
     // touched; what to delete: a key no item is under, which only someone
     // else can have written.
     let mut writes: Vec<usize> = kept.iter().map(|(at, _)| *at).collect();
-    writes.extend(changes.copied..now.len());
+    writes.extend(changes.copied..now.count());
     let mut stale: Vec<&str> = Vec::new();
     for key in touched.keys() {
-        match items.position_of(&Id::from_raw(key)) {
+        match position_of(&Id::from_raw(key)) {
             Some(at) => writes.push(at),
             None if doc.get(&map, key)?.is_some() => stale.push(key),
             None => {}
@@ -887,16 +984,53 @@ fn store_by_id_changed<T: Model + Identified, S>(
     writes.sort_unstable();
     writes.dedup();
     for at in writes {
-        let Some(item) = now.get(at) else {
+        let Some((id, item)) = now.item(at) else {
             continue;
         };
-        let id = item.id();
-        match was.get(at).filter(|_| at < changes.copied) {
-            Some(held) => write_key_changed(doc, &map, id.as_str(), item, held, dirty)?,
-            None => item
-                .store(doc, Slot::Key(&map, id.as_str()))
-                .located(id.as_str())?,
+        let key = id.as_str();
+        match was.item(at).filter(|_| at < changes.copied) {
+            Some((_, held)) => match dirty.key(&map, key) {
+                Touch::Written => {
+                    (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?;
+                }
+                Touch::Untouched if (table.ops.stores_as)(table, item, held) => {}
+                Touch::Untouched | Touch::Below => {
+                    (table.ops.store_changed)(table, item, held, doc, Slot::Key(&map, key), dirty)
+                        .located(key)?;
+                }
+            },
+            None => (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?,
         }
+    }
+    Ok(())
+}
+
+/// [`ById::store`] over items whose type `table` describes, compiled once
+/// for every item type.
+#[inline(never)]
+fn store_by_id_in(
+    table: &'static crate::table::ModelTable,
+    items: &dyn crate::collection::ItemList,
+    doc: &mut Doc,
+    slot: Slot<'_>,
+) -> Result<(), ModelError> {
+    let map = slot.object(doc, ObjType::Map)?;
+    let ids: Vec<Id> = (0..items.count())
+        .filter_map(|at| Some(items.item(at)?.0))
+        .collect();
+    let keys: HashSet<&str> = ids.iter().map(Id::as_str).collect();
+    let stale: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| !keys.contains(key.as_str()))
+        .collect();
+    for key in stale {
+        doc.delete(&map, key.as_str())?;
+    }
+    for at in 0..items.count() {
+        let Some((id, item)) = items.item(at) else {
+            continue;
+        };
+        (table.ops.store)(table, item, doc, Slot::Key(&map, id.as_str())).located(id.as_str())?;
     }
     Ok(())
 }
