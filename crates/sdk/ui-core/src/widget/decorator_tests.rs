@@ -391,3 +391,78 @@ fn decorators_preserve_content_free_physical_feedback() {
         Some(PhysicalInput::Focused(false))
     ));
 }
+
+/// [`Named`] through [`concrete::Decorator`] and a concrete [`Widget`] impl,
+/// as the toolkit's own boxed decorators are.
+struct ConcreteNamed {
+    inner: Recorder,
+}
+
+impl concrete::Decorator for ConcreteNamed {
+    type Inner = Recorder;
+
+    fn inner(&self) -> &Recorder {
+        &self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut Recorder {
+        &mut self.inner
+    }
+
+    fn name(&self) -> &'static str {
+        "ConcreteNamed"
+    }
+}
+
+concrete_decorator_widget!(ConcreteNamed);
+
+/// A toolkit decorator with a concrete `Widget` impl (compiled once into the
+/// toolkit rather than in every app that boxes it) is the same widget as one
+/// through the blanket impl: its inner widget plus its overrides, standing in
+/// for the inner widget's layout node.
+#[test]
+fn a_concrete_decorator_forwards_and_stands_in_like_the_blanket_one() {
+    let log = Log::default();
+    let mut decorated = ConcreteNamed {
+        inner: Recorder::new(&log),
+    };
+    decorated.inner.dirty = true;
+    let widget: &mut dyn Widget = &mut decorated;
+    let doc = AutoCommit::new();
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+
+    assert_eq!(widget.name(), "ConcreteNamed");
+    assert_eq!(widget.get_rect(), Rect::new(1.0, 2.0, 3.0, 4.0));
+    widget.sync(&doc, &automerge::ROOT);
+    let node = widget.build_layout(&mut taffy, &theme, &mut nodes);
+    widget.apply_layout(&taffy, node, Point::ORIGIN);
+    widget.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &PresenceCtx::empty(),
+    );
+    assert!(widget.take_structure_dirty());
+    assert!(!widget.take_structure_dirty(), "reading clears it");
+    assert!(widget.children().is_empty(), "the inner widget's children");
+    assert!(
+        widget.concrete_type_name().ends_with("ConcreteNamed"),
+        "identity describes the decorator"
+    );
+    assert!(
+        widget.as_any().is_some_and(|any| any.is::<ConcreteNamed>()),
+        "downcasts to the decorator"
+    );
+    assert_eq!(
+        *log.borrow(),
+        ["sync", "build_layout", "apply_layout", "draw"]
+    );
+    assert_eq!(nodes.len(), 1);
+    // SAFETY: `decorated` is alive and was laid out into `nodes` above.
+    let registered = unsafe { &*nodes[&node] };
+    assert!(registered.concrete_type_name().ends_with("ConcreteNamed"));
+    assert_eq!(registered.name(), "ConcreteNamed");
+}
