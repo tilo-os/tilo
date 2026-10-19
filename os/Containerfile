@@ -2249,6 +2249,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
+    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -2256,7 +2257,7 @@ COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.c
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
-COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
+COPY os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate /usr/libexec/
 COPY \
     os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
     os/usr/share/polkit-1/actions/org.tilo.disk-unlock.policy \
@@ -2477,7 +2478,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-relay.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf os/usr/share/user-tmpfiles.d/tilo-secret-service.conf /usr/share/user-tmpfiles.d/
 
@@ -3280,7 +3281,7 @@ ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,target=/run/tilo-collaborative-files-image-contract.sh,ro \
     chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
-        /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot \
+        /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
     && chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/tilo-greeter \
               /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \

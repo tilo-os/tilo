@@ -97,19 +97,31 @@ grep -Fq 'COPY os/usr/lib/sysusers.d/tilo-relay.conf /usr/lib/sysusers.d/tilo-re
 grep -Fq 'systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf' \
   "$root/os/Containerfile.host"
 grep -Eq '^d /var/lib/tilo-relay +0700 tilo-relay tilo-relay ' \
+  "$root/os/usr/lib/tmpfiles.d/tilo-relay.conf"
+grep -Eq '^d /var/lib/tilo/full-replica +0700 tilo-relay tilo-relay ' \
+  "$root/os/usr/lib/tmpfiles.d/tilo-relay.conf"
+! grep -hEq '^d +/var/lib/(tilo-relay|tilo/full-replica) ' "$root/os/usr/lib/tmpfiles.d/tilo.conf" \
   "$root/os/usr/lib/tmpfiles.d/tilo-host.conf"
 grep -Fq 'chown -R --no-dereference --one-file-system tilo-relay:tilo-relay "$state"' "$migrate"
 ! grep -q '^ConditionPathExists=' "$migrate_unit"
 grep -Fq 'tilo-relay-state-migrate: unsafe completion marker' "$migrate"
 grep -Fq "stat -c '%u:%a:%h:%s' -- \"\$marker\"" "$migrate"
 grep -Fqx 'Before=tilo-relay.service tilo-fs-replica.service' "$migrate_unit"
-grep -Fq 'COPY os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate' \
-  "$root/os/Containerfile.host"
 # shellcheck source=lib/containerfile.sh
 . "$root/os/tests/lib/containerfile.sh"
 containerfile_has_copy "$root/os/Containerfile" \
   os/usr/lib/systemd/system/tilo-relay-firstboot.service \
   /usr/lib/systemd/system/tilo-relay-firstboot.service
+# The desktop image runs tilo-relay.service too once it serves as a home peer.
+for image in Containerfile Containerfile.host; do
+  containerfile_has_copy "$root/os/$image" \
+    os/usr/lib/systemd/system/tilo-relay-state-migrate.service \
+    /usr/lib/systemd/system/tilo-relay-state-migrate.service
+  containerfile_has_copy "$root/os/$image" \
+    os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate
+  containerfile_has_copy "$root/os/$image" \
+    os/usr/lib/tmpfiles.d/tilo-relay.conf /usr/lib/tmpfiles.d/tilo-relay.conf
+done
 grep -q 'bounded_command::spawn_prepared' "$settings"
 grep -q 'const APPLY_TIMEOUT' "$settings"
 grep -q 'const MANAGEMENT_TIMEOUT' "$settings"

@@ -272,7 +272,9 @@ containerfile="$repo/os/Containerfile"
 # interface declaration it reads, so a shell swapped onto an older image never
 # judges apps by that image's declaration: its manifest row replaces the
 # context COPY of the same file.
-expected_contract=65ba52ccf01f12b234d7c93cbcc6eae4399f1d4a10fa2a19c5cb4da439c0489e
+# The relay's state migration and its tmpfiles entry (tilo-relay.conf) ship
+# with tilo-relay.service, which a home peer enables on this image too.
+expected_contract=0529213fe8ecb3adf0bacdc386e643b66d7ed070af66b173fdebe102613a40a9
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
