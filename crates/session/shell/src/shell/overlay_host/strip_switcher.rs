@@ -453,6 +453,13 @@ impl StripSwitcher {
         self.place(ribbon);
     }
 
+    /// Everything the open labels would take beside `ribbon`, "New strip"
+    /// under the last included: where nothing else may wait at that edge,
+    /// open or not, since the labels open over whatever is there.
+    pub(crate) fn extent_beside(&self, ribbon: &StripRibbon) -> Rect {
+        Layout::beside(&self.model, ribbon, None, |row| self.label_width(row)).bounds
+    }
+
     fn relayout(&mut self) {
         let Some(ribbon) = self.ribbon else {
             return;

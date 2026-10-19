@@ -300,6 +300,35 @@ fn each_widget_honours_its_own_setting() {
     assert_eq!(forms(&host).1, Form::Away);
 }
 
+/// The Team widget waits on the right edge, where the strip switcher's
+/// ribbon is and its labels open: it waits clear of all of them, "New strip"
+/// under the last mark included, so opening the switcher never lays a label
+/// over its faces and reaching for a strip never brings the widget.
+#[test]
+fn the_team_widget_waits_clear_of_the_strip_switcher() {
+    let (mut host, _chrome, _) = desk();
+    host.update_desk(Instant::now());
+    let zone = host.strip_switcher_zone();
+    assert!(zone.area() > 0.0, "the demo desk offers the strip switcher");
+    let labels = host.strip_switcher.extent_beside(&host.strip_ribbon());
+    assert!(
+        labels.y1 > zone.y1,
+        "the labels reach under the ribbon: {labels:?} {zone:?}"
+    );
+    let switcher = zone.union(labels);
+    let team = host.desk_slot(WidgetId::Team).expect("team is laid out");
+    assert_eq!(
+        host.desk_widget_prefs().team.edge,
+        DockEdge::Right,
+        "the case in question: Team on the switcher's edge"
+    );
+    assert!(
+        team.glance.intersect(switcher).is_zero_area(),
+        "the Team glance {:?} clears the switcher {switcher:?}",
+        team.glance
+    );
+}
+
 #[test]
 fn passing_an_edge_is_not_a_glance_but_reaching_for_it_is() {
     let (mut host, _chrome, _) = desk();

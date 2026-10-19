@@ -342,6 +342,62 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
     leaving_a_workspace_releases_follow_in_the_original_room();
 }
 
+/// Following shows the frame and the follow bar; over the work it rings the
+/// person followed and draws no line from anyone's pointer to anyone else's.
+/// The follower's own pointer far across the window and another pair of
+/// people following each other paint nothing but that one ring.
+#[test]
+fn following_draws_no_stray_stroke_across_the_work() {
+    let mut tree = one_group_seed();
+    for (id, name) in [("ada", "Ada"), ("ben", "Ben")] {
+        tree.desktop.workspaces[0]
+            .collaborators
+            .push(Collaborator::new(id, name));
+    }
+    let key = active_key(&tree);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let mut presence = PresenceCtx::default();
+    presence.pointers.insert(
+        key.clone(),
+        vec![
+            (UserId("ada".into()), (270.0, 290.0)),
+            (UserId("ben".into()), (550.0, 470.0)),
+        ],
+    );
+    presence.apply_remote_presence(
+        "ben".into(),
+        key,
+        ui::collaboration::PresencePayload::Following {
+            target: Some("ada".into()),
+        },
+    );
+    host.set_followed_peer(Some("ada".into()));
+    host.last_cursor = Some(Point::new(820.0, 300.0));
+
+    let mut scene = Scene::new();
+    let painted =
+        host.draw_follow_cursor_affordances(&mut scene, Affine::IDENTITY, &presence, true);
+
+    let ring = Rect::new(270.0 - 17.0, 290.0 - 17.0, 270.0 + 17.0, 290.0 + 17.0);
+    assert_eq!(
+        painted.len(),
+        1,
+        "only the followed person's ring paints: {painted:?}"
+    );
+    assert!(
+        painted
+            .iter()
+            .all(|rect| ring.contains(rect.origin()) && rect.width() <= ring.width()),
+        "nothing reaches beyond the ring on the followed pointer: {painted:?}"
+    );
+    assert_eq!(
+        scene.encoding().draw_tags.len(),
+        1,
+        "one stroke, the ring, and no line to the local pointer or between peers"
+    );
+}
+
 #[test]
 fn follow_waits_for_the_live_row_before_recording_its_target() {
     let tree = one_group_seed();

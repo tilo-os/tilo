@@ -114,6 +114,7 @@ pub struct AvatarFace<'a> {
     glyph: Option<crate::icons::Icon>,
     presence_ring: bool,
     speaking: f32,
+    idle_on: Option<Color>,
 }
 
 impl<'a> AvatarFace<'a> {
@@ -133,6 +134,7 @@ impl<'a> AvatarFace<'a> {
             glyph: None,
             presence_ring: false,
             speaking: 0.0,
+            idle_on: None,
         }
     }
 
@@ -202,6 +204,15 @@ impl<'a> AvatarFace<'a> {
     #[must_use]
     pub fn presence_ring(mut self) -> Self {
         self.presence_ring = true;
+        self
+    }
+
+    /// The person is idle or away: their colour quietened for a face on
+    /// `ground` ([`crate::tokens::colors::PresencePalette::idle_on`]), so
+    /// it reads as dimmed and still stands out from the ground.
+    #[must_use]
+    pub fn idle_on(mut self, ground: Color) -> Self {
+        self.idle_on = Some(ground);
         self
     }
 
@@ -276,11 +287,16 @@ impl<'a> AvatarFace<'a> {
     #[must_use]
     pub fn colour(&self, theme: &Theme) -> Color {
         let presence = &theme.tokens.colors.presence;
-        match self.tint {
-            Tint::Identity(id) => initials_fill(presence.hue(PresenceHue::of_identity(id)), theme),
-            Tint::Presence(colour) => initials_fill(presence.of(colour), theme),
-            Tint::Neutral => theme.tokens.colors.surfaces.raised,
-        }
+        let person = match self.tint {
+            Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
+            Tint::Presence(colour) => presence.of(colour),
+            Tint::Neutral => return theme.tokens.colors.surfaces.raised,
+        };
+        let person = match self.idle_on {
+            Some(ground) => presence.idle_on(person, ground),
+            None => person,
+        };
+        initials_fill(person, theme)
     }
 
     /// The person's presence colour (the badge's), whatever the fallback.
