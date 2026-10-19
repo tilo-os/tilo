@@ -1418,6 +1418,22 @@ impl ResourcesPane {
         }
         let bridge = self.shared.borrow();
         let Some(metrics) = bridge.metrics.as_ref() else {
+            // No reading of the machine: say so (or that it is coming)
+            // instead of a dashboard of zeros.
+            let state = if matches!(bridge.placeholder, Some(Placeholder::Loading)) {
+                EmptyState::new("Reading this computer's usage").busy()
+            } else {
+                EmptyState::new("Usage unavailable").with_message(
+                    "This computer's processor, memory, network and disk use couldn't be read.",
+                )
+            };
+            drop(bridge);
+            self.page = Some(
+                state
+                    .into_scrollable()
+                    .with_semantic_key("monitor.resources"),
+            );
+            self.built_with = Some(key);
             return;
         };
         let dashboard = dashboard(metrics, bridge.process_count, bridge.thread_count, theme);

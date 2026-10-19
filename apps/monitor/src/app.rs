@@ -1227,7 +1227,11 @@ impl MonitorApp {
             bridge.placeholder = placeholder;
             if self.published_metrics != Some(self.metrics_revision) {
                 self.published_metrics = Some(self.metrics_revision);
-                bridge.metrics = Some(self.model.metrics.clone());
+                bridge.metrics = self
+                    .model
+                    .metrics
+                    .measured()
+                    .then(|| self.model.metrics.clone());
                 bridge.process_count = self.model.processes.len();
                 bridge.thread_count = self.model.processes.iter().map(|p| p.threads).sum();
                 bridge.metrics_revision = bridge.metrics_revision.wrapping_add(1);
