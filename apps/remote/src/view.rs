@@ -70,7 +70,10 @@ pub(crate) fn rail(
     session: Option<ConnectionKind>,
 ) -> NavList {
     let mut items = vec![
-        NavItem::new(Destination::Connections.id(), "Connections").icon(Icon::List),
+        // "All" beside "Pinned": the rail is a 48 px column, and a word as
+        // long as "Connections" only fits it elided. The page it opens is
+        // still headed "Connections".
+        NavItem::new(Destination::Connections.id(), "All").icon(Icon::List),
         NavItem::new(Destination::Pinned.id(), "Pinned").icon(Icon::Pin),
     ];
     if let Some(kind) = session {

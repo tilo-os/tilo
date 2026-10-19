@@ -811,8 +811,11 @@ fn a_staged_drag_lifts_the_row_over_its_drop_line() {
     );
 }
 
+// From the coordinator (2026-10-19): shared rails never hyphenate a
+// single word ("Connec-tions"); a caption wraps only at spaces and a word
+// too long for the rail elides.
 #[test]
-fn rail_captions_wrap_before_they_elide() {
+fn rail_captions_wrap_at_spaces_and_never_break_a_word() {
     let list = NavList::new(vec![NavSection::untitled(
         "places",
         vec![
@@ -827,40 +830,31 @@ fn rail_captions_wrap_before_they_elide() {
     let list = h.root::<NavList>();
     let home = list.row_rect("home").expect("home");
     let subs = list.row_rect("subs").expect("subs");
-    let caption = f64::from(
-        theme
-            .text(crate::tokens::TextRole::Caption)
-            .line_height_px(),
-    );
     assert!((home.height() - crate::chrome::nav_rail_row_height(&theme)).abs() < 0.5);
     assert!(
-        (subs.height() - home.height() - caption).abs() < 0.5,
-        "a caption too wide for the rail takes a second line"
+        (subs.height() - home.height()).abs() < 0.5,
+        "one word too wide for the rail stays one line"
     );
     let mut text = crate::text_render::TextRenderer::new();
-    let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Subscriptions", 60.0);
-    assert_eq!(lines.len(), 2);
-    assert!(
-        lines.iter().all(|line| !line.contains('\u{2026}')),
-        "{lines:?}"
-    );
-    assert_eq!(lines.concat().replace('-', ""), "Subscriptions");
-
-    // Case `a_long_word_breaks_at_a_syllable_not_a_letter`.
-    let mut broken = 0;
-    for width in [52.0, 60.0, 68.0] {
-        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Connections", width);
-        let syllables = crate::text_break::discretionary_hyphen_breaks("Connections", "en-US");
-        if let [head, _] = lines.as_slice() {
-            broken += 1;
-            let cut = head.trim_end_matches('-').len();
-            assert!(
-                syllables.contains(&cut),
-                "{width}: breaks at a syllable boundary {syllables:?}, not inside one: {lines:?}"
-            );
-        }
+    for (label, width) in [
+        ("Subscriptions", 60.0),
+        ("Connections", 52.0),
+        ("Connections", 60.0),
+        ("Connections", 68.0),
+    ] {
+        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, label, width);
+        assert_eq!(lines.len(), 1, "{label} at {width}: {lines:?}");
+        assert!(
+            !lines[0].contains('-'),
+            "{label} at {width} is never hyphenated: {lines:?}"
+        );
+        assert!(
+            lines[0] == label || lines[0].ends_with('\u{2026}'),
+            "{label} at {width} shows whole or elided: {lines:?}"
+        );
     }
-    assert!(broken > 0, "the word is too wide for a narrow rail");
+    let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Liked songs", 40.0);
+    assert_eq!(lines, ["Liked", "songs"], "two words wrap at the space");
 }
 
 /// Sections handed over before the first layout stand at the navigation
