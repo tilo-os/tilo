@@ -251,6 +251,21 @@ pub enum ClientError {
     },
 }
 
+impl ClientError {
+    /// The peer protocol version the other side speaks, when that is why
+    /// this failed: over the relay stream ([`Self::PeerVersion`]) or over
+    /// its HTTPS fallback ([`tilo_relay_client::LinkError::PeerVersion`]),
+    /// so a device behind or ahead is told either way, never only logged.
+    #[must_use]
+    pub fn peer_version(&self) -> Option<u32> {
+        match self {
+            Self::PeerVersion { theirs }
+            | Self::Https(tilo_relay_client::LinkError::PeerVersion { theirs }) => Some(*theirs),
+            _ => None,
+        }
+    }
+}
+
 /// A handshake frame read as this device's version, or the other side's
 /// version when it speaks another.
 fn handshake_frame<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ClientError> {
@@ -2693,5 +2708,33 @@ mod session_carrier_tests {
     fn native_client_retains_spawn_compatibility() {
         fn send_sync<T: Send + Sync>() {}
         send_sync::<RelayClient>();
+    }
+}
+
+#[cfg(test)]
+mod peer_version_tests {
+    use super::ClientError;
+
+    /// A host at another peer protocol version is told apart from any other
+    /// failure on both transports, so the person hears who has to update
+    /// rather than seeing a link that silently never comes up.
+    #[test]
+    fn another_version_is_named_on_the_stream_and_over_https() {
+        let ours = crate::auth::PEER_PROTOCOL_VERSION;
+        let behind = ours.saturating_sub(1);
+        assert_eq!(
+            ClientError::PeerVersion { theirs: behind }.peer_version(),
+            Some(behind)
+        );
+        assert_eq!(
+            ClientError::Https(tilo_relay_client::LinkError::PeerVersion { theirs: behind })
+                .peer_version(),
+            Some(behind)
+        );
+        assert_eq!(ClientError::PrivateTransportClosed.peer_version(), None);
+        assert_eq!(
+            ClientError::Https(tilo_relay_client::LinkError::Malformed("x".into())).peer_version(),
+            None
+        );
     }
 }

@@ -10,8 +10,8 @@ pub(crate) mod native_ingress;
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update (`crate::shell::collaborator_versions`).
 fn relay_error(host: &iroh::EndpointId, error: tilo_relay_session::ClientError) -> String {
-    if let tilo_relay_session::ClientError::PeerVersion { theirs } = &error {
-        crate::shell::collaborator_versions::note(host.to_string(), String::new(), *theirs);
+    if let Some(theirs) = error.peer_version() {
+        crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
     }
     error.to_string()
 }
