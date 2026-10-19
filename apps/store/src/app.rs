@@ -1177,10 +1177,11 @@ impl StoreApp {
         if query.chars().count() < 3 {
             self.remote_results.clear();
             self.remote_query.clear();
-        } else if query != self.remote_query && self.results.apps.len() < 3 {
-            if let Some(fetcher) = &self.fetcher {
-                fetcher.search(&query);
-            }
+        } else if query != self.remote_query
+            && self.results.apps.len() < 3
+            && let Some(fetcher) = &self.fetcher
+        {
+            fetcher.search(&query);
         }
         if !self.query.trim().is_empty() {
             // A search shows over the catalogue, not over an app's page.
@@ -1745,85 +1746,86 @@ impl StoreApp {
         }
     }
 
-    pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
-        let detail = app
-            .map(|id| {
-                if !crate::reports::valid_app_id(id) {
-                    return Err("invalid app identity".to_string());
+    /// One app of the catalogue as an explicit read sees it: its row's
+    /// fields, then what only such a read carries (its languages, notice,
+    /// blockers, developer, licence, download size, screenshots and
+    /// permissions).
+    fn inspect_app(&self, id: &str) -> Result<serde_json::Value, String> {
+        if !crate::reports::valid_app_id(id) {
+            return Err("invalid app identity".to_string());
+        }
+        self.items
+            .iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| "App is not in the current catalogue.".to_string())
+            .and_then(|item| {
+                let mut detail =
+                    inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref());
+                // Language metadata belongs to an explicit app read,
+                // not every row of a catalogue listing. Bound it even
+                // when the model was supplied by a legacy source.
+                let fields = detail.as_object_mut().ok_or_else(|| {
+                    "App inspection did not produce a metadata object.".to_string()
+                })?;
+                fields.insert(
+                    "supported_languages".into(),
+                    serde_json::json!(
+                        item.supported_languages
+                            .iter()
+                            .take(128)
+                            .map(|tag| tag.chars().take(64).collect::<String>())
+                            .collect::<Vec<_>>()
+                    ),
+                );
+                fields.insert(
+                    "supported_language_count".into(),
+                    serde_json::json!(item.supported_languages.len()),
+                );
+                if let Some(notice) = self.local_only_notice(item) {
+                    fields.insert("notice".into(), serde_json::json!(notice));
                 }
-                self.items
-                    .iter()
-                    .find(|item| item.id == id)
-                    .ok_or_else(|| "App is not in the current catalogue.".to_string())
-                    .and_then(|item| {
-                        let mut detail = inspect_item(
-                            item,
-                            self.flatpak_available,
-                            self.flatpak_error.as_deref(),
-                        );
-                        // Language metadata belongs to an explicit app read,
-                        // not every row of a catalogue listing. Bound it even
-                        // when the model was supplied by a legacy source.
-                        let fields = detail.as_object_mut().ok_or_else(|| {
-                            "App inspection did not produce a metadata object.".to_string()
-                        })?;
-                        fields.insert(
-                            "supported_languages".into(),
+                fields.insert(
+                    "blocked_by".into(),
+                    serde_json::to_value(self.blocks.blockers(id))
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                let facts = self.page_facts(item);
+                fields.insert(
+                    "developer".into(),
+                    serde_json::json!(resource_detail_excerpt(&self.developer(item))),
+                );
+                fields.insert(
+                    "license".into(),
+                    serde_json::json!(resource_detail_excerpt(&facts.license)),
+                );
+                fields.insert(
+                    "download_bytes".into(),
+                    serde_json::json!(facts.download_bytes),
+                );
+                fields.insert(
+                    "screenshots".into(),
+                    serde_json::json!(facts.screenshots.len()),
+                );
+                fields.insert(
+                    "permissions".into(),
+                    facts
+                        .permissions
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, |permissions| {
                             serde_json::json!(
-                                item.supported_languages
+                                permissions
                                     .iter()
-                                    .take(128)
-                                    .map(|tag| tag.chars().take(64).collect::<String>())
+                                    .map(crate::catalogue::Permission::label)
                                     .collect::<Vec<_>>()
-                            ),
-                        );
-                        fields.insert(
-                            "supported_language_count".into(),
-                            serde_json::json!(item.supported_languages.len()),
-                        );
-                        if let Some(notice) = self.local_only_notice(item) {
-                            fields.insert("notice".into(), serde_json::json!(notice));
-                        }
-                        fields.insert(
-                            "blocked_by".into(),
-                            serde_json::to_value(self.blocks.blockers(id))
-                                .unwrap_or(serde_json::Value::Null),
-                        );
-                        let facts = self.page_facts(item);
-                        fields.insert(
-                            "developer".into(),
-                            serde_json::json!(resource_detail_excerpt(&self.developer(item))),
-                        );
-                        fields.insert(
-                            "license".into(),
-                            serde_json::json!(resource_detail_excerpt(&facts.license)),
-                        );
-                        fields.insert(
-                            "download_bytes".into(),
-                            serde_json::json!(facts.download_bytes),
-                        );
-                        fields.insert(
-                            "screenshots".into(),
-                            serde_json::json!(facts.screenshots.len()),
-                        );
-                        fields.insert(
-                            "permissions".into(),
-                            facts.permissions.as_ref().map_or(
-                                serde_json::Value::Null,
-                                |permissions| {
-                                    serde_json::json!(
-                                        permissions
-                                            .iter()
-                                            .map(crate::catalogue::Permission::label)
-                                            .collect::<Vec<_>>()
-                                    )
-                                },
-                            ),
-                        );
-                        Ok(detail)
-                    })
+                            )
+                        }),
+                );
+                Ok(detail)
             })
-            .transpose()?;
+    }
+
+    pub(crate) fn inspect_catalogue(&self, app: Option<&str>) -> Result<serde_json::Value, String> {
+        let detail = app.map(|id| self.inspect_app(id)).transpose()?;
         let visible = self.visible_items();
         let items = visible
             .iter()
@@ -2066,9 +2068,7 @@ impl StoreApp {
                 if category == "All" || category.is_empty() {
                     self.show_view(View::Home);
                 } else {
-                    if category.chars().count() > 128
-                        || !self.categories().iter().any(|known| *known == category)
-                    {
+                    if category.chars().count() > 128 || !self.categories().contains(&category) {
                         return Err("unknown Store category".into());
                     }
                     self.set_filter_field("");

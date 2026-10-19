@@ -1072,34 +1072,20 @@ impl StoreApp {
         for (label, value) in device_properties(item) {
             rows.push(Property::new(label, value));
         }
-        if let Some(url) = facts.homepage.clone() {
-            let target = url.clone();
-            rows.push(
-                Property::new(ui::i18n!("store-fact-homepage"), url)
-                    .with_kind(TextKind::Identifier)
-                    .action(
-                        Icon::ExternalLink,
-                        ui::i18n!("store-open-homepage"),
-                        move || {
-                            ui::widget::open_external_url(&target);
-                        },
-                    ),
-            );
-        }
-        if let Some(url) = item.source_url.clone() {
-            let target = url.clone();
-            rows.push(
-                Property::new(ui::i18n!("store-fact-source-code"), url)
-                    .with_kind(TextKind::Identifier)
-                    .action(
-                        Icon::ExternalLink,
-                        ui::i18n!("store-open-source-code"),
-                        move || {
-                            ui::widget::open_external_url(&target);
-                        },
-                    ),
-            );
-        }
+        rows.extend(facts.homepage.clone().map(|url| {
+            link_row(
+                ui::i18n!("store-fact-homepage"),
+                url,
+                ui::i18n!("store-open-homepage"),
+            )
+        }));
+        rows.extend(item.source_url.clone().map(|url| {
+            link_row(
+                ui::i18n!("store-fact-source-code"),
+                url,
+                ui::i18n!("store-open-source-code"),
+            )
+        }));
         rows
     }
 
@@ -1511,7 +1497,7 @@ impl StoreApp {
         let input = TextInput::new(vec![])
             .with_id(&format!("store.report.note.{app_id}"))
             .multiline(true)
-            .with_placeholder(&ui::i18n!("store-report-note-placeholder"));
+            .with_placeholder(ui::i18n!("store-report-note-placeholder"));
         let path = crate::reports::Reports::note(app_id);
         NoteField(match &self.dispatcher {
             Some(dispatcher) => TextControl::at(input, dispatcher.clone(), path),
@@ -1542,7 +1528,7 @@ impl StoreApp {
                         TextInput::from_state(&self.remote_name_state)
                             .with_id("store.remote.name")
                             .with_kind(ui::widget::TextInputKind::Name)
-                            .with_placeholder(&ui::i18n!("store-remote-name-placeholder")),
+                            .with_placeholder(ui::i18n!("store-remote-name-placeholder")),
                     ))
                     .field(
                         Field::new(
@@ -1949,4 +1935,15 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(String, String)> {
             ui::i18n!("store-device-installed-version", "version" => version.clone()),
         )],
     }
+}
+
+/// A fact row whose value is a web address, with the action that opens it
+/// in the browser.
+fn link_row(label: String, url: String, open: String) -> Property {
+    let target = url.clone();
+    Property::new(label, url)
+        .with_kind(TextKind::Identifier)
+        .action(Icon::ExternalLink, open, move || {
+            ui::widget::open_external_url(&target);
+        })
 }

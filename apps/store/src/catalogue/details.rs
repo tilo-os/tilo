@@ -154,7 +154,7 @@ pub fn tilo_permissions(capabilities: &[String]) -> Vec<Permission> {
 /// of its build summary (Flatpak's finish arguments).
 #[must_use]
 pub fn flatpak_permissions(permissions: &serde_json::Value) -> Vec<Permission> {
-    fn strings<'a>(value: Option<&'a serde_json::Value>) -> Vec<&'a str> {
+    fn strings(value: Option<&serde_json::Value>) -> Vec<&str> {
         value
             .and_then(serde_json::Value::as_array)
             .map(|values| {
