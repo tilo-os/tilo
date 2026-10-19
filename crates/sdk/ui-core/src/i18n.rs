@@ -187,10 +187,30 @@ thread_local! {
     static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
     static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
     static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
+    /// Messages resolved without variables, under the manager and revision
+    /// they were resolved at ([`I18nManager::lookup`]).
+    static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
     // Shared controls remain readable even when an app installs only its own
     // catalog. App translations always take precedence over this source.
     static TOOLKIT_SOURCE: Result<FluentBundle<FluentResource>, I18nError> =
         make_bundle(&parse_locale_or_default("en-US"), include_str!("../locales/en-US.ftl"));
+}
+
+/// What [`I18nManager::lookup`] resolved without variables since the
+/// catalogues, the locale, pseudo-localisation or the region formats last
+/// changed: the same key resolves to the same text until one of them does.
+/// A list publishing a hundred rows asked Fluent for the same dozen labels
+/// on each of them.
+#[derive(Default)]
+struct PlainLookups {
+    /// The manager and its [`I18nManager::revision`] they were resolved at.
+    stamp: Option<(Option<u64>, u64)>,
+    texts: HashMap<String, String>,
+}
+
+impl PlainLookups {
+    /// At most this many texts are kept; past it they are resolved again.
+    const MAX: usize = 4096;
 }
 
 struct LocalizedSource {
@@ -621,6 +641,33 @@ impl I18nManager {
     /// first best-effort rendering is returned, and a key no bundle defines
     /// resolves to itself.
     pub fn lookup(key: &str, args: Option<&FluentArgs>) -> String {
+        if args.is_some() {
+            return Self::resolve_lookup(key, args);
+        }
+        let stamp = (manager_id(), Self::revision());
+        let kept = PLAIN_LOOKUPS.with(|kept| {
+            let kept = kept.borrow();
+            (kept.stamp == Some(stamp))
+                .then(|| kept.texts.get(key).cloned())
+                .flatten()
+        });
+        if let Some(text) = kept {
+            return text;
+        }
+        let text = Self::resolve_lookup(key, None);
+        PLAIN_LOOKUPS.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            if kept.stamp != Some(stamp) || kept.texts.len() >= PlainLookups::MAX {
+                kept.stamp = Some(stamp);
+                kept.texts.clear();
+            }
+            kept.texts.insert(key.to_owned(), text.clone());
+        });
+        text
+    }
+
+    /// [`Self::lookup`], resolved by Fluent.
+    fn resolve_lookup(key: &str, args: Option<&FluentArgs>) -> String {
         let mut resolution = Resolution {
             key,
             args,
@@ -1009,6 +1056,34 @@ mod tests {
     fn install_plain(source: &str, locale: &str, catalogs: &[(&str, &str)]) {
         I18nManager::install(source, locale, catalogs).unwrap();
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
+    }
+
+    /// A plain lookup is resolved once per catalogue, locale and
+    /// pseudo-localisation, and resolved again as soon as any of them changes.
+    #[test]
+    fn a_kept_plain_lookup_follows_catalogue_locale_and_pseudo_locale() {
+        let _restore = RestoreLookupState::capture();
+        install_plain(
+            "en-US",
+            "en-US",
+            &[
+                ("en-US", "kept-probe = One\n"),
+                ("de-DE", "kept-probe = Eins\n"),
+            ],
+        );
+        assert_eq!(I18nManager::lookup_plain("kept-probe"), "One");
+        assert_eq!(I18nManager::lookup_plain("kept-probe"), "One");
+        I18nManager::set_locale("de-DE");
+        assert_eq!(I18nManager::lookup_plain("kept-probe"), "Eins");
+        I18nManager::add_resource("de-DE", "kept-other = Zwei\n".to_owned());
+        assert_eq!(I18nManager::lookup_plain("kept-other"), "Zwei");
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        assert_ne!(I18nManager::lookup_plain("kept-probe"), "Eins");
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        assert_eq!(I18nManager::lookup_plain("kept-probe"), "Eins");
+        // Another manager on the thread starts from its own catalogues.
+        install_plain("en-US", "en-US", &[("en-US", "kept-probe = Other\n")]);
+        assert_eq!(I18nManager::lookup_plain("kept-probe"), "Other");
     }
 
     #[test]
