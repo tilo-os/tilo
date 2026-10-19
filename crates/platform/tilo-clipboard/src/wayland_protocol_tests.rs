@@ -869,6 +869,58 @@ fn selection_before_enter_and_same_client_surface_switch_keep_one_offer() {
     assert_eq!(h.query(|state| state.received.len()), 4);
 }
 
+/// Roundtrip completion runs at the backend level, before any event queue
+/// dispatch. The worker must not dispatch it for the application: that can
+/// complete the sync between the application's completion check and its poll,
+/// leaving the application asleep on a reply that was already consumed.
+#[test]
+fn worker_leaves_application_callbacks_to_the_application() {
+    use client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
+
+    struct Completion(mpsc::Sender<std::thread::ThreadId>);
+    impl ObjectData for Completion {
+        fn event(
+            self: Arc<Self>,
+            _: &Backend,
+            _: Message<ObjectId, OwnedFd>,
+        ) -> Option<Arc<dyn ObjectData>> {
+            self.0
+                .send(std::thread::current().id())
+                .expect("completion receiver");
+            None
+        }
+
+        fn destroyed(&self, _: ObjectId) {}
+    }
+
+    let h = Harness::new();
+    let (completed, received) = mpsc::channel();
+    h.connection
+        .send_request(
+            &h.connection.display(),
+            client::protocol::wl_display::Request::Sync {},
+            Some(Arc::new(Completion(completed))),
+        )
+        .expect("application sync request");
+    h.connection.flush().expect("flush application sync");
+    // The worker's own sync reply follows the application's on the same
+    // socket, so once the fence returns the application's reply was read.
+    h.fence();
+    assert_eq!(
+        received.try_recv(),
+        Err(mpsc::TryRecvError::Empty),
+        "the clipboard worker dispatched the application's sync callback"
+    );
+    h.connection
+        .backend()
+        .dispatch_inner_queue()
+        .expect("application dispatch");
+    assert_eq!(
+        received.recv_timeout(h.remaining()),
+        Ok(std::thread::current().id())
+    );
+}
+
 #[test]
 fn leave_and_null_cancel_both_pending_pipes_before_the_deadline() {
     let h = Harness::new();

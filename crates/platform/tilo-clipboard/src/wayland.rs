@@ -285,6 +285,44 @@ impl WaylandClipboard {
         display_ptr: *mut std::ffi::c_void,
         owner: Option<Arc<dyn Send + Sync>>,
     ) -> Self {
+        let reader = || {
+            Some(Arc::new(DisplayReader {
+                clipboard: std::sync::Mutex::new(unsafe {
+                    smithay_clipboard::Clipboard::new(display_ptr)
+                }),
+                _display: owner.clone(),
+            }))
+        };
+        let (read_clipboard, read_primary, write_inner) = (reader(), reader(), reader());
+        let mut clipboard = unsafe {
+            Self::with_publication_worker(
+                display_ptr,
+                owner,
+                CLIPBOARD_READ_BUDGET,
+                "tilo-wayland-clipboard",
+            )
+        };
+        clipboard.read_clipboard = read_clipboard;
+        clipboard.read_primary = read_primary;
+        clipboard.write_inner = write_inner;
+        clipboard
+    }
+
+    /// Only the publication worker, on its own backend for the display. It
+    /// shares the application's socket but never its event queue: dispatching
+    /// that queue could consume an application's roundtrip reply just before
+    /// the application waits for it.
+    ///
+    /// # Safety
+    ///
+    /// `display_ptr` must outlive the worker thread, unless `owner` keeps it
+    /// alive.
+    unsafe fn with_publication_worker(
+        display_ptr: *mut std::ffi::c_void,
+        owner: Option<Arc<dyn Send + Sync>>,
+        rich_read_budget: tilo_clock::Duration,
+        name: &str,
+    ) -> Self {
         let backend = unsafe {
             smithay_client_toolkit::reexports::client::backend::Backend::from_foreign_display(
                 display_ptr.cast(),
@@ -299,12 +337,17 @@ impl WaylandClipboard {
         let worker_pasted = Arc::clone(&pasted);
         let rich = Arc::new(RichClipboard::new());
         let worker_rich = Arc::clone(&rich);
-        let worker_display = owner.clone();
         let thread = std::thread::Builder::new()
-            .name("tilo-wayland-clipboard".into())
+            .name(name.into())
             .spawn(move || {
-                publication_worker(connection, receiver, worker_pasted, worker_rich);
-                drop(worker_display);
+                image_worker_impl::run(
+                    connection,
+                    receiver,
+                    worker_pasted,
+                    worker_rich,
+                    rich_read_budget,
+                );
+                drop(owner);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -312,24 +355,9 @@ impl WaylandClipboard {
             alive.store(false, std::sync::atomic::Ordering::Release);
         }
         Self {
-            read_clipboard: Some(Arc::new(DisplayReader {
-                clipboard: std::sync::Mutex::new(unsafe {
-                    smithay_clipboard::Clipboard::new(display_ptr)
-                }),
-                _display: owner.clone(),
-            })),
-            read_primary: Some(Arc::new(DisplayReader {
-                clipboard: std::sync::Mutex::new(unsafe {
-                    smithay_clipboard::Clipboard::new(display_ptr)
-                }),
-                _display: owner.clone(),
-            })),
-            write_inner: Some(Arc::new(DisplayReader {
-                clipboard: std::sync::Mutex::new(unsafe {
-                    smithay_clipboard::Clipboard::new(display_ptr)
-                }),
-                _display: owner,
-            })),
+            read_clipboard: None,
+            read_primary: None,
+            write_inner: None,
             publication: PublicationClipboard {
                 sender,
                 thread: std::sync::Mutex::new(thread),
@@ -390,47 +418,15 @@ impl WaylandClipboard {
         connection: smithay_client_toolkit::reexports::client::Connection,
         rich_read_budget: tilo_clock::Duration,
     ) -> Self {
-        let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
-        let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let worker_alive = std::sync::Arc::clone(&alive);
-        let pasted = PastedImage::default();
-        let worker_pasted = Arc::clone(&pasted);
-        let rich = Arc::new(RichClipboard::new());
-        let worker_rich = Arc::clone(&rich);
-        let thread = std::thread::Builder::new()
-            .name("tilo-wayland-clipboard-test".into())
-            .spawn(move || {
-                image_worker_impl::run(
-                    connection,
-                    receiver,
-                    worker_pasted,
-                    worker_rich,
-                    rich_read_budget,
-                );
-                worker_alive.store(false, std::sync::atomic::Ordering::Release);
-            })
-            .ok();
-        if thread.is_none() {
-            alive.store(false, std::sync::atomic::Ordering::Release);
-        }
-        Self {
-            read_clipboard: None,
-            read_primary: None,
-            write_inner: None,
-            publication: PublicationClipboard {
-                sender,
-                thread: std::sync::Mutex::new(thread),
-                alive,
-            },
-            clipboard_cache: Arc::new(std::sync::Mutex::new(None)),
-            primary_cache: Arc::new(std::sync::Mutex::new(None)),
-            clipboard_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pasted,
-            rich,
-            wake: tilo_rt::wake::WakeHandle::new(),
+        let display_ptr = connection.backend().display_ptr().cast();
+        // SAFETY: the worker retains the connection that owns the display.
+        unsafe {
+            Self::with_publication_worker(
+                display_ptr,
+                Some(Arc::new(connection)),
+                rich_read_budget,
+                "tilo-wayland-clipboard-test",
+            )
         }
     }
 }
@@ -1936,15 +1932,6 @@ mod image_worker_impl {
     }
     delegate_registry!(State);
     delegate_touch!(State);
-}
-
-fn publication_worker(
-    connection: smithay_client_toolkit::reexports::client::Connection,
-    commands: smithay_client_toolkit::reexports::calloop::channel::Channel<ClipboardCommand>,
-    pasted: PastedImage,
-    rich: Arc<RichClipboard>,
-) {
-    image_worker_impl::run(connection, commands, pasted, rich, CLIPBOARD_READ_BUDGET);
 }
 
 impl ClipboardBackend for WaylandClipboard {
