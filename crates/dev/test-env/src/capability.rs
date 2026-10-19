@@ -47,6 +47,11 @@ pub enum Capability {
     /// process for a mount namespace, or an unprivileged caller for a user
     /// namespace (bubblewrap, `unshare --user`). The job sandbox refuses both.
     UserNamespace,
+    /// Entering a namespace this process made (`setns`), as a sandbox
+    /// supervisor does to prepare its guest's network namespace. The job
+    /// sandbox's seccomp filter refuses `setns` even where it lets a job make
+    /// namespaces.
+    NamespaceEntry,
 }
 
 impl Capability {
@@ -64,6 +69,7 @@ impl Capability {
             Self::ScreenCapture => "TILO_REQUIRE_SCREEN_CAPTURE",
             Self::Chown => "TILO_REQUIRE_CHOWN",
             Self::UserNamespace => "TILO_REQUIRE_USERNS",
+            Self::NamespaceEntry => "TILO_REQUIRE_SETNS",
         }
     }
 
@@ -88,6 +94,7 @@ impl fmt::Display for Capability {
             Self::ScreenCapture => "screen capture",
             Self::Chown => "giving files to another user",
             Self::UserNamespace => "user and mount namespaces",
+            Self::NamespaceEntry => "entering namespaces (setns)",
         })
     }
 }

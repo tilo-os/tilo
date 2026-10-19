@@ -281,6 +281,14 @@ mod tests {
             probe_namespace_loader(&case);
             return;
         }
+        // The fixture mounts a real read-only filesystem and gives files to
+        // users the namespace does and does not map: real root's work, which
+        // the job sandbox never grants (the micro-VM check does).
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(2000),
+            "the loader fixture's ownership and mounts"
+        );
         let executable = std::env::current_exe().unwrap();
         let loader = interpreter(Path::new("/usr/bin/bash")).unwrap().unwrap();
         let canonical = loader.canonicalize().unwrap();
