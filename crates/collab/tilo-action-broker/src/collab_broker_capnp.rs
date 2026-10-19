@@ -5942,20 +5942,28 @@ impl CapnpBrokerState {
                         .certificate
                         .as_ref()
                         .ok_or("original caller certificate missing")?;
+                    if route.cluster_id != offered.0.route.cluster_id {
+                        return Err("original local caller does not match invocation room".into());
+                    }
                     let expected = current.agent_id.as_ref().map_or_else(
                         || principal_id_for_root(certificate.user_public_key),
                         |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
                     );
-                    if route.cluster_id != offered.0.route.cluster_id
-                        || actor.id != expected
-                        || actor.is_agent != current.agent_id.is_some()
-                    {
-                        return Err("original local caller does not match invocation actor".into());
-                    }
-                    InvocationOwner::AuthenticatedLocal {
-                        root: certificate.user_public_key,
-                        device: certificate.device_public_key,
-                        agent: current.agent_id.clone(),
+                    if actor.id == expected && actor.is_agent == current.agent_id.is_some() {
+                        InvocationOwner::AuthenticatedLocal {
+                            root: certificate.user_public_key,
+                            device: certificate.device_public_key,
+                            agent: current.agent_id.clone(),
+                        }
+                    } else {
+                        // The connection's custody attests only its own admitted
+                        // Person or agent. An application acting under its own
+                        // identity, or an effect continuing another caller's
+                        // invocation, is decided as that actor and stays
+                        // actor-owned: never attested as the connection's.
+                        InvocationOwner::Local {
+                            actor: actor.id.clone(),
+                        }
                     }
                 }
                 None => InvocationOwner::Local {

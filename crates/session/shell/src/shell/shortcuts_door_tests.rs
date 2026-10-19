@@ -175,6 +175,9 @@ fn spawn_broker(
     }
     let mut tree = crate::shell::state::WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
+    // As on a desktop, the broker keeps its invocation journal beside the
+    // saved tree: an admission attested as the owner's is recorded there.
+    tree.persist_path = Some(path.with_file_name("state.json"));
     let membership = tree.shared();
     let broker = crate::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
