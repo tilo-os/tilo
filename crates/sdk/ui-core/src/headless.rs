@@ -397,6 +397,9 @@ pub struct FrameHarness {
     // An activation is complete only when its current focus and encoded frame
     // agree. Failed composition keeps this intent for the original retry path.
     pending_app_activation: Option<crate::application::InstanceId>,
+    /// The last activation frame failed only because its composition changed
+    /// under it (input that landed during the frame), not for its focus.
+    activation_recomposed: bool,
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
@@ -1565,6 +1568,7 @@ impl FrameHarness {
             focus_trap_active: false,
             active_input_instance: None,
             pending_app_activation: None,
+            activation_recomposed: false,
             saved_instance_focus: HashMap::new(),
             focus_before_trap: None,
             author: author(),
@@ -2366,7 +2370,11 @@ impl FrameHarness {
         // next frame answers for. Only a difference nothing announced is a
         // skipped sync.
         self.drain_component_wakes();
-        if self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()) {
+        if self
+            .component_wake
+            .as_ref()
+            .is_some_and(|wake| wake.dirty.get())
+        {
             self.request_layout();
             return;
         }
@@ -3124,7 +3132,28 @@ impl FrameHarness {
         clippy::too_many_lines,
         reason = "exclusive headless frame lifecycle with f32 logical pixel sizes"
     )]
+    /// One frame, as [`Self::try_relayout_once`], again while an activation
+    /// frame failed only because input landing during it changed its
+    /// composition: the live host draws the next frame for that input, and
+    /// the activation completes there. Bounded as composition is
+    /// ([`crate::widget::layout::settle_widget_composition`]).
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.activation_recomposed = false;
+        let mut result = self.try_relayout_once();
+        for _ in 1..8 {
+            if !matches!(
+                result,
+                Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle)
+            ) || !std::mem::take(&mut self.activation_recomposed)
+            {
+                break;
+            }
+            result = self.try_relayout_once();
+        }
+        result
+    }
+
+    fn try_relayout_once(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         if self.layout_requested {
             // A deferred request permits a full original composition, not
             // stale target access. Retire BEFORE its arbitrary callbacks; a
@@ -4475,6 +4504,7 @@ impl FrameHarness {
         let history_invalidated = self.invalidate_unsupported_history_owner();
         if changed || history_invalidated {
             self.discard_layout_tree();
+            self.activation_recomposed = changed;
             return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
         }
         if self.active_input_instance != Some(instance)
@@ -4494,6 +4524,7 @@ impl FrameHarness {
             let history_invalidated = self.invalidate_unsupported_history_owner();
             if changed || history_invalidated {
                 self.discard_layout_tree();
+                self.activation_recomposed = changed;
                 return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
             }
             if !focused {
@@ -4520,6 +4551,7 @@ impl FrameHarness {
             let history_invalidated = self.invalidate_unsupported_history_owner();
             if changed || history_invalidated {
                 self.discard_layout_tree();
+                self.activation_recomposed = changed;
                 return Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle);
             }
             if focused {
