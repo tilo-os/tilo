@@ -51,12 +51,24 @@ fi
 # Only the NTFS helper's own tests read the native images, which take minutes to build.
 if tests tilo-ntfs-helper; then export TILO_TEST_NTFS_FIXTURES=1; else export TILO_TEST_NTFS_FIXTURES=0; fi
 
-# The imager's native syscall tests need a cache on a qualified filesystem: the
-# build directory, never the image's overlay.
-if tests imager; then
-    export TILO_IMAGER_TEST_CACHE_ROOT="${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs"
-    mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT"
-    chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
+# The imager's native syscall tests need a cache on a qualified filesystem
+# (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
+# is one, else the job's scratch TMPDIR (t mounts the build directory as an
+# overlay when it stacks it on earlier builds).
+if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
+    qualified() { case $(stat -f -c %t "$1") in ef53|58465342|9123683e) return 0 ;; esac; return 1; }
+    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs"; do
+        mkdir -p "$candidate"
+        chmod 700 "$candidate"
+        if qualified "$candidate"; then
+            export TILO_IMAGER_TEST_CACHE_ROOT=$candidate
+            break
+        fi
+    done
+    if [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
+        echo "t-nextest.sh: neither the build directory nor TMPDIR is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
+        exit 1
+    fi
 fi
 
 # The app-cli and app-host trust tests execute the installer, which no package
