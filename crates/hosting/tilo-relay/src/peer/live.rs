@@ -51,6 +51,30 @@ pub(super) async fn handle_live_join(
     Ok(None)
 }
 
+/// The room authority `peer` takes part in calls of `workspace_id` through:
+/// none unless they subscribed to it and this relay governs its room, and
+/// none for a spectator, who takes no part in the room's calls.
+async fn call_authority(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+) -> Option<crate::rooms::RoomAuthority> {
+    if !subscribed.contains(&workspace_id) {
+        return None;
+    }
+    let ws = session
+        .workspaces
+        .lock()
+        .await
+        .get(&workspace_id)
+        .cloned()?;
+    let runtime = ws.lock().await;
+    (!room_access::watches_only(&runtime, peer))
+        .then(|| runtime.room_authority.clone())
+        .flatten()
+}
+
 /// Handle a call envelope for a subscribed workspace whose room this relay
 /// governs; see [`crate::rooms`].
 pub(super) async fn handle_voice(
@@ -67,21 +91,7 @@ pub(super) async fn handle_voice(
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
-    let authority = if subscribed.contains(&workspace_id) {
-        let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
-        match ws {
-            // A spectator takes no part in the room's calls.
-            Some(ws) => {
-                let runtime = ws.lock().await;
-                (!room_access::watches_only(&runtime, peer))
-                    .then(|| runtime.room_authority.clone())
-                    .flatten()
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
+    let authority = call_authority(peer, session, subscribed, workspace_id).await;
     let rooms = authority
         .as_ref()
         .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())));
