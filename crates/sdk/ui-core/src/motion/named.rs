@@ -946,6 +946,39 @@ impl Feedback {
     }
 }
 
+/// A person's voice on their face while they talk in a call: the ring is
+/// there the moment their voice is heard and eases out over `fast` when they
+/// pause, so it pulses with their speech and stops when they stop. It never
+/// loops by itself. Reduced motion: it shows while they talk and goes at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Speaking {
+    level: Feedback,
+}
+
+impl Speaking {
+    /// Whether they are heard at `now`.
+    pub fn set(&mut self, speaking: bool, motion: EffectiveMotion, now: Instant) {
+        if motion.reduced() && !speaking {
+            self.level = Feedback::default();
+            return;
+        }
+        self.level.set(speaking, motion, now);
+    }
+
+    /// How strongly the ring shows at `now`, `0..=1`.
+    pub fn level(&self, now: Instant) -> f32 {
+        self.level.level(now)
+    }
+
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.level.is_moving(now)
+    }
+
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.level.settles_at()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 11. Attention
 // ---------------------------------------------------------------------------

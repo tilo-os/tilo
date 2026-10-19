@@ -751,6 +751,19 @@ fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> 
     Some((decoded.rgba, decoded.width, decoded.height))
 }
 
+/// Paint `img` into `rect` with a `contain` fit (the whole picture, aspect
+/// kept, centred; whatever it leaves shows what is under it), clipped to a
+/// rounded rectangle: a shared screen, of which nothing may be cut off.
+pub fn paint_image_contain(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    img: &PenikoImage,
+    radius: f64,
+) {
+    paint_image_fitted(scene, transform, rect, img, radius, false);
+}
+
 /// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,
 /// crop the overflow) clipped to a rounded rectangle, matching the shape a
 /// procedural placeholder occupied.
@@ -760,6 +773,17 @@ pub fn paint_image_cover(
     rect: Rect,
     img: &PenikoImage,
     radius: f64,
+) {
+    paint_image_fitted(scene, transform, rect, img, radius, true);
+}
+
+fn paint_image_fitted(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    img: &PenikoImage,
+    radius: f64,
+    cover: bool,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -771,7 +795,11 @@ pub fn paint_image_cover(
     }
     let rw = rect.width();
     let rh = rect.height();
-    let scale = (rw / iw).max(rh / ih);
+    let scale = if cover {
+        (rw / iw).max(rh / ih)
+    } else {
+        (rw / iw).min(rh / ih)
+    };
     let dw = iw * scale;
     let dh = ih * scale;
     let dx = rect.x0 + (rw - dw) * 0.5;
@@ -787,12 +815,13 @@ pub fn paint_image_cover(
     let clip = RoundedRect::from_rect(rect, radius);
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
     let brush = ImageBrush::new(img.clone());
+    let painted = Rect::new(dx, dy, dx + dw, dy + dh).intersect(rect);
     scene.fill(
         Fill::NonZero,
         transform,
         &brush,
         Some(brush_transform),
-        &rect,
+        &painted,
     );
     scene.pop_layer();
 }
