@@ -25,12 +25,12 @@
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
-#   --join FILE        redeem the workspace invitation in FILE at startup: the
-#                      session's active workspace becomes that workspace (one
-#                      another nested session shares; see nested-pair.sh)
-#   --invite-guest FILE  enrol a new Home workspace and write to FILE an
-#                      invitation another nested session can join it with
-#                      (--join); valid for an hour while this session runs
+#   --community SITE   the community site this session is in (a site's
+#                      address, as /etc/tilo/community.toml names one): it
+#                      joins the site's home workspace through the site's door
+#                      as a computer joins tilo.coffee's Lounge. Without it
+#                      the session follows this machine's configuration.
+#                      nested-pair.sh points two sessions at a local site.
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
@@ -54,8 +54,7 @@ prepare_only=0
 reset_identity=0
 fresh_desktop=0
 headless=0
-join_invitation=
-guest_invitation=
+community=
 shell_args=()
 
 die() { printf 'nested-session: %s\n' "$*" >&2; exit 1; }
@@ -70,9 +69,7 @@ while (($#)); do
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
-        --join) join_invitation=$(realpath -e "${2:?--join needs an invitation file}") \
-                    || die "no invitation file $2"; shift 2 ;;
-        --invite-guest) guest_invitation=$(realpath -m "${2:?--invite-guest needs a file}"); shift 2 ;;
+        --community) community=${2:?--community needs a site}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
         *) die "unknown option: $1 (see --help)" ;;
@@ -222,6 +219,7 @@ runtime_id=tilo-runtime/$runtime_version
 
 # --- 5. Session environment ----------------------------------------------------
 for dir in home config data state cache identity; do mkdir -p "$state/$dir"; done
+mkdir -p -m 700 "$state/secrets"
 export HOME=$state/home
 export XDG_CONFIG_HOME=$state/config XDG_DATA_HOME=$state/data
 export XDG_STATE_HOME=$state/state XDG_CACHE_HOME=$state/cache
@@ -230,7 +228,21 @@ export TILO_APPS_DATA_DIR=$state/apps
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
+# The interfaces this build of the system provides, not the host's: on a Tilo
+# host /usr/share/tilo/system-interfaces.toml is that image's, which may be
+# newer or older than the apps built here.
+export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.toml
+# The private D-Bus answers no Secret Service, so secrets (the collaboration
+# channels' keys among them) go to the sealed file store a headless machine
+# uses, in the state directory.
+export TILO_SECRETS_DIR=$state/secrets
 unset TILO_APPS_SYSTEM_DIR TILO_TEST_CONTROL TILO_STATE_PATH
+if [[ -n $community ]]; then
+    # The shell reads its community site from this file instead of
+    # /etc/tilo/community.toml and /usr/share/tilo/community.toml.
+    printf 'site = "%s"\n' "$community" > "$state/community.toml"
+    export TILO_COMMUNITY_CONFIG=$state/community.toml
+fi
 
 # --- 6. Apps -------------------------------------------------------------------
 stamps=$state/stamps
@@ -277,20 +289,25 @@ mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
 control=$runtime/control.sock
 children=()
-cleanup() {
+# Stop the process groups the given children lead: each child leads its own
+# group, so apps a shell started go too, and so does the shell itself when
+# the child that started it (its session bus) has already gone.
+stop_groups() {
     local pid
-    # Each child leads its own process group, so apps the shell started go too.
-    for pid in "${children[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+    for pid in "$@"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
     # A compositor whose main loop is stuck never acts on SIGTERM.
     local tries=50
     while ((tries--)); do
         local alive=0
-        for pid in "${children[@]}"; do kill -0 -- "-$pid" 2>/dev/null && alive=1; done
+        for pid in "$@"; do kill -0 -- "-$pid" 2>/dev/null && alive=1; done
         ((alive)) || break
         sleep 0.1
     done
-    for pid in "${children[@]}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
-    for pid in "${children[@]}"; do wait "$pid" 2>/dev/null || true; done
+    for pid in "$@"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
+    for pid in "$@"; do wait "$pid" 2>/dev/null || true; done
+}
+cleanup() {
+    stop_groups "${children[@]}"
     rm -f "$pidfile"
     # The document portal's FUSE mount under the runtime directory goes away
     # with its process, a moment after the kill.
@@ -326,10 +343,11 @@ if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +120
     # A new identity is a new person: the native workspace the old one
     # governs belongs to someone else now.
     say "discarding the throwaway identity and its desktop"
-    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" \
+    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
         "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
         "$XDG_CONFIG_HOME"/tilo/state.automerge*
     mkdir -p "$TILO_IDENTITY_ROOT"
+    mkdir -m 700 "$state/secrets"
 fi
 if [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
@@ -342,7 +360,9 @@ if [[ ! -f $marker ]]; then
     wait_for_socket "$control" "$pid" || die "headless shell did not start (see $logs/identity.log)"
     TILO_TEST_CONTROL=$control "$bin/tilo-control" raw '{"op":"provision_test_identity"}' \
         | grep -q '"throwaway": *true' || die "identity provisioning failed (see $logs/identity.log)"
-    kill -TERM -- "-$pid"; wait "$pid" 2>/dev/null || true
+    # Gone before the session starts: it holds the state file's writer lease
+    # while it lives.
+    stop_groups "$pid"
     children=()
     rm -rf "$runtime"
     mkdir -m 700 "$runtime"
@@ -360,24 +380,12 @@ fi
 # later start restores it from the saved desktop.
 native_marker=$state/native-workspace
 [[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
-[[ -z $join_invitation || -z $guest_invitation ]] || die "--join and --invite-guest exclude each other"
-# A guest joins through the governor that admits this session, so the Home
-# workspace is enrolled anew, with the guest's invitation beside its own.
-[[ -z $guest_invitation ]] || rm -f "$native_marker"
 join_file=
-if [[ -n $join_invitation ]]; then
-    # Joining another person's workspace: the active workspace takes that
-    # room, governed by its owner, so this session enrols no room of its own.
-    say "joining the workspace the invitation names"
-    join_file=$runtime/join-invitation
-    (umask 077 && cp "$join_invitation" "$join_file")
-elif [[ ! -f $native_marker ]]; then
+if [[ ! -f $native_marker ]]; then
     say "enrolling the Home workspace into a native room"
     invitation=$state/native-invitation.json
-    guest_output=()
-    rm -f "$invitation" "$state/guest-invitation"
-    [[ -n $guest_invitation ]] && guest_output=("$state/guest-invitation")
-    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" "${guest_output[@]}" \
+    rm -f "$invitation"
+    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" \
         > "$logs/governor.log" 2>&1 &
     governor_pid=$!
     children+=("$governor_pid")
@@ -392,15 +400,6 @@ elif [[ ! -f $native_marker ]]; then
     join_file=$runtime/join-invitation
     (umask 077 && jq -er .invitation "$invitation" > "$join_file")
     rm -f "$invitation"
-    if [[ -n $guest_invitation ]]; then
-        tries=300
-        until [[ -s $state/guest-invitation ]]; do
-            ((tries--)) && kill -0 "$governor_pid" 2>/dev/null \
-                || die "the governor fixture issued no guest invitation (see $logs/governor.log)"
-            sleep 0.1
-        done
-        (umask 077 && mv "$state/guest-invitation" "$guest_invitation")
-    fi
 fi
 
 mkdir -p "$runtime/tilo/services"
@@ -473,7 +472,7 @@ confirm_native() {
     echo "the Home workspace did not become native; see governor.log and shell.log"
     return 1
 }
-if [[ -n $join_file && -z $join_invitation ]]; then
+if [[ -n $join_file ]]; then
     TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
 fi
 status=0

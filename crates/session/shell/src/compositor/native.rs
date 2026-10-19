@@ -3489,6 +3489,7 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// presence context `draw_real_peers` uses, keyed by room.
     fn peers_json(&self) -> serde_json::Value {
         let presence = self.fb.presence();
+        let now = std::time::Instant::now();
         let rows: Vec<serde_json::Value> = presence
             .pointers
             .iter()
@@ -3506,6 +3507,12 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "name": presence.display_name(user),
                         "x": x,
                         "y": y,
+                        // What they are saying beside the pointer (cursor
+                        // chat), while its bubble shows.
+                        "chat": presence
+                            .chats
+                            .bubble(user, now, ui::tokens::EffectiveMotion::default())
+                            .map(|bubble| bubble.text),
                     })
                 })
             })
@@ -3520,6 +3527,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         .into_iter()
         .map(|row| {
             serde_json::json!({
+                // The participant id `presence.follow` takes.
+                "id": row.id,
                 "label": row.label,
                 "role": row.role,
                 // Kept separate from the label, same as the panel: inferring which of
@@ -3528,6 +3537,8 @@ impl ControlState for FrameBuilderControlState<'_> {
                 // Named but not arrived — the one thing a harness watching a join needs,
                 // and what a screenshot of a dimmed row can't be asserted on.
                 "invited": row.invited,
+                // Connected and in this workspace: what Follow offers.
+                "followable": row.followable,
             })
         })
         .collect();
