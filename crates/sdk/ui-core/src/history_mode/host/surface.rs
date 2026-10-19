@@ -458,10 +458,15 @@ impl Widget for HistoryHost {
             self.toolbar_dirty = true;
         }
         self.motion = theme.motion();
-        // The content first: the selected version in place under its banner.
+        // The content first: the selected version in place under its banner,
+        // drawn as the live view is in this window.
         if self.show_preview() {
-            self.canvas_mut()
-                .draw(scene, transform, text, theme, presence);
+            let window_presents = self.window_presents;
+            let canvas = self.canvas_mut();
+            if let Some(preview) = canvas.preview.as_mut() {
+                preview.set_window_presents_search(window_presents);
+            }
+            canvas.draw(scene, transform, text, theme, presence);
         }
         if self.banner_node.is_some() {
             let band = self.banner.get_rect();
@@ -485,6 +490,11 @@ impl Widget for HistoryHost {
                 crate::motion::input_source(),
                 crate::time::now(),
             );
+            // The panel is drawn outside the tree a frame pump polls: the
+            // motion clock keeps frames coming until it has slid in.
+            if let Some(until) = self.panel_motion.settles_at() {
+                crate::motion::want_frames_until(until);
+            }
         } else if !self.open && self.panel_motion.is_open() {
             self.panel_motion.snap(false);
         }

@@ -154,6 +154,14 @@ pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kur
     )
 }
 
+/// How many frames a root may run in one host frame to settle a sync or
+/// layout its previous frame left: a widget that measures itself in one
+/// layout pass (a column centred on the width it was given, a header whose
+/// height insets what follows) reports its structure dirty and is built
+/// again at once, so what is painted is the root at rest. An embedded app
+/// settles this way, and so does a History preview of a past version.
+pub(crate) const SETTLE_FRAMES: usize = 3;
+
 /// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a
 /// leaf's rect. A node missing from the tree is an empty box at `origin`.
 pub fn layout_rect(
@@ -3485,7 +3493,8 @@ pub use search_field::{
 };
 pub mod window_search;
 pub use window_search::{
-    InPlace, SearchHandoff, SearchReach, SearchableWindow, WindowSearch, WindowSearchRequest,
+    InPlace, SearchDriver, SearchHandoff, SearchReach, SearchableWindow, WindowSearch,
+    WindowSearchRequest,
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;

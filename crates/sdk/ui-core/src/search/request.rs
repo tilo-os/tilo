@@ -294,6 +294,11 @@ pub fn open_search_binding(request: &SearchRequest) -> ActionBinding<()> {
         .expect("search request arguments match the host search action")
 }
 
+/// The id of the button [`search_button`] makes for the whole app. A
+/// window bar that presents search for the window replaces it: a header that
+/// holds the window's bar controls ([`crate::widget::WindowHeader`]) drops it.
+pub const APP_SEARCH_BUTTON_ID: &str = "search-open";
+
 /// The search launcher: an icon-only magnifier button that opens the
 /// platform search with `request`. This is the only search affordance an app
 /// puts in its chrome; it never draws a field.
@@ -302,7 +307,7 @@ pub fn search_button(request: SearchRequest) -> crate::widget::Button {
     let label = I18nManager::lookup_plain("standalone-search-title");
     let id = match request.resource_scope() {
         Some(scope) => format!("search-open-{}", scope.anchor),
-        None => "search-open".to_owned(),
+        None => APP_SEARCH_BUTTON_ID.to_owned(),
     };
     let name = match request.resource_scope() {
         Some(scope) => format!("{label} {}", scope.label),

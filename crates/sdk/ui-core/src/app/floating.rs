@@ -77,6 +77,9 @@ pub(super) struct FloatingRuntime {
     /// The [`crate::window_toolbar::revision`] of the slots last sent to
     /// the shell on this connection.
     pub toolbar_sent: Option<u64>,
+    /// The window bar's search and History control for this app
+    /// ([`window_bar`]).
+    pub window_bar: window_bar::WindowBarRuntime,
 }
 
 impl FloatingRuntime {
@@ -132,6 +135,7 @@ impl FloatingRuntime {
             selection_capable_sent: false,
             close_window_requested: false,
             toolbar_sent: None,
+            window_bar: window_bar::WindowBarRuntime::default(),
         }
     }
 }
@@ -422,6 +426,7 @@ impl App {
         // No desktop bar to show the app's slots: it keeps its own toolbar.
         changed |= crate::window_toolbar::set_hosted(false);
         let _ = crate::window_toolbar::take_edit_request();
+        let _ = crate::window_toolbar::take_search_request();
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         crate::shared_selection::set_agent_host_available(false);
@@ -535,6 +540,26 @@ impl App {
         if crate::window_toolbar::take_edit_request() {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::EditLocation { instance },
+            )?;
+            *changed = true;
+        }
+        // The window's bar presents this app's search and History: its
+        // header drops its own, and the bar hears what the window offers.
+        if !self.floating.window_bar.presents() {
+            self.set_window_presents_history(true);
+            *changed = true;
+        }
+        if let Some(offer) = self.take_window_offer_change() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowOffer {
+                    offer,
+                    instance,
+                },
+            )?;
+        }
+        if crate::window_toolbar::take_search_request() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch { instance },
             )?;
             *changed = true;
         }
@@ -857,7 +882,12 @@ impl App {
                     crate::webview::paint::set_share_watched(false);
                 }
                 FloatingSurfaceHostMessage::ToolbarEvent { event } => {
-                    crate::window_toolbar::deliver(event.clone());
+                    // The bar's search and History act here; the app's own
+                    // slots are the app's to read.
+                    // Any host message already asks for a new frame.
+                    if self.apply_window_bar_event(event).is_none() {
+                        crate::window_toolbar::deliver(event.clone());
+                    }
                 }
                 FloatingSurfaceHostMessage::ShareSelection => {
                     let selection = self.selection_for_agent(
@@ -895,6 +925,12 @@ impl App {
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);
         self.floating.toolbar_sent = None;
+        // Nothing presents the app's search and History any more: it shows
+        // its own again.
+        self.floating.window_bar.disconnected();
+        if self.floating.window_bar.presents() {
+            self.set_window_presents_history(false);
+        }
         if self.floating.network_status_active {
             tilo_host::network_status::clear_host_status();
             self.floating.network_status_active = false;

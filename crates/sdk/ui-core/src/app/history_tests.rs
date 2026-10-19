@@ -110,7 +110,7 @@ fn app_on(state: State) -> App {
     app_with_root(state, Box::new(crate::widget::Column::new()))
 }
 /// An app on `state` showing `root` under the framework's registered History.
-fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
+pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {

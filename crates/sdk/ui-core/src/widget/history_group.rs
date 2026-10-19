@@ -202,8 +202,15 @@ impl HistoryGroup {
         }
     }
 
-    /// The dim second line: who, and how much moved.
+    /// The dim second line as one string, for a text summary.
     pub fn subtitle(&self, entries: &[HistoryEntry]) -> String {
+        self.subtitle_facts(entries).join(" \u{00b7} ")
+    }
+
+    /// The dim second line: who, and how much moved, as separate facts a
+    /// surface lays out apart ([`crate::widget::primitives::Facts`]), never
+    /// joined by a glyph.
+    pub fn subtitle_facts(&self, entries: &[HistoryEntry]) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
             let count = crate::i18n!("history-group-changes", "count" => self.len());
@@ -232,7 +239,7 @@ impl HistoryGroup {
         {
             parts.push(crate::i18n!("history-group-named-by", "name" => by.name.as_str()));
         }
-        parts.join(" \u{00b7} ")
+        parts
     }
 
     /// "Alice", "Alice and Bob", "Alice, Bob + 4".
@@ -686,6 +693,11 @@ mod tests {
             assert_eq!(groups[0].len(), 10);
             assert_eq!(groups[0].title(&entries), "10 edits");
             assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 -0 chars");
+            // Drawn as separate facts, never joined by a glyph.
+            assert_eq!(
+                groups[0].subtitle_facts(&entries),
+                vec!["Alice".to_owned(), "+30 -0 chars".to_owned()]
+            );
         }
 
         fn a_five_minute_gap_ends_the_session() {

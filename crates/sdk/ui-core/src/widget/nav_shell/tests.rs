@@ -1781,3 +1781,77 @@ fn a_header_in_the_window_bar_hides_until_reached_for() {
     );
     assert_eq!(child_rect(&h, "content").map(|r| r.y0), Some(0.0));
 }
+
+fn has_child(h: &FrameHarness, id: &str) -> bool {
+    h.root::<NavShell>()
+        .children()
+        .into_iter()
+        .any(|child| child.test_id() == Some(id))
+}
+
+fn notes_shell_with_search() -> NavShell {
+    let actions: Vec<Element> = vec![
+        Box::new(Button::icon_only(
+            "note-menu",
+            crate::icons::Icon::MoreHorizontal,
+            "Note actions",
+        )),
+        Box::new(crate::search::search_button(
+            crate::search::SearchRequest::this_app(),
+        )),
+    ];
+    NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Notes", Vec::new())
+        .content_header("", actions)
+}
+
+// USER REQUIREMENT (2026-10-19): "one top bar with all the options for that
+// app in context ... search next to the app title" and "apps shouldnt be
+// responsible for rendering a top bar" -- one search control per window: the
+// bar's, never a second one in the app's header.
+#[test]
+fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() {
+    // Case `told_before_the_first_build`.
+    {
+        let mut shell = notes_shell_with_search();
+        assert!(WindowHeader::set_window_presents_search(&mut shell, true));
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+        assert!(has_child(&h, "note-menu"), "the app's other actions stay");
+    }
+
+    // Case `told_after_it_was_shown`.
+    {
+        let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        assert!(
+            has_child(&h, crate::search::APP_SEARCH_BUTTON_ID),
+            "outside a window bar the header keeps its search button"
+        );
+        assert!(WindowHeader::set_window_presents_search(
+            h.root_mut::<NavShell>(),
+            true
+        ));
+        settle(&mut h, 1280, 800);
+        assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+        assert!(has_child(&h, "note-menu"));
+    }
+
+    // Case `a_header_set_later_has_none_either`.
+    {
+        let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
+        WindowHeader::set_window_presents_search(h.root_mut::<NavShell>(), true);
+        settle(&mut h, 1280, 800);
+        h.root_mut::<NavShell>().set_content_header(
+            "Groceries",
+            vec![Box::new(crate::search::search_button(
+                crate::search::SearchRequest::this_app(),
+            ))],
+        );
+        settle(&mut h, 1280, 800);
+        assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+    }
+}

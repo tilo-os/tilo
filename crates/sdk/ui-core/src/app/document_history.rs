@@ -819,12 +819,13 @@ impl App {
         }
     }
 
-    /// This app is shown in a desktop window, whose tab row presents its
-    /// History while `tab_presents`: the app draws no History band of its
-    /// own, and offers its header row the control only while the tab row
-    /// is hidden.
+    /// This app is shown in a desktop window, whose bar presents its
+    /// History and search while `tab_presents`: the app draws no History
+    /// band of its own, offers its header row the control only while the
+    /// bar is hidden, and its header drops its own search button.
     #[cfg(feature = "native")]
     pub(crate) fn set_window_presents_history(&mut self, tab_presents: bool) {
+        self.set_window_presents_bar(tab_presents);
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
             history.set_open_button(!tab_presents);

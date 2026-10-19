@@ -243,6 +243,12 @@ impl BrowserWidget {
                 }
                 _ => {}
             },
+            // The bar's own search and History control are run by the
+            // framework on the app's widgets, never handed to its slots.
+            ToolbarEvent::Search { .. }
+            | ToolbarEvent::SearchStep { .. }
+            | ToolbarEvent::SearchClose
+            | ToolbarEvent::History => return,
         }
         self.structure_dirty = true;
     }

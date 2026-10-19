@@ -738,6 +738,12 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().cursor_chat_open() {
         return true;
     }
+    // A window's search field holds the keyboard: typing goes to the query
+    // (and Enter steps through matches), not to the app's window under it,
+    // until the person clicks back into the content, Tabs out or closes it.
+    if fb.host().window_search_has_keyboard() {
+        return true;
+    }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();

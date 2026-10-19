@@ -1516,6 +1516,13 @@ pub struct NavShell {
     animating: bool,
     /// The host tree has been built once.
     built: bool,
+    /// The window's bar presents search for the window
+    /// ([`WindowHeader::set_window_presents_search`]): the headers carry no
+    /// button of their own that opens the app's search.
+    window_search: bool,
+    /// Header actions put away while the host may still hold their nodes,
+    /// dropped when the next build replaces the row.
+    retired_actions: Vec<Element>,
     structure_dirty: bool,
     layout_dirty: bool,
     paint_dirty: bool,
@@ -1613,6 +1620,8 @@ impl NavShell {
             switch_columns: [false; 4],
             animating: false,
             built: false,
+            window_search: false,
+            retired_actions: Vec::new(),
             structure_dirty: false,
             layout_dirty: true,
             paint_dirty: true,
@@ -2049,7 +2058,10 @@ impl NavShell {
         self.stage_header(Column::Inspector, title.into(), actions);
     }
 
-    fn stage_header(&mut self, column: Column, title: String, actions: Vec<Element>) {
+    fn stage_header(&mut self, column: Column, title: String, mut actions: Vec<Element>) {
+        if self.window_search {
+            actions.retain(|action| !is_app_search(action.as_ref()));
+        }
         self.set_title(column, title);
         if let Some(slot) = self.pending.actions.get_mut(column.index()) {
             *slot = Some(actions);
@@ -2119,6 +2131,48 @@ impl NavShell {
 
     /// A slot or header waits for the next build; before the first one there
     /// is no tree to wait for.
+    /// The window's bar presents search: put away each header's button that
+    /// opens the app's search ([`crate::search::APP_SEARCH_BUTTON_ID`]).
+    fn drop_app_search(&mut self) {
+        let mut changed = false;
+        for column in Column::ALL {
+            let index = column.index();
+            if let Some(Some(staged)) = self.pending.actions.get_mut(index) {
+                let before = staged.len();
+                staged.retain(|action| !is_app_search(action.as_ref()));
+                changed |= staged.len() != before;
+                continue;
+            }
+            let Some(header) = self.headers.get_mut(index) else {
+                continue;
+            };
+            if !header
+                .actions
+                .iter()
+                .any(|action| is_app_search(action.as_ref()))
+            {
+                continue;
+            }
+            let (keep, gone): (Vec<Element>, Vec<Element>) = std::mem::take(&mut header.actions)
+                .into_iter()
+                .partition(|action| !is_app_search(action.as_ref()));
+            if self.built {
+                // The host may still hold the row's nodes: the row is staged
+                // anew, and what it drops lives until the build replaces it.
+                self.retired_actions.extend(gone);
+                if let Some(slot) = self.pending.actions.get_mut(index) {
+                    *slot = Some(keep);
+                }
+            } else {
+                header.actions = keep;
+            }
+            changed = true;
+        }
+        if changed {
+            self.pending_changed();
+        }
+    }
+
     fn pending_changed(&mut self) {
         if !self.built {
             self.apply_pending();
@@ -2160,6 +2214,7 @@ impl NavShell {
                 header.actions = actions;
             }
         }
+        self.retired_actions.clear();
         for (header, leading) in self.headers.iter_mut().zip(leading) {
             if let Some(Staged(leading)) = leading {
                 header.leading = leading;
@@ -4375,10 +4430,27 @@ impl Widget for NavShell {
     }
 }
 
+/// Whether `action` is the button that opens the app's search
+/// ([`crate::search::search_button`] for the whole app), which the window's
+/// bar replaces.
+fn is_app_search(action: &dyn Widget) -> bool {
+    action.test_id() == Some(crate::search::APP_SEARCH_BUTTON_ID)
+}
+
 /// Controls in a column the shell is not showing (a hidden sidebar, a
 /// closed drawer, a screen pushed away) still belong to the window: custody,
 /// invocations and availability reach every part the shell owns.
 impl WindowHeader for NavShell {
+    fn set_window_presents_search(&mut self, presents: bool) -> bool {
+        if self.window_search != presents {
+            self.window_search = presents;
+            if presents {
+                self.drop_app_search();
+            }
+        }
+        true
+    }
+
     fn set_history_control(&mut self, control: Option<HistoryControl>) {
         if self.inputs.borrow().history == control {
             return;

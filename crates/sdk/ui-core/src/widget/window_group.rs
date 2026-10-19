@@ -337,6 +337,12 @@ pub struct WindowGroup {
     /// in place ([`super::WindowSearch`]), and the tab whose app it is on.
     search: super::WindowSearch,
     search_tab: Option<u64>,
+    /// What the apps of tabs that run in processes of their own offer the
+    /// bar's search and History control ([`Self::set_tab_window_offer`]).
+    window_offers: Vec<(u64, crate::window_toolbar::WindowOffer)>,
+    /// What the person did with the bar's search and History control on
+    /// those tabs, for their apps ([`Self::take_toolbar_events`]).
+    window_events: Vec<(u64, crate::window_toolbar::ToolbarEvent)>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
     /// Close-button requests still awaiting the shell's durable workspace
@@ -546,6 +552,8 @@ impl WindowGroup {
             pending_search_open: None,
             search: super::WindowSearch::new(),
             search_tab: None,
+            window_offers: Vec::new(),
+            window_events: Vec::new(),
             pending_new_tab: None,
             pending_close_commit: Vec::new(),
         }
@@ -1005,7 +1013,12 @@ impl WindowGroup {
         let tab_row = self.navigation_bar_visible();
         for (id, host) in &mut self.hosts {
             host.set_window_presents_history(tab_row);
-            self.bar.set_history_control(*id, host.history_control());
+            // An app in a process of its own says what its control shows.
+            let control = match self.window_offers.iter().find(|(tab, _)| tab == id) {
+                Some((_, offer)) => offer.history.map(super::HistoryControl::from),
+                None => host.history_control(),
+            };
+            self.bar.set_history_control(*id, control);
         }
     }
 
@@ -1023,7 +1036,15 @@ impl WindowGroup {
             }
             pressed = true;
         }
-        if let Some((id, control)) = self.bar.take_history()
+        let history = self.bar.take_history();
+        if let Some((id, _)) = history
+            && self.window_offers.iter().any(|(tab, _)| *tab == id)
+        {
+            // The app runs its History door in its own process.
+            self.window_events
+                .push((id, crate::window_toolbar::ToolbarEvent::History));
+            pressed = true;
+        } else if let Some((id, control)) = history
             && let Some((_, host)) = self.hosts.iter_mut().find(|(i, _)| *i == id)
         {
             if let Err(error) = host.invoke_history_control(control) {
@@ -1263,10 +1284,13 @@ impl WindowGroup {
     /// the app (what the control always did).
     pub fn open_search(&mut self, source: crate::tokens::MotionSource) {
         let active = self.bar.active_id();
+        let offered = self.window_offer(active).map(|offer| offer.search.into());
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) else {
             return;
         };
-        let in_place = host.in_place_search();
+        // An app in a process of its own says what it offers; the window
+        // looks into an app in its process itself.
+        let in_place = offered.unwrap_or_else(|| host.in_place_search());
         if let TileContent::App(app) = host.content() {
             self.search.set_app_name(app.app_title());
         }
@@ -1278,10 +1302,82 @@ impl WindowGroup {
             });
             return;
         }
-        self.search.open(in_place, source);
+        if offered.is_some() {
+            self.search.open_remote(in_place, source);
+        } else {
+            self.search.open(in_place, source);
+        }
         self.search_tab = Some(active);
         self.search_active = true;
         self.drive_search();
+    }
+
+    /// What the app of tab `id` offers the bar, when it runs in a process of
+    /// its own.
+    fn window_offer(&self, id: u64) -> Option<&crate::window_toolbar::WindowOffer> {
+        self.window_offers
+            .iter()
+            .find(|(tab, _)| *tab == id)
+            .map(|(_, offer)| offer)
+    }
+
+    /// What the app of tab `id`, running in a process of its own, offers the
+    /// bar's search and History control, or `None` (no such app, or it went
+    /// away). Returns whether that changed.
+    pub fn set_tab_window_offer(
+        &mut self,
+        id: u64,
+        offer: Option<crate::window_toolbar::WindowOffer>,
+    ) -> bool {
+        let at = self.window_offers.iter().position(|(tab, _)| *tab == id);
+        let history =
+            |offer: Option<&crate::window_toolbar::WindowOffer>| offer.map(|offer| offer.history);
+        // Only the History control is laid out in the bar; a count is drawn.
+        let control_changed = history(offer.as_ref())
+            != history(
+                at.and_then(|at| self.window_offers.get(at))
+                    .map(|(_, offer)| offer),
+            );
+        match (at, offer) {
+            (Some(at), Some(offer)) if self.window_offers[at].1 == offer => return false,
+            (Some(at), Some(offer)) => self.window_offers[at].1 = offer,
+            (None, Some(offer)) => self.window_offers.push((id, offer)),
+            (Some(at), None) => {
+                self.window_offers.remove(at);
+                if self.search_tab == Some(id) && self.search.is_remote() {
+                    // The app went away under its search.
+                    self.search.detach();
+                    self.close_search(crate::tokens::MotionSource::Pointer);
+                }
+            }
+            (None, None) => return false,
+        }
+        if let Some(offer) = offer
+            && self.search_tab == Some(id)
+        {
+            self.search
+                .set_remote_count(offer.count.map(super::FilterCount::from));
+        }
+        if control_changed {
+            self.style_dirty = true;
+        }
+        self.grip_dirty = true;
+        true
+    }
+
+    /// The app of tab `id`, in a process of its own, asked for the window's
+    /// search (its Ctrl+F): open it, or give the open one the keyboard.
+    /// Only the tab the window shows searches. Returns whether it did.
+    pub fn open_search_for_app(&mut self, id: u64) -> bool {
+        if id != self.bar.active_id() || !self.navigation_bar_visible() {
+            return false;
+        }
+        if self.search.is_open() {
+            self.search.take_keyboard();
+            return true;
+        }
+        self.open_search(crate::tokens::MotionSource::Keyboard);
+        self.search.is_open() || self.pending_search_open.is_some()
     }
 
     /// Close the window's search: its app stops highlighting or narrowing.
@@ -1294,6 +1390,15 @@ impl WindowGroup {
 
     /// Carry the window's search to its tab's app ([`super::WindowSearch::drive`]).
     fn drive_search(&mut self) {
+        if self.search.is_remote() {
+            // An app in a process of its own is told, and drives itself.
+            if let Some(tab) = self.search_tab {
+                let events = self.search.take_remote_events();
+                self.window_events
+                    .extend(events.into_iter().map(|event| (tab, event)));
+            }
+            return;
+        }
         if !self.search.wants_drive() {
             return;
         }
@@ -1383,9 +1488,13 @@ impl WindowGroup {
             self.search.take_keyboard();
             return true;
         }
-        let in_place = self
-            .active_host_mut()
-            .map_or(super::InPlace::Nothing, TileHost::in_place_search);
+        let active = self.bar.active_id();
+        let in_place = match self.window_offer(active) {
+            Some(offer) => offer.search.into(),
+            None => self
+                .active_host_mut()
+                .map_or(super::InPlace::Nothing, TileHost::in_place_search),
+        };
         if in_place == super::InPlace::Nothing {
             return false;
         }
@@ -1789,6 +1898,8 @@ impl WindowGroup {
             pending_search_open: None,
             search: super::WindowSearch::new(),
             search_tab: None,
+            window_offers: Vec::new(),
+            window_events: Vec::new(),
             pending_new_tab: None,
             pending_close_commit: Vec::new(),
         }
@@ -1945,7 +2056,9 @@ impl WindowGroup {
 
     /// What the person did with the apps' slots in the bar, by tab.
     pub fn take_toolbar_events(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
-        self.bar.take_toolbar_events()
+        let mut events = self.bar.take_toolbar_events();
+        events.append(&mut self.window_events);
+        events
     }
 
     /// What the edited location held since the last call, by tab, for the

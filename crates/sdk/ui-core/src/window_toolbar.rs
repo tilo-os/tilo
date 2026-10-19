@@ -28,6 +28,14 @@
 //! location is where you are. A window whose app declares no slots shows
 //! its title, as before.
 //!
+//! The bar's own controls reach an app in its own process the same way: the
+//! app says what its window offers them ([`WindowOffer`]: what the search
+//! acts on in place and its count, and its History control), and the bar
+//! hands it what the person did with them as [`ToolbarEvent`]s (a query, a
+//! step, a close, the History control). The app answers through its own
+//! widgets, as the window does for an app in its process, and draws neither
+//! control itself.
+//!
 //! An app declares its current slots with [`declare`] whenever they change
 //! (an equal declaration is free) and reads what the person did in the bar
 //! with [`take_events`]. The app runner carries both over the app's
@@ -258,6 +266,130 @@ pub enum ToolbarEvent {
     Action {
         id: String,
     },
+    /// The window's search is open on the app with this query (empty when
+    /// nothing is typed yet): highlight a document's matches, or narrow a
+    /// list. Sent when the search opens and whenever the query changes.
+    Search {
+        query: String,
+    },
+    /// Step to the next (or previous) match in the document.
+    SearchStep {
+        forward: bool,
+    },
+    /// The window's search closed: stop highlighting or narrowing.
+    SearchClose,
+    /// The window's History control was pressed: open History, or close it
+    /// while it shows.
+    History,
+}
+
+/// What a window's search acts on in place, as its app offers it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchOffer {
+    /// Nothing: the bar's search opens the platform search narrowed to the
+    /// app.
+    #[default]
+    Nothing,
+    /// A document: matches are highlighted and stepped through ("3 of 12").
+    Document,
+    /// A list: it narrows to what matches ("12 of 40").
+    List,
+}
+
+/// The search's count: in a document the current match of all of them, in
+/// a list the rows shown of all rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchCount {
+    pub shown: u32,
+    pub total: u32,
+}
+
+/// The window's History control, as its app offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryOffer {
+    /// History is closed; the control opens it.
+    Closed,
+    /// History shows; the control reads as on and closes it.
+    Open,
+}
+
+/// What an app's window offers the bar's own controls: its search in place
+/// and the count of the open search, and its History control. Sent whenever
+/// it changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowOffer {
+    #[serde(default)]
+    pub search: SearchOffer,
+    /// The open search's count; none before anything is typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<SearchCount>,
+    /// The History control; none where the app has no History.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryOffer>,
+}
+
+impl SearchOffer {
+    /// What `root`'s widgets offer the window's search.
+    #[must_use]
+    pub fn of(root: &mut dyn crate::widget::Widget) -> Self {
+        crate::widget::InPlace::of(root).into()
+    }
+}
+
+impl From<crate::widget::InPlace> for SearchOffer {
+    fn from(in_place: crate::widget::InPlace) -> Self {
+        match in_place {
+            crate::widget::InPlace::Nothing => Self::Nothing,
+            crate::widget::InPlace::Document => Self::Document,
+            crate::widget::InPlace::List => Self::List,
+        }
+    }
+}
+
+impl From<SearchOffer> for crate::widget::InPlace {
+    fn from(offer: SearchOffer) -> Self {
+        match offer {
+            SearchOffer::Nothing => Self::Nothing,
+            SearchOffer::Document => Self::Document,
+            SearchOffer::List => Self::List,
+        }
+    }
+}
+
+impl From<crate::widget::FilterCount> for SearchCount {
+    fn from(count: crate::widget::FilterCount) -> Self {
+        let clamp = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        Self {
+            shown: clamp(count.shown),
+            total: clamp(count.total),
+        }
+    }
+}
+
+impl From<SearchCount> for crate::widget::FilterCount {
+    fn from(count: SearchCount) -> Self {
+        Self::new(count.shown as usize, count.total as usize)
+    }
+}
+
+impl From<crate::widget::HistoryControl> for HistoryOffer {
+    fn from(control: crate::widget::HistoryControl) -> Self {
+        match control {
+            crate::widget::HistoryControl::Closed => Self::Closed,
+            crate::widget::HistoryControl::Open => Self::Open,
+        }
+    }
+}
+
+impl From<HistoryOffer> for crate::widget::HistoryControl {
+    fn from(offer: HistoryOffer) -> Self {
+        match offer {
+            HistoryOffer::Closed => Self::Closed,
+            HistoryOffer::Open => Self::Open,
+        }
+    }
 }
 
 impl WindowToolbar {
@@ -336,8 +468,16 @@ impl ToolbarEvent {
     #[must_use]
     pub fn bounded(mut self) -> Self {
         match &mut self {
-            Self::Commit { text } | Self::Edit { text } | Self::Action { id: text } => cut(text),
-            Self::ToggleSidebar | Self::Back | Self::Forward => {}
+            Self::Commit { text }
+            | Self::Edit { text }
+            | Self::Action { id: text }
+            | Self::Search { query: text } => cut(text),
+            Self::ToggleSidebar
+            | Self::Back
+            | Self::Forward
+            | Self::SearchStep { .. }
+            | Self::SearchClose
+            | Self::History => {}
         }
         self
     }
@@ -363,6 +503,7 @@ thread_local! {
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
+    static SEARCH_REQUESTED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
@@ -416,6 +557,20 @@ pub fn edit_location() {
 #[must_use]
 pub fn take_edit_request() -> bool {
     EDIT_REQUESTED.with(|cell| cell.replace(false))
+}
+
+/// Ask the bar to open the window's search, as a click on its control does:
+/// the app's Ctrl+F while the bar hosts its window and it has something to
+/// search in place.
+pub fn open_search() {
+    SEARCH_REQUESTED.with(|cell| cell.set(true));
+}
+
+/// Whether the app asked to open the window's search since the last call
+/// (the runner, to tell the shell).
+#[must_use]
+pub fn take_search_request() -> bool {
+    SEARCH_REQUESTED.with(|cell| cell.replace(false))
 }
 
 /// Hand the app what the person did in the bar (the runner, from the
@@ -515,13 +670,19 @@ mod tests {
             ToolbarEvent::Action {
                 id: "reload".into(),
             },
+            ToolbarEvent::Search {
+                query: "cat".into(),
+            },
+            ToolbarEvent::SearchStep { forward: false },
+            ToolbarEvent::SearchClose,
+            ToolbarEvent::History,
         ] {
             let wire = serde_json::to_string(&event).unwrap();
             assert_eq!(serde_json::from_str::<ToolbarEvent>(&wire).unwrap(), event);
             deliver(event);
         }
         let taken = take_events();
-        assert_eq!(taken.len(), 4);
+        assert_eq!(taken.len(), 8);
         assert_eq!(taken[0], ToolbarEvent::Back);
         assert!(take_events().is_empty());
         let wire = serde_json::to_string(&browser()).unwrap();
@@ -533,5 +694,32 @@ mod tests {
             browser().location.unwrap().edit_value(),
             "https://duckduckgo.com/?q=rust"
         );
+    }
+
+    #[test]
+    fn a_window_offer_round_trips_and_an_empty_one_reads_as_nothing() {
+        let offer = WindowOffer {
+            search: SearchOffer::List,
+            count: Some(SearchCount {
+                shown: 12,
+                total: 40,
+            }),
+            history: Some(HistoryOffer::Open),
+        };
+        let wire = serde_json::to_string(&offer).unwrap();
+        assert_eq!(serde_json::from_str::<WindowOffer>(&wire).unwrap(), offer);
+        assert_eq!(
+            serde_json::from_str::<WindowOffer>("{}").unwrap(),
+            WindowOffer::default(),
+            "an app with nothing to offer sends nothing but the frame"
+        );
+        assert_eq!(
+            crate::widget::FilterCount::from(offer.count.unwrap()),
+            crate::widget::FilterCount::new(12, 40)
+        );
+        assert!(!take_search_request());
+        open_search();
+        assert!(take_search_request());
+        assert!(!take_search_request(), "one ask per Ctrl+F");
     }
 }
