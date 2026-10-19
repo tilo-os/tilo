@@ -1,3 +1,11 @@
+/// What every published action carries besides the fields a test is about:
+/// its operation kind, parameters and contract.
+fn published_operation(mut row: collab_capnp::exported_action::Builder<'_>) {
+    row.set_operation_kind("view");
+    row.set_params_json("[]");
+    row.set_contract_json(serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap());
+}
+
 #[cfg(feature = "client")]
 #[test]
 fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
@@ -7,6 +15,7 @@ fn action_semantic_identity_is_optional_bounded_and_kind_exact() {
         row.set_resource("opaque-alias");
         row.set_resource_kind("store.app");
         row.set_resource_label("A misleading label");
+        published_operation(row.reborrow());
         if let Some((kind, key)) = identity {
             let mut out = row.reborrow().init_semantic_identity();
             out.set_kind(kind);
@@ -270,6 +279,7 @@ fn action_directory_and_view_metadata_round_trip() {
             let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
             action.set_resource("notes:brief");
             action.set_action("show-editor");
+            published_operation(action.reborrow());
             let mut view = action.init_view();
             view.set_id("editor");
             view.set_label("Editor");
