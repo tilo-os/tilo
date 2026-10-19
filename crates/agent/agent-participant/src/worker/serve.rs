@@ -318,6 +318,10 @@ impl Worker {
 /// a face is used; once confined, the worker can open no file, and a
 /// component would find no font to lay its text out in. So every face is
 /// mapped before the confinement, and shaping reads the mappings.
+///
+/// A database read from the toolkit's font index already names its faces
+/// by shared data, but maps each file only when its bytes are first read;
+/// reading every face's data once here maps those too.
 fn resident_text_renderer() -> ui::TextRenderer {
     let mut fonts = ui::configured_font_system();
     let database = fonts.db_mut();
@@ -328,6 +332,7 @@ fn resident_text_renderer() -> ui::TextRenderer {
         // the image are not rewritten under a running worker, and a fault
         // costs only this worker.
         let _ = unsafe { database.make_shared_face_data(face) };
+        let _ = database.with_face_data(face, |data, _| data.len());
     }
     ui::TextRenderer::with_font_system(fonts)
 }
