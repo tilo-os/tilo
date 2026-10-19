@@ -341,6 +341,11 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     assert!(lifecycle.status(job).is_some());
     caller.retire_execution();
     assert!(cloned.observe(&caller, &request.invocation).is_none());
+    let fresh = |request: &InvokeRequest| InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        ..request.clone()
+    };
+    let (forged_request, unscoped_request) = (fresh(&request), fresh(&request));
     assert!(
         cloned
             .invoke(&caller, request)
@@ -350,10 +355,14 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
             .expect("retired execution refusal resolves")
             .is_err()
     );
+    // Discovery is ordinary visibility and never resolves the seat's
+    // identity; admission is where a displayed Person must be the seat's
+    // certified one. Neither a forged label nor a Person without a room
+    // acquires native custody.
     let forged =
         Caller::local_person("display-label-is-not-authority").in_room(fixture.room.to_string());
     assert!(
-        host.query(&forged, CatalogueQuery::default())
+        host.invoke(&forged, forged_request)
             .wait_timeout(Duration::from_secs(3))
             .ok()
             .flatten()
@@ -362,7 +371,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     );
     let unscoped = Caller::local_person(&person);
     assert!(
-        host.query(&unscoped, CatalogueQuery::default())
+        host.invoke(&unscoped, unscoped_request)
             .wait_timeout(Duration::from_secs(3))
             .ok()
             .flatten()
@@ -372,7 +381,7 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
 }
 
 #[test]
-fn native_facade_keeps_unsigned_workspace_actions_without_certified_ownership() {
+fn native_facade_admits_workspace_actions_under_certified_ownership() {
     use tilo_actions::remote::{
         ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
     };
@@ -384,8 +393,9 @@ fn native_facade_keeps_unsigned_workspace_actions_without_certified_ownership() 
         .in_room(fixture.room.to_string())
         .in_new_execution();
     let host = crate::shell::remote_actions::BrokerActionHost::new(broker.clone());
-    // Preserve native governance, the shortcut library and keyboard settings
-    // without making their old unsigned dispatch appear certificate-owned.
+    // Native governance, the shortcut library and keyboard settings stay in
+    // the native catalogue, and invoking them retains the seat's signed
+    // admission like every other native action.
     let workspace_query = CatalogueQuery {
         provider: Some(tilo_actions::remote::workspace_provider(
             &fixture.room.to_string(),
@@ -448,8 +458,8 @@ fn native_facade_keeps_unsigned_workspace_actions_without_certified_ownership() 
         .lifecycle()
         .unwrap();
     assert!(
-        lifecycle.status(job).is_none(),
-        "unsigned jobs must not acquire certified Person ownership"
+        lifecycle.status(job).is_some(),
+        "workspace services keep the native seat's certified ownership"
     );
 }
 
