@@ -237,12 +237,16 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
     Some((center, best))
 }
 
-/// Human-readable distance: metres under 1 km, else kilometres.
+/// Human-readable distance: metres under 1 km, kilometres with one decimal
+/// up to 100 km, whole kilometres beyond, in the person's number format
+/// ("1,972 km", not "1972.2 km").
 pub fn fmt_distance(m: f64) -> String {
     if m < 950.0 {
         format!("{} m", (m / 10.0).round() as i64 * 10)
+    } else if m < 99_950.0 {
+        format!("{} km", ui::format::decimal(m / 1000.0, 1))
     } else {
-        format!("{:.1} km", m / 1000.0)
+        format!("{} km", ui::format::decimal(m / 1000.0, 0))
     }
 }
 
@@ -318,6 +322,7 @@ mod tests {
         {
             assert_eq!(fmt_distance(120.0), "120 m");
             assert_eq!(fmt_distance(1500.0), "1.5 km");
+            assert_eq!(fmt_distance(1_972_200.0), "1,972 km");
             assert_eq!(fmt_duration(90.0), "2 min");
             assert_eq!(fmt_duration(3720.0), "1 h 2 min");
         }
