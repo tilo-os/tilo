@@ -3294,8 +3294,14 @@ mod location_tests {
             location_from_title("LibreOffice Writer \u{2014} Q3 report.odt", name),
             "Q3 report.odt"
         );
-        assert_eq!(location_from_title("LibreOffice Writer", name), "LibreOffice Writer");
-        assert_eq!(location_from_title("~/work: vim", "Alacritty"), "~/work: vim");
+        assert_eq!(
+            location_from_title("LibreOffice Writer", name),
+            "LibreOffice Writer"
+        );
+        assert_eq!(
+            location_from_title("~/work: vim", "Alacritty"),
+            "~/work: vim"
+        );
         assert_eq!(
             location_from_title("Writer - notes", name),
             "Writer - notes",
