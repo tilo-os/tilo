@@ -3050,7 +3050,14 @@ mod tests {
             let input = overlay.name_input.as_ref().expect("shared field painted");
             let caret = input.caret_rect(&theme, name.len());
             assert!(input.scroll_x() > 0.0, "long-name editing must scroll");
-            assert!(overlay.name_rect().contains(caret.origin()));
+            // The caret spans the text's line, which at a large text scale
+            // can stand a pixel past the field's edge: its middle is in
+            // the field.
+            assert!(
+                overlay.name_rect().contains(caret.center()),
+                "the caret {caret:?} is in the field {:?}",
+                overlay.name_rect()
+            );
             assert!(
                 caret.x1 <= overlay.name_rect().x1,
                 "full caret must remain reachable"
@@ -3165,7 +3172,14 @@ mod tests {
             if editing {
                 let input = overlay.name_input.as_ref().expect("editing field painted");
                 let caret = input.caret_rect(&theme, name.len());
-                assert!(overlay.name_rect().contains(caret.origin()));
+                // The caret spans the text's line, which at a large text scale
+                // can stand a pixel past the field's edge: its middle is in
+                // the field.
+                assert!(
+                    overlay.name_rect().contains(caret.center()),
+                    "the caret {caret:?} is in the field {:?}",
+                    overlay.name_rect()
+                );
                 assert!(caret.x1 <= overlay.name_rect().x1);
             }
             assert!(
@@ -3598,7 +3612,11 @@ mod general_scroll_tests {
         overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
         let name = overlay.name_rect();
         assert!(overlay.general_body_rect().contains(name.center()));
-        assert!(overlay.scroll_general(1000.0));
+        // Cards follow the summary (devices, public), so scrolling to the end
+        // passes it: scroll until its bottom meets the body's.
+        let below = overlay.general_summary_rect().y1 - overlay.general_body_rect().y1;
+        assert!(below > 0.0, "a compact body starts with the summary below");
+        assert!(overlay.scroll_general(below));
         let summary = overlay.general_summary_rect();
         assert!(summary.y1 <= overlay.general_body_rect().y1);
         assert!(summary.y0 >= overlay.general_body_rect().y0);
@@ -3616,9 +3634,16 @@ mod general_scroll_tests {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
         overlay.device_rows = 3;
-        overlay.scroll_general(10_000.0);
+        // The public card follows, so scroll until this card's bottom meets
+        // the body's rather than to the end.
+        let below = overlay.devices_card_rect().y1 - overlay.general_body_rect().y1;
+        overlay.scroll_general(below);
         let card = overlay.devices_card_rect();
         assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
+        assert!(
+            card.y0 >= overlay.general_body_rect().y0,
+            "the whole card is in view"
+        );
         let toggle = Rect::new(
             card.x1 - 112.0,
             card.y0 + 48.0,
