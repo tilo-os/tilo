@@ -992,6 +992,26 @@ pub trait ContinuationServices: Send + Sync {
         message: Vec<u8>,
     ) -> Result<(), String>;
 }
+/// Encoded bytes one application's search index change may take: the bound
+/// `ui::search::index_publication::MAX_DELTA_BYTES` publishers chunk to.
+pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;
+
+/// The session's persistent search index of applications' content. An app
+/// publishes changes to its entries over its certified route; the index
+/// keeps them after the app closes, so what the app holds stays findable
+/// whether or not it runs.
+pub trait SearchIndexServices: Send + Sync {
+    /// Apply one change to the entries `app` published in `room` from its
+    /// record `record`. `delta` is an encoded
+    /// `ui::search::index_publication::IndexDelta`, at most
+    /// [`MAX_SEARCH_INDEX_DELTA_BYTES`]; the host decodes and bounds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the delta is malformed or cannot be kept.
+    fn publish(&self, room: RoomId, app: &str, record: &str, delta: &[u8]) -> Result<(), String>;
+}
+
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
 pub trait WorkspaceControlServices: Send + Sync {
     /// Opens the workspace control handle of `room` for `target`.
@@ -1541,6 +1561,9 @@ pub struct HostServices {
     /// host. Without it no door offers them.
     pub identity_admin: Option<Arc<dyn IdentityAdminServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
+    /// The session's persistent search index of applications' content.
+    /// Without it apps' content is findable only while they run.
+    pub search_index: Option<Arc<dyn SearchIndexServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,

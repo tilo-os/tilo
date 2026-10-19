@@ -359,6 +359,9 @@ pub struct LiveAppActionsProvider {
     index_worker: RefCell<Option<mpsc::Sender<IndexJob>>>,
     auxiliary_snapshot: RefCell<Option<AuxiliarySnapshot>>,
     projection: Cell<QueryProjection>,
+    /// The persistent index of apps' content: an app's view of a resource
+    /// it holds is that provider's row, so one resource is one row.
+    app_content: RefCell<Option<Rc<super::app_content::AppContentProvider>>>,
     #[cfg(test)]
     build_probe: Arc<BuildProbe>,
     #[cfg(test)]
@@ -762,11 +765,39 @@ impl LiveAppActionsProvider {
             index_worker: RefCell::new(None),
             auxiliary_snapshot: RefCell::new(None),
             projection: Cell::new(QueryProjection::All),
+            app_content: RefCell::new(None),
             #[cfg(test)]
             build_probe: Arc::new(BuildProbe::default()),
             #[cfg(test)]
             directory_query_probe: RefCell::new(None),
         }
+    }
+
+    /// Give way to `content` for the resources it holds: the person sees
+    /// one row per resource, the indexed one, which opens the app through
+    /// the same door whether or not it runs.
+    pub fn set_app_content(&self, content: Rc<super::app_content::AppContentProvider>) {
+        *self.app_content.borrow_mut() = Some(content);
+    }
+
+    /// Whether a person's row for `app`'s `kind` action on `resource` in
+    /// `room` is the content provider's: a view of a resource the index
+    /// holds. Agents listing the catalogue still see every action.
+    fn gives_way_to_content(
+        &self,
+        ctx: &SearchContext<'_>,
+        app: &str,
+        room: &str,
+        resource: &str,
+        kind: tilo_actions::OperationKind,
+    ) -> bool {
+        !ctx.include_programmatic
+            && kind == tilo_actions::OperationKind::View
+            && self
+                .app_content
+                .borrow()
+                .as_ref()
+                .is_some_and(|content| content.covers(app, room, resource))
     }
 
     #[cfg(test)]
@@ -3297,6 +3328,13 @@ impl SearchProvider for LiveAppActionsProvider {
                         if (descriptor.contract.is_programmatic() && !ctx.include_programmatic)
                             || (!ctx.wanted.is_empty()
                                 && !ctx.wanted.contains(&ResourceKind::Action))
+                            || self.gives_way_to_content(
+                                &ctx,
+                                &root.app_id,
+                                &root.cluster_id,
+                                &descriptor.address.resource,
+                                descriptor.kind,
+                            )
                         {
                             position = position.saturating_add(1);
                             work = work.saturating_add(1);
@@ -3426,6 +3464,13 @@ impl SearchProvider for LiveAppActionsProvider {
             let row = candidate
                 .filter(|(surface, action, _)| {
                     !self.has_disclosed_directory_alias(&ctx, surface, action)
+                        && !self.gives_way_to_content(
+                            &ctx,
+                            &surface.app_id,
+                            &surface.route.cluster_id,
+                            &action.resource,
+                            action.operation_kind,
+                        )
                 })
                 .and_then(|(surface, action, rank)| {
                     self.materialize_local_action(&ctx, surface, action, rank)

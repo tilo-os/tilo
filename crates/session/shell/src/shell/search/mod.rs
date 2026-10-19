@@ -10,6 +10,7 @@
 //! resources from the focused app ahead of equally relevant global results.
 
 pub mod action_api;
+pub mod app_content_index;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod providers;

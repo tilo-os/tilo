@@ -1239,6 +1239,9 @@ search-scope-everywhere = Überall
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
+search-provider-app-content = Inhalte deiner Apps
+search-unlock-app = { $app } entsperren, um nach „{ $query }“ zu suchen
+search-unlock-app-detail = { $app } ist gesperrt
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich

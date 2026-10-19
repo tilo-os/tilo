@@ -1917,6 +1917,11 @@ pub fn native_services(
         shortcut_library,
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         continuations: Some(Arc::new(NativeContinuations)),
+        search_index: Some(Arc::new(
+            crate::shell::search::app_content_index::SearchIndexService(
+                crate::shell::search::app_content_index::session(),
+            ),
+        )),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>

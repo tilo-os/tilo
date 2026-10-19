@@ -1482,6 +1482,63 @@ impl IndexedEntries {
     }
 }
 
+/// `entry` as the session's persistent search index keeps it: keyed by the
+/// resource a hit opens, with its short fields. A prose body stays in the
+/// app, and a secret-bearing entry carries only its title, secondary line
+/// and fields (what the app chose to show of it, never a secret value).
+/// `None` for an entry a hit cannot open from outside the app.
+fn index_entry(entry: &SearchEntry) -> Option<ui_core::search::index_publication::IndexEntry> {
+    use tilo_resource::SearchWeight;
+    use ui_core::search::index_publication::{IndexAction, IndexEntry, IndexWeight};
+    let action = entry.action.as_ref().map(|address| IndexAction {
+        resource: address.resource.clone(),
+        action: address.action.clone(),
+    });
+    let resource = entry
+        .anchor
+        .clone()
+        .or_else(|| action.as_ref().map(|action| action.resource.clone()))?;
+    let key = match &action {
+        Some(action) => format!("{}\u{1f}{}", action.resource, action.action),
+        None => resource.clone(),
+    };
+    let mut fields = Vec::new();
+    if !entry.secret && !entry.text.trim().is_empty() {
+        fields.push((entry.text.clone(), IndexWeight::Body));
+    }
+    fields.extend(entry.fields.iter().filter_map(|(text, weight)| {
+        let weight = match weight {
+            SearchWeight::Title => IndexWeight::Title,
+            SearchWeight::Identity => IndexWeight::Identity,
+            SearchWeight::Subtitle => IndexWeight::Subtitle,
+            SearchWeight::Metadata => IndexWeight::Metadata,
+            SearchWeight::Body => IndexWeight::Body,
+            SearchWeight::Unranked => return None,
+        };
+        Some((text.clone(), weight))
+    }));
+    let subtitle = entry
+        .subtitle
+        .clone()
+        .or_else(|| entry.row.as_ref().and_then(|row| row.subtitle.clone()));
+    let icon = entry
+        .icon
+        .clone()
+        .or_else(|| entry.row.as_ref().and_then(|row| row.icon.clone()));
+    Some(IndexEntry {
+        key,
+        resource,
+        action,
+        title: entry.title.clone(),
+        subtitle,
+        group: entry.group.clone(),
+        icon,
+        boost: entry.boost,
+        fields,
+        secret: entry.secret,
+    })
+}
+
 /// The index's weight for a field an entry ranks as `weight`.
 fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
     use tilo_resource::SearchWeight;
@@ -2131,6 +2188,18 @@ impl ResourceRoot {
         cache.build(state, generation, entries)
     }
 
+    /// Whether the surfaces' secrets are unlocked: locked when any surface
+    /// says so, unlocked when one says so and none disagrees, else unsaid.
+    fn secrets_unlocked(&self) -> Option<bool> {
+        let mut said = None;
+        self.surfaces(&mut |surface| match surface.secrets_unlocked() {
+            Some(false) => said = Some(false),
+            Some(true) if said.is_none() => said = Some(true),
+            _ => {}
+        });
+        said
+    }
+
     /// Everything search finds in `state`: the resource's entries and what
     /// its surfaces show.
     fn entries_of(&self, state: &SearchState) -> Vec<SearchEntry> {
@@ -2288,6 +2357,28 @@ impl RootSearch for ResourceRoot {
             // `ResourceSearch` keeps the provider default.
             ui_core::widget::ActionDirectoryInvocationDomain::Unsupported,
         )]
+    }
+
+    /// The resource's entries and what its surfaces show, as of the same
+    /// generation the action directory names, with whether the surfaces'
+    /// secrets are unlocked.
+    fn search_index_state(&self) -> Option<ui_core::search::index_publication::IndexState> {
+        let (state, _) = self.search_state();
+        let generation = self.search.borrow_mut().generation_for(state);
+        Some(ui_core::search::index_publication::IndexState {
+            generation,
+            secrets_unlocked: self.secrets_unlocked(),
+        })
+    }
+
+    /// Every entry a hit can open, as the session's persistent index keeps
+    /// it: short metadata only, never a prose body.
+    fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
+        let (state, _) = self.search_state();
+        self.entries_of(&state)
+            .iter()
+            .filter_map(index_entry)
+            .collect()
     }
 
     /// A picked hit opens the app at its anchor: the views registered with
@@ -2734,6 +2825,63 @@ impl RootApp for ResourceRoot {
             Ok(()),
             ApplicationViewState::finish_application_view_restore,
         )
+    }
+}
+
+#[cfg(test)]
+mod index_entry_tests {
+    use super::*;
+    use ui_core::search::index_publication::IndexWeight;
+
+    #[test]
+    fn an_anchored_entry_is_kept_by_its_resource_with_its_short_fields() {
+        let entry = SearchEntry::new("Groceries", "milk, eggs")
+            .anchored("note:7")
+            .subtitled("Notes")
+            .field("errands", tilo_resource::SearchWeight::Metadata)
+            .field("hidden", tilo_resource::SearchWeight::Unranked);
+        let indexed = index_entry(&entry).expect("an anchored entry opens");
+        assert_eq!(indexed.key, "note:7");
+        assert_eq!(indexed.resource, "note:7");
+        assert_eq!(indexed.action, None);
+        assert_eq!(indexed.subtitle.as_deref(), Some("Notes"));
+        assert_eq!(
+            indexed.fields,
+            [
+                ("milk, eggs".to_owned(), IndexWeight::Body),
+                ("errands".to_owned(), IndexWeight::Metadata),
+            ],
+            "unranked text never enters the index"
+        );
+        assert!(!indexed.secret);
+    }
+
+    #[test]
+    fn a_secret_entry_carries_its_metadata_but_not_its_text() {
+        let entry = SearchEntry::new("GitHub", "never indexed")
+            .anchored("passwords.item:gh")
+            .field("github.com", tilo_resource::SearchWeight::Identity)
+            .secret_bearing();
+        let indexed = index_entry(&entry).expect("kept");
+        assert!(indexed.secret);
+        assert_eq!(
+            indexed.fields,
+            [("github.com".to_owned(), IndexWeight::Identity)]
+        );
+    }
+
+    #[test]
+    fn an_entry_invoking_an_action_is_keyed_by_it_and_one_opening_nothing_is_dropped() {
+        let entry = SearchEntry::new("Marker", "")
+            .invoking(tilo_actions::ActionAddress::new("timeline", "seek"));
+        let indexed = index_entry(&entry).expect("an action opens it");
+        assert_eq!(indexed.resource, "timeline");
+        assert_eq!(indexed.key, "timeline\u{1f}seek");
+        assert_eq!(
+            indexed.action.map(|action| action.action).as_deref(),
+            Some("seek")
+        );
+        assert!(index_entry(&SearchEntry::new("Loose", "")).is_none());
     }
 }
 

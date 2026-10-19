@@ -1579,6 +1579,27 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Change this application's entries in the session's persistent
+    /// search index. `delta_json` is an encoded
+    /// `ui::search::index_publication::IndexDelta`; the broker binds it to
+    /// this channel's certified route and never relays it to peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker refuses the delta or the
+    /// connection fails during the call.
+    pub async fn publish_search_index(
+        &self,
+        app_id: &str,
+        delta_json: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_search_index_request();
+        req.get().set_app_id(app_id);
+        req.get().set_delta_json(delta_json);
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
     ///

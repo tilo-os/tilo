@@ -501,6 +501,17 @@ impl Core {
         self.toast = Some(message.into());
     }
 
+    /// Whether this window's vault is unlocked: it opened and its key was
+    /// found. `None` for a window that opens no vault (a past version, the
+    /// fixture captures show), which says nothing about the person's.
+    pub(crate) fn secrets_unlocked(&self) -> Option<bool> {
+        let model = self.model.as_ref()?;
+        if !model.opens_vault() {
+            return None;
+        }
+        Some(self.recovery_error.is_none())
+    }
+
     pub(crate) fn refresh(&mut self) {
         let Some(model) = &self.model else {
             return;

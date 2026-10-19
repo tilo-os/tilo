@@ -308,6 +308,12 @@ impl PasswordsSurface {
         crate::search::entries(&self.core.borrow().items)
     }
 
+    /// Whether the vault behind the secret-bearing search entries is
+    /// unlocked, as the system's search index needs to know.
+    pub(crate) fn secrets_unlocked(&self) -> Option<bool> {
+        self.core.borrow().secrets_unlocked()
+    }
+
     /// The live row `id`, whether or not the list shows it now.
     pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.core.borrow().item_row(id)

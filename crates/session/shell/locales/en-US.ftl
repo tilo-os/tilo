@@ -1251,6 +1251,11 @@ palette-copy-path = Copy path
 # Search providers, as the search settings actions name them
 search-provider-now-playing = Now playing
 search-provider-records = Records
+search-provider-app-content = Content in your apps
+# A locked app's entries (a password vault's logins) match what was typed:
+# this row offers to unlock the app; Enter opens it to unlock.
+search-unlock-app = Unlock { $app } to search for “{ $query }”
+search-unlock-app-detail = { $app } is locked
 search-provider-session = Session
 search-provider-permission-prompts = Permission requests
 permission-request-expired = Permission request is no longer pending

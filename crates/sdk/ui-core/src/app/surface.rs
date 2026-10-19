@@ -697,6 +697,7 @@ impl App {
         app.publish_action_surface();
         app.publish_continuation_metadata();
         app.publish_playback_handoff();
+        app.publish_search_index();
         phases.finish(InputPhase::Publication, publication);
 
         if let Some(id) = focus_target {
