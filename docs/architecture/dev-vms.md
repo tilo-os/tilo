@@ -63,12 +63,17 @@ beside it, and a contract check catches divergence.
   the compositor and its user services see one build. Other slots and the VM do
   not see them.
 - VM-wide components (`fs`, the local model, the greeter) live in the
-  pseudo-slot `vm`, merged into the VM's `/usr` with `systemd-sysext refresh`.
+  pseudo-slot `vm`, merged into the VM's `/usr` (with a laptop's `device` slot)
+  as signed layers: tilo-vm signs each with the build host's development key,
+  and `tilo-extension-activate.service`, the production verifier, checks it
+  against the authorities the owner enrolled before it merges
+  (`tilo-vm guide trust`). `systemd-sysext.service` stays masked as on a
+  production image.
 - `tilo-vm swap <component> --from worktree|sha:<commit>|layer:<hash>` resolves
   the source to a layer, writes a new generation and applies it. Session
   components restart the session; apps alone install as self-signed `.tapp`
   packages into the slot user's store, which production already shadows, so
-  they are live at the next launch; VM-wide components refresh sysext and
+  they are live at the next launch; VM-wide components run the activation and
   restart the affected unit. `tilo-vm rollback` re-applies the previous
   generation the same way.
 - Boot-level components (kernel, UKI, bootloader, initramfs, installer) are not
@@ -89,8 +94,8 @@ apps whose runtime does not match `libruntime_dylib.so`. Local layers are never
 promoted; CI rebuilds from source.
 
 `os/Containerfile.dev` builds from the production image of the same commit and
-adds `tilo-vmd`, sshd and the toolchain. Its `/usr` is unsealed so sysext can
-merge into it. Upgrades are `bootc switch`; slots survive because they live in
+adds `tilo-vmd`, sshd and the toolchain. Its `/usr` is unsealed so signed
+layers can merge into it. Upgrades are `bootc switch`; slots survive because they live in
 `/var`. `tilo-vm` reaches the guest daemon `tilo-vmd` by JSON-RPC over SSH stdio,
 the same transport on every hypervisor. Every command takes `--json`, is
 idempotent, and long or state-changing commands write a receipt.

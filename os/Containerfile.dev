@@ -28,7 +28,7 @@
 #     context), checked against it by the dev image contract, and installed from
 #     the same frozen RPM snapshot, so the C toolchain and -devel libraries
 #     cannot drift from the production builder's.
-#   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
+#   * sshd (enabled), rsync, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
 #   * tilo-device-admin.service (enabled): tilo-vmd's requests over the peer
@@ -38,6 +38,12 @@
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
 #     os/dev/disk-image.sh installs it with ordinary boot entries.
+#   * NOT a different merge path. systemd-sysext.service stays masked, as on a
+#     production image: tilo-vm's layers reach /usr only as signed layers,
+#     which tilo-extension-activate.service (the production verifier) checks
+#     against the extension authorities the owner enrolled in
+#     /etc/tilo/extension-authorities.d (`tilo-vm trust enroll`; the image
+#     ships it empty). See crates/dev/tilo-vm/guide/trust.md.
 #
 # Build context: the repository root. Only BASE_IMAGE has to be given:
 #
@@ -365,14 +371,16 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
-    && systemctl unmask systemd-sysext.service \
-    && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
+    && systemctl enable sshd.service tilo-vm-restore.service \
        tilo-vm-reconcile-image.service \
        tilo-device-admin.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version && /usr/bin/tilo-device-admin --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
+    && test "$(readlink /etc/systemd/system/systemd-sysext.service)" = /dev/null \
+    && systemctl is-enabled tilo-extension-activate.service >/dev/null \
+    && ! find /etc/tilo/extension-authorities.d -mindepth 1 2>/dev/null | grep -q . \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \
     && /usr/sbin/sshd -t -h /run/tilo-dev-hostkey \
     && rm -f /run/tilo-dev-hostkey /run/tilo-dev-hostkey.pub \

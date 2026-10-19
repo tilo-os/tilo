@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The sealed image merges no system or configuration extension at boot; only
-# the unsealed dev image re-enables systemd-sysext for its development layers.
+# Neither the sealed image nor the dev image merges a system or configuration
+# extension at boot by itself; tilo-extension-activate.service merges what it
+# verified.
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -35,13 +36,15 @@ else
   ok 'nothing in the production recipe re-enables an extension merge'
 fi
 
-dev_run="$(joined "$dev" | grep -F 'systemctl enable sshd.service systemd-sysext.service' || true)"
-if grep -Eq 'systemctl unmask systemd-sysext\.service +&& systemctl enable sshd\.service systemd-sysext\.service' <<<"$dev_run" \
-   && ! joined "$dev" | grep -Fq 'unmask systemd-confext' \
-   && ! joined "$dev" | grep -Fq 'unmask systemd-sysext.socket'; then
-  ok 'only the unsealed dev image unmasks systemd-sysext, for its development layers'
+# The dev image is the production mechanism with a development key, never a
+# bypass: it keeps every mask, and its layers merge only as signed layers
+# through tilo-extension-activate.service.
+if ! joined "$dev" | grep -E 'systemctl (unmask|enable|preset)[^&]*(systemd-sysext|systemd-confext)' >/dev/null \
+   && joined "$dev" | grep -Fq 'test "$(readlink /etc/systemd/system/systemd-sysext.service)" = /dev/null' \
+   && joined "$dev" | grep -Fq 'systemctl is-enabled tilo-extension-activate.service'; then
+  ok 'the dev image keeps systemd-sysext masked; its layers merge only through the activation'
 else
-  bad 'the dev image cannot merge its layers, or unmasks more than systemd-sysext.service'
+  bad 'the dev image re-enables a boot-time extension merge'
 fi
 
 if grep -Fq '### No boot-time system or configuration extensions' "$doc" \

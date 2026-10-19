@@ -337,8 +337,8 @@ those services. The image therefore masks both, and the `systemd-sysext.socket`
 Varlink endpoint, so it merges nothing by itself. A caller who merges an
 extension on purpose runs `systemd-sysext` with its own `--image-policy`. Doing
 that already requires root, which can change the system in other ways too.
-Only the unsealed development image (`os/Containerfile.dev`) unmasks
-`systemd-sysext.service`, for its development layers.
+The unsealed development image (`os/Containerfile.dev`) keeps the same masks:
+development is the production mechanism with another key, never a bypass.
 
 The one caller that merges on purpose is `tilo-extension-activate.service`,
 for the downloaded extensions the owner turned on (the media codecs, say). At
@@ -349,6 +349,19 @@ the manifest's SHA-256, rebuilds every part from those bytes alone, and merges
 nothing if anything else is in the sysext search path. A file written to `/var`
 therefore still never reaches `/usr` across a reboot: it is replaced, or the
 merge is refused. See `os/usr/share/tilo/system-extensions/README.md`.
+
+The same activation merges *signed layers*: trees an extension authority the
+owner enrolled in `/etc/tilo/extension-authorities.d/` signed. Production
+devices ship that directory empty, so they merge none. A development machine
+enrolls its build host's key there (`tilo-vm trust enroll`) and tilo-vm's
+`vm` and `device` slot layers reach `/usr` this way: the signature over the
+manifest is checked before anything is parsed, then every file by its
+fs-verity digest (or by hashing it), every link and executable bit, nothing
+added, no set-id bit, nothing writable by others. The verified layer is linked
+from `/run/extensions`, which is empty at boot, so it merges only after a
+verification at this boot. `tilo-security-audit` lists every enrolled
+authority, by fingerprint, under development posture, and fails a production
+image that has one.
 
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected

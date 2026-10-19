@@ -15,6 +15,7 @@ const GUARDED: &[&str] = &[
     "/var/lib/tilo-vm",
     "/var/lib/extensions",
     "/run/extensions",
+    "/var/lib/tilo/signed-layers",
 ];
 
 /// Programs whose last operand is where they write.
