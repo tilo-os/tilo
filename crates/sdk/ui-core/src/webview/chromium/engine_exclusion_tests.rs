@@ -154,7 +154,11 @@ while True:
     )
     .unwrap();
     let _reap = ReapOnPanic(engine.clone());
-    let args = std::fs::read_to_string(profile.join("host-args.json")).unwrap();
+    // The engine no longer waits for its host to start (e2e7efdf23): the
+    // host records its arguments once it runs.
+    let args_path = profile.join("host-args.json");
+    tilo_test_env::wait_until("the protocol host to start", || args_path.exists());
+    let args = std::fs::read_to_string(&args_path).unwrap();
     assert!(args.contains("--service-session=selected-slack-session"));
     assert!(!args.contains("--private"));
     let mut request = super::tests::selected_service_request();
