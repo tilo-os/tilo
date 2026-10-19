@@ -250,7 +250,13 @@ pub enum Request {
 }
 
 /// What the service answers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// On the wire an object tagged by `op`, as serde's internally tagged enums
+/// are. It is read through a flat struct of every field rather than derived: a derived
+/// internally tagged enum buffers the whole reply and reads every field of
+/// a snapshot a second time from the buffer, and that second reader, compiled
+/// for each type in the snapshot, was a third of Monitor's protocol code.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Reply {
     /// One reading for `subscription`.
@@ -266,6 +272,61 @@ pub enum Reply {
     Ended { request: u64, ended: u32 },
     /// A request was refused.
     Refused { request: u64, refusal: Refusal },
+}
+
+/// The `op` of a [`Reply`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ReplyOp {
+    Snapshot,
+    SubscriptionRefused,
+    Grants,
+    Ended,
+    Refused,
+}
+
+/// A [`Reply`] as it arrives: its tag and the fields of every variant, read
+/// in one pass straight from the stream.
+#[derive(Deserialize)]
+struct ReplyWire {
+    op: ReplyOp,
+    subscription: Option<u64>,
+    snapshot: Option<Box<Snapshot>>,
+    request: Option<u64>,
+    refusal: Option<Refusal>,
+    grants: Option<Grants>,
+    ended: Option<u32>,
+}
+
+impl<'de> Deserialize<'de> for Reply {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        fn field<T, E: serde::de::Error>(value: Option<T>, name: &'static str) -> Result<T, E> {
+            value.ok_or_else(|| E::missing_field(name))
+        }
+        let wire = ReplyWire::deserialize(deserializer)?;
+        Ok(match wire.op {
+            ReplyOp::Snapshot => Self::Snapshot {
+                subscription: field(wire.subscription, "subscription")?,
+                snapshot: field(wire.snapshot, "snapshot")?,
+            },
+            ReplyOp::SubscriptionRefused => Self::SubscriptionRefused {
+                subscription: field(wire.subscription, "subscription")?,
+                refusal: field(wire.refusal, "refusal")?,
+            },
+            ReplyOp::Grants => Self::Grants {
+                request: field(wire.request, "request")?,
+                grants: field(wire.grants, "grants")?,
+            },
+            ReplyOp::Ended => Self::Ended {
+                request: field(wire.request, "request")?,
+                ended: field(wire.ended, "ended")?,
+            },
+            ReplyOp::Refused => Self::Refused {
+                request: field(wire.request, "request")?,
+                refusal: field(wire.refusal, "refusal")?,
+            },
+        })
+    }
 }
 
 /// Why something was refused.
@@ -620,6 +681,59 @@ mod tests {
         let mut wire = Vec::new();
         write_handoff(&mut wire, &future).unwrap();
         assert!(read_handoff(&mut wire.as_slice()).is_err());
+    }
+
+    /// Every reply reads back as it was written, in the internally tagged
+    /// form it always had on the wire, and a reply without a field its `op`
+    /// needs is refused.
+    #[test]
+    fn every_reply_reads_back_from_its_tagged_wire_form() {
+        let replies = [
+            Reply::Snapshot {
+                subscription: 7,
+                snapshot: Box::default(),
+            },
+            Reply::SubscriptionRefused {
+                subscription: 7,
+                refusal: Refusal::NotGranted {
+                    grant: Grant::Processes,
+                },
+            },
+            Reply::Grants {
+                request: 3,
+                grants: Grants::IMAGE_DEFAULT,
+            },
+            Reply::Ended {
+                request: 4,
+                ended: 2,
+            },
+            Reply::Refused {
+                request: 5,
+                refusal: Refusal::Invalid {
+                    detail: "no such process".into(),
+                },
+            },
+        ];
+        for reply in replies {
+            let wire = serde_json::to_value(&reply).unwrap();
+            assert!(wire.get("op").is_some_and(serde_json::Value::is_string));
+            let text = serde_json::to_string(&reply).unwrap();
+            assert_eq!(serde_json::from_str::<Reply>(&text).unwrap(), reply);
+            assert_eq!(
+                serde_json::from_slice::<Reply>(text.as_bytes()).unwrap(),
+                reply
+            );
+        }
+        let tag_last = r#"{"request":4,"ended":2,"op":"ended"}"#;
+        assert_eq!(
+            serde_json::from_str::<Reply>(tag_last).unwrap(),
+            Reply::Ended {
+                request: 4,
+                ended: 2
+            }
+        );
+        assert!(serde_json::from_str::<Reply>(r#"{"op":"ended","request":4}"#).is_err());
+        assert!(serde_json::from_str::<Reply>(r#"{"op":"restarted","request":4}"#).is_err());
     }
 
     #[test]
