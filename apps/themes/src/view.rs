@@ -103,7 +103,9 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     };
     Box::new(
         NavShell::new()
-            .content_kind(ui::widget::ContentKind::Grid)
+            // The gallery's 288 px cards and the editor's form need a page's
+            // width beside the list; narrower, the window shows one at a time.
+            .content_kind(ui::widget::ContentKind::Page)
             .with_id("themes-shell")
             .with_pane_state(&ui.pane)
             .sidebar(nav)

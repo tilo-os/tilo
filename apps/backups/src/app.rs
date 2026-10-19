@@ -1055,7 +1055,12 @@ impl ui::widget::Decorator for BackupsApp {
         self.refresh_runtime();
         self.drain_intents();
         self.refresh_view();
-        if self.open_drawer && self.shell.geometry().sidebar == ui::widget::SidebarPlacement::Drawer
+        // A narrow window shows the list as a drawer or as its own screen.
+        if self.open_drawer
+            && matches!(
+                self.shell.geometry().sidebar,
+                ui::widget::SidebarPlacement::Drawer | ui::widget::SidebarPlacement::Screen
+            )
         {
             self.open_drawer = false;
             self.shell.open_sidebar();
@@ -1232,7 +1237,8 @@ mod tests {
         Framed::harness_mut(app).relayout();
     }
     fn place(app: &mut Framed<BackupsApp>, id: &str) {
-        if app.shell.geometry().sidebar == SidebarPlacement::Drawer {
+        // Narrow, the list is a screen of its own: go back to it first.
+        if app.shell.geometry().sidebar == SidebarPlacement::Screen {
             app.shell.open_sidebar();
             app.shell.snap();
             Framed::harness_mut(app).relayout();
@@ -1339,9 +1345,13 @@ mod tests {
     }
     #[test]
     fn rail_paints_and_scrolls_only_when_needed() {
+        // Narrow, the list is a screen of its own the window goes back to.
         let mut narrow = frame(demo(), 390.0, 844.0, 1.0);
-        assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Drawer);
-        assert!(!narrow.shell.is_sidebar_open());
+        assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
+        assert!(
+            !narrow.shell.is_sidebar_open(),
+            "a new narrow window opens on its list of backups"
+        );
         narrow.shell.open_sidebar();
         narrow.shell.snap();
         Framed::harness_mut(&mut narrow).relayout();

@@ -157,16 +157,22 @@ fn backend_availability_governs_what_is_shown_and_announced() {
     }
 }
 
-/// The zones dock beside the page when wide and become a drawer when narrow.
+/// The zones dock beside the page while the page keeps its minimum width
+/// beside them, and become a screen of their own below that.
 #[test]
-fn the_zones_dock_when_wide_and_collapse_to_a_drawer_when_narrow() {
-    let wide = framed(1280.0, 800.0);
-    assert_eq!(wide.shell.geometry().sidebar, SidebarPlacement::Docked);
-    assert!(wide.shell.is_sidebar_open());
+fn the_zones_dock_while_they_fit_and_become_a_screen_when_narrow() {
+    for width in [1280.0, 640.0] {
+        let docked = framed(width, 800.0);
+        assert_eq!(
+            docked.shell.geometry().sidebar,
+            SidebarPlacement::Docked,
+            "at {width} px"
+        );
+        assert!(docked.shell.is_sidebar_open(), "at {width} px");
+    }
 
-    let narrow = framed(640.0, 600.0);
-    assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Drawer);
-    assert!(!narrow.shell.is_sidebar_open());
+    let narrow = framed(480.0, 600.0);
+    assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
 }
 
 /// The zone list selects a zone and the page follows it.
