@@ -50,7 +50,7 @@ fn native_accessibility_new_note_creates_an_editable_document() {
         fn request_redraw(&self) {}
         fn set_cursor(&self, _: winit::window::CursorIcon) {}
     }
-    for (width, index, count) in [(664, 0, 1), (1000, 0, 2), (1000, 1, 2)] {
+    for (width, index, count) in [(480, 0, 1), (1000, 0, 2), (1000, 1, 2)] {
         let f = NotebookFixture::rich();
         let component = component(&f, 21, ui::application::LaunchTarget::New);
         let checkout = component.record().clone();
