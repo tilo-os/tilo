@@ -8,6 +8,10 @@
  */
 const services = new WeakMap();
 const ROSTER_REFRESH_MS = 1000;
+/** How long a watch is held before it is answered unchanged (the toolkit's
+ * `WATCH_HOLD`), and how often a held watch looks again. */
+const WATCH_HOLD_MS = 20000;
+const WATCH_LOOK_MS = 100;
 const JOIN_MUTED_KEY = 'tilo.calls.joinMuted';
 
 /** The person's remembered mute choice, in this browser's storage. */
@@ -16,6 +20,18 @@ export function storedCallPreferences(storage = globalThis.localStorage) {
     joinMuted() { try { return storage?.getItem(JOIN_MUTED_KEY) === 'true'; } catch { return false; } },
     remember(muted) { try { storage?.setItem(JOIN_MUTED_KEY, muted ? 'true' : 'false'); } catch {} },
   };
+}
+
+/** The revision of a status's content (FNV-1a over its JSON): it changes
+ * whenever anything a watcher sees changes, and is never zero. */
+export function revisionOf(status) {
+  const text = JSON.stringify({...status, revision: 0});
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash || 1;
 }
 
 /** Who is in each active call of `app`'s `record`, one roster per voice
@@ -33,7 +49,7 @@ export function rostersOf(calls, app, record) {
     .map(([channel_id, people]) => ({channel_id, people: [...people].sort()}));
 }
 
-export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date}) {
+export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date, wait = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
   let generation = 0;
   let owner;
   let inventory = '';
@@ -58,18 +74,33 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? 'session_ended' : null,
-      inventory_revision: live ? revision : null, publication, publishers, rosters: []};
+      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
   }
+  const stamped = status => ({...status, revision: revisionOf(status)});
   return {
     async execute(request) {
       if (request.app !== 'so.tilo.chat' || request.room !== room || request.command?.version !== 1) throw new Error('unsupported local media route');
       const command = request.command.command;
       const route = key(request);
       const rosters = () => rostersOf(voice.calls, request.app, request.record);
+      const status = () => {
+        if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        return stamped({...snapshot(), rosters: rosters()});
+      };
       if (command.op === 'status') {
         refreshRosters();
-        if (owner && owner !== route) return {...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()};
-        return {...snapshot(), rosters: rosters()};
+        return status();
+      }
+      // Answered once the status differs from the one the app saw, or after
+      // the hold: who joins and leaves reaches the app as it happens.
+      if (command.op === 'watch') {
+        refreshRosters();
+        const until = clock.now() + WATCH_HOLD_MS;
+        for (;;) {
+          const current = status();
+          if (current.revision !== command.revision || clock.now() >= until) return current;
+          await wait(WATCH_LOOK_MS);
+        }
       }
       if (owner && owner !== route && command.op !== 'join') throw new Error('this route does not own the active call');
       if (command.op === 'join') {
@@ -98,7 +129,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       // Enumeration never prompts; update labels after consent without
       // delaying a stop command's completion.
       void voice.call.inputs().then(devices => {inputs = devices.filter(d => d.deviceId).map(d => ({id: d.deviceId, label: d.label || d.deviceId}));}).catch(() => {});
-      return {...snapshot(), rosters: rosters()};
+      return stamped({...snapshot(), rosters: rosters()});
     },
     snapshot,
     release(request) {if (owner === key(request)) {generation++; voice.call.leave(); owner = undefined;}},

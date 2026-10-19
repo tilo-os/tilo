@@ -265,6 +265,11 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let alone = call.grant().unwrap();
     assert_eq!(alone.participants.len(), 1);
     assert!(alone.subscriptions.is_empty());
+    // Alone in the call, Alice's carrier is already up: it hears the call,
+    // whoever joins it.
+    let alice_carrier =
+        Arc::new(Client::start(call.next_carrier().unwrap().unwrap(), call.clone()).unwrap());
+    call.set_client(&alice_carrier).unwrap();
 
     // Bob's browser joins the same call over HTTPS.
     let mut page_link = HttpsLink::connect(
@@ -306,12 +311,12 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     let bob_voice = bob_grant.publication.clone().unwrap();
     assert_eq!(bob_grant.subscriptions, vec![alice_voice.clone()]);
     assert_eq!(alice_grant.subscriptions, vec![bob_voice.clone()]);
+    // Bob's joining changed who is in the call, not Alice's carrier.
+    assert!(!call.stale(), "a roster change keeps the carrier");
+    assert_eq!(call.carrier_generation(), Some(1));
 
     // Alice's carrier is the one her participation authorizes; Bob's is his
     // browser's. Audio flows both ways.
-    let alice_carrier =
-        Arc::new(Client::start(call.next_carrier().unwrap().unwrap(), call.clone()).unwrap());
-    call.set_client(&alice_carrier).unwrap();
     let bob_carrier = carrier(&bob_grant, 1);
     until("Alice's carrier", &alice_carrier, |status| {
         status == Status::Live
@@ -331,6 +336,11 @@ async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
     )
     .await;
     hears("Alice hears Bob", &bob_carrier, &alice_carrier, &bob_voice).await;
+    assert_eq!(
+        call.carrier_generation(),
+        Some(1),
+        "Alice hears Bob on the carrier she had before he joined"
+    );
 
     // Her heartbeat is answered with a grant for the same scope.
     let before = call.revision();

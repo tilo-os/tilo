@@ -59,13 +59,16 @@ impl RelayAuthority for TestIdentities {
         }))
     }
 }
-struct ExactScope(ConnectionScope);
+/// Exactly this scope, hearing exactly the one other participant.
+struct ExactScope(ConnectionScope, String);
 impl ClientAuthority for ExactScope {
     fn current(&self, scope: &ConnectionScope, direction: Direction, name: &str) -> bool {
         scope == &self.0
             && match direction {
                 Direction::Publish => self.0.publication.as_deref() == Some(name),
-                Direction::Subscribe => self.0.subscriptions.iter().any(|value| value == name),
+                Direction::Subscribe => {
+                    self.0.subscription_prefix.as_deref() == Some(name) || self.1 == name
+                }
             }
     }
 }
@@ -113,14 +116,14 @@ fn start(relay: &LoopbackRelay, own: char, other: char, proof: &[u8]) -> Client 
         owner_epoch: [7; 32],
         carrier_generation: 1,
         publication: Some(namespace(own)),
-        subscriptions: vec![namespace(other)],
+        subscription_prefix: Some(CALL.to_owned()),
     };
     Client::start(
         Connection {
             scope: scope.clone(),
             authorization: proof.to_vec(),
         },
-        Arc::new(ExactScope(scope)),
+        Arc::new(ExactScope(scope, namespace(other))),
     )
     .expect("native media client")
 }

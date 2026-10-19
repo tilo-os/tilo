@@ -17,6 +17,9 @@ struct Device {
     reconnecting: AtomicBool,
     pending: AtomicBool,
     ticks: AtomicUsize,
+    /// Who the controlled call hears talking, and its revision.
+    speaking: Mutex<Vec<String>>,
+    speaking_revision: std::sync::atomic::AtomicU64,
 }
 struct BackendFixture(Arc<Device>);
 impl MediaSession for BackendFixture {
@@ -64,6 +67,12 @@ impl MediaSession for BackendFixture {
     }
     fn close(&mut self) {
         self.0.closes.fetch_add(1, Ordering::SeqCst);
+    }
+    fn speaking_revision(&self) -> u64 {
+        self.0.speaking_revision.load(Ordering::SeqCst)
+    }
+    fn speaking(&self) -> Vec<String> {
+        self.0.speaking.lock().unwrap().clone()
     }
 }
 struct Factory(Arc<Device>);
@@ -769,4 +778,53 @@ async fn a_microphone_allowed_once_is_asked_for_again_on_the_next_join() {
     fixture.command(Command::Leave);
     fixture.join().await;
     assert!(settle(|| fixture.prompts.queued_len() == 1).await);
+}
+
+#[tokio::test]
+async fn a_watch_answers_when_the_call_hears_someone_and_holds_while_nothing_changes() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    let route = (
+        fixture.caller.workspace.clone(),
+        fixture.caller.app.clone(),
+        fixture.caller.record.clone(),
+    );
+    let seen = fixture
+        .service
+        .watch(fixture.caller.clone(), 0, route.clone())
+        .await
+        .unwrap();
+    assert_ne!(
+        seen.revision, 0,
+        "a watcher with nothing is answered at once"
+    );
+    assert_eq!(seen.state, State::Live);
+    assert!(seen.speaking.is_empty());
+
+    let held = fixture
+        .service
+        .watch(fixture.caller.clone(), seen.revision, route);
+    tokio::pin!(held);
+    fixture.tick();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut held)
+            .await
+            .is_err(),
+        "nothing changed: the watch is held"
+    );
+
+    // Ana talks: the next tick sees it and the held watch answers.
+    let ana = "a".repeat(64);
+    *fixture.device.speaking.lock().unwrap() = vec![ana.clone()];
+    fixture
+        .device
+        .speaking_revision
+        .fetch_add(1, Ordering::SeqCst);
+    fixture.tick();
+    let answered = tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("the watch answers")
+        .unwrap();
+    assert_eq!(answered.speaking, vec![ana]);
+    assert_ne!(answered.revision, seen.revision);
 }

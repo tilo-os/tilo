@@ -3,8 +3,9 @@
 //! cannot grant consent or authenticate a call.
 use super::{
     AudioError, AudioStats, BTreeMap, CaptureQueue, CaptureTimeline, CapturedOpus, Duration,
-    FRAME_DURATION, FRAME_SAMPLES, Instant, JitterBuffer, MAX_PACKET_BYTES, MAX_PUBLISHERS,
-    PlayoutFrame, PublicationId, ReceivedOpus, SEND_LIFETIME, VecDeque, mix_frames, validate_frame,
+    FRAME_DURATION, FRAME_SAMPLES, HEARD_FOR, HEARD_RUN, Instant, JitterBuffer, MAX_PACKET_BYTES,
+    MAX_PUBLISHERS, PlayoutFrame, PublicationId, ReceivedOpus, SEND_LIFETIME, VecDeque, mix_frames,
+    validate_frame,
 };
 mod codec;
 mod device;
@@ -51,6 +52,10 @@ struct Capture {
     sample_diagnosed: bool,
 }
 
+/// A transmitted frame this soon after the last continues its speech:
+/// one frame duration, with half a frame of capture jitter.
+const NEXT_FRAME_WITHIN: Duration = Duration::from_millis(30);
+
 pub struct VoiceAudio {
     output: DevicePipeline,
     output_source: gst_app::AppSrc,
@@ -61,6 +66,10 @@ pub struct VoiceAudio {
     decoders: BTreeMap<PublicationId, Decoder>,
     last_output: Option<Instant>,
     timeline: CaptureTimeline,
+    /// The microphone's speech: contiguous transmitted frames up to the
+    /// last one, which DTX silence never adds to.
+    capture_run: u32,
+    capture_last: Option<Instant>,
 }
 impl VoiceAudio {
     /// Start the persistent output pipeline on the observer's exact socket.
@@ -124,6 +133,8 @@ impl VoiceAudio {
             decoders: BTreeMap::new(),
             last_output: None,
             timeline: CaptureTimeline::default(),
+            capture_run: 0,
+            capture_last: None,
         })
     }
     /// Enqueue bounded startup. The current-authority callback must be a
@@ -334,6 +345,13 @@ impl VoiceAudio {
                 continue;
             }
             let timestamp = self.timeline.frame_timestamp(captured_at)?;
+            self.capture_run = match self.capture_last {
+                Some(last) if captured_at.saturating_duration_since(last) <= NEXT_FRAME_WITHIN => {
+                    self.capture_run.saturating_add(1)
+                }
+                _ => 1,
+            };
+            self.capture_last = Some(captured_at);
             self.captured.push(
                 CapturedOpus {
                     timestamp_48k: timestamp,
@@ -470,6 +488,19 @@ impl VoiceAudio {
             .map_err(|_| AudioError::DeviceLost)?;
         self.last_output = Some(output_at);
         Ok(())
+    }
+    /// The publishers heard talking at `now`.
+    pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
+        self.jitter.heard(now).cloned().collect()
+    }
+    /// Whether the microphone is heard talking at `now`: it captures and
+    /// sends speech, not DTX silence.
+    pub fn capture_heard(&self, now: Instant) -> bool {
+        self.capture_ready()
+            && self.capture_run >= HEARD_RUN
+            && self
+                .capture_last
+                .is_some_and(|last| now.saturating_duration_since(last) < HEARD_FOR)
     }
     pub fn remove_publisher(&mut self, publisher: &PublicationId) {
         self.jitter.remove(publisher);
@@ -1294,6 +1325,7 @@ mod tests {
         let id = PublicationId {
             namespace: "stalled".into(),
             carrier_generation: 1,
+            incarnation: 1,
         };
         let decoder = Decoder::new().unwrap();
         let pad = decoder.source.static_pad("src").unwrap();
@@ -1488,6 +1520,7 @@ mod tests {
         let id = PublicationId {
             namespace: "loss".into(),
             carrier_generation: 1,
+            incarnation: 1,
         };
         audio
             .receive(
@@ -1562,6 +1595,7 @@ mod tests {
         let id = PublicationId {
             namespace: "drift".into(),
             carrier_generation: 1,
+            incarnation: 1,
         };
         let mut decoder = Decoder::new().unwrap();
         for _ in 0..3 {
@@ -1903,6 +1937,7 @@ mod tests {
             publisher: PublicationId {
                 namespace: name.into(),
                 carrier_generation: generation,
+                incarnation: 1,
             },
             sequence: 0,
             timestamp_48k: 0,
@@ -1941,6 +1976,7 @@ mod tests {
         audio.remove_publisher(&PublicationId {
             namespace: "bob".into(),
             carrier_generation: 1,
+            incarnation: 1,
         });
         assert_eq!(audio.decoder_count(), 0);
         audio.close();

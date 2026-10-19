@@ -150,6 +150,7 @@ impl OpusDecoder {
                 publisher: PublicationId {
                     namespace: "codec-diagnostic".into(),
                     carrier_generation: 0,
+                    incarnation: 1,
                 },
                 sequence: 0,
                 timestamp_48k: 0,

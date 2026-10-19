@@ -3,7 +3,7 @@ name = "tilo-moq"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Tilo live plane over MoQ: the moq-lite live relay, its WebTransport admission carrier and the HTTPS fallback, plus the tilo-voice/1 object profile."
+description = "Tilo live plane over MoQ: the moq-lite live relay, its WebTransport admission carrier and the HTTPS fallback, plus the tilo-voice/1 and tilo-video/1 object profiles."
 license.workspace = true
 
 [features]
@@ -55,6 +55,10 @@ required-features = ["relay"]
 
 [[test]]
 name = "client_admission"
+required-features = ["relay"]
+
+[[test]]
+name = "client_pictures"
 required-features = ["relay"]
 
 [[test]]

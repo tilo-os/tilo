@@ -19,6 +19,9 @@ pub(crate) struct Registry {
     tickets: Vec<Weak<Ticket>>,
     /// Each room's calls, by its relay workspace, as last listed.
     listed: HashMap<u64, Listed>,
+    /// Woken whenever a room's call list changes: the call services that
+    /// asked for rosters, so a voice channel shows a join or leave at once.
+    signals: Vec<Weak<tokio::sync::Notify>>,
 }
 #[derive(Default)]
 struct Listed {
@@ -52,7 +55,19 @@ impl Registry {
                     ticket.leave(sessions(ticket.workspace()).as_deref());
                     Reply::Left
                 }),
-                Operation::Rosters { owner, target } => {
+                Operation::Rosters {
+                    owner,
+                    target,
+                    signal,
+                } => {
+                    self.signals.retain(|known| known.strong_count() != 0);
+                    if !self
+                        .signals
+                        .iter()
+                        .any(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(&signal)))
+                    {
+                        self.signals.push(Arc::downgrade(&signal));
+                    }
                     self.rosters(&owner, &target, identity, sessions)
                 }
             },
@@ -68,7 +83,14 @@ impl Registry {
         session: Option<&RelayCoeditSession>,
     ) {
         if let VoiceEvent::Calls(result) = event {
-            self.listed.entry(ws).or_default().calls = result.clone().unwrap_or_default();
+            let calls = result.clone().unwrap_or_default();
+            let listed = self.listed.entry(ws).or_default();
+            if listed.calls != calls {
+                listed.calls = calls;
+                for signal in self.signals.iter().filter_map(Weak::upgrade) {
+                    signal.notify_waiters();
+                }
+            }
             return;
         }
         self.tickets.retain(|ticket| ticket.strong_count() != 0);
@@ -91,6 +113,10 @@ impl Registry {
     }
     /// The room on `ws` was dialled again: its calls join over `session`.
     pub(crate) fn reconnected(&mut self, ws: u64, session: &RelayCoeditSession) {
+        // The room tells a connection its call list only once asked over it.
+        if let Some(listed) = self.listed.get_mut(&ws) {
+            listed.asked = None;
+        }
         self.tickets.retain(|ticket| ticket.strong_count() != 0);
         for ticket in self.tickets.iter().filter_map(Weak::upgrade) {
             if ticket.workspace() == ws

@@ -67,7 +67,13 @@ pub fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
                 owner_epoch: grant.participation,
                 carrier_generation: generation,
                 publication: grant.publication.clone(),
-                subscriptions: grant.subscriptions.clone(),
+                subscription_prefix: grant.directions.subscribe.then(|| {
+                    grant
+                        .call
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect()
+                }),
             },
             authorization: grant.token.clone(),
         },

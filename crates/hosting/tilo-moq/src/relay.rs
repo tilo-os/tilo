@@ -9,6 +9,10 @@
 //! exact namespace. The relay copies its `audio` track into the shared origin,
 //! validating every object and datagram bundle and bounding the groups in
 //! flight, so subscribers only ever observe validated tilo-voice/1 objects.
+//! Its picture tracks (tilo-video/1: a camera or screen in one resolution
+//! layer, [`crate::video`]) are copied the same way, each only while some
+//! subscriber asks for it, so a publisher sends, and the relay forwards, only
+//! the layers someone shows.
 //! Every session is served from its own host-owned view of the shared origin
 //! ([`crate::mirror`]), which revocation drops before anything else.
 
@@ -45,12 +49,19 @@ const LAPSED_OFFER_FENCE: Duration = Duration::from_millis(900);
 pub const GOAWAY_GRACE: Duration = Duration::from_secs(1);
 /// Voice retention: late audio is dropped, never queued.
 const VOICE_RETAIN: Duration = Duration::from_millis(200);
-/// Bytes one publisher may have cached at the relay's ingress.
-const INGRESS_BYTES: u64 = 64 * 1024;
-/// Bytes cached across every forwarded voice track.
-const SHARED_BYTES: u64 = 512 * 1024;
-/// Bytes one subscriber's own view may cache.
-const VIEW_BYTES: u64 = 64 * 1024;
+/// Picture retention: a late subscriber starts at the newest keyframe group,
+/// and a picture older than this is not worth showing.
+const PICTURE_RETAIN: Duration = Duration::from_secs(2);
+/// Bytes one publisher may have cached at the relay's ingress: its voice and
+/// the picture layers asked of it, a [`PICTURE_RETAIN`] of each.
+const INGRESS_BYTES: u64 = 2 * 1024 * 1024;
+/// Bytes cached across every forwarded track of the relay.
+const SHARED_BYTES: u64 = 64 * 1024 * 1024;
+/// Bytes one subscriber's own view may cache: the voices and the pictures it
+/// shows.
+const VIEW_BYTES: u64 = 4 * 1024 * 1024;
+/// Picture tracks of one publisher served at once: each source's layers.
+const MAX_PICTURE_TRACKS: usize = 5;
 /// Groups copied concurrently per publisher; a newer group evicts the oldest.
 const MAX_GROUPS_IN_FLIGHT: usize = 3;
 
@@ -274,7 +285,7 @@ impl Relay {
     /// on it for as long as any clone of the relay lives.
     pub fn new(authority: Arc<dyn RelayAuthority>) -> Self {
         let (origin, task) =
-            carrier::OriginTask::produce(carrier::origin_config(SHARED_BYTES, VOICE_RETAIN));
+            carrier::OriginTask::produce(carrier::origin_config(SHARED_BYTES, PICTURE_RETAIN));
         Self {
             authority,
             origin,
@@ -351,7 +362,7 @@ impl Relay {
                 let view = crate::mirror::Mirror::start(
                     subscribe.clone(),
                     VIEW_BYTES,
-                    VOICE_RETAIN,
+                    PICTURE_RETAIN,
                     Some(scopes.downlink.clone()),
                 );
                 server = server.with_publisher(view.consume());
@@ -408,7 +419,7 @@ impl Relay {
             AuthorityDriver::admit(self.observe(authorization.as_ref(), offered.as_mut()))?;
         let ingress = authorization.publication().map(|_| {
             let (origin, task) =
-                carrier::OriginTask::produce(carrier::origin_config(INGRESS_BYTES, VOICE_RETAIN));
+                carrier::OriginTask::produce(carrier::origin_config(INGRESS_BYTES, PICTURE_RETAIN));
             Ingress {
                 origin,
                 _task: task,
@@ -683,6 +694,11 @@ async fn forward(
         ) else {
             return;
         };
+        let pictures = crate::Task::spawn(forward_pictures(
+            out.dynamic(),
+            source.clone(),
+            counters.clone(),
+        ));
         if out.announce(moq_net::origin::Route::default()).is_err() {
             return;
         }
@@ -697,6 +713,7 @@ async fn forward(
             let _ = source.closed().await;
             let _ = track.abort(moq_net::Error::Cancel);
         }
+        drop(pictures);
         out.finish();
         // A publisher that ends and re-announces is picked up afresh.
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -761,6 +778,139 @@ async fn copy_voice_group(
                 count = count.saturating_add(1);
                 if count > voice::FRAMES_PER_GROUP
                     || voice::validate(&frame.payload).is_err()
+                    || output.write_frame(frame.timestamp, frame.payload).is_err()
+                {
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    let _ = output.abort(moq_net::Error::ProtocolViolation);
+                    return;
+                }
+                counters.forwarded.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(None) => {
+                let _ = output.finish();
+                return;
+            }
+            Err(_) => {
+                let _ = output.abort(moq_net::Error::Cancel);
+                return;
+            }
+        }
+    }
+}
+
+/// Serve the picture tracks subscribers ask of one publication: each copied
+/// from the publisher, validated, only while someone asks for it. Any other
+/// track name is refused.
+async fn forward_pictures(
+    mut requests: moq_net::broadcast::Dynamic,
+    source: moq_net::broadcast::Consumer,
+    counters: Arc<Counters>,
+) {
+    let mut serving: Vec<crate::Task> = Vec::new();
+    while let Ok(request) = requests.requested_track().await {
+        serving.retain(|task| !task.is_finished());
+        let Some((_, layer)) = crate::video::parse_track(request.name()) else {
+            request.reject(moq_net::Error::NotFound);
+            continue;
+        };
+        if serving.len() >= MAX_PICTURE_TRACKS {
+            request.reject(moq_net::Error::BoundsExceeded(
+                moq_net::BoundsExceeded,
+            ));
+            continue;
+        }
+        serving.push(crate::Task::spawn(forward_picture(
+            request,
+            source.clone(),
+            layer,
+            counters.clone(),
+        )));
+    }
+}
+
+/// Copy one picture track for as long as a subscriber asks for it.
+async fn forward_picture(
+    request: moq_net::track::Request,
+    source: moq_net::broadcast::Consumer,
+    layer: crate::video::Layer,
+    counters: Arc<Counters>,
+) {
+    let subscription = moq_net::track::Subscription::default().with_max_age(PICTURE_RETAIN);
+    let input = match source.track(request.name()) {
+        Ok(track) => track.subscribe(subscription).await,
+        Err(error) => Err(error),
+    };
+    let input = match input {
+        Ok(input) => input,
+        Err(error) => {
+            request.reject(error);
+            return;
+        }
+    };
+    let output = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_RETAIN));
+    let watched = output.clone();
+    tokio::select! {
+        () = copy_pictures(input, output, layer, &counters) => {}
+        // Nobody shows this layer any more: stop asking the publisher for it.
+        _ = watched.unused() => {}
+    }
+}
+
+async fn copy_pictures(
+    mut input: moq_net::track::Subscriber,
+    output: moq_net::track::Producer,
+    layer: crate::video::Layer,
+    counters: &Arc<Counters>,
+) {
+    let mut groups: VecDeque<crate::Task> = VecDeque::new();
+    loop {
+        match next(&mut input).await {
+            // Pictures travel in groups only.
+            Next::Datagram(_) => {
+                counters.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Next::Group(group) => {
+                groups.retain(|task| !task.is_finished());
+                if groups.len() >= MAX_GROUPS_IN_FLIGHT {
+                    groups.pop_front();
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                let Ok(out) = output.create_group(moq_net::group::Info::from(group.sequence))
+                else {
+                    counters.dropped.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                groups.push_back(crate::Task::spawn(copy_picture_group(
+                    *group,
+                    out,
+                    layer,
+                    counters.clone(),
+                )));
+            }
+            Next::End => break,
+        }
+    }
+    drop(groups);
+    let _ = output.abort(moq_net::Error::Cancel);
+}
+
+/// Copy one group of pictures: a keyframe first, every picture of the
+/// track's own layer, at most [`crate::video::MAX_GROUP_OBJECTS`].
+async fn copy_picture_group(
+    mut input: moq_net::group::Consumer,
+    mut output: moq_net::group::Producer,
+    layer: crate::video::Layer,
+    counters: Arc<Counters>,
+) {
+    let mut count: u64 = 0;
+    loop {
+        match input.read_frame().await {
+            Ok(Some(frame)) => {
+                let valid = crate::video::validate(&frame.payload)
+                    .is_ok_and(|header| header.layer == layer && (count > 0 || header.keyframe));
+                count = count.saturating_add(1);
+                if !valid
+                    || count > crate::video::MAX_GROUP_OBJECTS
                     || output.write_frame(frame.timestamp, frame.payload).is_err()
                 {
                     counters.dropped.fetch_add(1, Ordering::Relaxed);

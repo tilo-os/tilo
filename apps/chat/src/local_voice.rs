@@ -16,10 +16,20 @@ pub(crate) struct LocalVoice {
     next_request: u64,
     intent_floor: u64,
     applied: u64,
-    last_poll: Option<Instant>,
+    /// The one watch outstanding, and when it was sent: the service answers
+    /// it the moment the status changes (who joins, leaves, talks).
+    watch: Option<(u64, Instant)>,
+    /// No watch before this: the service just refused something.
+    watch_after: Option<Instant>,
     pending_since: Option<Instant>,
     unmute_requested: bool,
 }
+
+/// How long a service that refused is left alone before it is watched again.
+const WATCH_RETRY: Duration = Duration::from_secs(2);
+/// A watch unanswered this long was lost: the service holds one at most
+/// [`ui::native_media::WATCH_HOLD`].
+const WATCH_LOST: Duration = ui::native_media::WATCH_HOLD.saturating_add(Duration::from_secs(5));
 
 impl Default for LocalVoice {
     fn default() -> Self {
@@ -32,7 +42,8 @@ impl Default for LocalVoice {
             next_request: 0,
             intent_floor: 0,
             applied: 0,
-            last_poll: None,
+            watch: None,
+            watch_after: None,
             pending_since: None,
             unmute_requested: false,
         }
@@ -106,7 +117,7 @@ impl LocalVoice {
                     self.snapshot.capture_active = false;
                 }
             }
-            Command::SelectInput { .. } | Command::Status => {}
+            Command::SelectInput { .. } | Command::Status | Command::Watch { .. } => {}
         }
         self.pending.insert(id, command);
         self.queued.push(CollabRequest::NativeMediaCommand {
@@ -122,33 +133,78 @@ impl LocalVoice {
         {
             self.invalidate("reply_timeout");
         }
-        if self.pending.is_empty()
-            && self.queued.is_empty()
-            && self
-                .last_poll
-                .is_none_or(|last| now.saturating_duration_since(last) >= self.status_interval())
+        if self
+            .watch
+            .is_some_and(|(_, sent)| now.saturating_duration_since(sent) >= WATCH_LOST)
         {
-            let _ = self.submit(Command::Status);
+            self.watch = None;
+            self.invalidate("reply_timeout");
         }
-        if !self.queued.is_empty() {
-            self.last_poll = Some(now);
-            if self.pending_since.is_none() {
-                self.pending_since = Some(now);
-            }
+        if !self.queued.is_empty() && self.pending_since.is_none() {
+            self.pending_since = Some(now);
+        }
+        // Who is in each voice channel and who talks, joined or not: one
+        // watch the service answers when that changes, never a poll.
+        if self.watch.is_none()
+            && self.pending.is_empty()
+            && self.queued.is_empty()
+            && self.watch_after.is_none_or(|after| now >= after)
+            && let Some(id) = self.next_request.checked_add(1)
+        {
+            self.next_request = id;
+            self.watch = Some((id, now));
+            self.queued.push(CollabRequest::NativeMediaCommand {
+                request_id: id,
+                command: Request::new(Command::Watch {
+                    revision: self.snapshot.revision,
+                }),
+            });
         }
         std::mem::take(&mut self.queued)
     }
-    fn status_interval(&self) -> Duration {
-        if self.channel.is_some() {
-            Duration::from_millis(500)
-        } else {
-            // Out of a call the status still says who is in each voice
-            // channel, which the sidebar shows.
-            Duration::from_secs(2)
+
+    /// The service's answer to the watch `request_id`: everything when no
+    /// newer intent is in flight, else only what the room says (who is in
+    /// each call, who talks), which no local intent changes.
+    fn complete_watch(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
+        let before = self.snapshot.clone();
+        let before_channel = self.channel.clone();
+        match result {
+            Err(error) if error == "native media command superseded" => {}
+            Err(error) => {
+                self.watch_after = Some(ui::time::now() + WATCH_RETRY);
+                let issue = match error.as_str() {
+                    "native media command timed out" => "reply_timeout",
+                    "native media command refused" => "command_refused",
+                    _ => "unavailable",
+                };
+                self.invalidate(issue);
+            }
+            Ok(snapshot) if !snapshot.valid() => {
+                self.watch_after = Some(ui::time::now() + WATCH_RETRY);
+                self.invalidate("invalid_status");
+            }
+            Ok(snapshot)
+                if self.pending.is_empty()
+                    && request_id >= self.intent_floor
+                    && request_id > self.applied =>
+            {
+                self.applied = request_id;
+                self.apply(snapshot);
+            }
+            Ok(snapshot) => {
+                self.snapshot.rosters.clone_from(&snapshot.rosters);
+                self.snapshot.speaking.clone_from(&snapshot.speaking);
+            }
         }
+        before != self.snapshot || before_channel != self.channel
     }
 
     pub(crate) fn complete(&mut self, request_id: u64, result: &Result<Snapshot, String>) -> bool {
+        if self.watch.is_some_and(|(watch, _)| watch == request_id) {
+            self.watch = None;
+            return self.complete_watch(request_id, result);
+        }
         if self.pending.remove(&request_id).is_none()
             || request_id < self.intent_floor
             || request_id < self.applied
@@ -171,6 +227,8 @@ impl LocalVoice {
         let snapshot = match result {
             Ok(snapshot) => snapshot,
             Err(error) => {
+                // A refusing service is left alone for a moment.
+                self.watch_after = Some(ui::time::now() + WATCH_RETRY);
                 // Transport errors may carry private details. Export only
                 // these fixed protocol categories, never the error itself.
                 let issue = match error.as_str() {
@@ -187,6 +245,12 @@ impl LocalVoice {
             self.invalidate("invalid_status");
             return before != self.snapshot || before_channel != self.channel;
         }
+        self.apply(snapshot);
+        before != self.snapshot || before_channel != self.channel
+    }
+    /// Take the service's `snapshot` as the call's state, fail-closed: the
+    /// microphone shows on only while this person asked for it.
+    fn apply(&mut self, snapshot: &Snapshot) {
         self.snapshot = snapshot.clone();
         if !self.unmute_requested {
             self.snapshot.muted = true;
@@ -203,7 +267,6 @@ impl LocalVoice {
             self.snapshot.muted = true;
             self.snapshot.capture_active = false;
         }
-        before != self.snapshot || before_channel != self.channel
     }
     /// Forget the service's state and leave the call, if there is one. With
     /// no channel there is nothing to leave: a Leave here would itself be
@@ -218,6 +281,15 @@ impl LocalVoice {
         self.client_issue = Some(issue);
     }
 }
+
+/// See [`crate::app::ChatApp::call_layout_inputs`].
+type CallLayoutInputs = (
+    bool,
+    String,
+    bool,
+    Option<String>,
+    Vec<(String, Vec<String>)>,
+);
 
 impl crate::app::ChatApp {
     pub(crate) fn native_voice_command(
@@ -240,17 +312,21 @@ impl crate::app::ChatApp {
             }
             Command::SetMuted { muted: false } => CallAction::Speak,
             Command::SetMuted { muted: true } | Command::Leave => CallAction::Leave,
-            Command::SelectInput { .. } | Command::Status => CallAction::Join,
+            Command::SelectInput { .. } | Command::Status | Command::Watch { .. } => {
+                CallAction::Join
+            }
         };
         if !self.call_allows(action) {
             return Err("Call action is not permitted".into());
         }
-        if !matches!(&command, Command::Join { .. } | Command::Status)
-            && self
-                .native_voice
-                .channel
-                .as_deref()
-                .is_some_and(|active| active != channel)
+        if !matches!(
+            &command,
+            Command::Join { .. } | Command::Status | Command::Watch { .. }
+        ) && self
+            .native_voice
+            .channel
+            .as_deref()
+            .is_some_and(|active| active != channel)
         {
             return Err("This is not the active call".into());
         }
@@ -260,6 +336,7 @@ impl crate::app::ChatApp {
     }
 
     pub(crate) fn project_native_voice(&mut self) {
+        let laid_out = self.call_layout_inputs();
         let snapshot = &self.native_voice.snapshot;
         // The panel represents explicit local intent, including an unavailable
         // attempt. Only Snapshot::Live represents current service readiness.
@@ -290,7 +367,37 @@ impl crate::app::ChatApp {
             })
         });
         self.refresh_native_streams();
-        self.request_relayout();
+        // Who talks changes several times a second in a call: it repaints
+        // the rings, and lays nothing out again.
+        if self.call_layout_inputs() == laid_out {
+            self.canonical_dirty = true;
+        } else {
+            self.request_relayout();
+        }
+    }
+
+    /// What the call's layout depends on: whether and where this person is
+    /// in a call, its microphone and issue, and who is in each voice
+    /// channel; not who is talking.
+    fn call_layout_inputs(&self) -> CallLayoutInputs {
+        let mut people: Vec<(String, Vec<String>)> = self
+            .voice_members
+            .iter()
+            .map(|(channel, members)| {
+                (
+                    channel.clone(),
+                    members.iter().map(|member| member.user.clone()).collect(),
+                )
+            })
+            .collect();
+        people.sort();
+        (
+            self.call.active,
+            self.call.channel.clone(),
+            self.call.muted,
+            self.media_error.clone(),
+            people,
+        )
     }
 
     /// Who is in each voice channel, joined or not: the rosters the service
@@ -299,13 +406,16 @@ impl crate::app::ChatApp {
     pub(crate) fn refresh_native_streams(&mut self) {
         self.voice_members.clear();
         let snapshot = &self.native_voice.snapshot;
+        let screens = &self.remote_screens;
+        let cameras = &self.remote_frames;
         let member = |user: &str, muted: bool| crate::model::VoiceMember {
             user: user.to_owned(),
-            talking: false,
+            talking: snapshot.speaking.iter().any(|person| person == user),
             muted,
             deafened: false,
-            audio_only: true,
-            sharing: false,
+            // Whoever's pictures arrive shows them.
+            audio_only: !cameras.contains_key(user),
+            sharing: screens.contains_key(user),
             ticket: None,
             video: None,
         };
@@ -402,7 +512,7 @@ mod tests {
             request,
             CollabRequest::NativeMediaCommand {
                 command: Request {
-                    command: Command::Status,
+                    command: Command::Watch { .. },
                     ..
                 },
                 ..
@@ -425,8 +535,14 @@ mod tests {
         snapshot.publishers = vec![format!("{}/{}", "11".repeat(32), "22".repeat(32))];
         voice.complete(request_id(&join[0]), &Ok(snapshot.clone()));
         let status = voice.take_requests(now + Duration::from_millis(500));
-        assert_eq!(status.len(), 1);
-        let stopping = voice.take_requests(now + Duration::from_millis(2500));
+        assert_eq!(status.len(), 1, "one watch outstanding");
+        assert!(
+            voice
+                .take_requests(now + Duration::from_secs(20))
+                .is_empty(),
+            "a held watch is no lost reply"
+        );
+        let stopping = voice.take_requests(now + Duration::from_millis(500) + WATCH_LOST);
         assert_eq!(voice.snapshot.state, State::Unavailable);
         assert!(voice.snapshot.publishers.is_empty());
         assert!(stopping.iter().any(|request| matches!(
@@ -510,43 +626,67 @@ mod tests {
         assert!(!voice.snapshot.capture_active);
     }
 
+    fn watch_of(request: &CollabRequest) -> Option<u64> {
+        match request {
+            CollabRequest::NativeMediaCommand {
+                command:
+                    Request {
+                        command: Command::Watch { revision },
+                        ..
+                    },
+                ..
+            } => Some(*revision),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn idle_status_poll_backs_off_and_unchanged_replies_are_silent() {
+    fn one_watch_is_outstanding_and_the_next_waits_past_what_was_seen() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
         let first = voice.take_requests(now);
         assert_eq!(first.len(), 1);
-        assert!(!voice.complete(request_id(&first[0]), &Ok(Snapshot::unavailable())));
+        assert_eq!(watch_of(&first[0]), Some(0), "nothing seen yet");
         assert!(
-            voice
-                .take_requests(now + Duration::from_millis(500))
-                .is_empty(),
-            "idle Chat does not poll voice status every 500 ms"
+            voice.take_requests(now + Duration::from_secs(5)).is_empty(),
+            "no poll while the watch is held"
         );
-        let later = voice.take_requests(now + Duration::from_secs(5));
-        assert_eq!(
-            later.len(),
-            1,
-            "an idle session still notices a late voice service"
+        let mut unavailable = Snapshot::unavailable();
+        unavailable.revision = 7;
+        voice.complete(request_id(&first[0]), &Ok(unavailable.clone()));
+        let next = voice.take_requests(now + Duration::from_secs(5));
+        assert_eq!(next.len(), 1);
+        assert_eq!(watch_of(&next[0]), Some(7), "the next waits past it");
+        assert!(
+            !voice.complete(request_id(&next[0]), &Ok(unavailable)),
+            "an unchanged answer changes nothing"
         );
-        assert!(!voice.complete(request_id(&later[0]), &Ok(Snapshot::unavailable())));
 
+        // Someone joins the standup: the held watch answers with it.
         voice
             .submit(Command::Join {
                 channel_id: "voice".into(),
             })
             .unwrap();
         let join = voice.take_requests(now + Duration::from_secs(5));
+        assert_eq!(join.len(), 1, "a join waits for no watch");
         assert!(voice.complete(request_id(&join[0]), &Ok(live())));
-        assert_eq!(
-            voice
-                .take_requests(now + Duration::from_secs(5) + Duration::from_millis(500))
-                .len(),
-            1,
-            "an active call still polls twice a second"
-        );
+        let held = voice.take_requests(now + Duration::from_secs(5));
+        let mut joined = live();
+        joined.rosters = vec![ui::native_media::Roster {
+            channel_id: "voice".into(),
+            people: vec!["a".repeat(64)],
+        }];
+        joined.speaking = vec!["a".repeat(64)];
+        joined.revision = 9;
+        assert!(voice.complete(request_id(&held[0]), &Ok(joined)));
+        assert_eq!(voice.snapshot.speaking, vec!["a".repeat(64)]);
+        assert_eq!(voice.snapshot.rosters.len(), 1);
+    }
 
-        let same = live();
+    #[test]
+    fn a_watch_answered_under_a_newer_intent_takes_only_who_is_in_the_call() {
+        let now = ui::time::now();
         let mut voice = LocalVoice::default();
         voice
             .submit(Command::Join {
@@ -554,13 +694,25 @@ mod tests {
             })
             .unwrap();
         let join = voice.take_requests(now);
-        assert!(voice.complete(request_id(&join[0]), &Ok(same.clone())));
-        let status = voice.take_requests(now + Duration::from_millis(500));
-        assert!(!voice.complete(request_id(&status[0]), &Ok(same)));
+        voice.complete(request_id(&join[0]), &Ok(live()));
+        let watch = voice.take_requests(now);
+        voice.submit(Command::SetMuted { muted: false }).unwrap();
+        let unmute = voice.take_requests(now);
+        let mut stale = live();
+        stale.state = State::Reconnecting;
+        stale.speaking = vec!["b".repeat(64)];
+        voice.complete(request_id(&watch[0]), &Ok(stale));
+        assert_eq!(
+            voice.snapshot.state,
+            State::Live,
+            "the unmute in flight decides the call's own state"
+        );
+        assert_eq!(voice.snapshot.speaking, vec!["b".repeat(64)]);
+        voice.complete(request_id(&unmute[0]), &Ok(live()));
     }
 
     #[test]
-    fn semantic_status_reads_share_the_in_flight_automatic_refresh() {
+    fn semantic_status_reads_coalesce_beside_the_watch() {
         let now = ui::time::now();
         let mut doc = automerge::AutoCommit::new();
         crate::demo::seed(&mut doc).unwrap();
@@ -573,31 +725,29 @@ mod tests {
         .unwrap();
         let join = app.native_voice.take_requests(now);
         app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-        let refresh = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(500));
-        assert_eq!(refresh.len(), 1);
+        let watch = app.native_voice.take_requests(now);
+        assert_eq!(watch.len(), 1);
+        assert!(watch_of(&watch[0]).is_some());
         for _ in 0..12 {
             app.answer_effect(crate::effects::ChatEffect::CallStatus {
                 channel: "c_standup".into(),
             })
             .unwrap();
         }
-        assert!(
-            app.native_voice
-                .take_requests(now + Duration::from_secs(1))
-                .is_empty()
-        );
+        let reads = app.native_voice.take_requests(now + Duration::from_secs(1));
+        assert_eq!(reads.len(), 1, "twelve reads are one");
         assert_eq!(app.native_voice.snapshot.state, State::Live);
         assert_eq!(app.native_voice.channel.as_deref(), Some("c_standup"));
         assert!(
             !app.native_voice
-                .complete(request_id(&refresh[0]), &Ok(live()))
+                .complete(request_id(&reads[0]), &Ok(live()))
         );
-        let next = app
-            .native_voice
-            .take_requests(now + Duration::from_millis(1500));
-        assert_eq!(next.len(), 1, "a later refresh still crosses the transport");
+        assert!(
+            app.native_voice
+                .take_requests(now + Duration::from_millis(1500))
+                .is_empty(),
+            "the watch is still held"
+        );
         assert_eq!(
             doc.save(),
             before,
@@ -617,7 +767,7 @@ mod tests {
         let join = voice.take_requests(now);
         voice.complete(request_id(&join[0]), &Ok(live()));
         let refresh = voice.take_requests(now + Duration::from_millis(500));
-        voice.submit(Command::Status).unwrap();
+        assert!(watch_of(&refresh[0]).is_some());
         assert!(voice.complete(request_id(&refresh[0]), &Err("service refused".into())));
         let stop = voice.take_requests(now + Duration::from_secs(1));
         assert_eq!(stop.len(), 1);
@@ -654,7 +804,7 @@ mod tests {
             .take_requests(now + Duration::from_millis(500));
         app.native_voice.complete(
             request_id(&refresh[0]),
-            &Err("native media command superseded".into()),
+            &Err("native media command timed out".into()),
         );
         let stop = app.native_voice.take_requests(now + Duration::from_secs(1));
         let mut ended = Snapshot::unavailable();
@@ -671,7 +821,7 @@ mod tests {
         };
         let output = output.value.unwrap();
         assert_eq!(output["reported"]["state"], "ended");
-        assert_eq!(output["clientIssue"], "reply_superseded");
+        assert_eq!(output["clientIssue"], "reply_timeout");
         assert_eq!(output["channel"], serde_json::Value::Null);
         app.answer_effect(crate::effects::ChatEffect::JoinCall {
             channel: "c_standup".into(),
@@ -717,9 +867,9 @@ mod tests {
     fn status_polling_and_pending_commands_are_bounded_and_mute_always_fits() {
         let now = ui::time::now();
         let mut voice = LocalVoice::default();
-        assert_eq!(voice.take_requests(now).len(), 1);
+        assert_eq!(voice.take_requests(now).len(), 1, "the watch");
         assert!(voice.take_requests(now).is_empty());
-        for _ in 0..7 {
+        for _ in 0..8 {
             voice
                 .submit(Command::SelectInput {
                     input_id: "input".into(),

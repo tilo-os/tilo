@@ -178,3 +178,32 @@ fn rosters_name_people_once_per_channel() {
 fn hex_person(n: u8) -> String {
     format!("{n:02x}").repeat(32)
 }
+
+#[test]
+fn a_watch_is_a_query_and_speaking_names_people_once_each() {
+    let watch = Request::new(Command::Watch { revision: 7 });
+    assert!(watch.dispatch_valid(), "a watch is a query: intent zero");
+    let bytes = watch.encode().unwrap();
+    assert_eq!(Request::decode(&bytes).unwrap(), watch);
+    let mut effect = watch;
+    effect.intent = 3;
+    assert!(
+        !effect.dispatch_valid(),
+        "a watch changes nothing, so carries no intent"
+    );
+
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.speaking = vec![hex_person(1), hex_person(2)];
+    snapshot.revision = 42;
+    let bytes = snapshot.encode().unwrap();
+    assert_eq!(Snapshot::decode(&bytes).unwrap(), snapshot);
+    for speaking in [
+        vec![hex_person(2), hex_person(1)],
+        vec![hex_person(1), hex_person(1)],
+        vec!["ana".to_owned()],
+    ] {
+        let mut invalid = snapshot.clone();
+        invalid.speaking = speaking;
+        assert!(invalid.encode().is_err());
+    }
+}

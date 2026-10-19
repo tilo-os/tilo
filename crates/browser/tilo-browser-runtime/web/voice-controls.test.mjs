@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createVoiceControls, createMediaPump, rostersOf, storedCallPreferences} from './voice-controls.mjs';
+import {createVoiceControls, createMediaPump, rostersOf, revisionOf, storedCallPreferences} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
 function fixture({joinMuted = true} = {}) {
   const operations = [];
@@ -179,4 +179,25 @@ test('the remembered mute choice lives in the browser storage', () => {
   assert.equal(preferences.joinMuted(), false, 'joining has the microphone on by default');
   preferences.remember(true);
   assert.equal(storedCallPreferences(storage).joinMuted(), true);
+});
+
+test('a watch answers when someone joins the room\'s call, and holds while nothing changes', async () => {
+  const ana = 'a'.repeat(64);
+  const voice = {call: {state: {phase: 'idle', participants: []}, stats: () => ({})}, calls: [], list: async () => []};
+  let looks = 0;
+  const controls = createVoiceControls({voice, room: 'room-1', wait: async () => {
+    looks++;
+    // Ana joins the standup while the watch is held.
+    if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, participants: [{user: ana}]}];
+  }});
+  const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
+  const seen = await controls.execute(request({op: 'status'}));
+  assert.equal(seen.revision, revisionOf(seen));
+  const answered = await controls.execute(request({op: 'watch', revision: seen.revision}));
+  assert.equal(looks, 3, 'held until the call changed');
+  assert.deepEqual(answered.rosters, [{channel_id: 'standup', people: [ana]}]);
+  assert.notEqual(answered.revision, seen.revision);
+  const stale = await controls.execute(request({op: 'watch', revision: 1}));
+  assert.equal(stale.revision, answered.revision, 'an out-of-date watcher is answered at once');
+  assert.equal(looks, 3);
 });

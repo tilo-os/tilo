@@ -4,6 +4,7 @@ fn publisher(name: &str, generation: u64) -> PublicationId {
     PublicationId {
         namespace: name.into(),
         carrier_generation: generation,
+        incarnation: 1,
     }
 }
 fn received(name: &str, sequence: u64, at: Instant) -> ReceivedOpus {
@@ -268,5 +269,61 @@ fn a_ninth_voice_takes_the_slot_of_the_one_quiet_longest() {
             .count(),
         1,
         "exactly one quiet voice gave up its slot"
+    );
+}
+
+#[test]
+fn a_voice_is_heard_while_its_frames_run_back_to_back_and_not_for_comfort_noise() {
+    let now = Instant::now();
+    let mut queue = JitterBuffer::default();
+    for sequence in 0..3_u64 {
+        let at = now + Duration::from_millis(sequence.saturating_mul(20));
+        queue.push(received("ada", sequence, at), at).unwrap();
+    }
+    let speaking = now + Duration::from_millis(50);
+    assert_eq!(
+        queue
+            .heard(speaking)
+            .map(|id| id.namespace.as_str())
+            .collect::<Vec<_>>(),
+        ["ada"],
+        "three frames 20 ms apart are speech"
+    );
+    assert_eq!(
+        queue.heard(now + Duration::from_millis(300)).count(),
+        0,
+        "a pause is not heard"
+    );
+
+    // A silent publisher: one comfort-noise update every 400 ms.
+    let mut quiet = JitterBuffer::default();
+    for update in 0..4_u64 {
+        let at = now + Duration::from_millis(update.saturating_mul(400));
+        let mut frame = received("bo", update, at);
+        frame.timestamp_48k = update.saturating_mul(20 * 960);
+        quiet.push(frame, at).unwrap();
+        assert_eq!(quiet.heard(at).count(), 0, "comfort noise is not speech");
+    }
+}
+
+#[test]
+fn a_publisher_that_returns_is_a_new_publication_and_its_old_frames_are_refused() {
+    let now = Instant::now();
+    let mut queue = JitterBuffer::default();
+    for sequence in 10..13 {
+        queue.push(received("ada", sequence, now), now).unwrap();
+    }
+    // It left and came back on the same carrier: its sequence restarts.
+    let mut back = received("ada", 0, now);
+    back.publisher.incarnation = 2;
+    queue.push(back, now).unwrap();
+    assert!(queue.contains(&PublicationId {
+        incarnation: 2,
+        ..publisher("ada", 1)
+    }));
+    assert_eq!(
+        queue.push(received("ada", 13, now), now),
+        Err(AudioError::Revoked),
+        "the earlier publication is over"
     );
 }

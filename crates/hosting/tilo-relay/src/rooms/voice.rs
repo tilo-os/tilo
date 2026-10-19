@@ -22,6 +22,12 @@
 //! resulting snapshot on each of its observations, so removing a member or
 //! ending a call closes their voice within one carrier observation of the
 //! decision.
+//!
+//! Every device that asked for a room's calls ([`Rooms::voice_calls`]) is
+//! sent the room's call list again whenever it changes: someone joins or
+//! leaves a call, a participation ends, or a call starts or ends. A voice
+//! channel shows who is in it the moment that changes, without anyone asking
+//! again.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -83,6 +89,18 @@ struct Participation {
 struct State {
     participations: HashMap<[u8; 32], Participation>,
     tokens: HashMap<[u8; 32], [u8; 32]>,
+    /// The devices told each room's call list, by room.
+    watchers: HashMap<String, Vec<Watcher>>,
+    /// Rooms whose call list changed since their watchers were last told.
+    changed: std::collections::BTreeSet<String>,
+}
+
+/// A device told a room's call list whenever it changes.
+struct Watcher {
+    workspace_id: u64,
+    device: [u8; 32],
+    user: [u8; 32],
+    outbound: mpsc::Sender<Envelope>,
 }
 
 impl State {
@@ -223,6 +241,9 @@ impl Calls {
         changed.sort_unstable();
         changed.dedup();
         self.announce(&state, &changed);
+        if !changed.is_empty() {
+            state.changed.insert(room.room().to_owned());
+        }
     }
 
     /// End participations not heard from for [`PARTICIPATION_TTL`] or whose
@@ -239,10 +260,13 @@ impl Calls {
             })
             .map(|(id, _)| *id)
             .collect();
-        let mut changed: Vec<[u8; 32]> = gone
-            .iter()
-            .filter_map(|id| state.remove(id).map(|participation| participation.call))
-            .collect();
+        let mut changed: Vec<[u8; 32]> = Vec::new();
+        for id in &gone {
+            if let Some(participation) = state.remove(id) {
+                changed.push(participation.call);
+                state.changed.insert(participation.room);
+            }
+        }
         changed.sort_unstable();
         changed.dedup();
         self.announce(&state, &changed);
@@ -353,6 +377,47 @@ fn current(
             subscribe: call.allowed.subscribe && !denied.is_some_and(|value| value.subscribe),
         },
     ))
+}
+
+/// Whether `device` of person `user` is a member of the room under `policy`.
+fn member(policy: &Policy, device: [u8; 32], user: [u8; 32]) -> bool {
+    policy.access.member_devices.contains(&device)
+        || policy.access.member_user_roots.contains(&user)
+}
+
+/// The room's calls under `policy`, with who is in each now.
+fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
+    let Some(calls) = &policy.calls else {
+        return Vec::new();
+    };
+    calls
+        .calls
+        .iter()
+        .map(|(call, entry)| {
+            let mut participants: Vec<VoiceParticipant> = state
+                .in_call(call)
+                .map(|(id, participation)| VoiceParticipant {
+                    device_public_key: participation.device,
+                    user_public_key: participation.user,
+                    namespace: protocol::namespace(call, id),
+                    publishes: participation.directions.publish,
+                })
+                .collect();
+            participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
+            CallSummary {
+                state: CallState {
+                    call: *call,
+                    epoch: entry.epoch,
+                    active: entry.phase == CallPhaseV1::Active,
+                    allowed: from_v1(entry.allowed),
+                },
+                app_id: entry.binding.app_id.clone(),
+                record_id: entry.binding.record_id.clone(),
+                channel_id: entry.binding.channel_id.clone(),
+                participants,
+            }
+        })
+        .collect()
 }
 
 const fn directions(value: Directions) -> DirectionsV1 {
@@ -728,6 +793,12 @@ impl Rooms {
             .ok_or("the room has no calls")?;
         let entry = policy.calls.get(&call).ok_or("the call vanished")?;
         tracing::info!(room = %room.room(), call = %hex::encode(call), epoch = entry.epoch, "call changed");
+        self.inner
+            .calls
+            .state()
+            .changed
+            .insert(room.room().to_owned());
+        self.tell_call_lists();
         Ok(CallState {
             call,
             epoch: entry.epoch,
@@ -792,10 +863,11 @@ impl Rooms {
                 .collect();
             let mut left = Vec::new();
             for id in earlier {
-                if let Some(existing) = state.remove(&id)
-                    && existing.call != call
-                {
-                    left.push(existing.call);
+                if let Some(existing) = state.remove(&id) {
+                    state.changed.insert(existing.room.clone());
+                    if existing.call != call {
+                        left.push(existing.call);
+                    }
                 }
             }
             left.sort_unstable();
@@ -825,6 +897,7 @@ impl Rooms {
                 },
             );
             state.renew_token(id);
+            state.changed.insert(room.to_owned());
             tracing::info!(%room, call = %hex::encode(call), "voice participant joined");
             id
         };
@@ -849,60 +922,85 @@ impl Rooms {
                 }
             }
         }
+        drop(state);
+        self.tell_call_lists();
         Ok(grant)
     }
 
-    /// The calls of `room` for `peer`, a member, with who is in each.
+    /// The calls of `room` for `peer`, a member, with who is in each. From
+    /// now on `outbound` is sent the list again whenever it changes, while
+    /// the device is a member and its connection lasts.
     pub(crate) async fn voice_calls(
         &self,
         room: &str,
         peer: &AuthenticatedPeer,
+        outbound: mpsc::Sender<Envelope>,
     ) -> Result<Vec<CallSummary>, String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let policy = Policy::read(governed.lock().await.peer())?;
-        if !policy
-            .access
-            .member_devices
-            .contains(&peer.device_public_key)
-            && !policy
-                .access
-                .member_user_roots
-                .contains(&peer.user_public_key)
-        {
+        let (workspace_id, policy) = {
+            let governed = governed.lock().await;
+            (governed.workspace_id(), Policy::read(governed.peer())?)
+        };
+        if !member(&policy, peer.device_public_key, peer.user_public_key) {
             return Err("not a member of the room".into());
         }
-        let Some(calls) = policy.calls else {
-            return Ok(Vec::new());
+        let mut state = self.inner.calls.state();
+        let watchers = state.watchers.entry(room.to_owned()).or_default();
+        watchers.retain(|watcher| {
+            !watcher.outbound.is_closed() && watcher.device != peer.device_public_key
+        });
+        watchers.push(Watcher {
+            workspace_id,
+            device: peer.device_public_key,
+            user: peer.user_public_key,
+            outbound,
+        });
+        Ok(call_list(&state, &policy))
+    }
+
+    /// Tell the watchers of every room whose call list changed the new
+    /// list, off the caller's path.
+    fn tell_call_lists(&self) {
+        if self.inner.calls.state().changed.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
         };
-        let state = self.inner.calls.state();
-        Ok(calls
-            .calls
-            .iter()
-            .map(|(call, entry)| {
-                let mut participants: Vec<VoiceParticipant> = state
-                    .in_call(call)
-                    .map(|(id, participation)| VoiceParticipant {
-                        device_public_key: participation.device,
-                        user_public_key: participation.user,
-                        namespace: protocol::namespace(call, id),
-                        publishes: participation.directions.publish,
-                    })
-                    .collect();
-                participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
-                CallSummary {
-                    state: CallState {
-                        call: *call,
-                        epoch: entry.epoch,
-                        active: entry.phase == CallPhaseV1::Active,
-                        allowed: from_v1(entry.allowed),
-                    },
-                    app_id: entry.binding.app_id.clone(),
-                    record_id: entry.binding.record_id.clone(),
-                    channel_id: entry.binding.channel_id.clone(),
-                    participants,
-                }
-            })
-            .collect())
+        let this = self.clone();
+        runtime.spawn(async move { this.send_call_lists().await });
+    }
+
+    async fn send_call_lists(&self) {
+        let changed = std::mem::take(&mut self.inner.calls.state().changed);
+        for room in changed {
+            let Ok(governed) = self.room(&room).await else {
+                continue;
+            };
+            let Ok(policy) = Policy::read(governed.lock().await.peer()) else {
+                continue;
+            };
+            let mut state = self.inner.calls.state();
+            let list = call_list(&state, &policy);
+            let Some(watchers) = state.watchers.get_mut(&room) else {
+                continue;
+            };
+            // A device that left the room, or whose connection closed, is
+            // told nothing more.
+            watchers.retain(|watcher| {
+                !watcher.outbound.is_closed() && member(&policy, watcher.device, watcher.user)
+            });
+            for watcher in watchers.iter() {
+                // A full queue hears the next change, or asks again.
+                let _ = watcher.outbound.try_send(Envelope::VoiceCallList {
+                    workspace_id: watcher.workspace_id,
+                    result: Ok(list.clone()),
+                });
+            }
+            if watchers.is_empty() {
+                state.watchers.remove(&room);
+            }
+        }
     }
 
     /// End `participation` of `peer` in `call`.
@@ -920,8 +1018,11 @@ impl Rooms {
             .is_some_and(|existing| {
                 existing.call == call && existing.device == peer.device_public_key
             });
-        if owned && state.remove(&participation).is_some() {
+        if owned && let Some(left) = state.remove(&participation) {
             calls.announce(&state, &[call]);
+            state.changed.insert(left.room);
+            drop(state);
+            self.tell_call_lists();
         }
     }
 
@@ -947,6 +1048,7 @@ impl Rooms {
                     };
                     this.observe_calls(&*room.lock().await);
                 }
+                this.send_call_lists().await;
             }
         });
     }

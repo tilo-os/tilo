@@ -19,12 +19,28 @@ pub struct Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
-    Join { channel_id: String },
-    SetMuted { muted: bool },
-    SelectInput { input_id: String },
+    Join {
+        channel_id: String,
+    },
+    SetMuted {
+        muted: bool,
+    },
+    SelectInput {
+        input_id: String,
+    },
     Leave,
     Status,
+    /// [`Command::Status`] once it differs from the status at `revision`
+    /// ([`Snapshot::revision`]), or after [`WATCH_HOLD`] when nothing
+    /// changed: how an app hears who joins, leaves and talks the moment it
+    /// happens, with one question outstanding instead of a poll.
+    Watch {
+        revision: u64,
+    },
 }
+
+/// The longest a [`Command::Watch`] is held before it is answered unchanged.
+pub const WATCH_HOLD: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,6 +140,15 @@ pub struct Snapshot {
     /// and while this device takes part: what a voice channel shows.
     #[serde(default)]
     pub rosters: Vec<Roster>,
+    /// The people this device's call hears talking now (person ids, sorted
+    /// and distinct), this person among them while their microphone is
+    /// heard: what the speaking rings show.
+    #[serde(default)]
+    pub speaking: Vec<String>,
+    /// Advances whenever anything above changes; what a
+    /// [`Command::Watch`] waits past.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// The people in one voice channel's call.
@@ -139,18 +164,20 @@ pub struct Roster {
 impl Roster {
     #[must_use]
     pub fn valid(&self) -> bool {
-        identifier(&self.channel_id)
-            && self.people.iter().all(|person| {
-                person.len() == 64
-                    && person
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            })
-            && self
-                .people
-                .windows(2)
-                .all(|pair| matches!(pair, [left, right] if left < right))
+        identifier(&self.channel_id) && people_valid(&self.people)
     }
+}
+
+/// Person ids: a user root key in lowercase hex each, sorted and distinct.
+fn people_valid(people: &[String]) -> bool {
+    people.iter().all(|person| {
+        person.len() == 64
+            && person
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }) && people
+        .windows(2)
+        .all(|pair| matches!(pair, [left, right] if left < right))
 }
 
 impl Request {
@@ -169,14 +196,17 @@ impl Request {
             && match &self.command {
                 Command::Join { channel_id } => identifier(channel_id),
                 Command::SelectInput { input_id } => identifier(input_id),
-                Command::SetMuted { .. } | Command::Leave | Command::Status => true,
+                Command::SetMuted { .. }
+                | Command::Leave
+                | Command::Status
+                | Command::Watch { .. } => true,
             }
     }
 
     pub fn dispatch_valid(&self) -> bool {
         self.valid()
             && match self.command {
-                Command::Status => self.intent == 0,
+                Command::Status | Command::Watch { .. } => self.intent == 0,
                 Command::Leave => self.intent > 0,
                 _ => self.intent > 0 && self.intent < u64::MAX,
             }
@@ -220,6 +250,8 @@ impl Snapshot {
             publication: None,
             publishers: Vec::new(),
             rosters: Vec::new(),
+            speaking: Vec::new(),
+            revision: 0,
         }
     }
 
@@ -241,6 +273,7 @@ impl Snapshot {
                 || (!self.muted && self.state == State::Live && self.input_id.is_some()))
             && self.input_id.as_deref().is_none_or(identifier)
             && self.rosters.iter().all(Roster::valid)
+            && people_valid(&self.speaking)
             && self
                 .rosters
                 .windows(2)

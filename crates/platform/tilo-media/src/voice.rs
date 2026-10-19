@@ -92,7 +92,25 @@ impl CaptureTimeline {
 pub struct PublicationId {
     pub namespace: String,
     pub carrier_generation: u64,
+    /// Which announcement of the namespace on this carrier: a publisher that
+    /// leaves and comes back restarts its sequence, so its return is a new
+    /// publication with fresh playout and decoder state, while every other
+    /// voice on the carrier plays on.
+    pub incarnation: u64,
 }
+
+impl PublicationId {
+    /// Carrier generation, then incarnation: what supersedes what.
+    fn epoch(&self) -> (u64, u64) {
+        (self.carrier_generation, self.incarnation)
+    }
+}
+
+/// Contiguous frames that make a voice heard: speech arrives every 20 ms,
+/// while a silent (DTX) publisher's comfort-noise updates come 400 ms apart.
+const HEARD_RUN: u32 = 3;
+/// A voice is heard while its last contiguous frame is this recent.
+const HEARD_FOR: Duration = Duration::from_millis(120);
 
 #[derive(Clone, Debug)]
 pub struct CapturedOpus {
@@ -231,9 +249,43 @@ struct Publisher {
     jitter_ms: f64,
     target_ms: u64,
     applied_target_ms: u64,
+    /// Contiguous frames up to the last one received.
+    run: u32,
 }
 
 impl Publisher {
+    /// A publisher heard for the first time, with `frame`.
+    fn first(frame: &ReceivedOpus) -> Self {
+        Self {
+            id: frame.publisher.clone(),
+            frames: BTreeMap::new(),
+            base_timestamp: frame.timestamp_48k,
+            next_sequence: frame.sequence,
+            next_timestamp: frame.timestamp_48k,
+            next_play: frame
+                .received_at
+                .checked_add(Duration::from_millis(60))
+                .unwrap_or(frame.received_at),
+            last_receive: frame.received_at,
+            last_timestamp: frame.timestamp_48k,
+            active_until: frame.expires_at,
+            jitter_ms: 0.0,
+            target_ms: 60,
+            applied_target_ms: 60,
+            run: 0,
+        }
+    }
+
+    /// Count a frame at `timestamp_48k` into the run of contiguous frames:
+    /// speech runs on, a silent publisher's comfort noise starts over.
+    fn count_run(&mut self, timestamp_48k: u64) {
+        self.run = if self.run > 0 && timestamp_48k == self.last_timestamp.saturating_add(960) {
+            self.run.saturating_add(1)
+        } else {
+            1
+        };
+    }
+
     /// Update the arrival-jitter estimate and playout target from one frame
     /// that is newer in both media time and arrival time.
     fn observe_arrival(&mut self, timestamp_48k: u64, received_at: Instant) {
@@ -338,23 +390,24 @@ impl JitterBuffer {
                 .checked_add(Duration::from_millis(publisher.target_ms))
                 .unwrap_or(frame.received_at);
         }
+        publisher.count_run(frame.timestamp_48k);
         publisher.observe_arrival(frame.timestamp_48k, frame.received_at);
         publisher.active_until = publisher.active_until.max(frame.expires_at);
         publisher.frames.insert(frame.timestamp_48k, frame);
         Ok(())
     }
 
-    /// Find or make `frame`'s publisher slot: a newer carrier generation
-    /// replaces the old slot, and a new voice takes the quietest idle slot
+    /// Find or make `frame`'s publisher slot: a newer carrier generation or
+    /// incarnation replaces the old slot, and a new voice takes the quietest idle slot
     /// when all are taken. `false` when every slot is speaking, so this
     /// voice waits for one.
     fn admit_publisher(&mut self, frame: &ReceivedOpus, now: Instant) -> Result<bool, AudioError> {
         let name = &frame.publisher.namespace;
         if let Some(existing) = self.publishers.get(name) {
-            if frame.publisher.carrier_generation < existing.id.carrier_generation {
+            if frame.publisher.epoch() < existing.id.epoch() {
                 return Err(AudioError::Revoked);
             }
-            if frame.publisher.carrier_generation > existing.id.carrier_generation {
+            if frame.publisher.epoch() > existing.id.epoch() {
                 self.publishers.remove(name);
             }
         }
@@ -375,26 +428,8 @@ impl JitterBuffer {
                 };
                 self.publishers.remove(&quiet);
             }
-            self.publishers.insert(
-                name.clone(),
-                Publisher {
-                    id: frame.publisher.clone(),
-                    frames: BTreeMap::new(),
-                    base_timestamp: frame.timestamp_48k,
-                    next_sequence: frame.sequence,
-                    next_timestamp: frame.timestamp_48k,
-                    next_play: frame
-                        .received_at
-                        .checked_add(Duration::from_millis(60))
-                        .unwrap_or(frame.received_at),
-                    last_receive: frame.received_at,
-                    last_timestamp: frame.timestamp_48k,
-                    active_until: frame.expires_at,
-                    jitter_ms: 0.0,
-                    target_ms: 60,
-                    applied_target_ms: 60,
-                },
-            );
+            self.publishers
+                .insert(name.clone(), Publisher::first(frame));
         }
         Ok(true)
     }
@@ -469,6 +504,17 @@ impl JitterBuffer {
             }
         }
         out
+    }
+    /// The publishers heard talking at `now`: frames arriving back to back
+    /// within the last [`HEARD_FOR`], not a silent publisher's comfort noise.
+    pub fn heard(&self, now: Instant) -> impl Iterator<Item = &PublicationId> {
+        self.publishers
+            .values()
+            .filter(move |publisher| {
+                publisher.run >= HEARD_RUN
+                    && now.saturating_duration_since(publisher.last_receive) < HEARD_FOR
+            })
+            .map(|publisher| &publisher.id)
     }
     /// Whether `publisher` holds one of the voices this device plays.
     pub fn contains(&self, publisher: &PublicationId) -> bool {
