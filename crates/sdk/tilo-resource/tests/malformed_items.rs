@@ -1,7 +1,7 @@
 //! One malformed item never makes its record unreadable, the same item id
 //! made on two replicas is one complete item, and a compared write never
 //! stores half an item.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, Value};
@@ -93,7 +93,7 @@ fn a_quarantined_item_survives_writes_and_is_repaired_by_a_whole_item() {
     // A whole write of the rest keeps the broken item for its repair.
     board.groups.get_mut(&Id::from_raw("ok")).unwrap().name = "Renamed".into();
     write_key(&mut doc, &ROOT, "board", &board).unwrap();
-    assert!(doc.get(&groups_map(&doc), "broken").unwrap().is_some());
+    assert!(doc.get(groups_map(&doc), "broken").unwrap().is_some());
 
     board.groups.push(
         Id::from_raw("broken"),
@@ -130,7 +130,7 @@ fn a_discarded_quarantined_item_is_deleted() {
             &Delta::nothing(),
         )
         .unwrap();
-    assert!(doc.get(&groups_map(&doc), "broken").unwrap().is_none());
+    assert!(doc.get(groups_map(&doc), "broken").unwrap().is_none());
     let read: Board = read_key(&doc, &ROOT, "board").unwrap();
     assert!(read.groups.quarantined().is_empty());
     assert_eq!(read.groups.len(), 1);

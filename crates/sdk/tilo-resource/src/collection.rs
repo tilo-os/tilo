@@ -2028,6 +2028,10 @@ fn diff_entries(
 /// [`Model::refresh`] of a collection: read anew when changed all over or
 /// edited in memory since it was read, else only the entries `delta`
 /// touched.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass over the touched entries: read, place, order and quarantine share its state"
+)]
 fn refresh_entries(
     desc: &CollectionDesc,
     table: &ModelTable,
@@ -2134,12 +2138,11 @@ fn refresh_entries(
                 match read {
                     Ok(()) => {
                         entries.release(&item_id);
-                        let at = match position {
-                            Some(position) => Some(position),
-                            None => {
-                                entries.changed();
-                                entries.count().checked_sub(1)
-                            }
+                        let at = if position.is_some() {
+                            position
+                        } else {
+                            entries.changed();
+                            entries.count().checked_sub(1)
                         };
                         if merged && let Some(at) = at {
                             entries.set_order(at, None);
