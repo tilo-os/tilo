@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{Banner, Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
+use ui::widget::{Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
 
 /// A padding-free, content-sized column: one section of a page.
 pub(crate) fn stack() -> Column {
@@ -53,7 +53,7 @@ pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
 #[cfg(feature = "installation")]
 pub(crate) fn notice(status: &str, is_error: bool) -> Option<Box<dyn Widget>> {
     (is_error && !status.is_empty())
-        .then(|| Box::new(Banner::error(status.to_string())) as Box<dyn Widget>)
+        .then(|| Box::new(ui::widget::Banner::error(status.to_string())) as Box<dyn Widget>)
 }
 
 /// The id of the control holding keyboard focus in `root`, if it has one.
