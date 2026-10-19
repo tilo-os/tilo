@@ -701,7 +701,7 @@ impl SidebarDrawer {
     pub fn tick(&mut self, theme: &Theme) -> bool {
         self.animating = self
             .flap
-            .advance(self.layout, crate::time::now(), theme.motion());
+            .advance(self.layout, crate::motion::frame_now(), theme.motion());
         self.recompute_rects();
         self.animating
     }

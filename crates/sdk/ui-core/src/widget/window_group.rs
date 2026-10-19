@@ -141,7 +141,7 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
             crate::tokens::EffectiveMotion::default(),
             crate::tokens::MotionSource::Pointer,
         );
-        self.motion.set(target, timing, crate::time::now());
+        self.motion.set(target, timing, crate::motion::frame_now());
     }
 
     fn snap(&mut self, value: T) {

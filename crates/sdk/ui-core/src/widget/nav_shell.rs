@@ -2576,7 +2576,7 @@ impl NavShell {
                 return;
             }
             let stack = &self.geometry.stack;
-            let now = crate::time::now();
+            let now = crate::motion::frame_now();
             if !inputs.push.is_moving(now) {
                 let from = f64_of_usize(stack_index(stack, inputs.pane));
                 inputs.push.snap(from);
@@ -3080,7 +3080,7 @@ impl NavShell {
     /// push stack on the drill, a layout switch's columns and the
     /// reduced-motion reveal on the cross-fade.
     fn tick(&mut self, theme: &Theme) {
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let motion = theme.motion();
         let sidebar_layout = layout_of(self.geometry.sidebar);
         let inspector_layout = inspector_layout_of(self.geometry.inspector);

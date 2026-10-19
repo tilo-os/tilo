@@ -49,7 +49,7 @@ impl WorkspaceView {
     /// Non-zero while a switch transition is in flight; the drill settles
     /// it back to 0.
     pub fn slide_target(&self) -> f32 {
-        crate::num::f32_of_f64(self.slide.get(crate::time::now()))
+        crate::num::f32_of_f64(self.slide.get(crate::motion::frame_now()))
     }
     pub fn switch(&mut self, d: WorkspaceSwitchDirection) -> bool {
         let (new_idx, direction_sign) = match d {
@@ -119,7 +119,7 @@ impl Widget for WorkspaceView {
     ) {
         // A static workspace inherits the app background and doesn't need
         // to re-paint it.
-        let offset = self.slide.get(crate::time::now());
+        let offset = self.slide.get(crate::motion::frame_now());
         if offset.abs() > f64::EPSILON {
             let t = transform.pre_translate(Vec2::new(0.0, offset));
             scene.fill(
