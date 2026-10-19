@@ -147,6 +147,7 @@ pub mod resource;
 pub mod schema;
 pub mod selection;
 pub mod surface;
+/// Private task-to-task context values; these confer no authority.
 pub mod task_messaging;
 pub mod task_step;
 
