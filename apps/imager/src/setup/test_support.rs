@@ -41,8 +41,35 @@ fn qualified_root() -> &'static Path {
         let root = std::env::var_os(ROOT_VAR).map_or_else(default_root, PathBuf::from);
         std::fs::create_dir_all(&root)
             .unwrap_or_else(|error| panic!("create test root {}: {error}", root.display()));
+        assert_qualified(&root);
         root
     })
+}
+
+/// The cache tests' precondition, checked once with the reason a run lacks it,
+/// rather than as the cache's own refusal deep inside each test.
+#[cfg(target_os = "linux")]
+fn assert_qualified(root: &Path) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(root.as_os_str().as_bytes()).expect("test root path");
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: NUL-terminated path and writable statfs storage.
+    let result = unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) };
+    assert_eq!(
+        result,
+        0,
+        "statfs {}: {}",
+        root.display(),
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: a successful statfs initialized the storage.
+    let kind = unsafe { stat.assume_init() }.f_type;
+    assert!(
+        matches!(kind as u64, 0xef53 | 0x5846_5342 | 0x9123_683e),
+        "the imager's cache tests need {} on ext4, XFS or Btrfs, not filesystem type {kind:#x}; \
+         point {ROOT_VAR} at a directory on one",
+        root.display(),
+    );
 }
 
 /// `<target>/test-fs/imager`, found from the running test binary
