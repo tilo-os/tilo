@@ -401,7 +401,7 @@ pub fn panel_border(theme: &Theme) -> Color {
     // separating a panel. Elsewhere the panel's ground, shadow and inner
     // light edge already do; a bright line on top read as a frame drawn
     // around the panel rather than its edge.
-    let alpha = if theme.high_contrast {
+    let alpha = if theme.tokens.colors.palette.high_contrast {
         PANEL_BORDER_ALPHA
     } else {
         PANEL_BORDER_QUIET_ALPHA
