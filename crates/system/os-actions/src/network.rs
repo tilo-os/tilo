@@ -427,6 +427,9 @@ pub struct WifiNetworkInfo {
     pub security: WifiSecurity,
     /// `true` when the row's IN-USE column is `*`.
     pub connected: bool,
+    /// A saved profile for it exists: this machine has joined it before and
+    /// connects without asking for its password.
+    pub known: bool,
 }
 
 /// Turn the Wi-Fi radio on or off, and say how it really stands afterwards.
@@ -589,7 +592,25 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
 ///
 /// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
-    list_wifi_networks_via("nmcli", &[])
+    let mut networks = list_wifi_networks_via("nmcli", &[])?;
+    // Which ones this machine knows: a failed read leaves them unknown,
+    // which only means a password may be asked for.
+    if let Ok(profiles) = list_saved_network_profiles() {
+        mark_known(&mut networks, &profiles);
+    }
+    Ok(networks)
+}
+
+/// Mark the networks a saved Wi-Fi profile exists for. `NetworkManager`
+/// names a profile after the network it was made for, which is how
+/// `nmcli device wifi connect` and every network panel create them.
+fn mark_known(networks: &mut [WifiNetworkInfo], profiles: &[SavedNetworkProfile]) {
+    for network in networks {
+        network.known = network.connected
+            || profiles
+                .iter()
+                .any(|profile| profile.kind == "802-11-wireless" && profile.name == network.ssid);
+    }
 }
 
 /// Scan for Wi-Fi networks: ask `NetworkManager` over D-Bus to scan with every Wi-Fi device
@@ -646,6 +667,7 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
             secure: security.is_secure(),
             security,
             connected: in_use == "*",
+            known: false,
         });
     }
     // De-duplicate SSIDs (multiple BSSIDs broadcasting the same SSID show up as separate rows):
@@ -2691,6 +2713,29 @@ mod wifi_radio_tests {
         nm.hard.set(false);
         let radios = set_wifi_radio_with(&nm, true).unwrap();
         assert!(radios.wifi_enabled && !radios.wifi_hardware_blocked);
+    }
+
+    #[test]
+    fn a_network_with_a_saved_wifi_profile_is_known() {
+        let mut networks = parse_nmcli_wifi_list("*:Home:80:WPA2\n:Cafe:55:--\n:Office:40:WPA2\n");
+        let profile = |name: &str, kind: &str| SavedNetworkProfile {
+            name: name.into(),
+            uuid: format!("{name}-uuid"),
+            kind: kind.into(),
+            autoconnect: true,
+        };
+        mark_known(
+            &mut networks,
+            &[
+                profile("Office", "802-11-wireless"),
+                profile("Cafe", "802-3-ethernet"),
+            ],
+        );
+        let known: Vec<_> = networks
+            .iter()
+            .map(|n| (n.ssid.as_str(), n.known))
+            .collect();
+        assert_eq!(known, [("Home", true), ("Cafe", false), ("Office", true)]);
     }
 
     #[test]

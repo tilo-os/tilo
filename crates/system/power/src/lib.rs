@@ -70,6 +70,9 @@ pub use policy::{MachineDuty, PowerAction, PowerPolicy, this_machine_duty};
 pub use profiles::PowerProfilesMonitor;
 #[cfg(feature = "service")]
 pub use service::PowerService;
-pub use sysfs::{battery_snapshot as sysfs_battery_snapshot, on_battery as sysfs_on_battery};
+pub use sysfs::{
+    BatteryTime, battery_snapshot as sysfs_battery_snapshot, battery_time as sysfs_battery_time,
+    on_battery as sysfs_on_battery,
+};
 #[cfg(feature = "service")]
 pub use upower::UPowerMonitor;

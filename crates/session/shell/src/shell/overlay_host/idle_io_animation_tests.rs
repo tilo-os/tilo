@@ -72,6 +72,7 @@ fn ordinary_host_update_adopts_completed_wifi_scan_without_a_paint() {
             secure: false,
             security: os_actions::WifiSecurity::Open,
             connected: false,
+            known: false,
         }])
     });
     tilo_test_env::recv("a completed scan must wake its owning host", &wake_rx);
@@ -200,14 +201,19 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
 }
 
 #[test]
-fn wifi_drill_in_waits_for_its_owned_radio_receipt_and_reenables_controls() {
+fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     use crate::shell::quick_settings::radio::fixture::Fixture;
-    use crate::shell::quick_settings::wifi::{QuickSettingsWifiPane, WifiPaneOutcome};
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
     );
-    chrome.borrow_mut().quick_settings.wifi = false;
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.quick_settings = true;
+        state.quick_settings.wifi = false;
+        state.quick_settings.radios.wifi_available = true;
+        state.quick_settings.section = Some(crate::shell::quick_settings::QsSection::Wifi);
+    }
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
         .with_qs_actions(Box::new(fixture.dispatcher));
@@ -215,22 +221,20 @@ fn wifi_drill_in_waits_for_its_owned_radio_receipt_and_reenables_controls() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-    let toggle = QuickSettingsWifiPane::action_rects(panel)
-        .into_iter()
-        .find(|(name, _)| *name == "quick_settings_wifi_toggle")
-        .unwrap()
-        .1;
-    let outcome = host.qs_wifi_pane.handle_click(
-        toggle.center(),
+    host.force_quick_settings_settled();
+    // Lay the page out where a frame would, so its targets are where a
+    // click lands.
+    let panel = host.quick_settings_rect();
+    let _ = host.qs_root.handle_click(
+        Point::new(-10.0, -10.0),
         panel,
         &mut chrome.borrow_mut().quick_settings,
-        &crate::shell::search::providers::actions::ValidatedQsActions::new(
-            host.qs_actions.as_ref(),
-        ),
     );
-    assert_eq!(outcome, WifiPaneOutcome::RequestWifi(true));
-    host.apply_qs_wifi_outcome(&chrome, outcome);
+    let target =
+        |host: &ShellOverlayHost| host.quick_settings_target("quick_settings_section_turn_on");
+    let turn_on = target(&host).expect("the section offers to turn Wi-Fi on");
+    let mut handled = false;
+    host.handle_shell_quick_settings_click(turn_on.center(), &mut handled);
     assert_eq!(
         fixture
             .entered
@@ -245,10 +249,8 @@ fn wifi_drill_in_waits_for_its_owned_radio_receipt_and_reenables_controls() {
     );
     assert!(!host.needs_animation_frame());
     assert!(
-        host.qs_wifi_pane
-            .semantic_rects(panel, &chrome.borrow().quick_settings)
-            .iter()
-            .all(|(name, _)| name != "quick_settings_wifi_toggle")
+        target(&host).is_none(),
+        "while it turns on there is nothing to press"
     );
     let doc = automerge::AutoCommit::new();
     let before_update = std::time::Instant::now();
@@ -266,12 +268,6 @@ fn wifi_drill_in_waits_for_its_owned_radio_receipt_and_reenables_controls() {
     assert!(!state.quick_settings.radio_change_pending);
     assert!(state.quick_settings.wifi);
     assert!(state.quick_settings.radios.wifi_enabled);
-    assert!(
-        host.qs_wifi_pane
-            .semantic_rects(panel, &state.quick_settings)
-            .iter()
-            .any(|(name, _)| name == "quick_settings_wifi_toggle")
-    );
     assert!(state.notifications().is_empty());
 }
 

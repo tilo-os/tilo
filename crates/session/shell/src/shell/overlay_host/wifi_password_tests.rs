@@ -1,6 +1,6 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::quick_settings::{QsLevel, WifiNetwork};
+use crate::shell::quick_settings::{QsLevel, QsSection, WifiNetwork};
 use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use ui::widget::Container;
@@ -80,7 +80,10 @@ fn host_on_wifi_pane(
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
-        st.quick_settings.nav_stack = vec![QsLevel::Root, QsLevel::Wifi];
+        st.quick_settings.nav_stack = vec![QsLevel::Root];
+        st.quick_settings.section = Some(QsSection::Wifi);
+        st.quick_settings.wifi = true;
+        st.quick_settings.radios.wifi_available = true;
         st.quick_settings.wifi_networks = vec![
             WifiNetwork {
                 ssid: "Cafe WiFi".into(),
@@ -88,6 +91,7 @@ fn host_on_wifi_pane(
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
+                known: false,
             },
             WifiNetwork {
                 ssid: "Airport Free".into(),
@@ -95,6 +99,7 @@ fn host_on_wifi_pane(
                 secure: false,
                 security: os_actions::WifiSecurity::Open,
                 connected: false,
+                known: false,
             },
         ];
     }
@@ -452,7 +457,7 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
             .filter(|node| node.role == Role::Button)
             .filter_map(|node| node.name.as_deref())
             .collect();
-        assert_eq!(names, ["Back", "Cancel", "Connect"]);
+        assert_eq!(names, ["Cancel", "Connect"]);
 
         let update = ui::accesskit_bridge::build_tree_update(
             &h,
@@ -478,9 +483,11 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
         h.begin_wifi_password("Cafe WiFi");
         let semantics = h.accessibility().expect("shell semantics");
         let target = |name: &str| {
-            find_node(&semantics, &|node| node.name.as_deref() == Some(name))
-                .and_then(|node| node.action_target.clone())
-                .expect("an operable node")
+            find_node(&semantics, &|node| {
+                node.name.as_deref() == Some(name) && node.action_target.is_some()
+            })
+            .and_then(|node| node.action_target.clone())
+            .expect("an operable node")
         };
         let (field, connect) = (target("Password"), target("Connect"));
         assert!(act(&mut h, &field, &Action::SetValue("hunter22".into())));
@@ -501,9 +508,11 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
         let (mut h, chrome, _) = host_on_wifi_pane(false);
         h.begin_wifi_password("Cafe WiFi");
         let semantics = h.accessibility().expect("shell semantics");
-        let cancel = find_node(&semantics, &|node| node.name.as_deref() == Some("Cancel"))
-            .and_then(|node| node.action_target.clone())
-            .expect("Cancel is operable");
+        let cancel = find_node(&semantics, &|node| {
+            node.name.as_deref() == Some("Cancel") && node.action_target.is_some()
+        })
+        .and_then(|node| node.action_target.clone())
+        .expect("Cancel is operable");
         h.cancel_wifi_password();
         h.begin_wifi_password("Airport Free");
         assert!(
@@ -515,9 +524,11 @@ fn wifi_password_prompt_is_published_and_operable_through_accessibility() {
             "the prompt for another network stays up"
         );
         let semantics = h.accessibility().expect("shell semantics");
-        let cancel = find_node(&semantics, &|node| node.name.as_deref() == Some("Cancel"))
-            .and_then(|node| node.action_target.clone())
-            .expect("Cancel is operable");
+        let cancel = find_node(&semantics, &|node| {
+            node.name.as_deref() == Some("Cancel") && node.action_target.is_some()
+        })
+        .and_then(|node| node.action_target.clone())
+        .expect("Cancel is operable");
         assert!(act(&mut h, &cancel, &Action::Activate));
         assert!(chrome.borrow().quick_settings.wifi_password.is_none());
     }

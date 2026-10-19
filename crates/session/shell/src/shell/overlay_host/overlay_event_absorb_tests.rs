@@ -14,7 +14,7 @@ use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 #[path = "notification_header_tests.rs"]
@@ -1805,102 +1805,59 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
-    fn compact_quick_settings_drill_ins_own_wheel_scrolling() {
-        use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
+    fn a_long_open_section_scrolls_the_compact_panel_by_wheel() {
+        use crate::shell::quick_settings::{QsSection, WifiNetwork};
 
         let (vw, vh) = (960.0, 540.0);
-        let wheel = MouseScrollDelta::LineDelta(0.0, -2.0);
-
+        let wheel = ui::synthetic_input::mouse_wheel(0.0, -4.0);
         let mut wifi = build_harness_sized(vw, vh);
         {
             let mut state = wifi.chrome.borrow_mut();
             state.overlays.quick_settings = true;
             state.quick_settings.wifi = true;
+            state.quick_settings.radios.wifi_available = true;
+            state.quick_settings.radios.wifi_enabled = true;
             state.quick_settings.wifi_networks = (0..18)
                 .map(|index| WifiNetwork {
-                    ssid: format!("Network {index}"),
+                    ssid: format!("Network {index:02}"),
                     signal: 3,
                     secure: false,
                     security: os_actions::WifiSecurity::Open,
                     connected: false,
+                    known: false,
                 })
                 .collect();
-            state.quick_settings.push_level(QsLevel::Wifi);
+            state.quick_settings.section = Some(QsSection::Wifi);
         }
         wifi.host.force_quick_settings_settled();
         settle(&mut wifi, vw, vh);
-        let wifi_center = wifi.host.quick_settings_rect().center();
-        assert!(pump(&mut wifi, &cursor_moved_at(wifi_center)));
-        assert!(wifi.host.handle_qs_drill_in_wheel(wheel, 1.0));
-        let wifi_names = wifi
-            .host
-            .quick_settings_semantic_rects()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(wifi_names.contains(&"quick_settings_wifi_network[2]".to_string()));
-        assert!(!wifi_names.contains(&"quick_settings_wifi_network[0]".to_string()));
-
-        let mut bluetooth = build_harness_sized(vw, vh);
-        {
-            let mut state = bluetooth.chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state.quick_settings.bt_devices = (0..18)
-                .map(|index| BtDevice {
-                    name: format!("Device {index}"),
-                    address: format!("02:00:00:00:00:{index:02X}"),
-                    battery: 70,
-                    connected: false,
-                })
-                .collect();
-            state.quick_settings.push_level(QsLevel::Bluetooth);
+        let names = |h: &AbsorbHarness| {
+            h.host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        };
+        let last = "quick_settings_wifi_network_Network 17".to_string();
+        assert!(
+            !names(&wifi).contains(&last),
+            "the last network starts below the compact panel"
+        );
+        let center = wifi.host.quick_settings_rect().center();
+        assert!(pump(&mut wifi, &cursor_moved_at(center)));
+        for _ in 0..6 {
+            let _ = pump(&mut wifi, &wheel);
+            settle(&mut wifi, vw, vh);
         }
-        bluetooth.host.force_quick_settings_settled();
-        settle(&mut bluetooth, vw, vh);
-        let bluetooth_center = bluetooth.host.quick_settings_rect().center();
-        assert!(pump(&mut bluetooth, &cursor_moved_at(bluetooth_center)));
-        assert!(bluetooth.host.handle_qs_drill_in_wheel(wheel, 1.0));
-        let bluetooth_names = bluetooth
-            .host
-            .quick_settings_semantic_rects()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(bluetooth_names.contains(&"quick_settings_bluetooth_device[2]".to_string()));
-        assert!(!bluetooth_names.contains(&"quick_settings_bluetooth_device[0]".to_string()));
-
-        let mut vpn = build_harness_sized(vw, vh);
-        {
-            let mut state = vpn.chrome.borrow_mut();
-            state.overlays.quick_settings = true;
-            state.quick_settings.vpns = (0..18)
-                .map(|index| os_actions::VpnConnectionInfo {
-                    name: format!("Profile {index}"),
-                    uuid: format!("profile-{index}"),
-                    active: false,
-                    kind: "wireguard".into(),
-                })
-                .collect();
-            state.quick_settings.push_level(QsLevel::Vpn);
-        }
-        vpn.host.force_quick_settings_settled();
-        settle(&mut vpn, vw, vh);
-        let vpn_center = vpn.host.quick_settings_rect().center();
-        assert!(pump(&mut vpn, &cursor_moved_at(vpn_center)));
-        assert!(vpn.host.handle_qs_drill_in_wheel(wheel, 1.0));
-        let vpn_names = vpn
-            .host
-            .quick_settings_semantic_rects()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(vpn_names.contains(&"quick_settings_vpn_profile[2]".to_string()));
-        assert!(!vpn_names.contains(&"quick_settings_vpn_profile[0]".to_string()));
+        assert!(
+            names(&wifi).contains(&last),
+            "the wheel scrolls the page to it"
+        );
     }
 
     quick_settings_power_tile_opens_the_power_menu_on_the_first_click();
     quick_settings_power_tile_tracks_its_entrance_animation();
-    compact_quick_settings_drill_ins_own_wheel_scrolling();
+    a_long_open_section_scrolls_the_compact_panel_by_wheel();
 }
 
 fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f64) {
@@ -2305,7 +2262,7 @@ fn render_notification_history_accessibility_matrix_at_1x() {
     reason = "an end-to-end test scenario that reads top to bottom"
 )]
 fn s1_review_fixtures_are_written_in_dark_and_light() {
-    use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
+    use crate::shell::quick_settings::{BtDevice, QsSection, WifiNetwork};
     use ui::offscreen::OffscreenRenderer;
 
     fn net(ssid: &str, signal: u8, secure: bool, connected: bool) -> WifiNetwork {
@@ -2319,6 +2276,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                 os_actions::WifiSecurity::Open
             },
             connected,
+            known: connected,
         }
     }
     fn vpn(name: &str, active: bool) -> os_actions::VpnConnectionInfo {
@@ -2330,17 +2288,18 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         }
     }
     type AbsorbScene = (&'static str, fn(&mut AbsorbHarness));
-    fn quick_settings_open(h: &AbsorbHarness, level: QsLevel) {
+    fn quick_settings_open(h: &AbsorbHarness, section: QsSection) {
         let mut st = h.chrome.borrow_mut();
         st.overlays.quick_settings = true;
-        st.quick_settings.push_level(level);
+        st.quick_settings.section = Some(section);
         st.bump();
     }
     let scenes: [AbsorbScene; 5] = [
-        ("qs-wifi-drillin", |h| {
+        ("qs-wifi", |h| {
             {
                 let mut st = h.chrome.borrow_mut();
                 st.quick_settings.radios.wifi_available = true;
+                st.quick_settings.wifi = true;
                 st.quick_settings.wifi_networks = vec![
                     net("Home Fibre", 4, true, true),
                     net(
@@ -2352,12 +2311,13 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                     net("Neighbour", 1, true, false),
                 ];
             }
-            quick_settings_open(h, QsLevel::Wifi);
+            quick_settings_open(h, QsSection::Wifi);
         }),
-        ("qs-bt-drillin", |h| {
+        ("qs-bt", |h| {
             {
                 let mut st = h.chrome.borrow_mut();
                 st.quick_settings.bluetooth_available = true;
+                st.quick_settings.bluetooth = true;
                 st.quick_settings.bt_devices = vec![
                     BtDevice {
                         address: "00:11:22:33:44:55".into(),
@@ -2373,7 +2333,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                     },
                 ];
             }
-            quick_settings_open(h, QsLevel::Bluetooth);
+            quick_settings_open(h, QsSection::Bluetooth);
         }),
         ("qs-vpn-long-labels", |h| {
             {
@@ -2383,7 +2343,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                     vpn("Home", false),
                 ];
             }
-            quick_settings_open(h, QsLevel::Vpn);
+            quick_settings_open(h, QsSection::Vpn);
         }),
         ("shortcut-guide", |h| {
             let mut st = h.chrome.borrow_mut();
@@ -2440,23 +2400,19 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             renderer.render_png(&scene, ground, &path);
             assert!(path.is_file(), "fixture missing: {}", path.display());
             if name.starts_with("qs-") {
-                // The first list row rests on the Control floor; the
-                // panel padding beside it is the Panel ground.
+                // A section's resting row shows the section's Control
+                // floor; the panel padding beside it is the Panel ground.
                 let panel = harness.host.quick_settings_rect();
-                let list_top = if name == "qs-wifi-drillin" {
-                    crate::shell::quick_settings::wifi::QuickSettingsWifiPane::LIST_TOP
-                } else {
-                    qs::LIST_TOP
-                };
-                let mut list = DrillInList::default();
-                list.layout_from(panel, 1, list_top);
-                let row = list.rows()[0];
+                let row = harness
+                    .host
+                    .quick_settings_target("quick_settings_section_settings")
+                    .expect("the open section's last row");
                 let rgba = renderer.render_rgba_resilient(&scene);
                 expect(
                     &rgba,
                     Point::new(row.x0 + row.width() * 0.55, row.y0 + 3.0),
                     floor,
-                    &format!("{theme_name}/{name}: a drill-in row's interior is the Control floor"),
+                    &format!("{theme_name}/{name}: a section row's interior is the Control floor"),
                 );
                 expect(
                     &rgba,
@@ -2505,7 +2461,8 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             }
             assert_eq!(st.notification_history().len(), 3);
             st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Notifications);
+            st.quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
             st.bump();
         }
         harness.host.force_quick_settings_settled();
@@ -3987,18 +3944,18 @@ fn open_radio_details_in_harness(
 
 #[test]
 fn radio_details_use_native_keyboard_pointer_and_action_routes() {
-    for (name, target, action_id, level) in [
+    for (name, target, action_id, section) in [
         (
             "Wi-Fi networks",
             "quick_settings_network_details",
             "quick-settings.network",
-            crate::shell::quick_settings::QsLevel::Wifi,
+            crate::shell::quick_settings::QsSection::Wifi,
         ),
         (
             "Bluetooth devices",
             "quick_settings_bluetooth_details",
             "quick-settings.bluetooth",
-            crate::shell::quick_settings::QsLevel::Bluetooth,
+            crate::shell::quick_settings::QsSection::Bluetooth,
         ),
     ] {
         for input in ["keyboard", "pointer", "accessibility", "semantic"] {
@@ -4016,25 +3973,28 @@ fn radio_details_use_native_keyboard_pointer_and_action_routes() {
             h.host.force_quick_settings_settled();
             settle(&mut h, 1000.0, 980.0);
             open_radio_details_in_harness(&mut h, input, name, target, action_id);
+            // The list opens in place on the root page.
             assert_eq!(
-                h.chrome.borrow().quick_settings.current_level(),
-                &level,
+                h.chrome.borrow().quick_settings.section,
+                Some(section),
                 "{input}"
             );
-            assert!(
-                actions.calls().is_empty(),
-                "details navigation must not write radio state"
-            );
-            assert!(qs_details_tap(&mut h, NamedKey::Escape));
             assert_eq!(
                 h.chrome.borrow().quick_settings.current_level(),
                 &crate::shell::quick_settings::QsLevel::Root
             );
+            assert!(
+                actions.calls().is_empty(),
+                "opening a list must not write radio state"
+            );
+            // Escape closes the section before the panel.
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert_eq!(h.chrome.borrow().quick_settings.section, None);
             assert!(h.chrome.borrow().overlays.quick_settings);
             settle(&mut h, 780.0, 920.0);
             if input == "keyboard" {
                 assert!(qs_details_tap(&mut h, NamedKey::Enter));
-                assert_eq!(h.chrome.borrow().quick_settings.current_level(), &level);
+                assert_eq!(h.chrome.borrow().quick_settings.section, Some(section));
                 assert!(qs_details_tap(&mut h, NamedKey::Escape));
             }
             assert!(qs_details_tap(&mut h, NamedKey::Escape));

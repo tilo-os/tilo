@@ -235,43 +235,60 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
         );
     }
 
-    fn wifi_drill_in_keyboard_focus_can_activate_back() {
+    fn the_wifi_chevron_opens_and_closes_its_section_by_keyboard() {
         let (mut host, chrome) = host_with_chrome();
         {
             let mut state = chrome.borrow_mut();
             state.overlays.quick_settings = true;
-            state
-                .quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+            state.quick_settings.radios.wifi_available = true;
         }
-
         let mut handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &Key::Named(NamedKey::Tab),
-            false,
-            false,
-            &mut handled,
-        ));
-        assert!(handled);
-        handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &Key::Named(NamedKey::Enter),
-            false,
-            false,
-            &mut handled,
-        ));
-        assert!(handled);
-        assert!(matches!(
-            chrome.borrow().quick_settings.current_level(),
-            crate::shell::quick_settings::QsLevel::Root
-        ));
+        let chevron_focused = |host: &ShellOverlayHost| {
+            host.qs_root
+                .accessibility_snapshot(&chrome.borrow().quick_settings)
+                .children
+                .iter()
+                .any(|node| node.state.focused && node.name.as_deref() == Some("Wi-Fi networks"))
+        };
+        for _ in 0..40 {
+            assert!(host.handle_quick_settings_keyboard(
+                &Key::Named(NamedKey::Tab),
+                false,
+                false,
+                &mut handled,
+            ));
+            if chevron_focused(&host) {
+                break;
+            }
+        }
+        assert!(chevron_focused(&host), "Tab reaches the Wi-Fi chevron");
+        for open in [true, false] {
+            handled = false;
+            assert!(host.handle_quick_settings_keyboard(
+                &Key::Named(NamedKey::Enter),
+                false,
+                false,
+                &mut handled,
+            ));
+            assert!(handled);
+            let state = chrome.borrow();
+            assert_eq!(
+                state.quick_settings.section,
+                open.then_some(crate::shell::quick_settings::QsSection::Wifi),
+                "Enter on the chevron toggles the section in place"
+            );
+            assert!(matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ));
+        }
     }
 
     workspace_rename_owns_reserved_chords_in_production_dispatch();
     quick_settings_owns_reserved_chords_but_keeps_f1_and_escape_paths();
     quick_settings_absorbs_text_keys_but_keeps_f1_help_escape_hatch();
     direct_quick_settings_open_reconciles_focus_before_the_first_draw();
-    wifi_drill_in_keyboard_focus_can_activate_back();
+    the_wifi_chevron_opens_and_closes_its_section_by_keyboard();
 }
 
 #[test]
@@ -1032,7 +1049,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             state.overlays.quick_settings = true;
             state
                 .quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+                .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
         }
 
         let mut handled = false;
@@ -1084,14 +1101,13 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
         assert!(!host.palette_visible, "Escape at the root closes search");
     }
 
-    fn escape_cancels_wifi_password_before_leaving_wifi_page() {
+    fn escape_cancels_wifi_password_then_closes_the_section_then_the_panel() {
         let (mut host, chrome) = host_with_chrome();
         {
             let mut state = chrome.borrow_mut();
             state.overlays.quick_settings = true;
-            state
-                .quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+            state.quick_settings.radios.wifi_available = true;
+            state.quick_settings.section = Some(crate::shell::quick_settings::QsSection::Wifi);
             state.quick_settings.wifi_password = Some(
                 crate::shell::quick_settings::WifiPasswordPrompt::new("Secure network"),
             );
@@ -1100,18 +1116,32 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
         let mut handled = false;
         assert!(host.handle_shell_escape_chord(&mut handled));
         assert!(handled);
-        let state = chrome.borrow();
-        assert!(state.overlays.quick_settings);
-        assert!(state.quick_settings.wifi_password.is_none());
-        assert!(matches!(
-            state.quick_settings.current_level(),
-            crate::shell::quick_settings::QsLevel::Wifi
-        ));
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert!(state.quick_settings.wifi_password.is_none());
+            assert_eq!(
+                state.quick_settings.section,
+                Some(crate::shell::quick_settings::QsSection::Wifi),
+                "the password goes first, the networks stay"
+            );
+        }
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert_eq!(
+                state.quick_settings.section, None,
+                "then the section closes"
+            );
+        }
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(!chrome.borrow().overlays.quick_settings, "then the panel");
     }
 
     escape_returns_from_quick_settings_drill_in_before_closing_popover();
     escape_leaves_resource_search_scope_before_closing_palette();
-    escape_cancels_wifi_password_before_leaving_wifi_page();
+    escape_cancels_wifi_password_then_closes_the_section_then_the_panel();
 }
 
 #[test]
@@ -1466,7 +1496,7 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
                 .push((package_id.to_string(), display_name.to_string()));
         });
         chrome.borrow_mut().overlays.quick_settings = true;
-        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+        host.apply_quick_settings_root_action(RootAction::OpenSettings(None), &chrome);
 
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");
@@ -1498,7 +1528,7 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.quick_settings = true;
-        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+        host.apply_quick_settings_root_action(RootAction::OpenSettings(None), &chrome);
 
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");

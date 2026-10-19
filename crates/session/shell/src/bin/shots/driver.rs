@@ -24,7 +24,6 @@ use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
-use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::WorkspaceTree;
 use ui::Widget;
 
@@ -1836,11 +1835,19 @@ impl ShellDriver {
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
             "qs-compact" => self.scene_qs_compact(),
             "qs-scrolled" => self.scene_qs_scrolled(),
-            "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
+            "qs-wifi" => self.scene_qs_wifi(),
+            "qs-wifi-off" => self.scene_qs_wifi_off(),
+            "qs-wifi-hardware-switch" => self.scene_qs_wifi_hardware_switch(),
+            "qs-wifi-turning-on" => self.scene_qs_wifi_turning_on(),
+            "qs-wifi-scanning" => self.scene_qs_wifi_scanning(),
+            "qs-wifi-password" => self.scene_qs_wifi_password(false),
+            "qs-wifi-password-rejected" => self.scene_qs_wifi_password(true),
             "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
-            "qs-bt-drillin" => self.scene_qs_bt_drillin(),
+            "qs-bt" => self.scene_qs_bt(),
             "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
+            "qs-battery" => self.scene_qs_battery(),
+            "qs-sound" => self.scene_qs_sound(),
             "power-menu" => self.scene_power_menu(false),
             "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
@@ -2137,11 +2144,97 @@ impl ShellDriver {
         self.set_modifiers(ModifiersState::empty());
     }
 
+    /// A laptop's Quick Settings: Wi-Fi on and in use with a few networks
+    /// in range, a pair of headphones, a battery part-way down and the
+    /// power daemon's three modes. Shots only: a live session reads all of
+    /// this from the machine.
+    pub(crate) fn seed_laptop_quick_settings(st: &mut ChromeState) {
+        use shell::shell::quick_settings::{BtDevice, PowerProfile, WifiNetwork};
+        st.overlays.quick_settings = true;
+        let qs = &mut st.quick_settings;
+        qs.brightness_available = true;
+        qs.radios.wifi_available = true;
+        qs.radios.wifi_enabled = true;
+        qs.wifi = true;
+        qs.bluetooth_available = true;
+        qs.bluetooth = true;
+        qs.power_profiles = vec![
+            PowerProfile::Saver,
+            PowerProfile::Balanced,
+            PowerProfile::Performance,
+        ];
+        qs.power_profile = PowerProfile::Balanced;
+        qs.battery = tilo_power_mgmt::BatterySnapshot {
+            present: true,
+            percent: 72,
+            state: tilo_power_mgmt::BatteryState::Discharging,
+        };
+        qs.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        let network =
+            |ssid: &str, signal: u8, secure: bool, connected: bool, known: bool| WifiNetwork {
+                ssid: ssid.into(),
+                signal,
+                secure,
+                security: if secure {
+                    os_actions::WifiSecurity::Wpa2
+                } else {
+                    os_actions::WifiSecurity::Open
+                },
+                connected,
+                known,
+            };
+        qs.wifi_networks = vec![
+            network("Kitchen", 4, true, true, true),
+            network("Studio 5G", 3, true, false, true),
+            network("Café Lindenhof", 3, true, false, false),
+            network("Library guests", 2, false, false, false),
+            network("DIRECT-7F-Printer", 1, true, false, false),
+        ];
+        qs.bt_devices = vec![
+            BtDevice {
+                name: "Headphones".into(),
+                address: "02:00:00:00:00:01".into(),
+                battery: 64,
+                connected: true,
+            },
+            BtDevice {
+                name: "Keyboard".into(),
+                address: "02:00:00:00:00:02".into(),
+                battery: 0,
+                connected: false,
+            },
+        ];
+        qs.notification_count = 3;
+        qs.clipboard_items = 6;
+        qs.sound_outputs = vec![
+            shell::shell::quick_settings::SoundOutput {
+                node: 41,
+                name: "Speakers".into(),
+                current: true,
+            },
+            shell::shell::quick_settings::SoundOutput {
+                node: 57,
+                name: "Headphones".into(),
+                current: false,
+            },
+        ];
+    }
+
     fn scene_quick_settings(&mut self) {
+        self.with_chrome(Self::seed_laptop_quick_settings);
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// The laptop's Quick Settings with `section` open in place.
+    fn scene_qs_section(
+        &mut self,
+        section: shell::shell::quick_settings::QsSection,
+        adjust: impl FnOnce(&mut ChromeState),
+    ) {
         self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.radios.wifi_available = true;
-            st.quick_settings.bluetooth_available = true;
+            Self::seed_laptop_quick_settings(st);
+            st.quick_settings.section = Some(section);
+            adjust(st);
         });
         self.fb.host_mut().force_quick_settings_settled();
     }
@@ -2171,7 +2264,7 @@ impl ShellDriver {
     /// end with the wheel: the tiles keep their size and the lower controls
     /// come into view (compare `quick-settings` at the same size).
     fn scene_qs_scrolled(&mut self) {
-        self.scene_quick_settings();
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |_| {});
         // The first paint sizes the page's scroll region, as the first
         // frame does before any pointer event reaches it.
         let _ = self.paint();
@@ -2190,21 +2283,63 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    fn scene_qs_wifi_drillin(&mut self) {
-        self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Wifi);
+    fn scene_qs_wifi(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |_| {});
+    }
+
+    fn scene_qs_wifi_off(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            st.quick_settings.wifi = false;
+            st.quick_settings.radios.wifi_enabled = false;
+            st.quick_settings.wifi_networks.clear();
         });
-        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_wifi_hardware_switch(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            st.quick_settings.wifi = false;
+            st.quick_settings.radios.wifi_enabled = false;
+            st.quick_settings.radios.wifi_hardware_blocked = true;
+            st.quick_settings.wifi_networks.clear();
+        });
+    }
+
+    fn scene_qs_wifi_turning_on(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            st.quick_settings.wifi = false;
+            st.quick_settings.radios.wifi_enabled = false;
+            st.quick_settings.wifi_networks.clear();
+            st.quick_settings.radio_change_pending = true;
+            st.quick_settings.radio_change = Some(os_actions::RadioChange::Wifi(true));
+        });
+    }
+
+    fn scene_qs_wifi_scanning(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            st.quick_settings.wifi_networks.clear();
+            st.quick_settings.wifi_scanning = true;
+        });
+    }
+
+    fn scene_qs_wifi_password(&mut self, rejected: bool) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
+            let mut prompt =
+                shell::shell::quick_settings::WifiPasswordPrompt::new("Café Lindenhof");
+            if rejected {
+                prompt.error = Some("Couldn't join. Check the password.".into());
+            }
+            st.quick_settings.wifi_password = Some(prompt);
+        });
+        self.fb
+            .host_mut()
+            .seed_wifi_password_for_tests("espresso", rejected);
     }
 
     /// Long SSIDs are normal in apartment blocks and enterprise networks;
     /// keep this deterministic scene so their text cannot regress across the
-    /// trailing signal/connection indicators.
+    /// trailing status.
     fn scene_qs_wifi_long_labels(&mut self) {
-        self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Wifi);
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Wifi, |st| {
             st.quick_settings.wifi_networks = vec![
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Conference-room-very-long-5GHz-network-name".into(),
@@ -2212,6 +2347,7 @@ impl ShellDriver {
                     secure: true,
                     security: os_actions::WifiSecurity::Wpa2,
                     connected: true,
+                    known: true,
                 },
                 shell::shell::quick_settings::WifiNetwork {
                     ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
@@ -2219,18 +2355,14 @@ impl ShellDriver {
                     secure: false,
                     security: os_actions::WifiSecurity::Open,
                     connected: false,
+                    known: false,
                 },
             ];
         });
-        self.fb.host_mut().force_quick_settings_settled();
     }
 
-    fn scene_qs_bt_drillin(&mut self) {
-        self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Bluetooth);
-        });
-        self.fb.host_mut().force_quick_settings_settled();
+    fn scene_qs_bt(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Bluetooth, |_| {});
     }
 
     /// Device names from `BlueZ` are user-controlled. Keep a deterministic
@@ -2238,9 +2370,7 @@ impl ShellDriver {
     /// reserved trailing region instead of becoming an accidental text
     /// overlay at a compact panel width.
     fn scene_qs_bt_long_labels(&mut self) {
-        self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Bluetooth);
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Bluetooth, |st| {
             st.quick_settings.bt_devices = vec![
                 shell::shell::quick_settings::BtDevice {
                     name: "Studio-headphones-with-a-very-long-pairing-name".into(),
@@ -2256,17 +2386,14 @@ impl ShellDriver {
                 },
             ];
         });
-        self.fb.host_mut().force_quick_settings_settled();
     }
 
     /// VPN connection names are also supplied by `NetworkManager`. Exercise
     /// two rows with distinct active state, an intentionally long label and
-    /// the trailing toggle region in the same render contract as Wi-Fi and
+    /// the trailing switch in the same render contract as Wi-Fi and
     /// Bluetooth.
     fn scene_qs_vpn_long_labels(&mut self) {
-        self.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.push_level(QsLevel::Vpn);
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Vpn, |st| {
             st.quick_settings.vpns = vec![
                 os_actions::VpnConnectionInfo {
                     name: "Engineering production WireGuard tunnel Frankfurt".into(),
@@ -2282,7 +2409,16 @@ impl ShellDriver {
                 },
             ];
         });
-        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_sound(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Sound, |_| {});
+    }
+
+    fn scene_qs_battery(&mut self) {
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Battery, |st| {
+            st.quick_settings.awake_holders = vec!["Videos".into()];
+        });
     }
 
     fn scene_power_menu(&mut self, select_shutdown: bool) {
@@ -3286,11 +3422,19 @@ impl ShellDriver {
         "qs-hardware-wired",
         "qs-compact",
         "qs-scrolled",
-        "qs-wifi-drillin",
+        "qs-wifi",
+        "qs-wifi-off",
+        "qs-wifi-hardware-switch",
+        "qs-wifi-turning-on",
+        "qs-wifi-scanning",
+        "qs-wifi-password",
+        "qs-wifi-password-rejected",
         "qs-wifi-long-labels",
-        "qs-bt-drillin",
+        "qs-bt",
         "qs-bt-long-labels",
         "qs-vpn-long-labels",
+        "qs-battery",
+        "qs-sound",
         "power-menu",
         "power-menu-keyboard",
         "ws-settings-general",

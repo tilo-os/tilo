@@ -45,6 +45,9 @@ pub struct FastReading {
     pub wired: Option<qs::WiredInfo>,
     /// The same reading, from the same parser, as the top bar's battery.
     pub battery: BatterySnapshot,
+    /// How long the battery has left to run or to charge, when the rate is
+    /// known.
+    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
     /// One `nmcli` radio snapshot; Wi-Fi on/off is derived from it.
     pub radios: Option<qs::RadioState>,
     pub privacy: qs::PrivacyStatus,
@@ -87,6 +90,7 @@ impl FastReading {
             power_profiles: None,
             wired: None,
             battery: BatterySnapshot::absent(),
+            battery_time: None,
             radios: None,
             privacy: qs::PrivacyStatus::default(),
             vpns: None,
@@ -212,6 +216,7 @@ pub(crate) struct ReadFns {
     pub(crate) power_profiles: fn() -> Option<Vec<qs::PowerProfile>>,
     pub(crate) wired: fn() -> Option<qs::WiredInfo>,
     pub(crate) battery: fn() -> BatterySnapshot,
+    pub(crate) battery_time: fn() -> Option<tilo_power_mgmt::BatteryTime>,
     pub(crate) radios: fn() -> Option<qs::RadioState>,
     pub(crate) privacy: fn() -> qs::PrivacyStatus,
     pub(crate) vpns: fn() -> Option<Vec<qs::VpnConnectionInfo>>,
@@ -228,6 +233,7 @@ impl ReadFns {
         power_profiles: os_power_profiles,
         wired: os_wired,
         battery: tilo_power_mgmt::sysfs_battery_snapshot,
+        battery_time: tilo_power_mgmt::sysfs_battery_time,
         radios: os_radios,
         privacy: qs::get_privacy_status,
         vpns: os_vpns,
@@ -248,6 +254,7 @@ impl ReadFns {
             power_profiles: (self.power_profiles)(),
             wired: (self.wired)(),
             battery: (self.battery)(),
+            battery_time: (self.battery_time)(),
             radios: (self.radios)(),
             privacy: (self.privacy)(),
             vpns: (self.vpns)(),
@@ -1131,6 +1138,7 @@ mod tests {
                 hit(8);
                 BatterySnapshot::absent()
             },
+            battery_time: || None,
             radios: || {
                 hit(9);
                 Some(qs::RadioState {

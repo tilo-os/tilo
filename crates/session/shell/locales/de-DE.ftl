@@ -263,19 +263,13 @@ devices-media-list = Medienziele
 # Schnelleinstellungen
 qs-title = Schnelleinstellungen
 qs-a11y-description = Häufig verwendete Systemsteuerungen
-qs-back = Zurück
 qs-on = An
 qs-off = Aus
 qs-connected = Verbunden
-qs-disconnected = Getrennt
 qs-connecting = Wird verbunden …
 qs-not-connected = Nicht verbunden
 qs-tile-settings = Einstellungen
 qs-tile-settings-description = Geräteeinstellungen öffnen
-qs-tile-privacy = Datenschutz
-qs-tile-privacy-description = App-Berechtigungen und erzwungene Zugriffe für diesen Arbeitsbereich
-qs-tile-history = Verlauf
-qs-tile-history-description = Benachrichtigungsverlauf
 qs-tile-power = Ein/Aus
 qs-tile-power-description = Sperren, abmelden, neu starten oder herunterfahren
 qs-volume = Lautstärke
@@ -287,7 +281,6 @@ qs-wired-network = Kabelnetzwerk
 qs-cable-unplugged = Kabel nicht angeschlossen
 qs-bluetooth = Bluetooth
 qs-vpn = VPN
-qs-vpn-no-profiles = Keine Profile
 qs-night-light = Nachtlicht
 qs-airplane-mode = Flugmodus
 qs-mobile-data = Mobile Daten
@@ -313,11 +306,7 @@ qs-clipboard-a11y-description = Privater Verlauf der Zwischenablage
 qs-power-saver = Energiesparen
 qs-power-balanced = Ausgewogen
 qs-power-performance = Leistung
-qs-power-profile-a11y = Energieprofil ändern
-qs-power-battery = { $percent } % Akku
 qs-power-ac = Netzbetrieb
-qs-power-kept-awake-by-app = { $power } · { $app } verhindert den Ruhezustand
-qs-power-kept-awake-by-apps = { $power } · { $count } Apps verhindern den Ruhezustand
 
 # Schnelleinstellungen: Steuerungen bearbeiten
 qs-edit-controls = Steuerungen bearbeiten
@@ -341,39 +330,59 @@ qs-wifi-off = WLAN ist aus
 qs-wifi-scanning = Netzwerke werden gesucht …
 qs-wifi-scan-failed = Netzwerksuche fehlgeschlagen
 qs-wifi-none = Keine Netzwerke gefunden
-qs-wifi-choose-a11y = Wähle ein Netzwerk, aktualisiere die Suche oder verwalte WLAN und Hotspot
-qs-wifi-rescan-a11y = Nach WLAN-Netzwerken suchen
 qs-wifi-secured = Gesichert
 qs-wifi-open = Offen
 qs-wifi-turn-on = WLAN einschalten
-qs-wifi-turn-off = WLAN ausschalten
-qs-wifi-hotspot = Hotspot
-qs-wifi-hotspot-a11y = WLAN-Hotspot
-qs-wifi-hotspot-sharing = Diese Verbindung wird geteilt
-qs-wifi-hotspot-turn-on = WLAN-Hotspot einschalten
-qs-wifi-hotspot-turn-off = WLAN-Hotspot ausschalten
 qs-turning-on = Wird eingeschaltet …
 qs-turning-off = Wird ausgeschaltet …
 qs-wifi-problem-hardware-switch = Mit dem Hardwareschalter aus
 qs-wifi-problem-stayed-off = Ließ sich nicht einschalten
 qs-wifi-problem-failed = WLAN ließ sich nicht ändern
+qs-power-mode = Energiemodus
+qs-power = Energiemodus
+qs-lock-description = Bildschirm sperren; Apps laufen weiter
+qs-notifications = Benachrichtigungen
+qs-notifications-none = Keine
+qs-notifications-count = { $count }
+qs-battery = Akku
+qs-battery-charging = Wird geladen
+qs-battery-full = Voll geladen
+qs-battery-not-charging = Angeschlossen, lädt nicht
+qs-battery-on-battery = Im Akkubetrieb
+qs-battery-time-left = { $hours ->
+    [0] Noch { $minutes } min
+   *[other] Noch { $hours } h { $minutes } min
+}
+qs-battery-time-to-full = { $hours ->
+    [0] Voll in { $minutes } min
+   *[other] Voll in { $hours } h { $minutes } min
+}
+qs-battery-settings = Akku-Einstellungen
+qs-power-settings = Energie-Einstellungen
+qs-awake-app = { $app } hält den Bildschirm an
+qs-awake-apps = { $count } Apps halten den Bildschirm an
+qs-wifi-settings = WLAN-Einstellungen
+qs-wifi-known = Bekannt
+qs-wifi-password-for = Gib das Passwort des Netzwerks ein
+qs-bluetooth-off = Bluetooth ist aus
+qs-bluetooth-turn-on = Bluetooth einschalten
+qs-bluetooth-pair = Neues Gerät koppeln
+qs-bluetooth-paired = Gekoppelt
+qs-bluetooth-use-elsewhere = Auf einem anderen Gerät nutzen
+qs-vpn-settings = VPN-Einstellungen
+qs-vpn-details = VPN-Profile
+qs-sound-output = Tonausgabe
+qs-sound-settings = Ton-Einstellungen
 
 # Schnelleinstellungen: Bluetooth
 qs-bluetooth-empty = Keine Geräte gefunden
-qs-bluetooth-none-a11y = Keine gekoppelten Bluetooth-Geräte gefunden
-qs-bluetooth-choose-a11y = Wähle ein gekoppeltes Bluetooth-Gerät
 qs-bluetooth-device-connected-a11y = Verbunden; Geräteaktionen öffnen
 qs-bluetooth-device-paired-a11y = Gekoppelt; zum Verbinden aktivieren
 
 # Schnelleinstellungen: VPN
 qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
-qs-vpn-none-a11y = Keine VPN-Profile eingerichtet
-qs-vpn-choose-a11y = Ein eingerichtetes VPN-Profil verbinden oder trennen
-qs-vpn-connected-a11y = VPN verbunden
-qs-vpn-disconnected-a11y = VPN getrennt
 
 # Fehler der Schnelleinstellungen als Benachrichtigungen
-qs-action-failed = „{ $action }“ fehlgeschlagen
 qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
 qs-bluetooth-connect-failed = { $device } konnte nicht verbunden werden
 qs-bluetooth-disconnect-failed = { $device } konnte nicht getrennt werden

@@ -51,6 +51,18 @@ impl crate::shell::quick_settings::actions::QsActions for Recorder {
         self.push(format!("airplane={enabled}"));
         Ok(())
     }
+    fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
+        self.push(format!("vpn={name}:{enabled}"));
+        Ok(())
+    }
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.push(format!("bluetooth-connect={address}"));
+        Ok(())
+    }
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.push(format!("bluetooth-disconnect={address}"));
+        Ok(())
+    }
 }
 
 fn bridge_at(level: f32, muted: bool) -> StatusBridge {

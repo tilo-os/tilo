@@ -260,19 +260,13 @@ devices-media-list = Media destinations
 # Quick Settings
 qs-title = Quick Settings
 qs-a11y-description = Frequently used system controls
-qs-back = Back
 qs-on = On
 qs-off = Off
 qs-connected = Connected
-qs-disconnected = Disconnected
 qs-connecting = Connecting…
 qs-not-connected = Not connected
 qs-tile-settings = Settings
 qs-tile-settings-description = Open device settings
-qs-tile-privacy = Privacy
-qs-tile-privacy-description = App grants and enforced access for this workspace
-qs-tile-history = History
-qs-tile-history-description = Notification history
 qs-tile-power = Power
 qs-tile-power-description = Lock, log out, restart or shut down
 qs-volume = Volume
@@ -284,7 +278,6 @@ qs-wired-network = Wired network
 qs-cable-unplugged = Cable unplugged
 qs-bluetooth = Bluetooth
 qs-vpn = VPN
-qs-vpn-no-profiles = No profiles
 qs-night-light = Night Light
 qs-airplane-mode = Airplane mode
 qs-mobile-data = Mobile data
@@ -310,11 +303,7 @@ qs-clipboard-a11y-description = Private clipboard history
 qs-power-saver = Power Saver
 qs-power-balanced = Balanced
 qs-power-performance = Performance
-qs-power-profile-a11y = Change power profile
-qs-power-battery = { $percent }% battery
 qs-power-ac = AC power
-qs-power-kept-awake-by-app = { $power } · { $app } is preventing sleep
-qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
 
 # Quick Settings: editing the control grid
 qs-edit-controls = Edit controls
@@ -338,39 +327,59 @@ qs-wifi-off = Wi-Fi is off
 qs-wifi-scanning = Scanning for networks…
 qs-wifi-scan-failed = Couldn't scan for networks
 qs-wifi-none = No networks found
-qs-wifi-choose-a11y = Choose a network, refresh the scan, or manage the Wi-Fi radio and hotspot
-qs-wifi-rescan-a11y = Scan for Wi-Fi networks
 qs-wifi-secured = Secured
 qs-wifi-open = Open
 qs-wifi-turn-on = Turn on Wi-Fi
-qs-wifi-turn-off = Turn off Wi-Fi
-qs-wifi-hotspot = Hotspot
-qs-wifi-hotspot-a11y = Wi-Fi hotspot
-qs-wifi-hotspot-sharing = Sharing this connection
-qs-wifi-hotspot-turn-on = Turn on Wi-Fi hotspot
-qs-wifi-hotspot-turn-off = Turn off Wi-Fi hotspot
 qs-turning-on = Turning on…
 qs-turning-off = Turning off…
 qs-wifi-problem-hardware-switch = Off with the hardware switch
 qs-wifi-problem-stayed-off = Couldn't turn on
 qs-wifi-problem-failed = Couldn't change Wi-Fi
+qs-power-mode = Power mode
+qs-power = Power mode
+qs-lock-description = Lock the screen; apps keep running
+qs-notifications = Notifications
+qs-notifications-none = None
+qs-notifications-count = { $count }
+qs-battery = Battery
+qs-battery-charging = Charging
+qs-battery-full = Fully charged
+qs-battery-not-charging = Plugged in, not charging
+qs-battery-on-battery = On battery
+qs-battery-time-left = { $hours ->
+    [0] { $minutes } min left
+   *[other] { $hours } h { $minutes } min left
+}
+qs-battery-time-to-full = { $hours ->
+    [0] Full in { $minutes } min
+   *[other] Full in { $hours } h { $minutes } min
+}
+qs-battery-settings = Battery settings
+qs-power-settings = Power settings
+qs-awake-app = { $app } keeps the screen on
+qs-awake-apps = { $count } apps keep the screen on
+qs-wifi-settings = Wi-Fi settings
+qs-wifi-known = Known
+qs-wifi-password-for = Enter the network's password to join
+qs-bluetooth-off = Bluetooth is off
+qs-bluetooth-turn-on = Turn on Bluetooth
+qs-bluetooth-pair = Pair a new device
+qs-bluetooth-paired = Paired
+qs-bluetooth-use-elsewhere = Use on another device
+qs-vpn-settings = VPN settings
+qs-vpn-details = VPN profiles
+qs-sound-output = Sound output
+qs-sound-settings = Sound settings
 
 # Quick Settings: Bluetooth
 qs-bluetooth-empty = No devices found
-qs-bluetooth-none-a11y = No paired Bluetooth devices found
-qs-bluetooth-choose-a11y = Choose a paired Bluetooth device
 qs-bluetooth-device-connected-a11y = Connected; open device actions
 qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
 qs-vpn-empty = No VPN profiles. Add one in Settings.
-qs-vpn-none-a11y = No VPN profiles configured
-qs-vpn-choose-a11y = Connect or disconnect a configured VPN profile
-qs-vpn-connected-a11y = VPN connected
-qs-vpn-disconnected-a11y = VPN disconnected
 
 # Quick Settings failures, as notifications
-qs-action-failed = { $action } failed
 qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
 qs-bluetooth-connect-failed = Could not connect { $device }
 qs-bluetooth-disconnect-failed = Could not disconnect { $device }

@@ -502,10 +502,9 @@ pub enum MotionCue {
     OpenQuickSettings,
     /// Quick Settings closes.
     CloseQuickSettings,
-    /// A Quick Settings submenu opens, as a click on its tile opens it.
-    QuickSettingsLevel(QsLevel),
-    /// Back out of the Quick Settings submenu.
-    QuickSettingsBack,
+    /// A Quick Settings section opens in place (or, with `None`, the open
+    /// one closes), as a press on a tile's chevron does.
+    QuickSettingsSection(Option<shell::shell::quick_settings::QsSection>),
     /// Click at this point.
     ClickAt(Point),
 }
@@ -661,19 +660,14 @@ fn apply_motion_frames<S: SnapshotSink>(driver: &mut ShellDriver, action: &Actio
 #[cfg(feature = "test-support")]
 fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
     match cue {
-        MotionCue::OpenQuickSettings => driver.with_chrome(|st| {
-            st.overlays.quick_settings = true;
-            st.quick_settings.radios.wifi_available = true;
-            st.quick_settings.bluetooth_available = true;
-        }),
+        MotionCue::OpenQuickSettings => driver.with_chrome(ShellDriver::seed_laptop_quick_settings),
         MotionCue::CloseQuickSettings => {
             driver.with_chrome(|st| st.overlays.quick_settings = false)
         }
-        MotionCue::QuickSettingsLevel(level) => {
-            let level = level.clone();
-            driver.with_chrome(|st| st.quick_settings.push_level(level));
+        MotionCue::QuickSettingsSection(section) => {
+            let section = *section;
+            driver.with_chrome(|st| st.quick_settings.section = section);
         }
-        MotionCue::QuickSettingsBack => driver.with_chrome(|st| st.quick_settings.pop_level()),
         MotionCue::ClickAt(point) => driver.click_at(*point),
     }
 }
@@ -1653,9 +1647,12 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
         Action::SeedWifiPrompt(preset) => {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
-                use shell::shell::quick_settings::{QsLevel, WifiNetwork, WifiPasswordPrompt};
+                use shell::shell::quick_settings::{
+                    QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt,
+                };
                 st.overlays.quick_settings = true;
-                st.quick_settings.nav_stack = vec![QsLevel::Root, QsLevel::Wifi];
+                st.quick_settings.nav_stack = vec![QsLevel::Root];
+                st.quick_settings.section = Some(QsSection::Wifi);
                 st.quick_settings.wifi_networks = vec![
                     WifiNetwork {
                         ssid: "Cafe WiFi".into(),
@@ -1663,6 +1660,7 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                         secure: true,
                         security: os_actions::WifiSecurity::Wpa2,
                         connected: false,
+                        known: false,
                     },
                     WifiNetwork {
                         ssid: "Airport Free".into(),
@@ -1670,6 +1668,7 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                         secure: false,
                         security: os_actions::WifiSecurity::Open,
                         connected: false,
+                        known: false,
                     },
                 ];
                 let mut p = WifiPasswordPrompt::new("Cafe WiFi");
@@ -1867,11 +1866,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     drop(guard);
     let qs_level = match st.quick_settings.current_level() {
         QsLevel::Root => "root",
-        QsLevel::Wifi => "wifi",
-        QsLevel::Bluetooth => "bluetooth",
-        QsLevel::WifiDetails(_) => "wifi-details",
         QsLevel::BluetoothDetails(_) => "bluetooth-details",
-        QsLevel::Vpn => "vpn",
         QsLevel::Notifications => "notifications",
         QsLevel::Clipboard => "clipboard",
         QsLevel::Devices => "devices",
@@ -1918,6 +1913,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "room_activity_compared": host.room_activity().has_comparison(),
         "room_activity_focus": host.room_activity().focused_control_label().unwrap_or_default(),
         "qs_level": qs_level,
+        "qs_section": format!("{:?}", st.quick_settings.section),
         "ws_settings_tab": ws_tab,
         "palette_visible": palette_visible,
         "palette_query": palette_query,
@@ -2188,12 +2184,13 @@ fn desk_widgets_scenario() -> Scenario {
     }
 }
 
-/// Quick Settings appearing from the tray, drilling into Wi-Fi and back,
-/// and leaving: frame by frame at 90 Hz on the toolkit's clock.
+/// Quick Settings appearing from the tray, opening Wi-Fi's networks in place
+/// and closing them, and leaving: frame by frame at 90 Hz on the toolkit's
+/// clock.
 fn motion_quick_settings_scenario() -> Scenario {
     Scenario {
         name: "motion_quick_settings",
-        description: "Quick Settings appears from the tray, drills into Wi-Fi and back, and leaves, at 90 Hz (needs --features test-support).",
+        description: "Quick Settings appears from the tray, opens Wi-Fi's networks in place and closes them, and leaves, at 90 Hz (needs --features test-support).",
         actions: vec![
             Action::MotionFrames {
                 prefix: "qs-open",
@@ -2202,14 +2199,16 @@ fn motion_quick_settings_scenario() -> Scenario {
                 every_ms: 11,
             },
             Action::MotionFrames {
-                prefix: "qs-drill",
-                cue: MotionCue::QuickSettingsLevel(QsLevel::Wifi),
-                frames: 26,
+                prefix: "qs-expand",
+                cue: MotionCue::QuickSettingsSection(Some(
+                    shell::shell::quick_settings::QsSection::Wifi,
+                )),
+                frames: 30,
                 every_ms: 11,
             },
             Action::MotionFrames {
-                prefix: "qs-back",
-                cue: MotionCue::QuickSettingsBack,
+                prefix: "qs-collapse",
+                cue: MotionCue::QuickSettingsSection(None),
                 frames: 26,
                 every_ms: 11,
             },

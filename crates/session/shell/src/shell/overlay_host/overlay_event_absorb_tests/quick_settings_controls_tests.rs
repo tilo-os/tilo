@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::shell::overlay_host::qs_device_state_tests::Recorder;
-use crate::shell::quick_settings::QsLevel;
+use crate::shell::quick_settings::{QsLevel, QsSection};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 
 type Launches = Rc<RefCell<Vec<(String, String)>>>;
@@ -32,6 +32,7 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
                 QuickSettingsControl::RotationLock,
                 QuickSettingsControl::AirplaneMode,
                 QuickSettingsControl::DoNotDisturb,
+                QuickSettingsControl::PowerMode,
             ],
         });
     let launches: Launches = Rc::default();
@@ -53,6 +54,15 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
         qs.bluetooth_available = true;
         qs.bluetooth = false;
         qs.rotation_available = true;
+        qs.power_profiles = vec![
+            crate::shell::quick_settings::PowerProfile::Saver,
+            crate::shell::quick_settings::PowerProfile::Balanced,
+        ];
+        qs.battery = tilo_power_mgmt::BatterySnapshot {
+            present: true,
+            percent: 50,
+            state: tilo_power_mgmt::BatteryState::Discharging,
+        };
         qs.vpns.push(os_actions::VpnConnectionInfo {
             name: "Office".into(),
             uuid: "office-vpn".into(),
@@ -123,11 +133,13 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
             assert!(!st.overlays.quick_settings, "and gets out of its way");
             assert!(!st.overlays.ws_settings);
         }
-        "quick_settings_privacy" => {
-            assert!(st.overlays.ws_settings);
-            assert_eq!(st.ws_settings_tab, WsTab::Permissions);
+        "quick_settings_lock" => {
+            assert!(!st.overlays.quick_settings, "the panel gets out of the way");
+            drop(st);
+            assert!(h.chrome.borrow_mut().take_session_lock_request());
+            assert!(!h.host.layers.power_menu.is_open());
         }
-        "quick_settings_history" => {
+        "quick_settings_notifications" => {
             assert_eq!(st.quick_settings.current_level(), &QsLevel::Notifications);
         }
         "quick_settings_power" => {
@@ -144,19 +156,34 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
         "quick_settings_volume" => assert!(wrote(actions, "volume="), "{:?}", actions.calls()),
         "quick_settings_network" => assert!(wrote(actions, "wifi=false"), "{:?}", actions.calls()),
         "quick_settings_network_details" => {
+            assert_eq!(st.quick_settings.section, Some(QsSection::Wifi));
             drop(st);
-            assert_eq!(level(h), QsLevel::Wifi);
-            assert!(actions.calls().is_empty(), "opening details writes nothing");
+            assert_eq!(level(h), QsLevel::Root, "it opens in place");
+            assert!(actions.calls().is_empty(), "opening a list writes nothing");
         }
         "quick_settings_bluetooth" => {
             assert!(wrote(actions, "bluetooth=true"), "{:?}", actions.calls());
         }
         "quick_settings_bluetooth_details" => {
+            assert_eq!(st.quick_settings.section, Some(QsSection::Bluetooth));
             drop(st);
-            assert_eq!(level(h), QsLevel::Bluetooth);
-            assert!(actions.calls().is_empty(), "opening details writes nothing");
+            assert_eq!(level(h), QsLevel::Root, "it opens in place");
+            assert!(actions.calls().is_empty(), "opening a list writes nothing");
         }
-        "quick_settings_vpn" => assert_eq!(st.quick_settings.current_level(), &QsLevel::Vpn),
+        "quick_settings_vpn" => {
+            assert!(wrote(actions, "vpn=Office:true"), "{:?}", actions.calls());
+        }
+        "quick_settings_vpn_details" => {
+            assert_eq!(st.quick_settings.section, Some(QsSection::Vpn));
+            assert!(actions.calls().is_empty(), "opening a list writes nothing");
+        }
+        "quick_settings_battery" => {
+            assert_eq!(st.quick_settings.section, Some(QsSection::Battery));
+            assert!(
+                actions.calls().is_empty(),
+                "opening a section writes nothing"
+            );
+        }
         "quick_settings_airplane_mode" => {
             assert!(wrote(actions, "airplane=true"), "{:?}", actions.calls());
         }
@@ -181,17 +208,17 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
         "quick_settings_clipboard" => {
             assert_eq!(st.quick_settings.current_level(), &QsLevel::Clipboard);
         }
-        "quick_settings_power_profile" => {
-            assert!(wrote(actions, "power="), "{:?}", actions.calls());
+        "quick_settings_power_mode" => {
+            assert!(wrote(actions, "power=power-saver"), "{:?}", actions.calls());
         }
         other => panic!("no expectation for {other}"),
     }
 }
 
-const CONTROLS: [&str; 19] = [
+const CONTROLS: [&str; 21] = [
     "quick_settings_settings",
-    "quick_settings_privacy",
-    "quick_settings_history",
+    "quick_settings_lock",
+    "quick_settings_notifications",
     "quick_settings_power",
     "quick_settings_edit",
     "quick_settings_brightness",
@@ -201,13 +228,15 @@ const CONTROLS: [&str; 19] = [
     "quick_settings_bluetooth",
     "quick_settings_bluetooth_details",
     "quick_settings_vpn",
+    "quick_settings_vpn_details",
     "quick_settings_airplane_mode",
     "quick_settings_night_light",
     "quick_settings_rotation_lock",
     "quick_settings_do_not_disturb",
+    "quick_settings_power_mode",
+    "quick_settings_battery",
     "quick_settings_devices",
     "quick_settings_clipboard",
-    "quick_settings_power_profile",
 ];
 
 #[test]
@@ -281,11 +310,13 @@ fn quick_settings_keeps_natural_tiles_and_scrolls_in_a_640_by_400_window() {
         "the footer starts out of view"
     );
     assert!(
-        target(&h, "quick_settings_power_profile").is_none(),
-        "the last row starts out of view"
+        target(&h, "quick_settings_battery").is_none(),
+        "the rows start out of view"
     );
 
-    let profile = reveal(&mut h, "quick_settings_power_profile", vw, vh);
+    let profile = reveal(&mut h, "quick_settings_power_mode", vw, vh);
+    let _ = reveal(&mut h, "quick_settings_battery", vw, vh);
+    let profile = target(&h, "quick_settings_power_mode").unwrap_or(profile);
     assert!(h.host.qs_root.scroll_offset() > 0.0);
     assert!(
         target(&h, "quick_settings_brightness").is_none(),
