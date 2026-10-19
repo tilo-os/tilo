@@ -4083,7 +4083,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             .and_then(|opening| opening.0.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
+        let room_sync = room_sync_json(&chrome.tree());
         serde_json::json!({
+            // Where each workspace's room stands with its host, what its
+            // apps are told (`ui::room_sync`), and which apps it lets write.
+            "room_sync": room_sync,
             "seat_focus": self.seat.map(State::seat_focus_json),
             "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {
@@ -4267,6 +4271,29 @@ impl ControlState for FrameBuilderControlState<'_> {
             "fullscreen": chrome.is_fullscreen(),
         })
     }
+}
+
+/// Each workspace's room for `state_dump`: where it stands with its host
+/// ([`crate::shell::room_sync`], `null` for a room with no host), the apps
+/// its grants make authors, and how many grants it holds, as this device
+/// last received them.
+fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
+    let now = tilo_clock::unix_now();
+    tree.desktop
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            serde_json::json!({
+                "workspace": workspace.name,
+                "room": workspace.room.to_string(),
+                "state": crate::shell::room_sync::state(
+                    crate::shell::network::room_topic_id(workspace.room),
+                ),
+                "app_authors": workspace.launch_grants(now).authors,
+                "grants": workspace.policy.grants.len(),
+            })
+        })
+        .collect()
 }
 
 /// The command palette's live state, for `state_dump` — which row Enter
