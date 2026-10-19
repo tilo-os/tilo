@@ -2994,6 +2994,11 @@ impl TabBar {
 pub const TAB_BAR_HEIGHT: f64 = 44.0;
 /// 44 – 2×6 = 32 px pill height and pointer-sized + affordance.
 pub const TAB_PILL_INSET_Y: f64 = 6.0;
+/// Action targets of the window's own controls (History, maximize/restore,
+/// close), as assistive technology and automation address them.
+pub const WINDOW_HISTORY_TARGET: &str = "window-history";
+pub const WINDOW_MAXIMIZE_TARGET: &str = "window-maximize";
+pub const WINDOW_CLOSE_TARGET: &str = "window-close";
 /// Where a window bar's row starts: the leading glyph then sits as far from
 /// the window's leading edge as the close glyph does from its trailing edge.
 const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
@@ -3842,6 +3847,41 @@ impl Widget for TabBar {
                     }),
             );
         }
+        // The window's own controls, acting on the active tab.
+        if self.window_controls {
+            let button = |role: Role, name: String, target: &str| {
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_action_target(target)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    })
+            };
+            if let Some(control) = self.history.get(&self.active_id) {
+                let mut history = button(
+                    Role::ToggleButton,
+                    crate::i18n::I18nManager::lookup_plain("standalone-history-title"),
+                    WINDOW_HISTORY_TARGET,
+                );
+                history.state.checked = Some(control.is_open());
+                tab_children.push(history);
+            }
+            tab_children.push(button(
+                Role::Button,
+                crate::i18n::I18nManager::lookup_plain(if self.maximized {
+                    "host-window-restore"
+                } else {
+                    "host-window-maximize"
+                }),
+                WINDOW_MAXIMIZE_TARGET,
+            ));
+            tab_children.push(button(
+                Role::Button,
+                crate::i18n::I18nManager::lookup_plain("host-window-close"),
+                WINDOW_CLOSE_TARGET,
+            ));
+        }
         node = node.with_children(tab_children);
         Some(node)
     }
@@ -3862,6 +3902,18 @@ impl Widget for TabBar {
             }
             self.pending_new_tab = Some(());
             return true;
+        }
+        if self.window_controls {
+            let active = self.active_id;
+            match target {
+                WINDOW_CLOSE_TARGET => return self.start_closing(active),
+                WINDOW_MAXIMIZE_TARGET => {
+                    self.pending_max = Some(active);
+                    return true;
+                }
+                WINDOW_HISTORY_TARGET => return self.press_history(active),
+                _ => {}
+            }
         }
         if let Some(id) = target
             .strip_prefix("tab-close:")

@@ -389,65 +389,6 @@ pub(crate) struct PillPaint<'a> {
     pub centred: bool,
 }
 
-/// Only the body of a pill (fill and edge) in `rect`, for a toolkit host
-/// that lays its own content inside the shape (window chrome chips).
-pub(crate) fn paint_pill_body(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    style: ChipStyle,
-    selected: bool,
-    theme: &Theme,
-) {
-    let colors = style.colors(theme, theme.tokens.colors.surfaces.content, selected, false);
-    paint_pill_surface(scene, transform, rect, theme, (colors.fill, colors.edge));
-}
-
-/// Quiet chrome actions use the retained Button's hover/press palette,
-/// while keeping the compact pill geometry and measured caption content.
-pub(crate) fn paint_pill_action_body(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    interaction: crate::widget::activation::Interaction,
-    theme: &Theme,
-) -> Color {
-    let (fill, edge, ink) = crate::widget::ButtonFace::new(rect, "")
-        .hovered(interaction.hovered)
-        .pressed(interaction.pressed)
-        .colors(theme);
-    paint_pill_surface(scene, transform, rect, theme, (fill, edge));
-    ink
-}
-
-fn paint_pill_surface(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    theme: &Theme,
-    colors: (Color, Option<Color>),
-) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.0,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
-    if let Some(edge) = colors.1 {
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            edge,
-            None,
-            &crate::surface::edge_outline(rect, radius),
-        );
-    }
-}
 
 /// The one pill painter.
 pub(crate) fn paint_pill(

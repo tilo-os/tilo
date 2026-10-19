@@ -385,30 +385,12 @@ pub fn merged_controls_width(theme: &Theme) -> f64 {
     let m = crate::chrome::HeaderRowMetrics::resolve(theme);
     3.0 * m.chip + 2.0 * m.gap
 }
-/// Narrowest the `[app title]` chip is drawn, so a one-letter title still
-/// reads as a chip rather than a dot.
-const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
-/// Narrowest the `[Restore]` chip is drawn; a longer label widens it.
-const MAXIMIZED_RESTORE_CHIP_W: f64 = 76.0;
-/// Side of the lucide glyph slot inside the maximized chips — the same
-/// 14 px the tab pills' app glyphs and action chips use.
-const MAXIMIZED_ICON_PX: f64 = 14.0;
 /// The per-group right-edge resize grip: two bars, each this wide, filling
 /// the `RESIZE_HANDLE_PX` band between them.
 const GRIP_BAR_PX: f64 = 2.0;
 /// The grip runs a quarter of the group's height, clamped to
 /// `spacing.s6 ..= spacing.s16 + spacing.s4`.
 const GRIP_HEIGHT_SHARE: f64 = 0.25;
-
-/// Shared layout numbers for the maximized-chrome pill row, computed once in
-/// [`WindowGroup::draw_maximized_chrome`] and threaded through its two child
-/// painters — keeps both well under clippy's argument-count limit.
-#[derive(Clone, Copy)]
-struct ChromePillLayout {
-    pad: f64,
-    pill_h: f64,
-    y0: f64,
-}
 
 impl WindowGroup {
     /// Paint a whole group while its window handle is being reordered. The
@@ -903,9 +885,7 @@ impl WindowGroup {
             self.top_slide_from = self.top_slide_now();
             self.top_slide_since = Some(crate::time::now());
             self.top_overlay_inset = inset;
-            if self.maximized {
-                self.style_dirty = true;
-            }
+            self.style_dirty = true;
             self.grip_dirty = true;
             if self.bar_offered_to.is_some() {
                 self.style_dirty = true;
@@ -2437,376 +2417,11 @@ impl WindowGroup {
         );
     }
 
-    /// A maximized window's bar, over the top edge of its content while the
-    /// person reaches for it (`top_edge_reveal`): the floating
-    /// `[app title]  …  [Full screen][Restore][×]` chips over a foreign
-    /// client, or three icon buttons in the trailing slot of a Tilo app's
-    /// header row that took the bar. It fades in and out in place; its
-    /// controls take the pointer only while it shows.
-    fn draw_maximized_chrome(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.maximized_chrome_live() {
-            self.top_edge.reset();
-            self.clear_maximized_controls();
-            return;
-        }
-        let now = crate::time::now();
-        if self.top_edge.settle(now) {
-            self.top_edge_changed();
-        }
-        let motion = crate::tokens::EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
-        self.chrome_motion = motion;
-        let alpha = self.top_edge.opacity(now, motion);
-        if alpha <= 0.0 {
-            self.clear_maximized_controls();
-            return;
-        }
-        let layered = alpha < 1.0;
-        if layered {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::num::f32_of_f64(alpha),
-                transform,
-                &self.rect,
-            );
-        }
-        if let Some(slot) = self.bar_slot {
-            self.draw_merged_controls(scene, transform, tr, theme, slot);
-        } else {
-            // `[app title]  …  [Restore][×]`, matching the concept layout.
-            // The row floats `TAB_PILL_INSET_Y` in from the card's top and
-            // sides — the same inset the tab pills it stands in for keep.
-            let pad = crate::widget::tabs::TAB_PILL_INSET_Y;
-            let layout = ChromePillLayout {
-                pad,
-                pill_h: maximized_chip_height(theme),
-                y0: self.rect.y0 + self.top_overlay_inset + pad,
-            };
-            self.draw_maximized_title_chip(scene, transform, tr, theme, layout);
-            self.draw_maximized_buttons(scene, transform, tr, theme, layout);
-        }
-        if layered {
-            scene.pop_layer();
-        }
-        if !self.top_edge.shown() {
-            // Fading out: painted, but no longer the pointer's.
-            self.clear_maximized_controls();
-        }
-    }
 
-    /// Register the bar's three controls with their painted targets.
-    fn register_maximized_controls(&mut self, restore: &str, fullscreen: &str) {
-        let geometry = (self.restore_rect, self.close_rect, self.fullscreen_rect);
-        if self.registered_controls != Some(geometry) {
-            self.maximized_controls.begin_frame();
-            self.maximized_controls
-                .target(RESTORE_TARGET, self.restore_rect, restore);
-            self.maximized_controls
-                .target(FULLSCREEN_TARGET, self.fullscreen_rect, fullscreen);
-            self.maximized_controls.target(
-                CLOSE_TARGET,
-                self.close_rect,
-                crate::i18n::widget_format("host-window-close", &[]),
-            );
-            self.registered_controls = Some(geometry);
-        }
-    }
 
-    /// The window's controls in the trailing slot of the app's header row:
-    /// the row's own icon buttons, so the app's header and the window's
-    /// controls read as one bar.
-    fn draw_merged_controls(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        slot: crate::widget::WindowBarSlot,
-    ) {
-        let m = crate::chrome::HeaderRowMetrics::resolve(theme);
-        let y0 = slot.row.center().y - m.chip / 2.0;
-        let at = |x1: f64| Rect::new(x1 - m.chip, y0, x1, y0 + m.chip);
-        self.title_rect = Rect::ZERO;
-        self.close_rect = at(slot.controls.x1);
-        self.restore_rect = at(self.close_rect.x0 - m.gap);
-        self.fullscreen_rect = at(self.restore_rect.x0 - m.gap);
-        let restore = crate::i18n::widget_format("widget-maximized-restore", &[]);
-        let fullscreen = crate::i18n::widget_format("widget-maximized-fullscreen", &[]);
-        let close = crate::i18n::widget_format("host-window-close", &[]);
-        self.register_maximized_controls(&restore, &fullscreen);
-        for (rect, icon, name, hovered, target) in [
-            (
-                self.fullscreen_rect,
-                icons::Icon::Maximize2,
-                &fullscreen,
-                self.fullscreen_hover,
-                FULLSCREEN_TARGET,
-            ),
-            (
-                self.restore_rect,
-                icons::Icon::Minimize2,
-                &restore,
-                self.restore_hover,
-                RESTORE_TARGET,
-            ),
-            (
-                self.close_rect,
-                icons::Icon::X,
-                &close,
-                self.close_hover,
-                CLOSE_TARGET,
-            ),
-        ] {
-            // Someone else's window offers no close.
-            if target == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
-                continue;
-            }
-            let interaction = self.maximized_controls.interaction(target);
-            let face = crate::widget::ButtonFace::icon_only(rect, icon, name)
-                .hovered(hovered || interaction.hovered)
-                .pressed(interaction.pressed);
-            crate::widget::Button::paint(scene, transform, tr, theme, &face);
-        }
-    }
 
-    /// The `[app title]` chip at the left of the maximized-chrome pill row.
-    fn draw_maximized_title_chip(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        layout: ChromePillLayout,
-    ) {
-        let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let active_title = self
-            .bar
-            .tabs()
-            .iter()
-            .find(|t| t.id == self.bar.active_id())
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
-        let title_style = theme.text(TextRole::Caption);
-        let (tw, th) = tr.measure_style(&active_title, None, &title_style);
-        // The label sits `spacing.s3` in from either end of its chip.
-        let chip_pad = f64::from(theme.tokens.spacing.s3);
-        let title_pill_w = (f64::from(tw) + 2.0 * chip_pad).max(MAXIMIZED_TITLE_CHIP_MIN_W);
-        let title_pill = Rect::new(
-            self.rect.x0 + pad,
-            y0,
-            self.rect.x0 + pad + title_pill_w,
-            y0 + pill_h,
-        );
-        self.title_rect = title_pill;
-        crate::surface::shadow(
-            scene,
-            transform,
-            title_pill,
-            title_pill.height() / 2.0,
-            &theme.tokens.elevation.floating,
-        );
-        crate::widget::chip::paint_pill_body(
-            scene,
-            transform,
-            title_pill,
-            crate::widget::ChipStyle::Neutral,
-            false,
-            theme,
-        );
-        // Affine composition is floating-point matrix multiply — it
-        // cannot overflow or panic the way integer arithmetic can.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-        )]
-        let title_text_transform = transform
-            * vello::kurbo::Affine::translate((
-                title_pill.center().x - f64::from(tw) / 2.0,
-                title_pill.center().y - f64::from(th) / 2.0,
-            ));
-        tr.draw_style(
-            scene,
-            &active_title,
-            theme.tokens.colors.text_primary,
-            title_text_transform,
-            None,
-            &title_style,
-        );
-    }
 
-    /// The `[Restore][×]` button pair at the right of the maximized-chrome
-    /// pill row. Also updates `restore_rect`/`close_rect` for hit-testing,
-    /// which keeps running regardless of the cursor band — only the paint
-    /// is gated by the caller.
-    fn draw_maximized_buttons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        layout: ChromePillLayout,
-    ) {
-        let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_style = theme.text(TextRole::Caption);
-        // The close chip is a square of the row's height, so its × sits on
-        // the same centre the title chip's text does.
-        let close_w = pill_h;
-        let close_x0 = self.rect.x1 - close_w - pad;
-        self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-        let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-        let (lw, lh) = tr.measure_style(&label, None, &title_style);
-        let icon_inset = f64::from(theme.tokens.spacing.s2);
-        // Icon slot, gap, label, end pad: a longer translation widens the chip.
-        let restore_w = MAXIMIZED_RESTORE_CHIP_W
-            .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(lw) + icon_inset);
-        let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
-        self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
-        let full_label = crate::i18n::widget_format("widget-maximized-fullscreen", &[]);
-        let (flw, flh) = tr.measure_style(&full_label, None, &title_style);
-        let full_w = MAXIMIZED_RESTORE_CHIP_W
-            .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(flw) + icon_inset);
-        let full_x0 = restore_x0 - full_w - f64::from(theme.tokens.spacing.s1);
-        self.fullscreen_rect = Rect::new(full_x0, y0, full_x0 + full_w, y0 + pill_h);
-        crate::surface::shadow(
-            scene,
-            transform,
-            self.fullscreen_rect,
-            self.fullscreen_rect.height() / 2.0,
-            &theme.tokens.elevation.floating,
-        );
-        crate::widget::chip::paint_pill_body(
-            scene,
-            transform,
-            self.fullscreen_rect,
-            crate::widget::ChipStyle::Neutral,
-            self.fullscreen_hover,
-            theme,
-        );
-        let full_icon = Rect::new(
-            self.fullscreen_rect.x0 + icon_inset,
-            self.fullscreen_rect.center().y - MAXIMIZED_ICON_PX / 2.0,
-            self.fullscreen_rect.x0 + icon_inset + MAXIMIZED_ICON_PX,
-            self.fullscreen_rect.center().y + MAXIMIZED_ICON_PX / 2.0,
-        );
-        icons::draw_icon(
-            scene,
-            transform,
-            full_icon,
-            icons::Icon::Maximize2,
-            theme.tokens.colors.text_primary,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-        )]
-        let full_label_transform = transform
-            * vello::kurbo::Affine::translate((
-                full_icon.x1 + f64::from(theme.tokens.spacing.s2),
-                self.fullscreen_rect.center().y - f64::from(flh) / 2.0,
-            ));
-        tr.draw_style(
-            scene,
-            &full_label,
-            theme.tokens.colors.text_primary,
-            full_label_transform,
-            None,
-            &title_style,
-        );
-        self.register_maximized_controls(&label, &full_label);
 
-        crate::surface::shadow(
-            scene,
-            transform,
-            self.restore_rect,
-            self.restore_rect.height() / 2.0,
-            &theme.tokens.elevation.floating,
-        );
-        let ink = crate::widget::chip::paint_pill_action_body(
-            scene,
-            transform,
-            self.restore_rect,
-            crate::widget::activation::Interaction {
-                hovered: self.restore_hover,
-                ..self.maximized_controls.interaction(RESTORE_TARGET)
-            },
-            theme,
-        );
-        // Text label kept (for screen readers/i18n), after a square icon
-        // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
-        // chip's edge, `MAXIMIZED_ICON_PX` a side and centred on the chip's
-        // centre line, with the label one `spacing.s2` after it — the same
-        // icon → gap → label rhythm a tab pill uses.
-        let icon_x0 = self.restore_rect.x0 + icon_inset;
-        let icon_slot = Rect::new(
-            icon_x0,
-            self.restore_rect.center().y - MAXIMIZED_ICON_PX / 2.0,
-            icon_x0 + MAXIMIZED_ICON_PX,
-            self.restore_rect.center().y + MAXIMIZED_ICON_PX / 2.0,
-        );
-        icons::draw_icon(
-            scene,
-            transform,
-            icon_slot,
-            icons::Icon::Minimize2,
-            ink,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
-        let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
-        // Affine composition is floating-point matrix multiply — it
-        // cannot overflow or panic the way integer arithmetic can.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-        )]
-        let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
-        tr.draw_style(scene, &label, ink, label_transform, None, &title_style);
-
-        self.draw_maximized_close_button(scene, transform, theme);
-    }
-
-    /// The `[×]` close button at the far right of the maximized-chrome
-    /// pill row, painted into `self.close_rect` (already computed by
-    /// [`Self::draw_maximized_buttons`]).
-    fn draw_maximized_close_button(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if self.bar.is_held(self.bar.active_id()) {
-            return;
-        }
-        crate::surface::shadow(
-            scene,
-            transform,
-            self.close_rect,
-            self.close_rect.height() / 2.0,
-            &theme.tokens.elevation.floating,
-        );
-        // The quiet chip, lifted under the pointer. Closing a window is not
-        // an error, so it is never danger red.
-        let glyph_color = crate::widget::chip::paint_pill_action_body(
-            scene,
-            transform,
-            self.close_rect,
-            crate::widget::activation::Interaction {
-                hovered: self.close_hover,
-                ..self.maximized_controls.interaction(CLOSE_TARGET)
-            },
-            theme,
-        );
-        icons::draw_icon(
-            scene,
-            transform,
-            self.close_rect,
-            icons::Icon::X,
-            glyph_color,
-            1.5,
-        );
-    }
 
     /// Paint the app being carried as one lifted object: real app pixels tucked
     /// under the translucent tab handle. This runs in the floating-surface pass
@@ -3253,11 +2868,13 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
-            // Moved down, not shrunk, while the desktop's bar shows above.
-            let slide = self.top_slide_now();
-            if slide > 0.0 {
-                style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
-            }
+        }
+        // Moved down, not shrunk, while the desktop's bar shows over the
+        // windows' top edge (a maximized window, or a bar hidden by choice):
+        // the window's own bar is never under the desktop's.
+        let slide = self.top_slide_now();
+        if slide > 0.0 {
+            style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
         }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3300,7 +2917,7 @@ impl Widget for WindowGroup {
     ) {
         self.reduce_motion = theme.reduce_motion;
         // The slide is a layout offset: lay out again on every frame of it.
-        if self.maximized && self.top_slide_in_flight() {
+        if self.top_slide_in_flight() {
             self.style_dirty = true;
         }
         self.step_rect_spring();
@@ -3640,7 +3257,7 @@ impl Widget for WindowGroup {
         let rect_in_flight = !self.reduce_motion && self.rect_spring.is_some();
         let chrome_fade = self.maximized_chrome_live()
             && self.top_edge.fading(crate::time::now(), self.chrome_motion);
-        let top_slide = self.maximized && self.top_slide_in_flight();
+        let top_slide = self.top_slide_in_flight();
         spawn_in_flight
             || top_slide
             || chrome_fade
@@ -4562,29 +4179,8 @@ mod tests {
             .unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // A pill only carries a maximize chip once hovered open.
-        let pill = g.bar.tab_rects()[0];
-        dispatch_at(
-            &mut g,
-            &taffy,
-            group_node,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
-            },
-        );
-        assert!(
-            g.bar.elapse_hover_dwell(),
-            "resting on the pill must open it once the hover dwell has run",
-        );
-        g.apply_layout(&taffy, group_node, Point::ZERO);
-
-        let max_rect = g.bar.max_rects()[0];
-        assert!(
-            max_rect.area() > 0.0,
-            "an opened pill must carry a maximize chip to click",
-        );
-        let click_pt = max_rect.center();
+        // The window's maximize control stands at the bar's trailing end.
+        let click_pt = g.bar.window_controls().maximize.center();
 
         let moved = WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
@@ -4599,71 +4195,33 @@ mod tests {
         (g, taffy, group_node, moved, press)
     }
 
-    /// The expanded chip row carries a `[Full screen]` entry beside
-    /// Restore; pressing it asks for real fullscreen once.
-    #[test]
-    fn the_expanded_chrome_offers_full_screen_beside_restore() {
-        let (mut g, taffy, group_node, _moved, press) = open_maximize_chip();
-        let theme = Theme::dark();
-        g.maximized = true;
-        g.top_edge.force_shown(true);
-        g.draw_maximized_chrome(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-        );
-        let chip = g.fullscreen_rect();
-        assert!(chip.width() > 0.0, "the chip is drawn");
-        assert_eq!(chip.y0, g.restore_rect.y0, "one row with Restore");
-        assert!(chip.x1 <= g.restore_rect.x0, "left of Restore");
-        assert!(!g.take_pending_fullscreen_request());
-        // Maximized controls act on a completed click: press, then release
-        // on the same control.
-        let over_chip = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(chip.center().x, chip.center().y),
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
-        g.last_cursor = chip.center();
-        let _ = dispatch_at(&mut g, &taffy, group_node, &over_chip);
-        assert!(dispatch_at(&mut g, &taffy, group_node, &press));
-        assert!(
-            !g.take_pending_fullscreen_request(),
-            "a press awaits its release"
-        );
-        let _ = dispatch_at(&mut g, &taffy, group_node, &release);
-        assert!(g.take_pending_fullscreen_request());
-        assert!(!g.take_pending_fullscreen_request(), "drained once");
-    }
 
     #[test]
     fn maximize_toggles_rebuild_layout_and_drain_once() {
-        // Case `maximize_click_on_tab_pill_toggles_window_group_maximized`.
+        // Case `maximize_click_on_the_window_control_toggles_maximized`.
         {
             let (mut g, taffy, group_node, moved, press) = open_maximize_chip();
 
             // Seed last_cursor on the icon — the bar's press arm uses the
             // cached cursor for its fresh hit-test.
+            let release = WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            };
             dispatch_at(&mut g, &taffy, group_node, &moved);
             let handled = dispatch_at(&mut g, &taffy, group_node, &press);
-
-            assert!(handled, "press on the maximize icon must be claimed");
+            assert!(handled, "press on the maximize control must be claimed");
+            dispatch_at(&mut g, &taffy, group_node, &release);
             assert!(
                 g.maximized,
-                "maximize click on a tab pill must drive WindowGroup::maximized true",
+                "a click on the window's maximize control maximizes it",
             );
 
             dispatch_at(&mut g, &taffy, group_node, &moved);
             dispatch_at(&mut g, &taffy, group_node, &press);
-            assert!(
-                !g.maximized,
-                "second maximize click must restore (toggle off)",
-            );
+            dispatch_at(&mut g, &taffy, group_node, &release);
+            assert!(!g.maximized, "a second click restores it");
         }
 
         // Case `maximize_toggle_marks_structure_dirty_for_layout_rebuild`.
@@ -4793,93 +4351,7 @@ mod tests {
             );
         }
 
-        // Case `maximized_group_keeps_client_header_below_system_controls`.
-        {
-            use std::collections::HashMap;
-            use taffy::Style;
-            use taffy::prelude::TaffyMaxContent;
 
-            // Lay a group out and report (group_height, tile_height).
-            fn measure(g: &mut WindowGroup, theme: &Theme) -> (f64, f64) {
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = g.build_layout(&mut taffy, theme, &mut node_map);
-                let root = taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(1600.0),
-                            height: Dimension::length(900.0),
-                        },
-                        ..Default::default()
-                    },
-                    &[node],
-                );
-                taffy
-                    .compute_layout(root, taffy::Size::MAX_CONTENT)
-                    .unwrap();
-                g.apply_layout(&taffy, node, Point::ZERO);
-                let tile = taffy.children(node).unwrap()[1];
-                let tile_h = f64::from(taffy.layout(tile).copied().unwrap_or_default().size.height);
-                (g.get_rect().height(), tile_h)
-            }
-
-            let theme = Theme::dark();
-            let mut g = make_group();
-            let (group_h, tile_h) = measure(&mut g, &theme);
-            assert!(
-                tile_h < group_h,
-                "while tiled, the tab strip takes height off the app: \
-             group={group_h} tile={tile_h}",
-            );
-
-            for theme in [
-                Theme::light(),
-                Theme::dark(),
-                Theme::high_contrast().with_text_scale(2.0),
-            ] {
-                g.maximized = true;
-                let (group_h, tile_h) = measure(&mut g, &theme);
-                assert!(
-                    (group_h - tile_h).abs() < 0.0001,
-                    "the client fills the maximized window: group={group_h}, client={tile_h}",
-                );
-                g.top_edge.force_shown(true);
-                g.draw_maximized_chrome(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut TextRenderer::new(),
-                    &theme,
-                );
-                let client = g.active_host().unwrap().get_rect();
-                assert!(
-                    g.restore_rect.y0 >= client.y0 + crate::widget::top_edge_reveal::REVEAL_BAND_PX,
-                    "Restore stands over the client's top edge, below the reveal band"
-                );
-                assert!(
-                    g.maximized_chrome_captures(g.restore_rect.center()),
-                    "the revealed scaled Restore control must stay reachable"
-                );
-                assert!(tile_h > 0.0);
-            }
-        }
-
-        // Case `maximized_restore_rebuilds_the_tiled_layout`.
-        {
-            use crate::synthetic_input::PointerAction;
-            let mut fixture = MaximizedControlFixture::new(Theme::dark());
-            let _ = fixture.group.take_structure_dirty();
-            let restore = fixture.group.presentation_bounds().restore.unwrap();
-            fixture.pointer(PointerAction::MoveTo(restore.center()));
-            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
-            assert!(fixture.group.maximized, "press must wait for release");
-            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
-            assert!(!fixture.group.maximized);
-            assert_eq!(fixture.group.take_pending_maximize_change(), Some(false));
-            assert!(
-                fixture.group.take_structure_dirty(),
-                "restore must invalidate the cached maximized geometry"
-            );
-        }
     }
 
     struct EdgeResizeJourney {
@@ -5856,114 +5328,7 @@ mod tests {
         );
     }
 
-    struct MaximizedControlFixture {
-        group: WindowGroup,
-        theme: Theme,
-        taffy: TaffyTree<()>,
-        node: NodeId,
-        doc: AutoCommit,
-        focus: Option<NodeId>,
-        input_scale: f64,
-    }
 
-    impl MaximizedControlFixture {
-        fn new(theme: Theme) -> Self {
-            Self::with_group(make_group(), theme)
-        }
-
-        fn with_group(mut group: WindowGroup, theme: Theme) -> Self {
-            group.maximized = true;
-            group.last_cursor = Point::new(600.0, 49.0);
-            // As if the person had reached for the bar.
-            group.top_edge.force_shown(true);
-            let mut fixture = Self {
-                group,
-                theme: theme.with_reduce_motion(true),
-                taffy: TaffyTree::new(),
-                node: NodeId::from(0u64),
-                doc: AutoCommit::new(),
-                focus: None,
-                input_scale: 1.0,
-            };
-            fixture.layout();
-            fixture.paint();
-            fixture
-        }
-
-        fn layout(&mut self) {
-            use taffy::prelude::TaffyMaxContent;
-            let mut map = HashMap::new();
-            self.taffy = TaffyTree::new();
-            self.node = self
-                .group
-                .build_layout(&mut self.taffy, &self.theme, &mut map);
-            let root = self.taffy.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(752.0),
-                    },
-                    ..Default::default()
-                },
-                &[self.node],
-            );
-            self.taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            self.group
-                .apply_layout(&self.taffy, self.node, Point::new(0.0, 48.0));
-        }
-
-        fn scene(&mut self) -> Scene {
-            let mut scene = Scene::new();
-            self.group.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &self.theme,
-                &PresenceCtx::empty(),
-            );
-            scene
-        }
-
-        fn paint(&mut self) {
-            self.scene();
-        }
-
-        fn capture(&mut self, name: &str) {
-            if let Some(path) = ux1x_out(&self.theme, name) {
-                let scene = self.scene();
-                let pixels = crate::offscreen::OffscreenRenderer::new(1280, 800)
-                    .render(&scene, self.theme.tokens.colors.surfaces.base);
-                write_png(&pixels, 1280, 800, &path);
-            }
-        }
-
-        fn pointer(&mut self, action: crate::synthetic_input::PointerAction) -> bool {
-            self.drive(|group, ctx| action.dispatch(group, ctx))
-        }
-
-        fn drive(
-            &mut self,
-            send: impl FnOnce(&mut WindowGroup, &mut crate::widget::EventCtx<'_>),
-        ) -> bool {
-            let mut handled = false;
-            send(
-                &mut self.group,
-                &mut crate::widget::EventCtx {
-                    scale_factor: self.input_scale,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: crate::widget::Edits::lend(&mut self.doc),
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut self.focus,
-                    node_id: self.node,
-                    taffy: &self.taffy,
-                },
-            );
-            handled
-        }
-    }
 
     #[test]
     fn refused_final_tab_close_restores_live_group_input() {
@@ -5989,373 +5354,9 @@ mod tests {
         assert!(group.has_host(1));
     }
 
-    #[test]
-    fn maximized_control_bounds_capture_visible_chrome_across_themes() {
-        for (theme, size) in [
-            (Theme::dark(), "default"),
-            (Theme::light(), "default"),
-            (Theme::dark().with_text_scale(2.0), "text-200"),
-            (Theme::light().with_text_scale(2.0), "text-200"),
-        ] {
-            let mut fixture = MaximizedControlFixture::new(theme);
-            let bounds = fixture.group.presentation_bounds();
-            assert_eq!(bounds.group, Rect::new(0.0, 48.0, 1280.0, 800.0));
-            let client = bounds.client.expect("active client laid out");
-            assert!(client.height() > 0.0);
-            for control in [bounds.restore, bounds.close] {
-                let control = control.expect("visible painted control");
-                assert_eq!(control.intersect(bounds.group), control);
-                assert!(
-                    client.contains(control.center())
-                        && control.y0 >= client.y0 + crate::widget::top_edge_reveal::REVEAL_BAND_PX,
-                    "the bar stands over the client's top edge, below the reveal band"
-                );
-                assert!(control.area() > 0.0);
-            }
-            assert!(bounds.maximize.is_none());
-            assert_eq!(bounds.tab_bar.height(), 0.0);
-            for _ in 0..3 {
-                assert_eq!(fixture.group.presentation_bounds(), bounds);
-            }
-            assert_eq!(fixture.group.take_pending_maximize_change(), None);
-            assert!(fixture.group.take_pending_close_commits().is_empty());
-            fixture.capture(&format!("maximized-controls-{size}.png"));
-        }
-    }
 
-    #[test]
-    fn maximized_controls_require_a_completed_pointer_gesture() {
-        use crate::synthetic_input::PointerAction;
-        for close in [false, true] {
-            let mut fixture = MaximizedControlFixture::new(Theme::dark());
-            let bounds = fixture.group.presentation_bounds();
-            let target = if close { bounds.close } else { bounds.restore }.unwrap();
-            fixture.pointer(PointerAction::MoveTo(target.center()));
-            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
-            fixture.capture(if close {
-                "maximized-close-held.png"
-            } else {
-                "maximized-restore-held.png"
-            });
-            assert!(
-                fixture.group.maximized,
-                "a press must await its matching release"
-            );
-            assert!(Widget::wants_pointer_capture(&fixture.group));
-            assert!(fixture.group.take_pending_close_commits().is_empty());
-            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
-            assert!(!fixture.group.maximized);
-            assert_eq!(fixture.group.take_pending_maximize_change(), Some(false));
-            assert_eq!(
-                fixture.group.take_pending_close_commits().len(),
-                usize::from(close)
-            );
-            assert!(!Widget::wants_pointer_capture(&fixture.group));
-        }
-    }
 
-    #[test]
-    fn maximized_controls_cancel_interrupted_or_moved_gestures() {
-        use crate::synthetic_input::PointerAction;
-        for close in [false, true] {
-            for interruption in 0..6 {
-                let mut fixture = MaximizedControlFixture::new(Theme::dark());
-                let bounds = fixture.group.presentation_bounds();
-                let target = if close { bounds.close } else { bounds.restore }.unwrap();
-                fixture.pointer(PointerAction::MoveTo(target.center()));
-                fixture.pointer(PointerAction::Press(MouseButton::Left));
-                match interruption {
-                    0 => {
-                        fixture.pointer(PointerAction::Leave);
-                    }
-                    1 => {
-                        fixture.pointer(PointerAction::LoseFocus);
-                    }
-                    2 => {
-                        fixture.pointer(PointerAction::MoveTo(bounds.client.unwrap().center()));
-                        fixture.paint();
-                        let hidden = fixture.group.presentation_bounds();
-                        assert!(
-                            hidden.restore.is_none() && hidden.close.is_none(),
-                            "unpainted controls cannot remain pointer targets"
-                        );
-                    }
-                    3 => {
-                        fixture.theme =
-                            Theme::light().with_text_scale(2.0).with_reduce_motion(true);
-                        fixture.layout();
-                        fixture.paint();
-                        let moved = fixture.group.presentation_bounds();
-                        let next = if close { moved.close } else { moved.restore }.unwrap();
-                        assert_ne!(next, target);
-                        fixture.pointer(PointerAction::MoveTo(next.center()));
-                    }
-                    4 => {
-                        fixture.input_scale = 1.5;
-                    }
-                    5 => {
-                        let escape =
-                            crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape);
-                        fixture.drive(|group, ctx| group.handle_event(&escape, ctx));
-                    }
-                    _ => unreachable!(),
-                }
-                assert!(
-                    fixture.pointer(PointerAction::Release(MouseButton::Left)),
-                    "the cancelled release stays owned by chrome"
-                );
-                assert!(fixture.group.maximized);
-                assert_eq!(fixture.group.take_pending_maximize_change(), None);
-                assert!(fixture.group.take_pending_close_commits().is_empty());
-                assert!(!Widget::wants_pointer_capture(&fixture.group));
-                if !close && matches!(interruption, 2 | 3 | 5) {
-                    fixture.capture(&format!("maximized-restore-cancel-{interruption}.png"));
-                }
-                fixture.pointer(PointerAction::MoveTo(Point::new(600.0, 49.0)));
-                // Reached for again.
-                fixture.group.set_maximized_chrome_shown_for_tests(true);
-                fixture.paint();
-                let fresh = fixture.group.presentation_bounds();
-                let fresh = if close { fresh.close } else { fresh.restore }.unwrap();
-                fixture.pointer(PointerAction::MoveTo(fresh.center()));
-                fixture.pointer(PointerAction::Press(MouseButton::Left));
-                assert!(fixture.group.maximized);
-                fixture.pointer(PointerAction::Release(MouseButton::Left));
-                assert!(
-                    !fixture.group.maximized,
-                    "a fresh complete gesture still works"
-                );
-                assert_eq!(
-                    fixture.group.take_pending_close_commits().len(),
-                    usize::from(close)
-                );
-            }
-        }
-    }
 
-    #[test]
-    fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
-        // Case `window_group_close_glyph_is_lucide_x`.
-        {
-            assert_eq!(WindowGroup::close_glyph_icon_for_tests(), icons::Icon::X,);
-        }
-
-        // Case `window_group_restore_pill_uses_minimize2`.
-        {
-            assert_eq!(
-                WindowGroup::restore_glyph_icon_for_tests(),
-                icons::Icon::Minimize2,
-            );
-        }
-
-        // Case `maximized_close_chip_uses_danger_token_on_hover`.
-        // Sampled from the **production paint path** on both presets.
-        // At rest the × chip is the quiet chip face (the raised
-        // surface under a rest edge that registers against it), not a literal
-        // white tint; on hover it turns to the danger token and the × glyph
-        // stays legible on that face, where the old opaque white only happened
-        // to on the dark preset's red.
-        {
-            use crate::a11y::{contrast_ratio, relative_luminance};
-            const EDGE_MIN: f64 = 0.008;
-            let (w, h) = (620u32, 200u32);
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                let mut g = make_group();
-                g.maximized = true;
-                // The chrome paints while the cursor is in the top band.
-                g.last_cursor = Point::new(600.0, 10.0);
-                g.top_edge.force_shown(true);
-
-                g.set_close_hover_for_tests(false);
-                let idle = production_frame(&mut g, &theme, w, h);
-                if let Some(png) = ux1x_out(&theme, "window_group_close_chip_idle.png") {
-                    write_png(&idle, w, h, &png);
-                }
-                let chip = g.close_rect;
-                assert!(
-                    chip.width() > 0.0
-                        && chip.x0 >= 0.0
-                        && chip.y0 >= 0.0
-                        && chip.x1 <= f64::from(w)
-                        && chip.y1 <= f64::from(h),
-                    "{}: the maximized × chip was laid out on the canvas: {chip:?} in {:?}",
-                    theme.name,
-                    g.rect
-                );
-                // Interior, on the chip's centre column just under its top edge —
-                // inside the capsule and above the × glyph's box.
-                let (cx, top) = (chip.center().x, chip.y0);
-                let face = pixel(&idle, w, cx, top + 3.0);
-                let quiet = crate::widget::ChipStyle::Neutral.colors(
-                    &theme,
-                    theme.tokens.colors.surfaces.content,
-                    false,
-                    false,
-                );
-                let (quiet_fill, quiet_edge) = (quiet.fill, quiet.edge);
-                assert!(
-                    contrast_ratio(face, quiet_fill) < 1.02,
-                    "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
-                    theme.name,
-                    g.rect
-                );
-                assert!(
-                    quiet_edge.is_some(),
-                    "{}: the quiet chip declares a rest edge",
-                    theme.name
-                );
-                let edge = pixel(&idle, w, cx, top);
-                let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
-                assert!(
-                    moved >= EDGE_MIN,
-                    "{}: the × chip's rest edge {edge:?} moved only {moved:.4} against its face {face:?}",
-                    theme.name
-                );
-
-                g.set_close_hover_for_tests(true);
-                let hover = production_frame(&mut g, &theme, w, h);
-                if let Some(png) = ux1x_out(&theme, "window_group_close_chip_hover.png") {
-                    write_png(&hover, w, h, &png);
-                }
-                let hot = pixel(&hover, w, cx, top + 3.0);
-                // Hover lifts the chip, as every quiet control: closing a
-                // window is not an error, so it is never danger red.
-                assert!(
-                    crate::chrome::lightness_step(hot, face) >= 0.04,
-                    "{}: hover must visibly lift the × chip ({face:?} -> {hot:?})",
-                    theme.name
-                );
-                let danger = theme.tokens.colors.semantic.danger;
-                assert!(
-                    contrast_ratio(hot, danger) > 1.2,
-                    "{}: the hovered × chip {hot:?} is not danger red",
-                    theme.name
-                );
-                // The × glyph stays readable on the hot face: the darkest or
-                // lightest pixel in the glyph's central 5×5 block clears the
-                // non-text minimum against the face beside it.
-                let c = chip.center();
-                let mut best = 1.0_f64;
-                for dy in -2..=2 {
-                    for dx in -2..=2 {
-                        let px = pixel(&hover, w, c.x + f64::from(dx), c.y + f64::from(dy));
-                        best = best.max(contrast_ratio(px, hot));
-                    }
-                }
-                assert!(
-                    best >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                    "{}: the × glyph reads {best:.2}:1 on the hovered face {hot:?}",
-                    theme.name
-                );
-            }
-        }
-
-        // Case `maximized_chrome_hides_at_rest_and_shows_on_a_rest_at_the_top`.
-        {
-            let mut g = make_group();
-            g.maximized = true;
-            g.rect = Rect::new(0.0, 48.0, 1200.0, 800.0);
-            assert!(!g.maximized_chrome_shown(), "hidden before any pointer");
-            assert!(!g.note_maximized_pointer(Point::new(600.0, 60.0)));
-            assert!(!g.maximized_chrome_shown(), "hidden while in the app");
-            assert!(
-                !g.elapse_maximized_chrome_intent(),
-                "a rest on the app's top row is the app's"
-            );
-            // Into the band, then settling there (the first sample may read
-            // as a fast pass; the rest counts once the pointer settles).
-            g.note_maximized_pointer(Point::new(600.0, 50.0));
-            g.note_maximized_pointer(Point::new(600.0, 51.0));
-            assert!(g.next_wake_deadline().is_some(), "the dwell wakes the loop");
-            assert!(g.elapse_maximized_chrome_intent(), "a rest in the band");
-            assert!(g.maximized_chrome_shown());
-        }
-
-        // Case `maximized_chrome_always_hidden_when_not_maximized`.
-        {
-            let mut g = make_group();
-            assert!(!g.maximized, "fresh group is not maximized");
-            g.rect = Rect::new(0.0, 48.0, 1200.0, 800.0);
-            assert!(!g.note_maximized_pointer(Point::new(600.0, 50.0)));
-            assert!(!g.elapse_maximized_chrome_intent());
-            assert!(!g.maximized_chrome_shown());
-        }
-
-        // Case `maximized_chrome_chips_share_one_row_and_a_token_gap`.
-        // The floating `[Restore][×]` row: both chips one row tall, the close
-        // chip square, the pair one `spacing.s1` apart, and the row inset from
-        // the card by the same `TAB_PILL_INSET_Y` the tab pills keep.
-        {
-            let mut g = make_group();
-            g.maximized = true;
-            g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
-            g.last_cursor = Point::new(600.0, 10.0);
-            g.top_edge.force_shown(true);
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-
-            let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
-            assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
-            assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
-            assert_eq!(
-                g.close_rect.width(),
-                g.close_rect.height(),
-                "the × chip is square"
-            );
-            assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
-            assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
-            assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
-            assert!(
-                (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs()
-                    < 1e-9,
-                "restore and close sit one s1 apart"
-            );
-            assert!(
-                g.restore_rect.width() >= MAXIMIZED_RESTORE_CHIP_W,
-                "the restore chip never undercuts its authored width"
-            );
-        }
-        // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
-        {
-            use crate::i18n::I18nManager;
-            let restore_width_in = |locale: &str| {
-                I18nManager::init(locale);
-                let mut g = make_group();
-                g.maximized = true;
-                g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
-                g.last_cursor = Point::new(600.0, 10.0);
-                g.top_edge.force_shown(true);
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let mut scene = Scene::new();
-                g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-                let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
-                let style = theme.text(TextRole::Caption);
-                let (label_w, _) = tr.measure_style(&label, None, &style);
-                let label_x0 = g.restore_rect.x0
-                    + f64::from(theme.tokens.spacing.s2) * 2.0
-                    + MAXIMIZED_ICON_PX;
-                assert!(
-                    label_x0 + f64::from(label_w) <= g.restore_rect.x1,
-                    "{locale}: `{label}` must fit its chip {:?}",
-                    g.restore_rect
-                );
-                (label, g.restore_rect.width())
-            };
-            let (en, en_w) = restore_width_in("en-US");
-            let (de, de_w) = restore_width_in("de-DE");
-            assert_eq!(en, "Restore");
-            assert_eq!(de, "Wiederherstellen", "the chip reads German under de-DE");
-            assert!(
-                de_w > en_w,
-                "the longer label widens the chip: {de_w} vs {en_w}"
-            );
-            I18nManager::init("en-US");
-        }
-    }
 
     #[test]
     fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
@@ -6629,66 +5630,6 @@ mod tests {
             );
         }
 
-        // Case `maximized_close_uses_deferred_flow`.
-        {
-            use crate::synthetic_input::PointerAction;
-            let tabs = vec![(
-                TabDescriptor::new(1, "solo"),
-                TileContent::Stub {
-                    kind: AppKind::Settings,
-                    label: "a".into(),
-                },
-            )];
-            let group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
-            let mut fixture = MaximizedControlFixture::with_group(group, Theme::dark());
-            let close = fixture.group.presentation_bounds().close.unwrap();
-            fixture.pointer(PointerAction::MoveTo(close.center()));
-            assert!(fixture.pointer(PointerAction::Press(MouseButton::Left)));
-            assert!(fixture.group.maximized);
-            assert!(fixture.pointer(PointerAction::Release(MouseButton::Left)));
-            let g = &mut fixture.group;
-            assert!(!g.maximized, "completed close leaves maximize");
-            assert!(
-                g.take_structure_dirty(),
-                "leaving maximize must rebuild the cached tiled layout",
-            );
-            assert!(
-                g.has_host(1),
-                "host stays in `hosts` for the fade duration — no synchronous removal",
-            );
-            assert!(
-                g.bar.closing_tab_ids().contains(&1),
-                "bar.start_closing must have latched the tab pill fade",
-            );
-            assert!(
-                g.has_closing_host(1),
-                "closing_hosts must carry the active id so the host fade runs",
-            );
-            assert_eq!(
-                g.take_pending_close_commits(),
-                vec![1],
-                "the maximized close must also reach the shell's durable lifecycle path",
-            );
-            assert!(
-                !g.is_closing(),
-                "group close must NOT fire while a host-level close is still in flight",
-            );
-
-            g.force_expire_closing(1);
-            fixture.pointer(PointerAction::MoveTo(Point::new(9000.0, 9000.0)));
-            let g = &fixture.group;
-
-            assert!(!g.has_host(1), "sweep drops the host once the fade expires");
-            assert!(
-                !g.bar.closing_tab_ids().contains(&1),
-                "bar.finalize_close clears the closing pill entry",
-            );
-            assert!(g.bar.tabs().is_empty(), "bar has no live tabs left");
-            assert!(
-                g.is_closing(),
-                "group-level close fade must latch once the last host has swept out",
-            );
-        }
     }
 
     /// Lays `g` out at `w`×`h`, draws it through the production
@@ -7072,138 +6013,9 @@ mod window_bar_tests {
         scene
     }
 
-    #[test]
-    fn a_maximized_client_fills_the_work_area_at_1x_and_2x() {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_reduce_motion(true);
-            let mut g = page_group();
-            lay_out(&mut g, &theme);
-            let _ = paint(&mut g, &theme, scale);
-            let work_area = Rect::new(0.0, TOP, W, H);
-            assert_eq!(
-                g.get_rect(),
-                work_area,
-                "{scale}x: the window is the work area"
-            );
-            assert_eq!(
-                g.active_host().unwrap().get_rect(),
-                work_area,
-                "{scale}x: the client fills it: no lane above, no gap below"
-            );
-            assert!(!g.maximized_chrome_shown(), "{scale}x: no bar at rest");
-            assert_eq!(g.presentation_bounds().restore, None);
-        }
-    }
 
-    #[test]
-    fn the_bar_reveals_over_the_client_on_intent_and_holds_under_aim() {
-        let theme = Theme::dark().with_reduce_motion(true);
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        let _ = paint(&mut g, &theme, 1.0);
-        // A synthetic timeline: one pointer sample per 16 ms frame.
-        let t0 = crate::time::now();
-        let mut frame = 0u64;
-        let mut at = |g: &mut WindowGroup, p: Point| {
-            frame += 1;
-            g.note_maximized_pointer_at(p, t0 + Duration::from_millis(16 * frame));
-        };
-        // Aiming at the app's top content: never.
-        at(&mut g, Point::new(400.0, TOP + 30.0));
-        at(&mut g, Point::new(401.0, TOP + 24.0));
-        assert!(!g.elapse_maximized_chrome_intent());
-        let _ = paint(&mut g, &theme, 1.0);
-        assert!(!g.maximized_chrome_captures(Point::new(401.0, TOP + 17.0)));
-        // A rest at the very top: the bar, over the client's top edge.
-        at(&mut g, Point::new(400.0, TOP + 2.0));
-        at(&mut g, Point::new(401.0, TOP + 2.0));
-        assert!(g.elapse_maximized_chrome_intent());
-        let _ = paint(&mut g, &theme, 1.0);
-        let restore = g.presentation_bounds().restore.expect("Restore shows");
-        let client = g.active_host().unwrap().get_rect();
-        assert!(
-            client.contains(restore.center()),
-            "over the client, not above it"
-        );
-        assert!(restore.y0 >= TOP + crate::widget::top_edge_reveal::REVEAL_BAND_PX);
-        // Across the app's top row to Restore: off every chip on the way,
-        // but heading for it the whole time, so the bar holds.
-        let title = g.title_rect;
-        assert!(title.area() > 0.0, "the floating bar names the window");
-        let from = Point::new(401.0, TOP + 2.0);
-        let to = Point::new(restore.x0 - 30.0, restore.center().y);
-        for step in 1..=10u32 {
-            let p = from.lerp(to, f64::from(step) / 10.0);
-            at(&mut g, p);
-            assert!(g.maximized_chrome_shown(), "heading for Restore at {p:?}");
-        }
-        for dx in [-12.0, -4.0, 0.0] {
-            at(&mut g, restore.center() + (dx, 0.0));
-        }
-        let _ = paint(&mut g, &theme, 1.0);
-        assert!(g.maximized_chrome_captures(restore.center()));
-        // Down into the app: gone.
-        at(&mut g, Point::new(restore.center().x, 300.0));
-        at(&mut g, Point::new(restore.center().x, 400.0));
-        assert!(!g.maximized_chrome_shown());
-    }
 
-    #[test]
-    fn the_bar_stands_below_a_desktop_bar_shown_over_the_window() {
-        let theme = Theme::dark().with_reduce_motion(true);
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        g.set_maximized_chrome_shown_for_tests(true);
-        let _ = paint(&mut g, &theme, 1.0);
-        let flush = g.presentation_bounds().restore.expect("shown");
-        g.set_top_overlay_inset(36.0);
-        let _ = paint(&mut g, &theme, 1.0);
-        let below = g.presentation_bounds().restore.expect("shown");
-        assert!(
-            (below.y0 - flush.y0 - 36.0).abs() < 1e-9,
-            "{flush:?} -> {below:?}"
-        );
-    }
 
-    #[test]
-    fn a_tilo_app_shows_one_bar_with_its_header() {
-        for header_in_bar in [false, true] {
-            let theme = Theme::dark().with_reduce_motion(true);
-            let mut g = group(TileContent::App(Box::new(HeaderedApp::new(header_in_bar))));
-            lay_out(&mut g, &theme);
-            let _ = paint(&mut g, &theme, 1.0);
-            let slot = g
-                .bar_slot
-                .expect("the app's header row took the window's bar");
-            assert_eq!(slot.hides_with_bar, header_in_bar);
-            assert_eq!(slot.row.y0, TOP, "the bar is the window's top row");
-            assert!(slot.controls.x1 <= W && slot.controls.y1 <= slot.row.y1);
-            assert!(!g.maximized_chrome_shown());
-
-            g.set_maximized_chrome_shown_for_tests(true);
-            lay_out(&mut g, &theme);
-            let _ = paint(&mut g, &theme, 1.0);
-            let bounds = g.presentation_bounds();
-            let restore = bounds.restore.expect("Restore in the header row");
-            let close = bounds.close.expect("close in the header row");
-            for control in [restore, close, g.fullscreen_rect] {
-                assert!(
-                    slot.controls.contains(control.center()) && slot.row.contains(control.center()),
-                    "{header_in_bar}: {control:?} stands in the row's slot {slot:?}"
-                );
-            }
-            assert_eq!(
-                g.title_rect,
-                Rect::ZERO,
-                "{header_in_bar}: no floating title chip: the header names the window"
-            );
-            assert_eq!(
-                g.active_host().unwrap().get_rect(),
-                Rect::new(0.0, TOP, W, H),
-                "the client still fills the window"
-            );
-        }
-    }
 
     /// Review frames: a maximized foreign-like window at rest (1× and 2×),
     /// the bar revealed and its Restore hovered, and a Tilo app with its
@@ -7290,5 +6102,75 @@ mod window_bar_tests {
                 Some(Point::new(900.0, TOP + 2.0)),
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "the entire top area looks like shit
+    // ... why is everything crammed together?"
+    /// A maximized window keeps its bar in a band above its content: the
+    /// content starts where the bar ends, and nothing of the app is under it.
+    #[test]
+    fn a_maximized_window_keeps_its_bar_above_its_content() {
+        let theme = Theme::dark();
+        let mut g = page_group();
+        lay_out(&mut g, &theme);
+        let bar = g.bar_rect();
+        let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
+        assert!(bar.height() > 0.0, "the maximized window shows its bar");
+        assert!(bar.y1 <= content.y0 + 0.5, "the bar {bar:?} is over the content {content:?}");
+    }
+
+
+    /// Lay the group out as the strip does: a child of the work area, so an
+    /// offset the group asks for applies (the layout root ignores one).
+    fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, theme, &mut map);
+        let strip = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(f32_of_f64(W)),
+                        height: Dimension::length(f32_of_f64(H - TOP)),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        {
+            use taffy::prelude::TaffyMaxContent;
+            taffy
+                .compute_layout(strip, taffy::Size::MAX_CONTENT)
+                .unwrap();
+        }
+        g.apply_layout(&taffy, node, Point::new(0.0, TOP));
+    }
+
+    // USER REQUIREMENT (2026-10-19): "the top bar disappears and i cant
+    // interact with the window decorations because it then collides."
+    /// The desktop's bar shown over a window moves the window down rather
+    /// than covering the window's own bar, and moves it whole: no resize.
+    #[test]
+    fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
+        let mut theme = Theme::dark();
+        theme.reduce_motion = true;
+        let mut g = page_group();
+        lay_out_in_strip(&mut g, &theme);
+        let before = g.get_rect();
+        g.set_top_overlay_inset(TOP);
+        lay_out_in_strip(&mut g, &theme);
+        let after = g.get_rect();
+        assert!(
+            (after.y0 - (before.y0 + TOP)).abs() < 0.5,
+            "moved down by the desktop bar: {before:?} to {after:?}"
+        );
+        assert!(
+            (after.height() - before.height()).abs() < 0.5,
+            "moved, not resized: {before:?} to {after:?}"
+        );
+        g.set_top_overlay_inset(0.0);
+        lay_out_in_strip(&mut g, &theme);
+        assert!((g.get_rect().y0 - before.y0).abs() < 0.5, "and back up when it hides");
     }
 }
