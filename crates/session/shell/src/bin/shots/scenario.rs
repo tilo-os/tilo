@@ -459,8 +459,10 @@ pub enum Action {
     },
 }
 
-/// What starts the motion a [`Action::MotionFrames`] captures.
+/// What starts the motion a [`Action::MotionFrames`] captures. Only a build
+/// with `test-support` plays motion, so only it reads a cue.
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "test-support"), allow(dead_code))]
 pub enum MotionCue {
     /// Quick Settings opens, as a click on the tray opens it.
     OpenQuickSettings,

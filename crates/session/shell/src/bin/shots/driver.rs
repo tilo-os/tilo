@@ -486,6 +486,7 @@ impl ShellDriver {
     /// real time because the host reads `Instant::now()` directly —
     /// there's no virtual clock hook (yet).
     /// Run the hosted apps' update once, as a frame does before it paints.
+    #[cfg(feature = "test-support")]
     pub fn pump_apps(&mut self) {
         self.fb.pump_apps(&mut self.state, &self.root_obj);
     }
