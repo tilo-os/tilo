@@ -1,6 +1,6 @@
 //! A derived record describes its stored layout.
 
-use tilo_resource::{Collection, FieldShape, Json, Model, Resource, Shape, resource};
+use tilo_resource::{Collection, FieldShape, Model, Resource, Shape, resource};
 
 #[derive(Model, Default)]
 pub struct Board {
@@ -8,7 +8,7 @@ pub struct Board {
     #[model(rename = "cols")]
     pub columns: Collection<Column>,
     pub archived: Option<Meta>,
-    pub filter: Json<Vec<String>>,
+    pub filter: serde_json::Value,
     #[model(skip)]
     pub scroll: f64,
 }
@@ -157,7 +157,7 @@ fn a_derived_record_lists_its_stored_fields() {
                 owner: "board",
                 name: "filter",
 
-                ty: "Json<Vec<String>>",
+                ty: "serde_json::Value",
                 title: "Filter",
                 shape: Shape::Value,
                 unit: false,

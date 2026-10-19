@@ -232,6 +232,17 @@ LEGACY_API_BANS = {
         "a migration or an old-shape fixture with the model's helpers (`write_key`, `Slot`, "
         "`evolution::fixture`)",
     ),
+    "json_text_field": (
+        re.compile(r"\bJson\s*<"),
+        "a value kept as one JSON string; give the field its model type (a struct or enum "
+        "with #[derive(Model)], `Option`, `Vec`, a map), or `serde_json::Value` for JSON "
+        "another party shapes, and migrate stored ones with `evolution::retype_json`",
+    ),
+    "value_model_in_app": (
+        re.compile(r"\bvalue_model\s*!"),
+        "a type the app shapes derives Model, so its fields have paths, edits and history "
+        "of their own; `value_model!` is for types below the resource layer",
+    ),
 }
 # The apps that act on other apps' published actions or publish their own to
 # the broker as data, not through a resource of their own: the agent plans and

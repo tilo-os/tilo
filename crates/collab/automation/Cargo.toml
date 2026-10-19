@@ -25,6 +25,12 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+# How a Shortcuts draft stores a step's bindings, condition and transform and
+# a shortcut's triggers (`model`): as values of the resource layer.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+
+[features]
+model = ["dep:tilo-resource"]
 
 [lints]
 workspace = true

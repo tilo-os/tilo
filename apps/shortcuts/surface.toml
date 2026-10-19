@@ -3,20 +3,20 @@
 [[resources]]
 kind = "shortcuts.workbench"
 label = "Shortcuts"
-version = 1
+version = 2
 fields = [
   { path = "drafts", type = "Collection<Draft>", stored = "collection" },
   { path = "drafts.*.name", type = "String", label = true },
   { path = "drafts.*.shortcut_id", type = "String" },
-  { path = "drafts.*.inputs", type = "Collection<Json<Option<ActionParam>>>", stored = "collection" },
+  { path = "drafts.*.inputs", type = "Collection<ActionParam>", stored = "collection" },
   { path = "drafts.*.steps", type = "Collection<StepNode>", stored = "collection" },
   { path = "drafts.*.steps.*.parent", type = "Atom" },
   { path = "drafts.*.steps.*.branch", type = "Atom" },
   { path = "drafts.*.steps.*.id", type = "Atom" },
-  { path = "drafts.*.steps.*.head", type = "Json<Option<Head>>" },
-  { path = "drafts.*.steps.*.args", type = "BTreeMap<String, Json<Option<Binding>>>" },
-  { path = "drafts.*.output", type = "Json<Option<Binding>>" },
-  { path = "drafts.*.triggers", type = "Json<Vec<TriggerSpec>>" },
+  { path = "drafts.*.steps.*.head", type = "Option<Head>" },
+  { path = "drafts.*.steps.*.args", type = "BTreeMap<String, Binding>" },
+  { path = "drafts.*.output", type = "Option<Binding>" },
+  { path = "drafts.*.triggers", type = "Vec<TriggerSpec>" },
   { path = "drafts.*.replaces_saved", type = "bool" },
 ]
 

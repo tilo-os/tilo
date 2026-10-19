@@ -1417,9 +1417,7 @@ fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) ->
     let picker = ui.edit(
         picker,
         Workbench::paths().drafts.item(draft_id).output,
-        |value: String| {
-            Json(binding_json(&value).and_then(|value| serde_json::from_value(value).ok()))
-        },
+        |value: String| binding_json(&value).and_then(|value| serde_json::from_value(value).ok()),
     );
     Box::new(Section::titled(
         ui::i18n!("shortcuts-output"),

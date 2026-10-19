@@ -1792,37 +1792,6 @@ impl<T: Model> Model for BTreeMap<String, T> {
     }
 }
 
-/// An opaque value stored as one JSON string: written whole, last writer
-/// wins. Only for a payload whose shape is another party's and opaque to the
-/// app's model: an account type's connection settings, a shortcut step's
-/// bindings (literal JSON values, other apps' parameter declarations with
-/// their JSON Schemas). Data the app shapes itself is a model type — a
-/// struct, an enum (a data enum is a map naming its variant), a list, a map —
-/// so its parts merge and migrate as values; a field that was `Json<T>` moves
-/// to one with `evolution::retype_json`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Json<T>(pub T);
-
-impl<T> Settable for Json<T> where
-    T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static
-{
-}
-impl<T> Model for Json<T>
-where
-    T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
-{
-    leaf_paths!();
-    /// Any JSON value, `null` among them.
-    const NULLABLE: bool = true;
-    // Run by one set of functions for every value stored as JSON text.
-    const TABLE: &'static crate::table::ModelTable =
-        &crate::table::ModelTable::of_json(&crate::table::JsonOf::<T>::WRAPPED);
-    crate::__table_functions!();
-    fn missing() -> Result<Self, ModelError> {
-        Ok(Self::default())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

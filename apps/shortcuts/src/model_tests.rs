@@ -320,7 +320,7 @@ fn the_name_and_output_are_field_edits_and_history_names_the_draft() {
         pointer: String::new(),
     };
     replica
-        .apply(Invoke::edit(&draft.output.set(Json(Some(output.clone())))).unwrap())
+        .apply(Invoke::edit(&draft.output.set(Some(output.clone()))).unwrap())
         .unwrap();
     assert_eq!(program(&replica).output, Some(output));
     replica
@@ -450,4 +450,99 @@ fn morning_refresh_schedule_edits_preserve_other_saved_triggers() {
         .apply(Workbench::SET_SCHEDULE.with((id, false, 9, 15)))
         .unwrap();
     assert_eq!(program(&reopened).triggers, existing);
+}
+
+/// A workbench of version 1 kept each input, step head, argument, the output
+/// and the triggers as one JSON string. Opened now, every draft holds the
+/// program it held, with every step, binding and trigger.
+#[test]
+fn a_workbench_of_version_one_opens_with_every_draft_program() {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::{Doc, ModelError, Slot, evolution, read_key};
+
+    /// Store the value at `key` of `obj` as the JSON text version 1 wrote.
+    fn as_text<T: Model + serde::Serialize>(doc: &mut Doc, obj: &ui::automerge::ObjId, key: &str) {
+        let value: T = read_key(doc, obj, key).unwrap();
+        let slot = Slot::Key(obj, key);
+        slot.remove(doc).unwrap();
+        slot.put_scalar(
+            doc,
+            ScalarValue::Str(serde_json::to_string(&value).unwrap().into()),
+        )
+        .unwrap();
+    }
+
+    fn map_at(
+        doc: &Doc,
+        obj: &ui::automerge::ObjId,
+        key: &str,
+    ) -> Result<ui::automerge::ObjId, ModelError> {
+        match doc.get(obj, key)? {
+            Some((Value::Object(ObjType::Map), map)) => Ok(map),
+            _ => Err(ModelError::shape("a map")),
+        }
+    }
+
+    let mut replica = Replica::<Workbench>::new();
+    replica
+        .apply(Workbench::OPEN_SHORTCUT.with(json!({
+            "id": "s1", "name": "File receipts",
+            "inputs": [{"name": "folder", "ty": "text", "required": true, "description": "Where to file"}],
+            "steps": [
+                {"id": "list", "step": "invoke",
+                 "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                 "resource": {"from_binding": {"input": "folder"}},
+                 "args": {"limit": {"literal": {"count": 5, "sort": ["date", "desc"]}}}},
+                {"id": "any", "step": "if",
+                 "cond": {"not": {"all": [{"truthy": {"step_output": {"step": "list", "pointer": "/0"}}},
+                                         {"equals": {"left": {"var": "x"}, "right": {"literal": null}}}]}},
+                 "then": [{"id": "make", "step": "invoke",
+                           "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                           "resource": {"fixed": "notes.folder:inbox"},
+                           "args": {"title": {"template": "Receipts {{input.folder}}"}}}]}
+            ],
+            "output": {"step_output": {"step": "list"}},
+            "grant": [],
+            "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+R"},
+                         {"trigger": "schedule", "schedule": {"every": "interval", "seconds": 3600}}]
+        })))
+        .unwrap();
+    let expected = program(&replica);
+    assert_eq!(expected.steps.len(), 2);
+    assert_eq!(expected.triggers.len(), 2);
+    assert!(expected.output.is_some());
+
+    let doc = replica.doc_mut();
+    for draft in evolution::collection_items(doc, &ROOT, "drafts").unwrap() {
+        as_text::<Option<Binding>>(doc, &draft, "output");
+        as_text::<Vec<tilo_automation::TriggerSpec>>(doc, &draft, "triggers");
+        let inputs = map_at(doc, &draft, "inputs").unwrap();
+        for id in doc.keys(&inputs).collect::<Vec<_>>() {
+            let entry = map_at(doc, &inputs, &id).unwrap();
+            as_text::<Option<ActionParam>>(doc, &entry, "v");
+        }
+        for step in evolution::collection_items(doc, &draft, "steps").unwrap() {
+            as_text::<Option<Head>>(doc, &step, "head");
+            if let Ok(args) = map_at(doc, &step, "args") {
+                for name in doc.keys(&args).collect::<Vec<_>>() {
+                    as_text::<Option<Binding>>(doc, &args, &name);
+                }
+            }
+        }
+    }
+    Slot::Key(&ROOT, evolution::VERSION_KEY)
+        .put_scalar(doc, ScalarValue::Uint(1))
+        .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<Workbench>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Workbench>(&mut old).unwrap());
+    let workbench = evolution::read_checked::<Workbench>(&old).unwrap();
+    let draft = workbench.drafts.values().next().unwrap();
+    assert_eq!(draft.program(), expected);
+    assert_eq!(draft.name, "File receipts");
+    assert!(draft.replaces_saved);
 }

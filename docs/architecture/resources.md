@@ -59,11 +59,16 @@ want, not only for the value you hold.
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
 | enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
-| `Json<T>` | one JSON string | last writer wins; only for a payload opaque to the app's model: another party's JSON (a binding's literal value, a parameter's JSON Schema, a provider's settings) |
+| `serde_json::Value` | an object as a map, an array as a list, everything else a scalar | per key of an object, by position in an array; only for JSON another party shapes (an account type's settings, a binding's literal value, a parameter's JSON Schema) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
 is the only place storage code is written by hand, and the framework ships the
 shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
+A type defined below the resource layer, or one that holds itself (a
+condition made of conditions), is stored as its serde form's maps, lists and
+scalars through `value_model!` in the crate that defines it: a Shortcut step's
+bindings, an action's key and parameters. An app never stores a value as JSON
+text it wrote itself.
 
 ### Field attributes
 
@@ -519,8 +524,8 @@ Apps and examples once held code written against the APIs this model
 replaced: hand-written `impl Resource for`, `ActionDecl::new`, `ActionAddress::new`,
 untyped argument parsing (`args.text(..)`, `args.get(..)`), `ActionSpec::`
 descriptors, direct Automerge writes (`put`, `put_object`, `insert_object`,
-`splice_text`, `update_text`, `increment`) and `Json<T>` fields holding data
-they shape themselves. None is left,
+`splice_text`, `update_text`, `increment`) and `Json<T>` fields, each one
+JSON string. None is left, `Json<T>` itself is gone,
 and `tools/policy/check_app_resource_action_contract.py` refuses each one in
 every source file of an app crate (`src`, `tests`, `examples`, `benches`) and
 of an example: there is no ceiling to raise. What to write instead:
@@ -538,9 +543,10 @@ of an example: there is no ceiling to raise. What to write instead:
   typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).
 - **A stored value** is a model type chosen for its merge (§1): a struct, an
   enum (a data enum is a map naming its variant), `Collection`, `Map`, `Set`,
-  `RichText`. A value that is genuinely opaque — written whole, never merged,
-  such as a retained import tree compared whole on retry — implements `Model`
-  through `json_model!` with a comment saying why.
+  `RichText`, and `serde_json::Value` for JSON another party shapes. A value
+  that is genuinely opaque — written whole, never merged, such as a retained
+  import tree compared whole on retry — implements `Model` through
+  `json_model!` with a comment saying why.
 - **A document change** is a field edit or a verb. A migration
   (`#[resource(version, migrate)]`) and a test's fixture of an older shape
   write through the model's storage helpers: `write_key`, `Slot`,

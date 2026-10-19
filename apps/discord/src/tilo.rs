@@ -111,7 +111,7 @@ fn flag(value: &Value, field: &str) -> bool {
     value.get(field).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// A value stored as JSON text (`Json<T>`) or inline.
+/// A value the chat stores as JSON text (`json_model!`) or as itself.
 fn json_field(value: &Value, field: &str) -> Value {
     match value.get(field) {
         Some(Value::String(text)) => serde_json::from_str(text).unwrap_or(Value::Null),
