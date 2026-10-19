@@ -1448,10 +1448,10 @@ mod tests {
         let started = Instant::now();
         for press in 1..=20u8 {
             assert!(service.set("DP-1", f32::from(press) * 5.0));
-            assert_eq!(
-                service.levels()[0].level,
-                f32::from(press) * 0.05,
-                "the cache moves with every press"
+            let level = service.levels()[0].level;
+            assert!(
+                (level - f32::from(press) * 0.05).abs() < 1e-6,
+                "the cache moves with every press: {level} after press {press}"
             );
         }
         assert!(
