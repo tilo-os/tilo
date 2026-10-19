@@ -702,3 +702,29 @@ fn the_settled_clock_reads_every_motion_at_its_end() {
     );
     assert!(v.is_moving(ms(start, 10)));
 }
+
+#[test]
+fn a_speaking_ring_comes_with_the_voice_and_eases_out_in_the_pause() {
+    let now = crate::time::now();
+    let mut ring = Speaking::default();
+    ring.set(true, on(), now);
+    assert_eq!(ring.level(now), 1.0, "there the moment they are heard");
+    ring.set(false, on(), now);
+    let rest = ring.settles_at().expect("eases out");
+    assert!(
+        ring.level(ms(now, 20)) > 0.0,
+        "a pause fades, it does not cut"
+    );
+    assert_eq!(ring.level(rest), 0.0);
+    assert!(!ring.is_moving(rest), "a quiet face costs nothing");
+    assert!(
+        rest <= now + Motion::default().durations.fast() + Duration::from_millis(10),
+        "it eases out within fast"
+    );
+
+    let mut ring = Speaking::default();
+    ring.set(true, reduced(), now);
+    ring.set(false, reduced(), now);
+    assert_eq!(ring.level(now), 0.0, "reduced motion: gone at once");
+    assert!(!ring.is_moving(now));
+}

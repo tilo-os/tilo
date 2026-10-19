@@ -112,6 +112,8 @@ pub struct AvatarFace<'a> {
     ring_on: Option<Color>,
     status: Option<PresenceStatus>,
     glyph: Option<crate::icons::Icon>,
+    presence_ring: bool,
+    speaking: f32,
 }
 
 impl<'a> AvatarFace<'a> {
@@ -129,6 +131,8 @@ impl<'a> AvatarFace<'a> {
             ring_on: None,
             status: None,
             glyph: None,
+            presence_ring: false,
+            speaking: 0.0,
         }
     }
 
@@ -191,6 +195,74 @@ impl<'a> AvatarFace<'a> {
     pub fn ringed_on(mut self, ground: Color) -> Self {
         self.ring_on = Some(ground);
         self
+    }
+
+    /// A person's face as presence shows it: their colour as a ring around
+    /// the disc, inside `rect`, with the ground showing between the two.
+    #[must_use]
+    pub fn presence_ring(mut self) -> Self {
+        self.presence_ring = true;
+        self
+    }
+
+    /// Their voice while they talk in a call: a soft ring in their colour
+    /// just outside `rect`, as strong as `level` (`ui::motion::Speaking`).
+    #[must_use]
+    pub fn speaking(mut self, level: f32) -> Self {
+        self.speaking = level.clamp(0.0, 1.0);
+        self
+    }
+
+    /// The width of the presence ring and of the gap beside it for a face
+    /// `side` across: 2 px apart on a face of 32 px or more, finer on the
+    /// small faces of rows and chips so their initials stay legible.
+    fn presence_ring_px(theme: &Theme, side: f64) -> (f64, f64) {
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+        if side >= 32.0 {
+            (2.0 * rule, 2.0 * rule)
+        } else {
+            (1.5 * rule, rule)
+        }
+    }
+
+    /// The presence ring and the speaking ring around `shape`; returns the
+    /// shape the disc is painted in, inside the ring.
+    fn paint_presence_rings(&self, ctx: &mut PaintCtx<'_>, shape: RoundedRect) -> RoundedRect {
+        let theme = ctx.theme;
+        let colour = self.presence_colour(theme);
+        let (ring, gap) = Self::presence_ring_px(theme, shape.rect().width());
+        let rounded = |rect: Rect, inset: f64| {
+            let radius = if self.square {
+                (shape.radii().top_left - inset).max(0.0)
+            } else {
+                rect.width().min(rect.height()) / 2.0
+            };
+            RoundedRect::from_rect(rect, radius)
+        };
+        if self.speaking > 0.0 {
+            // Just outside the face, the ground between.
+            let reach = gap + ring / 2.0;
+            ctx.scene.stroke(
+                &vello::kurbo::Stroke::new(ring),
+                ctx.transform,
+                colour.multiply_alpha(self.speaking),
+                None,
+                &rounded(shape.rect().inflate(reach, reach), -reach),
+            );
+        }
+        if !self.presence_ring {
+            return shape;
+        }
+        let band = shape.rect().inset(-ring / 2.0);
+        ctx.scene.stroke(
+            &vello::kurbo::Stroke::new(ring),
+            ctx.transform,
+            colour,
+            None,
+            &rounded(band, ring / 2.0),
+        );
+        let inset = ring + gap;
+        rounded(shape.rect().inset(-inset), inset)
     }
 
     /// The initials this face shows: the first letter of the first two
@@ -336,6 +408,7 @@ impl<'a> AvatarFace<'a> {
                 &RoundedRect::from_rect(outer, radius),
             );
         }
+        let shape = self.paint_presence_rings(ctx, shape);
         #[cfg(feature = "local-daemons")]
         let public_image = if self.image.is_none() {
             if self.tint == Tint::Neutral {
