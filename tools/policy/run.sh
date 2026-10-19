@@ -68,6 +68,7 @@ run_tests 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks 
 run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
 run 'Copy used by source is in every shipped catalogue' python3 tools/policy/check_app_copy.py
 run 'Copy follows the house language and glossary' python3 tools/policy/check_copy_language.py
+run 'Surfaces are built from the design system primitives' python3 tools/policy/check_primitives.py
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py

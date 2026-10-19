@@ -1,0 +1,10 @@
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.
+de-DE history-actor-agent glyph
+de-DE history-actor-app glyph
+de-DE history-actor-bot glyph
+de-DE history-actor-shortcut glyph
+en-US history-actor-agent glyph
+en-US history-actor-app glyph
+en-US history-actor-bot glyph
+en-US history-actor-shortcut glyph

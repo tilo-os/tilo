@@ -10,3 +10,16 @@ en-US installer-migration-state-unavailable narration
 en-US installer-original-boot-step narration
 en-US installer-preview-new-recovery narration
 en-US installer-service-source-needs-access instruction
+en-US imager-setup-detail-availability glyph
+en-US imager-setup-detail-review glyph
+en-US imager-setup-detail-root glyph
+en-US imager-setup-detail-selection glyph
+en-US installer-accounts-intro glyph
+en-US installer-demo-notice glyph
+en-US installer-logins-select-group glyph
+en-US installer-service-source-discord glyph
+en-US installer-service-source-discord-origin glyph
+en-US installer-service-source-slack glyph
+en-US installer-windows-budget glyph
+en-US installer-windows-category-summary glyph
+en-US installer-windows-path glyph

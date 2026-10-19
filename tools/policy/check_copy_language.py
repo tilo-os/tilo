@@ -16,6 +16,12 @@ that (HIG section 4):
 - all-caps: shouted words ("AGENT CONTROLS"); headings are sentence case;
 - chain: more than one " · " in a message; a row says one thing, at most a
   name and its value;
+- glyph: a separator glyph joining facts ("·", "•", "|", "—", "–" or " / "
+  between values) or a unicode symbol standing in for an icon (an arrow, a
+  check mark, a cross, a dot, a star). Separate facts are separate
+  components: a secondary line, `ui::widget::Facts`, a property list, key
+  hints with drawn keycaps; icons come from `ui::icons`
+  (docs/design-language.md, "Primitives");
 - instruction: telling people how to operate a control ("select to stop")
   instead of naming the control by what it does;
 - vague-button: a confirming button named "Continue", "OK", "Yes" or
@@ -59,6 +65,11 @@ SAVE_EXCEPTIONS = HERE / "copy_save_exceptions.toml"
 BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
+
+# A separator glyph standing between two values, and unicode symbols used as
+# icons. The same sets as tools/policy/check_primitives.py.
+GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|\s[·•]\s*$")
+GLYPH_ICON = re.compile("[←→↑↓↖↗↘↙↔↕⇐⇒⇑⇓✓✔✗✘✕✖●○◉◎★☆▶◀▲▼▸◂▴▾►◄⬤⏵⏴⏶⏷]")
 
 # Product and app names are matched case-sensitively; ordinary phrases are not.
 NARRATION = (
@@ -303,6 +314,11 @@ def violations(locale: str, message: Message, glossary: list[Term]) -> list[tupl
             break
     if any(line.count(" · ") > 1 for line in lines):
         found.append(("chain", "chains more than two parts with \" · \""))
+    shown = [re.sub(r"\{[^{}]*\}", "x", line) for line in lines]
+    if any(GLYPH_JOIN.search(line) or GLYPH_ICON.search(line) for line in shown):
+        found.append(("glyph", "joins facts with a separator glyph or uses a symbol as an "
+                      "icon; lay facts out as separate components (ui::widget::Facts, "
+                      "a secondary line, key hints) and take icons from ui::icons"))
     instruction = INSTRUCTION.get(lang)
     if instruction:
         match = instruction.search(text)

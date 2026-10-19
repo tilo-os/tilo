@@ -57,12 +57,16 @@ class CopyLanguageTests(unittest.TestCase):
             ("b", "implementation"),
             ("c", "implementation"),
             ("d", "implementation"),
+            ("d", "glyph"),
             ("e", "implementation"),
             ("e", "raw-id"),
             ("f", "implementation"),
             ("f", "raw-id"),
             ("g", "all-caps"),
+            ("g", "glyph"),
             ("h", "chain"),
+            ("h", "glyph"),
+            ("i", "glyph"),
             ("i", "instruction"),
             ("window-transfer-confirm", "vague-button"),
             ("j", "glossary"),
@@ -72,15 +76,15 @@ class CopyLanguageTests(unittest.TestCase):
     def test_plain_copy_passes(self):
         text = "\n".join([
             "a = Couldn't move the tab. Try again.",
-            "b = Online · 80%",
+            "b = Online, 80%",
             "c = Wi-Fi, VPN and USB over HDMI",
             "d = Tap to click",
             "e = Click a window to focus it",
             "f = Hardware H.264/HEVC is ready",
             "g = Set HOME or XDG_STATE_HOME",
             "h = { $count ->",
-            "        [one] { $count } speaker · playing",
-            "       *[other] { $count } speakers · playing",
+            "        [one] { $count } speaker playing",
+            "       *[other] { $count } speakers playing",
             "    }",
             "search-kw-power = session, compositor, AGENT",
             "window-transfer-confirm = Move",
@@ -99,10 +103,39 @@ class CopyLanguageTests(unittest.TestCase):
         ]) + "\n"
         self.assertEqual(rules("de-DE", text), [
             ("a", "all-caps"),
+            ("a", "glyph"),
             ("b", "instruction"),
             ("c", "implementation"),
             ("d", "glossary"),
             ("x-confirm", "vague-button"),
+        ])
+
+    def test_separator_glyphs_and_symbol_icons_are_refused(self):
+        text = "\n".join([
+            "a = { $who } · { $when }",
+            "b = Enter to save • Esc to cancel",
+            "c = Settings | Network",
+            "d = Offline — reconnecting",
+            "e = Offline – reconnecting",
+            "f = { $done } / { $total }",
+            "g = ✓ Connected",
+            "h = Next →",
+            "i = ★ Favourites",
+            "ok-range = Mon–Fri",
+            "ok-pair = Read/write",
+            "ok-sentence = Your files are safe, and the copy is kept.",
+            "ok-dimension = { $w }×{ $h }",
+        ]) + "\n"
+        self.assertEqual(rules("en-US", text), [
+            ("a", "glyph"),
+            ("b", "glyph"),
+            ("c", "glyph"),
+            ("d", "glyph"),
+            ("e", "glyph"),
+            ("f", "glyph"),
+            ("g", "glyph"),
+            ("h", "glyph"),
+            ("i", "glyph"),
         ])
 
     def test_attributes_and_terms_are_checked(self):
@@ -153,9 +186,9 @@ class CopyLanguageTests(unittest.TestCase):
             "ok-place = Saved places",
             "ok-where = Saved as { $name }.",
         ]) + "\n"
-        self.assertEqual(rules("en-US", text), [
-            (key, "save-status") for key in "abcdefgh"
-        ])
+        expected = [(key, "save-status") for key in "abcdefgh"]
+        expected.insert(6, ("g", "glyph"))
+        self.assertEqual(rules("en-US", text), expected)
         german = "\n".join([
             "a = Gespeichert.",
             "b = { $file } gespeichert",

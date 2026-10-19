@@ -1,0 +1,8 @@
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.
+de-DE terminal-env-no-grants glyph
+de-DE terminal-env-no-tools glyph
+de-DE terminal-no-runtime-status glyph
+en-US terminal-env-no-grants glyph
+en-US terminal-env-no-tools glyph
+en-US terminal-no-runtime-status glyph

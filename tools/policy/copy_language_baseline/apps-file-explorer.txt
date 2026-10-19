@@ -1,1 +1,17 @@
 
+de-DE files-availability-title glyph
+de-DE files-history-title glyph
+de-DE files-merge-review-needs-review glyph
+de-DE files-merge-review-title glyph
+de-DE files-mounted-source glyph
+de-DE files-properties-title glyph
+de-DE files-resolve-keep-current glyph
+de-DE files-resolve-use-other glyph
+de-DE files-sharing-title glyph
+en-US files-availability-title glyph
+en-US files-history-title glyph
+en-US files-merge-review-needs-review glyph
+en-US files-merge-review-title glyph
+en-US files-mounted-source glyph
+en-US files-properties-title glyph
+en-US files-sharing-title glyph
