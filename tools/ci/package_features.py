@@ -24,8 +24,10 @@ NATIVE_TEST_FEATURES = {
 
 # Packages whose tested features above are not their default build. The
 # default build is what ships (the Imager's Tilo app), so clippy also checks it
-# on its own, tests included: otherwise code and tests the default leaves out
-# rot unseen, as the Imager's did when the installation became a feature.
+# on its own, and the `default-builds` check in t.toml builds its tests as it
+# ships, each alone: otherwise code and tests the default leaves out rot
+# unseen, as the Imager's did when the installation became a feature. Not in
+# the test family's shared jobs, whose memory t budgets for one build each.
 DEFAULT_BUILDS_ALSO_CHECKED = ("imager", "imager-backend")
 
 
@@ -41,6 +43,10 @@ def default_builds(packages: list[str]) -> list[str]:
 
 
 def main(argv: list[str]) -> None:
+    if argv == ["--default-builds", "--all"]:
+        # Every such package, for the `default-builds` check in t.toml.
+        print(" ".join(sorted(DEFAULT_BUILDS_ALSO_CHECKED)))
+        return
     defaults = bool(argv) and argv[0] == "--default-builds"
     if defaults:
         argv = argv[1:]
