@@ -2765,8 +2765,8 @@ impl CommandPalette {
 /// Ink drawn on a selected row is measured against the composite this
 /// produces — the two values must stay equal.
 
-const ROW_HEIGHT: f64 = 32.0;
-const TWO_LINE_ROW_HEIGHT: f64 = 42.0;
+const ROW_HEIGHT: f64 = 36.0;
+const TWO_LINE_ROW_HEIGHT: f64 = 48.0;
 const HEADER_HEIGHT: f64 = 24.0;
 /// What a secret's characters are painted as.
 const MASK: char = '\u{2022}';
