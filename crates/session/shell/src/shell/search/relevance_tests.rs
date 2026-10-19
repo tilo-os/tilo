@@ -115,8 +115,7 @@ struct Palette {
 impl Palette {
     fn new() -> Self {
         let mut registry = SearchRegistry::new();
-        let apps =
-            ApplicationsTestSource::new(installed_apps(), Vec::new(), Vec::new(), Vec::new());
+        let apps = ApplicationsTestSource::new(installed_apps(), Vec::new());
         registry.register(Rc::new(ApplicationsProvider::with_test_source(apps)));
         // A device with every radio, so the switches are offered.
         let qs = Rc::new(SharedQsDispatcher::new(

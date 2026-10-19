@@ -1,26 +1,26 @@
 //! Applications provider: apps you can open, launchable from the palette.
 //!
 //! Typing an installed app's name into Ctrl+K offers `Open <App>`, launched
-//! through [`crate::shell::launcher`]. Registry apps that are not installed
-//! intentionally take a different, safe route: the palette opens the Store's
-//! stable detail URI. The Store then shows provenance and offers the current
-//! revalidated install action; palette activation never downloads software.
+//! through [`crate::shell::launcher`]. Apps the device does not have yet are
+//! the catalogue's, which search shares with the App Store
+//! ([`super::store_catalogue`]).
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::Ref;
 use std::collections::HashSet;
-use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
 
 use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
-use crate::shell::catalogue::{self, CatalogueApp};
+use crate::shell::catalogue;
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
-use crate::shell::search::action_api::{ActionArgs, ActionError};
+#[cfg(test)]
+use crate::shell::search::action_api::ActionArgs;
+use crate::shell::search::action_api::ActionError;
 use crate::shell::search::provider_score;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
@@ -31,12 +31,6 @@ use tilo_search::{Document, Matching, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
-
-/// Penalty for an app the machine does not have yet, against one it does —
-/// enough to break a tie without dragging a better match below a worse one
-/// (every tier of [`searchable_fields`] is at least five points apart).
-const NOT_INSTALLED_TIEBREAK: i32 = 1;
-const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// The provider's own id, which also keys what was chosen from it.
 const PROVIDER_ID: &str = "applications";
@@ -65,18 +59,13 @@ fn app_detail(category: Option<&str>) -> Option<String> {
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    index: BackgroundIndex<(u64, u64, u64, u128), ApplicationsSnapshot>,
+    index: BackgroundIndex<(u64, u128), ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
 }
 
 #[cfg(test)]
-type ApplicationsTestState = (
-    Vec<InstalledApp>,
-    Vec<CatalogueApp>,
-    Vec<crate::shell::host_apps::HostApp>,
-    Vec<DynamicLauncherRecord>,
-);
+type ApplicationsTestState = (Vec<InstalledApp>, Vec<DynamicLauncherRecord>);
 
 #[cfg(test)]
 pub(crate) struct ApplicationsTestSource {
@@ -89,44 +78,34 @@ pub(crate) struct ApplicationsTestSource {
 impl ApplicationsTestSource {
     pub(crate) fn new(
         installed: Vec<InstalledApp>,
-        catalogue: Vec<CatalogueApp>,
-        host_apps: Vec<crate::shell::host_apps::HostApp>,
         dynamic: Vec<DynamicLauncherRecord>,
     ) -> Arc<Self> {
         Arc::new(Self {
             generation: std::sync::atomic::AtomicU64::new(1),
-            state: Mutex::new((installed, catalogue, host_apps, dynamic)),
+            state: Mutex::new((installed, dynamic)),
             materializations: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
-    fn generation(&self) -> (u64, u64, u64, u128) {
+    fn generation(&self) -> (u64, u128) {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        (generation, generation, generation, u128::from(generation))
+        (generation, u128::from(generation))
     }
 
-    fn snapshot(
-        &self,
-    ) -> (
-        u64,
-        Vec<InstalledApp>,
-        Vec<CatalogueApp>,
-        Vec<crate::shell::host_apps::HostApp>,
-        Vec<DynamicLauncherRecord>,
-    ) {
+    fn snapshot(&self) -> (u64, Vec<InstalledApp>, Vec<DynamicLauncherRecord>) {
         self.materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        let (installed, catalogue, host_apps, dynamic) = self
+        let (installed, dynamic) = self
             .state
             .lock()
             .expect("application test source lock")
             .clone();
-        (generation, installed, catalogue, host_apps, dynamic)
+        (generation, installed, dynamic)
     }
 
-    fn replace_catalogue(&self, catalogue: Vec<CatalogueApp>) {
-        self.state.lock().expect("application test source lock").1 = catalogue;
+    fn replace_installed(&self, installed: Vec<InstalledApp>) {
+        self.state.lock().expect("application test source lock").0 = installed;
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
@@ -137,19 +116,14 @@ enum ApplicationEntry {
     /// keystroke does not copy the app's manifest view into each row.
     Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
-    /// Boxed: a catalogue entry carries its whole registry record (names,
-    /// description, images, download and trust fields), several times the
-    /// size of the other variants.
-    Catalogue(Box<CatalogueApp>),
 }
 
 struct ApplicationsSnapshot {
     entries: Vec<ApplicationEntry>,
-    /// Canonical lower-cased identities make the warm catalogue membership
-    /// check O(1).  Re-walking either complete source for every indexed row
-    /// turns a broad palette page into a quadratic catalogue query.
+    /// Canonical lower-cased identities make the warm membership check of a
+    /// shortcut's owner O(1), rather than a walk of every installed app per
+    /// indexed row.
     installed_ids: HashSet<String>,
-    host_app_ids: HashSet<String>,
     /// Entries' fields, keyed by position in `entries`.
     index: SearchIndex,
 }
@@ -173,87 +147,59 @@ impl ApplicationsProvider {
     }
 
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn source_generation(&self) -> (u64, u64, u64, u128) {
+    fn source_generation(&self) -> (u64, u128) {
         #[cfg(test)]
         if let Some(source) = &self.source {
             return source.generation();
         }
         (
             launcher::gui_apps_generation(),
-            catalogue::available_apps_generation(),
-            crate::shell::host_apps::host_apps_generation(),
             crate::portal::desktop_services::dynamic_launcher_generation(),
         )
     }
 
     /// Refresh the retained projection during the registry's source-refresh
     /// pass.  `query_page` deliberately never calls this: a source change may
-    /// contain a very large installed/catalogue corpus and must not turn the
-    /// first keystroke into an indexing job.
+    /// contain a very large installed corpus and must not turn the first
+    /// keystroke into an indexing job.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
-    ) -> ((u64, u64, u64, u128), ApplicationsSnapshot) {
+    ) -> ((u64, u128), ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
-            let (generation, installed, catalogue_apps, host_apps, dynamic) = source.snapshot();
+            let (generation, installed, dynamic) = source.snapshot();
             return (
-                (generation, generation, generation, u128::from(generation)),
-                Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
+                (generation, u128::from(generation)),
+                Self::snapshot_from_parts(&installed, dynamic),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
-        let (catalogue_generation, catalogue_apps) = catalogue::available_apps_snapshot();
-        let (host_generation, host_apps) = crate::shell::host_apps::host_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
         (
-            (
-                installed_generation,
-                catalogue_generation,
-                host_generation,
-                dynamic_generation,
-            ),
-            Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
+            (installed_generation, dynamic_generation),
+            Self::snapshot_from_parts(&installed, dynamic),
         )
     }
 
     fn snapshot_from_parts(
         installed: &[InstalledApp],
-        catalogue_apps: Vec<CatalogueApp>,
-        host_apps: &[crate::shell::host_apps::HostApp],
         dynamic: Vec<DynamicLauncherRecord>,
     ) -> ApplicationsSnapshot {
         let installed_ids: HashSet<String> = installed
             .iter()
             .map(|app| app.package_id.to_ascii_lowercase())
             .collect();
-        let host_app_ids: HashSet<String> = host_apps
-            .iter()
-            .map(|host| host.desktop_id.to_ascii_lowercase())
-            .collect();
-        let mut seen_catalogue = HashSet::new();
         let mut entries = installed
             .iter()
             .cloned()
             .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
         entries.extend(dynamic.into_iter().map(ApplicationEntry::Dynamic));
-        entries.extend(
-            catalogue_apps
-                .into_iter()
-                .filter(|app| {
-                    let package_id = app.package_id.to_ascii_lowercase();
-                    !installed_ids.contains(&package_id)
-                        && !host_app_ids.contains(&package_id)
-                        && seen_catalogue.insert(package_id)
-                })
-                .map(|app| ApplicationEntry::Catalogue(Box::new(app))),
-        );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
             entries,
             installed_ids,
-            host_app_ids,
             index,
         }
     }
@@ -261,9 +207,7 @@ impl ApplicationsProvider {
     /// The worker reads and clones every source itself; the UI tick never
     /// flattens an application corpus before spawn, and a query never starts it.
     #[allow(clippy::unused_self, reason = "test builds use the injected source")]
-    fn builder(
-        &self,
-    ) -> impl FnOnce() -> ((u64, u64, u64, u128), ApplicationsSnapshot) + Send + 'static {
+    fn builder(&self) -> impl FnOnce() -> ((u64, u128), ApplicationsSnapshot) + Send + 'static {
         #[cfg(test)]
         let source = self.source.clone();
         move || {
@@ -419,200 +363,6 @@ impl ApplicationsProvider {
             })
             .collect()
     }
-
-    /// Score not-yet-installed apps and build Store-detail rows. `installed`
-    /// keeps an app from being offered twice between an install finishing and the
-    /// catalogue refetching.
-    #[cfg(test)]
-    pub(crate) fn catalogue_results_for(
-        &self,
-        needle: &str,
-        apps: Vec<CatalogueApp>,
-        installed: &[String],
-    ) -> Vec<SearchResult> {
-        self.catalogue_results_for_with_hosts(needle, apps, installed, &[])
-    }
-
-    #[cfg(test)]
-    fn catalogue_results_for_with_hosts(
-        &self,
-        needle: &str,
-        apps: Vec<CatalogueApp>,
-        installed: &[String],
-        host_apps: &[crate::shell::host_apps::HostApp],
-    ) -> Vec<SearchResult> {
-        let installed_ids = installed.iter().map(|id| id.to_ascii_lowercase()).collect();
-        let host_app_ids = host_apps
-            .iter()
-            .map(|app| app.desktop_id.to_ascii_lowercase())
-            .collect();
-        let scores = test_scores(
-            needle,
-            apps.iter().map(|app| {
-                searchable_fields(
-                    &app.display_name,
-                    &app.package_id,
-                    app.category.as_deref(),
-                    Some(&app.description),
-                    [],
-                    &[],
-                )
-            }),
-        );
-        self.catalogue_results_for_membership(needle, apps, &scores, &installed_ids, &host_app_ids)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the callback captures one catalogue row's launch safety and failure behaviour, keeping Store activation identical across result sources"
-    )]
-    fn catalogue_results_for_membership(
-        &self,
-        needle: &str,
-        apps: Vec<CatalogueApp>,
-        scores: &[Option<i32>],
-        installed_ids: &HashSet<String>,
-        host_app_ids: &HashSet<String>,
-    ) -> Vec<SearchResult> {
-        let mut out = Vec::new();
-        let mut seen = HashSet::new();
-        for (app, score) in apps.into_iter().zip(scores) {
-            let package_id_key = app.package_id.to_ascii_lowercase();
-            if installed_ids.contains(&package_id_key)
-                || host_app_ids.contains(&package_id_key)
-                || !seen.insert(package_id_key)
-            {
-                continue;
-            }
-            let Some(score) = *score else {
-                continue;
-            };
-            let package_id = app.package_id.clone();
-            let display_name = app.display_name.clone();
-            let detail = app_detail(app.category.as_deref());
-            let trust = if app.trust.trim().is_empty() {
-                t("search-apps-verification-pending")
-            } else {
-                app.trust.clone()
-            };
-            let subtitle = match detail {
-                Some(detail) => t_args(
-                    "search-apps-store-subtitle",
-                    &[("trust", trust.into()), ("detail", detail.into())],
-                ),
-                None => t_args(
-                    "search-apps-store-subtitle-bare",
-                    &[("trust", trust.into())],
-                ),
-            };
-            out.push(SearchResult {
-                shortcut: None,
-                kind: ResourceKind::Application,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                provider_id: self.id().to_string(),
-                id: format!("app:{}", app.package_id),
-                title: t_args(
-                    "search-apps-view-in-store",
-                    &[("app", app.display_name.as_str().into())],
-                ),
-                subtitle: Some(subtitle),
-                badge: None,
-                score: presentation_score(needle, &app.package_id, score)
-                    .saturating_sub(NOT_INSTALLED_TIEBREAK),
-                on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                    // A palette can be opened and activated repeatedly while
-                    // catalogue installation is still running. Keep one
-                    // in-flight operation and one acknowledgement; replacing
-                    // the pending id would strand the first card forever.
-                    if catalogue::pending_launch(&package_id) {
-                        return Ok(());
-                    }
-                    // Captured now, not re-read at launch: the window may be
-                    // a minute away and the user's selection can change.
-                    let context = {
-                        let st = chrome.borrow();
-                        let tree = st.tree();
-                        crate::shell::placement::note_placement_for_launch_targeted(
-                            &package_id,
-                            &tree,
-                            st.strip_viewport(),
-                            st.open_target,
-                        );
-                        tree.desktop
-                            .active_workspace()
-                            .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
-                    };
-                    let Some((room, capabilities)) = context else {
-                        // No active workspace is no room to launch into —
-                        // reported exactly as an installed app's launch would.
-                        let mut st = chrome.borrow_mut();
-                        st.push_notification_full(
-                            Notification::new(
-                                t_args(
-                                    "search-apps-store-failed",
-                                    &[("app", display_name.as_str().into())],
-                                ),
-                                launcher::LaunchError::NoWorkspace.notification_message(),
-                            )
-                            .with_severity(NotificationSeverity::Error)
-                            .with_app_name(t("host-source-applications"))
-                            .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
-                        );
-                        st.bump();
-                        // The notification is how the person at the machine
-                        // learns; this is how a caller with no screen learns —
-                        // the same failure, rather than success reported for an
-                        // app that was never started.
-                        return Err(ActionError::Refused(format!(
-                            "Couldn't open App Store for {display_name}: {}",
-                            launcher::LaunchError::NoWorkspace.user_message()
-                        )));
-                    };
-                    let uri = store_detail_uri(&package_id)?;
-                    launcher::launch_uri_in_room(STORE_PACKAGE_ID, room, capabilities, &uri)
-                        .map(|_| ())
-                        .map_err(|error| {
-                            let message = error.user_message();
-                            let mut state = chrome.borrow_mut();
-                            state.push_notification_full(
-                                Notification::new(
-                                    t_args(
-                                        "search-apps-store-failed",
-                                        &[("app", display_name.as_str().into())],
-                                    ),
-                                    message.clone(),
-                                )
-                                .with_severity(NotificationSeverity::Error)
-                                .with_app_name(t("host-source-applications")),
-                            );
-                            state.bump();
-                            ActionError::Refused(format!(
-                                "Couldn't open App Store for {display_name}: {message}"
-                            ))
-                        })
-                }),
-                on_invoke: None,
-                on_begin_invoke: None,
-                params: Vec::new(),
-                contract: None,
-            });
-        }
-        out
-    }
-}
-
-fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
-    if package_id.is_empty()
-        || package_id.len() > 255
-        || package_id
-            .chars()
-            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '.' && ch != '-')
-    {
-        return Err(ActionError::Refused(
-            "The catalogue entry has an invalid stable package identity".into(),
-        ));
-    }
-    Ok(format!("tilo-store:app/{package_id}"))
 }
 
 /// The package id of the file manager Tilo ships as a system app.
@@ -958,10 +708,9 @@ impl Default for ApplicationsProvider {
 }
 
 /// Whether an installed app's row (its id the package id) opens the app
-/// whose windows announce `app_id`. A store offer ("app:…") is not open.
+/// whose windows announce `app_id`.
 fn package_row_opens(result: &SearchResult, app_id: &str) -> bool {
     result.kind == ResourceKind::Application
-        && !result.id.starts_with("app:")
         && crate::shell::launcher::app_id_matches_package(app_id, &result.id)
 }
 
@@ -1080,7 +829,7 @@ impl SearchProvider for ApplicationsProvider {
         // Then the order the product gives apps: "apps" names the Store and
         // "Windows Apps" alike, and the Store is what people mean.
         crate::shell::search::usage::order_ties_by(&mut page.results, |row| {
-            ui::search::system::starting_point_rank(row.id.strip_prefix("app:").unwrap_or(&row.id))
+            ui::search::system::starting_point_rank(&row.id)
         });
         page
     }
@@ -1093,9 +842,6 @@ impl ApplicationEntry {
         match self {
             Self::Installed(app) => app.package_id == id,
             Self::Dynamic(record) => record.id == id,
-            Self::Catalogue(app) => id
-                .strip_prefix("app:")
-                .is_some_and(|package_id| package_id == app.package_id),
         }
     }
 }
@@ -1120,22 +866,15 @@ impl ApplicationsProvider {
                 &score,
                 &snapshot.installed_ids,
             ),
-            ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
-                ctx.needle,
-                vec![app.as_ref().clone()],
-                &score,
-                &snapshot.installed_ids,
-                &snapshot.host_app_ids,
-            ),
         };
         rows.pop()
     }
 
     fn revision(&self) -> String {
-        let (installed, catalogue, host, dynamic) = self.source_generation();
-        let ready = self.index.is_ready(&(installed, catalogue, host, dynamic));
+        let (installed, dynamic) = self.source_generation();
+        let ready = self.index.is_ready(&(installed, dynamic));
         format!(
-            "{}:{installed}:{catalogue}:{host}:{dynamic}",
+            "{}:{installed}:{dynamic}",
             if ready { "ready" } else { "indexing" }
         )
     }
@@ -1170,7 +909,7 @@ fn test_scores(
 /// generated first-party registry knows for its id (an app the store offers
 /// but this machine does not have yet declares none locally) — and the
 /// initials of its name.
-fn searchable_fields(
+pub(super) fn searchable_fields(
     name: &str,
     package_id: &str,
     category: Option<&str>,
@@ -1219,14 +958,8 @@ fn installed_fields(app: &InstalledApp) -> Vec<(String, tilo_search::FieldWeight
 
 /// Index each entry's [`searchable_fields`], keyed by position.
 fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
-    fn app_fields(
-        document: Document,
-        name: &str,
-        package_id: &str,
-        category: Option<&str>,
-        description: Option<&str>,
-    ) -> Document {
-        searchable_fields(name, package_id, category, description, [], &[])
+    fn app_fields(document: Document, name: &str, package_id: &str) -> Document {
+        searchable_fields(name, package_id, None, None, [], &[])
             .into_iter()
             .fold(document, |document, (text, weight)| {
                 document.field(text, weight)
@@ -1242,16 +975,7 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
                 .fold(document, |document, (text, weight)| {
                     document.field(text, weight)
                 }),
-            ApplicationEntry::Dynamic(record) => {
-                app_fields(document, &record.name, &record.id, None, None)
-            }
-            ApplicationEntry::Catalogue(app) => app_fields(
-                document,
-                &app.display_name,
-                &app.package_id,
-                app.category.as_deref(),
-                Some(&app.description),
-            ),
+            ApplicationEntry::Dynamic(record) => app_fields(document, &record.name, &record.id),
         }
     }));
     if let Err(error) = index.commit() {
@@ -1316,7 +1040,7 @@ mod tests {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::search::action_api::{ActionCatalog, AllVisible};
         use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
-        let source = ApplicationsTestSource::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let source = ApplicationsTestSource::new(Vec::new(), Vec::new());
         let gate = source.state.lock().expect("hold source materialization");
         let (woken, wake) = std::sync::mpsc::channel();
         let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
@@ -1584,19 +1308,6 @@ mod tests {
         app_in(package_id, display_name, None)
     }
 
-    fn offered(package_id: &str, display_name: &str, category: Option<&str>) -> CatalogueApp {
-        CatalogueApp {
-            package_id: package_id.to_string(),
-            display_name: display_name.to_string(),
-            description: "does a thing".to_string(),
-            category: category.map(str::to_string),
-            version: "0.1.0".to_string(),
-            registry: "Tilo main".to_string(),
-            trust: "verified".to_string(),
-            ..Default::default()
-        }
-    }
-
     fn app_in(package_id: &str, display_name: &str, category: Option<&str>) -> InstalledApp {
         InstalledApp {
             package_id: package_id.to_string(),
@@ -1630,46 +1341,6 @@ mod tests {
                 "a second activation must not start another worker or say anything"
             );
             assert!(catalogue::take_pending_launch(package_id));
-        }
-
-        // Phase `activating_with_no_workspace_reports_it_the_same_way`.
-        // Must say so in the same words an installed app's launch uses, not
-        // fail silently. Drives the real `on_open` closure.
-        {
-            let p = ApplicationsProvider::new();
-            let c = chrome_rc();
-            let mut doc = AutoCommit::new();
-            let out = p.catalogue_results_for(
-                "sheets",
-                vec![offered("so.tilo.sheets", "Sheets", None)],
-                &[],
-            );
-            let row = out.first().expect("a row for the offered app");
-            assert!(c.borrow().notifications().is_empty());
-            let opened = (row.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &c,
-                &ActionArgs::none(),
-            );
-            assert!(
-                opened.is_err(),
-                "no active workspace is no room to launch into — the caller must be told, \
-                 not answered as though the app had started",
-            );
-            let st = c.borrow();
-            let n = st
-                .notifications()
-                .last()
-                .expect("activation must never be silent");
-            assert_eq!(n.title, "Couldn't open App Store for Sheets");
-            assert_eq!(n.severity, NotificationSeverity::Error);
-            assert_eq!(
-                n.body,
-                launcher::LaunchError::NoWorkspace.notification_message(),
-                "the same failure gets the same words whichever list the app \
-                 came from"
-            );
         }
 
         // Phase `a_failed_launch_notifies_the_user_and_refuses_the_caller`.
@@ -1741,27 +1412,6 @@ mod tests {
                 out[0].subtitle.as_deref(),
                 None,
                 "no vendor, package id or version under an app's name"
-            );
-        }
-
-        // Phase `available_apps_are_discoverable_by_description_and_cross_field_terms`.
-        {
-            let p = ApplicationsProvider::new();
-            let mut candidate = offered("so.tilo.ledger", "Ledger", Some("Office"));
-            candidate.description = "Fast collaborative spreadsheet".to_string();
-
-            let by_description =
-                p.catalogue_results_for("spreadsheet", vec![candidate.clone()], &[]);
-            assert_eq!(
-                by_description.first().map(|row| row.id.as_str()),
-                Some("app:so.tilo.ledger")
-            );
-
-            let across_fields =
-                p.catalogue_results_for("office collaborative", vec![candidate], &[]);
-            assert_eq!(
-                across_fields.first().map(|row| row.id.as_str()),
-                Some("app:so.tilo.ledger")
             );
         }
 
@@ -1871,78 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn application_rows_dedupe_only_true_identity_and_hide_malformed_records() {
-        // Phase `duplicate_registry_offers_produce_one_application_row`.
-        {
-            let p = ApplicationsProvider::new();
-            let app = offered("so.tilo.notes", "Notes", Some("Office"));
-            let out = p.catalogue_results_for("notes", vec![app.clone(), app], &[]);
-            assert_eq!(out.len(), 1, "registry mirrors must not duplicate an app");
-        }
-
-        // Phase `an_exact_host_package_identity_hides_its_catalogue_alias`.
-        {
-            let p = ApplicationsProvider::new();
-            let hosts = vec![crate::shell::host_apps::HostApp {
-                desktop_id: "so.tilo.notes".into(),
-                name: "Notes".into(),
-                source_label: "Flatpak",
-                categories: Vec::new(),
-                keywords: Vec::new(),
-                mime_types: Vec::new(),
-                terminal: false,
-                window_identities: vec!["so.tilo.notes".into()],
-                icon: None,
-            }];
-            let out = p.catalogue_results_for_with_hosts(
-                "notes",
-                vec![offered("so.tilo.notes", "Notes", Some("Office"))],
-                &[],
-                &hosts,
-            );
-            assert!(
-                out.is_empty(),
-                "opening an existing app must not offer a duplicate fetch"
-            );
-        }
-
-        // Phase `gnome_calendar_does_not_hide_tilo_calendar`.
-        {
-            let rows = catalogue_rows_with_host(
-                "so.tilo.calendar",
-                "Calendar",
-                "org.gnome.Calendar",
-                "Calendar",
-            );
-            assert_eq!(rows.len(), 1);
-            assert_eq!(
-                rows[0].id, "app:so.tilo.calendar",
-                "the Tilo app is offered"
-            );
-        }
-
-        // Phase `host_terminal_does_not_hide_tilo_terminal`.
-        {
-            let rows = catalogue_rows_with_host(
-                "so.tilo.terminal",
-                "Terminal",
-                "org.gnome.Console",
-                "Terminal",
-            );
-            assert_eq!(rows.len(), 1);
-        }
-
-        // Phase `a_generic_shared_name_is_not_cross_provider_identity`.
-        {
-            let rows = catalogue_rows_with_host(
-                "so.tilo.notes",
-                "Notes",
-                "org.example.PrivateNotes",
-                "Notes",
-            );
-            assert_eq!(rows.len(), 1);
-        }
-
+    fn reviewed_shortcuts_are_searchable_and_malformed_records_are_hidden() {
         // Phase `reviewed_web_shortcut_is_searchable_but_malformed_records_are_hidden`.
         {
             let p = ApplicationsProvider::new();
@@ -1968,32 +1547,6 @@ mod tests {
             assert_eq!(out[0].title, "Project board");
             assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
         }
-    }
-
-    fn catalogue_rows_with_host(
-        catalogue_id: &str,
-        catalogue_name: &str,
-        host_id: &str,
-        host_name: &str,
-    ) -> Vec<SearchResult> {
-        let p = ApplicationsProvider::new();
-        let hosts = vec![crate::shell::host_apps::HostApp {
-            desktop_id: host_id.into(),
-            name: host_name.into(),
-            source_label: "System",
-            categories: Vec::new(),
-            keywords: Vec::new(),
-            mime_types: Vec::new(),
-            terminal: false,
-            icon: None,
-            window_identities: vec![host_id.into()],
-        }];
-        p.catalogue_results_for_with_hosts(
-            catalogue_name,
-            vec![offered(catalogue_id, catalogue_name, None)],
-            &[],
-            &hosts,
-        )
     }
 
     #[test]
@@ -2060,121 +1613,6 @@ mod tests {
         }
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn uninstalled_apps_open_their_store_detail_and_never_install() {
-        // Phase `an_uninstalled_app_opens_its_canonical_store_detail`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.catalogue_results_for(
-                "she",
-                vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
-                &[],
-            );
-            assert_eq!(out.len(), 1, "the offered app must match: {out:?}");
-            assert_eq!(
-                out[0].title, "View Sheets in App Store",
-                "palette activation must present a reviewable Store detail, not install"
-            );
-            assert_eq!(out[0].id, "app:so.tilo.sheets");
-            assert_eq!(out[0].kind, ResourceKind::Application);
-            assert!(
-                out[0].subtitle.as_deref().is_some_and(
-                    |subtitle| subtitle.contains("App Store") && subtitle.contains("verified")
-                ),
-                "the palette must disclose the review surface and trust claim"
-            );
-            assert_eq!(
-                out[0].provider_id, "applications",
-                "one provider means one group header — a second would be a \
-                 visible 'other kind of app' section"
-            );
-        }
-
-        // Phase `palette_result_never_installs_and_store_uri_is_stable`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.catalogue_results_for(
-                "",
-                vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
-                &[],
-            );
-            let row = &out[0];
-            let visible = format!("{} {}", row.title, row.subtitle.clone().unwrap_or_default());
-            let lowered = visible.to_lowercase();
-            for word in ["install", "download", "fetch", "available", "get "] {
-                assert!(
-                    !lowered.contains(word),
-                    "{word:?} must not appear in a row the user reads as opening \
-                     an app: {visible:?}"
-                );
-            }
-            assert_eq!(
-                store_detail_uri("so.tilo.sheets").unwrap(),
-                "tilo-store:app/so.tilo.sheets"
-            );
-            assert!(store_detail_uri("so.tilo.sheets?install=true").is_err());
-        }
-
-        // Phase `uninstalled_rows_are_explicit_about_the_store_review_surface`.
-        {
-            let p = ApplicationsProvider::new();
-            let available = p.catalogue_results_for(
-                "",
-                vec![offered("so.tilo.sheets", "Sheets", Some("Office"))],
-                &[],
-            );
-            assert!(available[0].title.contains("App Store"));
-            assert!(
-                available[0]
-                    .subtitle
-                    .as_deref()
-                    .is_some_and(|subtitle| subtitle.contains("verified"))
-            );
-        }
-
-        // Phase `shell_query_includes_an_uninstalled_app_as_a_store_detail_row`.
-        {
-            let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
-                Vec::new(),
-                vec![offered(
-                    "so.tilo.uninstalled-sheets",
-                    "Sheets",
-                    Some("Office"),
-                )],
-                Vec::new(),
-                Vec::new(),
-            ));
-            let c = chrome_rc();
-            let state = c.borrow();
-            let doc = AutoCommit::new();
-            let ctx = SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "sheets",
-                wanted: &[ResourceKind::Application],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            };
-            refresh_until_ready(&p, &ctx);
-            let results = p.query(ctx);
-            let row = results
-                .iter()
-                .find(|row| row.id == "app:so.tilo.uninstalled-sheets")
-                .expect("Win+K finds the uninstalled stable app identity");
-            assert_eq!(row.title, "View Sheets in App Store");
-            assert!(
-                row.subtitle
-                    .as_deref()
-                    .is_some_and(|text| text.contains("verified"))
-            );
-        }
-    }
-
     /// An app is found by its name in any language its manifest gives, so a
     /// German desktop finds Files as "Dateien" and English still works.
     #[test]
@@ -2183,8 +1621,6 @@ mod tests {
         files.localized_names.insert("de".into(), "Dateien".into());
         let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
             vec![files.clone()],
-            Vec::new(),
-            Vec::new(),
             Vec::new(),
         ));
         let c = chrome_rc();
@@ -2216,71 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_apps_and_catalogue_offers_never_double_up() {
-        // Phase `an_app_you_have_wins_a_tie_but_not_a_better_match`.
-        {
-            let p = ApplicationsProvider::new();
-            let mine = p.results_for("notes", vec![app("so.tilo.notes", "Notes")]);
-            let theirs = p.catalogue_results_for(
-                "notes",
-                vec![offered("org.other.notes", "Notes", None)],
-                &[],
-            );
-            assert!(
-                mine[0].score > theirs[0].score,
-                "at equal match quality the installed app ranks first: \
-                 {} vs {}",
-                mine[0].score,
-                theirs[0].score
-            );
-
-            // A weaker match on an installed app must NOT beat the app the
-            // user actually named.
-            let vague = p.results_for("sheets", vec![app("so.tilo.score", "Sheet Music Helper")]);
-            let named = p.catalogue_results_for(
-                "sheets",
-                vec![offered("so.tilo.sheets", "Sheets", None)],
-                &[],
-            );
-            assert!(
-                !vague.is_empty() && !named.is_empty(),
-                "both sides must actually match for this to prove anything"
-            );
-            assert!(
-                named[0].score > vague[0].score,
-                "naming an app you don't have beats a vague hit on one you do: \
-                 {} vs {}",
-                named[0].score,
-                vague[0].score
-            );
-        }
-
-        // Phase `an_app_that_just_became_installed_is_not_offered_twice`.
-        // The same app can be in both lists briefly; must produce one row, not two.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.catalogue_results_for(
-                "sheets",
-                vec![offered("so.tilo.sheets", "Sheets", None)],
-                &["so.tilo.sheets".to_string()],
-            );
-            assert!(
-                out.is_empty(),
-                "an installed app must not also be offered as available: {out:?}"
-            );
-        }
-
-        // Phase `a_non_matching_needle_offers_nothing_from_the_catalogue`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.catalogue_results_for(
-                "zzzqqq",
-                vec![offered("so.tilo.sheets", "Sheets", None)],
-                &[],
-            );
-            assert!(out.is_empty());
-        }
-
+    fn an_app_that_is_here_is_just_opened() {
         // Phase `an_app_that_is_already_here_does_not_raise_a_loading_state`.
         // A state that flashes for a hundred milliseconds is noise, not feedback.
         {
@@ -2325,8 +1697,6 @@ mod tests {
         let provider = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
             Vec::new(),
             Vec::new(),
-            Vec::new(),
-            Vec::new(),
         ));
         let entries = (0..=4_000)
             .map(|index| {
@@ -2347,7 +1717,6 @@ mod tests {
             ApplicationsSnapshot {
                 entries,
                 installed_ids: HashSet::new(),
-                host_app_ids: HashSet::new(),
                 index,
             },
         );
@@ -2376,7 +1745,7 @@ mod tests {
 
     #[test]
     fn a_worker_snapshot_is_rejected_when_its_source_revision_changed() {
-        let source = ApplicationsTestSource::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let source = ApplicationsTestSource::new(Vec::new(), Vec::new());
         let provider = ApplicationsProvider::with_test_source(Arc::clone(&source));
         let chrome = chrome_rc();
         let chrome = chrome.borrow();
@@ -2411,7 +1780,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
-        source.replace_catalogue(vec![offered("so.tilo.changed", "Changed", None)]);
+        source.replace_installed(vec![app("so.tilo.changed", "Changed")]);
         provider.refresh_search_index(&ctx);
         assert!(provider.search_revision(&ctx).starts_with("indexing:"));
         refresh_until_ready(&provider, &ctx);
@@ -2435,12 +1804,7 @@ mod tests {
                 )
             })
             .collect();
-        let source = ApplicationsTestSource::new(
-            installed,
-            vec![offered("so.tilo.store-only", "Store Only", None)],
-            Vec::new(),
-            Vec::new(),
-        );
+        let source = ApplicationsTestSource::new(installed, Vec::new());
         let provider = Rc::new(ApplicationsProvider::with_test_source(source));
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
@@ -2488,10 +1852,6 @@ mod tests {
             Some(format!("Fixture {:03}", count - 1).as_str()),
             "an installed app past the first page must still open by its address"
         );
-        assert!(
-            select("app:so.tilo.store-only").is_some_and(|title| title.contains("Store Only")),
-            "a catalogue offer past the first page must still resolve"
-        );
         assert_eq!(select("so.tilo.store-only"), None);
         assert_eq!(select("so.tilo.missing"), None);
     }
@@ -2505,12 +1865,8 @@ mod tests {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use std::rc::Rc;
 
-        let source = ApplicationsTestSource::new(
-            vec![app("so.tilo.calculator", "Calculator")],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let source =
+            ApplicationsTestSource::new(vec![app("so.tilo.calculator", "Calculator")], Vec::new());
         let mut registry = SearchRegistry::new();
         registry.register(Rc::new(ApplicationsProvider::with_test_source(source)));
         let chrome = chrome_rc();
@@ -2535,22 +1891,18 @@ mod tests {
     #[test]
     fn source_backed_cold_query_does_no_application_index_work_before_refresh() {
         let source = ApplicationsTestSource::new(
-            Vec::new(),
             (0..=4_000)
-                .map(|index| CatalogueApp {
-                    package_id: format!("so.tilo.cold-fixture-{index}"),
-                    display_name: if index == 4_000 {
-                        "unique-source-tail".into()
-                    } else {
-                        "common source app".into()
-                    },
-                    version: "1".into(),
-                    registry: "fixture".into(),
-                    trust: "verified".into(),
-                    ..Default::default()
+                .map(|index| {
+                    app(
+                        &format!("so.tilo.cold-fixture-{index}"),
+                        if index == 4_000 {
+                            "unique-source-tail"
+                        } else {
+                            "common source app"
+                        },
+                    )
                 })
                 .collect(),
-            Vec::new(),
             Vec::new(),
         );
         let provider = ApplicationsProvider::with_test_source(Arc::clone(&source));
@@ -2624,10 +1976,7 @@ mod tests {
                 max_work: 1,
             },
         );
-        assert_eq!(
-            page.results[0].title,
-            "View unique-source-tail in App Store"
-        );
+        assert_eq!(page.results[0].title, "unique-source-tail");
     }
 }
 

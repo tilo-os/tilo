@@ -3,7 +3,6 @@
 # These are search row titles and subtitles, rewritten with the search row work.
 de-DE search-action-quick-settings-devices-subtitle implementation
 de-DE search-app-action-launches chain
-de-DE search-apps-store-subtitle chain
 de-DE search-continuity-audio-forward-subtitle implementation
 de-DE search-continuity-calibration-revert-subtitle implementation
 de-DE search-continuity-call-move-subtitle implementation
@@ -16,7 +15,6 @@ en-US search-action-shared-display-inspect-subtitle implementation
 en-US search-app-action-launches chain
 en-US search-app-job implementation
 en-US search-app-job-cancel implementation
-en-US search-apps-store-subtitle chain
 en-US search-continuity-audio-forward-subtitle implementation
 en-US search-continuity-calibration-revert-subtitle implementation
 en-US search-continuity-call-move-subtitle implementation
