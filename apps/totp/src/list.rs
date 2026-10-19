@@ -857,7 +857,8 @@ mod tests {
                 assert_eq!(list.take_events(), vec![command.event(id)]);
             }
         }
-        let mut list = list(600.0, 220.0, 1.0);
+        // Room for about three of the five sample rows: the last is off screen.
+        let mut list = list(600.0, 160.0, 1.0);
         assert!(list.scroller.overflows_vertically());
         dispatch(&mut list, &cursor_at(Point::new(300.0, 110.0)));
         assert!(dispatch(&mut list, &wheel(-100.0)));

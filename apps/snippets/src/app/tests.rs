@@ -664,15 +664,16 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
 
     let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
     assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
+    // The drawer floats over the list, its own toggle under it.
     assert!(
-        has_control(&mut narrow, "Hide sidebar"),
+        has_control(&mut narrow, "All snippets"),
         "the overlay sidebar is open"
     );
-    narrow.harness().click_named("nav-shell-sidebar").unwrap();
+    narrow.harness().key("Escape");
     narrow.settle();
     assert!(
-        has_control(&mut narrow, "Show sidebar"),
-        "the sidebar closes through its control"
+        !has_control(&mut narrow, "All snippets"),
+        "Escape puts the drawer away"
     );
 }
 

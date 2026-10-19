@@ -215,7 +215,7 @@ fn live_catalogue() -> ui::framework::testing::TestApp<tube::TubeShell> {
 }
 
 fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
-    if let Some(label) = id.strip_prefix("nav_").filter(|name| *name != "toggle") {
+    if let Some(label) = id.strip_prefix("nav_") {
         let expected = format!("{}{}", label.get(..1).unwrap().to_uppercase(), &label[1..]);
         let centre = app
             .harness()
@@ -227,13 +227,7 @@ fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
             .center();
         app.harness().click_at(centre.x, centre.y);
     } else {
-        app.harness()
-            .click_named(if id == "nav_toggle" {
-                "nav-shell-sidebar"
-            } else {
-                id
-            })
-            .unwrap();
+        app.harness().click_named(id).unwrap();
     }
     app.settle();
     app.harness().relayout();
@@ -487,13 +481,14 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "the now-selected Home tab is still in the laid-out tree"
         );
     }
-    // Case `hamburger_toggles_the_overlay_rail_through_a_real_click`.
+    // Case `back_goes_to_the_narrow_rail_through_a_real_click`.
     {
-        // At a narrow width the rail is a collapsed overlay flap. The top-bar
-        // hamburger must summon and dismiss it — via a real click through the menu
-        // button's `handle_event`, not app.apply.
+        // Too narrow for the rail beside the grid, the window shows one
+        // screen at a time and keeps the page it showed. Back must go to
+        // the rail, and choosing a destination there must
+        // show its page, via real clicks, not app.apply.
         let mut app = live_app();
-        app.harness().resize((560, 800)).unwrap();
+        app.harness().resize((420, 800)).unwrap();
         app.harness().relayout();
         let open = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
             app.with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
@@ -501,14 +496,17 @@ fn pages_lay_out_without_overlap_at_every_size() {
         };
         assert!(
             !open(&mut app),
-            "a narrow window starts with the rail collapsed"
+            "narrowing keeps the page in front of the rail"
         );
 
-        click(&mut app, "nav_toggle");
-        assert!(open(&mut app), "the hamburger summons the overlay rail");
+        app.harness().click_named("nav-shell-back").unwrap();
+        app.settle();
+        app.harness().relayout();
+        assert!(open(&mut app), "Back goes to the rail");
 
-        click(&mut app, "nav_toggle");
-        assert!(!open(&mut app), "a second click dismisses it");
+        click(&mut app, "nav_home");
+        assert_eq!(route(&mut app), Route::Home);
+        assert!(!open(&mut app), "choosing a destination shows its page");
     }
 }
 
@@ -523,6 +521,11 @@ fn search_inputs_are_present_and_navigate() {
             ui::framework::testing::TestApp::<tube::TubeShell>::capture_at(None, viewport).unwrap();
         app.harness()
             .set_theme(Theme::dark().with_text_scale(scale));
+        if viewport.0 < 800 {
+            // A new narrow window opens on the rail, one screen at a time;
+            // the search belongs to the page a destination shows.
+            click(&mut app, "nav_home");
+        }
         let search = app
             .harness()
             .controls()
