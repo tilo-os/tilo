@@ -224,9 +224,11 @@ compatible string, `brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.*`; the
 profile installs both sets. The NVRAM text names Broadcom's sample MAC
 `00:90:4c:c5:12:38`; the image installs it without that line, so boards do
 not share one address. NetworkManager keeps the permanent MAC for `brcmfmac`
+and turns its power saving off
 (`os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf`): the driver drops the
-link when the address is changed. The onboard Ethernet PHY drops the cable
-after idle while Energy Efficient Ethernet is on, so a NetworkManager
+link when the address is changed, and while scanning with power saving on.
+The onboard Ethernet PHY drops the cable after idle while Energy Efficient
+Ethernet is on, so a NetworkManager
 dispatcher (`os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee`)
 turns EEE off whenever `end0` comes up.
 
