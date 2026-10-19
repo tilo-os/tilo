@@ -182,7 +182,7 @@ impl Formats {
 
     /// Divide by `base` until below one step; whole bytes print with no
     /// decimal, larger units with one.
-    fn scaled(&self, n: u64, base: f64, units: &[&str; 7]) -> String {
+    fn scaled(self, n: u64, base: f64, units: &[&str; 7]) -> String {
         let mut value = crate::num::f64_of_u64(n);
         let mut unit = 0;
         while value >= base && unit < units.len().saturating_sub(1) {

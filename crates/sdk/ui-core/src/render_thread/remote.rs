@@ -261,26 +261,27 @@ impl ResourceIds for Session {
         let id = FontId(self.next_font);
         self.next_font = self.next_font.wrapping_add(1);
         let file = font_files().lock_recover().get(&font.data.id()).cloned();
-        match file.filter(|path| self.font_roots.iter().any(|root| path.starts_with(root))) {
-            Some(path) => self.send(
+        if let Some(path) =
+            file.filter(|path| self.font_roots.iter().any(|root| path.starts_with(root)))
+        {
+            self.send(
                 &AppMessage::RegisterFontFile {
                     font: id,
                     path: path.display().to_string(),
                     index: font.index,
                 },
                 &[],
-            )?,
-            None => {
-                let fd = upload(&font.data, font.data.data())
-                    .map_err(|_| WireError::Malformed("font upload"))?;
-                self.send(
-                    &AppMessage::RegisterFontData {
-                        font: id,
-                        index: font.index,
-                    },
-                    &[fd.as_fd()],
-                )?;
-            }
+            )?;
+        } else {
+            let fd = upload(&font.data, font.data.data())
+                .map_err(|_| WireError::Malformed("font upload"))?;
+            self.send(
+                &AppMessage::RegisterFontData {
+                    font: id,
+                    index: font.index,
+                },
+                &[fd.as_fd()],
+            )?;
         }
         self.fonts.insert(font.data.id(), id);
         Ok(id)
@@ -312,9 +313,10 @@ impl ResourceIds for Session {
                 image: id,
                 width: image.width,
                 height: image.height,
-                format: match image.format {
-                    vello::peniko::ImageFormat::Bgra8 => ImageFormat::Bgra8,
-                    _ => ImageFormat::Rgba8,
+                format: if matches!(image.format, vello::peniko::ImageFormat::Bgra8) {
+                    ImageFormat::Bgra8
+                } else {
+                    ImageFormat::Rgba8
                 },
                 alpha: match image.alpha_type {
                     vello::peniko::ImageAlphaType::AlphaPremultiplied => AlphaType::Premultiplied,
@@ -528,8 +530,8 @@ impl Worker {
                 full: full_redraw,
                 backdrop: &backdrop,
             };
-            let outcome = match session.as_mut() {
-                Some(live) => match self.frame(live, &job) {
+            let outcome = if let Some(live) = session.as_mut() {
+                match self.frame(live, &job) {
                     Ok(outcome) => outcome,
                     Err(Lost::Failed(reason)) => {
                         tracing::error!(%reason, "frame not sent to the render service");
@@ -541,16 +543,15 @@ impl Worker {
                         self.repaint();
                         FrameOutcome::Skipped
                     }
-                },
-                None => {
-                    session = self.open().ok();
-                    self.repaint();
-                    FrameOutcome::Skipped
                 }
+            } else {
+                session = self.open().ok();
+                self.repaint();
+                FrameOutcome::Skipped
             };
             if outcome == FrameOutcome::Presented && !hooks.is_empty() {
                 let presented = crate::time::wall();
-                for hook in hooks.drain(..) {
+                for hook in std::mem::take(&mut hooks) {
                     hook(presented);
                 }
             }
@@ -597,7 +598,7 @@ impl Worker {
     fn frame(&mut self, session: &mut Session, job: &FrameJob<'_>) -> Result<FrameOutcome, Lost> {
         self.sequence = self.sequence.wrapping_add(1);
         let sequence = self.sequence;
-        if sequence % SWEEP_EVERY == 0 {
+        if sequence.is_multiple_of(SWEEP_EVERY) {
             session.sweep();
         }
         let record =
