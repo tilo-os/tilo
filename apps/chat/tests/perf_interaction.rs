@@ -14,3 +14,12 @@
 fn interaction_costs() {
     ui::framework::testing::perf::profile::<chat::ChatShell>(None).expect("chat opens its capture");
 }
+
+/// What opening chat costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<chat::ChatShell>(8)
+        .expect("chat opens")
+        .print();
+}

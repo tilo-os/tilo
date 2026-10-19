@@ -189,6 +189,44 @@ pub fn measure<A: ResourceApp>(
     report
 }
 
+/// What opening `A` costs on the UI thread, warm: the app opened as a
+/// person opens it a second time, on a profile that already holds its
+/// record, from the host preparing the launch to the first frame laid out
+/// and drawn, with the named scopes it ran. One launch runs first,
+/// unmeasured, to make the profile and its record; each measured launch
+/// then opens the app, and its close is outside the measurement.
+///
+/// What the GPU, the window and the compositor add on a device is not here:
+/// this is the part of a launch the app's own code decides.
+///
+/// # Errors
+/// Returns the launch failure.
+pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
+    let profile = tempfile::tempdir().map_err(|error| LaunchError::Operation(error.to_string()))?;
+    drop(HeadlessApp::<A>::open_data_dir(profile.path())?);
+    let mut report = Report {
+        label: format!("{} start", A::ID),
+        samples: Vec::with_capacity(launches),
+        phases: BTreeMap::new(),
+        frames: Vec::new(),
+    };
+    for _ in 0..launches {
+        let start = ui_core::time::now();
+        let (app, scopes) =
+            tilo_resource::profiling::observe(|| HeadlessApp::<A>::open_data_dir(profile.path()));
+        report
+            .samples
+            .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+        for scope in scopes {
+            let entry = report.phases.entry(scope.phase).or_default();
+            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
+            entry.1 = entry.1.saturating_add(scope.calls);
+        }
+        drop(app?);
+    }
+    Ok(report)
+}
+
 /// An accessibility node a person can point at: its label and the centre
 /// of its bounds, in logical pixels.
 #[derive(Clone, Debug)]

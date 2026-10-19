@@ -1940,6 +1940,7 @@ fn open_app(
     let person = launch.author.to_owned();
     let author = UserId(person.clone());
     let permissions = role_permissions(&person, launch.role);
+    let host_phase = tilo_resource::profiling::Phase::start("start.host");
     let (mut host, instance) = match &profile {
         Profile::Temporary(directory, room, device)
         | Profile::Window(directory, room, device, _) => (
@@ -1962,7 +1963,9 @@ fn open_app(
             DATA_DIR_INSTANCE,
         ),
     };
+    drop(host_phase);
     let definition = opening.definition;
+    let prepare_phase = tilo_resource::profiling::Phase::start("start.prepare");
     let records = host.records_for(definition)?;
     let named = (opening.launch_record)(&LaunchInput::new(arguments, None).with_options(&options));
     let inputs = ComponentRunnerInputs::from_native_process();
@@ -2002,9 +2005,19 @@ fn open_app(
     prepared.context.provide_content(profile.content());
     let mut prepared = in_profile(prepared, &profile.root(), opening.id);
     configure(&mut prepared.context);
-    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-    let mut harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
-    settle_launch(&mut harness);
+    drop(prepare_phase);
+    let component = {
+        let _phase = tilo_resource::profiling::Phase::start("start.instantiate");
+        definition.instantiate(prepared.context, prepared.target, prepared.restore)?
+    };
+    let mut harness = {
+        let _phase = tilo_resource::profiling::Phase::start("start.first_frame");
+        FrameHarness::from_component(component, viewport, prepared.runner_inputs)?
+    };
+    {
+        let _phase = tilo_resource::profiling::Phase::start("start.settle");
+        settle_launch(&mut harness);
+    }
     // The live host withdraws a component's whole action surface (the
     // palette's, agents', scripts') when any of its actions breaks its
     // contract. Every test that opens the app proves it would not.
@@ -2012,6 +2025,7 @@ fn open_app(
     let violations = if captured {
         Vec::new()
     } else {
+        let _phase = tilo_resource::profiling::Phase::start("start.contract_check");
         harness.component_contract_violations()
     };
     if !violations.is_empty() {

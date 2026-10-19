@@ -15,3 +15,12 @@ fn interaction_costs() {
     ui::framework::testing::perf::profile::<store::StoreShell>(None)
         .expect("store opens its capture");
 }
+
+/// What opening store costs on the UI thread, warm (its record already on the
+/// profile): from the host preparing the launch to the first frame drawn.
+#[test]
+fn start_cost() {
+    ui::framework::testing::perf::start::<store::StoreShell>(8)
+        .expect("store opens")
+        .print();
+}
