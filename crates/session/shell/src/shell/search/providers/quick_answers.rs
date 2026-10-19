@@ -1,14 +1,11 @@
-//! Answers to queries that are not names: arithmetic, unit conversions, an
-//! address, and, when nothing else matches, a web search.
+//! Answers to queries that are not names: arithmetic, unit conversions and
+//! an address.
 //!
-//! "2+2", `https://example.com` and "weather" are among the commonest things
-//! typed into a launcher, and each used to end in "No results". The sum is
-//! worked out as it is typed and Enter copies it; an address opens through
-//! [`crate::shell::uri_open`], placed like any launch; and a query nothing
-//! answers offers to search the web for it ([`SearchProvider::is_fallback`]),
-//! which a person has to choose: nothing typed leaves the machine before.
-
-use std::fmt::Write as _;
+//! "2+2" and `https://example.com` are among the commonest things typed into
+//! a launcher, and each used to end in "No results". The sum is worked out as
+//! it is typed and Enter copies it; an address opens through
+//! [`crate::shell::uri_open`], placed like any launch. Searching the web for
+//! what was typed is the web provider's ([`super::web`]).
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::{t, t_args};
@@ -26,11 +23,6 @@ const MONEY_ID: &str = "money";
 /// Rates older than this say how old they are on the answer.
 const RATES_STALE_SECS: u64 = 24 * 60 * 60;
 const ADDRESS_ID: &str = "address";
-const WEB_ID: &str = "web";
-
-/// Where a web search goes: a search engine that does not profile the person
-/// searching.
-const WEB_SEARCH: &str = "https://duckduckgo.com/?q=";
 
 /// The longest expression worked out; a longer query is prose.
 const MAX_EXPRESSION_SCALARS: usize = 120;
@@ -81,19 +73,21 @@ fn row(
     row
 }
 
-fn open_uri(uri: &str, chrome: &Chrome) -> Result<(), ActionError> {
+/// Open `uri` in the workspace, its refusal said as a person reads it.
+pub(crate) fn open_uri(uri: &str, chrome: &Chrome) -> Result<(), ActionError> {
     crate::shell::uri_open::open_in_workspace(uri, chrome)
         .map(drop)
-        .map_err(|error| {
-            ActionError::Explained(match error {
-                crate::shell::uri_open::UriOpenError::NoHandler { .. } => {
-                    t("search-answer-no-browser")
-                }
-                crate::shell::uri_open::UriOpenError::NoWorkspace => t("doc-open-no-workspace"),
-                crate::shell::uri_open::UriOpenError::InvalidUri => t("search-answer-bad-address"),
-                crate::shell::uri_open::UriOpenError::Launch(error) => error.user_message(),
-            })
-        })
+        .map_err(uri_refusal)
+}
+
+/// Why an address did not open, as a person reads it.
+pub(crate) fn uri_refusal(error: crate::shell::uri_open::UriOpenError) -> ActionError {
+    ActionError::Explained(match error {
+        crate::shell::uri_open::UriOpenError::NoHandler { .. } => t("search-answer-no-browser"),
+        crate::shell::uri_open::UriOpenError::NoWorkspace => t("doc-open-no-workspace"),
+        crate::shell::uri_open::UriOpenError::InvalidUri => t("search-answer-bad-address"),
+        crate::shell::uri_open::UriOpenError::Launch(error) => error.user_message(),
+    })
 }
 
 impl SearchProvider for QuickAnswersProvider {
@@ -118,15 +112,9 @@ impl SearchProvider for QuickAnswersProvider {
         format!("answers:{}", crate::shell::net_answers::revision())
     }
 
-    fn is_fallback(&self, result: &SearchResult) -> bool {
-        result
-            .id
-            .split_once(':')
-            .is_some_and(|(answer, _)| answer == WEB_ID)
-    }
-
     /// An answer's address carries what it answers (`sum:2+2`,
-    /// `web:weather`), so it resolves without the query that found it.
+    /// `address:example.com`), so it resolves without the query that found
+    /// it.
     fn resolve(&self, id: &str, _ctx: SearchContext<'_>) -> Option<SearchResult> {
         let (_, typed) = id.split_once(':')?;
         self.answers(typed).into_iter().find(|row| row.id == id)
@@ -178,7 +166,7 @@ impl QuickAnswersProvider {
         ))
     }
 
-    /// What answers `typed`: its sum, the address it is, or a web search.
+    /// What answers `typed`: its sum, a conversion, the address it is.
     fn answers(&self, typed: &str) -> Vec<SearchResult> {
         let typed = typed.trim();
         if typed.is_empty() {
@@ -229,16 +217,6 @@ impl QuickAnswersProvider {
                 t_args("search-answer-open-address", &[("address", shown.into())]),
                 None,
                 self.max_score(),
-                move |chrome| open_uri(&uri, chrome),
-            ));
-        } else {
-            let uri = format!("{WEB_SEARCH}{}", percent_encode(typed));
-            out.push(row(
-                self.kind(),
-                format!("{WEB_ID}:{typed}"),
-                t_args("search-answer-web", &[("query", typed.into())]),
-                None,
-                1,
                 move |chrome| open_uri(&uri, chrome),
             ));
         }
@@ -324,20 +302,6 @@ fn is_host(host: &str) -> bool {
         && labels.last().is_some_and(|tld| {
             (2..=24).contains(&tld.len()) && tld.chars().all(|c| c.is_ascii_alphabetic())
         })
-}
-
-fn percent_encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(byte));
-        } else if byte == b' ' {
-            out.push('+');
-        } else {
-            let _ = write!(out, "%{byte:02X}");
-        }
-    }
-    out
 }
 
 /// The value of an arithmetic expression: numbers (a decimal point or, with
@@ -552,7 +516,6 @@ mod tests {
         assert_eq!(address("weather"), None);
         assert_eq!(address("two words.com"), None);
         assert_eq!(address("ftp://example.com"), None);
-        assert_eq!(percent_encode("wetter köln"), "wetter+k%C3%B6ln");
     }
 
     #[test]
