@@ -15,15 +15,15 @@
 //! path does; `direct_and_tantivy_answer_alike` in the tests holds the two
 //! to that.
 //!
-//! [`GramTokenizer`]: tilo_search_tantivy::GramTokenizer
+//! [`GramTokenizer`]: crate::GramTokenizer
 
 use std::collections::{BTreeMap, HashMap};
 
-use tilo_search_model::query::{Matching, tier_sequence, typo_distance};
-use tilo_search_model::record::{Document, Hit, Hits, Page, Signals};
-use tilo_search_model::tokenizer::{marked, words};
-use tilo_search_model::typo::within;
-use tilo_search_model::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
+use crate::index::{Document, Hit, Hits, Page, Signals};
+use crate::query::{Matching, tier_sequence, typo_distance};
+use crate::tokenizer::{marked, words};
+use crate::typo::within;
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
 
 /// Most records an index answers directly; a larger one is searched through
 /// tantivy, whose postings outpace a scan.

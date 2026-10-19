@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tilo_search::{
     Document, FieldWeight, Page, SearchIndex, engine_generation, engine_ready, install_engine,
+    tantivy_engine,
 };
-use tilo_search_tantivy::tantivy_engine;
 
 static FETCHES: AtomicUsize = AtomicUsize::new(0);
 

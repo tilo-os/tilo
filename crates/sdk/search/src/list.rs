@@ -4,11 +4,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 
-use crate::index::SearchIndex;
+use crate::index::{Document, Page, SearchIndex};
+use crate::query::Matching;
+use crate::weight::{FieldWeight, Ranks};
 use tilo_lock::MutexRecover as _;
-use tilo_search_model::query::Matching;
-use tilo_search_model::record::{Document, Page};
-use tilo_search_model::weight::{FieldWeight, Ranks};
 
 /// Ranks the rows of a list against a query, for surfaces that rebuild
 /// their rows on every query or change (commands, windows, actions).

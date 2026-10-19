@@ -5,12 +5,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tilo_search_tantivy::tantivy::directory::{Directory as _, INDEX_WRITER_LOCK};
+use tantivy::directory::{Directory as _, INDEX_WRITER_LOCK};
 
 use super::*;
-use crate::{BodyPiece, BodySource, FieldWeight, Hit};
-use tilo_search_tantivy::tantivy::{IndexWriter, Term};
-use tilo_search_tantivy::{REBUILD_FRACTION, TantivyEngine, WRITER_HEAP_BYTES, tantivy_engine};
+use crate::engine::{REBUILD_FRACTION, TantivyEngine, WRITER_HEAP_BYTES, tantivy_engine};
+use tantivy::{IndexWriter, Term};
 
 /// The tantivy engine of `index`, made by its first commit.
 fn tantivy(index: &mut SearchIndex) -> &mut TantivyEngine {

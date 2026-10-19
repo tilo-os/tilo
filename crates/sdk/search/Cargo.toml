@@ -9,38 +9,35 @@ homepage.workspace = true
 description = "Tilo's search layer: tantivy with Tilo's folding, tiers and ranking"
 
 [package.metadata.cargo-machete]
-# The engine is named only without `lazy-engine`, the engine loader only
-# with it; tilo-search-tantivy's test-support only reaches the tests.
-ignored = ["tilo-search-tantivy", "tilo-engine-loader"]
+# The self dev-dependency only turns on `disk` for the tests.
+ignored = ["tilo-search"]
 
 [features]
 # `DiskIndex`, a persistent index in an mmap'ed directory. Native only.
-disk = ["tilo-search-tantivy/disk"]
-# The engine (tantivy) is not linked into `SearchIndex`: it arrives when
-# something first searches an index too large to answer from its records.
-# The browser desktop hands over a loader that fetches its code as a module
-# of its own (`defer_engine`, `install_engine`); natively the search layer
-# opens libtilo_search_engine.so, the runtime's engine library, whose own
-# build turns this on (crates/runtime/engines/search), so the shared runtime
-# every app maps leaves tantivy and its stemmers out.
-lazy-engine = ["dep:tilo-engine-loader"]
+disk = ["tantivy/mmap"]
+# The engine (tantivy) is not linked into `SearchIndex`: the program
+# fetches its code when something first searches and hands it over
+# (`defer_engine`, `install_engine`). The browser desktop uses this to keep
+# tantivy out of its start module.
+lazy-engine = []
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-search-model = { version = "0.1.0", path = "model" }
-# The engine: named, and linked, only without `lazy-engine` (rustc links no
-# crate the code does not name).
-tilo-search-tantivy = { version = "0.1.0", path = "tantivy" }
+# The engine. Default features add on-disk compression, mmap and the
+# stemmers, none of which an in-memory index of short fields uses.
+tantivy = { version = "0.22", default-features = false }
+# ICU word breaking, so words are found in scripts written without spaces.
+icu_segmenter = "2.3"
+# Compatibility decomposition behind folding: `ｃａｆé` finds `cafe`.
+unicode-normalization = "0.1.25"
 tracing.workspace = true
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-# Opens the engine library on first use (`lazy-engine`).
-tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
-# The tests look inside the engine, and fail its commits on purpose.
-tilo-search-tantivy = { version = "0.1.0", path = "tantivy", features = ["test-support"] }
+
+# The native tests cover `DiskIndex` too.
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tilo-search = { path = ".", features = ["disk"] }
 
 [lints]
 workspace = true
