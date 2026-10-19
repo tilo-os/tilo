@@ -181,6 +181,89 @@ fn layout_close_fixture(host: &mut ShellOverlayHost, theme: &Theme) {
     host.apply_layout(&taffy, root, Point::ORIGIN);
 }
 
+/// A window that crashes at the far end of a long strip: focus goes to its
+/// neighbour on the left, and the strip pans at most by the closed window's
+/// width. It never goes back to a window focused long ago at the strip's
+/// start, which panned the whole strip there.
+#[test]
+fn a_crashed_window_hands_focus_to_its_neighbour_and_the_strip_stays_where_it_is() {
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (mut tree, strip_id, first) = one_group_seed();
+    for id in 201..=204 {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(id, &format!("Window-{id}")));
+    }
+    let (neighbour, last) = (203, 204);
+    // Focused the first window once, then the last.
+    tree.desktop.set_active_group(strip_id, first);
+    tree.desktop.set_active_group(strip_id, last);
+    tree.seed_doc_from_cache();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    layout_close_fixture(&mut host, &theme);
+    let row = host.group_row_mut_for_tests(strip_id).expect("a live row");
+    assert!(row.max_scroll_x() > 1.0, "fixture: the strip overflows");
+    row.set_scroll_x_for_test(row.max_scroll_x());
+    layout_close_fixture(&mut host, &theme);
+    host.tick_scroll_active_into_view_for_tests();
+    layout_close_fixture(&mut host, &theme);
+    let row = host.group_row_mut_for_tests(strip_id).expect("a live row");
+    let scroll_before = row.scroll_x();
+    let spans = row.group_canvas_spans();
+    let x1 = |id: GroupId| {
+        spans
+            .iter()
+            .find(|(group, _, _)| *group == id)
+            .map(|(_, _, x1)| *x1)
+            .expect("group laid out")
+    };
+    // The closed window's footprint: its width and the gap before it.
+    let footprint = x1(last) - x1(neighbour);
+    assert!(scroll_before > footprint, "fixture: panned past the start");
+
+    // Its client dies: the same removal a destroyed toplevel runs.
+    {
+        let mut st = chrome.borrow_mut();
+        let mut live = st.tree_mut();
+        let last_tab = live.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == last)
+            .map(|group| group.active_tab)
+            .expect("the last window");
+        assert!(crate::shell::tab_binding::close_tab_back_to_previous(
+            &mut live, last_tab
+        ));
+        drop(live);
+        st.bump();
+    }
+    assert_eq!(
+        chrome.borrow().tree().desktop.active_group_for(strip_id),
+        Some(neighbour),
+        "focus goes to the neighbour on the left"
+    );
+    let _ = host.take_structure_dirty();
+    for _ in 0..3 {
+        layout_close_fixture(&mut host, &theme);
+        host.tick_scroll_active_into_view_for_tests();
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    for _ in 0..3 {
+        let _ = host.take_structure_dirty();
+        layout_close_fixture(&mut host, &theme);
+        host.tick_scroll_active_into_view_for_tests();
+    }
+    let scroll_after = host
+        .group_row_mut_for_tests(strip_id)
+        .expect("a live row")
+        .scroll_x();
+    assert!(
+        scroll_before - scroll_after <= footprint + 0.5,
+        "the strip panned from {scroll_before} to {scroll_after}, more than the closed \
+         window's {footprint} px"
+    );
+}
+
 #[test]
 fn window_close_retires_without_input_and_undo_during_fade_is_live() {
     let theme = Theme::dark();

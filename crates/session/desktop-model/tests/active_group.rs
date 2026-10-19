@@ -129,18 +129,18 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         // Map is unchanged.
         assert_eq!(tree.active_group_for(strip_id), Some(b));
     }
-    // Phase `resolve_active_group_walks_right_then_left`.
+    // Phase `resolve_active_group_walks_left_then_right`.
     {
-        // Three groups [A, B, C] with B active and closing. The
-        // reconciler must prefer C (right) over A (left) so focus
-        // moves "forward" rather than ping-ponging back to the start.
+        // Three groups [A, B, C] with B active and closing. Focus goes to
+        // A, the neighbour on its left: the strip keeps showing what it
+        // showed and pans at most by B's width.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        let (_a, b, c) = (ids[0], ids[1], ids[2]);
+        let (a, b, _c) = (ids[0], ids[1], ids[2]);
         tree.set_active_group(strip_id, b);
 
         let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
 
-        assert_eq!(landed, Some(c));
+        assert_eq!(landed, Some(a));
     }
 }
 
@@ -165,27 +165,34 @@ fn window_group_json_round_trips() {
 }
 
 #[test]
-fn a_closing_active_group_hands_focus_back_to_the_group_it_came_from() {
-    // [A, B, C]: the person was in A, then opened and focused B. When B
-    // starts closing, focus goes back to A, not to C on its right.
-    let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-    let (a, b, c) = (ids[0], ids[1], ids[2]);
-    tree.set_active_group(strip_id, a);
-    tree.set_active_group(strip_id, b);
-    assert_eq!(tree.nudge_active_group_off_closing(strip_id, &[b]), Some(a));
-
-    // Without history (nothing was focused before B), the neighbour rule.
-    let (mut tree, strip_id, _) = tree_with_n_groups(3);
-    tree.set_active_group(strip_id, b);
-    assert_eq!(tree.nudge_active_group_off_closing(strip_id, &[b]), Some(c));
-
-    // A remembered group that is itself closing is skipped.
-    let (mut tree, strip_id, _) = tree_with_n_groups(3);
-    tree.set_active_group(strip_id, c);
-    tree.set_active_group(strip_id, a);
-    tree.set_active_group(strip_id, b);
+fn a_closing_active_group_hands_focus_to_its_left_neighbour_whatever_was_focused_before() {
+    // [A, B, C, D, E]: the person was in A, then went to E. When E starts
+    // closing, focus goes to D beside it, never back to A at the strip's
+    // start, which would pan the whole strip there.
+    let (mut tree, strip_id, ids) = tree_with_n_groups(5);
+    let (first, beside, last) = (ids[0], ids[3], ids[4]);
+    tree.set_active_group(strip_id, first);
+    tree.set_active_group(strip_id, last);
     assert_eq!(
-        tree.resolve_active_group(strip_id, |id| id == b || id == a),
-        Some(c)
+        tree.nudge_active_group_off_closing(strip_id, &[last]),
+        Some(beside)
+    );
+
+    // At the strip's start, the neighbour on the right.
+    let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+    tree.set_active_group(strip_id, ids[2]);
+    tree.set_active_group(strip_id, ids[0]);
+    assert_eq!(
+        tree.nudge_active_group_off_closing(strip_id, &[ids[0]]),
+        Some(ids[1])
+    );
+
+    // A neighbour that is itself closing is skipped, still leftwards first.
+    let (mut tree, strip_id, ids) = tree_with_n_groups(4);
+    let (first, second, third) = (ids[0], ids[1], ids[2]);
+    tree.set_active_group(strip_id, third);
+    assert_eq!(
+        tree.resolve_active_group(strip_id, |id| id == third || id == second),
+        Some(first)
     );
 }

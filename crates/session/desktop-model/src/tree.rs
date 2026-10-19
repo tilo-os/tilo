@@ -48,15 +48,6 @@ pub struct DesktopTree {
     /// non-closing group" (see [`Self::resolve_active_group`]).
     #[serde(default, deserialize_with = "deserialize_id_map")]
     pub active_group: HashMap<StripId, GroupId>,
-    /// Per strip, the groups that were active before the current one, most
-    /// recent last: the group-level twin of
-    /// [`crate::WindowGroup::focus_history`]. Closing the active group's last
-    /// window goes back to the most recent of these still on the strip, the
-    /// window you came from, not to whichever window happens to sit to its
-    /// right. What this device has been showing: never persisted. Written by
-    /// [`Self::set_active_group`].
-    #[serde(skip)]
-    pub group_focus_history: HashMap<StripId, Vec<GroupId>>,
     /// Which display each window group is shown on, on this device. Local
     /// layout: persisted with this device's desktop, never replicated.
     #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
@@ -91,7 +82,6 @@ impl Default for DesktopTree {
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),
             active_group: HashMap::new(),
-            group_focus_history: HashMap::new(),
             outputs: OutputPartition::default(),
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
@@ -170,41 +160,19 @@ impl DesktopTree {
         self.active_group.get(&strip_id).copied()
     }
 
-    /// Mark `group_id` as the active group of `strip_id`, remembering the
-    /// group it replaces in [`Self::group_focus_history`]. Not validated
+    /// Mark `group_id` as the active group of `strip_id`. Not validated
     /// against the strip's actual membership — the host's reconciler is
     /// expected to be the sole writer.
     pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
-        let previous = self.active_group.insert(strip_id, group_id);
-        let history = self.group_focus_history.entry(strip_id).or_default();
-        if let Some(previous) = previous.filter(|previous| *previous != group_id) {
-            history.retain(|g| *g != previous);
-            history.push(previous);
-        }
-        history.retain(|g| *g != group_id);
-    }
-
-    /// The group of `strip_id` to show after the active one goes away: the
-    /// most recently active one still on the strip, other than `leaving`.
-    pub fn previously_active_group(&self, strip_id: StripId, leaving: GroupId) -> Option<GroupId> {
-        let strip = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.strips.iter())
-            .find(|s| s.id == strip_id)?;
-        self.group_focus_history
-            .get(&strip_id)?
-            .iter()
-            .rev()
-            .copied()
-            .find(|g| *g != leaving && strip.window_groups.iter().any(|w| w.id == *g))
+        self.active_group.insert(strip_id, group_id);
     }
 
     /// Resolve the active group on `strip_id` under `is_closing`: if
-    /// closing, returns the most recently active group that survives
-    /// ([`Self::group_focus_history`]), else the next non-closing sibling
-    /// right, falling back left. Pure read; `None` if no group survives, or
-    /// the strip doesn't exist.
+    /// closing, returns the nearest surviving neighbour on its left, or on
+    /// its right at the strip's start ([`Self::close_tab`] is the same rule
+    /// for a group already gone). The strip then pans only
+    /// as far as that neighbour needs, never back to its start. Pure read;
+    /// `None` if no group survives, or the strip doesn't exist.
     pub fn resolve_active_group(
         &self,
         strip_id: StripId,
@@ -244,23 +212,16 @@ impl DesktopTree {
                 if !is_closing(id) {
                     return Some(id);
                 }
-                // The window the person came from, when it's still there.
-                if let Some(came_from) = self.group_focus_history.get(&strip_id).and_then(|h| {
-                    h.iter()
-                        .rev()
-                        .copied()
-                        .find(|g| !is_closing(*g) && strip.window_groups.iter().any(|w| w.id == *g))
-                }) {
-                    return Some(came_from);
-                }
                 // Recorded group is closing — find its index, then
-                // scan right for a survivor; if none, scan left.
+                // scan left for a survivor; if none, scan right.
                 let Some(idx) = strip.window_groups.iter().position(|g| g.id == id) else {
                     // Recorded group no longer in the strip; fall
                     // through to "first non-closing" as a default.
                     return scan_right(0);
                 };
-                scan_right(idx.saturating_add(1)).or_else(|| idx.checked_sub(1).and_then(scan_left))
+                idx.checked_sub(1)
+                    .and_then(scan_left)
+                    .or_else(|| scan_right(idx.saturating_add(1)))
             }
             None => scan_right(0),
         }
