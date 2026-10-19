@@ -78,3 +78,6 @@ splash-budget   = 250
 [providers]
 mime = []
 ext  = []
+# `geo:0,0?q=<query>` (RFC 5870 with the common `q` search) opens on the
+# places a query finds, as desktop search's "Search Maps for …" does.
+schemes = ["geo"]
