@@ -29,7 +29,7 @@ argon2.workspace = true
 pbkdf2.workspace = true
 sha1 = "0.11"
 # Rclone's obscure password format: AES-256-CTR over a published key.
-ctr = "0.10.1"
+ctr = { version = "0.10.1", features = ["zeroize"] }
 base64.workspace = true
 # Key identifiers, the HKDF steps of formats this crate still reads, and
 # the HKDF + AES-GCM wraps a browser computes with WebCrypto.
@@ -38,8 +38,8 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 sha2.workspace = true
 # The Secret Service's session transport (`secret_service`): the RFC 2409
 # Oakley group, AES-128-CBC and PKCS#7, as the specification fixes them.
-aes = "0.9"
-cbc = { version = "0.2", features = ["alloc"] }
+aes = { version = "0.9", features = ["zeroize"] }
+cbc = { version = "0.2", features = ["alloc", "zeroize"] }
 num-bigint = "0.4"
 getrandom.workspace = true
 hex.workspace = true
