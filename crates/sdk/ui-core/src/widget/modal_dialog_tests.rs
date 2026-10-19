@@ -274,8 +274,13 @@ fn the_sheet_is_a_floating_panel_with_a_title() {
     );
 }
 
+// 98dea560fe moved the scrim under the sheet's material on purpose: the
+// material blurs a dimmed scene, so a bright control behind a sheet no
+// longer glows through it. This test once pinned the opposite (an undimmed
+// backdrop under the foreground); it now pins that one dim runs under the
+// material and outside it alike.
 #[test]
-fn a_modal_scrim_does_not_dim_the_foreground_materials_recorded_backdrop() {
+fn a_modal_scrim_runs_under_the_foreground_materials_recorded_backdrop() {
     // Motion reads at its end: this test checks the resting frame.
     let _settled = crate::motion::testing::settled();
     let window = Rect::new(0.0, 0.0, 1000.0, 700.0);
@@ -319,15 +324,15 @@ fn a_modal_scrim_does_not_dim_the_foreground_materials_recorded_backdrop() {
                 .expect("a sample inside the image")
                 .to_vec()
         };
-        assert_eq!(
+        assert_ne!(
             at(&below, 500, 350),
             at(&original, 500, 350),
-            "{name}: the actual material samples undimmed background under the foreground"
+            "{name}: the actual material samples dimmed background under the foreground"
         );
-        assert_ne!(
+        assert_eq!(
+            at(&below, 500, 350),
             at(&below, 20, 20),
-            at(&original, 20, 20),
-            "{name}: the same scrim still dims the page outside the dialog"
+            "{name}: the same dim runs under the dialog and outside it"
         );
     }
 }
