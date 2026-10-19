@@ -567,6 +567,10 @@ impl OpsFrame {
 
 /// One live frame, the payload of [`Envelope::Live`](crate::Envelope::Live).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "presence is the frame sent at pointer rate and decoded on every receipt; boxing it would allocate per frame to shrink the rarer ops frame"
+)]
 pub enum LiveFrame {
     /// Latest-value presence; a receiver keeps only the newest per publisher.
     Presence(PresenceFrame),
@@ -1289,7 +1293,7 @@ mod tests {
         }
         for emoji in ["", "two words", &"\u{1f600}".repeat(9)] {
             let LiveFrame::Presence(mut frame) = chatting("", false) else {
-                unreachable!()
+                panic!("chatting builds a presence frame")
             };
             frame.reaction = Some(LiveReaction {
                 seq: 1,
