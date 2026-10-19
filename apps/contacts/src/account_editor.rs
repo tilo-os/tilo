@@ -1039,11 +1039,11 @@ mod tests {
                 app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
                     .unwrap()
             );
-            assert!(
-                app.harness()
-                    .settle_for_capture(ui::time::Duration::from_secs(5)),
-                "inspector animation must finish"
-            );
+            // The inspector slides in; land it so its controls are measured
+            // where they come to rest, without racing a wall clock.
+            app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
+                .expect("the contacts shell is hosted");
+            app.harness().relayout();
             let nodes = app.harness().a11y_nodes();
             for label in [
                 "Contact",
@@ -1113,11 +1113,11 @@ mod input_journey {
             app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())
                 .unwrap()
         );
-        assert!(
-            app.harness()
-                .settle_for_capture(ui::time::Duration::from_secs(5)),
-            "inspector animation must finish"
-        );
+        // The inspector slides in; land it so its controls are measured
+        // where they come to rest, without racing a wall clock.
+        app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
+            .expect("the contacts shell is hosted");
+        app.harness().relayout();
         app.harness()
             .click_named("contacts.accounts.recipient")
             .unwrap();

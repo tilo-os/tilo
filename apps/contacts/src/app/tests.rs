@@ -1911,16 +1911,18 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
     {
         let shown = ui::time::now();
         ui::time::testing::with_monotonic_time(shown, || {
-            // A real action: saving an edit raises the confirmation.
+            // A real action: creating a contact raises the confirmation (a
+            // stored edit to an existing one says nothing).
             let mut app = Live::sample(1280, 800);
-            let contact = selected_contact(&app);
-            app.begin_edit(contact, false);
-            app.form
-                .as_ref()
-                .expect("the editor is open")
-                .set_value(Slot::Title, "Toasted");
+            let mut contact = Contact::new();
+            contact.first = "Toasted".into();
+            app.begin_edit(contact, true);
             app.request(Request::Save);
-            assert!(toast(&app).is_some(), "saving a contact raises a toast");
+            assert_eq!(
+                toast(&app),
+                Some("Contact created"),
+                "creating a contact raises a toast"
+            );
 
             let deadline = app
                 .shell
@@ -3717,6 +3719,13 @@ impl Live {
         app.harness()
             .resize(viewport)
             .expect("contacts frame lays out");
+        // The host opened the window at its default size; a viewport narrow
+        // enough for one column at a time slides the columns into place.
+        // Tests look at the window as it stands at `viewport`, once that
+        // resize motion has ended.
+        app.with_widget(|surface: &mut ContactsApp| surface.shell.snap())
+            .expect("the contacts surface is hosted");
+        app.harness().relayout();
         let surface = app
             .with_widget(|surface: &mut ContactsApp| std::ptr::from_mut(surface))
             .expect("the contacts surface is hosted");

@@ -334,6 +334,12 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
         app.harness()
             .resize((width, 760))
             .expect("resize production surface");
+        // Narrowing into one column at a time slides the conversation from
+        // where it stood beside the people list to fill the window; the
+        // controls are checked where that slide lands.
+        app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
+            .expect("the messages shell is hosted");
+        app.harness().relayout();
         let nodes = app.harness().a11y_nodes();
         assert!(
             nodes
@@ -359,7 +365,7 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
             let bounds = node.1.bounds().expect("control geometry");
             assert!(
                 bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width),
-                "{label} must be visible immediately after restoring selection: {bounds:?}"
+                "{label} must be visible after restoring selection: {bounds:?}"
             );
         }
         assert!(app.effect(&MessagesEffect::Back).is_ok());

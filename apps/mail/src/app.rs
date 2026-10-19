@@ -7177,9 +7177,10 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert!(!app.shared.borrow().narrow);
         }
 
-        // Phase `narrow_drawer_opens_over_a_settled_layout`: the header rows
-        // of the columns behind the drawer are laid out hidden, and the
-        // layout still settles (it panics in `layout_for_test` otherwise).
+        // Phase `narrow_mailboxes_open_over_a_settled_layout`: the header
+        // rows of the columns behind the mailboxes screen are laid out
+        // hidden, and the layout still settles (it panics in
+        // `layout_for_test` otherwise).
         {
             let (mut app, _doc) = app();
             app.nav.open_sidebar();
@@ -7256,18 +7257,27 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             assert_eq!(app.overview_title, "Sent", "the list's header follows");
         }
 
-        // Phase `narrow_toggle_opens_and_esc_closes_drawer`.
+        // Phase `narrow_list_goes_back_to_the_mailboxes`: too narrow to dock
+        // the mailboxes beside the list, they are the push stack's first
+        // screen; the list's Back (or Escape) goes to them, never a drawer.
         {
             let (mut app, mut doc) = app();
             app.layout_for_test(560.0, 860.0);
-            let toggle = app.nav.geometry().toggle;
-            assert!(toggle.width() > 0.0, "sidebar toggle on the narrow list");
-            // The toggle is the shell's own action; the host runs it.
-            app.nav.toggle_sidebar();
-            app.layout_for_test(560.0, 860.0);
-            assert!(app.nav.is_sidebar_open(), "the toggle opens the drawer");
+            let geometry = app.nav.geometry();
+            assert_eq!(geometry.sidebar, ui::widget::SidebarPlacement::Screen);
+            assert_eq!(app.nav_pane(), NavPane::Overview, "opens on the list");
+            assert!(geometry.back.width() > 0.0, "Back on the narrow list");
+            assert!(!app.nav.is_sidebar_open());
             assert!(dispatch(&mut app, &esc_event(), &mut doc), "Esc consumed");
-            assert!(!app.nav.is_sidebar_open(), "Esc closes the drawer");
+            app.nav.snap();
+            app.layout_for_test(560.0, 860.0);
+            assert_eq!(app.nav_pane(), NavPane::Sidebar, "Esc shows the mailboxes");
+            assert!(app.nav.is_sidebar_open(), "the mailboxes fill the window");
+            let sidebar = app.nav.geometry().sidebar_column;
+            assert!(
+                sidebar.x0.abs() < 2.0 && (sidebar.width() - 560.0).abs() < 2.0,
+                "the mailboxes are the full-width front screen: {sidebar:?}"
+            );
         }
     }
 
