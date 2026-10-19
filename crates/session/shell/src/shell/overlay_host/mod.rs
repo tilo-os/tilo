@@ -235,61 +235,6 @@ mod qs_wifi_radio_tests;
 /// input ended it.
 const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Draw a relationship line with a visible head at the followed person. This
-/// intentionally encodes direction in geometry, so a room observer does not
-/// have to decode a caption or guess from the source cursor's colour.
-///
-/// Returns the bounds, in scene coordinates, of what it painted.
-fn draw_follow_tether(
-    scene: &mut Scene,
-    transform: Affine,
-    from: Point,
-    to: Point,
-    color: Color,
-    width: f64,
-) -> Option<Rect> {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let length = dx.hypot(dy);
-    if length <= f64::EPSILON {
-        return None;
-    }
-    let ux = dx / length;
-    let uy = dy / length;
-    let head = 7.0;
-    let wing = 4.0;
-    // The head's wings reach `wing` across the line; strokes add their
-    // half width and a pixel of antialiasing.
-    let reach = wing + width + 1.0;
-    let bounds = transform.transform_rect_bbox(Rect::from_points(from, to).inflate(reach, reach));
-    let base = Point::new(to.x - ux * head, to.y - uy * head);
-    let left = Point::new(base.x - uy * wing, base.y + ux * wing);
-    let right = Point::new(base.x + uy * wing, base.y - ux * wing);
-    let stroke = Stroke::new(width);
-    scene.stroke(
-        &stroke,
-        transform,
-        color,
-        None,
-        &vello::kurbo::Line::new(from, to),
-    );
-    scene.stroke(
-        &stroke,
-        transform,
-        color,
-        None,
-        &vello::kurbo::Line::new(left, to),
-    );
-    scene.stroke(
-        &stroke,
-        transform,
-        color,
-        None,
-        &vello::kurbo::Line::new(right, to),
-    );
-    Some(bounds)
-}
-
 /// Which grant-composer control a click landed on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComposerHit {
@@ -17590,12 +17535,12 @@ impl ShellOverlayHost {
                     .changes_author(index)
                     .map(str::to_owned);
                 if let (Some(author), Some(chrome)) = (author, self.chrome.clone()) {
-                    chrome
-                        .borrow_mut()
-                        .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
                             author: Some(author),
                             ..Default::default()
-                        }));
+                        },
+                    ));
                 }
             }
             CollaboratorsHit::OpenChange(index, change) => {
@@ -17604,13 +17549,13 @@ impl ShellOverlayHost {
                     .change_target(index, change)
                     .map(|(author, entry)| (author.to_owned(), entry));
                 if let (Some((author, entry)), Some(chrome)) = (target, self.chrome.clone()) {
-                    chrome
-                        .borrow_mut()
-                        .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                    chrome.borrow_mut().open_room_activity(Some(
+                        crate::shell::chrome_state::ActivityFocus {
                             author: Some(author),
                             entry_id: entry,
                             ..Default::default()
-                        }));
+                        },
+                    ));
                 }
             }
             CollaboratorsHit::Invite => {
@@ -27600,52 +27545,12 @@ impl ShellOverlayHost {
     ) -> Vec<Rect> {
         self.follow_cursor_targets.clear();
         let mut painted = Vec::new();
-        let Some(room_key) = self.active_workspace_presence_key() else {
-            return painted;
-        };
         let anchors = self.workspace_follow_anchors(presence, reduce_motion);
-        for (follower, target) in presence.following_in(&room_key) {
-            let Some((_, from, color)) = anchors
-                .iter()
-                .find(|(id, _, _)| id.as_str() == follower.0.as_str())
-            else {
-                continue;
-            };
-            let Some((_, to, _)) = anchors
-                .iter()
-                .find(|(id, _, _)| id.as_str() == target.0.as_str())
-            else {
-                continue;
-            };
-            // A thin, low-contrast tether connects the follower's live
-            // cursor to the person they attached to. It is visible to every
-            // room member without exposing anything beyond that relationship.
-            painted.extend(draw_follow_tether(
-                scene,
-                transform,
-                *from,
-                *to,
-                color.multiply_alpha(0.38),
-                1.0,
-            ));
-        }
-        if let (Some(local), Some(followed)) = (self.last_cursor, self.followed_peer.as_deref())
-            && let Some((_, target, color)) =
-                anchors.iter().find(|(id, _, _)| id.as_str() == followed)
-        {
-            // The follower's own cursor is softly tethered to the target.
-            // This stays meaningful even when the compact banner is out of
-            // peripheral vision, while avoiding a modal or textual lock.
-            let openness = self.follow_transition.progress(ui::time::now());
-            painted.extend(draw_follow_tether(
-                scene,
-                transform,
-                local,
-                *target,
-                color.multiply_alpha(0.22 + 0.3 * ui::motion::unit_opacity(openness)),
-                1.0 + openness * 0.8,
-            ));
-        }
+        // Following shows as the frame in their colour and the follow bar,
+        // nothing else: no line from anyone's pointer to anyone else's runs
+        // across the work, neither from this person's own pointer to whom
+        // they follow nor between other people following each other (the
+        // roster says who follows whom).
         for (id, point, color) in anchors {
             if !self.rect.contains(point) {
                 continue;
@@ -27719,18 +27624,6 @@ impl ShellOverlayHost {
         drop(tree);
         drop(state);
         anchors
-    }
-
-    fn active_workspace_presence_key(&self) -> Option<PresenceKey> {
-        let chrome = self.chrome.as_ref()?;
-        let state = chrome.borrow();
-        state
-            .tree()
-            .desktop
-            .active_workspace()
-            .map(|workspace| PresenceKey::Workspace {
-                id: workspace.room.to_string(),
-            })
     }
 
     /// Convert authenticated session ids in room presence into the durable

@@ -3070,13 +3070,6 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
-
-
-
-
-
-
-
 fn people_viewport_probe_fixture() -> Harness {
     let mut h = roster_follow_fixture();
     adopt_rooms(&h);
@@ -3120,7 +3113,6 @@ fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
         "End selects Invite, on the visible output"
     );
 }
-
 
 #[test]
 fn people_viewport_keyboard_reaches_everyone_and_returns_to_the_first() {
@@ -3171,7 +3163,10 @@ fn people_viewport_keyboard_reaches_everyone_and_returns_to_the_first() {
         .collaborators_overlay
         .accessibility_rect_for_path(&[1])
         .expect("the first person's first control");
-    assert!(h.host.rect.contains(rect.origin()), "Home scrolls back to the top");
+    assert!(
+        h.host.rect.contains(rect.origin()),
+        "Home scrolls back to the top"
+    );
 }
 
 #[test]
@@ -3208,8 +3203,6 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
     assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
 }
-
-
 
 #[test]
 fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {

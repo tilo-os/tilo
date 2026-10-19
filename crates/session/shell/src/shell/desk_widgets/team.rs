@@ -49,6 +49,12 @@ pub fn members(
             .filter(|row| !row.invited && row.id != own_id && row.id != local_user)
             .map(|mut row| {
                 row.status = status_line(presence, &row, now);
+                // Idle or away dims their face; a call rings it, as
+                // everywhere else their face shows.
+                if let Some(id) = presence_id(presence, &row) {
+                    row.availability = presence.availability_of(&id);
+                    row.call = presence.call_of(&id).map(str::to_owned);
+                }
                 let place = place_of(desktop, &row.id);
                 TeamMember { row, place }
             })

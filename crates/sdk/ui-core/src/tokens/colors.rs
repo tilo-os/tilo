@@ -495,6 +495,15 @@ impl PresenceHue {
     }
 }
 
+/// How much of a person's chroma their face keeps while they are idle or
+/// away ([`PresencePalette::idle_on`]): enough to tell whose face it is,
+/// little enough to read as quieter than everyone present.
+pub const IDLE_CHROMA: f32 = 0.35;
+
+/// How far toward the ground an idle face's colour moves at most
+/// ([`PresencePalette::idle_on`]), as a share of the way.
+pub const IDLE_FADE: f32 = 0.45;
+
 /// One colour per participant: [`PRESENCE_HUES`] at one OKLCH lightness and
 /// chroma, so they differ in hue only and no participant looks more
 /// important than another. Where sRGB cannot carry the full chroma at a hue
@@ -555,6 +564,70 @@ impl PresencePalette {
             return self.hue(PresenceHue::Blue);
         }
         oklch(self.lightness, self.chroma, source.h)
+    }
+
+    /// A person's colour as the ring of their face on `ground` (`identity`
+    /// as [`Self::of`] takes it): their palette colour, moved in lightness
+    /// away from the ground, hue and chroma kept, only where it would not
+    /// otherwise stand out from it as a mark ([`NON_TEXT_MIN_CONTRAST`]).
+    /// The palette is tuned for windows and floating surfaces; a face on the
+    /// desktop's ground (the top bar) keeps its ring legible there too.
+    #[must_use]
+    pub fn ring_on(&self, identity: Color, ground: Color) -> Color {
+        use crate::color::contrast_ratio;
+        let person = Oklch::from_color(self.of(identity));
+        let ground_l = Oklch::from_color(ground).l;
+        let at = |l: f32| oklch(l.clamp(0.0, 1.0), person.c, person.h);
+        let holds = |l: f32| contrast_ratio(at(l), ground) >= NON_TEXT_MIN_CONTRAST;
+        if holds(person.l) {
+            return self.of(identity);
+        }
+        let away = if ground_l < 0.5 { 1.0 } else { 0.0 };
+        let mut lightness = person.l;
+        for step in 1..=40_u8 {
+            lightness = person.l + (away - person.l) * f32::from(step) / 40.0;
+            if holds(lightness) {
+                break;
+            }
+        }
+        at(lightness)
+    }
+
+    /// A person's colour while they are idle or away (`identity` as
+    /// [`Self::of`] takes it), on `ground`: their hue kept, most of its
+    /// chroma let go ([`IDLE_CHROMA`]), and moved toward the ground
+    /// ([`IDLE_FADE`] of the way at most) only as far as it stays a mark
+    /// against it ([`NON_TEXT_MIN_CONTRAST`]). A face dims without ever
+    /// vanishing into the bar it sits on, whatever the hue and theme; where
+    /// even the quieted colour would miss the floor, it moves away from the
+    /// ground until it holds.
+    #[must_use]
+    pub fn idle_on(&self, identity: Color, ground: Color) -> Color {
+        use crate::color::contrast_ratio;
+        let person = Oklch::from_color(self.of(identity));
+        let ground_l = Oklch::from_color(ground).l;
+        let chroma = person.c * IDLE_CHROMA;
+        let at = |l: f32| oklch(l.clamp(0.0, 1.0), chroma, person.h);
+        let holds = |l: f32| contrast_ratio(at(l), ground) >= NON_TEXT_MIN_CONTRAST;
+        let mut lightness = person.l;
+        if holds(lightness) {
+            for step in 1..=20_u8 {
+                let toward = person.l + (ground_l - person.l) * IDLE_FADE * f32::from(step) / 20.0;
+                if !holds(toward) {
+                    break;
+                }
+                lightness = toward;
+            }
+        } else {
+            let away = if ground_l < 0.5 { 1.0 } else { 0.0 };
+            for step in 1..=20_u8 {
+                lightness = person.l + (away - person.l) * f32::from(step) / 20.0;
+                if holds(lightness) {
+                    break;
+                }
+            }
+        }
+        at(lightness)
     }
 
     /// [`Self::of`] for the `(r, g, b)` tuples presence identities are

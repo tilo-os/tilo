@@ -2888,7 +2888,9 @@ impl TopBarChrome {
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (stack_right_x, center_y),
             (&faces, self.collaborator_overflow),
-            colors.surfaces.overlay,
+            // The bar's own ground (`draw_overlay_surface`), so the gap
+            // between faces and their rings is the bar, not a grey halo.
+            colors.surfaces.base,
         );
         self.face_rects = rects;
         faces.len().saturating_add(usize::from(badge.is_some()))
@@ -2920,7 +2922,7 @@ impl TopBarChrome {
         let (r, g, b) = own.rgb;
         ui::widget::AvatarFace::new(&own.name, "")
             .presence(Color::from_rgb8(r, g, b))
-            .ringed_on(theme.tokens.colors.surfaces.overlay)
+            .ringed_on(theme.tokens.colors.surfaces.base)
             .paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 chip,

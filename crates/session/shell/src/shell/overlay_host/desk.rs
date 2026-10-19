@@ -505,11 +505,19 @@ impl ShellOverlayHost {
         let area = self.overlay_area();
         // The strip ribbon on the right edge is where the strip switcher
         // opens: a widget waiting there would take the pointer that reaches
-        // for it. Widgets on that edge step past it, as past a call card.
+        // for it, and its labels ("New strip" under the last) open over
+        // whatever waits beside or below it. Widgets on that edge step past
+        // all of it, as past a call card.
         let mut occupied = self.desk.system_activities.clone();
         let ribbon = self.strip_switcher_zone();
         if ribbon.area() > 0.0 {
-            occupied.push(ribbon.inflate(layout::MARGIN, layout::MARGIN));
+            let labels = self.strip_switcher.extent_beside(&self.strip_ribbon());
+            let switcher = if labels.area() > 0.0 {
+                ribbon.union(labels)
+            } else {
+                ribbon
+            };
+            occupied.push(switcher.inflate(layout::MARGIN, layout::MARGIN));
         }
         let slots = layout::place(area, &items, &occupied, super_up);
         let mut changed = slots != self.desk.slots;
@@ -1147,13 +1155,19 @@ fn paint_avatar(
     rect: Rect,
     member: &TeamMember,
 ) {
-    ui::widget::AvatarFace::new(&member.row.label, &member.row.id)
-        .presence(member.row.color)
-        .ringed_on(theme.tokens.colors.surfaces.overlay)
-        .paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-            rect,
-        );
+    // The one face people have everywhere: one initial (or the agent mark)
+    // in a ring of their colour, dimmed while idle, ringed while in a call.
+    let face = ui::presence::Face {
+        is_agent: member.row.is_agent,
+        dimmed: member.row.availability.dims(),
+        in_call: member.row.call.is_some().then_some(1.0),
+        ..ui::presence::Face::new(&member.row.label, &member.row.id, member.row.color)
+    };
+    face.paint(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        ui::presence::Face::disc_in(rect),
+        theme.tokens.colors.surfaces.overlay,
+    );
 }
 
 fn paint_team_glance(
@@ -1170,20 +1184,32 @@ fn paint_team_glance(
     }
     paint_pill_ground(scene, transform, theme, rect);
     let vertical = matches!(edge, DockEdge::Left | DockEdge::Right);
-    for (k, member) in members.iter().take(GLANCE_AVATARS).enumerate() {
+    let cell = |k: usize| {
         let offset = 6.0 + AVATAR_STEP * ui::num::f64_of_usize(k);
         let origin = if vertical {
             Point::new(rect.x0 + 6.0, rect.y0 + offset)
         } else {
             Point::new(rect.x0 + offset, rect.y0 + 6.0)
         };
-        paint_avatar(
-            scene,
-            transform,
-            text,
-            theme,
-            Rect::from_origin_size(origin, (AVATAR, AVATAR)),
-            member,
+        Rect::from_origin_size(origin, (AVATAR, AVATAR))
+    };
+    // Past the last place, a drawn count of everyone else takes it, as in
+    // every face stack.
+    let (shown, more) = if members.len() > GLANCE_AVATARS {
+        let shown = GLANCE_AVATARS - 1;
+        (shown, members.len() - shown)
+    } else {
+        (members.len(), 0)
+    };
+    for (k, member) in members.iter().take(shown).enumerate() {
+        paint_avatar(scene, transform, text, theme, cell(k), member);
+    }
+    if more > 0 {
+        ui::widget::AvatarFace::paint_overflow(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+            ui::presence::Face::disc_in(cell(shown)),
+            more,
+            Some(theme.tokens.colors.surfaces.overlay),
         );
     }
 }

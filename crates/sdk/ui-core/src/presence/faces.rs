@@ -59,8 +59,6 @@ const RING: f64 = 2.0;
 const GAP: f64 = 1.0;
 /// How far the call ring reaches past the colour ring.
 const CALL_REACH: f64 = 3.0;
-/// How faint a dimmed face is.
-const DIMMED: f32 = 0.45;
 
 impl FaceStack {
     /// The top bar: up to four faces, 24 px, overlapping by 8.
@@ -146,25 +144,38 @@ impl FaceStack {
     }
 }
 
+impl Face<'_> {
+    /// The disc of a face whose ring and gap fill `outer` exactly: where a
+    /// caller with a fixed cell (a column at a screen edge, a list row)
+    /// paints [`Self::paint`] so nothing reaches past the cell.
+    #[must_use]
+    pub fn disc_in(outer: Rect) -> Rect {
+        outer.inset(-(RING + GAP))
+    }
+
+    /// Paint this face alone in `rect` over `ground`: the call ring, the
+    /// ground gap, the colour ring and the face itself, quietened while idle.
+    /// Where a caller lays faces out itself (a column at a screen edge, a
+    /// list row), so a person still looks as they do in every stack.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ground: Color) {
+        paint_face(ctx, rect, self, ground);
+    }
+}
+
 /// One face in `rect`: the call ring, the ground gap, the colour ring and
-/// the face, dimmed when idle.
+/// the face. Idle or away, its colour is quietened against `ground`
+/// ([`crate::tokens::colors::PresencePalette::idle_on`]) rather than faded
+/// through, so the ring and the initial still read on any bar in any theme.
 fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color) {
     let center = rect.center();
     let r = rect.width() / 2.0;
-    let colour = ctx.theme.tokens.colors.presence.of(face.colour);
-    let opacity = if face.dimmed { DIMMED } else { 1.0 };
-    let bounds = rect.inflate(RING + GAP + CALL_REACH + 1.0, RING + GAP + CALL_REACH + 1.0);
+    let palette = &ctx.theme.tokens.colors.presence;
+    let colour = if face.dimmed {
+        palette.idle_on(face.colour, ground)
+    } else {
+        palette.ring_on(face.colour, ground)
+    };
     let transform = ctx.transform;
-    let layered = opacity < 1.0;
-    if layered {
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            opacity,
-            transform,
-            &bounds,
-        );
-    }
     if let Some(level) = face.in_call {
         ctx.scene.stroke(
             &Stroke::new(2.0),
@@ -201,12 +212,13 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
     } else {
         // One initial: in a stack the next face covers the edge of this one.
         let first = face.name.split_whitespace().next().unwrap_or(face.name);
-        AvatarFace::new(first, face.identity)
-            .presence(face.colour)
-            .paint(ctx, rect);
-    }
-    if layered {
-        ctx.scene.pop_layer();
+        let avatar = AvatarFace::new(first, face.identity).presence(face.colour);
+        let avatar = if face.dimmed {
+            avatar.idle_on(ground)
+        } else {
+            avatar
+        };
+        avatar.paint(ctx, rect);
     }
 }
 
@@ -278,5 +290,60 @@ mod tests {
             u32::from(r) + u32::from(g) + u32::from(b)
         };
         assert!(at(&calling) > at(&here), "someone in a call is ringed");
+    }
+
+    /// Every presence hue's face marks against the top bar it sits on, in
+    /// dark and light, present or idle: its colour ring as painted clears
+    /// non-text contrast (3:1) on the bar's ground, and its initial clears
+    /// on-fill contrast on the face. An idle face quietens and never
+    /// vanishes into the bar.
+    #[test]
+    fn every_hue_marks_on_the_bar_in_dark_and_light_present_or_idle() {
+        use crate::color::contrast_ratio;
+        use crate::offscreen::OffscreenRenderer;
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST, PresenceHue};
+        for (label, theme) in [
+            ("dark", crate::theme::Theme::dark()),
+            ("light", crate::theme::Theme::light()),
+        ] {
+            let bar = theme.tokens.colors.surfaces.base;
+            let palette = theme.tokens.colors.presence;
+            for hue in PresenceHue::ALL {
+                let identity = palette.hue(hue);
+                for dimmed in [false, true] {
+                    let mut face = Face::new("Ben Carter", "ben", identity);
+                    face.dimmed = dimmed;
+                    let mut scene = vello::Scene::new();
+                    let mut text = crate::text_render::TextRenderer::new();
+                    let mut ctx = PaintCtx::new(
+                        &mut scene,
+                        vello::kurbo::Affine::IDENTITY,
+                        &mut text,
+                        &theme,
+                    );
+                    FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (&[face], 0), bar);
+                    let rgba = OffscreenRenderer::new(80, 60).render(&scene, bar);
+                    let center_x = 60.0 - FaceStack::BAR.width(1) / 2.0;
+                    let ring_x = (center_x - 12.0 - GAP - RING / 2.0) as u32;
+                    let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 80, ring_x, 30);
+                    let ring = Color::from_rgb8(r, g, b);
+                    let ratio = contrast_ratio(ring, bar);
+                    assert!(
+                        ratio >= NON_TEXT_MIN_CONTRAST - 0.05,
+                        "{label} {hue:?} dimmed={dimmed}: ring {ratio:.2}:1 on the bar"
+                    );
+
+                    let avatar = AvatarFace::new("Ben", "ben").presence(identity);
+                    let avatar = if dimmed { avatar.idle_on(bar) } else { avatar };
+                    let fill = avatar.colour(&theme);
+                    let ink = crate::widget::avatar::initial_ink(fill, &theme);
+                    let ratio = contrast_ratio(ink, fill);
+                    assert!(
+                        ratio >= ON_FILL_MIN_CONTRAST,
+                        "{label} {hue:?} dimmed={dimmed}: initial {ratio:.2}:1 on the face"
+                    );
+                }
+            }
+        }
     }
 }
