@@ -49,6 +49,7 @@ mod drives;
 mod mounted_cloud;
 mod native_open_with;
 mod selected_open;
+mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
 mod clash;
@@ -742,6 +743,14 @@ pub struct FileExplorerWidget {
     /// state — the in-progress typed path and its completion popover), and
     /// this handle feeds it the context and reads its control rects back.
     toolbar: crate::toolbar::ToolbarHandle,
+    /// The content header is in the window's bar ([`ui::window_toolbar`])
+    /// rather than in the window.
+    header_in_bar: bool,
+    /// What the person is typing into the location in the window's bar, as
+    /// the bar last said; `None` while it is not edited there.
+    bar_query: Option<String>,
+    /// What the bar's slots were last declared from.
+    declared_bar: Option<window_bar::BarKey>,
     /// Transient floating status bubble (bottom-right) — the item count /
     /// operation status + selection summary, surfaced on a real change or on
     /// hover then faded, in place of a permanent bottom footer strip so the
@@ -1854,6 +1863,9 @@ impl FileExplorerWidget {
             // pixel-stable.
             nav,
             toolbar,
+            header_in_bar: false,
+            bar_query: None,
+            declared_bar: None,
             status_bubble: ui::StatusBubble::new(),
             state_spinner: Spinner::new(),
             state_retry,
@@ -8962,7 +8974,12 @@ impl FileExplorerWidget {
             // file view, places list, or breadcrumb; a path editor itself
             // consumes keys before this method is reached.
             Key::Character(s) if (s == "l" || s == "L") && ctrl => {
-                self.toolbar.begin_path_edit();
+                if self.header_in_bar {
+                    // The location is the window bar's: it edits there.
+                    ui::window_toolbar::edit_location();
+                } else {
+                    self.toolbar.begin_path_edit();
+                }
                 true
             }
             // Help is intentionally a regular view command, not an invisible
@@ -10078,6 +10095,11 @@ impl Widget for FileExplorerWidget {
         // queued its command, and a search hit or an agent's `open` queued
         // the row it names; apply them before this frame is laid out.
         if self.drain_commands() | self.drain_opened() {
+            self.structure_dirty = true;
+        }
+        // The window's bar shows the toolbar's slots, and what the person did
+        // with them runs here, before this frame is laid out.
+        if self.sync_window_toolbar() {
             self.structure_dirty = true;
         }
         self.poll_cloud();

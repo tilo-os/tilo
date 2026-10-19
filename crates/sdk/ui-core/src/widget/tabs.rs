@@ -476,6 +476,9 @@ pub struct TabBar {
     /// The slots each tab's app declared for the window's bar
     /// ([`crate::window_toolbar`]), by tab id. Sidecar like the others.
     toolbars: HashMap<u64, crate::window_toolbar::WindowToolbar>,
+    /// Each tab's location picture (a page's favicon), decoded from its
+    /// slots: it stands where the app's icon would.
+    location_images: HashMap<u64, icons::AppImage>,
     /// The active tab's slots: in the title's row while the window shows
     /// one tab, in a row of their own under the tabs while it shows several.
     toolbar_row: super::window_toolbar_row::ToolbarRow,
@@ -617,6 +620,7 @@ impl TabBar {
             tabbed,
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
+            location_images: HashMap::new(),
             toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
             motion: EffectiveMotion::default(),
         }
@@ -709,6 +713,22 @@ impl TabBar {
         if self.toolbars.get(&id) == toolbar.as_ref() {
             return false;
         }
+        let image = toolbar
+            .as_ref()
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .and_then(|location| location.image.as_ref());
+        let decoded_same = self
+            .toolbars
+            .get(&id)
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .and_then(|location| location.image.as_ref())
+            == image;
+        if !decoded_same {
+            match image.and_then(crate::window_toolbar::ToolbarImage::app_image) {
+                Some(image) => self.location_images.insert(id, image),
+                None => self.location_images.remove(&id),
+            };
+        }
         match toolbar {
             Some(toolbar) => self.toolbars.insert(id, toolbar),
             None => self.toolbars.remove(&id),
@@ -722,9 +742,32 @@ impl TabBar {
         self.toolbars.get(&id)
     }
 
+    /// The picture tab `id` shows at its leading edge: its location's own
+    /// (a page's favicon), else its app's artwork.
+    fn tab_image<'a>(&'a self, t: &'a TabDescriptor) -> Option<&'a icons::AppImage> {
+        self.location_images.get(&t.id).or(t.icon.as_ref())
+    }
+
+    /// What the menus of the active tab's slots keep inside: the window.
+    pub fn set_popup_area(&mut self, area: Rect) {
+        self.toolbar_row.set_popup_area(area);
+    }
+
+    /// Whether `p` is on the edited location or the suggestions under it.
+    #[must_use]
+    pub fn location_hit(&self, p: Point) -> bool {
+        self.active_toolbar().is_some() && self.toolbar_row.location_hit(p)
+    }
+
     /// What the person did with the apps' slots since the last call, by tab.
     pub fn take_toolbar_events(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
         self.toolbar_row.take_events()
+    }
+
+    /// What the edited location held since the last call, by tab, for the
+    /// app's suggestions ([`crate::window_toolbar::ToolbarEvent::Edit`]).
+    pub fn take_location_drafts(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
+        self.toolbar_row.take_drafts()
     }
 
     /// Whether the active tab's location is being edited in the bar: the
@@ -1273,8 +1316,9 @@ impl TabBar {
             &text_style.clone().with_weight(title_weight),
         );
         let accent = self.accent_ids.get(&t.id).copied();
+        let image = self.tab_image(t);
         if is_pinned {
-            Self::draw_pill_pinned_marker(scene, transform, r, t, accent, text_color);
+            Self::draw_pill_pinned_marker(scene, transform, r, (t, image), accent, text_color);
             return;
         }
         let leading_shift = if let Some(mark) = self.marks.get(&t.id).copied() {
@@ -1288,7 +1332,7 @@ impl TabBar {
             );
             ICON_W + ICON_GAP
         } else {
-            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color)
+            Self::draw_pill_leading_glyph(scene, transform, r, (t, image), accent, text_color)
         };
         let title_x = title_x0(r, leading_shift);
         let title_y = r.center().y - f64::from(th) / 2.0;
@@ -1332,15 +1376,12 @@ impl TabBar {
         scene: &mut Scene,
         transform: Affine,
         r: Rect,
-        t: &TabDescriptor,
+        (t, image): (&TabDescriptor, Option<&icons::AppImage>),
         accent: Option<vello::peniko::Color>,
         text_color: vello::peniko::Color,
     ) {
         let icon_rect = square_at(r.center(), ICON_W);
-        if t.icon
-            .as_ref()
-            .is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image))
-        {
+        if image.is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image)) {
             return;
         }
         if let Some(kind) = t.app_kind {
@@ -1439,7 +1480,7 @@ impl TabBar {
         scene: &mut Scene,
         transform: Affine,
         r: Rect,
-        t: &TabDescriptor,
+        (t, image): (&TabDescriptor, Option<&icons::AppImage>),
         accent: Option<vello::peniko::Color>,
         text_color: vello::peniko::Color,
     ) -> f64 {
@@ -1448,10 +1489,7 @@ impl TabBar {
         // the title follows it at `ICON_GAP` — one inset and one gap for
         // every pill, instead of a glyph tucked 2 px inside the text.
         let icon_rect = leading_glyph_rect(r);
-        if t.icon
-            .as_ref()
-            .is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image))
-        {
+        if image.is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image)) {
             return ICON_W + ICON_GAP;
         }
         if let Some(kind) = t.app_kind {
@@ -3913,6 +3951,15 @@ impl Widget for TabBar {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // An open menu of the slots (the overflow's, the suggestions) takes
+        // the pointer over it first, and a press off it closes it.
+        if self.toolbar_row.popup_open() && self.toolbar_row.popup_event(event, ctx) {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            return;
+        }
         // The location field, while edited, has the keyboard and its own
         // pointer gestures (placing the caret, selecting).
         if self.toolbar_row.is_editing() {
@@ -4004,6 +4051,51 @@ impl Widget for TabBar {
     fn name(&self) -> &'static str {
         "TabBar"
     }
+
+    /// Every button in the bar names its outcome: the slots' buttons and
+    /// the window's controls.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.active_toolbar().is_some()
+            && let Some(tip) = self.toolbar_row.tooltip_at(point)
+        {
+            return Some(tip);
+        }
+        if !self.window_controls {
+            return None;
+        }
+        let control = self.controls.hit(point)?;
+        let (rect, key) = match control {
+            super::window_controls::WindowControl::History => {
+                (self.controls.history, "standalone-history-title")
+            }
+            super::window_controls::WindowControl::Maximize => (
+                self.controls.maximize,
+                if self.maximized {
+                    "host-window-restore"
+                } else {
+                    "host-window-maximize"
+                },
+            ),
+            super::window_controls::WindowControl::Close => {
+                (self.controls.close, "host-window-close")
+            }
+        };
+        Some((rect, crate::i18n::I18nManager::lookup_plain(key)))
+    }
+
+    /// The slots' menus (overflow, suggestions) float in the window's top
+    /// layer, over the content.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.toolbar_row
+            .paint_popups(scene, transform, text_renderer, theme, presence);
+    }
     fn test_id(&self) -> Option<&str> {
         Some("tabs")
     }
@@ -4025,6 +4117,11 @@ impl Widget for TabBar {
             out.push(("window_back".to_string(), slots.back));
             out.push(("window_forward".to_string(), slots.forward));
             out.push(("window_location".to_string(), slots.location));
+            out.push(("window_more".to_string(), slots.overflow));
+            out.push(("window_sidebar".to_string(), slots.sidebar));
+            for (i, rect) in slots.actions.iter().enumerate() {
+                out.push((format!("window_action:{i}"), *rect));
+            }
         }
         // The window's own controls, by what they do.
         out.extend([
@@ -4594,8 +4691,9 @@ impl TabBar {
         transform: Affine,
         theme: &Theme,
     ) -> Vec<Rect> {
-        // While the location is edited the field shows where typing goes.
-        if !self.keyboard_focus || self.toolbar_row.is_editing() {
+        // While the location is edited the field shows where typing goes;
+        // and a click that focused the tabs rings nothing (focus-visible).
+        if !self.keyboard_focus || self.toolbar_row.is_editing() || !crate::focus_visible::shown() {
             return Vec::new();
         }
         let Some((idx, _)) = self
@@ -5167,6 +5265,16 @@ fn draw_app_icon(
             scene.stroke(&stroke, transform, color, None, &h);
             let v = vello::kurbo::Line::new(Point::new(cx, cy - 5.5), Point::new(cx, cy + 5.5));
             scene.stroke(&stroke, transform, color, None, &v);
+        }
+        AppKind::App(icon) => {
+            icons::draw_icon(
+                scene,
+                transform,
+                rect,
+                icon,
+                color,
+                icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
         AppKind::Settings => {
             // Lucide `Settings`; full gear teeth are too small to read at 14px.
@@ -8270,6 +8378,7 @@ mod tests {
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
         };
         WindowToolbar {
+            sidebar: None,
             navigation: Some(ToolbarNavigation {
                 back: true,
                 forward: false,
@@ -8366,6 +8475,243 @@ mod tests {
             )],
             "typing replaced the selected address and Enter committed it"
         );
+    }
+
+    /// Browser slots with more actions than the row shows.
+    fn crowded_slots() -> crate::window_toolbar::WindowToolbar {
+        let mut slots = browser_slots();
+        for (id, icon, name) in [
+            ("bookmark", "star", "Bookmark this page"),
+            ("library", "history", "History and bookmarks"),
+            ("downloads", "download", "Downloads"),
+            ("hidden", "eye", "Show hidden"),
+            ("new-folder", "folder-plus", "New folder"),
+        ] {
+            slots.actions.push(crate::window_toolbar::ToolbarAction {
+                id: id.into(),
+                icon: icon.into(),
+                name: name.into(),
+                enabled: true,
+                on: false,
+            });
+        }
+        slots
+    }
+
+    /// At most three actions stand in the row, fewer when the location
+    /// would be squeezed; the rest are in the overflow button's menu, which
+    /// runs them, and every button names its outcome in a tooltip.
+    #[test]
+    fn actions_past_the_rows_room_are_in_an_overflow_menu_that_runs_them() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(crowded_slots()));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let (_, _, location, actions) = b.toolbar_rects();
+        assert_eq!(actions.len(), crate::window_toolbar::MAX_ACTIONS);
+        let more = b.toolbar_row.slots().overflow;
+        assert!(more.area() > 0.0, "six actions do not fit in the row");
+        assert!(
+            actions
+                .iter()
+                .all(|a| a.x1 <= more.x0 && a.x0 >= location.x1)
+        );
+        assert!(more.x1 <= b.window_controls().maximize.x0);
+
+        // Tooltips: the slots' buttons and the window's controls.
+        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let tip = |b: &TabBar, r: Rect| b.tooltip_target_at(r.center()).map(|(_, t)| t);
+        assert_eq!(tip(&b, actions[0]), Some("Reload".to_owned()));
+        assert_eq!(tip(&b, more), Some(lookup("window-toolbar-more")));
+        assert_eq!(
+            tip(&b, b.window_controls().close),
+            Some(lookup("host-window-close"))
+        );
+        assert_eq!(tip(&b, location), None, "the location is no button");
+
+        // The menu lists the actions the row has no room for and runs one.
+        b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));
+        let mut handled = false;
+        dispatch_cursor(&mut b, more.center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+        assert!(b.toolbar_row.popup_open(), "the overflow menu opened");
+        assert!(send_key(&mut b, Key::Named(NamedKey::ArrowDown), None));
+        assert!(send_key(&mut b, Key::Named(NamedKey::Enter), None));
+        assert_eq!(
+            b.take_toolbar_events(),
+            vec![(
+                1,
+                crate::window_toolbar::ToolbarEvent::Action {
+                    id: "downloads".into()
+                }
+            )],
+            "the first action past the row's three"
+        );
+        assert!(!b.toolbar_row.popup_open());
+
+        // Narrow, the location keeps its room and the actions go first.
+        lay_out_at_width_with(&mut b, 420.0, &theme);
+        let (_, _, narrow_location, narrow_actions) = b.toolbar_rects();
+        assert!(narrow_actions.len() < crate::window_toolbar::MAX_ACTIONS);
+        assert!(narrow_location.area() > 0.0);
+        assert!(b.toolbar_row.slots().overflow.area() > 0.0);
+    }
+
+    /// A location with levels is a breadcrumb: a click on a level commits
+    /// it; a click past them edits the whole path.
+    #[test]
+    fn a_locations_levels_are_a_breadcrumb_whose_levels_commit() {
+        use crate::window_toolbar::LocationSegment;
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut slots = browser_slots();
+        if let Some(location) = slots.location.as_mut() {
+            location.label = "Downloads".into();
+            location.value = "~/Downloads".into();
+            location.segments = vec![
+                LocationSegment {
+                    label: "Home".into(),
+                    value: "~".into(),
+                },
+                LocationSegment {
+                    label: "Downloads".into(),
+                    value: "~/Downloads".into(),
+                },
+            ];
+        }
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Downloads")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(slots));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        // The breadcrumb lays its levels out as it is painted.
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        b.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let location = b.location_rect();
+        let home = (0..900_u32)
+            .map(|x| Point::new(f64::from(x), location.center().y))
+            .filter(|p| location.contains(*p))
+            .find(|p| b.toolbar_row.crumb_at_for_tests(*p).is_some())
+            .expect("the Home level is painted in the location");
+        let mut handled = false;
+        dispatch_cursor(&mut b, home, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        assert!(
+            !b.editing_location(),
+            "a level goes there, it does not edit"
+        );
+        assert_eq!(
+            b.take_toolbar_events(),
+            vec![(
+                1,
+                crate::window_toolbar::ToolbarEvent::Commit { text: "~".into() }
+            )]
+        );
+        let past = Point::new(location.x1 - 40.0, location.center().y);
+        dispatch_cursor(&mut b, past, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        assert!(b.editing_location());
+        assert_eq!(b.toolbar_row.field_text(), Some("~/Downloads"));
+    }
+
+    /// While the location is edited the app hears its text (apart from what
+    /// the person did) and its suggestions are listed under the field; the
+    /// arrows choose one and Enter commits its value.
+    #[test]
+    fn the_app_hears_the_edited_text_and_its_suggestions_commit() {
+        use crate::window_toolbar::{LocationSuggestion, ToolbarEvent};
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(browser_slots()));
+        b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(b.edit_location());
+        assert_eq!(
+            b.take_location_drafts(),
+            vec![(
+                1,
+                ToolbarEvent::Edit {
+                    text: "https://duckduckgo.com/".into()
+                }
+            )],
+            "the app hears what the edit starts from"
+        );
+        for ch in "ru".chars() {
+            let text = ch.to_string();
+            assert!(send_key(
+                &mut b,
+                Key::Character(text.as_str().into()),
+                Some(&text)
+            ));
+        }
+        assert_eq!(
+            b.take_location_drafts(),
+            vec![(1, ToolbarEvent::Edit { text: "ru".into() })],
+            "only the latest text"
+        );
+        assert!(b.take_toolbar_events().is_empty(), "typing is no commit");
+
+        let mut answered = browser_slots();
+        if let Some(location) = answered.location.as_mut() {
+            location.suggestions = vec![
+                LocationSuggestion {
+                    label: "rust".into(),
+                    value: "rust".into(),
+                    icon: Some("search".into()),
+                },
+                LocationSuggestion {
+                    label: "Rust Programming Language".into(),
+                    value: "https://www.rust-lang.org/".into(),
+                    icon: Some("history".into()),
+                },
+            ];
+        }
+        b.set_toolbar(1, Some(answered));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(b.toolbar_row.popup_open(), "the suggestions are listed");
+        assert!(b.editing_location(), "and the field still has the keyboard");
+        assert!(send_key(&mut b, Key::Named(NamedKey::ArrowDown), None));
+        assert!(send_key(&mut b, Key::Named(NamedKey::ArrowDown), None));
+        assert!(send_key(&mut b, Key::Named(NamedKey::Enter), None));
+        assert!(!b.editing_location());
+        assert_eq!(
+            b.take_toolbar_events(),
+            vec![(
+                1,
+                ToolbarEvent::Commit {
+                    text: "https://www.rust-lang.org/".into()
+                }
+            )]
+        );
+    }
+
+    /// A page's favicon stands where the app's icon would.
+    #[test]
+    fn the_locations_picture_stands_in_for_the_apps_icon() {
+        let mut slots = browser_slots();
+        let png = crate::png::encode_rgba8(2, 2, &[255; 16]).unwrap();
+        if let Some(location) = slots.location.as_mut() {
+            location.image = Some(crate::window_toolbar::ToolbarImage { png });
+        }
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(slots));
+        let tab = b.tabs()[0].clone();
+        let image = b.tab_image(&tab).expect("the favicon");
+        assert!(image.pixels(16).is_some());
+        b.set_toolbar(1, Some(browser_slots()));
+        assert!(b.tab_image(&tab).is_none(), "no favicon, no picture");
     }
 
     /// Tabbed, the slots take a row of their own under the tabs, and the

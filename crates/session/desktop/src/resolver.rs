@@ -249,6 +249,11 @@ pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {
             }
             _ => Kind::Settings,
         },
-        _ => Kind::Settings,
+        // A window wears its own app's glyph, never another app's.
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Kind::App(ui::icons::app_glyph(app_id, None)),
+        TileContent::WorkspaceActivity => Kind::Settings,
     }
 }

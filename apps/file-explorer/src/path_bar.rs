@@ -393,11 +393,15 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
 
 /// Resolve a location against the folder being browsed, without removing root
 /// separators (`/` and `C:/` are not equivalent to empty text and `C:`).
-fn resolve_location(input: &str, home: Option<&Path>, current: &Path) -> PathBuf {
+pub(crate) fn resolve_location(input: &str, home: Option<&Path>, current: &Path) -> PathBuf {
     current.join(expand_tilde(input, home))
 }
 
-fn path_completions_at(input: &str, home: Option<&Path>, current: &Path) -> Vec<Suggestion> {
+pub(crate) fn path_completions_at(
+    input: &str,
+    home: Option<&Path>,
+    current: &Path,
+) -> Vec<Suggestion> {
     let resolved = resolve_location(input, home, current);
     let mut query = resolved.to_string_lossy().into_owned();
     if (input.is_empty() || input == "~") && !query.ends_with(std::path::is_separator) {

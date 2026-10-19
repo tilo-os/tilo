@@ -59,6 +59,9 @@ host-window-close = Close
 window-toolbar-back = Back
 window-toolbar-forward = Forward
 window-toolbar-go = Go
+window-toolbar-more = More actions
+window-toolbar-show-sidebar = Show sidebar
+window-toolbar-hide-sidebar = Hide sidebar
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }

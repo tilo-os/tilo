@@ -185,6 +185,7 @@ impl ShellOverlayHost {
                     }
                 }
                 events.extend(group.take_toolbar_events());
+                events.extend(group.take_location_drafts());
             }
         }
         for (tab, event) in events {
@@ -231,7 +232,7 @@ impl ShellOverlayHost {
                     continue;
                 }
                 if press {
-                    if !cursor.is_some_and(|p| group.location_rect().contains(p)) {
+                    if !cursor.is_some_and(|p| group.location_hit(p)) {
                         group.cancel_location_edit();
                     }
                     // The press goes on to whatever is under it.
@@ -241,6 +242,50 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    /// The pointer moved to `p`: the window bar's button under it gets its
+    /// tooltip after the dwell.
+    pub(super) fn bar_tooltip_pointer(&mut self, p: vello::kurbo::Point) {
+        let target = self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups.iter().find_map(|group| group.bar_tooltip_at(p))
+        });
+        self.bar_tooltip.on_pointer(target, ui::time::now());
+    }
+
+    /// The windows' bars' menus (overflow, suggestions) and the tooltip of
+    /// the button under the pointer, over the windows.
+    pub(super) fn draw_window_bar_popups(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
+        for ptr in rows {
+            // SAFETY: see field doc on `group_row_ptrs`; drawing is
+            // sequential and `&mut self` prevents another traversal.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                group.draw_bar_popups(scene, transform, text_renderer, theme, presence);
+            }
+        }
+        self.bar_tooltip.tick(ui::time::now());
+        if let Some((label, anchor)) = self.bar_tooltip.visible() {
+            ui::widget::tooltip::draw_hover_tooltip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                anchor,
+                label,
+                self.rect,
+            );
+        }
     }
 
     /// A window's location is being edited in its bar: the shell takes the
@@ -263,6 +308,7 @@ mod tests {
 
     fn location(label: &str) -> WindowToolbar {
         WindowToolbar {
+            sidebar: None,
             location: Some(ToolbarLocation {
                 label: label.into(),
                 editable: true,

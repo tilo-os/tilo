@@ -26,3 +26,4 @@ passwords-request-details = { $app } requests access to { $item }.
     Person: { $principal }
     Device: { $device }
 passwords-saved-item = Saved { $item }
+passwords-new-item = New item

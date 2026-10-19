@@ -127,6 +127,18 @@ impl ToolbarHandle {
         context.workspace_roots = workspace_roots;
     }
 
+    /// The window's bar shows the toolbar's controls instead
+    /// (`ui::window_toolbar`): the menus they open hang from the trailing
+    /// end of `area`, the top of the app's content.
+    pub fn set_bar_anchor(&self, area: Rect) {
+        self.0.published.area.set(area);
+        self.0.published.view_menu.set(None);
+        self.0.published.sort_menu.set(None);
+        self.0.published.up.set(None);
+        self.0.published.crumbs.borrow_mut().clear();
+        self.0.published.editing.set(false);
+    }
+
     /// Put the path bar into editable mode (the Ctrl+L "edit location" path).
     pub fn begin_path_edit(&self) {
         self.0.context.borrow_mut().edit_requested = true;

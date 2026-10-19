@@ -53,6 +53,9 @@ host-window-close = Schließen
 window-toolbar-back = Zurück
 window-toolbar-forward = Vorwärts
 window-toolbar-go = Öffnen
+window-toolbar-more = Weitere Aktionen
+window-toolbar-show-sidebar = Seitenleiste einblenden
+window-toolbar-hide-sidebar = Seitenleiste ausblenden
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet

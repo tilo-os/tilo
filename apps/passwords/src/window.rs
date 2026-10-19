@@ -119,6 +119,11 @@ pub struct PasswordsSurface {
     /// The list revision the overview title and search index follow.
     built_list: Option<u64>,
     overview_title: String,
+    /// The overview header is in the window's bar ([`ui::window_toolbar`]).
+    header_in_bar: bool,
+    /// The list title and sidebar state the bar's slots were last declared
+    /// with.
+    declared_bar: Option<(String, bool)>,
     shows_list: bool,
     /// Shell state a capture stages once the window has its size.
     pending: Option<String>,
@@ -127,16 +132,83 @@ pub struct PasswordsSurface {
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
+/// The action id of the window bar's New item.
+const NEW_ITEM: &str = "new-item";
+
 impl PasswordsSurface {
+    /// The overview header's actions: search and New item.
+    fn overview_actions(requests: &Requests) -> Vec<Element> {
+        let new_item = {
+            let requests = Rc::clone(requests);
+            Button::icon_only(
+                "passwords.add",
+                Icon::Plus,
+                &crate::CATALOG.t("passwords-new-item"),
+            )
+            .on_effect(move || requests.borrow_mut().push(Request::NewItem))
+        };
+        let search = ui::search::search_button(ui::search::SearchRequest::this_app());
+        vec![Box::new(search) as Element, Box::new(new_item)]
+    }
+
+    /// The overview header moves into the window's bar while the bar hosts
+    /// the slots ([`ui::window_toolbar`]) and back when it does not: the
+    /// list shown is the window's location, New item its action, and search
+    /// the bar's own. What the person did there is queued like a click.
+    fn sync_window_toolbar(&mut self) {
+        use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+        let hosted = ui::window_toolbar::is_hosted();
+        if hosted != self.header_in_bar {
+            self.header_in_bar = hosted;
+            self.shell.set_sidebar_toggle_in_window_bar(hosted);
+            if hosted {
+                self.shell.set_overview_header("", Vec::new());
+            } else {
+                self.shell.set_overview_header(
+                    self.overview_title.clone(),
+                    Self::overview_actions(&self.requests),
+                );
+                ui::window_toolbar::declare(None);
+                self.declared_bar = None;
+            }
+        }
+        if !hosted {
+            return;
+        }
+        let open = self.shell.is_sidebar_open();
+        let key = (self.overview_title.clone(), open);
+        if self.declared_bar.as_ref() != Some(&key) {
+            ui::window_toolbar::declare(Some(WindowToolbar {
+                sidebar: Some(open),
+                navigation: None,
+                location: Some(ToolbarLocation {
+                    label: self.overview_title.clone(),
+                    ..ToolbarLocation::default()
+                }),
+                actions: vec![ToolbarAction {
+                    id: NEW_ITEM.into(),
+                    icon: "plus".into(),
+                    name: crate::CATALOG.t("passwords-new-item"),
+                    enabled: true,
+                    on: false,
+                }],
+            }));
+            self.declared_bar = Some(key);
+        }
+        for event in ui::window_toolbar::take_events() {
+            match event {
+                ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
+                ToolbarEvent::Action { ref id } if id == NEW_ITEM => {
+                    self.requests.borrow_mut().push(Request::NewItem);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn with_core(core: Core) -> Self {
         let core: Shared = Rc::new(RefCell::new(core));
         let requests: Requests = Rc::default();
-        let new_item = {
-            let requests = Rc::clone(&requests);
-            Button::icon_only("passwords.add", Icon::Plus, "New item")
-                .on_effect(move || requests.borrow_mut().push(Request::NewItem))
-        };
-        let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         let title = core.borrow().filter.label().to_owned();
         // Maximized, the header lives in the window's bar.
         let shell = NavShell::new()
@@ -145,10 +217,7 @@ impl PasswordsSurface {
             .with_header_in_window_bar()
             .sidebar(Box::new(sidebar(&core, &requests)))
             .overview(Box::new(ListPane::new(&core, &requests)))
-            .overview_header(
-                title.clone(),
-                vec![Box::new(search) as Element, Box::new(new_item)],
-            );
+            .overview_header(title.clone(), Self::overview_actions(&requests));
         let mut surface = Self {
             core,
             requests,
@@ -156,6 +225,8 @@ impl PasswordsSurface {
             built_page: None,
             built_list: None,
             overview_title: title,
+            header_in_bar: false,
+            declared_bar: None,
             shows_list: true,
             pending: None,
             settled_layouts: 0,
@@ -222,6 +293,7 @@ impl PasswordsSurface {
     /// the search index.
     pub(crate) fn settle(&mut self) {
         self.core.borrow_mut().refresh_model();
+        self.sync_window_toolbar();
         loop {
             let requests = std::mem::take(&mut *self.requests.borrow_mut());
             if requests.is_empty() {
@@ -272,8 +344,12 @@ impl PasswordsSurface {
             self.built_list = Some(list);
         }
         if title != self.overview_title {
-            self.shell.set_overview_title(title.clone());
+            if !self.header_in_bar {
+                self.shell.set_overview_title(title.clone());
+            }
             self.overview_title = title;
+            // The bar names the list now shown.
+            self.sync_window_toolbar();
         }
         if let Some(front) = front {
             self.shell

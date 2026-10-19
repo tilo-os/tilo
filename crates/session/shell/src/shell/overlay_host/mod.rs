@@ -1121,6 +1121,8 @@ pub struct ShellOverlayHost {
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// The tooltip naming the window bar's button under the pointer.
+    bar_tooltip: ui::widget::tooltip::TooltipHost,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2805,6 +2807,7 @@ impl ShellOverlayHost {
             bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),
+            bar_tooltip: ui::widget::tooltip::TooltipHost::new(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -14480,9 +14483,18 @@ impl ShellOverlayHost {
                 touch.location.y / scale_factor,
             ));
         }
+        if let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            ..
+        } = event
+        {
+            // Acting on a button ends its tooltip.
+            self.bar_tooltip.dismiss();
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
+            self.bar_tooltip_pointer(p);
             if let Some(desk) = &self.shared_desk {
                 desk.set_pointer(Some((p.x, p.y)));
             }
@@ -21853,6 +21865,8 @@ impl Widget for ShellOverlayHost {
                 );
             }
         }
+        // The windows' bars put their menus and tooltips over the windows.
+        self.draw_window_bar_popups(scene, transform, text_renderer, theme, presence);
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         // The top bar goes over all of that, as the retained sections
         // compose it: their workspace section holds everything above.
@@ -23235,6 +23249,7 @@ impl Widget for ShellOverlayHost {
             .chain(self.agent_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.deadline())
+            .chain(self.bar_tooltip.reveal_at())
             .min()
     }
 }

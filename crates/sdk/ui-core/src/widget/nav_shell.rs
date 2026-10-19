@@ -444,6 +444,9 @@ struct Inputs {
     /// The app put its header in the window's bar
     /// ([`NavShell::with_header_in_window_bar`]).
     header_in_bar: bool,
+    /// The window's bar shows the sidebar toggle among the app's slots
+    /// ([`NavShell::set_sidebar_toggle_in_window_bar`]).
+    toggle_in_bar: bool,
     /// The person reached for the window's bar.
     bar_revealed: bool,
     /// How far down the window's top edge the bar stands: below the
@@ -521,6 +524,7 @@ impl Default for Inputs {
             history: None,
             window_controls: None,
             header_in_bar: false,
+            toggle_in_bar: false,
             bar_revealed: false,
             bar_top: 0.0,
             titled: [false; 4],
@@ -970,7 +974,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
 
     // 5. The header row.
-    let needs_header = inputs.has_sidebar
+    let needs_header = (inputs.has_sidebar && !inputs.toggle_in_bar)
         || inputs.has_inspector
         || inputs.history.is_some()
         || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
@@ -1181,6 +1185,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if hh > 0.0
         && !push_back
         && inputs.has_sidebar
+        && !inputs.toggle_in_bar
         && matches!(
             g.sidebar,
             SidebarPlacement::Docked | SidebarPlacement::Drawer
@@ -1818,6 +1823,21 @@ impl NavShell {
     pub fn with_header_in_window_bar(self) -> Self {
         self.inputs.borrow_mut().header_in_bar = true;
         self
+    }
+
+    /// The app shows the sidebar toggle in the window's bar
+    /// ([`crate::window_toolbar::WindowToolbar::sidebar`]) and runs it with
+    /// [`Self::toggle_sidebar`]: the header row keeps no toggle of its own,
+    /// and stands only for what else it holds.
+    pub fn set_sidebar_toggle_in_window_bar(&mut self, on: bool) {
+        let changed = {
+            let mut inputs = self.inputs.borrow_mut();
+            std::mem::replace(&mut inputs.toggle_in_bar, on) != on
+        };
+        if changed {
+            self.structure_dirty = true;
+            self.invalidate();
+        }
     }
 
     /// Start with the sidebar hidden (where it docks).

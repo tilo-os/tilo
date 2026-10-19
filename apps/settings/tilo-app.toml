@@ -82,6 +82,8 @@ mode = "off"
 system = "required@1"
 collab = "optional@2"
 tilo-fs = "optional@2"
+# The window's bar shows the app's toolbar (ui::window_toolbar).
+shell-ui = "optional@9"
 tools = "optional@2"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
