@@ -430,6 +430,16 @@ class AppResourceActionContractTests(unittest.TestCase):
                     )
                 ),
             )
+        with self.subTest(phase="a definition re-exported from a cfg(test) module publishes nothing"):
+            self.assertIn(
+                "Widget::resources",
+                reasons(
+                    fixture(
+                        code="#[cfg(test)]\nmod app;\npub use app::definition;\n",
+                        extra={"crates/shared-ui/src/app.rs": shared()},
+                    )
+                ),
+            )
         with self.subTest(phase="re-exporting an unrelated item does not name the host"):
             self.assertIn(
                 "Widget::resources",

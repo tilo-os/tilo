@@ -952,6 +952,7 @@ def exported_definition_body(crate_dir: Path) -> str | None:
         return None
     code = production_code(root.read_text(encoding="utf-8"))
     bodies: list[str] = []
+    test_only = test_only_module_files(crate_dir)
     direct = top_level_definition_body(code)
     if direct is not None:
         bodies.append(direct)
@@ -963,6 +964,11 @@ def exported_definition_body(crate_dir: Path) -> str | None:
             continue
         source = module_source(crate_dir, segments)
         if source is None:
+            continue
+        if (
+            source.resolve() in test_only
+            or is_test_source(source.relative_to(crate_dir).as_posix())
+        ):
             continue
         body = top_level_definition_body(production_code(source.read_text(encoding="utf-8")))
         if body is not None:
