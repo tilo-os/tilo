@@ -2412,13 +2412,31 @@ impl WorkspaceSettingsOverlay {
                 &style,
             );
         };
+        let title = t("workspace-settings-devices-title");
         text_renderer.draw_style(
             scene,
-            &t("workspace-settings-devices-title"),
+            &title,
             colors.text_primary,
             transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
             None,
             &theme.text(TextRole::Body),
+        );
+        // What stays on each device, beside the devices it is about: the
+        // workspace's content is shared, its arrangement here is not.
+        let (title_w, _) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Body));
+        let local_x = card.x0 + 16.0 + f64::from(title_w) + 12.0;
+        let local = text_renderer.elide_to_width_style(
+            &t("workspace-settings-devices-local"),
+            f32_of_f64((card.x1 - 16.0 - local_x).max(0.0)),
+            &style,
+        );
+        text(
+            text_renderer,
+            scene,
+            &local,
+            colors.text_dim,
+            local_x,
+            card.y0 + 18.0 * scale,
         );
         let button = |scene: &mut Scene,
                       text_renderer: &mut TextRenderer,

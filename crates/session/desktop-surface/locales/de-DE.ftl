@@ -908,6 +908,7 @@ workspace-settings-invite-hint = Wähle eine Person und eine Rolle. Die Einladun
 workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
 workspace-settings-invite-create = Erstellen
 workspace-settings-devices-title = Deine Geräte
+workspace-settings-devices-local = Fensteranordnung und Bedienelemente bleiben auf jedem Gerät.
 workspace-settings-public-title = Öffentlich
 workspace-settings-public-asking = Der Host dieses Arbeitsbereichs wird gefragt…
 workspace-settings-public-on = Alle können ihn im Verzeichnis seines Hosts finden und beitreten.
@@ -1009,7 +1010,7 @@ a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffne
 a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
-launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
+launchpad-subtitle = Wähle, wie du anfangen möchtest. Was du hier machst, teilen alle in diesem Arbeitsbereich.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
