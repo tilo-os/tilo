@@ -10,6 +10,7 @@ use vello::kurbo::{Point, Rect};
 use super::ShellOverlayHost;
 use crate::shell::agent_quick_composer::{AgentQuickComposerOrigin, ComposerOwner};
 use crate::shell::certified_action_session::ActionSessionSource;
+use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::selection_agent::{AgentStart, ChordRoute, SelectionSeed};
 
 impl ShellOverlayHost {
@@ -204,8 +205,15 @@ impl ShellOverlayHost {
     /// say there is no agent when it did not come up.
     fn follow_agent_start(&mut self, now: Instant) {
         let broker = self.shortcut_triggers.broker();
+        // Ready means exactly what `open_ask_agent` asks for. On 2026-10-19
+        // this waited only for the task subscription: an agent that had one
+        // but no certified identity was "ready", `open_ask_agent` found no
+        // agent to ask and started another, every frame, until the shell
+        // ran out of file descriptors (87 agents in a second).
         let outcome = self.selection_requests.started(now, |room, agent| {
-            broker.is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
+            broker
+                .as_ref()
+                .is_some_and(|broker| askable(broker, room, agent))
         });
         match outcome {
             Some(AgentStart::Ready(seed)) => {
@@ -234,12 +242,7 @@ impl ShellOverlayHost {
         let broker = self.shortcut_triggers.broker()?;
         let live = members
             .into_iter()
-            .filter(|agent| {
-                broker.agent_is_live_task_capable(room, agent)
-                    && broker
-                        .certified_agent_identity(room, &format!("agent:{agent}"))
-                        .is_some_and(|identity| &identity.agent_key == agent)
-            })
+            .filter(|agent| askable(&broker, room, agent))
             .collect();
         Some((ActionSessionSource::new(broker), live))
     }
@@ -259,6 +262,16 @@ impl ShellOverlayHost {
             .or_else(|| self.chrome.as_ref()?.borrow().active_app_title())
             .unwrap_or_else(|| app_id.to_owned())
     }
+}
+
+/// Whether `agent` takes asks in `room`: admitted (certified under its own
+/// key) and holding a live task subscription. The one test both the chord
+/// and the start it waits for use.
+fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
+    broker.agent_is_live_task_capable(room, agent)
+        && broker
+            .certified_agent_identity(room, &format!("agent:{agent}"))
+            .is_some_and(|identity| identity.agent_key == agent)
 }
 
 /// Where the composer about a selection in `window` points, and what it must
