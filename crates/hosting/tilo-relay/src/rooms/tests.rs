@@ -1958,3 +1958,77 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     }
     relay.shutdown().await;
 }
+
+/// A Complete whose challenge this host does not hold, and whose request it
+/// never completed, is answered as lapsed: the device learns its retained
+/// proof is dead and asks for a new challenge, instead of resending it to a
+/// refusal forever.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JOIN_PROOF_LAPSED, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
+        JoinTransportResponse, sign_join_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (device, device_cert) = guest_device();
+    let issued = rooms
+        .pre_admit(
+            &cert,
+            PreAdmitRequest {
+                request_id: [9; 32],
+                grant: signed_pre_admission(&created.room, b"door"),
+                recipient_user_public_key: Some(device_cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = rooms.join_service();
+    let endpoint = device_cert.device_public_key;
+    let JoinTransportResponse::Challenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert,
+                request_id: [4; 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no challenge");
+    };
+    // A challenge the host never issued, as one it has since dropped looks.
+    let mut dropped = answer.challenge;
+    dropped.nonce = [0x5a; 32];
+    let proof = sign_join_proof(dropped, &device).unwrap();
+    let response = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+        )
+        .await;
+    assert!(
+        matches!(
+            response,
+            JoinTransportResponse::Error {
+                code: JOIN_PROOF_LAPSED,
+                ..
+            }
+        ),
+        "{response:?}"
+    );
+    relay.shutdown().await;
+}

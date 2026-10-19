@@ -205,6 +205,18 @@ pub async fn prepare_and_complete(
         JoinTransportResponse::Complete(bootstrap) => {
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
+        // The host holds neither the challenge this proof answers nor a
+        // completion of its request: it never admitted it and never will.
+        // Kept, the proof would be resent and refused forever, and no new
+        // proof could be made for the room; the invitation is redeemed, if
+        // at all, through a new challenge.
+        JoinTransportResponse::Error { code, message } if lapsed(code, &message) => {
+            owner.drop_lapsed_enrollment(intent.room(), &id)?;
+            Err(format!(
+                "{}; the host never admitted this join, so it is asked for again",
+                refused(&message)
+            ))
+        }
         // Generic transport/protocol errors are not proof that remote admission did not happen.
         JoinTransportResponse::Error { message, .. } => Err(format!(
             "{}; exact signed proof retained",
@@ -212,6 +224,16 @@ pub async fn prepare_and_complete(
         )),
         _ => Err("native Complete was not acknowledged; exact signed proof retained".into()),
     }
+}
+
+/// Whether a host's refusal of a Complete says it never admitted the proof
+/// and no longer can ([`join::JOIN_PROOF_LAPSED`]). A host from before that
+/// code answers the same finding as a 403 naming the challenge it no longer
+/// holds; its `complete` looks up a completed request before the challenge,
+/// so that answer, too, means the proof was never admitted.
+fn lapsed(code: u16, message: &str) -> bool {
+    code == join::JOIN_PROOF_LAPSED
+        || (code == 403 && message == "join challenge was not issued by this host")
 }
 
 /// The host's refusal, in its own words: what the person is shown.
@@ -222,4 +244,24 @@ fn refused(message: &str) -> String {
         .take(240)
         .collect();
     format!("the workspace's host refused: {message}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_host_that_holds_neither_challenge_nor_completion_ends_a_retained_proof() {
+        assert!(lapsed(join::JOIN_PROOF_LAPSED, "anything"));
+        assert!(
+            lapsed(403, "join challenge was not issued by this host"),
+            "a host from before the code says the same in words"
+        );
+        assert!(!lapsed(403, "invitation was cancelled"));
+        assert!(!lapsed(
+            403,
+            "join proof does not match authenticated transport endpoint"
+        ));
+        assert!(!lapsed(503, "join challenge was not issued by this host"));
+    }
 }
