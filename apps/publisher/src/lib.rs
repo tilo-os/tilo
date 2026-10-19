@@ -400,16 +400,23 @@ fn namespace_form(cx: &ViewCx<Publisher>) -> Column {
         .input(paths.contact)
         .with_id("contact-input")
         .with_placeholder("publisher-contact-placeholder");
+    // One form, so the four labels share a column; on the key section's
+    // content edge, not indented under it.
+    let fields = ui::widget::Form::new().section(
+        ui::widget::FormSection::untitled()
+            .field(labeled_field("publisher-domain-label", domain))
+            .field(labeled_field("publisher-forge-label", forge))
+            .field(labeled_field("publisher-contact-label", contact))
+            .field(labeled_field("publisher-registry-label", registry)),
+    );
     ui::column![
         Text::new("publisher-namespace-heading")
             .with_id("namespaces-heading")
             .with_role(TextRole::Heading),
         Text::new("publisher-namespace-help"),
-        labeled_field("publisher-domain-label", domain),
-        labeled_field("publisher-forge-label", forge),
-        labeled_field("publisher-contact-label", contact),
-        labeled_field("publisher-registry-label", registry),
+        fields,
     ]
+    .with_no_padding()
     .with_intrinsic_height()
 }
 
