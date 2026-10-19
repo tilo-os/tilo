@@ -1340,6 +1340,11 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     host_content: Option<NodeId>,
     /// The content's measured size.
     content_size: (f64, f64),
+    /// The body width the hosted content was last laid out in: a draw
+    /// finding the body wider or narrower asks for a new layout pass. Not
+    /// the content's own width, which a fixed-size body keeps whatever the
+    /// body's width is.
+    content_laid_out_in: f64,
     /// Where the content's top-left was last placed.
     content_origin: Point,
     /// How far the body is scrolled when the content is taller than it.
@@ -1391,6 +1396,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             detached: None,
             host_content: None,
             content_size: (0.0, 0.0),
+            content_laid_out_in: 0.0,
             content_origin: Point::ZERO,
             scroll: 0.0,
             trim: 0.0,
@@ -2198,6 +2204,7 @@ impl Widget for ModalDialog<dyn Widget> {
         self.content_size = size;
         let theme = self.layout_theme.clone();
         crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.resolve(&theme, tr));
+        self.content_laid_out_in = self.body_rect().width();
         let place = |dialog: &mut Self| {
             let target = dialog.content_target();
             dialog.content.apply_layout(
@@ -2248,7 +2255,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 self.stale = true;
             }
             let body_w = self.body_rect().width();
-            if (self.content_size.0 - body_w).abs() > 1.0 {
+            if (self.content_laid_out_in - body_w).abs() > 1.0 {
                 self.remeasure = true;
                 self.stale = true;
             }

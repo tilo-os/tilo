@@ -317,6 +317,33 @@ fn layout_changes_have_hysteresis() {
 
 // USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
 // content should obviously be displayed full screen"
+/// A window opened narrow has no place to keep yet, so it opens on a list,
+/// whole screen: the content's own list where it has one, else the sidebar.
+/// Never the content, which nothing has chosen.
+#[test]
+fn a_fresh_narrow_window_opens_on_its_list() {
+    // A mail window: mailboxes, the inbox, a message.
+    let mut h = harness(mail_shell(), 360, 700, Theme::dark());
+    settle(&mut h, 360, 700);
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    assert_eq!(g.overview_column.width(), 360.0, "the inbox fills the screen");
+    assert!(g.content_column.width() <= 0.0 || g.content_column.x0 >= 360.0);
+    // A settings window: a list of pages and a page.
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .content_header("General", Vec::new());
+    let mut h = harness(shell, 360, 700, Theme::dark());
+    settle(&mut h, 360, 700);
+    let g = geometry(&h);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_eq!(g.sidebar_column.width(), 360.0, "the pages fill the screen");
+}
+
+// USER REQUIREMENT (2026-10-18): "on very small screens the sidebar OR app
+// content should obviously be displayed full screen"
 /// Narrowing a docked window keeps the person's place: they land on the
 /// page they were on, Back goes to the list, and widening docks again with
 /// the same page open.
@@ -497,12 +524,19 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                 assert!((g.sidebar_column.width() - m.sidebar.min(w - pair)).abs() < 0.5);
                 assert_eq!(g.sidebar_column.x0, 0.0);
             } else {
+                // A fresh window has no place to keep: it opens on the
+                // first list, whole screen (the inbox where the content has
+                // its own list, else the sidebar).
+                let list = if g.stack.contains(&NavPane::Overview) {
+                    g.overview_column
+                } else {
+                    g.sidebar_column
+                };
                 assert_eq!(
-                    g.sidebar_column.width(),
+                    list.width(),
                     w,
-                    "the list is a whole screen: {scale}x {width}, column {:?}, side by side {}",
-                    g.sidebar_column,
-                    g.side_by_side
+                    "the list is a whole screen: {scale}x {width}, stack {:?}",
+                    g.stack
                 );
             }
             // Every shown body sits under the one header row.

@@ -1725,11 +1725,14 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
         let _ = present(&mut d, WINDOW, &theme);
         assert!(
             !d.needs_animation_frame(),
-            "it rests: appear moving {} (progress {}), stale {}, content wants frames {}",
+            "it rests: appear moving {} (progress {}), stale {}, remeasure {}, content wants frames {}, content size {:?}, body {:?}",
             d.appear.is_moving(),
             d.appear.progress(),
             d.stale,
-            d.content.needs_animation_frame()
+            d.remeasure,
+            d.content.needs_animation_frame(),
+            d.content_size,
+            d.body_rect()
         );
         // Closed by a click: it leaves, drawn but deaf.
         d.set_open(false);

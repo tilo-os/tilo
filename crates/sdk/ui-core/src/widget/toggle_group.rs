@@ -1989,9 +1989,12 @@ impl ToggleGroup {
             self.thumb_for = NONE_CHOSEN;
             return None;
         };
+        // A slide needs a laid-out place to leave: until the thumb has
+        // rested on a segment of real size, it lands.
         let chose_another = self.thumb_for != self.selected
             && self.thumb_for != NONE_CHOSEN
-            && self.thumb_for < self.segment_rects.len();
+            && self.thumb_for < self.segment_rects.len()
+            && self.thumb.target().area() > 0.0;
         if chose_another {
             let timing =
                 ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
@@ -1999,7 +2002,9 @@ impl ToggleGroup {
             if let Some(until) = self.thumb.settles_at() {
                 crate::motion::want_frames_until(until);
             }
-        } else if self.thumb.target() != target {
+        } else if self.thumb_for == NONE_CHOSEN || self.thumb.target() != target {
+            // The first laid-out place is where the thumb rests: it does not
+            // arrive from wherever the value started.
             self.thumb.snap(target);
         }
         self.thumb_for = self.selected;
@@ -3194,13 +3199,24 @@ mod tests {
                 Segment::new("Month"),
             ],
             0,
-        );
+        )
+        // The strip fits its labels through `measure`, which a plain taffy
+        // pass never calls: let it take the row's width instead.
+        .fill();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = g.build_layout(&mut taffy, &theme, &mut node_map);
-        // The strip fits its labels through `measure`, which a plain taffy
-        // pass never calls: give it a row's width directly.
-        g.set_rect_and_partition(Rect::new(0.0, 0.0, 300.0, g.strip_height()));
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.parent_node(
+            Style {
+                size: Size::from_lengths(300.0, 40.0),
+                ..Style::default()
+            },
+            &[node],
+        );
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut paint = |g: &mut ToggleGroup| {
@@ -3234,7 +3250,9 @@ mod tests {
             let drawn = g.last_thumb.expect("on its way");
             assert!(
                 drawn.x0 > first.x0 && drawn.x0 < last.x0,
-                "between the segments: {drawn:?}"
+                "between the segments: {drawn:?}, first {first:?}, last {last:?}, value now {:?}, target {:?}",
+                g.thumb.get(crate::time::now()),
+                g.thumb.target()
             );
         });
         with_monotonic_time(at(600), || {
