@@ -6,15 +6,11 @@
 //! Schema 24 host binding:
 //! <https://chromium.googlesource.com/chromium/src/+/main/net/extras/sqlite/sqlite_persistent_cookie_store.cc>
 use super::{ChromiumDecryptor, SourceError, SourceGrant};
-use aes::{
-    Aes128,
-    cipher::{Array, BlockCipherDecrypt, KeyInit},
-};
 use sha2::{Digest, Sha256};
 use std::{fs::File, os::unix::fs::MetadataExt, sync::Mutex};
 pub use tilo_secrets::owner_migration::ChromiumBrand;
 use tilo_secrets::owner_migration::ChromiumKey;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 const MAX_ENCRYPTED_COOKIE: usize = 32 * 1024;
 
@@ -116,10 +112,8 @@ impl ChromiumDecryptor for ChromiumLinux {
     }
 }
 fn derive(password: &[u8]) -> Zeroizing<[u8; 16]> {
-    let mut key = Zeroizing::new([0; 16]);
     // Compatibility KDF defined by Linux OSCrypt, not a new password-storage policy.
-    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password, b"saltysalt", 1, key.as_mut_slice());
-    key
+    tilo_seal::compat::chromium_oscrypt_key(password)
 }
 fn decode(
     key: &[u8; 16],
@@ -136,41 +130,9 @@ fn decode(
     {
         return Err(SourceError::UnsupportedEncryption);
     }
-    let cipher = Aes128::new_from_slice(key).map_err(|_| SourceError::UnsupportedEncryption)?;
-    let mut previous = [b' '; 16];
-    let mut plaintext = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
-    for bytes in ciphertext.chunks_exact(16) {
-        let original: [u8; 16] = bytes
-            .try_into()
-            .map_err(|_| SourceError::UnsupportedEncryption)?;
-        let mut block = Array::from(original);
-        cipher.decrypt_block(&mut block);
-        for (byte, previous) in block.iter_mut().zip(previous.iter()) {
-            *byte ^= previous
-        }
-        plaintext.extend_from_slice(&block);
-        block.as_mut_slice().zeroize();
-        previous = original;
-    }
-    let padding = usize::from(*plaintext.last().ok_or(SourceError::UnsupportedEncryption)?);
-    if !(1..=16).contains(&padding) {
-        return Err(SourceError::UnsupportedEncryption);
-    }
-    let length = plaintext
-        .len()
-        .checked_sub(padding)
-        .ok_or(SourceError::UnsupportedEncryption)?;
-    if !plaintext
-        .get(length..)
-        .ok_or(SourceError::UnsupportedEncryption)?
-        .iter()
-        .all(|byte| usize::from(*byte) == padding)
-    {
-        return Err(SourceError::UnsupportedEncryption);
-    }
-    let unpadded = plaintext
-        .get(..length)
-        .ok_or(SourceError::UnsupportedEncryption)?;
+    let plaintext = tilo_seal::compat::chromium_oscrypt_plaintext(key, ciphertext)
+        .map_err(|_| SourceError::UnsupportedEncryption)?;
+    let unpadded = plaintext.as_slice();
     let value = if schema == 24 {
         let (hash, value) = unpadded
             .split_at_checked(32)

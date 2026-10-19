@@ -567,37 +567,11 @@ pub(super) fn custody_error(error: CustodyError) -> ConnectionError {
 // base64. This is obfuscation, not secure custody; reseal immediately.
 // https://github.com/rclone/rclone/blob/master/fs/config/obscure/obscure.go
 fn reveal_rclone(encoded: &str) -> Result<Zeroizing<String>, ConnectionError> {
-    use base64::Engine;
-    use ctr::cipher::{KeyIvInit, StreamCipher};
     if encoded.len() > 16 * 1024 {
         return Err(ConnectionError::CredentialUnavailable);
     }
-    let mut bytes = Zeroizing::new(
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(|_| ConnectionError::CredentialUnavailable)?,
-    );
-    let (iv, ciphertext) = bytes
-        .split_at_mut_checked(16)
-        .ok_or(ConnectionError::CredentialUnavailable)?;
-    let key = [
-        0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d, 0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9,
-        0x2b, 0xd3, 0x90, 0x19, 0x8e, 0xb8, 0x12, 0x8a, 0xfb, 0xf4, 0xde, 0x16, 0x2b, 0x8b, 0x95,
-        0xf6, 0x38,
-    ];
-    let mut cipher = ctr::Ctr128BE::<aes::Aes256>::new_from_slices(&key, iv)
-        .map_err(|_| ConnectionError::CredentialUnavailable)?;
-    cipher
-        .try_apply_keystream(ciphertext)
-        .map_err(|_| ConnectionError::CredentialUnavailable)?;
-    let password =
-        std::str::from_utf8(ciphertext).map_err(|_| ConnectionError::CredentialUnavailable)?;
-    if password.is_empty() {
-        return Err(ConnectionError::CredentialUnavailable);
-    }
-    Ok(Zeroizing::new(password.to_string()))
+    tilo_seal::compat::rclone_obscure(encoded).map_err(|_| ConnectionError::CredentialUnavailable)
 }
-
 pub(super) fn rclone_id(candidate: &super::Candidate) -> AccountId {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();

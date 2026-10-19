@@ -25,8 +25,6 @@ installation = ["dep:leveldb-sys"]
 ed25519-dalek.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tar.workspace = true
-pbkdf2.workspace = true
-sha1 = "0.11"
 wire-frame = { path = "../../system/wire-frame" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -34,8 +32,6 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
 tilo-test-env = { path = "../../dev/test-env", optional = true }
-aes = { version = "0.9.3", features = ["zeroize"] }
-ctr = "0.10.1"
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { workspace = true, features = ["blocking"] }
 tilo-seal = { path = "../../system/tilo-seal" }

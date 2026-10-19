@@ -25,6 +25,12 @@ hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["
 chacha20poly1305.workspace = true
 # Password-derived keys.
 argon2.workspace = true
+# The fixed password KDF of Chromium's Linux OSCrypt cookie format.
+pbkdf2.workspace = true
+sha1 = "0.11"
+# Rclone's obscure password format: AES-256-CTR over a published key.
+ctr = "0.10.1"
+base64.workspace = true
 # Key identifiers, the HKDF steps of formats this crate still reads, and
 # the HKDF + AES-GCM wraps a browser computes with WebCrypto.
 hkdf = "0.13"

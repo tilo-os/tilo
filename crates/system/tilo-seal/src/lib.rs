@@ -11,6 +11,8 @@
 //!   (Diffie-Hellman, AES-128-CBC), fixed by that specification.
 //! * [`web`]: AES-256-GCM under an HKDF-SHA256 key, the wrap a browser
 //!   computes with `WebCrypto`, so native code opens what a page sealed.
+//! * [`compat`]: the fixed KDF, AES-CBC and AES-CTR of other applications'
+//!   on-disk formats (Chromium OSCrypt, rclone obscure) that Tilo imports.
 //!
 //! Every operation takes a [`Label`] from one closed registry, so each
 //! ciphertext is bound to a single purpose. Secret key types zeroize on
@@ -27,6 +29,7 @@
     )
 )]
 
+pub mod compat;
 pub mod envelope;
 pub mod error;
 pub mod hpke;
