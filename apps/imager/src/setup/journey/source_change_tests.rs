@@ -146,6 +146,7 @@ fn recover_source(app: &mut App) {
     });
 }
 #[test]
+#[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
 fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts() {
     if !prepared_media::native_retained::enter_owned_journey(
         "setup::journey::source_change_tests::changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts",

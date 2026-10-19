@@ -20,6 +20,8 @@ TESTS = (
     'setup::journey::tests::same_computer_permission_accepts_semantic_grant_and_persists_review_before_advancing',
     'setup::journey::main_story_tests::guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage',
     'setup::journey::main_story_tests::guided_existing_backup_migrates_this_home_without_creating_another_identity',
+    'setup::journey::source_change_tests::changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts',
+    'setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission',
 )
 
 
@@ -104,7 +106,7 @@ def inner(args):
                 try:
                     status, out, err = bounded(
                         ['/usr/bin/env', *(f'{key}={value}' for key, value in environment.items()),
-                         str(tests), '--exact', selector, '--nocapture', '--test-threads=1'],
+                         str(tests), '--exact', selector, '--include-ignored', '--nocapture', '--test-threads=1'],
                         timeout=180, limit=1024 * 1024,
                     )
                 finally:

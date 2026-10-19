@@ -353,6 +353,7 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
 }
 
 #[test]
+#[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
 fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() {
     if !prepared_media::native_retained::enter_owned_journey(
         "setup::journey::main_story_tests::guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage",
@@ -667,6 +668,7 @@ fn prepare_portable_story(
 }
 
 #[test]
+#[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
 fn guided_existing_backup_migrates_this_home_without_creating_another_identity() {
     if !prepared_media::native_retained::enter_owned_journey(
         "setup::journey::main_story_tests::guided_existing_backup_migrates_this_home_without_creating_another_identity",

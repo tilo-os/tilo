@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
 fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
     if !native_retained::enter_owned_journey(
         "setup::journey::prepared_media_native::recovery_tests::prepared_stage_rechecks_recovery_custody_at_actual_write_admission",
