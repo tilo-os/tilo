@@ -2664,17 +2664,23 @@ static LARGE_BODY: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
 
 /// A document whose body holds `VIEWPORT_BLOCK_WINDOW * 4` paragraphs reading
 /// `Paragraph 0` to `Paragraph 767`, enough for the viewport window to move.
+/// The fixture is brought up to the document's storage version the way
+/// opening any saved document brings it up, so it keeps working across
+/// storage changes.
 fn large_body() -> ui::State {
-    ui::State::load(LARGE_BODY.as_slice()).expect(
+    let mut state = ui::State::load(LARGE_BODY.as_slice()).expect(
         "the large-body fixture loads; regenerate it with UPDATE_WP_LARGE_BODY=1 \
          cargo test -p word-processor --lib large_body_fixture",
-    )
+    );
+    ui::tilo_resource::evolution::migrate::<crate::framework::Document>(&mut state.doc)
+        .expect("the large-body fixture migrates to the current storage version");
+    state
 }
 
 /// How the large-body fixture is made: the same edits a person's typing
 /// would produce, block by block.
 fn build_large_body() -> ui::State {
-    let mut state = ui::State::new();
+    let mut state = crate::initialized_state();
     with_doc(&mut state, |dm| {
         let mut after = None;
         for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
