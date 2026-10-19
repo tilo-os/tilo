@@ -566,7 +566,7 @@ impl Worker {
     }
 
     /// A session with this window's surface on it.
-    fn open(&mut self) -> Result<Session, String> {
+    fn open(&self) -> Result<Session, String> {
         let session = take_session()?;
         let formats = self
             .window

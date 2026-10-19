@@ -509,7 +509,7 @@ impl ResourceRoot {
                         .zip(&children)
                         .all(|(was, now)| was.ptr_eq(now)) =>
             {
-                last.children.clone()
+                last.children
             }
             _ => SharedChildren::new(children),
         };
