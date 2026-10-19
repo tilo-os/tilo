@@ -3334,7 +3334,7 @@ const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
 /// The row the active tab's slots take under the tabs of a tabbed window.
 pub const TOOLBAR_ROW_HEIGHT: f64 = 40.0;
 /// Between the window's icon and its slots in the title's row.
-const TOOLBAR_LEAD_GAP: f64 = 8.0;
+const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
