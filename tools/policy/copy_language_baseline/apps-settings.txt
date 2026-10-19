@@ -21,7 +21,6 @@ en-US mesh-workspaces-empty narration
 en-US net-ipv4-unsupported narration
 en-US net-notice-password-sealed implementation
 en-US net-notice-used-sealed implementation
-en-US net-policy-unread narration
 en-US notif-apps-caption narration
 en-US perm-enforcement-caption narration
 en-US perm-no-grants-body narration
