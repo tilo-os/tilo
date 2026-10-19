@@ -2400,8 +2400,9 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             renderer.render_png(&scene, ground, &path);
             assert!(path.is_file(), "fixture missing: {}", path.display());
             if name.starts_with("qs-") {
-                // A section's resting row shows the section's Control
-                // floor; the panel padding beside it is the Panel ground.
+                // A section's resting row lies on the panel's own ground,
+                // as the panel padding beside it does: no box inside the
+                // panel.
                 let panel = harness.host.quick_settings_rect();
                 let row = harness
                     .host
@@ -2411,8 +2412,8 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                 expect(
                     &rgba,
                     Point::new(row.x0 + row.width() * 0.55, row.y0 + 3.0),
-                    floor,
-                    &format!("{theme_name}/{name}: a section row's interior is the Control floor"),
+                    panel_ground,
+                    &format!("{theme_name}/{name}: a section row lies on the panel's ground"),
                 );
                 expect(
                     &rgba,

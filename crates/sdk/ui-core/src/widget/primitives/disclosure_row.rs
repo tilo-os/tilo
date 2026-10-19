@@ -78,6 +78,13 @@ impl DisclosureState {
         self.0.borrow().open
     }
 
+    /// Open or close a lone row's state from the view, on the disclose
+    /// motion; a keyed row opens through its group
+    /// ([`DisclosureGroup::open`]).
+    pub fn set_open(&self, open: bool) {
+        self.show(open, crate::tokens::EffectiveMotion::default());
+    }
+
     /// Open or close on the disclose motion. Returns whether it changed.
     fn show(&self, open: bool, motion: EffectiveMotion) -> bool {
         let mut state = self.0.borrow_mut();
@@ -165,6 +172,23 @@ impl DisclosureGroup {
             .entry(key.to_owned())
             .or_default()
             .clone()
+    }
+
+    /// Open the row keyed `key` from the view (an agent asked for its
+    /// details), closing the group's other rows, on the disclose motion.
+    pub fn open(&self, key: &str) {
+        let state = self.state(key);
+        let motion = crate::tokens::EffectiveMotion::default();
+        state.show(true, motion);
+        self.opened(Member::Key(key.to_owned()), &state, motion);
+    }
+
+    /// Close the row keyed `key`, if it is open.
+    pub fn close(&self, key: &str) {
+        let member = Member::Key(key.to_owned());
+        self.state(key)
+            .show(false, crate::tokens::EffectiveMotion::default());
+        self.closed(&member);
     }
 
     /// The key of the open keyed row, if one is.
