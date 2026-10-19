@@ -1,4 +1,4 @@
-agent-provider-no-authority = This host has not granted provider administration.
+agent-provider-no-authority = Only an administrator of this computer can add or change model providers.
 agent-fit-excellent = Excellent fit
 agent-fit-good = Good fit
 agent-fit-tight = Will run, with limits
@@ -79,7 +79,7 @@ agent-provider-not-default = Only an enabled provider with a model can be the de
 agent-provider-details-required = A provider needs a name and an endpoint.
 agent-provider-saved = Provider change saved by the backend.
 agent-provider-ready = Provider settings loaded from the backend.
-agent-provider-offline = Provider administration is unavailable. Only offline metadata can be edited here; credentials and backend settings are unchanged.
+agent-provider-offline = Model providers can't be changed right now. Names and notes you edit here are kept on this device; keys and connections stay as they are.
 agent-provider-offline-saved = Offline metadata saved locally. Backend settings are unchanged.
 agent-provider-pending = Waiting for provider administration…
 agent-provider-busy = A provider operation is still running. Wait before making another change.
@@ -90,7 +90,7 @@ agent-key-empty = Enter an API key before saving.
 agent-request-limits-title = Model request limits
 
 
-agent-request-limits-caption = Limit output per request and set a planning deadline ceiling up to 15 minutes. A caller can still request a shorter deadline. Runtime context describes your deployment; it does not prove that a prompt fits. Blank values restore defaults.
+agent-request-limits-caption = Limit how much a model writes per request and how long it may plan, up to 15 minutes. Leave a value blank to use the default.
 agent-source-context = Model context capacity
 agent-runtime-context = Configured runtime context
 agent-plan-timeout = Planning deadline ceiling (milliseconds)
