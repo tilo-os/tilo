@@ -5554,7 +5554,7 @@ mod tests {
         )
     }
 
-    fn tab_history_control(driver: &crate::headless::FrameHarness, tab: u64) -> Option<bool> {
+    fn window_history_control(driver: &crate::headless::FrameHarness) -> Option<bool> {
         fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<bool> {
             if node.action_target.as_deref() == Some(target) {
                 return Some(node.state.checked == Some(true));
@@ -5567,7 +5567,11 @@ mod tests {
                 .and_then(|access| find(access, target))
                 .or_else(|| node.children.iter().find_map(|child| walk(child, target)))
         }
-        walk(&driver.inspection().root, &format!("tab-history:{tab}"))
+        // The window's History control acts on its active tab.
+        walk(
+            &driver.inspection().root,
+            crate::widget::tabs::WINDOW_HISTORY_TARGET,
+        )
     }
 
     #[test]
@@ -5596,20 +5600,20 @@ mod tests {
             "a hosted tile draws no History band: {:?}",
             targets.keys().collect::<Vec<_>>()
         );
-        assert_eq!(tab_history_control(&driver, 7), Some(false));
+        assert_eq!(window_history_control(&driver), Some(false));
 
         // The tab's control opens History through the tile's History door,
         // and reads as on while it shows; pressed again, it closes.
         driver
             .perform_semantic_named(
                 "tabs",
-                Some("tab-history:7"),
+                Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
                 &crate::a11y::Action::Activate,
             )
             .unwrap();
         driver.relayout();
         assert!(driver.targets().contains_key("activity_timeline"));
-        assert_eq!(tab_history_control(&driver, 7), Some(true));
+        assert_eq!(window_history_control(&driver), Some(true));
         assert!(
             !driver.targets().contains_key("history-open"),
             "open, History draws no toggle of its own: the tab's closes it"
@@ -5618,7 +5622,7 @@ mod tests {
             driver
                 .perform_semantic_named(
                     "tabs",
-                    Some("tab-history:7"),
+                    Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
                     &crate::a11y::Action::Activate,
                 )
                 .unwrap();
@@ -5626,7 +5630,7 @@ mod tests {
         };
         press_tab(&mut driver);
         assert!(!driver.targets().contains_key("activity_timeline"));
-        assert_eq!(tab_history_control(&driver, 7), Some(false));
+        assert_eq!(window_history_control(&driver), Some(false));
 
         // Escape leaves History as well.
         press_tab(&mut driver);
@@ -5637,6 +5641,6 @@ mod tests {
         ));
         driver.relayout();
         assert!(!driver.targets().contains_key("activity_timeline"));
-        assert_eq!(tab_history_control(&driver, 7), Some(false));
+        assert_eq!(window_history_control(&driver), Some(false));
     }
 }

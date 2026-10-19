@@ -54,6 +54,7 @@ host-menu-zoom = Zoom
 host-menu-front = Bring All to Front
 host-window-minimize = Minimize
 host-window-maximize = Maximize
+host-window-restore = Restore
 host-window-close = Close
 history-genesis = Created
 history-edited-field = { $more ->
