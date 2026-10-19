@@ -1845,7 +1845,15 @@ impl ChatApp {
         // `scroll == 0` is the newest edge: `start_y` starts the timeline at
         // its bottom-aligned position, while increasing offsets travel back
         // through history toward `max_start`.
-        self.timeline_at_end = self.scroll <= 0.5;
+        let at_end = self.scroll <= 0.5;
+        // Scrolling back to the newest message reads it. The read receipt
+        // is the sync's, asked for once when the timeline arrives at its
+        // newest edge, not on each wheel notch that brought it there (a
+        // notch only pans the view: `events.rs`).
+        if at_end && !self.timeline_at_end {
+            self.read_on_present = true;
+        }
+        self.timeline_at_end = at_end;
         self.timeline_total_height = total;
 
         let mut y = self.draw_messages_date_divider(

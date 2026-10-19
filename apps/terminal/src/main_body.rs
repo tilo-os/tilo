@@ -3710,6 +3710,11 @@ impl TerminalWidget {
             } else {
                 self.scroll_down((-lines) as usize);
             }
+            // Reviewing history moves the viewport over the scrollback and
+            // nothing the terminal publishes; the text it exposes to
+            // assistive technology follows with the frame's accessibility
+            // refresh.
+            ui::widget::note_view_only_pan();
         }
         *handled = true;
     }
