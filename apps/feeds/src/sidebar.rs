@@ -103,7 +103,7 @@ impl Core {
                 let children = store
                     .feeds_in_folder(Some(folder.id))
                     .into_iter()
-                    .map(|f| feed_item(f.id, &f.title, f.kind))
+                    .map(|f| feed_item(f.id, &f.shown_title(), f.kind))
                     .collect();
                 let item = NavItem::new(
                     nav_id(&Filter::Folder(folder.id.clone())),
@@ -124,7 +124,7 @@ impl Core {
             store
                 .feeds_in_folder(None)
                 .into_iter()
-                .map(|f| feed_item(f.id, &f.title, f.kind)),
+                .map(|f| feed_item(f.id, &f.shown_title(), f.kind)),
         );
         if !feeds.is_empty() {
             sections.push(NavSection::new("feeds", "Feeds", feeds));

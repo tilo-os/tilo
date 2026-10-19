@@ -199,6 +199,27 @@ pub struct Feed {
 }
 
 impl Feed {
+    /// What the feed is called on screen: its title, or, until a refresh
+    /// has brought one, the site it comes from ("theguardian.com") rather
+    /// than its whole address.
+    #[must_use]
+    pub fn shown_title(&self) -> String {
+        if self.title != self.url {
+            return self.title.clone();
+        }
+        let rest = self
+            .url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, rest)| rest);
+        let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        let host = host.strip_prefix("www.").unwrap_or(host);
+        if host.is_empty() {
+            self.title.clone()
+        } else {
+            host.to_owned()
+        }
+    }
+
     /// A subscription to `url`, titled with its address until a refresh
     /// brings its real title.
     pub fn subscribing(url: &str, folder: Option<Id>) -> Self {
@@ -778,6 +799,18 @@ pub fn relative_time(published: i64, now: i64) -> String {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+
+    /// A feed not yet refreshed is named by its site, not its whole
+    /// address; a fetched title wins.
+    #[test]
+    fn an_unrefreshed_feed_is_named_by_its_site() {
+        let mut feed = Feed::subscribing("https://www.theguardian.com/world/rss", None);
+        assert_eq!(feed.shown_title(), "theguardian.com");
+        feed.title = "The Guardian: World".into();
+        assert_eq!(feed.shown_title(), "The Guardian: World");
+        let gemini = Feed::subscribing("gemini://example.org/gemlog/", None);
+        assert_eq!(gemini.shown_title(), "example.org");
+    }
 
     fn feed(s: &mut Library, id: &str, folder: Option<&Id>) -> Id {
         let id = Id::from_raw(id);
