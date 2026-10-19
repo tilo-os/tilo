@@ -232,6 +232,7 @@ members = [
     "crates/media/wet-media",
 
     # Packaging
+    "crates/packaging/app-catalogue",
     "crates/packaging/app-cli",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
