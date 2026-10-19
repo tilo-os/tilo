@@ -1239,6 +1239,9 @@ pub struct State {
     /// Answers to `xdg_wm_base.ping`, per client: how a screenshot after
     /// input learns the clients in it finished answering the input.
     pub shell_pongs: crate::compositor::client_settle::Pongs,
+    /// Pings sent on input to tell an app that stopped answering
+    /// ([`crate::compositor::app_liveness`]).
+    pub(crate) app_watches: crate::compositor::app_liveness::Watches,
     pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
@@ -2138,6 +2141,7 @@ impl State {
             popups: Vec::new(),
             system_modals: Vec::new(),
             shell_pongs: crate::compositor::client_settle::Pongs::default(),
+            app_watches: crate::compositor::app_liveness::Watches::default(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             seat_input_method,
@@ -3671,7 +3675,18 @@ impl State {
 
     /// The exact `commit` capture gate, kept named so output-owned surfaces
     /// cannot silently regress back to “only workspace tabs have pixels”.
+    ///
+    /// The one gate both halves of a commit's capture read: the pre-commit
+    /// hook that copies or claims the buffer and queues its marker, and the
+    /// commit that files the frame. Every registered toplevel counts, with or
+    /// without a tab yet. When the commit asked for the tab alone, a
+    /// toplevel committing before its tab was observable had its buffer
+    /// claimed and then never filed: an idle client never draws again, so
+    /// its window stayed without a frame for good.
     fn should_capture_foreign_surface(&self, surface_id: SurfaceId) -> bool {
+        if self.client_input.is_known(surface_id) {
+            return true;
+        }
         let has_workspace_tab = {
             let tree = self.workspace_tree.read();
             tab_binding::group_id_for_surface(&tree, surface_id).is_some()
@@ -4895,12 +4910,8 @@ impl State {
         // Treat every registered toplevel as capture-eligible here.  Popup and
         // subsurface objects are registered through different paths, so this
         // does not turn arbitrary child commits into tiled windows.
-        let captured_here = self.client_input.is_known(surface_id)
-            || foreign_root(surface).is_some()
-            || self.osk_surface == Some(surface_id)
-            || self.is_floating_toplevel(surface_id)
-            || self.is_output_presentation_surface(surface_id)
-            || self.is_transient_surface(surface_id);
+        let captured_here =
+            foreign_root(surface).is_some() || self.should_capture_foreign_surface(surface_id);
         if !captured_here {
             forget_uncaptured_shm_base(surface, surface_id);
             return;
@@ -7411,6 +7422,205 @@ impl XdgShellHandler for State {
             state.size = None;
         });
         surface.send_configure();
+    }
+}
+
+impl State {
+    /// The `xdg_wm_base` client of toplevel `surface_id`.
+    fn shell_client_of(&self, surface_id: u64) -> Option<(ShellClient, ClientId)> {
+        self.xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| self::surface_id(toplevel.wl_surface()) == surface_id)
+            .and_then(|toplevel| {
+                let id = toplevel.wl_surface().client()?.id();
+                Some((toplevel.client(), id))
+            })
+    }
+
+    /// The pong count of connection `id`'s `xdg_wm_base`; `None` once it
+    /// has no toplevel left.
+    fn pongs_of(&self, id: &ClientId) -> Option<u64> {
+        self.xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                toplevel
+                    .wl_surface()
+                    .client()
+                    .is_some_and(|client| client.id() == *id)
+            })
+            .map(|toplevel| self.shell_pongs.count(&toplevel.client()))
+    }
+
+    /// Input reached the app of toplevel `surface_id`: ask it to answer, so
+    /// an app that stopped answering is told apart from a quiet one.
+    pub fn note_app_input(&mut self, surface_id: u64) {
+        let Some((client, id)) = self.shell_client_of(surface_id) else {
+            return;
+        };
+        let pongs = self.shell_pongs.count(&client);
+        self.app_watches
+            .note_input(&client, &id, pongs, std::time::Instant::now());
+    }
+
+    /// One loop turn of [`crate::compositor::app_liveness`]: carry out what
+    /// the person chose on a window's card, judge the pings in flight and
+    /// publish the windows whose app is not responding. Returns whether
+    /// that set changed, so the tiles repaint.
+    pub fn advance_app_liveness(&mut self) -> bool {
+        self.advance_app_liveness_at(std::time::Instant::now())
+    }
+
+    /// [`Self::advance_app_liveness`] as of `now`.
+    pub fn advance_app_liveness_at(&mut self, now: std::time::Instant) -> bool {
+        use crate::compositor::app_liveness::{self, Request};
+        for request in app_liveness::take_requests() {
+            match request {
+                Request::Wait(surface_id) => {
+                    if let Some((_, id)) = self.shell_client_of(surface_id) {
+                        self.app_watches.wait(&id, now);
+                    }
+                }
+                Request::CloseApp(surface_id) => self.close_app_of(surface_id),
+                Request::CloseWindow(surface_id) => self.close_surface_on_request(surface_id),
+            }
+        }
+        let mut watches = std::mem::take(&mut self.app_watches);
+        let hung = watches.judge(|id| self.pongs_of(id), now);
+        self.app_watches = watches;
+        let surfaces = if hung.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            self.xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .filter(|toplevel| {
+                    toplevel
+                        .wl_surface()
+                        .client()
+                        .is_some_and(|client| hung.contains(&client.id()))
+                })
+                .map(|toplevel| self::surface_id(toplevel.wl_surface()))
+                .collect()
+        };
+        app_liveness::publish_hung(surfaces)
+    }
+
+    /// When [`Self::advance_app_liveness`] next has something to decide.
+    pub fn app_liveness_deadline(&self) -> Option<std::time::Instant> {
+        self.app_watches.deadline()
+    }
+
+    /// "Close app" on a window whose app is not responding: every window of
+    /// the app goes as a person's close does, and its processes end. A hung
+    /// app cannot read a close request, so its app cgroup is killed (every
+    /// process of the app, those that left its process tree included); an
+    /// app outside the session's app tree has its own process killed.
+    fn close_app_of(&mut self, surface_id: u64) {
+        let Some(client) = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| self::surface_id(toplevel.wl_surface()) == surface_id)
+            .and_then(|toplevel| toplevel.wl_surface().client())
+        else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
+        let windows: Vec<u64> = self
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .filter(|toplevel| {
+                toplevel
+                    .wl_surface()
+                    .client()
+                    .is_some_and(|owner| owner.id() == client.id())
+            })
+            .map(|toplevel| self::surface_id(toplevel.wl_surface()))
+            .collect();
+        for window in windows {
+            // Its end reads as asked for, not as an app that went away.
+            self.closing_toplevels.insert(window, until);
+        }
+        let Some(data) = client.get_data::<ClientState>() else {
+            return;
+        };
+        let Some(pid) = data.pid else {
+            return;
+        };
+        eprintln!("app-force-close: surface={surface_id} pid={pid}");
+        #[cfg(target_os = "linux")]
+        end_unresponsive_process(pid, data.pid_start_time);
+    }
+}
+
+/// End the not-responding app whose client process is `pid` (started at
+/// `start_time`, in clock ticks since boot, when known): its app cgroup when
+/// it has one, else the process. Nothing when `pid` now names another
+/// process.
+#[cfg(target_os = "linux")]
+fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
+    let Some((_, started)) = crate::shell::launcher::proc_stat(pid) else {
+        return;
+    };
+    if start_time.is_some_and(|expected| started != expected) {
+        return;
+    }
+    if let Some(cgroup) = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()
+        .and_then(|cgroup| ::launcher::app_cgroup::app_cgroup_of(&cgroup))
+    {
+        match ::launcher::app_cgroup::kill(&::launcher::app_cgroup::fs_path(&cgroup)) {
+            Ok(()) => return,
+            Err(error) => eprintln!("app-force-close: cgroup={cgroup}: {error}"),
+        }
+    }
+    let Ok(raw) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    // SAFETY: plain syscall; `raw` was checked above to still name the
+    // client's own process.
+    unsafe {
+        libc::kill(raw, libc::SIGKILL);
+    }
+}
+
+impl State {
+    /// End full screen once focus has moved to another window of its strip:
+    /// a window the person opened (from an app, search or a link) or went
+    /// to. The full-screen window steps back into its place in the strip,
+    /// which then scrolls to the focused window as for any focus change; a
+    /// window opened for someone else never takes focus, so it never ends
+    /// a full screen. Client full screen is ended here, as
+    /// [`XdgShellHandler::unfullscreen_request`] does, with the configure
+    /// that tells the client. Returns whether the chrome's own full screen,
+    /// `user_fullscreen` (Super+F), should end for the same reason.
+    pub fn leave_fullscreen_when_focus_moved(&mut self, user_fullscreen: Option<u64>) -> bool {
+        let provisional = |surface_id: u64| self.provisional_focus.contains_key(&surface_id);
+        let (client_left, user_left) = {
+            let tree = self.workspace_tree.read();
+            let client_left = self
+                .fullscreen_target
+                .as_ref()
+                .filter(|target| target.pinned_output.is_none())
+                .and_then(|target| tab_binding::group_id_for_surface(&tree, target.surface_id))
+                .is_some_and(|group| {
+                    tab_binding::focus_left_fullscreen_group(&tree, group, provisional)
+                });
+            let user_left = user_fullscreen.is_some_and(|group| {
+                tab_binding::focus_left_fullscreen_group(&tree, group, provisional)
+            });
+            (client_left, user_left)
+        };
+        if client_left
+            && let Some(surface) = self.fullscreen_target.as_ref().map(|t| t.surface.clone())
+        {
+            self.unfullscreen_request(surface);
+        }
+        user_left
     }
 }
 

@@ -84,7 +84,6 @@ use crate::compositor::surface_readback::{
     copy_shm_damage,
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
-use ui::TextRole;
 
 mod commit_damage;
 mod scale;
@@ -4225,6 +4224,61 @@ pub struct ForeignSurfaceWidget {
     /// The window fills its display ([`Widget::set_full_bleed`]): the frame
     /// is drawn square and unclipped, the last thing in its tile.
     full_bleed: bool,
+    /// The card last painted on this window and where its actions are, for
+    /// the pointer ([`WindowCard`]).
+    card: Option<(WindowCard, ui::widget::BannerHit)>,
+    /// Where the pointer is, for the card's hover state and clicks.
+    cursor: Point,
+}
+
+/// What the shell says on a window whose app cannot show it right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowCard {
+    /// Its app stopped answering ([`crate::compositor::app_liveness`]): the
+    /// picture dims under "isn't responding", with Wait and Close app.
+    NotResponding,
+    /// No picture of it can be shown: it never drew one that could be put
+    /// on screen. Says so, with Close.
+    Unshowable,
+}
+
+impl WindowCard {
+    /// The card window `surface_id` shows now, if any.
+    #[must_use]
+    pub fn of(surface_id: SurfaceId) -> Option<Self> {
+        if crate::compositor::app_liveness::is_hung(surface_id) {
+            return Some(Self::NotResponding);
+        }
+        // Past its opening grace with nothing to show: the card says so.
+        // Before it, the window's opening card holds its place.
+        (store().is_presented(surface_id) && store().frame_seq(surface_id) == 0)
+            .then_some(Self::Unshowable)
+    }
+
+    /// What the card's main and second actions ask the compositor for.
+    const fn requests(
+        self,
+        surface_id: SurfaceId,
+    ) -> (
+        crate::compositor::app_liveness::Request,
+        Option<crate::compositor::app_liveness::Request>,
+    ) {
+        use crate::compositor::app_liveness::Request;
+        match self {
+            Self::NotResponding => (
+                Request::CloseApp(surface_id),
+                Some(Request::Wait(surface_id)),
+            ),
+            Self::Unshowable => (Request::CloseWindow(surface_id), None),
+        }
+    }
+}
+
+/// Whether window `surface_id` shows a card the shell answers for: pointer
+/// and keyboard go to the card then, not to the app, which cannot take them.
+#[must_use]
+pub fn shows_window_card(surface_id: SurfaceId) -> bool {
+    WindowCard::of(surface_id).is_some()
 }
 
 impl ForeignSurfaceWidget {
@@ -4244,6 +4298,8 @@ impl ForeignSurfaceWidget {
             floating_input_rect: None,
             last_draw: None,
             full_bleed: false,
+            card: None,
+            cursor: Point::new(f64::NAN, f64::NAN),
         }
     }
 
@@ -4282,12 +4338,107 @@ impl ForeignSurfaceWidget {
     ///
     /// So it names the app and says what happened, in plain words; why a
     /// *buffer* couldn't be shown stays in [`ForeignFrameStore::last_error`] for whoever is debugging, not on this card.
+    /// "Isn't responding" is for an app that fails its ping
+    /// ([`WindowCard::NotResponding`]), never for a window that only has no
+    /// picture: that app may be fine, idle with its frame lost.
     fn unshowable_text(&self) -> (String, String) {
-        let detail = match store().last_error(self.surface_id) {
-            Some(_) => crate::shell::i18n::t("foreign-window-unshowable"),
-            None => crate::shell::i18n::t("foreign-window-not-responding"),
+        (
+            self.display_name().to_string(),
+            crate::shell::i18n::t("foreign-window-unshowable"),
+        )
+    }
+
+    /// The card `card` as the banner paints it: the app's name, what is the
+    /// case, and the actions.
+    fn card_text(&self, card: WindowCard) -> (String, String, String, Option<String>) {
+        let t = crate::shell::i18n::t;
+        match card {
+            WindowCard::NotResponding => (
+                self.display_name().to_string(),
+                t("foreign-window-not-responding"),
+                t("foreign-app-close"),
+                Some(t("foreign-app-wait")),
+            ),
+            WindowCard::Unshowable => {
+                let (name, detail) = self.unshowable_text();
+                (name, detail, t("foreign-window-close"), None)
+            }
+        }
+    }
+
+    /// Paint the window's card, if it has one, over what [`Self::paint_window`]
+    /// drew: a scrim dims a not-responding app's picture under it.
+    fn paint_card(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(card) = WindowCard::of(self.surface_id) else {
+            self.card = None;
+            return;
         };
-        (self.display_name().to_string(), detail)
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            self.card = None;
+            return;
+        }
+        if card == WindowCard::NotResponding {
+            // Slightly: the app's own picture stays readable under it.
+            ui::chrome::shell::fill_scrim(
+                scene,
+                transform,
+                self.rect,
+                theme.tokens.colors.surfaces.scrim_strength * 0.6,
+                theme,
+            );
+        }
+        let (title, message, action, secondary) = self.card_text(card);
+        let mut content = ui::widget::BannerContent::new(
+            match card {
+                WindowCard::NotResponding => ui::widget::BannerKind::Warning,
+                WindowCard::Unshowable => ui::widget::BannerKind::Neutral,
+            },
+            &title,
+        )
+        .with_message(Some(&message))
+        .action(&action);
+        if let Some(secondary) = secondary.as_deref() {
+            content = content.secondary_action(secondary);
+        }
+        let inset = f64::from(theme.tokens.spacing.s4);
+        let width = (self.rect.width() - 2.0 * inset).max(0.0);
+        let height = ui::widget::Banner::height(&content, width, text_renderer, theme);
+        let center = self.rect.center();
+        let rect = Rect::new(
+            self.rect.x0 + inset,
+            center.y - height / 2.0,
+            self.rect.x0 + inset + width,
+            center.y + height / 2.0,
+        );
+        let hit = ui::widget::Banner::paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
+            &content,
+            self.cursor,
+        );
+        self.card = Some((card, hit));
+    }
+
+    /// A click on the card's actions: what it asks the compositor for.
+    fn card_request_at(&self, point: Point) -> Option<crate::compositor::app_liveness::Request> {
+        let (card, hit) = self.card?;
+        let (main, second) = card.requests(self.surface_id);
+        if hit.action.is_some_and(|rect| rect.contains(point)) {
+            return Some(main);
+        }
+        if hit
+            .secondary_action
+            .is_some_and(|rect| rect.contains(point))
+        {
+            return second;
+        }
+        None
     }
 
     fn draw_collaboration_overlay(
@@ -4631,32 +4782,9 @@ pub fn paint_output_presentation_surface(
     );
 }
 
-impl Widget for ForeignSurfaceWidget {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // `new_leaf` can't fail in practice for a single-node insert; a
-        // dummy id here just means the fallback is unreachable by real
-        // traversal instead of panicking.
-        taffy.fill_leaf(node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let next_rect = ui::widget::layout_rect(taffy, node, origin);
-        if self.rect != next_rect {
-            self.rect = next_rect;
-            self.placement_dirty = true;
-        }
-        // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
-        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-            store().note_placement(self.surface_id, self.rect);
-        }
-    }
-
-    fn draw(
+impl ForeignSurfaceWidget {
+    /// The app's picture, as the client last drew it.
+    fn paint_window(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -4765,37 +4893,83 @@ impl Widget for ForeignSurfaceWidget {
             return;
         }
 
-        let (headline, detail) = self.unshowable_text();
-        // Fixed ramp indices were a guess about which way round the card
-        // is, not an answer: `neutral[1]` is near-black on the dark ramp
-        // and the card is `#16171b`, so the app's own name measured 1.03:1 and was invisible. `on_card` derives both tiers from the card's actual luminance instead.
-        let tiers = theme.tokens.colors.on_content();
-        let on_card = tiers.ink;
-        let on_card_dim = tiers.ink_dim;
-        let style = theme.text(TextRole::Title);
-        let (tw, _) = text_renderer.measure_style(&headline, None, &style);
-        let cx = self.rect.center().x;
-        let y = self.rect.center().y - f64::from(style.size) / 2.0;
-        text_renderer.draw_style(
-            scene,
-            &headline,
-            on_card,
-            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
-            None,
-            &style,
-        );
-        let sm = theme.text(TextRole::Caption);
-        let (dw, _) = text_renderer.measure_style(&detail, None, &sm);
-        text_renderer.draw_style(
-            scene,
-            &detail,
-            on_card_dim,
-            transform
-                .pre_translate((cx - f64::from(dw) / 2.0, y + f64::from(style.size) + 8.0).into()),
-            None,
-            &sm,
-        );
+        // No picture: the window's card stands in for it ([`Self::paint_card`]).
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl Widget for ForeignSurfaceWidget {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // `new_leaf` can't fail in practice for a single-node insert; a
+        // dummy id here just means the fallback is unreachable by real
+        // traversal instead of panicking.
+        taffy.fill_leaf(node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let next_rect = ui::widget::layout_rect(taffy, node, origin);
+        if self.rect != next_rect {
+            self.rect = next_rect;
+            self.placement_dirty = true;
+        }
+        // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
+        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            store().note_placement(self.surface_id, self.rect);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.paint_window(scene, transform, text_renderer, theme, presence);
+        self.paint_card(scene, transform, text_renderer, theme);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = ctx.logical(position);
+                if self.card.is_some() {
+                    // The card's actions show the pointer over them.
+                    self.placement_dirty = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(request) = self.card_request_at(self.cursor) {
+                    crate::compositor::app_liveness::request(request);
+                    *ctx.handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        let (_, hit) = self.card?;
+        [hit.action, hit.secondary_action]
+            .into_iter()
+            .flatten()
+            .any(|rect| rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
     }
 
     fn name(&self) -> &'static str {
@@ -4849,6 +5023,7 @@ impl Widget for ForeignSurfaceWidget {
         self.placement_dirty
             || self.awaiting_first_paint()
             || store().frame_seq(self.surface_id) != self.cached_seq
+            || WindowCard::of(self.surface_id) != self.card.map(|(card, _)| card)
     }
 
     fn mark_drawn(&mut self) {
@@ -5861,9 +6036,11 @@ mod tests {
             store().forget(id);
             let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
 
+            // A window with no picture is not an app that stopped answering:
+            // the app may be idle and fine, its frame lost.
             let (headline, detail) = w.unshowable_text();
             assert_eq!(headline, "Never Launched Fixture", "the app's own name");
-            assert_eq!(detail, "This app isn't responding.");
+            assert_eq!(detail, "This window can't be shown.");
 
             // A capture that failed is a different thing to say, and the reason it failed is still not the person's problem to read.
             store().note_failure(id, "unsupported dmabuf modifier 0x0100000000000001".into());
@@ -5904,11 +6081,67 @@ mod tests {
             assert_eq!(w.app_title(), "Word Processor");
         }
 
+        /// Past its grace with no picture the window says it can't be shown
+        /// and offers Close; an app that stops answering its ping says it
+        /// isn't responding and offers Wait and Close app, and that clears
+        /// by itself once it answers.
+        fn a_card_says_which_of_the_two_it_is_and_what_can_be_done() {
+            let id = sid(55);
+            store().forget(id);
+            let _ = crate::compositor::app_liveness::publish_hung(std::collections::HashSet::new());
+            assert_eq!(WindowCard::of(id), None, "nothing to say yet");
+            store().backdate_first_seen(id, PRESENT_GRACE + Duration::from_millis(50));
+            assert!(store().mark_presented(id, TILE), "past its grace");
+            assert_eq!(WindowCard::of(id), Some(WindowCard::Unshowable));
+            assert!(shows_window_card(id), "the card takes the pointer");
+            let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
+            let (title, message, action, second) = w.card_text(WindowCard::Unshowable);
+            assert_eq!(
+                (title.as_str(), message.as_str(), action.as_str(), second),
+                (
+                    "Never Launched Fixture",
+                    "This window can't be shown.",
+                    "Close",
+                    None
+                )
+            );
+            assert_eq!(
+                WindowCard::Unshowable.requests(id),
+                (
+                    crate::compositor::app_liveness::Request::CloseWindow(id),
+                    None
+                )
+            );
+
+            assert!(crate::compositor::app_liveness::publish_hung(
+                std::collections::HashSet::from([id])
+            ));
+            assert_eq!(WindowCard::of(id), Some(WindowCard::NotResponding));
+            let (_, message, action, second) = w.card_text(WindowCard::NotResponding);
+            assert_eq!(
+                (message.as_str(), action.as_str(), second.as_deref()),
+                ("This app isn't responding.", "Close app", Some("Wait"))
+            );
+            assert_eq!(
+                WindowCard::NotResponding.requests(id),
+                (
+                    crate::compositor::app_liveness::Request::CloseApp(id),
+                    Some(crate::compositor::app_liveness::Request::Wait(id))
+                )
+            );
+            assert!(crate::compositor::app_liveness::publish_hung(
+                std::collections::HashSet::new()
+            ));
+            assert_ne!(WindowCard::of(id), Some(WindowCard::NotResponding));
+            store().forget(id);
+        }
+
         a_surface_just_heard_of_is_not_yet_worth_saying_anything_about();
         a_surface_still_starting_after_the_delay_says_so();
         a_surface_that_has_been_shown_is_never_opening_again();
         a_card_in_a_windows_place_names_the_app_not_its_id();
         a_window_that_cannot_be_shown_says_so_in_plain_words();
+        a_card_says_which_of_the_two_it_is_and_what_can_be_done();
         a_foreign_window_answers_with_its_name_not_its_app_id();
     }
 

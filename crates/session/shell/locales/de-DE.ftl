@@ -2272,6 +2272,9 @@ screenshot-send-no-folder = { $path } liegt in keinem Ordner
 # Ein Fenster, dessen Bilder nicht angezeigt werden können
 foreign-window-unshowable = Dieses Fenster kann nicht angezeigt werden.
 foreign-window-not-responding = Diese App reagiert nicht.
+foreign-window-close = Schließen
+foreign-app-wait = Warten
+foreign-app-close = App schließen
 
 # Warum eine Anfrage an eine Lautsprechergruppe fehlschlug, wie die Einstellungen es anzeigen
 speaker-error-too-many-groups = zu viele Lautsprechergruppen

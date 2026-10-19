@@ -411,3 +411,223 @@ fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
     assert_eq!(left.0, None, "exit releases the group");
     assert!(!left.1.contains(&FULLSCREEN), "states: {:?}", left.1);
 }
+
+/// A page in full screen, then the person opens an app (from search, a
+/// link, another app): the new window gets focus, so the full screen ends
+/// and the client is told, and its window is back in the strip. A window
+/// still opening without a frame (it may yet turn out to be the page's own
+/// dialog) does not end it.
+#[test]
+fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
+    const FULLSCREEN: u32 = 2;
+    let mut h = Harness::new();
+    h.state.output_size = (1280, 900);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, "org.tilo.Browser");
+    toplevel.set_app_id("org.tilo.Browser".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.tilo.Browser");
+    let store = shell::compositor::foreign::store();
+    store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    h.focus(id);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered = h.state.fullscreen_group;
+
+    // Another client's toplevel arrives with no frame yet: provisional.
+    let (_dialog_surface, _dialog_xdg, dialog) =
+        h.open(&compositor, &wm_base, "org.example.Opening");
+    let after_provisional = h.state.leave_fullscreen_when_focus_moved(None);
+    let kept = h.state.fullscreen_group;
+
+    // The person opens an app from search: it lands beside the page, focused.
+    {
+        let mut tree = h.state.workspace_tree.write();
+        let tab = shell::shell::state::Tab {
+            id: 9_100_001,
+            title: "Notes".into(),
+            tile: TileContent::Stub {
+                kind: shell::shell::state::AppKind::Other("Notes".into()),
+                label: "Notes".into(),
+            },
+        };
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            tab,
+            shell::shell::tab_binding::Placement::NewGroup,
+        );
+    }
+    let user_left = h.state.leave_fullscreen_when_focus_moved(None);
+    h.pump();
+    let left = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
+    drop(h);
+    store.forget(id);
+    store.forget(dialog);
+
+    assert!(entered.is_some(), "fixture: the page is full screen");
+    assert!(!after_provisional, "no Super+F full screen to end");
+    assert_eq!(kept, entered, "a window without a frame yet ends nothing");
+    assert!(!user_left);
+    assert_eq!(left.0, None, "the opened window ends the full screen");
+    assert!(
+        !left.1.contains(&FULLSCREEN),
+        "the page is told it left full screen: {:?}",
+        left.1
+    );
+}
+
+/// Super+F on a window, then a window opened for the person: the chrome's
+/// full screen ends too. A window opened for someone else ("Beside") never
+/// moves the person, so the full screen stays.
+#[test]
+fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened() {
+    let mut h = Harness::new();
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+    let (_surface, _xdg, id) = h.open(&compositor, &wm_base, "org.example.Expanded");
+    h.focus(id);
+    let group = {
+        let tree = h.state.workspace_tree.read();
+        shell::shell::tab_binding::group_id_for_surface(&tree, id).expect("a group")
+    };
+    let stub = |id: u64, title: &str| shell::shell::state::Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::Stub {
+            kind: shell::shell::state::AppKind::Other(title.into()),
+            label: title.into(),
+        },
+    };
+
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub(9_100_002, "Shared"),
+            shell::shell::tab_binding::Placement::Beside(group),
+        );
+    }
+    let for_someone_else = h.state.leave_fullscreen_when_focus_moved(Some(group));
+
+    {
+        let mut tree = h.state.workspace_tree.write();
+        shell::shell::tab_binding::place_tab(
+            &mut tree,
+            stub(9_100_003, "Notes"),
+            shell::shell::tab_binding::Placement::NewGroup,
+        );
+    }
+    let for_the_person = h.state.leave_fullscreen_when_focus_moved(Some(group));
+    drop(h);
+    shell::compositor::foreign::store().forget(id);
+
+    assert!(!for_someone_else, "a window opened beside for someone else");
+    assert!(for_the_person, "a window the person opened");
+}
+
+/// A client that answers pings only while told to: an app that hangs, then
+/// recovers.
+#[derive(Default)]
+struct Hanging {
+    globals: Vec<(u32, String, u32)>,
+    answering: bool,
+    unanswered: Option<u32>,
+}
+
+crate::support::wayland::test_client!(Hanging: registry, configure);
+delegate_noop!(Hanging: ignore wl_compositor::WlCompositor);
+delegate_noop!(Hanging: ignore wl_surface::WlSurface);
+delegate_noop!(Hanging: ignore xdg_toplevel::XdgToplevel);
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Hanging {
+    fn event(
+        state: &mut Self,
+        base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            if state.answering {
+                base.pong(serial);
+            } else {
+                state.unanswered = Some(serial);
+            }
+        }
+    }
+}
+
+/// Input reaches an app that has stopped answering: once its ping has gone
+/// unanswered for the allowed time, its window shows "isn't responding" (and
+/// takes the pointer for its card); Wait hides that for another period; the
+/// app answering clears it by itself.
+#[test]
+fn an_app_that_stops_answering_shows_not_responding_until_it_answers() {
+    use shell::compositor::app_liveness::{self, Request, UNANSWERED};
+    let mut h: wayland::Harness<Hanging> = wayland::Harness::new();
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.Busy".into());
+    surface.commit();
+    h.pump();
+    let id = h.foreign_id("org.example.Busy");
+    let _ = app_liveness::publish_hung(std::collections::HashSet::new());
+
+    // A click reaches it; it never answers.
+    h.state.note_app_input(id);
+    h.pump();
+    let pinged = h.client.unanswered;
+    let start = std::time::Instant::now();
+    let within = h.state.advance_app_liveness_at(start);
+    let hung_early = app_liveness::is_hung(id);
+    let past = start + UNANSWERED + std::time::Duration::from_millis(10);
+    let turned = h.state.advance_app_liveness_at(past);
+    let hung = (
+        app_liveness::is_hung(id),
+        shell::shell::foreign::shows_window_card(id),
+    );
+
+    // Wait: hidden for another full period.
+    app_liveness::request(Request::Wait(id));
+    let _ = h.state.advance_app_liveness_at(past);
+    let after_wait = app_liveness::is_hung(id);
+    let again = past + UNANSWERED + std::time::Duration::from_millis(10);
+    let _ = h.state.advance_app_liveness_at(again);
+    let hung_again = app_liveness::is_hung(id);
+
+    // It answers.
+    let serial = h.client.unanswered.take().expect("a ping is out");
+    wm_base.pong(serial);
+    h.pump();
+    let cleared = h.state.advance_app_liveness_at(again);
+    let recovered = app_liveness::is_hung(id);
+    drop(h);
+    shell::compositor::foreign::store().forget(id);
+
+    assert!(pinged.is_some(), "input to the app pings it");
+    assert!(!within && !hung_early, "an app gets its time to answer");
+    assert!(turned, "the tiles hear of it");
+    assert_eq!(hung, (true, true), "not responding, with its card");
+    assert!(!after_wait, "Wait hides it");
+    assert!(
+        hung_again,
+        "and it shows again if the app still does not answer"
+    );
+    assert!(cleared && !recovered, "the answer clears it by itself");
+}

@@ -37,7 +37,12 @@ pub fn active_foreign_surface(tree: &WorkspaceTree) -> Option<u64> {
         .find(|t| t.id == group.active_tab)
         .or_else(|| group.tabs.first())?;
     match &tab.tile {
-        TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+        // A window showing its card takes no keys: its app cannot.
+        TileContent::Foreign { surface_id, .. }
+            if !crate::shell::foreign::shows_window_card(*surface_id) =>
+        {
+            Some(*surface_id)
+        }
         _ => None,
     }
 }
@@ -66,7 +71,11 @@ pub fn foreign_tile_at(
     }
     let p = KurboPoint::new(point.0, point.1);
     find_foreign_tile(tree, host, |hit| {
-        hit.rect.contains(p) && !host.group_resize_hit(hit.group, point)
+        hit.rect.contains(p)
+            && !host.group_resize_hit(hit.group, point)
+            // The card over a not-responding or unshowable window is the
+            // shell's: the pointer goes to it, not to the app.
+            && !crate::shell::foreign::shows_window_card(hit.surface_id)
     })
 }
 

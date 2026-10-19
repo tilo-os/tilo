@@ -652,6 +652,7 @@ impl State {
             }
             record_activation_serial(self, serial, surface_id);
             if pressed {
+                self.note_app_input(surface_id);
                 let app = self
                     .client_input
                     .surfaces
@@ -747,6 +748,9 @@ impl State {
         pointer.frame(self);
         if let Some(surface_id) = self.client_input.pointer_focus {
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                self.note_app_input(surface_id);
+            }
         }
         true
     }

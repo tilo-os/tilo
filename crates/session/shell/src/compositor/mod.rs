@@ -33,6 +33,8 @@ pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;
 #[cfg(target_os = "linux")]
+pub mod app_liveness;
+#[cfg(target_os = "linux")]
 pub mod client_settle;
 #[cfg(target_os = "linux")]
 pub(crate) mod control_invocation;
