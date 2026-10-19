@@ -172,7 +172,8 @@ fn project(
 /// CRDT history into the destination. The caller retains the original bytes
 /// until this succeeds and the destination is saved.
 pub(super) async fn snapshot(bytes: &[u8], store: &SecretStore) -> Result<Workspace, String> {
-    let doc = AutoCommit::load(bytes).map_err(|_| "Invalid legacy Automerge snapshot")?;
+    let doc =
+        ui::tilo_resource::Doc::load(bytes).map_err(|_| "Invalid legacy Automerge snapshot")?;
     if !needs_import(&doc) {
         return Err("This is not a legacy API workspace snapshot".into());
     }
