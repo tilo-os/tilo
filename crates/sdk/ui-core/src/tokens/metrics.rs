@@ -142,6 +142,46 @@ pub struct Metrics {
     /// An avatar leading a two-line row: the row grows to
     /// [`Self::row_avatar`].
     pub avatar_row: f32,
+    /// A bar's location field narrower than this is not shown: the bar
+    /// keeps its buttons.
+    pub location_min_width: f32,
+    /// A bar's actions move into its overflow menu, last first, while its
+    /// location field would be narrower than this.
+    pub location_comfortable_width: f32,
+    /// Widest a short explanatory sentence (an arrival note, a hint under a heading) runs before it wraps.
+    pub note_wrap_width: f32,
+    /// The tallest a listing sheet (a directory of workspaces) grows.
+    pub sheet_max_height: f32,
+    /// A listing's row: a 40 px mark beside a title, a line and who is there.
+    pub listing_row_height: f32,
+    /// One face in a row's stack of who is here now.
+    pub face_stack: f32,
+    /// How far each face in a row's stack stands past the one before.
+    pub face_stack_step: f32,
+    /// The overview's panel of workspaces beside the picture of the windows.
+    pub overview_panel_width: f32,
+    /// The narrowest picture of the windows worth placing beside the overview's panel; a narrower display holds it inside the panel.
+    pub overview_picture_min_width: f32,
+    /// A row's named action button at its trailing end.
+    pub row_action_width: f32,
+    /// A small arrow button in a row (a placement step).
+    pub row_arrow: f32,
+    /// A slider at a row's trailing end (an app's volume).
+    pub row_slider_width: f32,
+    /// The narrowest a row's slider gets.
+    pub row_slider_min_width: f32,
+    /// A row's slider with its value beside it (the output volume).
+    pub row_slider_valued_width: f32,
+    /// A level meter's bar, at the default text size.
+    pub meter_height: f32,
+    /// A pane's chart (charge history), at the default text size.
+    pub chart_height: f32,
+    /// The narrowest a list beside a figure gets before it moves under it.
+    pub aside_min_width: f32,
+    /// A pane's figure (the time-zone globe), at the default text size.
+    pub figure_size: f32,
+    /// How far a press may move and still be a click.
+    pub click_slop: f32,
 }
 
 impl Metrics {
@@ -194,6 +234,25 @@ impl Metrics {
         icon_bar: 20.0,
         avatar_inline: 24.0,
         avatar_row: 40.0,
+        location_min_width: 48.0,
+        location_comfortable_width: 200.0,
+        note_wrap_width: 300.0,
+        sheet_max_height: 600.0,
+        listing_row_height: 76.0,
+        face_stack: 18.0,
+        face_stack_step: 13.0,
+        overview_panel_width: 480.0,
+        overview_picture_min_width: 480.0,
+        row_action_width: 84.0,
+        row_arrow: 22.0,
+        row_slider_width: 172.0,
+        row_slider_min_width: 88.0,
+        row_slider_valued_width: 184.0,
+        meter_height: 6.0,
+        chart_height: 168.0,
+        aside_min_width: 240.0,
+        figure_size: 280.0,
+        click_slop: 4.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -292,6 +351,25 @@ impl Metrics {
             icon_bar: self.icon_bar * factor,
             avatar_inline: self.avatar_inline * factor,
             avatar_row: self.avatar_row * factor,
+            location_min_width: self.location_min_width * factor,
+            location_comfortable_width: self.location_comfortable_width * factor,
+            note_wrap_width: self.note_wrap_width * factor,
+            sheet_max_height: self.sheet_max_height * factor,
+            listing_row_height: self.listing_row_height * factor,
+            face_stack: self.face_stack * factor,
+            face_stack_step: self.face_stack_step * factor,
+            overview_panel_width: self.overview_panel_width * factor,
+            overview_picture_min_width: self.overview_picture_min_width * factor,
+            row_action_width: self.row_action_width * factor,
+            row_arrow: self.row_arrow * factor,
+            row_slider_width: self.row_slider_width * factor,
+            row_slider_min_width: self.row_slider_min_width * factor,
+            row_slider_valued_width: self.row_slider_valued_width * factor,
+            meter_height: self.meter_height * factor,
+            chart_height: self.chart_height * factor,
+            aside_min_width: self.aside_min_width * factor,
+            figure_size: self.figure_size * factor,
+            click_slop: self.click_slop * factor,
         }
     }
 }

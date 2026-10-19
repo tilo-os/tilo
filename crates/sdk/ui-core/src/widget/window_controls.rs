@@ -21,14 +21,14 @@ pub enum WindowControl {
     Close,
 }
 
-/// Side of each control's square.
-pub const CONTROL_PX: f64 = 28.0;
+/// Side of each control's square: a bar control.
+pub const CONTROL_PX: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
 /// Between two neighbouring controls.
-pub const CONTROL_GAP: f64 = 4.0;
+pub const CONTROL_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Between the last control and the window's trailing edge.
-pub const EDGE_INSET: f64 = 8.0;
+pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Between the controls and whatever stands before them in the row.
-pub const LEAD_GAP: f64 = 16.0;
+pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s4 as f64;
 
 /// Where each control sits; `Rect::ZERO` for one the window doesn't offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
