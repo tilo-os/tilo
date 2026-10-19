@@ -782,6 +782,17 @@ mod tests {
             let from = temp.path().join("from");
             let id = source(&from);
             let real = rustix::process::getuid().as_raw();
+            if real == 0 {
+                // Root in a capability-less job sandbox cannot give the
+                // fixture to the target user or become it. Require the
+                // capability where it exists (the micro-VM check sets
+                // TILO_REQUIRE_CHOWN=1) and skip with that reason elsewhere.
+                tilo_test_env::require_capability!(
+                    Chown,
+                    tilo_test_env::switch_identity(65534),
+                    "the adoption fixture gives its files to the target user and becomes it"
+                );
+            }
             let uid = if real == 0 { 65534 } else { real };
             let gid = if real == 0 {
                 65534
@@ -822,8 +833,12 @@ mod tests {
                 let mode = if path.is_dir() { 0o700 } else { 0o600 };
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
             }
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            // Bound the child so a wedged fixture fails the lane instead of
+            // stalling it; timeout exits 124 and the status check below fails.
+            let mut child = std::process::Command::new("timeout");
             child
+                .args(["--kill-after=5", "60"])
+                .arg(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "portable::tests::installed_adoption_succeeds_as_private_target_user",

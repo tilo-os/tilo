@@ -1381,23 +1381,105 @@ inputs = []
 name = "sandbox-host-ids-build"
 requires = ["arch=x86_64"]
 run = """
-test=$(cargo test --locked -p tilo-sandbox --test job --no-run --message-format json \
-  | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "job"))')
+set -eu
 mkdir -p "$CARGO_TARGET_DIR/vm"
-cp "$test" "$CARGO_TARGET_DIR/vm/tilo-sandbox-job"
+binary_target() {
+  package=$1
+  target=$2
+  name=$3
+  # Read every message before selecting: closing cargo's pipe early makes it
+  # fail with a broken pipe while it is still writing build messages.
+  executable=$(cargo test --locked -p "$package" --test "$target" --no-run --message-format json \
+    | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$target")
+  cp "$executable" "$CARGO_TARGET_DIR/vm/$name"
+}
+binary_lib() {
+  package=$1
+  lib=$2
+  name=$3
+  executable=$(cargo test --locked -p "$package" --lib --no-run --message-format json \
+    | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$lib")
+  cp "$executable" "$CARGO_TARGET_DIR/vm/$name"
+}
+binary_target tilo-sandbox job tilo-sandbox-job
+binary_lib runtime-fs runtime_fs runtime-fs-lib
+binary_lib account-custody account_custody account-custody-lib
+binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
+binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
+binary_target env-tools it env-tools-it
 """
-outputs = ["/target/vm/tilo-sandbox-job"]
-cargo_packages = ["tilo-sandbox"]
-inputs = []
+outputs = [
+  "/target/vm/tilo-sandbox-job",
+  "/target/vm/runtime-fs-lib",
+  "/target/vm/account-custody-lib",
+  "/target/vm/runtime-bundle-lib",
+  "/target/vm/tilo-install-helpers-native-python",
+  "/target/vm/env-tools-it",
+  "/target/debug/install-test-home-seeds",
+  "/target/debug/install-test-firstboot-files",
+  "/target/debug/staging-handoff-native-extractor",
+]
+cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools"]
+inputs = ["os/tests/**", "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-installer-profile-extract", "os/usr/libexec/tilo-firstboot-user"]
 
 [[check]]
 name = "sandbox-host-ids"
 requires = ["arch=x86_64"]
 isolation = "vm"
 needs = ["sandbox-host-ids-build"]
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 run = """
-cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+set -eu
+# These fixtures must run as real root in the micro-VM. If t ever stops giving
+# the guest root, fail here instead of letting the fixtures take their
+# unprivileged branches or skip.
+if [ "$(id -u)" != "0" ]; then
+  echo "sandbox-host-ids: expected euid 0 in the micro-VM, got $(id -u)" >&2
+  exit 1
+fi
+mkdir -p "$TMPDIR"
+# Every fixture below must run the exact cases it exists for. A filter that
+# matches fewer (or no) tests still exits 0, so compare the reported count.
+run_tests() {
+  expected=$1
+  shift
+  if output=$("$@" 2>&1); then
+    printf '%s\\n' "$output"
+    case "$output" in
+      *"skipping:"*|*"skipped:"*)
+        echo "selected fixture skipped: $*" >&2
+        return 1
+        ;;
+    esac
+    actual=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+    if [ "${actual:-}" != "$expected" ]; then
+      echo "expected $expected passing tests, got ${actual:-none}: $*" >&2
+      return 1
+    fi
+  else
+    status=$?
+    printf '%s\\n' "$output"
+    return "$status"
+  fi
+}
+repo=$PWD
+cd "$repo/crates/platform/tilo-sandbox"
+run_tests 15 /target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+cd "$repo"
+run_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1
+run_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1
+run_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1
+run_tests 2 /target/vm/tilo-install-helpers-native-python staging_handoff_oracle native_home_seeds --nocapture --test-threads=1
+# The two real-runtime tests need TILO_ENV_RUNTIME_TREE (built by the env-runtime
+# chain) and the network. Selecting them here would turn a missing fixture
+# into a pass, so name the five sandbox fixtures this lane exists for.
+run_tests 5 /target/vm/env-tools-it \
+  build::a_fixture_build_seals_only_what_the_packages_added \
+  build::two_fixture_builds_are_identical \
+  build::a_catalog_hit_skips_the_build \
+  build::requests_dnf_rejects_fail_before_building \
+  build::set_runtime_rebuilds_every_tool_or_none \
+  --nocapture --test-threads=1
 """
 inputs = []
 

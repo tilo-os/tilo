@@ -22,8 +22,8 @@
 //! - [`script`] writes an executable fixture script without racing
 //!   concurrent `fork`/`exec` in sibling tests.
 //! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
-//!   FUSE or fanotify where the host lacks it, and fails it instead on a CI
-//!   lane that sets `TILO_REQUIRE_<CAP>=1`.
+//!   FUSE, fanotify, chown or namespaces where the host lacks it, and fails it
+//!   instead on a CI lane that sets `TILO_REQUIRE_<CAP>=1`.
 //! - [`hang`] waits for workers, daemons, sockets and events against one
 //!   workspace-wide bound that only catches a hang: [`wait_until`],
 //!   [`wait_for`], [`recv`] and [`within`].
@@ -43,9 +43,11 @@ mod desktop;
 pub mod hang;
 pub mod idle;
 
-#[cfg(unix)]
-pub use capability::chown_to;
 pub use capability::{Capability, Probe, capability_unavailable};
+#[cfg(target_os = "linux")]
+pub use capability::{bubblewrap, mount_namespace, user_namespace};
+#[cfg(unix)]
+pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
 
