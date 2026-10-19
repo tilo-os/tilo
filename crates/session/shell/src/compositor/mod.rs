@@ -20,6 +20,8 @@ pub(crate) mod agent_door;
 #[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
+pub mod app_liveness;
+#[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
 #[cfg(target_os = "linux")]
@@ -32,8 +34,6 @@ pub mod chooser_service;
 pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;
-#[cfg(target_os = "linux")]
-pub mod app_liveness;
 #[cfg(target_os = "linux")]
 pub mod client_settle;
 #[cfg(target_os = "linux")]
