@@ -206,58 +206,54 @@ fn centred(child: Element) -> Element {
 /// The measured numbers, the facts about the test, and the recent tests.
 fn results_column(model: &Model, theme: &Theme) -> Column {
     let readings = &model.readings;
-    let pending = "—";
     let number = |value: Option<f64>, decimals: usize| {
-        value.map_or_else(|| pending.to_owned(), |v| format!("{v:.decimals$}"))
+        value.map_or_else(String::new, |v| format!("{v:.decimals$}"))
     };
-    let tiles = StatGroup::new(vec![
-        Box::new(tile("Ping", number(readings.ping, 0), readings.ping, "ms")),
-        Box::new(tile(
-            "Download",
-            number(readings.download, 1),
-            readings.download,
-            "Mbps",
-        )),
-        Box::new(tile(
-            "Upload",
-            number(readings.upload, 1),
-            readings.upload,
-            "Mbps",
-        )),
-    ]);
     let server = readings.location.as_ref().map_or_else(
         || "Cloudflare".to_owned(),
         |city| format!("Cloudflare, {city}"),
     );
-    let facts = PropertyList::new(vec![
-        Property::new("Server", server),
-        Property::new(
-            "Jitter",
-            readings
-                .jitter
-                .map_or_else(|| pending.to_owned(), |v| format!("{v:.1} ms")),
-        )
-        .with_kind(ui::TextKind::Numeric),
-        Property::new(
-            "Data used",
-            if readings.bytes > 0 {
-                data_label(readings.bytes)
-            } else {
-                pending.to_owned()
-            },
-        )
-        .with_kind(ui::TextKind::Numeric),
-    ]);
+    // Only what was measured is shown: before a test there are no numbers,
+    // and a dash in their place reads as a value.
+    let mut facts = vec![Property::new("Server", server)];
+    if let Some(jitter) = readings.jitter {
+        facts.push(
+            Property::new("Jitter", format!("{jitter:.1} ms")).with_kind(ui::TextKind::Numeric),
+        );
+    }
+    if readings.bytes > 0 {
+        facts.push(
+            Property::new("Data used", data_label(readings.bytes)).with_kind(ui::TextKind::Numeric),
+        );
+    }
+    let facts = PropertyList::new(facts);
 
     let spacing = &theme.tokens.spacing;
     let mut column = Column::new()
         .with_intrinsic_height()
-        .with_gap(spacing.rhythm.section)
-        .push(Box::new(Section::titled("Results", vec![Box::new(tiles)])))
-        .push(Box::new(Section::titled(
-            "Connection",
-            vec![Box::new(facts)],
-        )));
+        .with_gap(spacing.rhythm.section);
+    if readings.ping.is_some() || readings.download.is_some() || readings.upload.is_some() {
+        let tiles = StatGroup::new(vec![
+            Box::new(tile("Ping", number(readings.ping, 0), readings.ping, "ms")),
+            Box::new(tile(
+                "Download",
+                number(readings.download, 1),
+                readings.download,
+                "Mbps",
+            )),
+            Box::new(tile(
+                "Upload",
+                number(readings.upload, 1),
+                readings.upload,
+                "Mbps",
+            )),
+        ]);
+        column = column.push(Box::new(Section::titled("Results", vec![Box::new(tiles)])));
+    }
+    column = column.push(Box::new(Section::titled(
+        "Connection",
+        vec![Box::new(facts)],
+    )));
 
     if let Some(latest) = model.latest() {
         let rows = qualities(latest)

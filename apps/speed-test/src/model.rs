@@ -202,13 +202,14 @@ impl Model {
 
     pub(crate) fn dial(&self) -> DialReading {
         let (value, unit) = match self.phase {
-            Phase::Idle | Phase::Error => ("—".to_owned(), ""),
+            // Nothing measured: an empty dial, never a dash for a number.
+            Phase::Idle | Phase::Error => (String::new(), ""),
             Phase::Ping => (format!("{:.0}", self.live), "ms"),
             Phase::Download | Phase::Upload => (format!("{:.1}", self.live), "Mbps"),
             Phase::Complete => (
                 self.readings
                     .download
-                    .map_or_else(|| "—".to_owned(), |value| format!("{value:.1}")),
+                    .map_or_else(String::new, |value| format!("{value:.1}")),
                 "Mbps",
             ),
         };
@@ -270,7 +271,7 @@ mod tests {
         let mut model = Model::new();
         model.present(project(Phase::Idle, &[]));
         let dial = model.dial();
-        assert_eq!(dial.value, "—");
+        assert_eq!(dial.value, "");
         assert!(dial.frac.abs() < f64::EPSILON, "no stub arc at idle");
         assert!(!model.is_running());
     }
@@ -331,7 +332,7 @@ mod tests {
         model.present(projection);
         assert_eq!(model.phase, Phase::Error);
         assert_eq!(model.error.as_deref(), Some("offline"));
-        assert_eq!(model.dial().value, "—");
+        assert_eq!(model.dial().value, "");
     }
 
     #[test]
