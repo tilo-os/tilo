@@ -328,12 +328,12 @@ impl super::ShellOverlayHost {
             let ink = ui::presence::contrast_ink(colour);
             let mut on_colour = theme.clone();
             on_colour.tokens.colors.text_primary = ink;
-            on_colour.tokens.colors.text_dim = ink.with_alpha_factor(0.7);
+            on_colour.tokens.colors.text_dim = ui::presence::contrast_ink_dim(colour);
             if chat.text.is_empty() {
                 text_renderer.draw_style(
                     scene,
                     &placeholder,
-                    ink.with_alpha_factor(0.7),
+                    ui::presence::contrast_ink_dim(colour),
                     transform * Affine::translate((line.x0, line.y0)),
                     None,
                     &theme.text(ui::TextRole::Body),

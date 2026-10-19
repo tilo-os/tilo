@@ -2482,12 +2482,21 @@ impl QuickSettingsRoot {
             let turn = self.chevron_turn(QsSection::Sound, state);
             let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
             if cursor.is_some_and(|p| expand.contains(p)) {
-                scene.fill(
-                    Fill::NonZero,
+                // The chevron's own target lifts under the pointer, as a
+                // tile's half does.
+                ui::widget::primitives::QuickTileFace {
+                    rect: expand,
+                    main: expand,
+                    expand: None,
+                    on: false,
+                    hovered: Some(expand),
+                    radius: control_radius(theme, expand),
+                }
+                .paint_ground(
+                    scene,
                     transform,
+                    theme,
                     tilo_desktop::drill_in::control_fill(theme, true),
-                    None,
-                    &RoundedRect::from_rect(expand, control_radius(theme, expand)),
                 );
             }
             ui::icons::draw_icon(
@@ -2527,7 +2536,6 @@ impl QuickSettingsRoot {
         let (s, cursor) = (frame.state, frame.cursor);
         let (scene, transform, text, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let colors = &theme.tokens.colors;
         let on = Self::on(c, s);
         let section = Self::section_of(c, s);
         let expand = section.map(|_| self.expand_rect(r));
@@ -2535,65 +2543,31 @@ impl QuickSettingsRoot {
         let over = |rect: Rect| cursor.is_some_and(|p| rect.contains(p));
         let main_hovered = over(main) && !expand.is_some_and(over);
         let radius = control_radius(theme, r);
-        if on {
-            // A control that is on is filled with the on colour: the whole
-            // tile says it at a glance.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.intent.on_state,
-                None,
-                &RoundedRect::from_rect(r, radius),
-            );
-            if main_hovered || expand.is_some_and(over) {
-                // Hover lifts the half under the pointer.
-                let lift = colors.intent.on_state_mark.multiply_alpha(0.12);
-                let half = if main_hovered {
-                    main
-                } else {
-                    expand.unwrap_or(r)
-                };
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &RoundedRect::from_rect(r, radius),
-                );
-                scene.fill(Fill::NonZero, transform, lift, None, &half);
-                scene.pop_layer();
-            }
+        let hovered = if main_hovered {
+            Some(main)
         } else {
-            paint_control(scene, transform, theme, r, false, false);
-            if main_hovered || expand.is_some_and(over) {
-                let half = if main_hovered {
-                    main
-                } else {
-                    expand.unwrap_or(r)
-                };
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &RoundedRect::from_rect(r, radius),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tilo_desktop::drill_in::control_fill(theme, true),
-                    None,
-                    &half,
-                );
-                scene.pop_layer();
-            }
-        }
-        let (ink, ink_dim) = if on {
-            let knob = colors.intent.on_state_mark;
-            (knob, knob.multiply_alpha(0.82))
-        } else {
-            (colors.text_primary, colors.text_dim)
+            expand.filter(|e| over(*e))
         };
+        let face = ui::widget::primitives::QuickTileFace {
+            rect: r,
+            main,
+            expand,
+            on,
+            hovered,
+            radius,
+        };
+        if !on {
+            paint_control(scene, transform, theme, r, false, false);
+        }
+        // A control that is on is filled with the on colour: the whole tile
+        // says it at a glance. Hover lifts the half under the pointer.
+        face.paint_ground(
+            scene,
+            transform,
+            theme,
+            tilo_desktop::drill_in::control_fill(theme, true),
+        );
+        let (ink, ink_dim) = face.ink(theme);
         let inset = self.scaled(CONTROL_INSET);
         let glyph = Self::glyph_at(self.layout_scale);
         let icon = leading_glyph(main, inset, glyph);
@@ -2627,25 +2601,9 @@ impl QuickSettingsRoot {
         );
         if let (Some(expand), Some(section)) = (expand, section) {
             // A hairline sets the chevron's area apart from the switch.
-            let divider = if on {
-                colors.intent.on_state_mark.multiply_alpha(0.35)
-            } else {
-                colors.text_primary.multiply_alpha(0.12)
-            };
             let inset_y =
                 self.scaled(CONTROL_PAD) + self.scaled(ui::tokens::Spacing::BASE.s1.into());
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                divider,
-                None,
-                &Rect::new(
-                    expand.x0,
-                    expand.y0 + inset_y,
-                    expand.x0 + 1.0,
-                    expand.y1 - inset_y,
-                ),
-            );
+            face.paint_divider(scene, transform, theme, inset_y);
             let turn = self.chevron_turn(section, s);
             let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
             let rotation =

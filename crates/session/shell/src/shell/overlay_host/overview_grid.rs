@@ -999,7 +999,7 @@ impl ShellOverlayHost {
             None,
             &style,
         );
-        let ground = colors.surfaces.base;
+        let ground = ui::chrome::shell::desktop_ground(theme);
         let mut x1 = line.x1;
         for (initial, color) in tile.faces.iter().take(shown).rev() {
             let disc = Rect::new(x1 - face, line.y0, x1, line.y0 + face);

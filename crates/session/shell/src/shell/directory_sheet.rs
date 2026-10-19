@@ -27,8 +27,7 @@ use ui::text_selection::Selection;
 use ui::theme::Theme;
 use ui::widget::{ButtonRole, FieldFace, TextInput, Widget as _};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -759,12 +758,13 @@ impl DirectorySheet {
             let index = self.scroll + offset;
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + ROW_H);
             if self.selected == Some(index) {
-                paint.scene.fill(
-                    Fill::NonZero,
+                ui::chrome::shell::paint_row_selection(
+                    paint.scene,
                     transform,
-                    rest_floor(theme),
-                    None,
-                    &RoundedRect::from_rect(row, f64::from(tokens.radii.control)),
+                    row,
+                    ui::chrome::SelectionState::active(true),
+                    ground,
+                    theme,
                 );
             }
             // The workspace's mark.
@@ -1109,15 +1109,6 @@ fn button_face(at: Rect, label: &str, primary: bool) -> ui::widget::ButtonFace<'
     } else {
         face
     }
-}
-
-/// The resting floor of the search field and the chosen row.
-fn rest_floor(theme: &Theme) -> vello::peniko::Color {
-    ui::chrome::selection_floor_ramp(
-        theme,
-        ui::chrome::SelectionState::active(false),
-        ui::chrome::shell::panel_ground(theme),
-    )
 }
 
 #[cfg(test)]
