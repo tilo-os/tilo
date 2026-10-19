@@ -771,6 +771,15 @@ workspace-settings-agents-help = Agents are visibly non-human collaborators. Adm
 workspace-settings-add-agent = Add agent
 workspace-settings-agents-empty-title = No agents have access
 workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
+workspace-settings-bots-header = Bots
+workspace-settings-add-bot = Add a bot
+workspace-settings-bots-empty = No bots run in this workspace
+workspace-settings-bot-tag = Bot
+workspace-settings-bot-starting = Starting
+workspace-settings-bot-paused = Paused
+workspace-settings-bot-running = Running
+workspace-settings-bot-version = Version { $version }
+workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
 workspace-settings-service-member = { $access ->
     [admin] Administers
@@ -952,6 +961,7 @@ launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-agent-tag = Agent
+people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
 people-panel-here-count = { $count ->
     [one] 1 here

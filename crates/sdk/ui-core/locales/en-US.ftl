@@ -678,7 +678,7 @@ search-apps-group-developer-tools = Developer tools
 
 approved-check-reports-disabled = Phase reports unavailable
 
-author-bot-chip = BOT
+author-bot-chip = Bot
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo

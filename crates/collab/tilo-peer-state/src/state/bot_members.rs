@@ -495,18 +495,11 @@ impl PeerGovernance<'_> {
     /// Every bot the room asks its host to run, by entry.
     #[must_use]
     pub fn bot_requests(self) -> Vec<RequestedBot> {
-        let Some(doc) = self.peer.core.room_doc.as_ref() else {
-            return Vec::new();
-        };
-        let Ok(Some((_, requests))) = doc.get(ROOT, REQUESTS) else {
-            return Vec::new();
-        };
-        let mut out: Vec<RequestedBot> = doc
-            .keys(&requests)
-            .filter_map(|entry| read_request(&**doc, &requests, &entry))
-            .collect();
-        out.sort_by(|a, b| a.request.entry.cmp(&b.request.entry));
-        out
+        self.peer
+            .core
+            .room_doc
+            .as_ref()
+            .map_or_else(Vec::new, |doc| requests_in(&**doc))
     }
 
     /// The room's request for directory entry `entry`, if it stands.
@@ -769,6 +762,19 @@ fn program_grants(
 
 /// The request kept under `entry` in `requests`, if it reads as one for
 /// that entry: a row naming another entry than its key is not trusted.
+/// Every bot request room document `doc` keeps, by entry.
+pub(crate) fn requests_in(doc: &impl ReadDoc) -> Vec<RequestedBot> {
+    let Ok(Some((_, requests))) = doc.get(ROOT, REQUESTS) else {
+        return Vec::new();
+    };
+    let mut out: Vec<RequestedBot> = doc
+        .keys(&requests)
+        .filter_map(|entry| read_request(doc, &requests, &entry))
+        .collect();
+    out.sort_by(|a, b| a.request.entry.cmp(&b.request.entry));
+    out
+}
+
 fn read_request(
     doc: &impl ReadDoc,
     requests: &automerge::ObjId,
