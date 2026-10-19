@@ -26,10 +26,10 @@ pub const FUZZY_RANK: i32 = 10;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MatchTier {
     /// Every word of the query matches a title word within a small edit
-    /// distance ([`Matching::typos`](crate::query::Matching::typos)).
+    /// distance ([`Matching::typos`](crate::Matching::typos)).
     Typo,
     /// Every word of the query occurs in some field, though no field holds
-    /// the whole query ([`Matching::spanning`](crate::query::Matching::spanning)).
+    /// the whole query ([`Matching::spanning`](crate::Matching::spanning)).
     Spanning,
     /// The query occurs inside the field, not at a word start.
     Contains,
@@ -51,8 +51,7 @@ pub type Ranks = fn(MatchTier, FieldWeight) -> Option<i32>;
 
 impl MatchTier {
     /// The tiers found in one field, weakest first.
-    #[doc(hidden)]
-    pub const FIELD: [Self; 6] = [
+    pub(crate) const FIELD: [Self; 6] = [
         Self::Contains,
         Self::WordPrefix,
         Self::Word,
@@ -141,9 +140,7 @@ impl FieldWeight {
     }
 
     /// The indexed field slot this weight is stored in.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn slot(self) -> usize {
+    pub(crate) fn slot(self) -> usize {
         let mut best = 0usize;
         let mut best_distance = u8::MAX;
         for (slot, weight) in INDEXED_WEIGHTS.iter().enumerate() {

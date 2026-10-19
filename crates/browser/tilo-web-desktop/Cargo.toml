@@ -23,8 +23,6 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches
 # (src/lazy.rs).
 tilo-search = { path = "../../sdk/search", features = ["lazy-engine"] }
-# The engine itself, which only the search module's export names.
-tilo-search-tantivy = { path = "../../sdk/search/tantivy" }
 # The spelling dictionaries load the first time a field checks spelling.
 tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionaries"] }
 # Hyphenation patterns load the first time text hyphenates.

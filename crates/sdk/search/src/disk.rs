@@ -25,9 +25,7 @@ use tantivy::schema::{
 };
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
-use tilo_search_model::tokenizer::words;
-
-use crate::tokenizer::WordTokenizer;
+use crate::tokenizer::{WordTokenizer, words};
 
 const WORDS: &str = "tilo_words";
 

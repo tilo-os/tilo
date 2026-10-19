@@ -10,14 +10,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::record::Document;
+use crate::index::Document;
 use crate::tokenizer::words;
 use crate::weight::KEYWORD_SLOT;
 
-/// The distinct folded words of one field, as the engine's word tokenizer
+/// The distinct folded words of one field, as [`crate::WordTokenizer`]
 /// indexes them, each with how many field values hold it.
 #[derive(Clone, Debug, Default)]
-pub struct Vocabulary {
+pub(crate) struct Vocabulary {
     words: BTreeMap<String, (usize, Box<[char]>)>,
 }
 
@@ -44,7 +44,7 @@ impl Vocabulary {
     /// The words within `distance` edits of `query` (a transposition is one
     /// edit) or, with `prefix`, that begin with such a word: what tantivy's
     /// fuzzy term query, and its prefix form, accept.
-    pub fn near<'a>(
+    pub(crate) fn near<'a>(
         &'a self,
         query: &'a [char],
         distance: usize,
@@ -60,7 +60,7 @@ impl Vocabulary {
 /// The words typos are matched against: those of title fields and those of
 /// keyword fields.
 #[derive(Clone, Debug, Default)]
-pub struct Typos {
+pub(crate) struct Typos {
     pub title: Vocabulary,
     pub keyword: Vocabulary,
 }
@@ -75,7 +75,7 @@ impl Typos {
     }
 
     /// Count the words of `document`'s title and keyword fields.
-    pub fn add(&mut self, document: &Document) {
+    pub(crate) fn add(&mut self, document: &Document) {
         for (text, weight) in document.fields() {
             if let Some(vocabulary) = self.vocabulary(weight.slot()) {
                 vocabulary.add(text);
@@ -84,7 +84,7 @@ impl Typos {
     }
 
     /// Stop counting the words of `document`, as [`Self::add`] counted them.
-    pub fn remove(&mut self, document: &Document) {
+    pub(crate) fn remove(&mut self, document: &Document) {
         for (text, weight) in document.fields() {
             if let Some(vocabulary) = self.vocabulary(weight.slot()) {
                 vocabulary.remove(text);
@@ -99,7 +99,7 @@ impl Typos {
 /// The table runs over `word` one scalar per row; a row whose every cell,
 /// and the row before it (a transposition reaches back two), exceeds
 /// `distance` ends the comparison, since no later row can come back under.
-pub fn within(query: &[char], word: &[char], distance: usize, prefix: bool) -> bool {
+pub(crate) fn within(query: &[char], word: &[char], distance: usize, prefix: bool) -> bool {
     let (n, m) = (query.len(), word.len());
     if prefix {
         if m.saturating_add(distance) < n {

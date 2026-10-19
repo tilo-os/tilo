@@ -162,8 +162,6 @@ members = [
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-rich-text",
     "crates/sdk/search",
-    "crates/sdk/search/model",
-    "crates/sdk/search/tantivy",
 
     # Collab
     "crates/collab/action-policy",
@@ -323,7 +321,6 @@ members = [
     "crates/runtime/engines/highlight",
     "crates/runtime/engines/paint",
     "crates/runtime/engines/pdf",
-    "crates/runtime/engines/search",
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/timezone",
     "crates/runtime/engines/typst",
