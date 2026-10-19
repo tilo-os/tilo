@@ -28,13 +28,24 @@ fn read(path: &str) -> String {
     fs::read_to_string(repo().join(path)).unwrap()
 }
 
-/// The helper's own sources, for what it must never contain.
+/// The helper's own sources, its module directories included, for what it
+/// must never contain.
 fn sources() -> String {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut all = String::new();
-    for entry in fs::read_dir(dir).unwrap() {
-        all.push_str(&fs::read_to_string(entry.unwrap().path()).unwrap());
+    fn collect(dir: &std::path::Path, all: &mut String) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(&path, all);
+            } else {
+                all.push_str(&fs::read_to_string(path).unwrap());
+            }
+        }
     }
+    let mut all = String::new();
+    collect(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut all,
+    );
     all
 }
 
@@ -114,7 +125,7 @@ fn the_command_line_reports_usage_with_status_2() {
     let out = Command::new(HELPER).output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "tilo-extension: expected exactly one argument: activate, refresh:all or <verb>:<id>\n"
+        "tilo-extension: expected exactly one argument: activate, refresh:all, live:<phase> or <verb>:<id>\n"
     );
 }
 
