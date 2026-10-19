@@ -95,6 +95,7 @@ profile-card = Dein Profil
 profile-name = Dein Name
 profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
+profile-add-your-name = Deinen Namen hinzufügen
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
 profile-section-linked = Verknüpfte Konten

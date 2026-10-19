@@ -97,20 +97,29 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
     drop(home);
 }
 
-/// A person is called by their own name in the rooms they are in; without
-/// one, "Guest", which the people there tell apart by number and colour.
-/// Never by a device's name ("Primary device") nor by a key: the name is
-/// all a room, a public one above all, learns of the person.
+/// The owner of this machine is known by name, never as "Guest", a device
+/// ("Primary device") or a key: the name they gave their identity, else the
+/// login account's real name. A record's stand-in name ("My Tilo identity")
+/// is not a name they gave.
 #[test]
-fn a_person_without_a_name_is_a_guest_never_their_device() {
-    assert_eq!(super::shared_person_name(Some("Ada".into())), "Ada");
-    assert_eq!(super::shared_person_name(Some("  Ada  ".into())), "Ada");
-    let guest = crate::shell::i18n::t("presence-guest-name");
-    assert_eq!(guest, "Guest");
-    assert_eq!(super::shared_person_name(None), guest);
-    assert_eq!(super::shared_person_name(Some("   ".into())), guest);
-    // Two guests in one room are told apart by number, as any shared name.
-    let labels =
-        ui::presence::ParticipantLabels::new([("a", guest.as_str()), ("b", guest.as_str())]);
-    assert_ne!(labels.label("a", &guest), labels.label("b", &guest));
+fn the_owner_is_called_by_their_name_else_their_accounts_never_a_guest() {
+    let account = || "Xaver Example".to_owned();
+    assert_eq!(
+        super::own_person_name_or(Some("Ada".into()), account),
+        "Ada"
+    );
+    assert_eq!(
+        super::own_person_name_or(Some("  Ada  ".into()), account),
+        "Ada"
+    );
+    assert_eq!(super::own_person_name_or(None, account), "Xaver Example");
+    assert_eq!(
+        super::own_person_name_or(Some("   ".into()), account),
+        "Xaver Example"
+    );
+    assert_eq!(
+        super::own_person_name_or(Some(runtime_identity::UNNAMED_DISPLAY_NAME.into()), account),
+        "Xaver Example"
+    );
+    assert!(!super::own_person_name(None).trim().is_empty());
 }

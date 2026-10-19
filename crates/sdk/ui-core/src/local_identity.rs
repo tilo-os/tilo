@@ -188,14 +188,21 @@ const fn default_bound() -> Option<LocalIdentity> {
     None
 }
 
-/// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
-/// `$HOME/.config/tilo/identity/primary.json`. Mirrors the resolution in
-/// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
+/// The person's active identity record under
+/// `$XDG_CONFIG_HOME/tilo/identity` (else `$HOME/.config/tilo/identity`):
+/// the one its `active` selector names, else the legacy `primary.json`.
+/// A device set up with more than one identity keeps them as
+/// `identity-<key>.json` beside that selector and no `primary.json`; reading
+/// only `primary.json` left such a person nameless on their own desktop.
 #[cfg(all(unix, feature = "local-daemons"))]
 fn config_identity_path() -> Option<std::path::PathBuf> {
-    let base = crate::host::environment().paths.config_dir()?;
-    let p = base.join("tilo").join("identity").join("primary.json");
-    p.is_file().then_some(p)
+    identity_record_in(&crate::host::environment().paths.config_dir()?)
+}
+
+/// [`config_identity_path`] under the config directory `config`.
+#[cfg(all(unix, feature = "local-daemons"))]
+fn identity_record_in(config: &std::path::Path) -> Option<std::path::PathBuf> {
+    runtime_identity::resolve_active_identity(&config.join("tilo").join("identity"))
 }
 
 #[cfg(feature = "local-daemons")]
@@ -252,5 +259,35 @@ mod photo_tests {
         let photo = photo_from(&source, &"12".repeat(32)).unwrap();
         assert_eq!(photo.rgba(), &[20, 90, 210, 255]);
         assert!(photo_from(&NoLocalIdentity, &"12".repeat(32)).is_none());
+    }
+}
+
+#[cfg(all(test, unix, feature = "local-daemons"))]
+mod active_record_tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn private(path: &std::path::Path, bytes: &[u8]) {
+        std::fs::write(path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// A device set up with more than one identity keeps each as
+    /// `identity-<key>.json` beside an `active` selector, with no
+    /// `primary.json`: the person's name is read from the active record, so
+    /// the owner of the desktop is never nameless on it.
+    #[test]
+    fn the_active_identity_record_is_read_where_there_is_no_primary() {
+        let config = tempfile::tempdir().unwrap();
+        let dir = config.path().join("tilo").join("identity");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let record = runtime_identity::public_member_record("Ada", [10, 20, 30], [7; 32]).unwrap();
+        private(&dir.join("identity-ada.json"), &record);
+        private(&dir.join("active"), b"identity-ada\n");
+
+        let path = super::identity_record_in(config.path()).expect("the active record");
+        assert_eq!(path, dir.join("identity-ada.json"));
+        let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
+        assert_eq!(metadata.display_name, "Ada");
     }
 }

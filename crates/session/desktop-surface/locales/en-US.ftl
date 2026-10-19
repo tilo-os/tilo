@@ -83,6 +83,7 @@ profile-card = Your profile
 profile-name = Your name
 profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
+profile-add-your-name = Add your name
 profile-section-identity = Your identity
 profile-section-devices = Devices
 profile-section-linked = Linked accounts

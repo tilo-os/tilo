@@ -282,6 +282,7 @@ fn profile_model(linked: Vec<LinkedAccount>) -> ProfileModel {
         identity: ME.into(),
         colour: Some(vello::peniko::Color::from_rgb8(214, 140, 96)),
         can_rename: true,
+        ask_name: false,
         actions: vec![
             ProfileAction {
                 id: "keep-identity".into(),

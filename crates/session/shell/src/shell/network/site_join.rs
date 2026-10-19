@@ -68,7 +68,7 @@ impl ShellNetwork {
             .map_err(SiteError::Refused)?;
         // The person's name, never the device's: a room, and a public one
         // above all, learns nothing of this person's devices.
-        let name = super::shared_person_name(
+        let name = super::own_person_name(
             ui::local_identity::load().map(|identity| identity.display_name),
         );
         Ok((certificate.user_public_key, name))
