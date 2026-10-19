@@ -229,7 +229,9 @@ pub(crate) fn spinner_painted(step: u64, turning: bool, scene_rect: vello::kurbo
 
 /// Where the waiting spinner painted a new pose since the last frame, in
 /// scene (physical) pixels: it paints outside any widget's box, so the
-/// frame damages that slot. `None` when its pose did not move.
+/// frame damages that slot. `None` when its pose did not move. Only the
+/// native runner presents frames with damage.
+#[cfg(any(test, all(feature = "native", not(target_arch = "wasm32"))))]
 pub(crate) fn take_spinner_damage() -> Option<vello::kurbo::Rect> {
     SPINNER.with(|spinner| {
         let (last, pending) = spinner.get();

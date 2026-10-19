@@ -567,9 +567,14 @@ impl OpsFrame {
 
 /// One live frame, the payload of [`Envelope::Live`](crate::Envelope::Live).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "presence is the frame sent at pointer rate and decoded on every receipt; boxing it would allocate per frame to shrink the rarer ops frame"
+// With 32-bit pointers (wasm32) the variants are close enough in size that
+// the lint does not fire.
+#[cfg_attr(
+    target_pointer_width = "64",
+    expect(
+        clippy::large_enum_variant,
+        reason = "presence is the frame sent at pointer rate and decoded on every receipt; boxing it would allocate per frame to shrink the rarer ops frame"
+    )
 )]
 pub enum LiveFrame {
     /// Latest-value presence; a receiver keeps only the newest per publisher.
