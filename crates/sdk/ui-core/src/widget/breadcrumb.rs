@@ -60,6 +60,9 @@ pub struct Breadcrumb {
     /// A click on the `…` hands the hidden segments and the `…`'s rect to
     /// the host, to offer them in a menu.
     on_overflow: Option<Box<dyn FnMut(Vec<usize>, Rect)>>,
+    /// The labels' text role: a caption in a header, body text where the
+    /// trail is a window's location.
+    role: TextRole,
     rect: Rect,
 }
 
@@ -78,8 +81,16 @@ impl Breadcrumb {
             last_cursor: None,
             on_edit_requested: None,
             on_overflow: None,
+            role: TextRole::Caption,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Set the labels in `role` (a window's location reads as body text).
+    #[must_use]
+    pub(crate) fn with_role(mut self, role: TextRole) -> Self {
+        self.role = role;
+        self
     }
 
     /// Called with the indices of the segments the `…` stands for, and its
@@ -141,7 +152,8 @@ impl Breadcrumb {
         if self.segments.is_empty() {
             return Vec::new();
         }
-        let full_width = measure_total_width(&self.segments, theme, tr) + self.root_width(theme);
+        let full_width =
+            measure_total_width(&self.segments, self.role, theme, tr) + self.root_width(theme);
         if full_width <= available_width {
             return self.segments.clone();
         }
@@ -195,7 +207,7 @@ impl Breadcrumb {
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
         // The root icon leads the first segment's rect.
-        let style = theme.text(TextRole::Caption);
+        let style = theme.text(self.role);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         let sep_w = separator_width(theme);
         let mut rects = Vec::with_capacity(labels.len());
@@ -248,6 +260,41 @@ impl Breadcrumb {
         self.rect.contains(point) && point.x > end
     }
 
+    /// Place the trail in `rect`, for a host that draws it without a layout
+    /// pass (a window's bar). Its segments are laid out at the next draw.
+    pub(crate) fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    /// The segment a click at `point` goes to: an ancestor, as laid out at
+    /// the last draw; not the current segment, nor the `…`.
+    pub(crate) fn ancestor_at(&self, point: Point) -> Option<usize> {
+        let active = self.segments.len().saturating_sub(1);
+        self.segment_rects
+            .iter()
+            .zip(&self.visible_origin)
+            .find(|(rect, _)| rect.contains(point))
+            .and_then(|(_, origin)| *origin)
+            .filter(|index| *index != active)
+    }
+
+    /// Light the segment under `point` (`None`: the pointer is off the
+    /// trail), as a hover does. Returns whether that changed.
+    pub(crate) fn hover_at(&mut self, point: Option<Point>) -> bool {
+        let active = self.segments.len().saturating_sub(1);
+        let hover = point.and_then(|point| {
+            self.segment_rects
+                .iter()
+                .zip(&self.visible_origin)
+                .position(|(rect, origin)| {
+                    rect.contains(point) && origin.is_some_and(|index| index != active)
+                })
+        });
+        let changed = hover != self.hover_idx;
+        self.hover_idx = hover;
+        changed
+    }
+
     /// Test-only helper: rebuild rects against a synthetic `self.rect`
     /// without running a full taffy layout pass. Keeps the click test
     /// independent of GPU + taffy availability.
@@ -261,8 +308,13 @@ impl Breadcrumb {
 /// padding on each side of each separator). Used by
 /// [`Breadcrumb::visible_segments`] to decide whether the full path
 /// fits. A free function (not a method) since it touches no `self` field.
-fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-    let style = theme.text(TextRole::Caption);
+fn measure_total_width(
+    labels: &[String],
+    role: TextRole,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+) -> f64 {
+    let style = theme.text(role);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
     let sep_block = separator_width(theme) + sep_pad * 2.0;
     let mut total = 0.0_f64;
@@ -287,7 +339,7 @@ impl Widget for Breadcrumb {
         // it); the height is a line of `Caption` with room for a click.
         // In a row it shrinks to what its neighbours leave and stretches to
         // the row's height; in a column it spans the column.
-        let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
+        let line_h = theme.tokens.typography.size(self.role) * 1.5;
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -319,7 +371,7 @@ impl Widget for Breadcrumb {
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
 
-        let style = theme.text(TextRole::Caption);
+        let style = theme.text(self.role);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         // One measured line height serves every segment and chevron: all are
         // single lines at one style, so cosmic-text gives each the same line

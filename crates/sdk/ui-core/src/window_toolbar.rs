@@ -5,16 +5,24 @@
 //! to it it declares here, as slots the bar lays out and draws with the
 //! system's own controls:
 //!
-//! - **navigation:** back and forward, and whether each can go;
+//! - **navigation:** the app's sidebar toggle, back and forward, and
+//!   whether each can go;
 //! - **location:** where the window is and can go, the label the bar shows
 //!   at rest (a page's domain, a folder's path, a document's name), and
 //!   whether it can be edited. An editable location turns into a field
 //!   holding the full value, all of it selected, on a click or Ctrl+L, with a
 //!   go button at its end; Enter or the go button commits the text to the
-//!   app, Esc puts the location back;
-//! - **actions:** up to [`MAX_ACTIONS`] icon buttons (reload, bookmark…);
-//!   the rest of an app's actions reach people through the action registry
-//!   (palette, menus), not through the bar.
+//!   app, Esc puts the location back. A location with a hierarchy (a
+//!   folder's path) declares its levels as [`LocationSegment`]s: the bar
+//!   draws them as a breadcrumb with drawn chevrons, and a click on a level
+//!   commits that level's value. Its own picture ([`ToolbarImage`], a page's
+//!   favicon) stands at the bar's leading edge in place of the app's icon.
+//!   While the field is edited the app hears each change of its text
+//!   ([`ToolbarEvent::Edit`]) and may answer with [`LocationSuggestion`]s,
+//!   which the bar lists under the field;
+//! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
+//!   of them in the row; the rest, and those the row has no room for, are
+//!   in the menu of a trailing overflow button.
 //!
 //! The tab label (what tells two tabs apart) stays the window's title; the
 //! location is where you are. A window whose app declares no slots shows
@@ -33,8 +41,24 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-/// The most actions the bar shows for one window.
+/// The most actions the row shows as buttons; the rest go in its overflow
+/// menu.
 pub const MAX_ACTIONS: usize = 3;
+
+/// The most actions one window declares, buttons and overflow together.
+pub const MAX_DECLARED_ACTIONS: usize = 12;
+
+/// The most levels a location's breadcrumb carries.
+pub const MAX_SEGMENTS: usize = 64;
+
+/// The most suggestions the bar lists under an edited location.
+pub const MAX_SUGGESTIONS: usize = 8;
+
+/// Largest encoded location picture, in bytes. A favicon is a few hundred.
+pub const MAX_IMAGE_BYTES: usize = 64 * 1024;
+
+/// Largest location picture, in pixels (edge squared).
+pub const MAX_IMAGE_PIXELS: u32 = 128 * 128;
 
 /// Longest label, value or name the bar takes, in bytes. Longer text is cut
 /// at a character boundary: the bar elides far sooner, and the wire never
@@ -44,6 +68,10 @@ pub const MAX_TEXT_BYTES: usize = 8 * 1024;
 /// What an app shows in its window's bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowToolbar {
+    /// The app's sidebar toggle, and whether the sidebar is open: the
+    /// window's navigation, leading the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<bool>,
     /// Back and forward, for an app that keeps a trail of places.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<ToolbarNavigation>,
@@ -86,6 +114,92 @@ pub struct ToolbarLocation {
     /// The go button's name ("Go").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub go_name: String,
+    /// The location's levels, outermost first, for a breadcrumb in place
+    /// of the label (a folder's path). Empty: the label.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<LocationSegment>,
+    /// The location's own picture (a page's favicon), shown at the bar's
+    /// leading edge instead of the app's icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ToolbarImage>,
+    /// What the bar lists under the field while it is edited, best first:
+    /// the app's answer to the text it heard last ([`ToolbarEvent::Edit`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<LocationSuggestion>,
+}
+
+/// One level of a location's hierarchy.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationSegment {
+    /// What the breadcrumb shows ("Downloads").
+    pub label: String,
+    /// What a click on it commits ([`ToolbarEvent::Commit`]): the level's
+    /// full location ("/home/ana/Downloads").
+    pub value: String,
+}
+
+/// A location's picture, as PNG bytes.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarImage {
+    pub png: Vec<u8>,
+}
+
+impl std::fmt::Debug for ToolbarImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolbarImage")
+            .field("bytes", &self.png.len())
+            .finish()
+    }
+}
+
+impl ToolbarImage {
+    /// The picture as the bar paints it: decoded once, at most
+    /// [`MAX_IMAGE_PIXELS`]. `None` for bytes that are not such a PNG.
+    #[must_use]
+    pub fn app_image(&self) -> Option<crate::icons::AppImage> {
+        if self.png.is_empty() || self.png.len() > MAX_IMAGE_BYTES {
+            return None;
+        }
+        let decoded =
+            crate::png::decode_rgba8_within(&self.png, u64::from(MAX_IMAGE_PIXELS)).ok()?;
+        let pixels = crate::raster::rgba8(decoded.rgba, decoded.width, decoded.height);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            self.png.hash(&mut hasher);
+            format!("window-toolbar-image:{:016x}", hasher.finish())
+        };
+        Some(crate::icons::AppImage::new(DecodedImage { key, pixels }))
+    }
+}
+
+/// A decoded [`ToolbarImage`].
+struct DecodedImage {
+    key: String,
+    pixels: vello::peniko::ImageData,
+}
+
+impl crate::icons::AppImageSource for DecodedImage {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
+        Some(self.pixels.clone())
+    }
+}
+
+/// One suggestion under an edited location.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationSuggestion {
+    /// What the row says ("rust-lang.org" or "Search for rust").
+    pub label: String,
+    /// What choosing it commits ([`ToolbarEvent::Commit`]).
+    pub value: String,
+    /// Its icon, by its icon-set name (a clock for history, a magnifier for
+    /// a search).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl ToolbarLocation {
@@ -125,11 +239,19 @@ fn enabled() -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolbarEvent {
+    /// The sidebar toggle was pressed.
+    ToggleSidebar,
     Back,
     Forward,
     /// The location field was committed (Enter or the go button) with this
-    /// text, exactly as typed.
+    /// text, exactly as typed; or a breadcrumb level or a suggestion was
+    /// chosen, with its value.
     Commit {
+        text: String,
+    },
+    /// The edited location's text is now this: the app may answer with
+    /// suggestions.
+    Edit {
         text: String,
     },
     /// An action button was pressed.
@@ -142,17 +264,22 @@ impl WindowToolbar {
     /// Whether there is anything to show.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.navigation.is_none() && self.location.is_none() && self.actions.is_empty()
+        self.sidebar.is_none()
+            && self.navigation.is_none()
+            && self.location.is_none()
+            && self.actions.is_empty()
     }
 
-    /// The declaration as the bar takes it: at most [`MAX_ACTIONS`]
-    /// actions, every text at most [`MAX_TEXT_BYTES`], no action with an
-    /// icon the set does not have.
+    /// The declaration as the bar takes it: at most
+    /// [`MAX_DECLARED_ACTIONS`] actions, [`MAX_SEGMENTS`] levels and
+    /// [`MAX_SUGGESTIONS`] suggestions, every text at most
+    /// [`MAX_TEXT_BYTES`], a picture at most [`MAX_IMAGE_BYTES`], no icon
+    /// the set does not have.
     #[must_use]
     pub fn bounded(mut self) -> Self {
         self.actions
             .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
-        self.actions.truncate(MAX_ACTIONS);
+        self.actions.truncate(MAX_DECLARED_ACTIONS);
         for action in &mut self.actions {
             cut(&mut action.id);
             cut(&mut action.name);
@@ -174,6 +301,30 @@ impl WindowToolbar {
             {
                 location.icon = None;
             }
+            location.segments.truncate(MAX_SEGMENTS);
+            for segment in &mut location.segments {
+                cut(&mut segment.label);
+                cut(&mut segment.value);
+            }
+            location.suggestions.truncate(MAX_SUGGESTIONS);
+            for suggestion in &mut location.suggestions {
+                cut(&mut suggestion.label);
+                cut(&mut suggestion.value);
+                if suggestion
+                    .icon
+                    .as_deref()
+                    .is_some_and(|icon| crate::icons::Icon::from_name(icon).is_none())
+                {
+                    suggestion.icon = None;
+                }
+            }
+            if location
+                .image
+                .as_ref()
+                .is_some_and(|image| image.png.is_empty() || image.png.len() > MAX_IMAGE_BYTES)
+            {
+                location.image = None;
+            }
         }
         self
     }
@@ -185,8 +336,8 @@ impl ToolbarEvent {
     #[must_use]
     pub fn bounded(mut self) -> Self {
         match &mut self {
-            Self::Commit { text } | Self::Action { id: text } => cut(text),
-            Self::Back | Self::Forward => {}
+            Self::Commit { text } | Self::Edit { text } | Self::Action { id: text } => cut(text),
+            Self::ToggleSidebar | Self::Back | Self::Forward => {}
         }
         self
     }
@@ -290,6 +441,7 @@ mod tests {
 
     fn browser() -> WindowToolbar {
         WindowToolbar {
+            sidebar: None,
             navigation: Some(ToolbarNavigation {
                 back: true,
                 forward: false,
@@ -329,8 +481,17 @@ mod tests {
             enabled: true,
             on: false,
         });
+        for n in 6..20 {
+            many.actions.push(ToolbarAction {
+                id: format!("a{n}"),
+                icon: "star".into(),
+                name: "Bookmark".into(),
+                enabled: true,
+                on: false,
+            });
+        }
         let bounded = many.clone().bounded();
-        assert_eq!(bounded.actions.len(), MAX_ACTIONS);
+        assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
         assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
 
         let before = revision();

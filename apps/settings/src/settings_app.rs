@@ -103,6 +103,11 @@ pub struct SettingsApp {
     /// persisted across rebuilds so its collapse/overlay state survives a
     /// category switch. Its nav + content are swapped on selection.
     shell: Option<NavShell>,
+    /// The page's header is in the window's bar ([`ui::window_toolbar`]):
+    /// the page is the window's location, and the sidebar toggle the bar's.
+    header_in_bar: bool,
+    /// The page and sidebar state the bar's slots were last declared with.
+    declared_bar: Option<(String, bool)>,
     /// Where the last wallpaper request stands, for the Appearance pane.
     wallpaper_status: ui::LocalState<Option<String>>,
     /// The assistive software this device has installed.
@@ -225,6 +230,8 @@ impl SettingsApp {
             account_root,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
+            header_in_bar: false,
+            declared_bar: None,
             shell_text_scale: 1.0,
             wallpaper_status: ui::LocalState::new(None),
             software,
@@ -798,7 +805,8 @@ impl SettingsApp {
             .sidebar_header("", Vec::new())
             .with_filter(filter)
             .content(self.build_content())
-            .content_header(self.selected.label(), Vec::new());
+            .content_header(self.content_title(), Vec::new());
+        shell.set_sidebar_toggle_in_window_bar(self.header_in_bar);
         shell.show(self.narrow_screen);
         shell
     }
@@ -808,6 +816,7 @@ impl SettingsApp {
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
         let content = self.build_content();
+        let title = self.content_title();
         if let Some(shell) = &mut self.shell {
             // Keep the retained navigation's viewport and focus when only
             // the selected pane changes.
@@ -825,8 +834,67 @@ impl SettingsApp {
                 )));
             }
             shell.set_content(content);
-            shell.set_content_title(self.selected.label());
+            shell.set_content_title(title);
         }
+    }
+
+    /// The content header's title: the page, unless the window's bar names
+    /// it.
+    fn content_title(&self) -> String {
+        if self.header_in_bar {
+            String::new()
+        } else {
+            self.selected.label()
+        }
+    }
+
+    /// Move the page's header into the window's bar while it hosts the
+    /// slots and back when it does not, tell the bar the page and the
+    /// sidebar's state, and run the bar's sidebar toggle. Returns whether
+    /// anything changed.
+    fn sync_window_toolbar(&mut self) -> bool {
+        use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
+        let hosted = ui::window_toolbar::is_hosted();
+        let mut changed = false;
+        if hosted != self.header_in_bar {
+            self.header_in_bar = hosted;
+            let title = self.content_title();
+            if let Some(shell) = self.shell.as_mut() {
+                shell.set_sidebar_toggle_in_window_bar(hosted);
+                shell.set_content_title(title);
+            }
+            if !hosted {
+                ui::window_toolbar::declare(None);
+                self.declared_bar = None;
+            }
+            changed = true;
+        }
+        if !hosted {
+            return changed;
+        }
+        let open = self.shell.as_ref().is_some_and(NavShell::is_sidebar_open);
+        let key = (self.selected.label(), open);
+        if self.declared_bar.as_ref() != Some(&key) {
+            ui::window_toolbar::declare(Some(WindowToolbar {
+                sidebar: Some(open),
+                navigation: None,
+                location: Some(ToolbarLocation {
+                    label: key.0.clone(),
+                    ..ToolbarLocation::default()
+                }),
+                actions: Vec::new(),
+            }));
+            self.declared_bar = Some(key);
+        }
+        for event in ui::window_toolbar::take_events() {
+            if event == ToolbarEvent::ToggleSidebar
+                && let Some(shell) = self.shell.as_mut()
+            {
+                shell.toggle_sidebar();
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
@@ -970,6 +1038,10 @@ impl Widget for SettingsApp {
         }))
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // The window's bar names the page and holds the sidebar toggle.
+        if self.sync_window_toolbar() {
+            self.structure_dirty = true;
+        }
         // Background work an effect started finishes whether or not its pane
         // is open.
         self.agent_models.poll_admin();

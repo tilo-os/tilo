@@ -468,6 +468,13 @@ pub struct BrowserWidget {
     reader_request: Option<bool>,
     title: String,
     favicon: Option<vello::peniko::ImageData>,
+    /// The favicon as the engine sent it, for the window's bar
+    /// (`ui::window_toolbar::ToolbarImage`).
+    favicon_png: Option<Vec<u8>>,
+    /// What the person is typing into the address in the window's bar, as
+    /// the bar last said (`ToolbarEvent::Edit`); `None` while it is not
+    /// being edited there.
+    bar_query: Option<String>,
     audio_muted: bool,
     media_playing: bool,
     media_document_generation: Option<u64>,
@@ -1295,6 +1302,8 @@ impl BrowserWidget {
             reader_request: None,
             title: String::new(),
             favicon: None,
+            favicon_png: None,
+            bar_query: None,
             audio_muted: false,
             media_playing: false,
             media_document_generation: None,
@@ -3132,6 +3141,7 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                     self.document_revision = self.document_revision.wrapping_add(1);
                     self.favicon = None;
+                    self.favicon_png = None;
                     self.media_playing = false;
                     self.media_document_generation = None;
                     if uri != self.current_uri {
@@ -3185,6 +3195,7 @@ impl BrowserWidget {
                 {
                     if let Some(image) = decode_favicon_png(&png, width, height) {
                         self.favicon = Some(image);
+                        self.favicon_png = Some(png.to_vec());
                         self.structure_dirty = true;
                     }
                 }
@@ -3269,6 +3280,7 @@ impl BrowserWidget {
                 WebViewEvent::LoadFailed { uri, error } => {
                     self.site.navigation(&uri);
                     self.favicon = None;
+                    self.favicon_png = None;
                     self.media_playing = false;
                     self.media_document_generation = None;
                     let follows_navigation = self.address.with(|value| {
@@ -3524,7 +3536,11 @@ impl BrowserWidget {
         if self.force_suggestions {
             return; // headless overlay render — keep the pinned list
         }
-        let text = if self.show_settings || !self.url_input_focused() {
+        let text = if ui::window_toolbar::is_hosted() {
+            // The address is edited in the window's bar: what the bar said
+            // is being typed there.
+            self.bar_query.clone().unwrap_or_default()
+        } else if self.show_settings || !self.url_input_focused() {
             String::new()
         } else {
             self.address.with(Clone::clone)
@@ -5735,6 +5751,8 @@ impl BrowserWidget {
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.sync_search_and_suggestions();
+        // Suggestions for what was just typed in the bar go out this frame.
+        self.declare_window_toolbar();
 
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);

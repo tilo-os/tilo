@@ -44,6 +44,7 @@ use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
 
 mod effects;
+mod window_bar;
 
 thread_local! {
     /// Whether the notebook's shell presents the window's History control.
@@ -355,6 +356,11 @@ pub struct NotesApp {
     columns: Columns,
     /// What the shell's header buttons asked for.
     header: Rc<HeaderRequests>,
+    /// The content header is in the window's bar ([`ui::window_toolbar`]).
+    header_in_bar: bool,
+    /// The note title and sidebar state the bar's slots were last declared
+    /// with.
+    declared_bar: Option<(Option<String>, bool)>,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).
@@ -658,6 +664,25 @@ impl NotesApp {
         workspace
     }
 
+    /// The content header's actions: the note's actions and search.
+    fn content_header_actions(header: &Rc<HeaderRequests>) -> Vec<ui::widget::Element> {
+        let note_menu = {
+            let header = Rc::clone(header);
+            Button::icon_only(
+                NOTE_MENU_BUTTON_ID,
+                ui::icons::Icon::MoreHorizontal,
+                &ui::i18n!("notes-affordance-note-actions"),
+            )
+            .on_view(move || header.note_menu.set(true))
+        };
+        vec![
+            Box::new(note_menu),
+            Box::new(ui::search::search_button(
+                ui::search::SearchRequest::this_app(),
+            )),
+        ]
+    }
+
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
         let new_note = {
             let header = Rc::clone(header);
@@ -668,21 +693,7 @@ impl NotesApp {
             )
             .on_view(move || header.new_note.set(true))
         };
-        let note_menu = {
-            let header = Rc::clone(header);
-            Button::icon_only(
-                NOTE_MENU_BUTTON_ID,
-                ui::icons::Icon::MoreHorizontal,
-                &ui::i18n!("notes-affordance-note-actions"),
-            )
-            .on_view(move || header.note_menu.set(true))
-        };
-        let actions: Vec<ui::widget::Element> = vec![
-            Box::new(note_menu),
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
-        ];
+        let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
         NavShell::new()
@@ -724,6 +735,8 @@ impl NotesApp {
             shell,
             columns,
             header,
+            header_in_bar: false,
+            declared_bar: None,
             shell_node: None,
             sidebar_node: None,
             shortcuts_return_to_tree: false,
@@ -2704,6 +2717,11 @@ impl Widget for NotesApp {
         }
         let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
+        // The window's bar shows the note's slots and runs what the person
+        // did with them through the same header requests.
+        if self.sync_window_toolbar() {
+            self.self_dirty = true;
+        }
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
@@ -3766,9 +3784,19 @@ impl NotesApp {
         let Some(page) = self.workspace.selected() else {
             return;
         };
-        let Some(anchor) = self.header_button_rect(NOTE_MENU_BUTTON_ID) else {
-            return;
-        };
+        // From the header's button; from the window's bar (which has no
+        // rect here) the menu hangs from the content's top trailing corner.
+        let anchor = self
+            .header_button_rect(NOTE_MENU_BUTTON_ID)
+            .unwrap_or_else(|| {
+                let r = self.rect;
+                Rect::new(
+                    (r.x1 - 8.0).max(r.x0),
+                    r.y0,
+                    (r.x1 - 8.0).max(r.x0),
+                    r.y0 + 4.0,
+                )
+            });
         self.note_menu_editor = false;
         self.note_menu_table = None;
         self.note_menu_table_source = None;

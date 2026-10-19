@@ -139,6 +139,10 @@ pub enum AppKind {
     Editor,
     Browser,
     Settings,
+    /// Any other app, by its own glyph from the icon set
+    /// ([`crate::icons::app_glyph`]): a window wears its own app's mark,
+    /// never another app's.
+    App(crate::icons::Icon),
 }
 
 impl AppKind {
@@ -149,6 +153,7 @@ impl AppKind {
             AppKind::Editor => "Editor",
             AppKind::Browser => "Browser",
             AppKind::Settings => "Settings",
+            AppKind::App(_) => "App",
         }
     }
 }

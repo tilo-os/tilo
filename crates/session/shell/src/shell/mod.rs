@@ -432,16 +432,16 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
 pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     match t {
         ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
-        // No `AppKind` describes "arbitrary external client", so both a
-        // foreign surface and a peer window wear the catch-all `Settings`
-        // glyph — and keep wearing it when a `PeerWindow` binds in and
-        // becomes `Foreign`, so the pill doesn't change under the user.
-        // The device-local activity tile has no app of its own either.
-        ShellTile::WorkspaceActivity
-        | ShellTile::Foreign { .. }
-        | ShellTile::PeerWindow { .. }
-        | ShellTile::HostedWindow { .. }
-        | ShellTile::LocalApp { .. } => UiKind::Settings,
+        // A window wears its own app's glyph (a generic window for an app
+        // the icon set has none for), the same before and after a
+        // `PeerWindow` binds in and becomes `Foreign`, since both name the
+        // app by its id.
+        ShellTile::Foreign { app_id, .. }
+        | ShellTile::PeerWindow { app_id, .. }
+        | ShellTile::HostedWindow { app_id, .. }
+        | ShellTile::LocalApp { app_id, .. } => UiKind::App(ui::icons::app_glyph(app_id, None)),
+        // The device-local activity tile has no app of its own.
+        ShellTile::WorkspaceActivity => UiKind::Settings,
     }
 }
 
@@ -1463,6 +1463,37 @@ mod hosted_app_tests {
 
         every_hosted_app_round_trips_from_its_tab_title_into_a_live_app();
         an_unhosted_title_is_carried_through_unchanged();
+    }
+
+    /// Each tab wears its own app's mark: Files' tab a folder, the browser's
+    /// a globe, an app the icon set has no glyph for a generic window, and
+    /// never one app's mark on another app's tab.
+    #[test]
+    fn each_tab_wears_its_own_apps_glyph() {
+        let foreign = |app_id: &str| ShellTile::Foreign {
+            app_id: app_id.into(),
+            surface_id: 7,
+        };
+        assert_eq!(
+            tile_app_kind(&foreign("so.tilo.file-explorer")),
+            UiKind::App(ui::icons::Icon::Folder)
+        );
+        assert_eq!(
+            tile_app_kind(&foreign("so.tilo.browser")),
+            UiKind::App(ui::icons::Icon::Globe)
+        );
+        assert_eq!(
+            tile_app_kind(&foreign("libreoffice-writer")),
+            UiKind::App(ui::icons::Icon::AppWindow)
+        );
+        assert_eq!(
+            tile_app_kind(&ShellTile::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            }),
+            UiKind::App(ui::icons::Icon::FileText)
+        );
     }
 }
 

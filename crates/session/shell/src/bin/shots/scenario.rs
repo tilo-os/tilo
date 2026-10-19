@@ -416,6 +416,12 @@ pub enum Action {
         active: usize,
         width: u32,
     },
+    /// The app of the seeded window `surface_id` declares these slots now,
+    /// as an app answers what the bar told it (suggestions for typed text).
+    DeclareBarSlots {
+        surface_id: u64,
+        slots: fn() -> ui::window_toolbar::WindowToolbar,
+    },
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -1076,6 +1082,29 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
 /// their bars together would, and stood in for with a plain frame.
 fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     use shell::shell::state::TileContent;
+    if let Action::DeclareBarSlots { surface_id, slots } = action {
+        let tab = {
+            let chrome = driver.chrome();
+            let tree = chrome.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| {
+                    matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if id == surface_id)
+                })
+                .map(|tab| tab.id)
+        };
+        if let Some(tab) = tab {
+            driver
+                .host_mut()
+                .declare_tab_toolbar_for_tests(tab, Some(slots()));
+            driver.relayout();
+        }
+        return;
+    }
     let Action::SeedWindowBar {
         tabs,
         active,
@@ -2259,6 +2288,8 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_tabbed_scenario(),
         window_bar_files_scenario(),
         window_bar_writer_scenario(),
+        window_bar_overflow_scenario(),
+        window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
         motion_sidebar_scenario(),
@@ -4863,10 +4894,34 @@ fn build_scenarios() -> Vec<Scenario> {
     ]
 }
 
+/// A stand-in favicon: a 16 px orange disc with a white centre, as PNG
+/// bytes, the way the engine hands a page's icon over.
+fn favicon_png() -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(16 * 16 * 4);
+    for y in 0..16_i32 {
+        for x in 0..16_i32 {
+            let (dx, dy) = (x * 2 - 15, y * 2 - 15);
+            let d = dx * dx + dy * dy;
+            let pixel = if d <= 49 {
+                [255, 255, 255, 255]
+            } else if d <= 225 {
+                [222, 88, 51, 255]
+            } else {
+                [0, 0, 0, 0]
+            };
+            rgba.extend_from_slice(&pixel);
+        }
+    }
+    ui::png::encode_rgba8(16, 16, &rgba).unwrap_or_default()
+}
+
 /// The browser's slots, on duckduckgo.com: back (it came from a search),
-/// the site as its editable location, reload, bookmark and the library.
+/// the site as its editable location with its favicon, reload, bookmark
+/// and the library.
 fn browser_slots() -> ui::window_toolbar::WindowToolbar {
-    use ui::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar};
+    use ui::window_toolbar::{
+        ToolbarAction, ToolbarImage, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+    };
     let action = |id: &str, icon: &str, name: &str| ToolbarAction {
         id: id.into(),
         icon: icon.into(),
@@ -4875,6 +4930,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         on: false,
     };
     WindowToolbar {
+        sidebar: None,
         navigation: Some(ToolbarNavigation {
             back: true,
             forward: false,
@@ -4887,6 +4943,8 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
             editable: true,
             name: "Address and search".into(),
             go_name: "Go".into(),
+            image: Some(ToolbarImage { png: favicon_png() }),
+            ..ToolbarLocation::default()
         }),
         actions: vec![
             action("reload", "refresh", "Reload"),
@@ -4896,23 +4954,79 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
     }
 }
 
-/// Files in ~/Downloads: back and forward, the folder as its location.
+/// Files in ~/Downloads, as Files declares it: the places list's toggle,
+/// back and forward, the folder's path as a breadcrumb that edits as a path,
+/// Up, the view and New folder in the row and the rest of the View options
+/// in the overflow menu.
 fn files_slots() -> ui::window_toolbar::WindowToolbar {
-    use ui::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
+    use ui::window_toolbar::{
+        LocationSegment, ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+    };
+    let action = |id: &str, icon: &str, name: &str| ToolbarAction {
+        id: id.into(),
+        icon: icon.into(),
+        name: name.into(),
+        enabled: true,
+        on: false,
+    };
+    let segment = |label: &str, value: &str| LocationSegment {
+        label: label.into(),
+        value: value.into(),
+    };
     WindowToolbar {
+        sidebar: Some(true),
         navigation: Some(ToolbarNavigation {
             back: true,
-            forward: true,
+            forward: false,
         }),
         location: Some(ToolbarLocation {
             label: "Downloads".into(),
             value: "~/Downloads".into(),
-            icon: Some("folder".into()),
-            name: "Folder".into(),
+            placeholder: "Type a path, e.g. ~/Documents".into(),
+            editable: true,
+            name: "Location".into(),
+            segments: vec![segment("Home", "~"), segment("Downloads", "~/Downloads")],
             ..ToolbarLocation::default()
         }),
-        actions: Vec::new(),
+        actions: vec![
+            action("up", "arrow-up", "Up one folder"),
+            action("view", "layout-grid", "Show as grid"),
+            action("new-folder", "folder-plus", "New folder"),
+            action("new-file", "file-plus", "New file…"),
+            action("terminal", "square-terminal", "Open terminal here"),
+            action("hidden", "eye", "Show hidden files"),
+        ],
     }
+}
+
+/// The browser's slots while "rust" is typed into its address: the
+/// omnibox's rows under the field.
+fn browser_suggesting_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::LocationSuggestion;
+    let row = |label: &str, value: &str, icon: &str| LocationSuggestion {
+        label: label.into(),
+        value: value.into(),
+        icon: Some(icon.into()),
+    };
+    let mut slots = browser_slots();
+    if let Some(location) = slots.location.as_mut() {
+        location.suggestions = vec![
+            row("rust", "rust", "search"),
+            row(
+                "Rust Programming Language",
+                "https://www.rust-lang.org/",
+                "history",
+            ),
+            row(
+                "The Rust Book",
+                "https://doc.rust-lang.org/book/",
+                "history",
+            ),
+            row("rust analyzer", "rust analyzer", "search"),
+            row("rust tutorial", "rust tutorial", "search"),
+        ];
+    }
+    slots
 }
 
 const BAR_BROWSER: BarTab = BarTab {
@@ -5017,6 +5131,64 @@ fn window_bar_files_scenario() -> Scenario {
             Action::Wait(30),
             Action::Relayout,
             Action::Snapshot("01-untabbed"),
+        ],
+    }
+}
+
+fn window_bar_overflow_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-overflow",
+        description: "Files in a narrow window: the actions that have no room \
+             move into the bar's overflow button, whose menu lists them by \
+             name; the buttons' tooltips name them too.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_FILES],
+                active: 0,
+                width: 380,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-narrow"),
+            Action::ClickNamed("window_more"),
+            Action::Wait(20),
+            Action::Snapshot("02-overflow-menu"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(10),
+            Action::MoveCursorNamed("window_action:0"),
+            Action::Wait(60),
+            Action::Snapshot("03-tooltip"),
+        ],
+    }
+}
+
+fn window_bar_suggestions_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-suggestions",
+        description: "The browser's address edited in the window's bar: what is \
+             typed goes to the browser, whose suggestions the bar lists under \
+             the field.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_BROWSER],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::ClickNamed("window_location"),
+            Action::Wait(4),
+            Action::Type("rust"),
+            Action::DeclareBarSlots {
+                surface_id: 9101,
+                slots: browser_suggesting_slots,
+            },
+            Action::Wait(20),
+            Action::Snapshot("01-suggestions"),
+            Action::Key(Key::Named(NamedKey::ArrowDown)),
+            Action::Key(Key::Named(NamedKey::ArrowDown)),
+            Action::Wait(10),
+            Action::Snapshot("02-second-chosen"),
         ],
     }
 }

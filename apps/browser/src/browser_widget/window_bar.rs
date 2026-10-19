@@ -2,13 +2,19 @@
 //! ([`ui::window_toolbar`]): back and forward, the address as the window's
 //! editable location (the site's domain at rest, the whole address while
 //! edited, Enter or the go button navigating), and reload, bookmark and the
-//! library. While the desktop's bar shows them the window draws no toolbar
-//! row of its own (`build_composition`); outside a Tilo session it keeps
-//! its row.
+//! library. The page's favicon is the location's picture, standing where
+//! the app's icon would. While the address is edited in the bar the browser
+//! hears what is typed and answers with the omnibox's rows (pages visited
+//! before, the engine's searches), which the bar lists under the field.
+//! While the desktop's bar shows them the window draws no toolbar row of
+//! its own (`build_composition`); outside a Tilo session it keeps its row.
 
 use ui::window_toolbar::{
-    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+    LocationSuggestion, ToolbarAction, ToolbarEvent, ToolbarImage, ToolbarLocation,
+    ToolbarNavigation, WindowToolbar,
 };
+
+use crate::omnibox::{Row, RowKind};
 
 use super::BrowserWidget;
 
@@ -48,6 +54,25 @@ pub(super) struct BarInputs {
     loading: bool,
     bookmarked: bool,
     library: bool,
+    favicon: Option<Vec<u8>>,
+    suggestions: Vec<LocationSuggestion>,
+}
+
+/// One omnibox row as the bar lists it: what it says, what choosing it
+/// commits (an address, or the words to search for), and its kind's icon.
+fn suggestion(row: &Row) -> LocationSuggestion {
+    let icon = match row.kind {
+        RowKind::Go => "globe",
+        RowKind::History => "history",
+        RowKind::Search | RowKind::Suggestion => "search",
+    };
+    LocationSuggestion {
+        // A visited page by its title (its address when it has none), a
+        // search by its words, an address as typed.
+        label: row.title.clone(),
+        value: row.url.clone(),
+        icon: Some(icon.to_owned()),
+    }
 }
 
 impl BrowserWidget {
@@ -59,7 +84,23 @@ impl BrowserWidget {
             loading: self.progress < 1.0,
             bookmarked: self.page_bookmarked(),
             library: self.show_library,
+            favicon: self.favicon_png.clone(),
+            suggestions: self.bar_suggestions(),
         }
+    }
+
+    /// What the bar lists under its edited address: the omnibox's rows for
+    /// what the bar said is typed there, nothing while it is not edited.
+    fn bar_suggestions(&self) -> Vec<LocationSuggestion> {
+        if self.bar_query.is_none() {
+            return Vec::new();
+        }
+        self.suggestions
+            .items()
+            .iter()
+            .take(ui::window_toolbar::MAX_SUGGESTIONS)
+            .map(suggestion)
+            .collect()
     }
 
     /// Whether the page shown is bookmarked, in whichever bookmarks this
@@ -89,6 +130,7 @@ impl BrowserWidget {
         };
         let bookmarked = self.page_bookmarked();
         WindowToolbar {
+            sidebar: None,
             navigation: Some(ToolbarNavigation {
                 back: self.can_go_back,
                 forward: self.can_go_forward,
@@ -101,6 +143,9 @@ impl BrowserWidget {
                 editable: true,
                 name: t("browser-address"),
                 go_name: t("browser-go"),
+                segments: Vec::new(),
+                image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
+                suggestions: self.bar_suggestions(),
             }),
             actions: vec![
                 ToolbarAction {
@@ -144,11 +189,7 @@ impl BrowserWidget {
     /// person did with them: the same canonical actions the browser's own
     /// toolbar runs. Returns whether anything ran.
     pub(super) fn sync_window_toolbar(&mut self) -> bool {
-        let inputs = self.bar_inputs();
-        if self.declared_bar.as_ref() != Some(&inputs) {
-            ui::window_toolbar::declare(Some(self.window_toolbar()));
-            self.declared_bar = Some(inputs);
-        }
+        self.declare_window_toolbar();
         let events = ui::window_toolbar::take_events();
         let ran = !events.is_empty();
         for event in events {
@@ -157,16 +198,34 @@ impl BrowserWidget {
         ran
     }
 
+    /// Tell the window's bar the slots, when what they are made from
+    /// changed.
+    pub(super) fn declare_window_toolbar(&mut self) {
+        let inputs = self.bar_inputs();
+        if self.declared_bar.as_ref() != Some(&inputs) {
+            ui::window_toolbar::declare(Some(self.window_toolbar()));
+            self.declared_bar = Some(inputs);
+        }
+    }
+
     /// Run one thing the person did in the bar.
     pub(super) fn run_window_toolbar_event(&mut self, event: ToolbarEvent) {
         match event {
+            // The browser declares no sidebar toggle.
+            ToolbarEvent::ToggleSidebar => {}
             ToolbarEvent::Back => self.queue_unit_operation("browser.page", "back"),
             ToolbarEvent::Forward => self.queue_unit_operation("browser.page", "forward"),
             ToolbarEvent::Commit { text } => {
-                // Exactly what Enter in the window's own address field does.
+                // Exactly what Enter in the window's own address field does;
+                // a chosen suggestion commits its address or its search.
+                self.bar_query = None;
                 self.address.set(text);
                 self.navigate_to_input();
                 self.reset_omnibox();
+            }
+            ToolbarEvent::Edit { text } => {
+                // The omnibox answers on this frame's suggestion pass.
+                self.bar_query = Some(text);
             }
             ToolbarEvent::Action { id } => match id.as_str() {
                 RELOAD => self.queue_unit_operation("browser.page", "reload"),

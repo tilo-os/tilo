@@ -1839,7 +1839,7 @@ impl WindowGroup {
             return false;
         }
         let plus = self.bar.new_tab_rect();
-        !(plus.area() > 0.0 && plus.contains(p)) && !self.bar.toolbar_hit(p)
+        (plus.area() <= 0.0 || !plus.contains(p)) && !self.bar.toolbar_hit(p)
     }
 
     /// True when `p` is in the group's trailing-edge resize target.
@@ -1948,6 +1948,12 @@ impl WindowGroup {
         self.bar.take_toolbar_events()
     }
 
+    /// What the edited location held since the last call, by tab, for the
+    /// app's suggestions.
+    pub fn take_location_drafts(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
+        self.bar.take_location_drafts()
+    }
+
     /// Whether the active tab's location is being edited in the bar.
     #[must_use]
     pub fn editing_location(&self) -> bool {
@@ -1967,6 +1973,38 @@ impl WindowGroup {
             self.grip_dirty = true;
         }
         took
+    }
+
+    /// What the button of the window's bar at `p` does, for its tooltip.
+    #[must_use]
+    pub fn bar_tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
+        if !self.navigation_bar_visible() {
+            return None;
+        }
+        self.bar.tooltip_target_at(p)
+    }
+
+    /// Paint the menus of the bar's slots (the overflow's, the
+    /// suggestions), for a host that draws the windows' top layer itself.
+    pub fn draw_bar_popups(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.navigation_bar_visible() {
+            self.bar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    /// Whether `p` is on the edited location or the suggestions under it:
+    /// a press there keeps the edit.
+    #[must_use]
+    pub fn location_hit(&self, p: Point) -> bool {
+        self.navigation_bar_visible() && self.bar.location_hit(p)
     }
 
     /// End the location's edit, putting it back. Returns whether it was
@@ -3058,6 +3096,26 @@ impl Widget for WindowGroup {
         }
         children
     }
+    /// The window's top layer: its app's, then its bar's menus over it,
+    /// maximized or not.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        // Maximized, the bar is not among the children, yet it still shows.
+        if self.maximized && self.navigation_bar_visible() {
+            self.bar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active = self.bar.active_id();
         let mut children: Vec<&mut dyn Widget> = Vec::new();
@@ -3267,6 +3325,8 @@ impl Widget for WindowGroup {
             self.bar.set_maximized(self.maximized);
             self.bar
                 .set_group_focused(self.focused || self.search_active);
+            // The bar's menus stay inside the window.
+            self.bar.set_popup_area(self.rect);
             self.bar.draw(scene, transform, tr, theme, presence);
             self.search.set_ground(self.bar.ground_color(theme));
             self.search.draw(scene, transform, tr, theme, presence);
@@ -6391,6 +6451,7 @@ mod window_bar_tests {
     fn slots() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
         WindowToolbar {
+            sidebar: None,
             navigation: Some(ToolbarNavigation {
                 back: true,
                 forward: true,
