@@ -352,24 +352,28 @@ impl ChatApp {
             }
             ChatEffect::CallStatus { channel } => return self.native_call_status(&channel),
             ChatEffect::StartCall => self.start_call(None)?,
-            ChatEffect::StartVideoCall => {
-                self.start_call(None)?;
-                if self.native_voice.snapshot.state == ui::native_media::State::Live
-                    && let Some(channel) = self.native_voice.channel.clone()
-                {
-                    if !self.call.audio_only {
-                        return Ok(Effected::done());
-                    }
-                    self.native_voice_command(&channel, Command::SetCamera { on: true })?;
-                } else {
-                    self.camera_on_live = true;
-                }
-            }
+            ChatEffect::StartVideoCall => self.start_video_call()?,
             ChatEffect::SelectInput { channel, input } => {
                 self.select_voice_input(&channel, &input)?;
             }
         }
         Ok(Effected::done())
+    }
+
+    /// Start a call with the camera on: at once when the call is already
+    /// live and audio only, or as soon as it goes live.
+    fn start_video_call(&mut self) -> Result<(), String> {
+        self.start_call(None)?;
+        if self.native_voice.snapshot.state == ui::native_media::State::Live
+            && let Some(channel) = self.native_voice.channel.clone()
+        {
+            if self.call.audio_only {
+                self.native_voice_command(&channel, Command::SetCamera { on: true })?;
+            }
+        } else {
+            self.camera_on_live = true;
+        }
+        Ok(())
     }
 
     fn set_live_context_sharing(&mut self, sharing: bool) -> Result<(), String> {
