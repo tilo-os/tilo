@@ -411,7 +411,7 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
         if hour < 8 {
             capacity = (capacity - 0.06).max(3.0);
         } else {
-            let on_ac = (18..20).contains(&hour) || (day % 2 == 0 && hour == 12);
+            let on_ac = (18..20).contains(&hour) || (day.is_multiple_of(2) && hour == 12);
             capacity = if on_ac {
                 (capacity + 9.0).min(f64::from(LIMIT_PERCENT))
             } else {
@@ -1114,7 +1114,7 @@ impl Widget for PowerPane {
             || self
                 .composed
                 .element()
-                .is_some_and(|element| element.has_pending_visual_work())
+                .is_some_and(Widget::has_pending_visual_work)
     }
 
     fn name(&self) -> &'static str {

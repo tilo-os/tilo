@@ -751,10 +751,6 @@ fn stream_live_row(stream: &AudioStream) -> LiveRow {
         }))
 }
 
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts: what the pane shows, what the device reports, whether it changed"
-)]
 pub struct AudioModel {
     cx: PaneCx,
     output: Arc<dyn OutputControl>,
@@ -2219,7 +2215,7 @@ impl AudioModel {
     /// Keep the output meter on the output in use while a pane shows it:
     /// start its capture, move it when the default output changes, and let
     /// it go when it ends. Without a pane nothing is captured.
-    fn follow_output_meter(&mut self) {
+    fn follow_output_meter(&self) {
         if !self.cx.reaches_devices() {
             // A capture or a test shows the level it was given.
             return;

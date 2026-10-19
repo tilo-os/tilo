@@ -939,6 +939,41 @@ impl SpeakersModel {
     }
 
     /// One saved set: its members, readiness, playback and actions.
+    /// The controls of a set led here: calibrate it from its row; deleting
+    /// it is in its menu.
+    fn led_set_controls(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Box<dyn Widget> {
+        Box::new(
+            ui::widget::Row::new()
+                .no_wrap()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(Box::new(
+                    self.cx.bind_invocation(
+                        Button::new(
+                            &format!("speakers.group.{}.calibrate", group.id),
+                            &t("speakers-calibrate-button"),
+                        )
+                        .control_size(ui::widget::ControlSize::Small),
+                        SpeakerFlow::OpenCalibration {
+                            group: group.id.clone(),
+                        },
+                    ),
+                ))
+                .push(Box::new(
+                    ui::widget::RowMenu::new(
+                        format!("speakers.group.{}.more", group.id),
+                        &t_args("settings-row-more", &[("name", group.name.clone().into())]),
+                    )
+                    .destructive(
+                        t("speakers-delete"),
+                        self.cx.invocation_binding(SpeakerEffect::DeleteSpeakerSet {
+                            group: group.id.clone(),
+                        }),
+                    ),
+                )),
+        )
+    }
+
     fn group_row(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Item {
         let ready = group
             .members
@@ -986,40 +1021,7 @@ impl SpeakersModel {
                 },
             ));
         }
-        // A set led here is calibrated from its row; deleting it is in its
-        // menu.
-        let trailing: Option<Box<dyn Widget>> = group.led_here.then(|| {
-            Box::new(
-                ui::widget::Row::new()
-                    .no_wrap()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .with_align_items(ui::taffy::AlignItems::Center)
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new(
-                                &format!("speakers.group.{}.calibrate", group.id),
-                                &t("speakers-calibrate-button"),
-                            )
-                            .control_size(ui::widget::ControlSize::Small),
-                            SpeakerFlow::OpenCalibration {
-                                group: group.id.clone(),
-                            },
-                        ),
-                    ))
-                    .push(Box::new(
-                        ui::widget::RowMenu::new(
-                            format!("speakers.group.{}.more", group.id),
-                            &t_args("settings-row-more", &[("name", group.name.clone().into())]),
-                        )
-                        .destructive(
-                            t("speakers-delete"),
-                            self.cx.invocation_binding(SpeakerEffect::DeleteSpeakerSet {
-                                group: group.id.clone(),
-                            }),
-                        ),
-                    )),
-            ) as Box<dyn Widget>
-        });
+        let trailing = group.led_here.then(|| self.led_set_controls(group));
         let mut description = if group.led_here {
             summary
         } else {

@@ -395,6 +395,18 @@ pub(crate) fn mute_seconds(label: &str) -> Option<i64> {
 }
 
 /// The English name of a mute duration shown in either language.
+/// What an app's notifications do, under its name: shown in full, shown
+/// without their content, or kept in the history only.
+fn app_caption(banners: bool, previews: bool) -> String {
+    if banners && previews {
+        t("notif-app-allowed")
+    } else if banners {
+        t("notif-app-hidden")
+    } else {
+        t("notif-app-history")
+    }
+}
+
 fn mute_english(shown: &str) -> String {
     english(MUTE_OPTIONS)
         .find(|english| *english == shown || mute_shown(english) == shown)
@@ -769,6 +781,104 @@ impl NotificationsPane {
         content
     }
 
+    /// One app's row: what it may show as its caption, opening in place on
+    /// its rules (banners, previews, sounds, badges, priority, priority
+    /// contacts) and how long it is muted.
+    fn app_card(
+        &self,
+        app: &InstalledNotificationApp,
+        shown: &AppShown,
+        prefs: &NotificationPrefs,
+    ) -> Item {
+        let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
+        let banners = rule.banners.unwrap_or(prefs.show_banners);
+        let previews = rule.previews.unwrap_or(prefs.show_previews);
+        let app_caption = app_caption(banners, previews);
+        let id = app.id.clone();
+        let mute = self
+            .cx
+            .row(t("notif-app-mute"))
+            .id(format!("notifications.app.{}.mute", app.id))
+            .choice_verb(
+                mute_options(),
+                &shown.mute,
+                NotificationPrefs::MUTE_APP
+                    .map(move |shown: String| (id.clone(), mute_english(&shown))),
+            );
+        let toggle = |field: &str, description: &str, label: &str, state, choice: AppChoice| {
+            let app = app.id.clone();
+            self.cx
+                .row(t(label))
+                .described(t(description))
+                .id(format!("notifications.app.{app}.{field}"))
+                .toggle_edit(state, NotificationPrefs::paths().per_app, move |on| {
+                    choice.edit(&app, on)
+                })
+        };
+        let rules = crate::widgets::page(vec![crate::widgets::untitled(rows(vec![
+            toggle(
+                "banners",
+                "notif-app-banners-desc",
+                "notif-app-banners",
+                &shown.banners,
+                AppChoice::Banners,
+            ),
+            toggle(
+                "previews",
+                "notif-app-previews-desc",
+                "notif-app-previews",
+                &shown.previews,
+                AppChoice::Previews,
+            ),
+            toggle(
+                "sounds",
+                "notif-app-sounds-desc",
+                "notif-app-sounds",
+                &shown.sounds,
+                AppChoice::Sounds,
+            ),
+            toggle(
+                "badges",
+                "notif-app-badges-desc",
+                "notif-app-badges",
+                &shown.badges,
+                AppChoice::Badges,
+            ),
+            toggle(
+                "priority",
+                "notif-app-priority-desc",
+                "notif-app-priority",
+                &shown.priority,
+                AppChoice::Priority,
+            ),
+            toggle(
+                "priority_contacts",
+                "notif-app-contacts-desc",
+                "notif-app-contacts",
+                &shown.priority_contacts,
+                AppChoice::PriorityContacts,
+            ),
+            mute,
+            value_row(&t("notif-app-verified"), &app.id),
+        ]))]);
+        row(Box::new(
+            ui::widget::DisclosureRow::keyed(
+                app.name.clone(),
+                Box::new(
+                    ui::widget::Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+                        .push(rules),
+                ),
+                &self.app_rules,
+                &app.id,
+            )
+            .icon(ui::icons::Icon::AppWindow)
+            .secondary(app_caption),
+        ))
+    }
+
     /// One row per app that opens its own rules in place, under one
     /// heading: what it may show, and for how long it is muted.
     fn build_app_cards(&self) -> Vec<SettingsSection> {
@@ -778,99 +888,7 @@ impl NotificationsPane {
             let Some(shown) = self.shown.apps.get(&app.id) else {
                 continue;
             };
-            let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
-            let banners = rule.banners.unwrap_or(prefs.show_banners);
-            let previews = rule.previews.unwrap_or(prefs.show_previews);
-            let app_caption = if banners && previews {
-                t("notif-app-allowed")
-            } else if banners {
-                t("notif-app-hidden")
-            } else {
-                t("notif-app-history")
-            };
-            let id = app.id.clone();
-            let mute = self
-                .cx
-                .row(t("notif-app-mute"))
-                .id(format!("notifications.app.{}.mute", app.id))
-                .choice_verb(
-                    mute_options(),
-                    &shown.mute,
-                    NotificationPrefs::MUTE_APP
-                        .map(move |shown: String| (id.clone(), mute_english(&shown))),
-                );
-            let toggle = |field: &str, description: &str, label: &str, state, choice: AppChoice| {
-                let app = app.id.clone();
-                self.cx
-                    .row(t(label))
-                    .described(t(description))
-                    .id(format!("notifications.app.{app}.{field}"))
-                    .toggle_edit(state, NotificationPrefs::paths().per_app, move |on| {
-                        choice.edit(&app, on)
-                    })
-            };
-            let rules = crate::widgets::page(vec![crate::widgets::untitled(rows(vec![
-                toggle(
-                    "banners",
-                    "notif-app-banners-desc",
-                    "notif-app-banners",
-                    &shown.banners,
-                    AppChoice::Banners,
-                ),
-                toggle(
-                    "previews",
-                    "notif-app-previews-desc",
-                    "notif-app-previews",
-                    &shown.previews,
-                    AppChoice::Previews,
-                ),
-                toggle(
-                    "sounds",
-                    "notif-app-sounds-desc",
-                    "notif-app-sounds",
-                    &shown.sounds,
-                    AppChoice::Sounds,
-                ),
-                toggle(
-                    "badges",
-                    "notif-app-badges-desc",
-                    "notif-app-badges",
-                    &shown.badges,
-                    AppChoice::Badges,
-                ),
-                toggle(
-                    "priority",
-                    "notif-app-priority-desc",
-                    "notif-app-priority",
-                    &shown.priority,
-                    AppChoice::Priority,
-                ),
-                toggle(
-                    "priority_contacts",
-                    "notif-app-contacts-desc",
-                    "notif-app-contacts",
-                    &shown.priority_contacts,
-                    AppChoice::PriorityContacts,
-                ),
-                mute,
-                value_row(&t("notif-app-verified"), &app.id),
-            ]))]);
-            app_rows.push(row(Box::new(
-                ui::widget::DisclosureRow::keyed(
-                    app.name.clone(),
-                    Box::new(
-                        ui::widget::Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
-                            .push(rules),
-                    ),
-                    &self.app_rules,
-                    &app.id,
-                )
-                .icon(ui::icons::Icon::AppWindow)
-                .secondary(app_caption),
-            )));
+            app_rows.push(self.app_card(app, shown, prefs));
         }
         if app_rows.is_empty() {
             return Vec::new();

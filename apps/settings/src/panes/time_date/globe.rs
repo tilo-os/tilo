@@ -551,7 +551,10 @@ impl TimeZoneGlobe {
     }
 
     fn view(&self) -> View {
-        self.state.borrow().view.unwrap_or(View::facing(10.0, 30.0))
+        self.state
+            .borrow()
+            .view
+            .unwrap_or_else(|| View::facing(10.0, 30.0))
     }
 
     fn projection(&self) -> Projection {
@@ -599,7 +602,7 @@ impl TimeZoneGlobe {
 
     /// Move the keyboard's city to the nearest one in a direction, and turn
     /// the globe to it.
-    fn move_cursor(&mut self, east: f64, north: f64) {
+    fn move_cursor(&self, east: f64, north: f64) {
         let current = self
             .cursor()
             .or_else(|| self.selected_index())
@@ -629,7 +632,7 @@ impl TimeZoneGlobe {
         {
             let mut state = self.state.borrow_mut();
             state.cursor = Some(target);
-            let view = state.view.unwrap_or(View::facing(0.0, 0.0));
+            let view = state.view.unwrap_or_else(|| View::facing(0.0, 0.0));
             // Turn only as far as keeps the city in view.
             let facing = degrees_apart(
                 (view.longitude, view.latitude),
@@ -688,6 +691,94 @@ impl TimeZoneGlobe {
                 ],
             )
         })
+    }
+    /// The cities on the globe's face: a dot for each, then the hovered,
+    /// the keyboard's and the chosen one marked, and the focus ring. The
+    /// pane shows no globe without zones to place on it.
+    fn paint_cities(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        projection: &Projection,
+    ) {
+        if self.points.is_empty() {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+
+        let selected = self.selected_index();
+        let cursor = self.cursor().filter(|_| self.focused);
+        // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
+        let dots = colors.text_primary.multiply_alpha(0.55);
+        let mut marks = BezPath::new();
+        for index in 0..self.points.len() {
+            if Some(index) == selected {
+                continue;
+            }
+            let Some(p) = self.unit_of(index) else {
+                continue;
+            };
+            if projection.faces(p) {
+                let at = projection.project(p);
+                marks.extend(Circle::new(at, 1.8).path_elements(0.1));
+            }
+        }
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+        scene.fill(Fill::NonZero, transform, dots, None, &marks);
+        for (index, emphasis) in [(self.hover, false), (cursor, false), (selected, true)] {
+            let Some(index) = index else { continue };
+            let Some(p) = self.unit_of(index) else {
+                continue;
+            };
+            if !projection.faces(p) {
+                continue;
+            }
+            let at = projection.project(p);
+            if emphasis {
+                // The chosen city: the person's accent, ringed in the ground
+                // so it stands off the land and the night.
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.content,
+                    None,
+                    &Circle::new(at, 6.5),
+                );
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.intent.accent,
+                    None,
+                    &Circle::new(at, 4.5),
+                );
+            } else {
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    if Some(index) == cursor {
+                        theme.border_focus
+                    } else {
+                        colors.text_primary
+                    },
+                    None,
+                    &Circle::new(at, 6.0),
+                );
+            }
+        }
+        if self.focused {
+            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &Circle::new(projection.centre, projection.radius + 3.0),
+            );
+        }
     }
 }
 
@@ -816,83 +907,7 @@ impl Widget for TimeZoneGlobe {
             &disk,
         );
 
-        // The pane shows no globe without zones to place on it.
-        if self.points.is_empty() {
-            return;
-        }
-
-        let selected = self.selected_index();
-        let cursor = self.cursor().filter(|_| self.focused);
-        // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
-        let dots = colors.text_primary.multiply_alpha(0.55);
-        let mut marks = BezPath::new();
-        for index in 0..self.points.len() {
-            if Some(index) == selected {
-                continue;
-            }
-            let Some(p) = self.unit_of(index) else {
-                continue;
-            };
-            if projection.faces(p) {
-                let at = projection.project(p);
-                marks.extend(Circle::new(at, 1.8).path_elements(0.1));
-            }
-        }
-        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
-        scene.fill(Fill::NonZero, transform, dots, None, &marks);
-        for (index, emphasis) in [(self.hover, false), (cursor, false), (selected, true)] {
-            let Some(index) = index else { continue };
-            let Some(p) = self.unit_of(index) else {
-                continue;
-            };
-            if !projection.faces(p) {
-                continue;
-            }
-            let at = projection.project(p);
-            if emphasis {
-                // The chosen city: the person's accent, ringed in the ground
-                // so it stands off the land and the night.
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.content,
-                    None,
-                    &Circle::new(at, 6.5),
-                );
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.intent.accent,
-                    None,
-                    &Circle::new(at, 4.5),
-                );
-            } else {
-                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    if Some(index) == cursor {
-                        theme.border_focus
-                    } else {
-                        colors.text_primary
-                    },
-                    None,
-                    &Circle::new(at, 6.0),
-                );
-            }
-        }
-        if self.focused {
-            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &Circle::new(projection.centre, projection.radius + 3.0),
-            );
-        }
+        self.paint_cities(scene, transform, theme, &projection);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

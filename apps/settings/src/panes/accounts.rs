@@ -60,6 +60,7 @@ pub use cloud_signin::{BrowserOpener, PortalOpener};
 use runtime_fs::cloud::CloudRequest;
 use vault_lane::Step;
 // Drives the FUSE-backed cloud service, which exists only on Linux.
+
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod cloud_import_acceptance;
@@ -2357,7 +2358,7 @@ impl AccountsPane {
                 mount.map(|mount| mount.paused),
                 &mut details,
             ));
-            entries.extend(self.account_maintenance_entries(
+            entries.extend(Self::account_maintenance_entries(
                 view,
                 runtime.is_some_and(|status| {
                     status.health == accounts::AccountSyncHealth::NeedsAuthentication
@@ -2381,21 +2382,7 @@ impl AccountsPane {
                 },
             )
         });
-        let trailing: Option<El> = match (files, menu) {
-            (Some(files), Some(menu)) => Some(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .with_align_items(taffy::AlignItems::Center)
-                    .push(Box::new(files.control_size(ui::widget::ControlSize::Small)))
-                    .push(Box::new(menu)),
-            )),
-            (Some(files), None) => {
-                Some(Box::new(files.control_size(ui::widget::ControlSize::Small)))
-            }
-            (None, Some(menu)) => Some(Box::new(menu)),
-            (None, None) => None,
-        };
+        let trailing = account_trailing(files, menu);
         let tags: Vec<(&str, ui::widget::ChipStyle)> = tags
             .iter()
             .map(|(text, tone)| (text.as_str(), ui::widget::ChipStyle::Tinted(*tone)))
@@ -2478,11 +2465,7 @@ impl AccountsPane {
     /// What the account's menu offers to keep it working: edit it, sign in
     /// again, check it, and remove it. Each entry runs the account row's own
     /// action, so the host admits it as it does a button.
-    fn account_maintenance_entries(
-        &self,
-        view: &AccountView,
-        needs_sign_in: bool,
-    ) -> Vec<AccountEntry> {
+    fn account_maintenance_entries(view: &AccountView, needs_sign_in: bool) -> Vec<AccountEntry> {
         let mut actions = Vec::new();
         let service_label = |action: String| {
             let service = if view.kind == AccountKind::Mail {
@@ -3890,6 +3873,24 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
 /// What the vault held for each account a save wrote the credential of,
 /// so a failed metadata write can put it back.
 type PreviousSecrets = Vec<(accounts::AccountId, Option<accounts::Secret>)>;
+
+/// An account row's trailing slot: the files it brings as the one button,
+/// beside the menu of everything else to do with it.
+fn account_trailing(files: Option<Button>, menu: Option<RowMenu>) -> Option<El> {
+    match (files, menu) {
+        (Some(files), Some(menu)) => Some(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(files.control_size(ui::widget::ControlSize::Small)))
+                .push(Box::new(menu)),
+        )),
+        (Some(files), None) => Some(Box::new(files.control_size(ui::widget::ControlSize::Small))),
+        (None, Some(menu)) => Some(Box::new(menu)),
+        (None, None) => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -82,10 +82,12 @@ impl ZoneRules {
         let infos = take(header.typecnt * 6)?;
         let transitions = times
             .chunks_exact(time_len)
-            .map(|chunk| match *chunk {
-                [a, b, c, d] => i64::from(i32::from_be_bytes([a, b, c, d])),
-                [a, b, c, d, e, f, g, h] => i64::from_be_bytes([a, b, c, d, e, f, g, h]),
-                _ => 0,
+            .map(|chunk| {
+                // Version 1 data counts in 32-bit seconds, later versions in 64.
+                <[u8; 4]>::try_from(chunk).map_or_else(
+                    |_| <[u8; 8]>::try_from(chunk).map_or(0, i64::from_be_bytes),
+                    |bytes| i64::from(i32::from_be_bytes(bytes)),
+                )
             })
             .collect();
         let offsets: Vec<i32> = infos

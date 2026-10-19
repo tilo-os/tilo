@@ -70,7 +70,10 @@ fn tile_geometry(width: f64, tiles: usize, gap: f64, scale: f64) -> (usize, f64,
     let (narrowest, widest) = (TILE_WIDTH.start() * scale, TILE_WIDTH.end() * scale);
     let tiles = tiles.max(1);
     let fit = (((width + gap) / (narrowest + gap)).floor() as usize).clamp(1, tiles);
-    let columns = (1..=fit).rev().find(|c| tiles % c == 0).unwrap_or(fit);
+    let columns = (1..=fit)
+        .rev()
+        .find(|c| tiles.is_multiple_of(*c))
+        .unwrap_or(fit);
     let tile = ((width - gap * (columns as f64 - 1.0)) / columns as f64).clamp(narrowest, widest);
     (columns, tile, (tile * TILE_ASPECT).round())
 }
@@ -205,6 +208,22 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
             (corner, 0.0, radius, 0.0),
         ),
     );
+    let unit = (window.height() / 9.0).max(2.0);
+    let sidebar = paint_sidebar(scene, transform, theme, window, (corner, unit));
+    paint_tile_content(scene, transform, theme, window, sidebar, unit);
+}
+
+/// A theme tile's sidebar: the recessed region down the window's leading
+/// side with three rows, the second selected. Where it ends.
+fn paint_sidebar(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    window: Rect,
+    (corner, unit): (f64, f64),
+) -> Rect {
+    let colors = &theme.tokens.colors;
+    let surfaces = &colors.surfaces;
     // The sidebar: the recessed region with three rows, the second
     // selected.
     let sidebar = Rect::new(
@@ -227,17 +246,6 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
             (corner, 0.0, 0.0, 0.0),
         ),
     );
-    let unit = (window.height() / 9.0).max(2.0);
-    let bar = |scene: &mut Scene, x: f64, y: f64, width: f64, color| {
-        // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            color,
-            None,
-            &RoundedRect::new(x, y, x + width, y + unit * 0.7, unit * 0.35),
-        );
-    };
     for row in 0..3 {
         let y = sidebar.y0 + unit * (1.2 + f64::from(row) * 1.6);
         if row == 1 {
@@ -256,8 +264,10 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
                 ),
             );
         }
-        bar(
+        tile_bar(
             scene,
+            transform,
+            unit,
             sidebar.x0 + unit,
             y,
             sidebar.width() * 0.55,
@@ -265,27 +275,47 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
             colors.text_dim.multiply_alpha(0.7),
         );
     }
+    sidebar
+}
+
+/// A theme tile's content beside its sidebar: a heading, two lines of
+/// text, a primary button and a switch that is on.
+fn paint_tile_content(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    window: Rect,
+    sidebar: Rect,
+    unit: f64,
+) {
+    let colors = &theme.tokens.colors;
     // The content: a heading, two lines of text, a primary button and a
     // switch that is on.
     let left = sidebar.x1 + unit * 1.2;
     let width = window.x1 - left - unit * 1.2;
-    bar(
+    tile_bar(
         scene,
+        transform,
+        unit,
         left,
         window.y0 + unit * 1.2,
         width * 0.55,
         colors.text_primary,
     );
-    bar(
+    tile_bar(
         scene,
+        transform,
+        unit,
         left,
         window.y0 + unit * 2.8,
         width * 0.9,
         // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
-    bar(
+    tile_bar(
         scene,
+        transform,
+        unit,
         left,
         window.y0 + unit * 4.0,
         width * 0.7,
@@ -335,6 +365,26 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     );
 }
 
+/// One bar of a theme tile's miniature text, `unit` tall at most.
+fn tile_bar(
+    scene: &mut Scene,
+    transform: Affine,
+    unit: f64,
+    x: f64,
+    y: f64,
+    width: f64,
+    color: vello::peniko::Color,
+) {
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        color,
+        None,
+        &RoundedRect::new(x, y, x + width, y + unit * 0.7, unit * 0.35),
+    );
+}
+
 impl Widget for ThemeTiles {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
@@ -370,7 +420,7 @@ impl Widget for ThemeTiles {
         available: Size<taffy::AvailableSpace>,
         _text: &mut ui::text_render::TextRenderer,
     ) -> Size<f32> {
-        let width = known.width.unwrap_or(match available.width {
+        let width = known.width.unwrap_or_else(|| match available.width {
             taffy::AvailableSpace::Definite(width) => width,
             _ => ((TILE_WIDTH.end() * self.scale + self.gap) * self.tiles.len() as f64) as f32,
         });
@@ -523,10 +573,10 @@ impl Widget for ThemeTiles {
                     Key::Named(NamedKey::ArrowLeft) => self.cursor = self.cursor.saturating_sub(1),
                     Key::Named(NamedKey::ArrowRight) => self.cursor = (self.cursor + 1).min(last),
                     Key::Named(NamedKey::ArrowUp) => {
-                        self.cursor = self.cursor.saturating_sub(columns)
+                        self.cursor = self.cursor.saturating_sub(columns);
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.cursor = (self.cursor + columns).min(last)
+                        self.cursor = (self.cursor + columns).min(last);
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => self.choose(self.cursor),
                     _ => return,
