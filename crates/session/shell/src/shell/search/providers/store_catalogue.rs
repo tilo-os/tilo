@@ -44,6 +44,31 @@ use crate::shell::search::{
 /// The provider's id, which also keys what was chosen from it.
 pub const PROVIDER_ID: &str = "store-catalogue";
 
+/// The id of the provider of the documents and closed actions of the Tilo
+/// apps this device has ([`Scope::Installed`]).
+pub const INSTALLED_PROVIDER_ID: &str = "installed-offers";
+
+/// Which apps' rows a provider lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scope {
+    /// Apps to get, with the documents and closed actions of Tilo apps not
+    /// on this device.
+    Offered,
+    /// The documents and closed actions of the Tilo apps this device has,
+    /// from the same signed manifest metadata: found whether or not the app
+    /// ever ran. The apps themselves are the Applications provider's.
+    Installed,
+}
+
+impl Scope {
+    const fn id(self) -> &'static str {
+        match self {
+            Self::Offered => PROVIDER_ID,
+            Self::Installed => INSTALLED_PROVIDER_ID,
+        }
+    }
+}
+
 /// An app the device does not have ranks one point below one it has, at
 /// an equal match: enough to break the tie, never enough to put a worse
 /// match of an installed app above a better one of an offered app.
@@ -123,6 +148,7 @@ impl StoreCatalogueTestSource {
 }
 
 pub struct StoreCatalogueProvider {
+    scope: Scope,
     kinds: Vec<ResourceKind>,
     index: BackgroundIndex<Generation, CatalogueSnapshot>,
     /// How a closed app's offered action is run; `None` until the session's
@@ -141,6 +167,7 @@ impl Default for StoreCatalogueProvider {
 impl StoreCatalogueProvider {
     pub fn new() -> Self {
         Self {
+            scope: Scope::Offered,
             kinds: vec![ResourceKind::Application, ResourceKind::Action],
             index: BackgroundIndex::new("tilo-catalogue-search-index"),
             action_sessions: None,
@@ -158,6 +185,25 @@ impl StoreCatalogueProvider {
         }
     }
 
+    /// The documents and closed actions of the Tilo apps this device has.
+    pub fn installed() -> Self {
+        Self {
+            scope: Scope::Installed,
+            kinds: vec![ResourceKind::Action],
+            index: BackgroundIndex::new("tilo-installed-offers-index"),
+            ..Self::new()
+        }
+    }
+
+    /// [`Self::installed`] once the session's action broker is attached:
+    /// a closed app's offered action runs through it.
+    pub(crate) fn installed_with_action_sessions(sessions: ActionSessionSource) -> Self {
+        Self {
+            action_sessions: Some(sessions),
+            ..Self::installed()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_test_source(source: Arc<StoreCatalogueTestSource>) -> Self {
         Self {
@@ -166,11 +212,28 @@ impl StoreCatalogueProvider {
         }
     }
 
-    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    #[cfg(test)]
+    pub(crate) fn installed_with_test_source(source: Arc<StoreCatalogueTestSource>) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::installed()
+        }
+    }
+
     fn source_generation(&self) -> Generation {
         #[cfg(test)]
         if let Some(source) = &self.source {
             return source.generation();
+        }
+        if self.scope == Scope::Installed {
+            // What the device has and what blocks it; the registries' lists
+            // and host apps change nothing an installed app offers.
+            return (
+                launcher::gui_apps_generation(),
+                0,
+                catalogue::shared_generation(),
+                0,
+            );
         }
         (
             launcher::gui_apps_generation(),
@@ -183,6 +246,7 @@ impl StoreCatalogueProvider {
     /// Read every source and index the offered rows. Runs on the index's
     /// worker, never on a keystroke.
     fn build_snapshot(
+        scope: Scope,
         #[cfg(test)] source: Option<Arc<StoreCatalogueTestSource>>,
     ) -> (Generation, CatalogueSnapshot) {
         #[cfg(test)]
@@ -194,12 +258,40 @@ impl StoreCatalogueProvider {
                 .expect("catalogue test source lock")
                 .clone();
             let installed = Installed::from_ids(&state.installed);
-            return (
-                generation,
-                CatalogueSnapshot::from_parts(&installed, &state.tilo, &state.shared),
-            );
+            let snapshot = match scope {
+                Scope::Offered => {
+                    CatalogueSnapshot::from_parts(&installed, &state.tilo, &state.shared)
+                }
+                Scope::Installed => CatalogueSnapshot::installed(
+                    state
+                        .tilo
+                        .iter()
+                        .filter(|app| state.installed.contains(&app.package_id))
+                        .cloned()
+                        .collect(),
+                    &state.shared,
+                ),
+            };
+            return (generation, snapshot);
         }
         let (installed_generation, installed_apps) = launcher::gui_apps_snapshot();
+        if scope == Scope::Installed {
+            let (shared_generation, shared) = catalogue::shared_snapshot();
+            let here = installed_apps
+                .iter()
+                .filter(|app| app_catalogue::fleet::metadata(&app.package_id).is_some())
+                .map(|app| CatalogueApp {
+                    package_id: app.package_id.clone(),
+                    display_name: app.display_name.clone(),
+                    category: app.category.clone(),
+                    ..CatalogueApp::default()
+                })
+                .collect();
+            return (
+                (installed_generation, 0, shared_generation, 0),
+                CatalogueSnapshot::installed(here, &shared),
+            );
+        }
         let (tilo_generation, tilo) = catalogue::available_apps_snapshot();
         let (shared_generation, shared) = catalogue::shared_snapshot();
         let (host_generation, host_apps) = crate::shell::host_apps::host_apps_snapshot();
@@ -223,12 +315,13 @@ impl StoreCatalogueProvider {
         )
     }
 
-    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
     fn builder(&self) -> impl FnOnce() -> (Generation, CatalogueSnapshot) + Send + 'static {
         #[cfg(test)]
         let source = self.source.clone();
+        let scope = self.scope;
         move || {
             Self::build_snapshot(
+                scope,
                 #[cfg(test)]
                 source,
             )
@@ -251,18 +344,24 @@ impl StoreCatalogueProvider {
 
     /// The row `row` of `snapshot`, as a search shows it.
     fn row(&self, snapshot: &CatalogueSnapshot, row: Row, score: i32) -> Option<SearchResult> {
-        let score = score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1);
+        let here = self.scope == Scope::Installed;
+        let score = if here {
+            score
+        } else {
+            score.saturating_sub(NOT_INSTALLED_TIEBREAK).max(1)
+        };
         match row {
             Row::App(at) => Some(app_row(snapshot.entries.get(at)?, score)),
             Row::Document { entry, kind } => {
                 let entry = snapshot.entries.get(entry)?;
                 let kind = entry.resource_types.get(kind)?;
-                Some(document_row(entry, kind, score))
+                Some(document_row(self.scope, entry, kind, score))
             }
             Row::Action { entry, action } => {
                 let entry = snapshot.entries.get(entry)?;
                 let action = entry.actions.get(action)?;
                 Some(action_row(
+                    self.scope,
                     entry,
                     action,
                     self.action_sessions.clone(),
@@ -306,6 +405,31 @@ impl CatalogueSnapshot {
             entries,
             rows,
             icons,
+            index,
+        }
+    }
+
+    /// The documents and closed actions of `here`, the Tilo apps this
+    /// device has, as the fleet's manifest metadata describes them; a
+    /// blocked app offers none.
+    fn installed(here: Vec<CatalogueApp>, shared: &SharedCatalogue) -> Self {
+        let entries: Vec<CatalogueEntry> = here
+            .iter()
+            .map(app_catalogue::tilo::entry)
+            .filter(|entry| !shared.blocks.is_blocked(&entry.id))
+            .collect();
+        let mut rows = Vec::new();
+        for (at, entry) in entries.iter().enumerate() {
+            rows.extend(
+                (0..entry.resource_types.len()).map(|kind| Row::Document { entry: at, kind }),
+            );
+            rows.extend((0..entry.actions.len()).map(|action| Row::Action { entry: at, action }));
+        }
+        let index = index_rows(&entries, &rows);
+        Self {
+            entries,
+            rows,
+            icons: HashMap::new(),
             index,
         }
     }
@@ -464,6 +588,7 @@ fn app_row(entry: &CatalogueEntry, score: i32) -> SearchResult {
 }
 
 fn document_row(
+    scope: Scope,
     entry: &CatalogueEntry,
     kind: &app_catalogue::ResourceType,
     score: i32,
@@ -472,7 +597,7 @@ fn document_row(
     let name = entry.name.clone();
     SearchResult::nullary_fallible(
         ResourceKind::Action,
-        PROVIDER_ID,
+        scope.id(),
         document_row_id(&entry.id, &kind.kind),
         kind.label.clone(),
         Some(t_args(
@@ -480,11 +605,15 @@ fn document_row(
             &[("app", entry.name.as_str().into())],
         )),
         score,
-        move |_doc, _root, chrome: &Chrome| open_tilo_app(chrome, &id, &name),
+        move |_doc, _root, chrome: &Chrome| match scope {
+            Scope::Installed => super::applications::launch_installed_app(chrome, &id, &name),
+            Scope::Offered => open_tilo_app(chrome, &id, &name),
+        },
     )
 }
 
 fn action_row(
+    scope: Scope,
     entry: &CatalogueEntry,
     action: &app_catalogue::CatalogueAction,
     sessions: Option<ActionSessionSource>,
@@ -495,10 +624,11 @@ fn action_row(
         display_name: entry.name.clone(),
         resource: action.resource.clone(),
         action: action.action.clone(),
+        installed: scope == Scope::Installed,
     };
     SearchResult::nullary_fallible(
         ResourceKind::Action,
-        PROVIDER_ID,
+        scope.id(),
         action_row_id(&entry.id, &action.resource, &action.action),
         action.label.clone(),
         Some(entry.name.clone()),
@@ -690,6 +820,8 @@ struct OfferedAction {
     display_name: String,
     resource: String,
     action: String,
+    /// The app is on this device: its row came from what it has.
+    installed: bool,
 }
 
 /// Get the app if needed, then run its offered action through the session's
@@ -723,9 +855,12 @@ fn run_offered_action(
         display_name,
         resource,
         action,
+        installed,
     } = offered.clone();
-    let installed = launcher::installed_apps()
-        .is_ok_and(|apps| apps.iter().any(|app| app.package_id == package_id));
+    // An offered app may have arrived since its row was listed.
+    let installed = installed
+        || launcher::installed_apps()
+            .is_ok_and(|apps| apps.iter().any(|app| app.package_id == package_id));
     if installed {
         invoke_offered(
             &sessions,
@@ -789,19 +924,40 @@ fn invoke_offered(
 
 impl SearchProvider for StoreCatalogueProvider {
     fn id(&self) -> &'static str {
-        PROVIDER_ID
+        self.scope.id()
     }
 
     fn name(&self) -> &'static str {
-        "App Store"
+        match self.scope {
+            Scope::Offered => "App Store",
+            Scope::Installed => "App actions",
+        }
     }
 
     fn display_name(&self) -> String {
-        t("search-catalogue-provider")
+        match self.scope {
+            Scope::Offered => t("search-catalogue-provider"),
+            Scope::Installed => t("search-catalogue-installed-provider"),
+        }
     }
 
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
+    }
+
+    /// While an app is open its own published actions answer for it, so
+    /// what it offers while closed would be the same thing twice.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        _needle: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        self.scope == Scope::Installed
+            && result.id.starts_with(ACTION_PREFIX)
+            && app_of_row(&result.id).is_some_and(|app| {
+                tilo_desktop::search::open_app_ids(&chrome.tree().desktop).contains(app)
+            })
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -1278,6 +1434,65 @@ mod tests {
                 "show-tasks"
             ),
             "it runs the chosen action, in the active workspace"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
+    // also be searchable, even if app not installed" — and those of the
+    // apps this device has, whether or not they ever ran.
+    #[test]
+    fn the_documents_and_closed_actions_of_installed_apps_are_found_and_run_at_once() {
+        let host = Arc::new(RecordingHost::default());
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = StoreCatalogueProvider {
+            action_sessions: Some(ActionSessionSource::with_mock(broker, host.clone())),
+            ..StoreCatalogueProvider::installed_with_test_source(StoreCatalogueTestSource::new(
+                state(&["so.tilo.calendar", "so.tilo.sheets"], &[]),
+            ))
+        };
+        let workbook = search(&provider, "workbook");
+        let document = workbook
+            .iter()
+            .find(|row| row.id == "new:so.tilo.sheets/sheets.workbook")
+            .expect("an installed app's document type is found");
+        assert_eq!(document.provider_id, INSTALLED_PROVIDER_ID);
+        assert_eq!(document.subtitle.as_deref(), Some("New in Sheets"));
+        assert!(
+            workbook
+                .iter()
+                .all(|row| row.kind != ResourceKind::Application),
+            "the apps themselves are the Applications provider's rows"
+        );
+
+        let row = search(&provider, "show tasks")
+            .into_iter()
+            .find(|row| row.id == "offer:so.tilo.calendar/calendar.calendar/show-tasks")
+            .expect("an installed app's closed action is found");
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &tilo_actions::ActionArgs::none(),
+        )
+        .expect("choosing the action is accepted");
+        let invoked = host.invoked.lock().expect("recording host lock");
+        assert_eq!(
+            invoked.len(),
+            1,
+            "the action runs at once, with nothing to get"
+        );
+        assert_eq!(invoked[0].target.address.action, "show-tasks");
+
+        let blocked = StoreCatalogueProvider::installed_with_test_source(
+            StoreCatalogueTestSource::new(state(&["so.tilo.sheets"], &["so.tilo.sheets"])),
+        );
+        assert!(
+            search(&blocked, "workbook")
+                .iter()
+                .all(|row| app_of_row(&row.id) != Some("so.tilo.sheets")),
+            "a blocked app offers nothing"
         );
     }
 

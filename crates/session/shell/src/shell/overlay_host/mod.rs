@@ -2259,6 +2259,11 @@ impl ShellOverlayHost {
                 crate::shell::certified_action_session::ActionSessionSource::new(broker.clone()),
             ),
         ));
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::StoreCatalogueProvider::installed_with_action_sessions(
+                crate::shell::certified_action_session::ActionSessionSource::new(broker.clone()),
+            ),
+        ));
         let app_actions =
             std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
         app_actions.set_app_content(app_content);
@@ -2386,6 +2391,11 @@ impl ShellOverlayHost {
         // rows rank just below installed apps of equal match.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::StoreCatalogueProvider::new(),
+        ));
+        // What the apps here create and do while closed, from their signed
+        // manifests: found whether or not the app ever ran.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::StoreCatalogueProvider::installed(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
@@ -9897,13 +9907,18 @@ impl ShellOverlayHost {
         if self.search_registry.adjustable(r) {
             e = e.adjustable();
         }
-        // A row found through a word it doesn't show says which.
+        // A row found through a word it doesn't show says which: a fact of
+        // its own after what the row already says, never glued on with a
+        // separator glyph.
         if let Some(word) = self.search_registry.match_reason(r, query) {
             let reason = t_args("search-matches", &[("word", word.into())]);
-            e.description = Some(match e.description.take() {
-                Some(description) => format!("{description} · {reason}"),
-                None => reason,
-            });
+            let mut facts = if e.description_facts.is_empty() {
+                e.description.take().into_iter().collect()
+            } else {
+                std::mem::take(&mut e.description_facts)
+            };
+            facts.push(reason);
+            e = e.facts(facts);
         }
         e
     }
