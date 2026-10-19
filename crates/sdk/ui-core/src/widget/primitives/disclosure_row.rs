@@ -489,7 +489,6 @@ impl DisclosureRow {
             return;
         }
         let theme = ctx.theme;
-        let m = &theme.tokens.metrics;
         let x0 = self.header.x0 + Self::text_inset(self.leading, theme);
         crate::surface::separator(
             ctx.scene,
