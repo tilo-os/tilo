@@ -56,6 +56,10 @@ pub(crate) struct SelfPresence {
     pub(crate) quiet_for: Duration,
     /// The voice channel this person is in, as the call says.
     pub(crate) call: Option<String>,
+    /// Per room where this person shows nothing, the people there when its
+    /// people were last told this person is not here: told again whenever
+    /// someone new is there, who has not heard it.
+    pub(crate) told_absent: HashMap<RoomId, std::collections::BTreeSet<String>>,
     /// When this person last waved at whom.
     pub(crate) waved: HashMap<String, Instant>,
     /// When each person last waved at this one.
@@ -297,7 +301,55 @@ impl super::ShellOverlayHost {
             sent = self.push_visibilities(&rooms);
             self.self_presence.visibility_inputs = inputs;
         }
-        sent | self.publish_availability()
+        sent | self.tell_absence() | self.publish_availability()
+    }
+
+    /// In every room where this person shows nothing, tell its people they
+    /// are not here (a room-keyed `Left`, which "Nothing" still lets out),
+    /// so nobody lists them even though their machine keeps taking part in
+    /// the room's documents. Told once when the choice takes hold, and again
+    /// whenever someone is there who has not heard it. Returns whether
+    /// anything went out.
+    fn tell_absence(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let hidden: Vec<RoomId> = self
+            .self_presence
+            .pushed
+            .iter()
+            .filter(|(_, visibility)| !visibility.shows_presence())
+            .map(|(room, _)| *room)
+            .collect();
+        self.self_presence
+            .told_absent
+            .retain(|room, _| hidden.contains(room));
+        let Some(bridge) = self.self_presence.desktop_bridge.clone() else {
+            return false;
+        };
+        let mut sent = false;
+        for room in hidden {
+            let here: std::collections::BTreeSet<String> = {
+                let state = chrome.borrow();
+                let tree = state.tree();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.room == room)
+                    .flat_map(|workspace| &workspace.collaborators)
+                    .filter(|person| !person.invited)
+                    .map(|person| person.id.clone())
+                    .collect()
+            };
+            let told = self.self_presence.told_absent.get(&room);
+            if told.is_some_and(|told| here.is_subset(told)) {
+                continue;
+            }
+            bridge(room, ui::collaboration::PresencePayload::Left);
+            self.self_presence.told_absent.insert(room, here);
+            sent = true;
+        }
+        sent
     }
 
     /// Work out what every room's people may see and tell the network the
@@ -324,11 +376,40 @@ impl super::ShellOverlayHost {
                     state.publication(*room),
                 )
             };
-            if self.self_presence.pushed.insert(*room, visibility) != Some(visibility)
-                && let Some(bridge) = self.self_presence.visibility_bridge.clone()
-            {
-                bridge(*room, visibility);
-                sent = true;
+            let was = self.self_presence.pushed.insert(*room, visibility);
+            if was != Some(visibility) {
+                // Seen again, or no longer: availability is said afresh
+                // once the room's people may see this person, and they are
+                // told anew that this person is not here once they may not.
+                if self
+                    .self_presence
+                    .published
+                    .as_ref()
+                    .is_some_and(|(published, _, _)| published == room)
+                {
+                    self.self_presence.published = None;
+                }
+                self.self_presence.told_absent.remove(room);
+                if let Some(bridge) = self.self_presence.visibility_bridge.clone() {
+                    bridge(*room, visibility);
+                    sent = true;
+                }
+                // Back from showing nothing: say so in that room at once,
+                // whether or not it is on screen, so its people list this
+                // person again (they were told this person is not here).
+                if was.is_some_and(|was| !was.shows_presence())
+                    && visibility.shows_presence()
+                    && let Some(bridge) = self.self_presence.desktop_bridge.clone()
+                {
+                    bridge(
+                        *room,
+                        ui::collaboration::PresencePayload::Availability {
+                            state: self.self_presence.shown(),
+                            call: self.self_presence.call.clone(),
+                        },
+                    );
+                    sent = true;
+                }
             }
         }
         self.self_presence
@@ -429,6 +510,77 @@ mod tests {
             Nothing
         );
         assert_eq!(visibility_of(Some(WhereIAm), Some(&lounge), None), WhereIAm);
+    }
+
+    /// "Nothing" means not appearing: choosing it tells the room this
+    /// person is not here, once, and again for anyone new there who has not
+    /// heard it; showing themselves again says they are, at once.
+    #[test]
+    fn showing_nothing_tells_the_room_you_are_not_here_and_coming_back_says_you_are() {
+        use ui::collaboration::PresencePayload;
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .expect("the demo has a workspace on screen")
+            .room;
+        let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
+        let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&said);
+        host.set_desktop_presence_bridge(std::rc::Rc::new(move |room, payload| {
+            sink.borrow_mut().push((room, payload));
+        }));
+        let lefts = |said: &[(RoomId, PresencePayload)]| {
+            said.iter()
+                .filter(|(at, payload)| *at == room && matches!(payload, PresencePayload::Left))
+                .count()
+        };
+
+        host.self_presence
+            .visibility
+            .insert(room, ui::PresenceVisibility::Nothing);
+        host.sync_self_presence();
+        assert_eq!(
+            lefts(&said.borrow()),
+            1,
+            "the room is told this person is not here"
+        );
+        assert!(
+            !said
+                .borrow()
+                .iter()
+                .any(|(_, payload)| matches!(payload, PresencePayload::Availability { .. })),
+            "and nothing else of them"
+        );
+        host.sync_self_presence();
+        assert_eq!(lefts(&said.borrow()), 1, "once");
+
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            tree.desktop
+                .active_workspace_mut()
+                .expect("the workspace on screen")
+                .collaborators
+                .push(crate::shell::state::Collaborator::new("newcomer", "Ada"));
+        }
+        chrome.borrow_mut().bump();
+        host.sync_self_presence();
+        assert_eq!(
+            lefts(&said.borrow()),
+            2,
+            "and again once someone is there who has not heard it"
+        );
+
+        host.self_presence
+            .visibility
+            .insert(room, ui::PresenceVisibility::WhereIAm);
+        host.sync_self_presence();
+        assert!(
+            said.borrow().iter().any(|(at, payload)| *at == room
+                && matches!(payload, PresencePayload::Availability { .. })),
+            "showing themselves again says they are here"
+        );
     }
 
     /// One wave per person per minute, both ways.

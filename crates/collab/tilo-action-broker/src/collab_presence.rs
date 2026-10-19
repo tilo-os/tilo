@@ -75,6 +75,8 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
             call,
         },
         PeerPresencePayload::Wave { target } => PresencePayload::Wave { target },
+        // Talking beside a pointer is the desktop's to show, never an app's.
+        PeerPresencePayload::Chat { .. } | PeerPresencePayload::Reaction { .. } => return None,
     };
     Some((key, payload))
 }
