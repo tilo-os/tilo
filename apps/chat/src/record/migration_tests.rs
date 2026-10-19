@@ -99,6 +99,54 @@ fn a_chat_record_of_version_four_opens_with_its_reports_and_decisions() {
     assert!(decision.reverted.is_empty());
 }
 
+/// The version-1 chat document holding one message with `body` and every
+/// value that version stored as JSON text.
+fn version_one_message(body: &[tilo_document::ClipBlock]) -> ui::serde_json::Value {
+    json!({
+        "messages": {
+            "m1": {
+                "k": "a",
+                "v": {
+                    "channel": "c_general",
+                    "author": "ada",
+                    "ts": 10,
+                    "text": "hi @Bo",
+                    "body": ui::serde_json::to_string(body).unwrap(),
+                    "edited": true,
+                    "history": r#"[{"ts":5,"text":"hey"}]"#,
+                    "reactions": {},
+                    "mentions": r#"[{"user":"u_bo","start":3,"len":3,"is_agent":false}]"#,
+                    "reference": "null",
+                    "attachment": r#"{"File":{"name":"a.txt","blob":"ff","size":5}}"#,
+                    "pinned": false,
+                    "appearance": r#"{"name":"Bo"}"#,
+                    "work": {
+                        "state": r#"{"state":{"state":"taken"},"since":11}"#,
+                        "reasoning": r#"{"route":"floor","why":"its words"}"#,
+                        "stream": {
+                            "run": "run-1",
+                            "sequence": 2,
+                            "reasoning": "",
+                            "progress": "",
+                            "finish": r#""complete""#,
+                            "detail": "",
+                        },
+                        "trace": {
+                            "s1": {
+                                "id": "s1",
+                                "sequence": 1,
+                                "resource": "notes.page:1",
+                                "label": "Rename",
+                                "outcome": r#"{"outcome":"refused","why":"no such page"}"#,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    })
+}
+
 /// A part of the chat's messages of version 1: a message's paragraphs,
 /// earlier texts, mentions, attachment, shown name and an agent's work as
 /// JSON text.
@@ -115,54 +163,7 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
     }];
     let mut replica = Replica::<ChatPart>::new();
     let doc = replica.doc_mut();
-    evolution::fixture(
-        doc,
-        &ROOT,
-        &json!({
-            "messages": {
-                "m1": {
-                    "k": "a",
-                    "v": {
-                        "channel": "c_general",
-                        "author": "ada",
-                        "ts": 10,
-                        "text": "hi @Bo",
-                        "body": ui::serde_json::to_string(&body).unwrap(),
-                        "edited": true,
-                        "history": r#"[{"ts":5,"text":"hey"}]"#,
-                        "reactions": {},
-                        "mentions": r#"[{"user":"u_bo","start":3,"len":3,"is_agent":false}]"#,
-                        "reference": "null",
-                        "attachment": r#"{"File":{"name":"a.txt","blob":"ff","size":5}}"#,
-                        "pinned": false,
-                        "appearance": r#"{"name":"Bo"}"#,
-                        "work": {
-                            "state": r#"{"state":{"state":"taken"},"since":11}"#,
-                            "reasoning": r#"{"route":"floor","why":"its words"}"#,
-                            "stream": {
-                                "run": "run-1",
-                                "sequence": 2,
-                                "reasoning": "",
-                                "progress": "",
-                                "finish": r#""complete""#,
-                                "detail": "",
-                            },
-                            "trace": {
-                                "s1": {
-                                    "id": "s1",
-                                    "sequence": 1,
-                                    "resource": "notes.page:1",
-                                    "label": "Rename",
-                                    "outcome": r#"{"outcome":"refused","why":"no such page"}"#,
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        }),
-    )
-    .unwrap();
+    evolution::fixture(doc, &ROOT, &version_one_message(&body)).unwrap();
     Slot::Key(&ROOT, evolution::VERSION_KEY)
         .remove(doc)
         .unwrap();

@@ -12,7 +12,7 @@ struct Put(u64);
 
 impl serde::Serialize for Put {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        ENCODINGS.with(|count| count.set(count.get() + 1));
+        ENCODINGS.with(|count| count.set(count.get().saturating_add(1)));
         serializer.serialize_u64(self.0)
     }
 }
