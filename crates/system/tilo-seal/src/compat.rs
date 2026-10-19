@@ -160,6 +160,23 @@ mod tests {
         );
     }
 
+    /// Four AES blocks decrypt before the padding check reads the last one.
+    /// Changing the byte before the final block changes only that block's
+    /// plaintext last byte (CBC), from a valid `0x05` to invalid zero, so the
+    /// error comes from a decode that already produced three blocks of
+    /// plaintext — the path the wiped in-place buffer exists for.
+    #[test]
+    fn a_multiblock_ciphertext_with_invalid_padding_is_refused() {
+        let key = chromium_oscrypt_key(b"synthetic-owner-password");
+        let mut ciphertext = hex::decode(CHROMIUM_V11).unwrap();
+        assert_eq!(ciphertext.len(), 64, "four AES blocks");
+        ciphertext[47] ^= 0x05;
+        assert_eq!(
+            chromium_oscrypt_plaintext(&key, &ciphertext).err(),
+            Some(Error::Malformed("chromium padding"))
+        );
+    }
+
     #[test]
     fn rclone_obscure_matches_an_independent_vector() {
         assert_eq!(
