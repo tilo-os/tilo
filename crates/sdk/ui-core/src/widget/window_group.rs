@@ -916,7 +916,9 @@ impl WindowGroup {
         if elapsed >= spec.settle_time(direction, motion, source) {
             return to;
         }
-        let p = spec.progress_after(direction, motion, source, elapsed).clamp(0.0, 1.0);
+        let p = spec
+            .progress_after(direction, motion, source, elapsed)
+            .clamp(0.0, 1.0);
         self.top_slide_from + (to - self.top_slide_from) * p
     }
 
@@ -1967,11 +1969,6 @@ impl WindowGroup {
         self.closing_at = Some(t);
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_close_hover_for_tests(&mut self, hover: bool) {
-        self.close_hover = hover;
-    }
-
     fn clear_maximized_controls(&mut self) {
         self.maximized_controls.cancel_pointer_press();
         self.maximized_controls.begin_frame();
@@ -2416,12 +2413,6 @@ impl WindowGroup {
             &bar(offset),
         );
     }
-
-
-
-
-
-
 
     /// Paint the app being carried as one lifted object: real app pixels tucked
     /// under the translucent tab handle. This runs in the floating-surface pass
@@ -2998,12 +2989,7 @@ impl Widget for WindowGroup {
             // A maximized window filling its display draws edge to edge;
             // under a docked bar, or mid-fade, it is still a card.
             h.set_square_bottom(self.maximized);
-            h.set_full_bleed(
-                self.maximized
-                    && self.fills_display
-                    && !spawn_active
-                    && !bar_visible,
-            );
+            h.set_full_bleed(self.maximized && self.fills_display && !spawn_active && !bar_visible);
             let source_is_lifted = dragged_tab == Some(active_id);
             if source_is_lifted {
                 scene.push_layer(
@@ -4195,7 +4181,6 @@ mod tests {
         (g, taffy, group_node, moved, press)
     }
 
-
     #[test]
     fn maximize_toggles_rebuild_layout_and_drain_once() {
         // Case `maximize_click_on_the_window_control_toggles_maximized`.
@@ -4350,8 +4335,6 @@ mod tests {
                 "the second click reports the new (false) value once",
             );
         }
-
-
     }
 
     struct EdgeResizeJourney {
@@ -5328,8 +5311,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn refused_final_tab_close_restores_live_group_input() {
         let mut group = WindowGroup::new(
@@ -5353,10 +5334,6 @@ mod tests {
         assert_eq!(group.keyboard_input_scope(), Some(1));
         assert!(group.has_host(1));
     }
-
-
-
-
 
     #[test]
     fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
@@ -5629,89 +5606,6 @@ mod tests {
                 "after the fade window elapses the group goes idle again",
             );
         }
-
-    }
-
-    /// Lays `g` out at `w`×`h`, draws it through the production
-    /// [`Widget::draw`] and composites the scene on the theme's app ground —
-    /// the frame a person sees, not a helper that restates the paint code.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "small fixed test-canvas dimensions, exactly representable in f32"
-    )]
-    fn production_frame(g: &mut WindowGroup, theme: &Theme, w: u32, h: u32) -> Vec<u8> {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let node = g.build_layout(&mut taffy, theme, &mut node_map);
-        // A maximized group is `width: auto, flex_grow: 1e6`: it fills the
-        // strip it sits in. Give it one — a sized flex parent, as the strip
-        // is — or as a taffy root it collapses to 0 px and its chrome lands
-        // off-canvas.
-        let root = taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Style::default()
-            },
-            &[node],
-        );
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(w as f32),
-                    height: taffy::AvailableSpace::Definite(h as f32),
-                },
-                |k, a, id, _, _| {
-                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(k, a, &mut tr)
-                    })
-                },
-            )
-            .unwrap();
-        g.apply_layout(&taffy, node, Point::ZERO);
-        let mut scene = Scene::new();
-        g.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            theme,
-            &PresenceCtx::empty(),
-        );
-        crate::offscreen::OffscreenRenderer::new(w, h)
-            .render(&scene, theme.tokens.colors.surfaces.base)
-    }
-
-    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
-    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
-            .join(theme.name.to_lowercase());
-        std::fs::create_dir_all(&dir).expect("create requested screenshot evidence directory");
-        Some(dir.join(name))
-    }
-
-    /// Writes an RGBA frame as a PNG — the by-eye half of the evidence.
-    fn write_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) {
-        crate::png::write_rgba8(path, w, h, rgba).expect("write evidence png");
-    }
-
-    /// The composited colour at (`x`, `y`) of a `w`-wide RGBA frame.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "probe coordinates are non-negative pixel positions inside the test canvas"
-    )]
-    fn pixel(rgba: &[u8], w: u32, x: f64, y: f64) -> vello::peniko::Color {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
-            rgba,
-            w,
-            x.floor() as u32,
-            y.floor() as u32,
-        );
-        vello::peniko::Color::from_rgb8(r, g, b)
     }
 }
 
@@ -6013,10 +5907,6 @@ mod window_bar_tests {
         scene
     }
 
-
-
-
-
     /// Review frames: a maximized foreign-like window at rest (1× and 2×),
     /// the bar revealed and its Restore hovered, and a Tilo app with its
     /// header in the bar at rest and revealed, plus one with a permanent
@@ -6116,9 +6006,11 @@ mod window_bar_tests {
         let bar = g.bar_rect();
         let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
         assert!(bar.height() > 0.0, "the maximized window shows its bar");
-        assert!(bar.y1 <= content.y0 + 0.5, "the bar {bar:?} is over the content {content:?}");
+        assert!(
+            bar.y1 <= content.y0 + 0.5,
+            "the bar {bar:?} is over the content {content:?}"
+        );
     }
-
 
     /// Lay the group out as the strip does: a child of the work area, so an
     /// offset the group asks for applies (the layout root ignores one).
@@ -6171,6 +6063,9 @@ mod window_bar_tests {
         );
         g.set_top_overlay_inset(0.0);
         lay_out_in_strip(&mut g, &theme);
-        assert!((g.get_rect().y0 - before.y0).abs() < 0.5, "and back up when it hides");
+        assert!(
+            (g.get_rect().y0 - before.y0).abs() < 0.5,
+            "and back up when it hides"
+        );
     }
 }
