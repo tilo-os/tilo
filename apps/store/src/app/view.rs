@@ -474,12 +474,30 @@ impl StoreApp {
         }
     }
 
+    /// Why the catalogue couldn't be read, if it couldn't.
+    fn catalogue_unreachable(&self) -> Option<&String> {
+        self.operation_error.as_ref().or_else(|| {
+            self.remotes
+                .iter()
+                .find_map(|remote| remote.catalogue_error.as_ref())
+        })
+    }
+
     /// Updates: one list, Update all, and Update on each app.
     pub(super) fn build_updates(&self, theme: &Theme) -> Element {
         let mut children = self.catalogue_top();
         let ids = self.update_ids();
         if ids.is_empty() {
-            children.push(Box::new(EmptyState::new(ui::i18n!("store-updates-none"))));
+            // Without the catalogue nobody knows whether updates wait:
+            // "Every app is up to date" would be a guess.
+            let state = match self.catalogue_unreachable() {
+                Some(error) => EmptyState::error(
+                    ui::i18n!("store-offline-title"),
+                    visible_operation_status(error),
+                ),
+                None => EmptyState::new(ui::i18n!("store-updates-none")),
+            };
+            children.push(Box::new(state));
             return self.page(theme, Measure::Catalogue, true, children);
         }
         let rows: Vec<Element> = self
@@ -634,11 +652,7 @@ impl StoreApp {
                     )),
             );
         }
-        let empty = if let Some(error) = self.operation_error.as_ref().or_else(|| {
-            self.remotes
-                .iter()
-                .find_map(|remote| remote.catalogue_error.as_ref())
-        }) {
+        let empty = if let Some(error) = self.catalogue_unreachable() {
             EmptyState::error(
                 ui::i18n!("store-offline-title"),
                 visible_operation_status(error),
