@@ -13,8 +13,9 @@ so t.toml carries both, generated between markers:
   * the publishing chains of tools/ci/products.toml, one block per family
     (`products-<family>`; docs/publishing-on-t.md, "Products");
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
-    filter in the image .config/visual-goldens-image names, and the nightly
-    `nightly-arm64-goldens` check, which runs it there on aarch64;
+    filter in the image .config/visual-goldens-image names, the
+    `visual-goldens` check, which runs it on release candidates, and the
+    nightly `nightly-arm64-goldens` check, which runs it there on aarch64;
   * what the checks in CARGO_CHECKS read: the workspace packages they build,
     test or run (`cargo_packages`, whose sources, local dependencies and
     external crates t derives from the manifests and the lockfile), and the
@@ -136,6 +137,27 @@ def goldens(image: str) -> str:
         # the 90th-percentile peak cores, at most 16. Batches of its packages run as one job.
         'requirement = { cores = 16, memory = "48GiB" }',
         'cost = "minutes"',
+        # Pushes to main don't run it: it holds 16 cores and 48 GiB per job, and on main it took
+        # 21 job-hours a day. Release candidates do (visual-goldens below); `t test goldens`
+        # runs it for a working tree.
+        "default = false",
+        "",
+        "# The goldens family over all its packages, on every release candidate and on demand.",
+        "[[check]]",
+        'name = "visual-goldens"',
+        f"image = {json.dumps(image)}",
+        'requires = ["arch=x86_64"]',
+        "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
+                              f"--no-tests=pass {' '.join(f'-p {name}' for name in packages)} -E '{golden}'"),
+        'inputs = [".config/nextest.toml", ".config/nextest-filters.toml", ".config/visual-goldens-image", '
+        '"tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]',
+        f"cargo_packages = {array(packages)}",
+        'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
+        "writable_sources = true",
+        'requirement = { cores = 16, memory = "48GiB" }',
+        'cost = "heavy"',
+        'on = ["stable", "dispatch"]',
+        "default = false",
     ]) + "\n"
 
 
