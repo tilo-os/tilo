@@ -718,6 +718,37 @@ mod tests {
         );
     }
 
+    /// A temporary directory on tmpfs, where Home review takes the live
+    /// inventory route. Ext4 and XFS sources are deliberately not inventoried
+    /// at review time (the original system's offline boot reads them), so a
+    /// fixture there could not observe ACL policy refusals, byte summaries or
+    /// changed contents. `/tmp` is not tmpfs everywhere, so `/dev/shm` is
+    /// tried next.
+    #[cfg(target_os = "linux")]
+    fn live_review_tempdir() -> tempfile::TempDir {
+        use std::os::fd::AsRawFd;
+        let tmpfs = |root: &Path| {
+            let Ok(directory) = std::fs::File::open(root) else {
+                return false;
+            };
+            let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+            // SAFETY: a held directory fd and complete writable statfs storage.
+            if unsafe { libc::fstatfs(directory.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            // SAFETY: successful fstatfs initialized the output.
+            unsafe { filesystem.assume_init() }.f_type == libc::TMPFS_MAGIC
+        };
+        let candidates = [std::env::temp_dir(), PathBuf::from("/dev/shm")];
+        candidates
+            .iter()
+            .filter(|root| tmpfs(root))
+            .find_map(|root| tempfile::tempdir_in(root).ok())
+            .unwrap_or_else(|| {
+                panic!("live Home review fixtures need a writable tmpfs at {candidates:?}")
+            })
+    }
+
     #[cfg(target_os = "linux")]
     fn install_acl(path: &Path, default: bool, named: bool) -> Vec<u8> {
         use std::os::fd::AsRawFd;
@@ -790,7 +821,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn named_file_acl_review_refuses_before_ready_without_permission_retry() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = live_review_tempdir();
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         let document = home.join("document");
@@ -818,7 +849,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn named_default_directory_acl_review_refuses_before_ready() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = live_review_tempdir();
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         let original = install_acl(&home, true, true);
@@ -841,7 +872,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn supported_file_and_default_acls_review_successfully() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = live_review_tempdir();
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         let document = home.join("document");
@@ -903,9 +934,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn consented_other_device_source_holds_review_without_same_disk_intent() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = live_review_tempdir();
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         let file = home.join("document");
@@ -937,9 +969,10 @@ mod tests {
         assert!(selection.reviewed_handle().is_none());
         assert_eq!(selection.projection()["state"], "idle");
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn changed_contents_refresh_with_held_permission_but_directory_replacement_refuses() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = live_review_tempdir();
         let home = temp.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("document"), b"before").unwrap();
