@@ -3277,7 +3277,9 @@ mod tests {
             );
         }
 
-        // Case `the_chosen_segment_is_a_colourless_lift_with_readable_ink`.
+        // Case `the_chosen_segment_is_a_lift_with_readable_ink`: the thumb is
+        // its style's selector lift (on a light raised track the one white
+        // object in the well), tinted at most by the accent's faint hue.
         {
             use crate::a11y::contrast_ratio;
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -3291,14 +3293,14 @@ mod tests {
                     let fill = fill.expect("the chosen segment is lifted");
                     assert_eq!(
                         fill,
-                        selection_tier_on(&theme, SelectionState::active(true), ground).fill,
-                        "{} {style:?}: the thumb is the selection tier of its ground",
+                        segment_tier(&theme, style, SelectionState::active(true)).fill,
+                        "{} {style:?}: the thumb is its style's selector lift",
                         theme.name
                     );
                     let chroma = crate::color::Oklch::from_color(fill).c;
                     assert!(
-                        chroma <= 0.02,
-                        "{} {style:?}: the chosen segment carries no hue ({chroma})",
+                        chroma <= crate::tokens::palette::TINTED_LIFT_CHROMA + 0.01,
+                        "{} {style:?}: the chosen segment carries more than a faint tint ({chroma})",
                         theme.name
                     );
                     assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);

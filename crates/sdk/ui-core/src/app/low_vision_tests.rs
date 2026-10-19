@@ -296,16 +296,16 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
 
 #[test]
 fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
-    use crate::color_compat::ColorCompat as _;
     use crate::theme::WindowAppearance;
     use crate::tokens::PresenceHue;
 
     let mut a = app();
     a.set_theme(Theme::light());
     let neutral = a.theme.tokens.colors.surfaces.content;
-    assert!(
-        neutral.r() == neutral.g() && neutral.g() == neutral.b(),
-        "a window nobody told is neutral"
+    assert_eq!(
+        neutral,
+        Theme::light().tokens.colors.surfaces.content,
+        "a window nobody told keeps the stock temperature"
     );
 
     let told = WindowAppearance {
@@ -318,9 +318,18 @@ fn the_shell_s_window_appearance_dresses_the_theme_and_survives_rebuilds() {
     assert_eq!(a.window_appearance(), told);
     assert_eq!(a.theme.document.palette.hue, Some(40.0));
     assert_eq!(a.theme.tokens.colors.you, PresenceHue::Violet);
+    // The focus ring is the accent's ink: the colour's hue at the
+    // lightness its contrast floor needs.
     assert_eq!(
         a.theme.border_focus,
-        a.theme.tokens.colors.presence.hue(PresenceHue::Violet),
+        a.theme.tokens.colors.intent.accent_ink
+    );
+    let ring = crate::color::Oklch::from_color(a.theme.border_focus).h;
+    let violet =
+        crate::color::Oklch::from_color(a.theme.tokens.colors.presence.hue(PresenceHue::Violet)).h;
+    let d = (ring - violet).rem_euclid(360.0);
+    assert!(
+        d.min(360.0 - d) <= 15.0,
         "focus ring, caret and selection follow"
     );
     assert_ne!(a.theme.tokens.colors.surfaces.content, neutral);

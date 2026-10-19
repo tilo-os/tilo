@@ -1550,9 +1550,16 @@ mod tests {
                         ("secondary", c.text_dim),
                         ("tertiary", c.text_tertiary),
                         ("border", c.border_standard),
-                        ("selection", c.intent.selection),
                     ]);
                     neutrals.extend(c.neutral.stops.iter().map(|s| ("ramp", *s)));
+                    // The selection is the one lift that carries the accent's
+                    // faint tint (design language, "Lifts"), never more.
+                    let selection = Oklch::from_color(c.intent.selection);
+                    assert!(
+                        selection.c <= TINTED_LIFT_CHROMA.max(palette.chroma) + 0.004,
+                        "{label}@{hue}: selection has chroma {:.4}",
+                        selection.c
+                    );
                     for (name, colour) in neutrals {
                         let o = Oklch::from_color(colour);
                         // 8-bit quantisation alone is worth a few thousandths

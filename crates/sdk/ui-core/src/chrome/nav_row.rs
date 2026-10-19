@@ -1436,8 +1436,10 @@ mod tests {
         );
     }
 
+    /// A selected row is a visible lift, tinted only by the accent's faint
+    /// hue (design language, "Lifts"); monochrome keeps it colourless.
     #[test]
-    fn a_selected_row_is_a_visible_neutral_lift() {
+    fn a_selected_row_is_a_visible_lift_in_the_accents_faint_tint() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             for region in [
                 crate::surface::Region::Content,
@@ -1455,9 +1457,14 @@ mod tests {
                     theme.name
                 );
                 let lift = crate::color::Oklch::from_color(lift);
+                let tint = if local.tokens.colors.accent_hue().is_some() {
+                    crate::tokens::palette::TINTED_LIFT_CHROMA
+                } else {
+                    0.0
+                };
                 assert!(
-                    lift.c <= 0.011,
-                    "{} {region:?}: the lift carries no hue (C {})",
+                    lift.c <= tint + 0.011,
+                    "{} {region:?}: the lift carries more than the accent's faint tint (C {})",
                     theme.name,
                     lift.c
                 );

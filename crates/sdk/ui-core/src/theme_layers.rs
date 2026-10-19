@@ -749,11 +749,17 @@ mod tests {
             window: in_warm_room,
             ..ThemeLayerStack::default()
         });
-        assert_eq!(
-            neutral.tokens.colors.surfaces.content,
-            Theme::dark().tokens.colors.surfaces.content,
-            "chroma 0 shows none"
+        // The stock dark material takes the room's hue at its own lightness
+        // and chroma (design language, "Workspace temperature").
+        let (room, stock) = (
+            crate::color::Oklch::from_color(neutral.tokens.colors.surfaces.content),
+            crate::color::Oklch::from_color(Theme::dark().tokens.colors.surfaces.content),
         );
+        assert!(
+            (room.l - stock.l).abs() <= 0.005,
+            "the temperature moves no lightness"
+        );
+        assert!(room.c <= 0.014, "nor adds chroma: {}", room.c);
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
             window: in_warm_room,
@@ -788,10 +794,13 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(mine.tokens.colors.you, PresenceHue::Violet);
-        assert_eq!(
-            mine.border_focus,
-            mine.tokens.colors.presence.hue(PresenceHue::Violet)
-        );
+        // The ring is the accent's ink: the colour's hue at its contrast floor.
+        assert_eq!(mine.border_focus, mine.tokens.colors.intent.accent_ink);
+        let ring = crate::color::Oklch::from_color(mine.border_focus).h;
+        let violet =
+            crate::color::Oklch::from_color(mine.tokens.colors.presence.hue(PresenceHue::Violet)).h;
+        let d = (ring - violet).rem_euclid(360.0);
+        assert!(d.min(360.0 - d) <= 15.0, "the ring is the person's colour");
         // The identity's colour reaches a window through its host, never
         // through the settings document's theme.
         let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);

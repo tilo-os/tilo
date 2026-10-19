@@ -649,8 +649,12 @@ mod tests {
                 "on-track is the on colour"
             );
             assert_eq!(
-                off.track, theme.tokens.colors.intent.selection,
-                "off-track is a lift off the ground, not a ramp slot"
+                off.track,
+                theme
+                    .tokens
+                    .colors
+                    .lift_on(theme.tokens.colors.surfaces.content, 1.0),
+                "off-track is the neutral lift off the window ground, not a ramp slot"
             );
             assert_ne!(on.track, off.track, "on and off tracks must differ");
         }
