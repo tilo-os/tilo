@@ -182,6 +182,58 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, _ = contract.audit(root)
             self.assertTrue(any("no toolkit resource descriptor" in item.reason for item in violations))
 
+    def test_a_shared_framework_app_definition_publishes_its_resource(self):
+        source = (
+            "pub use shared_ui::SampleApp;\n"
+            "pub fn definition() -> &'static ui::application::ApplicationDefinition {\n"
+            "    shared_ui::definition()\n"
+            "}\n"
+        )
+        dependencies = (
+            'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+            'shared_ui={path="../../crates/shared-ui"}\n'
+        )
+        with self.subTest(phase='delegated definition passes'):
+            root = self.fixture(source, dependencies=dependencies)
+            shared = root / "crates" / "shared-ui" / "src"
+            shared.mkdir(parents=True)
+            (shared / "lib.rs").write_text(
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
+                "impl Note {}\n"
+                "pub struct SampleApp;\n"
+                "impl ResourceApp for SampleApp { type Resource = Note; }\n"
+                "pub fn definition() -> &'static ApplicationDefinition { todo!() }\n",
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+        with self.subTest(phase='re-export without delegating definition still fails'):
+            root = self.fixture(
+                "pub use shared_ui::SampleApp;\n", dependencies=dependencies
+            )
+            shared = root / "crates" / "shared-ui" / "src"
+            shared.mkdir(parents=True)
+            (shared / "lib.rs").write_text(
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"shared.note\", label = \"Note\")]\n"
+                "impl Note {}\n"
+                "impl ResourceApp for SampleApp { type Resource = Note; }\n",
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+        with self.subTest(phase='delegation to a crate without a resource still fails'):
+            root = self.fixture(source, dependencies=dependencies)
+            shared = root / "crates" / "shared-ui" / "src"
+            shared.mkdir(parents=True)
+            (shared / "lib.rs").write_text(
+                "pub fn definition() -> &'static ApplicationDefinition { todo!() }\n",
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertIn("Widget::resources", "\n".join(item.reason for item in violations))
+
     def test_only_a_compute_package_publishes_no_surface_of_its_own(self):
         compute_manifest = (
             '[package]\nid="so.tilo.sample"\nkind="service"\n'

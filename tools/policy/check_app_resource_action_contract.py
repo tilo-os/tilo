@@ -762,6 +762,57 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
     return False
 
 
+SHARED_DEFINITION = re.compile(
+    r"\bfn\s+definition\s*\(\s*\)[^{]*\{\s*([A-Za-z_][A-Za-z0-9_]*)::definition\s*\(\s*\)"
+)
+SHARED_REEXPORT = re.compile(r"\bpub\s+use\s+([A-Za-z_][A-Za-z0-9_]*)::")
+
+
+def shared_framework_host(
+    root: Path, app_dir: Path, manifest: dict, combined: str
+) -> bool:
+    """Whether the app hosts a framework app whose resource a re-exported
+    workspace crate declares.
+
+    A portable app can re-export a shared `ResourceApp` and return its
+    `definition()`; the resource, its verbs and its surface live in that
+    crate. The app then publishes through the shared app exactly as an app
+    that declares the same items locally. Only a direct path dependency the
+    app re-exports and delegates `definition()` to is followed, so an
+    unrelated library cannot satisfy the contract.
+    """
+    delegated = set(SHARED_DEFINITION.findall(combined))
+    if not delegated:
+        return False
+    aliases = delegated & set(SHARED_REEXPORT.findall(combined))
+    if not aliases:
+        return False
+    for table in dependency_tables(manifest):
+        for alias, specification in table.items():
+            if isinstance(specification, dict) and specification.get("package"):
+                alias = specification["package"]
+            if alias.replace("-", "_") not in aliases or not isinstance(specification, dict):
+                continue
+            path = specification.get("path")
+            if not isinstance(path, str):
+                continue
+            dependency = (app_dir / path).resolve()
+            try:
+                dependency.relative_to(root.resolve())
+            except ValueError:
+                continue
+            source = dependency / "src"
+            if not source.is_dir():
+                continue
+            text = "\n".join(
+                item.read_text(encoding="utf-8") for item in sorted(source.rglob("*.rs"))
+            )
+            code = code_only(text)
+            if FRAMEWORK_APP.search(code) and FRAMEWORK_RESOURCE.search(code):
+                return True
+    return False
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -1036,7 +1087,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None
-            )
+            ) or shared_framework_host(root, manifest_path.parent, manifest, combined)
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
             # A host with several operations builds its descriptor directly;
             # the toolkit helpers each describe a single operation.
