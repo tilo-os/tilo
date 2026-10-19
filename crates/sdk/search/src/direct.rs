@@ -118,7 +118,7 @@ impl Direct {
             .enumerate()
             .map(|(at, word)| {
                 let scalars: Vec<char> = word.chars().collect();
-                let distance = typo_distance(scalars.len());
+                let distance = typo_distance(&scalars);
                 let prefix = at == last;
                 self.words
                     .iter()
