@@ -117,7 +117,7 @@ ENGINES = {
     "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
                               "libtilo_contact_directory_engine.so",
     "tilo-pdf-engine": "the PDF engine's library (libtilo_pdf_engine.so)",
-    "tilo-pdf": "the PDF engine, which PDF Viewer, Files, Writer and Print Centre load from "
+    "tilo-pdf": "the PDF engine, which PDF Viewer, Files and Print Centre load from "
                 "libtilo_pdf_engine.so",
     "hayro": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
     "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
