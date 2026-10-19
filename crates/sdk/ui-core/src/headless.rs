@@ -3554,7 +3554,7 @@ impl FrameHarness {
                     )?;
                 }
             }
-            drop(layout_phase);
+            layout_phase.end();
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
@@ -3937,7 +3937,7 @@ impl FrameHarness {
         self.replayed_window_draws = self
             .replayed_window_draws
             .saturating_add(u64::try_from(replayed).unwrap_or(u64::MAX));
-        drop(draw_phase);
+        draw_phase.end();
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
