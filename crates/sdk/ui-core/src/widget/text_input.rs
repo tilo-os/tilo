@@ -6432,6 +6432,12 @@ impl crate::widget::controls::ActionControls for TextInput {
         {
             bindings.push(ControlBindingMetadata::semantic(reveal));
         }
+        // The trailing accessory is a control of its own in the semantics
+        // whenever it is shown, activated through the semantic route
+        // (`perform_semantic_action`).
+        if self.accessory.is_some() && self.accessory_rect().is_some() {
+            bindings.push(ControlBindingMetadata::semantic(ACCESSORY_TARGET));
+        }
         bindings
     }
     fn refresh_control_action_availability(
