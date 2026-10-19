@@ -22,13 +22,15 @@ dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
 
 [product.context]
-run = "bash tools/ci/publish/room-service-context.sh {dir}/context"
-inputs = ["Cargo.lock", "os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+run = "bash tools/ci/publish/room-service-context.sh {dir}/context /target/publish/room-service/bin /target/publish/web-desktop/bundle"
+inputs = ["os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/container/**", "crates/hosting/tilo-room-service/web/**", "apps/discord/bridge/program.json", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+# The programs and the desktop bundle, built side by side; the bundle is the web entry's too.
+needs = ["room-service-binaries", "web-desktop-bundle"]
 outputs = ["{dir}/context/**"]
-# The release bundle records the commit it was built from (git rev-parse, git status).
+# The image's revision label names the commit (git rev-parse).
 git = true
-cost = "heavy"
-requirement = { cores = 8, memory = "24GiB" }
+cost = "minutes"
+requirement = { cores = 1, memory = "2GiB" }
 
 [product.build]
 context = "{dir}/context"
@@ -57,12 +59,14 @@ dev = ["dev-{commit}"]
 release = ["sha-{commit}"]
 
 [product.context]
-run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
-inputs = ["Cargo.lock", "crates/browser/**", "apps/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+run = "bash tools/ci/publish/web-entry-context.sh {dir}/context /target/publish/web-desktop/bundle"
+inputs = ["crates/browser/tilo-browser-runtime/container/**"]
+# The desktop bundle it lays out, shared with the room service.
+needs = ["web-desktop-bundle"]
 outputs = ["{dir}/context/**"]
 git = true
-cost = "heavy"
-requirement = { cores = 8, memory = "24GiB" }
+cost = "minutes"
+requirement = { cores = 1, memory = "2GiB" }
 
 [product.build]
 context = "{dir}/context"

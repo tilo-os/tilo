@@ -1,38 +1,32 @@
 #!/usr/bin/env bash
 # The room service image's build context (crates/hosting/tilo-room-service/container): the
-# relay, room service and connector binaries, the product fonts, the desktop bundle and pages.
-# Built in the CI builder, which has the Rust, wasm and Node toolchains, so the Containerfile
-# only copies them. usage: room-service-context.sh OUT
+# programs (room-service-binaries.sh), the product fonts, the desktop bundle
+# (web-desktop-bundle.sh, shared with the web entry's image) and the room's pages. The programs
+# and the bundle are outputs of checks of their own that build side by side; this only lays them
+# out, so the Containerfile only copies them.
+# usage: room-service-context.sh OUT BINARIES BUNDLE
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-out=${1:?usage: room-service-context.sh OUT}
+usage='usage: room-service-context.sh OUT BINARIES BUNDLE'
+out=${1:?$usage}
+binaries=${2:?$usage}
+bundle=${3:?$usage}
 cd "$repo_root"
+[[ -x $binaries/tilo-relay && -x $binaries/tilo-room-service ]] || die "no room service programs in $binaries"
+[[ -f $bundle/build.json ]] || die "no desktop bundle at $bundle"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/bots"
-# Fat LTO over one codegen unit got the relay's link killed for memory; thin LTO keeps these
-# server binaries fast at a fraction of the memory and time.
-export CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
-cargo build --locked --release -p tilo-room-service
-cp "$target/release/tilo-relay" "$target/release/tilo-room-service" "$out/bin/"
+cp "$binaries"/* "$out/bin/"
 export TILO_FONT_ASSET_CACHE=$target/font-artifacts
 TILO_FONT_ASSETS_OFFLINE=0 python3 tools/font-catalog.py prepare crates/sdk/ui-core/assets/fonts \
   "$out/bin/fonts" --scope product
-package=$(cargo metadata --locked --no-deps --format-version 1 \
-  | jq -r '.packages[] | select(any(.targets[]; .name == "discord-worker" and (.kind | index("bin")))) | .name' | head -1)
-if [[ -n $package ]]; then
-  cargo build --locked --release -p "$package" --bin discord-worker
-  cp "$target/release/discord-worker" "$out/bin/"
-fi
 cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
-moq=$scratch/moq-browser
-rm -rf "$moq" && cp -r scripts/moq-browser "$moq"
-TILO_MOQ_BROWSER_DIR=$moq crates/browser/tilo-browser-runtime/scripts/build.sh "$out/assets" --bundle desktop >/dev/null
+cp -r "$bundle" "$out/assets"
+chmod -R u+w "$out/assets"
 cp crates/hosting/tilo-room-service/web/* "$out/assets/"
 cp crates/hosting/tilo-room-service/container/Containerfile \
   crates/hosting/tilo-room-service/container/Containerfile.dockerignore \
   os/scripts/verify-no-cisco-openh264.sh "$out/"
-# The image's revision label: the commit this context was built from. t reuses the build for
-# later commits with the same inputs, whose receipts name them.
+# The image's revision label: the commit this context was built from.
 git rev-parse HEAD > "$out/source-revision"

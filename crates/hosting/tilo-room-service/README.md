@@ -259,8 +259,11 @@ longer than 15 s is dropped. Calls never hold up a reply.
 ## Build and run
 
 The image is built by t's `image-room-service-context` and `image-room-service`
-checks (`tools/ci/products.toml`, docs/publishing-on-t.md): the context step compiles
-`tilo-relay` (feature `agents`), `tilo-room-service` and the desktop bundle, and buildah
+checks (`tools/ci/products.toml`, docs/publishing-on-t.md): the context step lays out the
+programs `room-service-binaries` builds (`tilo-relay` with feature `agents`, whose agent
+participant links every web app because the host mounts the apps' own components, and
+`tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle` builds
+beside them for the web entry's image too; buildah
 assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
 `container/test-image.sh` smoke-tests the archive. Main publishes
 `registry.tilo.so/tilo/room-service:dev-<commit>`, stable the signed
