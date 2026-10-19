@@ -5,7 +5,7 @@
 //! covers stays visible behind it.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Shape};
+use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, ColorStop, Fill, Gradient};
 
 use crate::theme::Theme;
@@ -55,9 +55,12 @@ pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, openness: f3
     modal(scene, transform, rect, openness, theme);
 }
 
-/// Dim only the background around a modal's foreground. Floating material
-/// records the scene behind it for blur, so dimming underneath the panel
-/// would also darken the material a foreground control stands on.
+/// Dim the whole window behind a modal Panel, the part under the panel
+/// included. Floating material blurs the scene recorded behind it, so the
+/// scrim belongs under the material: a bright control behind the panel (a
+/// primary button) is dimmed with everything else before it is blurred,
+/// instead of glowing through the sheet as a coloured smudge. `panel` is
+/// where the sheet stands; the dim does not stop at its edge.
 pub fn behind_panel(
     scene: &mut Scene,
     transform: Affine,
@@ -65,17 +68,8 @@ pub fn behind_panel(
     panel: RoundedRect,
     theme: &Theme,
 ) {
-    let mut background = window.to_path(0.1);
-    background.extend(panel.path_elements(0.1));
-    scene.push_layer(
-        Fill::EvenOdd,
-        BlendMode::default(),
-        1.0,
-        transform,
-        &background,
-    );
+    let _ = panel;
     modal(scene, transform, window, 1.0, theme);
-    scene.pop_layer();
 }
 
 /// The edge of a [`vertical_fade`] where it is strongest.
@@ -148,6 +142,23 @@ pub fn fade_alpha(t: f64, strength: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scrim is under the sheet's material, not cut around it: the
+    /// material blurs a dimmed scene, so a primary button behind a sheet
+    /// does not glow through it as a coloured smudge.
+    #[test]
+    fn the_scrim_runs_under_the_panel_so_its_material_blurs_dimmed_content() {
+        let window = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let panel = RoundedRect::from_rect(Rect::new(200.0, 150.0, 600.0, 450.0), 18.0);
+        let mut scene = Scene::new();
+        behind_panel(&mut scene, Affine::IDENTITY, window, panel, &Theme::dark());
+        let mut whole = Scene::new();
+        modal(&mut whole, Affine::IDENTITY, window, 1.0, &Theme::dark());
+        assert!(
+            scene.encoding().draw_tags == whole.encoding().draw_tags,
+            "the same dim as the whole window's, with no hole cut for the panel"
+        );
+    }
 
     #[test]
     fn the_fade_is_smooth_monotonic_and_one_gradient() {
