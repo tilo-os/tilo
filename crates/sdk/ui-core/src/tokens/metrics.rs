@@ -116,6 +116,10 @@ pub struct Metrics {
     /// The line length of long-form reading text (documents, books, notes):
     /// about 66 characters of the `Reading` role at the stock text size.
     pub reading_measure: f32,
+    /// The longest line a short message runs to (an empty state's title and
+    /// message), so a wide window wraps it under its title instead of
+    /// stretching one sentence across the whole width.
+    pub message_measure: f32,
     /// The width a compact chooser (dropdown, segmented switch, single-line
     /// entry) keeps beside its label in a form row.
     pub chooser_width: f32,
@@ -223,6 +227,7 @@ impl Metrics {
         layout_hysteresis: 24.0,
         readable_width: 720.0,
         reading_measure: 640.0,
+        message_measure: 560.0,
         chooser_width: 224.0,
         wheel_line: 60.0,
         scroll_thumb: 8.0,
@@ -340,6 +345,7 @@ impl Metrics {
             layout_hysteresis: self.layout_hysteresis * factor,
             readable_width: self.readable_width * factor,
             reading_measure: self.reading_measure * factor,
+            message_measure: self.message_measure * factor,
             chooser_width: self.chooser_width * factor,
             wheel_line: self.wheel_line * factor,
             scroll_thumb: self.scroll_thumb * factor,
@@ -392,6 +398,7 @@ mod tests {
         for (one, scaled) in [
             (base.readable_width, scaled.readable_width),
             (base.reading_measure, scaled.reading_measure),
+            (base.message_measure, scaled.message_measure),
             (base.chooser_width, scaled.chooser_width),
             (base.wheel_line, scaled.wheel_line),
             (base.scroll_thumb, scaled.scroll_thumb),

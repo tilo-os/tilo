@@ -139,6 +139,8 @@ struct StackStyle {
     action: TextStyle,
     gap: f64,
     text_gap: f64,
+    /// The longest line the title and message run to.
+    measure: f64,
     pad_y: f64,
     min_button: f64,
     glyph: f64,
@@ -166,6 +168,7 @@ impl StackStyle {
             action: wrapped(TextRole::Label),
             gap: f64::from(theme.tokens.spacing.s4),
             text_gap: f64::from(theme.tokens.spacing.s3),
+            measure: f64::from(theme.tokens.metrics.message_measure),
             pad_y: f64::from(theme.tokens.spacing.s2),
             min_button: f64::from(theme.tokens.metrics.min_pointer_target),
             glyph: if inline { glyph } else { glyph * 2.0 },
@@ -228,7 +231,7 @@ impl StackStyle {
             clippy::cast_possible_truncation,
             reason = "window widths are logical pixels well within f32 range"
         )]
-        let inner_width = (width - gap * 2.0).clamp(1.0, READABLE_MEASURE) as f32;
+        let inner_width = (width - gap * 2.0).clamp(1.0, self.measure) as f32;
         let (_, title_h) =
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
@@ -264,11 +267,6 @@ impl StackStyle {
         }
     }
 }
-
-/// The longest line an empty state's title and message run to: a readable
-/// measure, so a wide window wraps the message under the title instead of
-/// stretching one sentence across the whole width.
-const READABLE_MEASURE: f64 = 560.0;
 
 /// The measure the technical detail wraps at: the stack's inner width,
 /// kept to a readable line.
@@ -2174,7 +2172,7 @@ mod tests {
         };
         let style = StackStyle::resolved(&theme, false);
         let wide = style.measure(&mut text, 1600.0, &content);
-        assert!(f64::from(wide.inner_width) <= READABLE_MEASURE);
+        assert!(f64::from(wide.inner_width) <= f64::from(theme.tokens.metrics.message_measure));
         let one_line = style.measure(&mut text, 1600.0, &EmptyStateContent {
             message: Some("Ag"),
             ..content
