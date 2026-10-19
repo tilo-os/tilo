@@ -19,6 +19,57 @@ pub(super) struct State {
     /// Signals the worker, started with the first admission, that the slot
     /// holds one to admit.
     worker: OnceLock<mpsc::Sender<()>>,
+    /// Inputs held until the app surface they are decided against is here.
+    held: Mutex<Held>,
+}
+
+/// Inputs neither admitted nor refused because the app surface they are
+/// decided against was not here yet ([`tilo_peer_state::HELD_FOR_SURFACE`]):
+/// a room replays its records to a member as it joins, often before the app
+/// that opens them has started and named its surface. Dropping them lost
+/// the records' history for good, and every later change to them then
+/// failed in the app ("change's deps should already be in the document").
+/// They are admitted again, in the order they arrived, once a surface is
+/// named.
+#[derive(Default)]
+struct Held {
+    waiting: std::collections::VecDeque<native_ingress::Input>,
+    /// Taken from `waiting` to be admitted again, oldest first.
+    again: std::collections::VecDeque<native_ingress::Input>,
+    /// [`ui::app_surface::registered`] when `waiting` was last taken.
+    seen: u64,
+}
+
+/// The most inputs held at once. A replay holds one per record change it
+/// carries before the app starts; past this the oldest goes, and the room's
+/// next checkpoint refresh delivers it again.
+const MAX_HELD: usize = 4096;
+
+impl State {
+    /// Keep `input` until a surface is named.
+    pub(super) fn hold(&self, input: native_ingress::Input) {
+        let mut held = self.held.lock_recover();
+        if held.waiting.len() >= MAX_HELD {
+            held.waiting.pop_front();
+            tracing::warn!("a held relay input was dropped: too many waiting for app surfaces");
+        }
+        held.waiting.push_back(input);
+    }
+
+    /// The next held input to admit again, once a surface was named since
+    /// they were held.
+    pub(super) fn next_again(&self) -> Option<native_ingress::Input> {
+        let mut held = self.held.lock_recover();
+        if held.again.is_empty() && !held.waiting.is_empty() {
+            let named = ui::app_surface::registered();
+            if named != held.seen {
+                held.seen = named;
+                let waiting = std::mem::take(&mut held.waiting);
+                held.again = waiting;
+            }
+        }
+        held.again.pop_front()
+    }
 }
 
 #[derive(Default)]

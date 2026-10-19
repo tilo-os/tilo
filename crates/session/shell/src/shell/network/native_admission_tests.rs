@@ -185,3 +185,75 @@ fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     );
     assert_eq!(fixture.net.event_rx.lock().unwrap().len(), 0);
 }
+
+/// A room replays its records to a member as it joins, often before the
+/// app that opens them has named its surface. Such an input is held, not
+/// dropped, and admitted again, in the order it arrived, once a surface is
+/// named: dropping it lost the record's history, and every later change to
+/// it then failed in the app.
+#[test]
+fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
+    let directory = tempfile::tempdir().unwrap();
+    let owner = tilo_joined_room::open_file(&directory.path().join("owner.json")).unwrap();
+    let (intent, bootstrap, messages, governor, now) = raw_fixture();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    owner.install(&enrollment, now).unwrap();
+    let room = RoomId::parse(ROOM).unwrap();
+    let (certificate, hint, continuity) = owner
+        .with_current(room, |view| {
+            Ok((
+                view.device().clone(),
+                view.transport_hint()?.clone(),
+                view.continuity(),
+            ))
+        })
+        .unwrap();
+    let scope = Arc::new(native_ingress::Scope::new(
+        native_ingress::Connect::new(owner.clone(), room).unwrap(),
+        hint,
+        certificate,
+        continuity,
+    ));
+    let mut documents = messages
+        .into_iter()
+        .filter(|message| matches!(message, NeighbourMsg::AppDocument { .. }));
+    let first = scope.input(governor, true, documents.next().expect("a document"));
+    let second = scope.input(governor, true, first.message().clone());
+    let state = native_admission::State::default();
+
+    state.hold(first);
+    state.hold(second);
+    ui::app_surface::register_package(
+        "so.tilo.test.held-input",
+        b"[[resources]]\nkind = \"held.input\"\n",
+    );
+    assert!(
+        state.next_again().is_some(),
+        "a surface was named: what was held is admitted again"
+    );
+    assert!(state.next_again().is_some());
+    assert!(state.next_again().is_none(), "both were taken, in order");
+
+    let third = scope.input(
+        governor,
+        true,
+        documents
+            .next()
+            .unwrap_or(NeighbourMsg::Heartbeat { peer: 0, ts: 0 }),
+    );
+    state.hold(third);
+    assert!(
+        state.next_again().is_none(),
+        "held again with no surface named since: it waits"
+    );
+    ui::app_surface::register_package(
+        "so.tilo.test.held-input-later",
+        b"[[resources]]\nkind = \"held.later\"\n",
+    );
+    assert!(
+        state.next_again().is_some(),
+        "another surface was named: it is admitted again"
+    );
+    assert!(state.next_again().is_none());
+}
