@@ -1894,8 +1894,10 @@ mod tests {
             );
         }
 
-        /// Older layouts are refused too, and the file is left untouched.
-        fn older_and_unversioned_state_files_are_refused_and_preserved() {
+        /// Layouts older than any step brings up are refused too, and the
+        /// file is left untouched. (A file of a version a step reads comes up
+        /// to date instead; the migration test covers that.)
+        fn too_old_and_unversioned_state_files_are_refused_and_preserved() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
 
@@ -1921,7 +1923,7 @@ mod tests {
                  removes nothing and the test is vacuous"
             );
             let mut older = written;
-            older["schema_version"] = serde_json::json!(NATIVE_STATE_SCHEMA_VERSION - 1);
+            older["schema_version"] = serde_json::json!(STATE_FORMAT.oldest - 1);
             for raw in [unversioned, older] {
                 let on_disk = serde_json::to_string_pretty(&raw).expect("re-json");
                 std::fs::write(&path, &on_disk).expect("write older state");
@@ -1945,7 +1947,7 @@ mod tests {
 
         a_written_state_file_stamps_its_schema_version();
         a_newer_state_file_is_refused_preserved_and_reported();
-        older_and_unversioned_state_files_are_refused_and_preserved();
+        too_old_and_unversioned_state_files_are_refused_and_preserved();
     }
 
     #[test]
