@@ -19,6 +19,7 @@ set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repo_root/tools/ci/publish/lib.sh"
+source "$repo_root/tools/apps/release-lib.sh"
 cd "$repo_root"
 
 # Public settings the release has always used (formerly repository variables).
@@ -28,53 +29,6 @@ registry_owner_pubkey=55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa
 
 default_apps() {
   python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | jq -r '.apps | join(" ")'
-}
-
-release_only() {
-  [[ $(channel) == release ]] || die "apps are signed and published from stable or a release tag, not ${T_REF}"
-  require_commit
-}
-
-# A file holding secret $1's value, readable only by this user, removed on exit.
-secret_file() {
-  local name=$1 file
-  [[ -n ${!name:-} ]] || die "$name is not set: the check needs secrets = [\"$name\"]"
-  file=$(mktemp "$scratch/$name.XXXXXX")
-  (umask 077 && printf '%s' "${!name}" > "$file")
-  unset "$name"
-  printf '%s' "$file"
-}
-
-# Every core compiles, bounded by memory: 2 GiB per job.
-cargo_jobs() {
-  local cpus memory limit quota period jobs
-  cpus=$(nproc)
-  if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
-    cpus=$(( (quota + period - 1) / period ))
-  fi
-  memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
-  if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
-    (( limit < memory )) && memory=$limit
-  fi
-  jobs=$(( memory / (2 << 30) ))
-  (( jobs > cpus )) && jobs=$cpus
-  (( jobs < 1 )) && jobs=1
-  printf '%s' "$jobs"
-}
-
-# The commit's time in seconds, which the release sequence and the packages' timestamps are.
-# The trusted steps on x86_64 run without Git (t's x86 micro-VMs have no room for a Git disk
-# beside the needs' outputs), so it comes from the forge, which serves the public history.
-commit_epoch() {
-  local date
-  if git rev-parse --verify --quiet "$T_COMMIT^{commit}" >/dev/null 2>&1; then
-    git show -s --format=%ct "$T_COMMIT"
-    return
-  fi
-  date=$(curl --fail --silent --show-error --proto '=https' --retry 3 \
-    "https://code.tilo.so/api/v1/repos/tilo/tilo/git/commits/$T_COMMIT?stat=false&verification=false&files=false" \
-    | jq -er '.commit.committer.date') || die "could not read $T_COMMIT's time from the forge"
-  date -d "$date" +%s
 }
 
 # The publication environment publish-collections.sh reads, for this trusted run.
