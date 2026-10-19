@@ -123,11 +123,6 @@ ENGINES = {
     "hayro-interpret": "the in-process PDF rasteriser, in libtilo_pdf_engine.so",
     "hayro-jpeg2000": "the PDF rasteriser's JPEG 2000 decoder, in libtilo_pdf_engine.so",
     "pdfium-render": "the pdfium helper's bindings, in libtilo_pdf_engine.so",
-    "tilo-search-engine": "the search engine's library (libtilo_search_engine.so)",
-    "tilo-search-tantivy": "the search layer's engine, which tilo-search opens from "
-                           "libtilo_search_engine.so the first time a large index is searched",
-    "tantivy": "the search engine, in libtilo_search_engine.so",
-    "rust-stemmers": "tantivy's stemmers and their tables, in libtilo_search_engine.so",
     "tilo-highlight-engine": "the syntax grammars' engine library (libtilo_highlight_engine.so)",
     "tilo-highlight-grammars": "the syntax grammars, which the toolkit opens from "
                                "libtilo_highlight_engine.so the first time code is highlighted",
@@ -220,7 +215,6 @@ def links_keys() -> frozenset[str]:
 # engine on first use instead), and rustc links no crate the code does not
 # name, so with it on the edge puts nothing on the runtime's link line.
 LAZY_EDGES = {
-    ("tilo-search", "tilo-search-tantivy"): "lazy-engine",
     ("tilo-ui", "tilo-highlight-grammars"): "lazy-highlight",
     ("tilo-ui", "tilo-content-blocker"): "lazy-adblock",
 }

@@ -130,19 +130,17 @@ its start shows it loads the accounts engine itself.
 ### Engines the toolkit opens on first use
 
 Some code the toolkit reaches on behalf of every app, but only once a person
-does something particular: the search engine (tantivy, with rust-stemmers'
-tables) for an index too large to answer from its records, the syntax
+does something particular: the syntax
 grammars (syntect, fancy-regex and two-face's packed grammars) for a line of
 code, the ad-block compiler (adblock-rust) for the browser's filter lists. No
 app names those engines: the toolkit opens them by name the first time
 (`tilo-engine-loader`: `dlopen` with local symbols, never closed) and calls
 one entry function, whose type the toolkit defines and the engine crate is
-checked against at compile time (`tilo_search::EngineEntry`,
-`tilo_highlight::GrammarsEntry`, `ui::webview::adblock::EngineEntry`):
+checked against at compile time (`tilo_highlight::GrammarsEntry`,
+`ui::webview::adblock::EngineEntry`):
 
 | engine library | opened by | the first time |
 |---|---|---|
-| `libtilo_search_engine.so` | `tilo-search` (`lazy-engine`) | a large index commits or is searched |
 | `libtilo_highlight_engine.so` | the code editor's highlighter (`lazy-highlight`) | a line of code is highlighted |
 | `libtilo_adblock_engine.so` | `ui::webview::adblock` (`lazy-adblock`) | an app compiles filter lists |
 
@@ -153,10 +151,17 @@ every other build (`tilo-app dev`, workspace tests, the shell) links it as
 before. The surface check knows these edges (`LAZY_EDGES`). The engine's
 check binary goes through the toolkit's own path, so a release proves the
 runtime finds and runs it. A library that does not open is logged once:
-large indexes then find nothing, code highlights as plain text, filter lists
+code highlights as plain text, filter lists
 do not compile. The Typst engine chains on the highlight engine (Typst's raw
 blocks use the same syntect and grammars), so Typst Editor maps one copy and
 the toolkit's `dlopen` finds it already loaded.
+
+The search engine (tantivy) is in the runtime again. Splitting it into a
+library of its own left tilo-search naming it, so the runtime kept tantivy
+and, through tantivy-sstable, zstd, and the engine library then called the
+runtime's copy of zstd's C library, whose symbols a Rust dylib does not
+export. It stays one copy in the runtime until tilo-search can leave it out
+entirely.
 
 ### Tables without relocations
 
@@ -189,7 +194,7 @@ process copies and relocates before `main`:
 
 | change | relocated data | code out of the runtime |
 |---|---|---|
-| search engine on first use (tantivy, rust-stemmers) | ~120 KB stemmers + tantivy's vtables and strings, ~0.2 MB | ~2-3 MB |
+| search engine on first use (tantivy, rust-stemmers; reverted, see above) | ~120 KB stemmers + tantivy's vtables and strings, ~0.2 MB | ~2-3 MB |
 | syntax grammars on first use (syntect, fancy-regex, two-face) | tens of KB | ~2 MB code, 0.9 MB grammar data |
 | ad-block compiler on first use | tens of KB | ~1-2 MB |
 | mime types from `tilo-mime` | ~122 KB | — |

@@ -156,27 +156,29 @@ class RuntimeSurfaceTests(unittest.TestCase):
         )
 
     def test_an_engine_the_toolkit_opens_on_first_use_is_not_in_the_runtime(self) -> None:
-        # tilo-search names tantivy's engine only without `lazy-engine`, which
-        # the search engine's own build turns on: with it on, the edge links
-        # nothing; with it off, tantivy is back in every app process.
+        # The toolkit names the syntax grammars only without `lazy-highlight`,
+        # which the highlight engine's own build turns on: with it on, the edge
+        # links nothing; with it off, syntect is back in every app process.
         def tree(features: str) -> str:
             return CLEAN.replace(
-                "4serde v1.0.228\n",
-                f"4serde v1.0.228\n4tilo-search v0.1.0 (/repo/crates/sdk/search)|{features}\n"
-                "5tilo-search-tantivy v0.1.0 (/repo/crates/sdk/search/tantivy)|\n"
-                "6tantivy v0.22.1|mmap\n",
+                "3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)\n",
+                f"3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)|{features}\n"
+                "4tilo-highlight-grammars v0.1.0 (/repo/crates/text/highlight-grammars)|\n"
+                "5syntect v5.2.0|\n",
             ).replace(
                 "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
                 "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-                "1tilo-search v0.1.0 (/repo/crates/sdk/search) (*)\n0store",
+                "1tilo-ui v0.1.0 (/repo/crates/sdk/ui-core) (*)\n0store",
             )
 
-        self.assertEqual(checker.violations(tree("disk,lazy-engine"), ["notes", "store"], TARGET), [])
-        found = checker.violations(tree("disk"), ["notes", "store"], TARGET)
+        self.assertEqual(
+            checker.violations(tree("native,lazy-highlight"), ["notes", "store"], TARGET), []
+        )
+        found = checker.violations(tree("native"), ["notes", "store"], TARGET)
         self.assertEqual(len(found), 2, found)
-        self.assertIn("reaches tantivy", found[0])
-        self.assertIn("libtilo_search_engine.so", found[0])
-        self.assertIn("reaches tilo-search-tantivy", found[1])
+        self.assertIn("reaches syntect", found[0])
+        self.assertIn("libtilo_highlight_engine.so", found[0])
+        self.assertIn("reaches tilo-highlight-grammars", found[1])
 
     def test_a_table_the_loader_relocates_back_in_the_runtime_fails(self) -> None:
         tree = CLEAN.replace(
