@@ -550,7 +550,7 @@ fn run_job_file_bound(
 }
 
 /// Bind an already-open block descriptor to the freshly reviewed device node.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 pub(crate) fn attest_target_descriptor(
     target: &TargetDrive,
     file: &std::fs::File,
@@ -574,6 +574,9 @@ fn run_system_job(
     }) {
         return JobResult::WriteFailed(error.to_string());
     }
+    // Only the installation's medium layout needs the helper's caller.
+    #[cfg(not(all(target_os = "linux", feature = "installation")))]
+    let _ = authenticated_caller;
     imager_backend::write::job::run_system_job(
         &imager_backend::write::job::SystemWriteRequest {
             source: reviewed_source(req),
@@ -584,6 +587,7 @@ fn run_system_job(
         },
         &AppWriteSetup {
             req,
+            #[cfg(all(target_os = "linux", feature = "installation"))]
             authenticated_caller,
         },
         should_cancel,
@@ -593,6 +597,7 @@ fn run_system_job(
 
 struct AppWriteSetup<'a> {
     req: &'a WriteRequest,
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     authenticated_caller: Option<u32>,
 }
 impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {

@@ -16,6 +16,7 @@ fn invalid() -> io::Error {
 #[derive(Clone, Debug)]
 #[cfg(target_os = "linux")]
 pub(crate) struct ReviewedOriginalImage {
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     source: crate::model::Source,
     proof: ConsumerCapability,
     applications: Option<super::applications_admission::ConsumerCapability>,
@@ -51,6 +52,7 @@ impl ReviewedOriginalImage {
             return Err(invalid());
         }
         Ok(Self {
+            #[cfg(all(target_os = "linux", feature = "installation"))]
             source: source.clone(),
             proof: proof.clone(),
             applications: release.applications.clone(),
@@ -64,9 +66,11 @@ impl ReviewedOriginalImage {
         let proof = self.applications.as_ref();
         super::applications_admission::require(proof, Some(2))
     }
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     pub(crate) fn source(&self) -> &crate::model::Source {
         &self.source
     }
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     pub(crate) fn open_verified(
         &self,
         cancel: &std::sync::atomic::AtomicBool,
@@ -136,7 +140,7 @@ impl ReviewedOriginalImage {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 #[derive(PartialEq, Eq)]
 struct ImageStamp {
     device: u64,
@@ -145,7 +149,7 @@ struct ImageStamp {
     modified: (i64, i64),
     changed: (i64, i64),
 }
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 impl ImageStamp {
     fn read(file: &std::fs::File) -> io::Result<Self> {
         let m = file.metadata()?;
@@ -164,13 +168,13 @@ impl ImageStamp {
 }
 /// Retains the actual digest-checked inode and its immutable observation through
 /// source permission and pending setup preparation. A bare File is not proof.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 pub(crate) struct VerifiedOriginalImage {
     file: std::fs::File,
     reviewed: ReviewedOriginalImage,
     stamp: ImageStamp,
 }
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 impl VerifiedOriginalImage {
     pub(crate) fn validate(&self) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
@@ -236,7 +240,7 @@ pub(crate) fn syntax_fixture() -> ConsumerCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn original_image_review_refuses_legacy_ambiguous_and_changed_held_images() {
         use sha2::{Digest, Sha256};

@@ -10,6 +10,7 @@ pub mod browser;
 // Pure journal/ordering contract is shared with cross-platform records.
 pub(super) mod btrfs_resize;
 pub mod bundle;
+#[cfg(feature = "installation")]
 pub(crate) mod capacity_probe;
 pub mod cli;
 pub mod efi;
@@ -40,7 +41,9 @@ pub use imager_backend::MIN_TARGET_BYTES;
 /// Default Tilo size offered on Review.
 pub const DEFAULT_TARGET_BYTES: u64 = 64 << 30;
 /// Conservative staging sizes until a verified bundle supplies its requirements.
+#[cfg(feature = "installation")]
 pub(crate) const PROVISIONAL_STAGING_ESP_BYTES: u64 = 2 << 30;
+#[cfg(feature = "installation")]
 pub(crate) const PROVISIONAL_STAGING_ROOT_BYTES: u64 = 40 << 30;
 /// GPT type of the staging ESP.
 pub use imager_backend::ESP_TYPE;

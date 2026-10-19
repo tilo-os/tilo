@@ -12,6 +12,7 @@ pub(crate) mod tests;
 
 pub(crate) use imager_backend::media_layout::PreparedLayout;
 
+#[cfg(feature = "installation")]
 pub(crate) fn prepare(
     image: &File,
     target: &File,
