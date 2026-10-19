@@ -328,6 +328,10 @@ fn retained_local_directory_distinct_revision_limit_preserves_pending_reports() 
     let (mut app, _) = declared_directory(1);
     publish_declared_directory(&mut app);
     let old = app.action_directory_revision();
+    #[expect(
+        clippy::collection_is_never_read,
+        reason = "the pins are guards: holding them fills the limit, popping one frees a slot"
+    )]
     let mut pins = vec![app.pin_local_document_action_directory(&old).unwrap()];
     // Tiny subsequent snapshots isolate the count limit from the byte limit.
     app.state_mut_for_test()
