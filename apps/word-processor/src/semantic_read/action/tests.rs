@@ -1,4 +1,5 @@
 use super::*;
+use tilo_actions::ActionContract;
 fn resource() -> Resource {
     Resource::new(
         "word-processor.document",

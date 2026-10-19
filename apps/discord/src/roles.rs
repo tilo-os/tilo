@@ -163,7 +163,6 @@ pub fn plan(guild: &Guild) -> RolePlan {
             };
             let current = channel
                 .overwrites
-                .0
                 .iter()
                 .find(|o| o.id == role_id && o.kind == 0);
             let want = OverwriteOp {

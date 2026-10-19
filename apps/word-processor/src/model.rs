@@ -788,7 +788,6 @@ fn reply_blocks(id: &Id, reply: &Reply) -> Vec<tilo_doc::snapshot::BlockView> {
     }
     reply
         .body
-        .0
         .iter()
         .enumerate()
         .map(|(index, block)| {

@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
-use taffy::prelude::Size;
+use taffy::prelude::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{Action as AccessAction, Politeness};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;

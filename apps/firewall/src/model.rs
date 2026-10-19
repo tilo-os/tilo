@@ -264,7 +264,7 @@ impl Matcher {
     pub fn label(&self) -> String {
         match self {
             Matcher::Service(s) => s.clone(),
-            Matcher::Port { port, proto } => format!("{}/{}", port, proto.label()),
+            Matcher::Port { port, proto } => format!("{}/{}", port, Proto::label(*proto)),
         }
     }
 
