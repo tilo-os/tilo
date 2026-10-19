@@ -3380,7 +3380,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
-    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service \
        | xargs -r rpm -e --nodeps \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \

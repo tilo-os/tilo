@@ -67,7 +67,7 @@ class PackagePolicy(unittest.TestCase):
 
     def test_package_policy_rejections(self):
         with self.subTest(phase="forbidden_packages_with_no_requirements"):
-            for package in ['openssh-server', 'openssl', 'openssl-devel', 'sbsigntools', 'pesign', 'qatlib', 'qatlib-service']:
+            for package in ['openssh-server', 'openssl', 'openssl-devel', 'sbsigntools', 'pesign', 'qatlib-service']:
                 with self.subTest(package=package):
                     self.check_policy([package, 'virt-viewer', 'swtpm-tools'], success=False,
                                       diagnostic='forbidden crypto/signing packages')
