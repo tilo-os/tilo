@@ -2654,7 +2654,10 @@ shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
-shell-window-retry = Reopen window
+shell-window-retry = Reopen
+shell-window-app-missing = { $app } isn't on this computer
+shell-window-get-app = Get { $app }
+shell-window-close = Close
 task-review-approve = Approve task run
 
 # Shared activity label used by native task-review rendering.

@@ -2156,6 +2156,16 @@ impl ShellDriver {
             }
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
+            "saved-window-missing-app" => self.scene_saved_window(
+                "org.example.Missing",
+                "Missing",
+                "Not installed on this machine",
+            ),
+            "saved-window-reopen" => self.scene_saved_window(
+                "org.gnome.TextEditor",
+                "Notes.txt",
+                "This saved window did not finish reopening.",
+            ),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
             "overview-lounge" => self.scene_overview_lounge(),
@@ -2992,6 +3002,49 @@ impl ShellDriver {
 
     /// The launchpad a moment after its Notes card is clicked: Notes is
     /// opening, and no launcher stands between the card and the app.
+    /// One saved window that didn't reopen, alone on the strip: its app
+    /// `app_id` (shown as `label`) and what the restore found, `note`.
+    fn scene_saved_window(&mut self, app_id: &str, label: &str, note: &str) {
+        use shell::shell::state::{MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth};
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
+                    for strip in &mut ws.strips {
+                        strip.window_groups.clear();
+                    }
+                    if let Some(strip) = ws.strips.first_mut() {
+                        let mut ids = ProcessIds;
+                        let tab = Tab {
+                            id: ids.mint_id(),
+                            title: label.into(),
+                            tile: TileContent::LocalApp {
+                                app_id: app_id.into(),
+                                label: label.into(),
+                                note: note.into(),
+                            },
+                        };
+                        strip.window_groups.push(WindowGroup {
+                            id: ids.mint_id(),
+                            active_tab: tab.id,
+                            tabs: vec![tab],
+                            width: WindowWidth::Normal,
+                            maximized: false,
+                            focus_history: Vec::new(),
+                        });
+                    }
+                }
+            }
+            st.bump();
+        });
+        self.relayout();
+        // The window arrives over about a second; capture where it rests.
+        for _ in 0..60 {
+            let _ = self.paint_settled();
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+        }
+    }
+
     fn scene_launchpad_notes_card(&mut self) {
         fn card_bounds(widget: &dyn Widget, card: &str) -> Option<Rect> {
             if widget.name() == "CollaborationLaunchpad" {
@@ -3862,6 +3915,8 @@ impl ShellDriver {
         "ws-settings-agent-access-keyboard",
         "collaborators",
         "launchpad",
+        "saved-window-missing-app",
+        "saved-window-reopen",
         "launchpad-notes-card",
         "peer-sync",
         "overview-lounge",

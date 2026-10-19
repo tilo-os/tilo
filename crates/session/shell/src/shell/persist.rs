@@ -798,6 +798,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
+    drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();
     tree.prune_package_launches();
     // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: it
@@ -809,6 +810,41 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
+}
+
+/// Drop the saved windows whose program can't be told (no app id, so the
+/// stand-in `anon-<surface>`): nothing can relaunch them, so restoring one
+/// only left a card that could never open. Each is recorded in the log.
+/// A window whose program is named is always kept, installed or not.
+fn drop_unidentifiable_windows(tree: &mut WorkspaceTree) {
+    use crate::shell::state::TileContent;
+
+    let unidentifiable: Vec<(crate::shell::state::TabId, String, String)> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| match &tab.tile {
+            TileContent::LocalApp { app_id, .. }
+                if !crate::shell::peer_windows::identifiable_app_id(app_id) =>
+            {
+                Some((tab.id, app_id.clone(), tab.title.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    for (tab, app_id, title) in unidentifiable {
+        if crate::shell::tab_binding::remove_tab(tree, tab) {
+            tracing::info!(
+                tab,
+                app = %app_id,
+                title = %title,
+                "not restoring a saved window whose program can't be identified: nothing can reopen it"
+            );
+        }
+    }
 }
 
 /// The identity a live client window is relaunched by.
@@ -1155,6 +1191,84 @@ mod tests {
                     other => panic!("expected symbolic app, got {other:?}"),
                 })
             })
+    }
+
+    /// A saved window whose program can't be identified (`anon-<surface>`,
+    /// no app id) is not restored: nothing can reopen it. A named app is
+    /// always kept, whether this computer has it or not.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn restore_drops_only_windows_whose_program_cant_be_identified() {
+        use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let local = |id: u64, app_id: &str, title: &str, note: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::LocalApp {
+                app_id: app_id.into(),
+                label: title.into(),
+                note: note.into(),
+            },
+        };
+        tree.desktop.workspaces[0].strips = vec![Strip {
+            id: StripId::from(92_100),
+            name: "Main".into(),
+            window_groups: vec![
+                WindowGroup {
+                    id: 92_099,
+                    tabs: vec![
+                        local(92_101, "anon-1524713390118", "tilo", "Not installed on this machine"),
+                        local(92_102, "org.example.Missing", "Missing", "Not installed on this machine"),
+                    ],
+                    active_tab: 92_101,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                },
+                WindowGroup {
+                    id: 92_098,
+                    tabs: vec![local(92_103, "", "untitled", "")],
+                    active_tab: 92_103,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                },
+                WindowGroup {
+                    id: 92_097,
+                    tabs: vec![local(92_104, "org.gnome.TextEditor", "Notes.txt", "")],
+                    active_tab: 92_104,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                },
+            ],
+        }];
+        save_tree_to(&tree, &path).expect("save");
+
+        let loaded = load_tree_from(&path).expect("load");
+        assert_eq!(
+            local_apps(&loaded),
+            vec![
+                (92_102, "org.example.Missing".to_owned()),
+                (92_104, "org.gnome.TextEditor".to_owned()),
+            ],
+            "the unidentifiable windows go; every named app stays"
+        );
+        let strip = &loaded.desktop.workspaces[0].strips[0];
+        assert_eq!(strip.window_groups.len(), 2, "a group left empty goes with it");
+        assert_eq!(strip.window_groups[0].active_tab, 92_102);
+        // The document agrees, so the next save and every peer see the same.
+        let mut reread = loaded.desktop.clone();
+        tilo_desktop_model::desktop_doc::rebuild(&loaded.doc, &mut reread);
+        let in_doc: Vec<u64> = reread.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect();
+        assert_eq!(in_doc, vec![92_102, 92_104]);
     }
 
     #[test]

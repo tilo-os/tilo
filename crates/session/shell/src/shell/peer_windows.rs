@@ -155,8 +155,20 @@ fn with_install_requests<R>(apply: impl FnOnce(&mut Vec<TabId>) -> R) -> R {
     }
 }
 
+/// What a saved window's card asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CardRequest {
+    /// Reopen this exact saved window in its tab.
+    Reopen,
+    /// Open the Store on the window's app, which this computer doesn't have.
+    Get,
+    /// Close the window: it can't open here.
+    Close,
+}
+
 #[derive(PartialEq, Eq)]
 struct RetryRequest {
+    what: CardRequest,
     tab: TabId,
     app_id: String,
 }
@@ -182,8 +194,11 @@ fn with_retry_requests<R>(apply: impl FnOnce(&mut Vec<RetryRequest>) -> R) -> R 
     }
 }
 
-pub(crate) fn request_retry(tab: TabId, app_id: &str) {
+/// Ask the next reconciliation for `what` on `tab`'s saved window of
+/// `app_id`; a stale card (another app in the tab now) is inert.
+pub(crate) fn request(what: CardRequest, tab: TabId, app_id: &str) {
     let request = RetryRequest {
+        what,
         tab,
         app_id: app_id.to_owned(),
     };
@@ -249,9 +264,95 @@ fn start_requested_retries(tree: &mut WorkspaceTree) -> bool {
     let requests = with_retry_requests(std::mem::take);
     let mut changed = false;
     for request in requests {
-        changed |= retry_local_restore(tree, request.tab, &request.app_id);
+        changed |= match request.what {
+            CardRequest::Reopen => retry_local_restore(tree, request.tab, &request.app_id),
+            CardRequest::Get => {
+                open_store_for(tree, request.tab, &request.app_id);
+                false
+            }
+            CardRequest::Close => close_local_window(tree, request.tab, &request.app_id),
+        };
     }
     changed
+}
+
+/// The workspace holding `tab` while it still shows a saved window of
+/// `app_id`.
+fn local_window_workspace<'a>(
+    tree: &'a WorkspaceTree,
+    tab: TabId,
+    app_id: &str,
+) -> Option<&'a Workspace> {
+    tree.desktop.workspaces.iter().find(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|candidate| {
+                candidate.id == tab
+                    && matches!(&candidate.tile, TileContent::LocalApp { app_id: shown, .. } if shown == app_id)
+            })
+    })
+}
+
+/// The Store's page for `app_id`, where it can be installed.
+pub(crate) fn store_page_uri(app_id: &str) -> Option<String> {
+    (!app_id.is_empty()
+        && app_id.len() <= 255
+        && app_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_')))
+    .then(|| format!("tilo-store:app/{app_id}"))
+}
+
+/// "Get {App}": open the Store on the saved window's app, in the window's
+/// workspace. The window stays until the person closes it or the app,
+/// once installed, reopens in it.
+fn open_store_for(tree: &WorkspaceTree, tab: TabId, app_id: &str) {
+    let Some(workspace) = local_window_workspace(tree, tab, app_id) else {
+        return;
+    };
+    let Some(uri) = store_page_uri(app_id) else {
+        tracing::warn!(app = %app_id, "a saved window's app has no Store page to open");
+        return;
+    };
+    if let Err(error) = launcher::launch_uri_in_workspace(STORE_PACKAGE_ID, workspace, &uri) {
+        tracing::warn!(app = %app_id, %error, "could not open the Store for a saved window's app");
+    }
+}
+
+/// The Store's package.
+const STORE_PACKAGE_ID: &str = "so.tilo.store";
+
+/// Close a saved window that can't open here, at the person's word.
+fn close_local_window(tree: &mut WorkspaceTree, tab: TabId, app_id: &str) -> bool {
+    if local_window_workspace(tree, tab, app_id).is_none() {
+        return false;
+    }
+    let closed = crate::shell::tab_binding::close_tab_back_to_previous(tree, tab);
+    if closed {
+        tree.queue_save();
+    }
+    closed
+}
+
+/// Whether a saved window's program can be told: an app id that names a
+/// program, not the stand-in a window without one gets (`anon-<surface>`).
+/// Nothing can relaunch a window whose program can't be told, so it is not
+/// restored.
+pub(crate) fn identifiable_app_id(app_id: &str) -> bool {
+    let app_id = app_id.trim();
+    !app_id.is_empty() && !app_id.starts_with("anon-")
+}
+
+/// The name a saved window's app goes by, for its card: the catalogue's,
+/// else the window's own label.
+pub(crate) fn app_display_name(app_id: &str, label: &str) -> String {
+    crate::shell::catalogue::available_apps()
+        .iter()
+        .find(|offered| launcher::app_id_matches_package(app_id, &offered.package_id))
+        .map_or_else(|| label.to_owned(), |offered| offered.display_name.clone())
 }
 
 /// An opening message belongs to this saved tab's launch, not to any window
@@ -1339,11 +1440,11 @@ mod tests {
         tree.remember_local_app_record(first, 8191);
         tree.remember_local_app_record(second, 8192);
         let records = tree.local_app_records.clone();
-        request_retry(first, app);
-        request_retry(first, app);
-        request_retry(second, app);
-        request_retry(second, "dev.tilo.wrong");
-        request_retry(next_id(), app);
+        request(CardRequest::Reopen, first, app);
+        request(CardRequest::Reopen, first, app);
+        request(CardRequest::Reopen, second, app);
+        request(CardRequest::Reopen, second, "dev.tilo.wrong");
+        request(CardRequest::Reopen, next_id(), app);
         assert!(examine(&mut tree));
         assert_eq!(local_app_note(&tree, first), NOT_INSTALLED);
         assert_eq!(
@@ -1356,6 +1457,79 @@ mod tests {
             !examine(&mut tree),
             "requests including closed/mismatched cards are consumed"
         );
+    }
+
+    /// A saved window whose app this computer doesn't have says so and
+    /// offers "Get {App}" and a quiet Close, never Reopen, which can't work
+    /// until it is installed. Close closes the window; Get leaves it.
+    #[test]
+    fn a_missing_apps_saved_window_offers_get_and_close_never_reopen() {
+        fn names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(node.name.clone());
+            out.extend(node.description.clone());
+            for child in &node.children {
+                names(child, out);
+            }
+        }
+        let app = "org.example.Missing";
+        let (mut tree, tab) = tree_with_local_app(app);
+        set_note(&mut tree, tab, NOT_INSTALLED.into());
+        let card = crate::shell::app_notice_card::AppNoticeCard::get(tab, app, "Missing");
+        let harness = ui::headless::FrameHarness::new_with_theme(
+            ui::State::new(),
+            Box::new(card),
+            (456, 500),
+            ui::launch::shot_theme_from_env().unwrap(),
+        );
+        if let Some(directory) = std::env::var_os("TILO_LOCALAPP_NOTICE_EVIDENCE") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            harness.render_png(&directory.join("missing-app.png"));
+        }
+        let mut text = Vec::new();
+        if let Some(node) = harness.root_widget().accessibility() {
+            names(&node, &mut text);
+        }
+        let says = |needle: &str| text.iter().any(|line| line.contains(needle));
+        assert!(says("Missing isn't on this computer"), "{text:#?}");
+        assert!(says("Get Missing"), "{text:#?}");
+        assert!(says("Close"), "{text:#?}");
+        assert!(!says(&crate::shell::i18n::t("shell-window-retry")), "{text:#?}");
+
+        let mut card = crate::shell::app_notice_card::AppNoticeCard::get(tab, app, "Missing");
+        card.press_for_test();
+        examine(&mut tree);
+        assert_eq!(
+            local_app_note(&tree, tab),
+            NOT_INSTALLED,
+            "Get opens the Store; the window stays until the app reopens in it"
+        );
+        card.press_close_for_test();
+        examine(&mut tree);
+        assert!(
+            !tree
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|ws| &ws.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab)),
+            "Close closes the window"
+        );
+    }
+
+    #[test]
+    fn identifiable_windows_are_the_ones_with_a_program() {
+        assert!(!identifiable_app_id(""));
+        assert!(!identifiable_app_id("  "));
+        assert!(!identifiable_app_id("anon-1524713390118"));
+        assert!(identifiable_app_id("org.gnome.TextEditor"));
+        assert!(identifiable_app_id("so.tilo.notes"));
+        assert_eq!(
+            store_page_uri("org.example.Missing").as_deref(),
+            Some("tilo-store:app/org.example.Missing")
+        );
+        assert_eq!(store_page_uri("not/a/package"), None);
     }
 
     #[test]
@@ -1590,7 +1764,7 @@ mod tests {
         assert!(pending(&opening).is_empty());
         assert!(any_pending(&opening));
         // So is an explicit retry queued outside the tree.
-        request_retry(tab, "dev.tilo.still-opening");
+        request(CardRequest::Reopen, tab, "dev.tilo.still-opening");
         assert!(any_pending(&empty), "a queued retry is owed a look");
         with_retry_requests(std::mem::take);
         assert!(!any_pending(&empty));
