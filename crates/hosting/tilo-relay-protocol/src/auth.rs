@@ -45,6 +45,13 @@ use crate::policy::TrustPolicy;
 /// and closes; neither side reads anything else from the other.
 pub use neighbour_wire::PEER_PROTOCOL_VERSION;
 
+/// The version a host is taken to speak when it predates versioned
+/// handshakes: it reads this device's [`Hello`] as its own unversioned one,
+/// cannot, and refuses it as malformed rather than answering with its
+/// version. It is behind every versioned device, so the person hears that
+/// the host has to update rather than seeing a room that never syncs.
+pub const UNVERSIONED_PEER_PROTOCOL: u32 = 0;
+
 /// Domain tag bound into every mutual-authentication challenge signature.
 /// Domain tag under which the *server* signs the client's challenge.
 ///
