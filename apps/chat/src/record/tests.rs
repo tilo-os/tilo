@@ -1082,10 +1082,15 @@ fn stored_value(doc: &automerge::AutoCommit, field: &str, id: &str) -> automerge
 
 #[test]
 fn a_chat_with_a_malformed_channel_opens_shows_the_rest_and_deletes_it() {
-    use automerge::transaction::Transactable as _;
     let mut ada = room();
     let voice = stored_value(ada.doc(), "channels", VOICE_CHANNEL);
-    ada.doc_mut().put(&voice, "kind", "teleport").unwrap();
+    // A peer's damaged write: a kind no channel has.
+    ui::tilo_resource::Slot::Key(&voice, "kind")
+        .put_scalar(
+            ada.doc_mut(),
+            automerge::ScalarValue::Str("teleport".into()),
+        )
+        .unwrap();
     ada.doc_mut().commit();
 
     let chat = ada
@@ -1143,32 +1148,33 @@ fn version_3_starter(
     with_workspace_on_text_category: bool,
     voice_name: automerge::ScalarValue,
 ) -> automerge::AutoCommit {
-    use automerge::transaction::Transactable as _;
-    use ui::tilo_resource::write_key;
+    use ui::tilo_resource::{Slot, write_key};
     let mut doc = Replica::<Chat>::new().doc().clone();
     let root = automerge::ROOT;
-    doc.put(
-        &root,
-        ui::tilo_resource::evolution::VERSION_KEY,
-        automerge::ScalarValue::Uint(3),
-    )
-    .unwrap();
-    let workspaces = doc
-        .put_object(&root, "workspaces", automerge::ObjType::Map)
+    let map = |doc: &mut automerge::AutoCommit, obj: &automerge::ObjId, key: &str| {
+        Slot::Key(obj, key)
+            .object(doc, automerge::ObjType::Map)
+            .unwrap()
+    };
+    let order = |doc: &mut automerge::AutoCommit, obj: &automerge::ObjId, key: &str| {
+        Slot::Key(obj, "k")
+            .put_scalar(doc, automerge::ScalarValue::Str(key.into()))
+            .unwrap();
+    };
+    Slot::Key(&root, ui::tilo_resource::evolution::VERSION_KEY)
+        .put_scalar(&mut doc, automerge::ScalarValue::Uint(3))
         .unwrap();
-    let home = doc
-        .put_object(&workspaces, "ws_home", automerge::ObjType::Map)
-        .unwrap();
-    doc.put(&home, "k", "a0").unwrap();
-    let home = doc.put_object(&home, "v", automerge::ObjType::Map).unwrap();
+    let workspaces = map(&mut doc, &root, "workspaces");
+    let home = map(&mut doc, &workspaces, "ws_home");
+    order(&mut doc, &home, "a0");
+    let home = map(&mut doc, &home, "v");
     write_key(&mut doc, &home, "name", &"My Workspace".to_owned()).unwrap();
     write_key(&mut doc, &home, "glyph", &"MW".to_owned()).unwrap();
     let entry = |doc: &mut automerge::AutoCommit, field: &str, id: &str, key: &str| {
-        let (_, map) = automerge::ReadDoc::get(doc, &root, field).unwrap().unwrap();
-        let entry = doc.put_object(&map, id, automerge::ObjType::Map).unwrap();
-        doc.put(&entry, "k", key).unwrap();
-        doc.put_object(&entry, "v", automerge::ObjType::Map)
-            .unwrap()
+        let (_, items) = automerge::ReadDoc::get(doc, &root, field).unwrap().unwrap();
+        let entry = map(doc, &items, id);
+        order(doc, &entry, key);
+        map(doc, &entry, "v")
     };
     let text = entry(&mut doc, "categories", "cat_home_text", "a0");
     if with_workspace_on_text_category {
@@ -1177,7 +1183,9 @@ fn version_3_starter(
     write_key(&mut doc, &text, "name", &"Channels".to_owned()).unwrap();
     let voice = entry(&mut doc, "categories", "cat_home_voice", "a1");
     write_key(&mut doc, &voice, "workspace", &Id::from_raw("ws_home")).unwrap();
-    doc.put(&voice, "name", voice_name).unwrap();
+    Slot::Key(&voice, "name")
+        .put_scalar(&mut doc, voice_name)
+        .unwrap();
     for (id, category, name, kind, key) in [
         (
             "c_general",
