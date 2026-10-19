@@ -771,6 +771,11 @@ fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
     // under an unrelated unprivileged UID; every fixture is created by that owner.
     // SAFETY: geteuid has no preconditions and only reads current credentials.
     if rustix::process::geteuid().as_raw() == 0 {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::switch_identity(65534),
+            "as root the fixture re-runs as an unprivileged owner"
+        );
         assert!(
             std::env::var_os("TILO_NATIVE_FLATPAK_OWNER_CHILD").is_none(),
             "test failed to drop root authority"

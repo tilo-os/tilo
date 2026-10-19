@@ -511,6 +511,13 @@ mod tests {
     }
     #[test]
     fn protected_pending_area_actual_private_provisioning_and_replacement_refusal() {
+        if rustix::process::geteuid().is_root() {
+            tilo_test_env::require_capability!(
+                Chown,
+                tilo_test_env::chown_to(99),
+                "as root the fixture provisions the area for uid 99"
+            );
+        }
         let temp = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir()

@@ -188,6 +188,13 @@ fn original_output_incomplete_intent_refuses_replay_and_named_replacement() {
 
 #[test]
 fn original_output_prepared_retry_rebinds_fresh_claim_and_refuses_dirty_or_launched_stage() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(99),
+            "as root the fixture binds its stage to uid 99"
+        );
+    }
     use output_attempt::StageBinding;
     let root = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -279,6 +286,13 @@ fn original_output_prepared_retry_rebinds_fresh_claim_and_refuses_dirty_or_launc
 
 #[test]
 fn original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate_intent() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(99),
+            "as root the fixture binds its stage to uid 99"
+        );
+    }
     use output_attempt::StageBinding;
     let root = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -358,6 +372,13 @@ fn original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate
 
 #[test]
 fn uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_corrupt_attempts() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(1),
+            "as root the fixture gives the original Home to a non-root owner"
+        );
+    }
     use crate::setup::{migration_handoff, prepared_setup::OfflineHomePlan};
     use output_attempt::{
         StageBinding, lookup_committed_original_selection, review_uncommitted_original_selection,
@@ -532,6 +553,13 @@ fn uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_c
 
 #[test]
 fn original_applications_output_prepared_retry_is_exact_and_cannot_adopt_home_intent() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(99),
+            "as root the fixture binds its stage to uid 99"
+        );
+    }
     use output_attempt::StageBinding;
     let root = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))

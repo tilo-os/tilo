@@ -399,6 +399,13 @@ fn capture_unsupported_filesystem_has_explicit_kind_without_persisting_plan() {
 
 #[test]
 fn unrelated_cgroup_namespace_root_preserves_storage_capture_and_cannot_be_selected() {
+    if rustix::process::geteuid().is_root() {
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::chown_to(1),
+            "as root the fixture gives the original Home to a non-root owner"
+        );
+    }
     let temp = tempfile::tempdir().unwrap();
     let base = temp.path().canonicalize().unwrap();
     let home = base.join("home");
