@@ -190,12 +190,12 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
+pub mod held_images;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
-pub mod held_images;
 pub mod image_store;
 pub mod ime;
 pub mod input;
@@ -314,8 +314,8 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png,
-    portal, secrets, time, wake,
+    background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
+    secrets, time, wake,
 };
 
 /// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.

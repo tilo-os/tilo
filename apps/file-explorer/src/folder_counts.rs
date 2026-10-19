@@ -75,7 +75,10 @@ impl FolderCounts {
             modified,
             hidden,
         };
-        let mut shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut shared = self
+            .shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((known, count)) = shared.counts.get(folder)
             && *known == key
         {
@@ -114,7 +117,10 @@ impl FolderCounts {
     }
 
     fn enqueue(&self, key: Key) {
-        let mut queue = self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(sender) = queue.as_ref()
             && sender.send(key.clone()).is_ok()
         {
@@ -146,7 +152,10 @@ impl Worker {
     fn run(&self, receiver: &Receiver<Key>) {
         while let Ok(key) = receiver.recv() {
             let count = count_entries(&key.path, key.hidden);
-            let mut shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             shared.queued.remove(&key);
             if let Some(count) = count {
                 shared.counts.insert(key.path.clone(), (key, count));

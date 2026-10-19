@@ -1087,7 +1087,7 @@ fn wake_search_result(
 ) -> SearchResult {
     let bridge = Rc::clone(bridge);
     SearchResult {
-            facts: Vec::new(),
+        facts: Vec::new(),
         shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::Effect,

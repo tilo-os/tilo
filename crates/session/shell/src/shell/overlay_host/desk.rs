@@ -991,7 +991,6 @@ impl ShellOverlayHost {
                 .flatten()
         });
     }
-
 }
 
 /// What an open card shows, read once per frame.

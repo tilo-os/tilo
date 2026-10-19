@@ -138,10 +138,26 @@ mod tests {
     #[test]
     fn sender_pictures_come_from_contacts_and_the_own_identity_only() {
         let book = directory(&[
-            ("00000000-0000-4000-8000-000000000001", "Maya@Northwind.example", "QUJD"),
-            ("00000000-0000-4000-8000-000000000002", "team@northwind.example", "REVG"),
-            ("00000000-0000-4000-8000-000000000003", "team@northwind.example", "R0hJ"),
-            ("00000000-0000-4000-8000-000000000004", "tom@northwind.example", ""),
+            (
+                "00000000-0000-4000-8000-000000000001",
+                "Maya@Northwind.example",
+                "QUJD",
+            ),
+            (
+                "00000000-0000-4000-8000-000000000002",
+                "team@northwind.example",
+                "REVG",
+            ),
+            (
+                "00000000-0000-4000-8000-000000000003",
+                "team@northwind.example",
+                "R0hJ",
+            ),
+            (
+                "00000000-0000-4000-8000-000000000004",
+                "tom@northwind.example",
+                "",
+            ),
         ]);
         let mut avatars = Avatars::new();
         let me = ImageData {
@@ -156,7 +172,10 @@ mod tests {
         assert!(avatars.by_address.contains_key("maya@northwind.example"));
         assert!(!avatars.by_address.contains_key("team@northwind.example"));
         assert!(!avatars.by_address.contains_key("tom@northwind.example"));
-        assert!(avatars.image("sam@rivera.example").is_some(), "the person's own picture");
+        assert!(
+            avatars.image("sam@rivera.example").is_some(),
+            "the person's own picture"
+        );
         // Every address resolves to held data: no URL is ever fetched.
         for held in avatars.by_address.values() {
             assert!(held.starts_with("held"), "{held}");

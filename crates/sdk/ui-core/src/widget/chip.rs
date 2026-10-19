@@ -389,7 +389,6 @@ pub(crate) struct PillPaint<'a> {
     pub centred: bool,
 }
 
-
 /// The one pill painter.
 pub(crate) fn paint_pill(
     pill: &PillPaint<'_>,

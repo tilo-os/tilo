@@ -29,8 +29,6 @@ pub(crate) mod capture_io;
 #[cfg(target_os = "linux")]
 pub mod chooser_service;
 #[cfg(target_os = "linux")]
-pub mod render_broker;
-#[cfg(target_os = "linux")]
 pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;
@@ -101,6 +99,8 @@ pub mod projection_capture;
 pub mod published_room;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
+#[cfg(target_os = "linux")]
+pub mod render_broker;
 pub mod render_node;
 #[cfg(target_os = "linux")]
 pub mod scanout_feedback;

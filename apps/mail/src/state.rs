@@ -270,7 +270,10 @@ impl MailState {
 
     /// What a screenshot shows: the fixture's mailbox, accounts and clock,
     /// with a conversation selected so the reader is populated.
-    pub fn from_fixture(fixture: &crate::sample::MailFixture, avatars: crate::avatars::Avatars) -> Self {
+    pub fn from_fixture(
+        fixture: &crate::sample::MailFixture,
+        avatars: crate::avatars::Avatars,
+    ) -> Self {
         let mut s = Self::empty(
             fixture.mailbox.clone(),
             fixture.accounts.clone(),

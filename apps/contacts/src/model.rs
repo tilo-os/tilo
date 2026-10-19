@@ -1034,10 +1034,7 @@ mod tests {
                 .pretty(),
                 "Dec 10, 1815"
             );
-            assert_eq!(
-                Birthday::MonthDay { month: 12, day: 10 }.pretty(),
-                "Dec 10"
-            );
+            assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "Dec 10");
         }
     }
 

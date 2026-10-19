@@ -323,7 +323,11 @@ fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
 /// The line under the title: where this record lives. Not decoration —
 /// without it, two rooms' `notes.md` are identical rows and activating
 /// one is a guess.
-fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, String)]) -> Vec<String> {
+fn provenance(
+    record: &KnownRecord,
+    here: Option<RoomId>,
+    rooms: &[(RoomId, String)],
+) -> Vec<String> {
     let where_it_lives = if here.is_some_and(|h| record.is_in(h)) {
         t("search-record-in-this-workspace")
     } else {

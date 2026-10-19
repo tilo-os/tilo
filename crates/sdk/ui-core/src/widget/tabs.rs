@@ -2815,7 +2815,6 @@ impl TabBar {
         Rect::new(x0, row.y0, x1, row.y1)
     }
 
-
     /// The ink of an idle tab's title and glyphs: the dim tier, unless the
     /// bar stands on a frosted strip, whose ground is the desktop behind it
     /// under the tint. There it is the ink that holds on the tint over black
@@ -4506,7 +4505,10 @@ impl TabBar {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor = p;
         self.hover_control = self.controls.hit(p);
-        if self.pressed_control.is_some_and(|c| Some(c) != self.hover_control) {
+        if self
+            .pressed_control
+            .is_some_and(|c| Some(c) != self.hover_control)
+        {
             self.pressed_control = None;
         }
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
@@ -4939,10 +4941,7 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .any(
-                        |run| (run.font_size - tab_title_style(&theme).size).abs()
-                            < 0.01
-                    ),
+                    .any(|run| (run.font_size - tab_title_style(&theme).size).abs() < 0.01),
                 "tab title must retain the requested 200% font size"
             );
         }

@@ -5626,6 +5626,9 @@ mod mosaic_tests {
         let mosaic = ui::held_images::mosaic_of(&chosen, 64).unwrap();
         assert_eq!((mosaic.width, mosaic.height), (64, 64));
 
-        assert!(mosaic_covers(&tracks, |_| None).is_empty(), "no artwork: initials");
+        assert!(
+            mosaic_covers(&tracks, |_| None).is_empty(),
+            "no artwork: initials"
+        );
     }
 }

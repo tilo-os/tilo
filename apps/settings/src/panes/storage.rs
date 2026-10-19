@@ -932,10 +932,7 @@ impl StorageModel {
                 .map(|w| w.reclaimable_bytes)
                 .sum();
             let mut sync_rows = vec![
-                value_row(
-                    &t("settings-storage-on-device"),
-                    &ui::format::size(local),
-                ),
+                value_row(&t("settings-storage-on-device"), &ui::format::size(local)),
                 value_row(
                     &t("settings-storage-remote-only"),
                     &ui::format::size(remote),
@@ -954,9 +951,7 @@ impl StorageModel {
                     .iter()
                     .filter(|f| f.reclaimable_bytes > 0)
                     .take(8)
-                    .map(|f| {
-                        value_row(&f.logical_path, &ui::format::size(f.reclaimable_bytes))
-                    }),
+                    .map(|f| value_row(&f.logical_path, &ui::format::size(f.reclaimable_bytes))),
             );
             if reclaimable > 0 && self.sync_result.is_none() {
                 let free = t_args(

@@ -135,7 +135,6 @@ mod tests {
                 "Keeping 21 item offline"
             );
         }
-
     }
 
     /// Collaboration and generic surfaces take labels from the catalogue and the pseudolocale preserves paths and hostile names.

@@ -1879,7 +1879,7 @@ impl LiveAppActionsProvider {
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
             return SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -6026,7 +6026,7 @@ mod tests {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room.to_string();
             let result = |cluster: &str| SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,

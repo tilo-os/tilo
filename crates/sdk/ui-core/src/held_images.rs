@@ -201,7 +201,10 @@ pub fn picture_bytes(text: &str) -> Option<Vec<u8>> {
 /// it costs one pass over its pixels. `None` without a picture in a format
 /// it reads (8-bit RGBA or BGRA).
 #[must_use]
-pub fn mosaic_of(tiles: &[crate::peniko::ImageData], side: u32) -> Option<crate::peniko::ImageData> {
+pub fn mosaic_of(
+    tiles: &[crate::peniko::ImageData],
+    side: u32,
+) -> Option<crate::peniko::ImageData> {
     use crate::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
     let tiles: Vec<&ImageData> = tiles
         .iter()
@@ -233,9 +236,11 @@ pub fn mosaic_of(tiles: &[crate::peniko::ImageData], side: u32) -> Option<crate:
         let top = tile.height.saturating_sub(crop) / 2;
         let bgra = matches!(tile.format, ImageFormat::Bgra8);
         for y in 0..half {
-            let source_y = top.saturating_add(y.saturating_mul(crop).checked_div(half).unwrap_or(0));
+            let source_y =
+                top.saturating_add(y.saturating_mul(crop).checked_div(half).unwrap_or(0));
             for x in 0..half {
-                let source_x = left.saturating_add(x.saturating_mul(crop).checked_div(half).unwrap_or(0));
+                let source_x =
+                    left.saturating_add(x.saturating_mul(crop).checked_div(half).unwrap_or(0));
                 let from = usize::try_from(
                     u64::from(source_y)
                         .saturating_mul(u64::from(tile.width))
@@ -266,7 +271,10 @@ pub fn mosaic_of(tiles: &[crate::peniko::ImageData], side: u32) -> Option<crate:
     Some(ImageData {
         data: Blob::new(Arc::new(out)),
         format: ImageFormat::Rgba8,
-        alpha_type: if tiles.iter().all(|tile| tile.alpha_type == ImageAlphaType::Alpha) {
+        alpha_type: if tiles
+            .iter()
+            .all(|tile| tile.alpha_type == ImageAlphaType::Alpha)
+        {
             ImageAlphaType::Alpha
         } else {
             ImageAlphaType::AlphaPremultiplied
@@ -317,7 +325,10 @@ mod tests {
     fn portraits_are_small_centred_squares_and_mosaics_tile_four_covers() {
         let wide = png(800, 400, [10, 200, 10]);
         let face = image::load_from_memory(&portrait(&wide).unwrap()).unwrap();
-        assert_eq!((face.width(), face.height()), (PORTRAIT_SIDE, PORTRAIT_SIDE));
+        assert_eq!(
+            (face.width(), face.height()),
+            (PORTRAIT_SIDE, PORTRAIT_SIDE)
+        );
         assert_eq!(portrait(b"not a picture"), None);
 
         let colours = [[250, 0, 0], [0, 250, 0], [0, 0, 250], [250, 250, 0]];
@@ -339,7 +350,10 @@ mod tests {
         {
             let pixel = tiled.get_pixel(x, y).0;
             for (got, want) in pixel.iter().zip(colour) {
-                assert!(got.abs_diff(want) < 40, "{pixel:?} at {x},{y} vs {colour:?}");
+                assert!(
+                    got.abs_diff(want) < 40,
+                    "{pixel:?} at {x},{y} vs {colour:?}"
+                );
             }
         }
         assert_eq!(mosaic(&[b"nothing".as_slice()]), None);
@@ -358,7 +372,10 @@ mod tests {
         let tiled = mosaic_of(&decoded, 64).unwrap();
         assert_eq!((tiled.width, tiled.height), (64, 64));
         let pixels = tiled.data.data();
-        for ((x, y), [r, g, b]) in [(8, 8), (40, 8), (8, 40), (40, 40)].into_iter().zip(colours) {
+        for ((x, y), [r, g, b]) in [(8, 8), (40, 8), (8, 40), (40, 40)]
+            .into_iter()
+            .zip(colours)
+        {
             let at = (y * 64 + x) * 4;
             assert_eq!(&pixels[at..at + 4], &[r, g, b, 255], "{x},{y}");
         }
