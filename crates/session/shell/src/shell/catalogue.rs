@@ -701,6 +701,135 @@ pub(crate) fn update_package(package_id: &str) -> crate::shell::app_versions::Up
     }
 }
 
+/// Report that getting `package_id` failed, as a failed launch of
+/// `display_name` saying `detail`: the place held for it says so and offers
+/// to try again.
+pub(crate) fn report_install_failure(package_id: &str, display_name: &str, detail: String) {
+    push_failure(package_id, display_name, detail);
+}
+
+// ---------------------------------------------------------------------
+// Installing from Flathub: the app host's rule (`app_catalogue::flathub`),
+// into the person's own installation, then opened like any host app.
+// ---------------------------------------------------------------------
+
+/// Flathub installs under way, by app id, so a repeated press is one install.
+static FLATHUB_INSTALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Reading Flatpak's configured sources is local and quick.
+const FLATPAK_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether `app_id` is being installed from Flathub.
+pub(crate) fn installing_from_flathub(app_id: &str) -> bool {
+    FLATHUB_INSTALLS
+        .lock_recover()
+        .iter()
+        .any(|id| id == app_id)
+}
+
+/// Install `app_id` from Flathub on a worker, then open it at `placement`
+/// once its desktop entry is there. A failure is reported as a failed
+/// launch of `display_name`.
+pub(crate) fn install_flathub_and_open(
+    app_id: String,
+    display_name: String,
+    placement: crate::shell::tab_binding::Placement,
+    portal_workspace_id: Option<String>,
+) {
+    {
+        let mut installs = FLATHUB_INSTALLS.lock_recover();
+        if installs.iter().any(|id| *id == app_id) {
+            return;
+        }
+        installs.push(app_id.clone());
+    }
+    let builder = std::thread::Builder::new().name("flathub-install".to_string());
+    let identity = (app_id.clone(), display_name.clone());
+    let spawned = launcher::spawn_reporting(builder, move || {
+        let outcome = install_from_flathub(&app_id);
+        FLATHUB_INSTALLS.lock_recover().retain(|id| *id != app_id);
+        if let Err(detail) = outcome {
+            push_failure(&app_id, &display_name, detail);
+            return;
+        }
+        crate::shell::host_apps::invalidate_cache();
+        let Some(app) = crate::shell::host_apps::find(&app_id) else {
+            push_failure(
+                &app_id,
+                &display_name,
+                crate::shell::i18n::t("catalogue-error-flathub-not-found"),
+            );
+            return;
+        };
+        let queued = crate::shell::host_apps::queue_launch(crate::shell::host_apps::QueuedLaunch {
+            app,
+            placement,
+            portal_workspace_id,
+            requested_at: Instant::now(),
+            reopen_from_tray: true,
+        });
+        if let Err(error) = queued {
+            push_failure(&app_id, &display_name, error.user_message());
+        }
+    });
+    if spawned.is_err() {
+        FLATHUB_INSTALLS
+            .lock_recover()
+            .retain(|id| *id != identity.0);
+        push_failure(
+            &identity.0,
+            &identity.1,
+            crate::shell::i18n::t("catalogue-error-spawn"),
+        );
+    }
+}
+
+/// Run the Flatpak commands that install `app_id` from Flathub. Blocks.
+fn install_from_flathub(app_id: &str) -> Result<(), String> {
+    let run = |args: &[String], timeout: Duration| -> Result<Vec<u8>, String> {
+        let mut command = std::process::Command::new("flatpak");
+        command.args(args);
+        let output = bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, timeout)
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "catalogue-error-flathub-run",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(safe_diagnostic(&output.stderr))
+        }
+    };
+    let remotes = run(
+        &[
+            "remotes".to_owned(),
+            "--columns=name,url,title,options".to_owned(),
+        ],
+        FLATPAK_QUERY_TIMEOUT,
+    )?;
+    let commands =
+        app_catalogue::flathub::install_commands(app_id, &String::from_utf8_lossy(&remotes))
+            .map_err(|refusal| {
+                crate::shell::i18n::t(match refusal {
+                    app_catalogue::flathub::InstallRefusal::InvalidId => {
+                        "catalogue-error-flathub-invalid"
+                    }
+                    app_catalogue::flathub::InstallRefusal::UntrustedUserSource => {
+                        "catalogue-error-flathub-untrusted"
+                    }
+                    app_catalogue::flathub::InstallRefusal::NoFlathub => {
+                        "catalogue-error-flathub-missing"
+                    }
+                })
+            })?;
+    for args in commands {
+        run(&args, INSTALL_TIMEOUT)?;
+    }
+    Ok(())
+}
+
 fn push_failure(package_id: &str, display_name: &str, detail: String) {
     // Installation can fail after the search action has already reserved a
     // placement for the eventual window. Drop that reservation with the

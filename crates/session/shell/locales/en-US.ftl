@@ -1598,11 +1598,17 @@ search-action-device-revoked-body = The revocation was root-signed and recorded 
 # Search: applications
 search-apps-shortcut-subtitle = Shortcut
 search-apps-shortcut-failed = The shortcut could not be opened. Check its target and try again.
-search-apps-verification-pending = Registry verification pending
-search-apps-store-subtitle = App Store · { $trust } · { $detail }
-search-apps-store-subtitle-bare = App Store · { $trust }
-search-apps-view-in-store = View { $app } in App Store
-search-apps-store-failed = Couldn't open App Store for { $app }
+
+# Search: apps to get, from the catalogue search shares with the App Store
+search-catalogue-provider = App Store
+search-catalogue-source-tilo = Tilo app
+search-catalogue-source-flathub = Flathub
+search-catalogue-document-subtitle = New in { $app }
+search-catalogue-show-in-store = Show in App Store
+search-catalogue-store-failed = Couldn't open the App Store for { $app }
+search-catalogue-installing = Installing { $app }
+search-catalogue-installing-body = It opens when it's installed.
+search-catalogue-actions-unavailable = Actions aren't available yet. Try again in a moment.
 
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
@@ -2448,6 +2454,11 @@ catalogue-error-missing = this system has no app catalogue (app is missing)
 catalogue-error-spawn = could not start loading it
 catalogue-error-run = could not run the app catalogue: { $error }
 catalogue-error-exited = the app catalogue exited { $status }
+catalogue-error-flathub-run = could not run Flatpak: { $error }
+catalogue-error-flathub-invalid = this isn't a Flathub app
+catalogue-error-flathub-untrusted = your Flathub source must be enabled, check signatures and use the official repository
+catalogue-error-flathub-missing = Flathub isn't set up on this device
+catalogue-error-flathub-not-found = it was installed but can't be found to open
 
 # Why sending to a nearby device failed
 nearby-error-destination-not-folder = Nearby Send destination is not a directory

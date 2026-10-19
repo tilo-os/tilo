@@ -1584,11 +1584,17 @@ search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel s
 # Suche: Anwendungen
 search-apps-shortcut-subtitle = Verknüpfung
 search-apps-shortcut-failed = Die Verknüpfung konnte nicht geöffnet werden. Prüfe ihr Ziel und versuche es erneut.
-search-apps-verification-pending = Prüfung durch die Registry ausstehend
-search-apps-store-subtitle = App Store · { $trust } · { $detail }
-search-apps-store-subtitle-bare = App Store · { $trust }
-search-apps-view-in-store = { $app } im App Store ansehen
-search-apps-store-failed = App Store für { $app } konnte nicht geöffnet werden
+
+# Suche: Apps zum Holen, aus dem Katalog, den die Suche mit dem App Store teilt
+search-catalogue-provider = App Store
+search-catalogue-source-tilo = Tilo-App
+search-catalogue-source-flathub = Flathub
+search-catalogue-document-subtitle = Neu in { $app }
+search-catalogue-show-in-store = Im App Store zeigen
+search-catalogue-store-failed = App Store für { $app } konnte nicht geöffnet werden
+search-catalogue-installing = { $app } wird installiert
+search-catalogue-installing-body = Die App öffnet sich, sobald sie installiert ist.
+search-catalogue-actions-unavailable = Aktionen sind noch nicht verfügbar. Versuche es gleich noch einmal.
 
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
@@ -2434,6 +2440,11 @@ catalogue-error-missing = dieses System hat keinen App-Katalog („app“ fehlt)
 catalogue-error-spawn = das Laden konnte nicht gestartet werden
 catalogue-error-run = der App-Katalog konnte nicht ausgeführt werden: { $error }
 catalogue-error-exited = der App-Katalog wurde beendet: { $status }
+catalogue-error-flathub-run = Flatpak konnte nicht ausgeführt werden: { $error }
+catalogue-error-flathub-invalid = das ist keine Flathub-App
+catalogue-error-flathub-untrusted = deine Flathub-Quelle muss aktiviert sein, Signaturen prüfen und das offizielle Repository nutzen
+catalogue-error-flathub-missing = Flathub ist auf diesem Gerät nicht eingerichtet
+catalogue-error-flathub-not-found = sie wurde installiert, kann aber nicht zum Öffnen gefunden werden
 
 # Warum das Senden an ein Gerät in der Nähe fehlschlug
 nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner

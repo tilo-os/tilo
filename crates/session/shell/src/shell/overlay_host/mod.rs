@@ -1319,6 +1319,9 @@ pub enum PeerSyncAction {
 
 /// Row id of one of a file's other actions (Alt+Enter).
 const SECONDARY_PREFIX: &str = "secondary:";
+/// A secondary action its row's provider gave, by position:
+/// `secondary:provided:<n>`.
+const PROVIDED_SLUG: &str = "provided:";
 
 /// The share of the display's height the palette's result list may take
 /// before it scrolls: enough to see several groups at once, while the card
@@ -2227,6 +2230,13 @@ impl ShellOverlayHost {
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
+        // The catalogue again, now able to run a closed app's offered action
+        // for an app this device does not have yet.
+        self.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::StoreCatalogueProvider::with_action_sessions(
+                crate::shell::certified_action_session::ActionSessionSource::new(broker.clone()),
+            ),
+        ));
         let app_actions =
             std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
         self.search_registry
@@ -2288,6 +2298,8 @@ impl ShellOverlayHost {
         // first Win+K query. A persisted metadata snapshot makes search
         // useful immediately; this refresh quietly makes it current.
         let _ = crate::shell::catalogue::available_apps();
+        // Flathub's cached metadata and the block list, read on a worker.
+        crate::shell::catalogue::refresh_shared();
         let search_preferences = std::rc::Rc::new(std::cell::RefCell::new(
             crate::shell::search::SearchPreferences::load(),
         ));
@@ -2346,6 +2358,11 @@ impl ShellOverlayHost {
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
+        ));
+        // Apps to get: the catalogue search shares with the App Store. Its
+        // rows rank just below installed apps of equal match.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::StoreCatalogueProvider::new(),
         ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
@@ -9516,8 +9533,8 @@ impl ShellOverlayHost {
         self.refresh_search_results(doc, root);
     }
 
-    /// Invoke the app's own action when the Applications provider resolves
-    /// it: the installed app, or the catalogue offer for one not installed.
+    /// Invoke the app's own action when search resolves it: the installed
+    /// app, or the catalogue's offer for one not installed, which opens it.
     /// `false` while neither address resolves.
     fn invoke_launchpad_app(
         &mut self,
@@ -9531,8 +9548,16 @@ impl ShellOverlayHost {
             return false;
         };
         let catalogue_id = format!("app:{app_id}");
-        let resolved = [app_id, catalogue_id.as_str()].into_iter().find_map(|id| {
-            let resource = ResourceRef::new("applications", id);
+        let resolved = [
+            ("applications", app_id),
+            (
+                crate::shell::search::providers::store_catalogue::PROVIDER_ID,
+                catalogue_id.as_str(),
+            ),
+        ]
+        .into_iter()
+        .find_map(|(provider, id)| {
+            let resource = ResourceRef::new(provider, id);
             let catalog = {
                 let state = chrome.borrow();
                 self.action_catalog_for_resource(&resource, &state, doc, root, &AllVisible)
@@ -9854,6 +9879,11 @@ impl ShellOverlayHost {
             }
             _ => {}
         }
+        // Artwork only the row's provider knows: an app this device does
+        // not have yet wears its catalogue icon.
+        if let Some(image) = self.search_registry.row_image(r) {
+            e = e.image(image);
+        }
         if let Some(sub) = &r.subtitle {
             e = e.description(sub.clone());
             if matches!(r.kind, ResourceKind::File | ResourceKind::Folder) {
@@ -9877,7 +9907,8 @@ impl ShellOverlayHost {
                     ActivationModifier::Ctrl,
                     palette_flow::Activation::Beside.label(),
                 );
-            if r.kind == ResourceKind::File {
+            if r.kind == ResourceKind::File || !self.search_registry.secondary_actions(r).is_empty()
+            {
                 e = e.alternate(
                     ActivationModifier::Alt,
                     palette_flow::Activation::More.label(),
@@ -10526,7 +10557,8 @@ impl ShellOverlayHost {
             .map(palette_flow::Activation::of);
         match activation {
             Some(palette_flow::Activation::More)
-                if result.kind == crate::shell::search::ResourceKind::File =>
+                if result.kind == crate::shell::search::ResourceKind::File
+                    || !self.search_registry.secondary_actions(&result).is_empty() =>
             {
                 self.show_secondary_actions(result);
             }
@@ -10945,19 +10977,40 @@ impl ShellOverlayHost {
         self.palette.set_cursor(cursor);
     }
 
-    /// List a file's other actions (Alt+Enter) in place of the results.
+    /// List a row's other actions (Alt+Enter) in place of the results: a
+    /// file's, or the ones its provider gives it
+    /// ([`crate::shell::search::SearchProvider::secondary_actions`]).
     fn show_secondary_actions(&mut self, result: crate::shell::search::SearchResult) {
         let query = self.palette.query().to_string();
-        let entries = palette_flow::SecondaryAction::FOR_FILES
-            .into_iter()
-            .map(|action| {
-                CommandEntry::new(
-                    format!("{SECONDARY_PREFIX}{}", action.slug()),
-                    action.label(),
-                )
-                .group(result.title.clone())
-            })
-            .collect();
+        let entries = if result.kind == crate::shell::search::ResourceKind::File {
+            palette_flow::SecondaryAction::FOR_FILES
+                .into_iter()
+                .map(|action| {
+                    CommandEntry::new(
+                        format!("{SECONDARY_PREFIX}{}", action.slug()),
+                        action.label(),
+                    )
+                    .group(result.title.clone())
+                })
+                .collect()
+        } else {
+            self.search_registry
+                .secondary_actions(&result)
+                .into_iter()
+                .enumerate()
+                .map(|(at, row)| {
+                    let mut entry = CommandEntry::new(
+                        format!("{SECONDARY_PREFIX}{PROVIDED_SLUG}{at}"),
+                        row.title,
+                    )
+                    .group(result.title.clone());
+                    if let Some(subtitle) = row.subtitle {
+                        entry = entry.description(subtitle);
+                    }
+                    entry
+                })
+                .collect()
+        };
         self.palette.set_bypass_fuzzy(false);
         self.palette.set_query("");
         self.palette.set_entries(entries);
@@ -10967,8 +11020,26 @@ impl ShellOverlayHost {
         self.palette_layout_dirty = true;
     }
 
-    /// Run one of the listed file's other actions.
+    /// Run one of the listed row's other actions.
     fn run_secondary_action(&mut self, slug: &str, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        if let Some(at) = slug
+            .strip_prefix(PROVIDED_SLUG)
+            .and_then(|at| at.parse::<usize>().ok())
+        {
+            let Some((result, _)) = self.secondary_flow.clone() else {
+                return;
+            };
+            self.end_palette_steps();
+            if let Some(row) = self
+                .search_registry
+                .secondary_actions(&result)
+                .into_iter()
+                .nth(at)
+            {
+                self.run_result(row, doc, root, None);
+            }
+            return;
+        }
         let Some(action) = palette_flow::SecondaryAction::from_slug(slug) else {
             return;
         };
