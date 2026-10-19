@@ -233,8 +233,8 @@ fn button_cell(
 }
 
 fn icon_button_cell(ctx: &mut PaintCtx<'_>, st: St, cell: Rect, size: ControlSize) {
-    let side = size.height(ctx.theme);
-    let rect = lead(cell, side, side);
+    let edge = size.height(ctx.theme);
+    let rect = lead(cell, edge, edge);
     let face = IconButton::face(rect, Icon::Pencil, "Rename")
         .control_size(size)
         .toggled(st == St::On)
@@ -284,25 +284,25 @@ fn controls(theme: &Theme, out: &Path) {
     p.section("Buttons");
     p.state_header();
     p.grid_row("Primary", 40.0, |c, st, r| {
-        button_cell(c, st, r, ButtonRole::Primary, "Save", None)
+        button_cell(c, st, r, ButtonRole::Primary, "Save", None);
     });
     p.grid_row("Secondary", 40.0, |c, st, r| {
-        button_cell(c, st, r, ButtonRole::Secondary, "Discard", None)
+        button_cell(c, st, r, ButtonRole::Secondary, "Discard", None);
     });
     p.grid_row("Quiet", 40.0, |c, st, r| {
-        button_cell(c, st, r, ButtonRole::Plain, "Details", None)
+        button_cell(c, st, r, ButtonRole::Plain, "Details", None);
     });
     p.grid_row("Destructive", 40.0, |c, st, r| {
-        button_cell(c, st, r, ButtonRole::Destructive, "Delete", None)
+        button_cell(c, st, r, ButtonRole::Destructive, "Delete", None);
     });
     p.grid_row("With icon", 40.0, |c, st, r| {
         button_cell(c, st, r, ButtonRole::Secondary, "Share", Some(Icon::Users));
     });
     p.grid_row("Icon button", 40.0, |c, st, r| {
-        icon_button_cell(c, st, r, ControlSize::Regular)
+        icon_button_cell(c, st, r, ControlSize::Regular);
     });
     p.grid_row("Icon button, small", 36.0, |c, st, r| {
-        icon_button_cell(c, st, r, ControlSize::Small)
+        icon_button_cell(c, st, r, ControlSize::Small);
     });
 
     p.section("Bar controls");
@@ -406,7 +406,7 @@ fn controls(theme: &Theme, out: &Path) {
     p.finish(out);
 }
 
-fn row_face<'a>(kind: u8, title: &'a str) -> ListRowFace<'a> {
+fn row_face(kind: u8, title: &str) -> ListRowFace<'_> {
     match kind {
         0 => ListRowFace::new(title)
             .leading(RowLeading::Icon(Icon::Wifi))
@@ -960,6 +960,10 @@ fn panels(theme: &Theme, out: &Path) {
     p.finish(out);
 }
 
+#[allow(
+    clippy::exit,
+    reason = "the gallery capture is a command-line scenario that must fail with a status when it cannot write its output"
+)]
 pub fn run(args: &[String]) {
     tilo_ui::i18n::I18nManager::init("en-US");
     let out = args
