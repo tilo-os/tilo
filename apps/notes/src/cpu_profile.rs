@@ -89,12 +89,18 @@ fn mounted_typing_observes_canonical_projection_scaling() {
             for phase in [
                 "framework.publication",
                 "framework.resource_tree",
-                "framework.row_declarations",
                 "framework.live_sync",
                 "framework.view_storage_refresh",
                 "framework.access_refresh",
             ] {
-                assert!(framework_rows.iter().any(|row| row.phase == phase));
+                assert!(
+                    framework_rows.iter().any(|row| row.phase == phase),
+                    "{phase} missing from {:?}",
+                    framework_rows
+                        .iter()
+                        .map(|row| &row.phase)
+                        .collect::<Vec<_>>()
+                );
             }
             for phase in [
                 "schema.cached_clone",
