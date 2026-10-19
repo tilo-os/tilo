@@ -165,7 +165,8 @@ impl RecipientControlServer {
             {
                 Ok(Some(request)) => request,
                 Ok(None) => return Ok(()),
-                Err(CanonicalFrameError::TooLarge(_)) => {
+                Err(CanonicalFrameError::TooLarge(len)) => {
+                    tracing::debug!(len, "refused a recipient control frame over the limit");
                     let _ = write_frame(
                         &mut stream,
                         &error_response(RecipientControlErrorCode::FrameTooLarge),
