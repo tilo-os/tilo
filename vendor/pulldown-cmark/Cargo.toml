@@ -116,3 +116,4 @@ simd = ["pulldown-cmark-escape?/simd"]
 [lints.rust.unexpected_cfgs]
 level = "warn"
 priority = 0
+check-cfg = ["cfg(rustbuild)"]
