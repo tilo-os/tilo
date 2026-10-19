@@ -195,6 +195,9 @@ pub struct Receipt {
     pub cleanup_observed: bool,
     pub stdout: Diagnostic,
     pub stderr: Diagnostic,
+    /// Why the host could not supervise the check, apart from the command's own streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Diagnostic>,
 }
 impl Receipt {
     fn valid(&self) -> bool {
@@ -218,11 +221,14 @@ impl Receipt {
             ]
             .into_iter()
             .all(|v| digest(v))
-            && [&self.stdout, &self.stderr].into_iter().all(|v| {
-                v.preview.len() <= MAX_PREVIEW_BYTES
-                    && v.sha256.as_ref().is_none_or(|s| digest(s))
-                    && (v.sha256.is_some() || v.preview.is_empty() && !v.truncated)
-            })
+            && [&self.stdout, &self.stderr]
+                .into_iter()
+                .chain(self.failure.as_ref())
+                .all(|v| {
+                    v.preview.len() <= MAX_PREVIEW_BYTES
+                        && v.sha256.as_ref().is_none_or(|s| digest(s))
+                        && (v.sha256.is_some() || v.preview.is_empty() && !v.truncated)
+                })
             && (self.exit_code.is_none() || self.signal.is_none())
             && (self.outcome != Outcome::Exited
                 || self.cleanup_observed && (self.exit_code.is_some() || self.signal.is_some()))
@@ -442,6 +448,7 @@ mod tests {
                 preview: String::new(),
                 truncated: false,
             },
+            failure: None,
         }
     }
 
@@ -706,6 +713,49 @@ mod tests {
             .replacen('{', r#"{"version":1,"#, 1);
         assert!(Receipt::decode(duplicate.as_bytes()).is_err());
         assert!(Receipt::decode(&vec![b' '; MAX_RECEIPT_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn approved_check_receipt_carries_a_bounded_supervision_failure_beside_empty_streams() {
+        let mut value = receipt();
+        value.outcome = Outcome::Failed;
+        value.exit_code = None;
+        value.cleanup_observed = false;
+        value.stdout = value.stderr.clone();
+        value.failure = Some(Diagnostic {
+            sha256: Some("f".repeat(64)),
+            preview: "user scope bus unavailable".into(),
+            truncated: false,
+        });
+        let encoded = value.encode().unwrap();
+        assert_eq!(Receipt::decode(&encoded).unwrap(), value);
+        let duplicate = String::from_utf8(encoded).unwrap().replacen(
+            "\"failure\":",
+            "\"failure\":null,\"failure\":",
+            1,
+        );
+        assert!(Receipt::decode(duplicate.as_bytes()).is_err());
+        for invalid in [
+            Diagnostic {
+                sha256: None,
+                preview: "unbound reason".into(),
+                truncated: false,
+            },
+            Diagnostic {
+                sha256: Some("F".repeat(64)),
+                preview: "reason".into(),
+                truncated: false,
+            },
+            Diagnostic {
+                sha256: Some("f".repeat(64)),
+                preview: "x".repeat(MAX_PREVIEW_BYTES + 1),
+                truncated: true,
+            },
+        ] {
+            value.failure = Some(invalid);
+            assert!(value.encode().is_err());
+            assert!(Receipt::decode(&serde_json::to_vec(&value).unwrap()).is_err());
+        }
     }
 
     #[cfg(feature = "client")]

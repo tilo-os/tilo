@@ -283,6 +283,7 @@ impl ApprovedCheckServices for TerminalProgressProbe {
                 truncated: false,
                 sha256: None,
             },
+            failure: None,
         };
         *self.receipt.lock().unwrap() = Some(receipt.clone());
         Ok(receipt)
