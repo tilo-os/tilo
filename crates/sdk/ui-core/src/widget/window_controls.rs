@@ -7,9 +7,10 @@
 //! what it does.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 
 use crate::icons;
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// One of the window's controls.
@@ -28,8 +29,6 @@ pub const CONTROL_GAP: f64 = 4.0;
 pub const EDGE_INSET: f64 = 8.0;
 /// Between the controls and whatever stands before them in the row.
 pub const LEAD_GAP: f64 = 16.0;
-/// The glyph inside a control.
-const GLYPH_PX: f64 = 16.0;
 
 /// Where each control sits; `Rect::ZERO` for one the window doesn't offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -109,63 +108,69 @@ impl WindowControls {
         }
     }
 
-    /// Paint the controls standing on `ground`.
+    /// Paint the controls with the shared icon button.
     pub fn paint(
         &self,
         scene: &mut Scene,
         transform: Affine,
+        text: &mut TextRenderer,
         theme: &Theme,
-        ground: vello::peniko::Color,
         state: ControlsState,
     ) {
-        let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.control);
         for (control, rect) in self.iter() {
-            let hovered = state.hovered == Some(control);
-            let pressed = state.pressed == Some(control);
-            let on = control == WindowControl::History && state.history_open;
-            if hovered || pressed || on {
-                let tier = crate::chrome::selector_tier(
-                    theme,
-                    crate::chrome::SelectionState::new(on, hovered, pressed),
-                    ground,
-                );
-                crate::chrome::paint_selector(
-                    scene,
-                    transform,
-                    &RoundedRect::from_rect(rect, radius),
-                    crate::chrome::SelectorRole::Item(&tier),
-                    theme,
-                );
-            }
             let icon = match control {
                 WindowControl::History => icons::Icon::History,
                 WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
                 WindowControl::Maximize => icons::Icon::Maximize2,
                 WindowControl::Close => icons::Icon::X,
             };
-            let ink = if hovered || pressed || on {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let c = rect.center();
-            let glyph = Rect::new(
-                c.x - GLYPH_PX / 2.0,
-                c.y - GLYPH_PX / 2.0,
-                c.x + GLYPH_PX / 2.0,
-                c.y + GLYPH_PX / 2.0,
-            );
-            icons::draw_icon(
+            paint_icon_button(
                 scene,
                 transform,
-                glyph,
-                icon,
-                ink,
-                icons::LUCIDE_DEFAULT_STROKE_PX,
+                text,
+                theme,
+                (rect, icon),
+                ButtonFace {
+                    hovered: state.hovered == Some(control),
+                    pressed: state.pressed == Some(control),
+                    on: control == WindowControl::History && state.history_open,
+                    enabled: true,
+                },
             );
         }
     }
+}
+
+/// How one icon button of the window's bar shows this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ButtonFace {
+    pub hovered: bool,
+    pub pressed: bool,
+    /// A toggle that is on.
+    pub on: bool,
+    /// It can act now.
+    pub enabled: bool,
+}
+
+/// Paint one icon button of the window's bar with the shared button face
+/// ([`crate::widget::Button::paint`]): the window's own controls, the
+/// app's slots ([`crate::window_toolbar`]) and the new-tab button are the
+/// same control, so the bar reads as one row of them.
+pub fn paint_icon_button(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    (rect, icon): (Rect, icons::Icon),
+    face: ButtonFace,
+) {
+    let face = crate::widget::ButtonFace::icon_only(rect, icon, "")
+        .control_size(crate::widget::ControlSize::Small)
+        .hovered(face.hovered && face.enabled)
+        .pressed(face.pressed && face.enabled)
+        .toggled(face.on)
+        .disabled(!face.enabled);
+    crate::widget::Button::paint(scene, transform, text, theme, &face);
 }
 
 #[cfg(test)]

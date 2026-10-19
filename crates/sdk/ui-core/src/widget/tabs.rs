@@ -470,6 +470,14 @@ pub struct TabBar {
     /// that change.
     tabbed: bool,
     tabbed_changed_at: Option<Instant>,
+    /// The slots each tab's app declared for the window's bar
+    /// ([`crate::window_toolbar`]), by tab id. Sidecar like the others.
+    toolbars: HashMap<u64, crate::window_toolbar::WindowToolbar>,
+    /// The active tab's slots: in the title's row while the window shows
+    /// one tab, in a row of their own under the tabs while it shows several.
+    toolbar_row: super::window_toolbar_row::ToolbarRow,
+    /// The motion the person allows, from the last layout's theme.
+    motion: EffectiveMotion,
 }
 
 /// Geometry shared by the tab handle and the window-content preview attached
@@ -511,6 +519,8 @@ impl TabBar {
         }
         self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
         self.controls.offset(shift);
+        let row = shift_rect(self.toolbar_row.row(), shift);
+        self.toolbar_row.lay_out(row);
     }
 
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
@@ -602,6 +612,9 @@ impl TabBar {
             maximized: false,
             tabbed,
             tabbed_changed_at: None,
+            toolbars: HashMap::new(),
+            toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
+            motion: EffectiveMotion::default(),
         }
     }
 
@@ -625,6 +638,185 @@ impl TabBar {
     /// no tab look.
     fn solo(&self) -> bool {
         self.window_controls && self.tabs.len() <= 1
+    }
+
+    /// Show the slots `id`'s app declared for the window's bar, or none.
+    /// Returns whether that changed what the bar shows.
+    pub fn set_toolbar(
+        &mut self,
+        id: u64,
+        toolbar: Option<crate::window_toolbar::WindowToolbar>,
+    ) -> bool {
+        let toolbar = toolbar
+            .map(crate::window_toolbar::WindowToolbar::bounded)
+            .filter(|toolbar| !toolbar.is_empty());
+        if self.toolbars.get(&id) == toolbar.as_ref() {
+            return false;
+        }
+        match toolbar {
+            Some(toolbar) => self.toolbars.insert(id, toolbar),
+            None => self.toolbars.remove(&id),
+        };
+        true
+    }
+
+    /// The slots `id`'s app declared.
+    #[must_use]
+    pub fn toolbar(&self, id: u64) -> Option<&crate::window_toolbar::WindowToolbar> {
+        self.toolbars.get(&id)
+    }
+
+    /// What the person did with the apps' slots since the last call, by tab.
+    pub fn take_toolbar_events(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
+        self.toolbar_row.take_events()
+    }
+
+    /// Whether the active tab's location is being edited in the bar: the
+    /// bar then takes the keyboard.
+    #[must_use]
+    pub fn editing_location(&self) -> bool {
+        self.toolbar_row.is_editing()
+    }
+
+    /// Turn the active tab's editable location into a field (Ctrl+L).
+    /// Returns whether it did.
+    pub fn edit_location(&mut self) -> bool {
+        self.toolbar_row.begin_edit()
+    }
+
+    /// Hand a keyboard or text event to the location field while it is
+    /// edited. Returns whether the field took it.
+    pub fn location_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        self.toolbar_row.is_editing() && self.toolbar_row.field_event(event, ctx)
+    }
+
+    /// Put the location back, ending its edit. Returns whether it was
+    /// being edited.
+    pub fn cancel_location_edit(&mut self) -> bool {
+        self.toolbar_row.cancel_edit()
+    }
+
+    /// Where the active tab's slots stand, for the host's hit tests.
+    #[must_use]
+    pub fn toolbar_hit(&self, p: Point) -> bool {
+        self.active_toolbar().is_some() && self.toolbar_row.hit(p)
+    }
+
+    /// Where the active tab's location stands (`Rect::ZERO` for none).
+    #[must_use]
+    pub fn location_rect(&self) -> Rect {
+        self.toolbar_row.slots().location
+    }
+
+    /// Where each of the active tab's slots stands, for tests and the
+    /// host: back, forward, location, then the actions.
+    #[must_use]
+    pub fn toolbar_rects(&self) -> (Rect, Rect, Rect, Vec<Rect>) {
+        let slots = self.toolbar_row.slots();
+        (
+            slots.back,
+            slots.forward,
+            slots.location,
+            slots.actions.clone(),
+        )
+    }
+
+    /// The active tab's slots, on a window's bar.
+    fn active_toolbar(&self) -> Option<&crate::window_toolbar::WindowToolbar> {
+        self.window_controls
+            .then(|| self.toolbars.get(&self.active_id))
+            .flatten()
+    }
+
+    /// A pill shown as its icon alone: a pinned tab, or the one tab of a
+    /// window whose app put its slots in the title's row.
+    fn icon_only(&self, id: u64) -> bool {
+        self.pinned_ids.contains(&id)
+            || (self.solo() && id == self.active_id && self.active_toolbar().is_some())
+    }
+
+    /// Whether the bar stands two rows tall: the tabs, then the active
+    /// tab's slots. While the window goes back to one tab the second row
+    /// stays until the slots have moved up into the title's row, so the
+    /// window's content is resized once, after the motion.
+    fn two_rows(&self) -> bool {
+        self.active_toolbar().is_some()
+            && (self.tabs.len() > 1 || (!self.tabbed && self.tabbed_in_flight()))
+    }
+
+    /// The bar's height: one row, or two with the active tab's slots under
+    /// the tabs.
+    #[must_use]
+    pub fn bar_height(&self) -> f64 {
+        if self.two_rows() {
+            TAB_BAR_HEIGHT + TOOLBAR_ROW_HEIGHT
+        } else {
+            TAB_BAR_HEIGHT
+        }
+    }
+
+    /// The row the tabs (or the title) and the window's controls stand in.
+    fn tab_row(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + TAB_BAR_HEIGHT.min(self.rect.height()),
+        )
+    }
+
+    /// Where the active tab's slots stand: after the icon in the title's
+    /// row while the window shows one tab, across a row of their own under
+    /// the tabs while it shows several, and between the two as that
+    /// changes, on the same motion as the tabs' bodies.
+    fn toolbar_row_rect(&self) -> Rect {
+        let tab_row = self.tab_row();
+        let solo = {
+            let icon = self.tab_rects.first().copied().unwrap_or(Rect::ZERO);
+            let x0 = if icon.area() > 0.0 {
+                icon.x1 + TOOLBAR_LEAD_GAP
+            } else {
+                self.pill_row().x0
+            };
+            let x1 = self.controls.content_limit(tab_row).max(x0);
+            Rect::new(x0, tab_row.y0, x1, tab_row.y1)
+        };
+        // The back button's glyph sits under the tabs' leading glyph.
+        let lead = self.pill_row().x0 + PILL_PAD_X + ICON_W / 2.0
+            - super::window_controls::CONTROL_PX / 2.0;
+        let below = Rect::new(
+            lead,
+            tab_row.y1,
+            (self.rect.x1 - super::window_controls::EDGE_INSET).max(lead),
+            tab_row.y1 + TOOLBAR_ROW_HEIGHT,
+        );
+        let p = self.tabbed_progress();
+        if p <= 0.0 {
+            solo
+        } else if p >= 1.0 {
+            below
+        } else {
+            Rect::new(
+                solo.x0 + (below.x0 - solo.x0) * p,
+                solo.y0 + (below.y0 - solo.y0) * p,
+                solo.x1 + (below.x1 - solo.x1) * p,
+                solo.y1 + (below.y1 - solo.y1) * p,
+            )
+        }
+    }
+
+    /// Show the active tab's slots and lay them out where they stand now.
+    fn lay_out_toolbar_row(&mut self) {
+        let toolbar = self.active_toolbar().cloned();
+        let active = self.active_id;
+        self.toolbar_row
+            .show(active, toolbar.as_ref(), self.motion, crate::time::now());
+        let rect = self.toolbar_row_rect();
+        self.toolbar_row.lay_out(rect);
     }
 
     /// How far the tabs' bodies have grown in: `0` while the window shows
@@ -857,7 +1049,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return;
         };
-        let is_pinned = self.pinned_ids.contains(&t.id);
+        let is_pinned = self.icon_only(t.id);
         // Tabs are not pills: the control radius (design language, Shape).
         let radius = f64::from(theme.tokens.radii.control);
         let Some(&target) = self.tab_rects.get(i) else {
@@ -1277,7 +1469,7 @@ impl TabBar {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
             return PillFaces::default();
         };
-        if self.pinned_ids.contains(&tab.id) {
+        if self.icon_only(tab.id) {
             return PillFaces::default();
         }
         let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
@@ -1293,7 +1485,7 @@ impl TabBar {
         let demand: HashMap<u64, f64> = self
             .tabs
             .iter()
-            .filter(|tab| !self.pinned_ids.contains(&tab.id))
+            .filter(|tab| !self.icon_only(tab.id))
             .filter_map(|tab| {
                 let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
                 let faces = peers.min(PILL_MAX_FACES);
@@ -2007,7 +2199,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return PILL_MIN_PX;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.icon_only(t.id) {
             return PINNED_W;
         }
         let title_w = self.shaped_title_width(i);
@@ -2082,7 +2274,7 @@ impl TabBar {
         theme: &Theme,
     ) -> Option<String> {
         let t = self.tabs.get(i)?;
-        if self.pinned_ids.contains(&t.id) {
+        if self.icon_only(t.id) {
             return None;
         }
         let style = tab_title_style(theme);
@@ -2458,6 +2650,10 @@ impl TabBar {
     /// Released outside this bar's rect → `pending_detach`; the parent `GroupRow`
     /// resolves the target bar by hit-testing sibling `bar_rect()`s.
     fn finish_drag_release(&mut self, handled: &mut bool) {
+        if self.toolbar_row.release(self.last_cursor) {
+            *handled = true;
+            return;
+        }
         if let Some(control) = self.pressed_control.take() {
             // A control acts on release over itself, like every button.
             if self.controls.hit(self.last_cursor) == Some(control) {
@@ -2799,10 +2995,11 @@ impl TabBar {
     /// the same inset they keep from its top and bottom, so the strip's
     /// capsule is concentric with the tabs in it.
     fn pill_row(&self) -> Rect {
-        let row = if self.on_strip && self.rect.width() > 2.0 * TAB_PILL_INSET_Y {
-            self.rect.inset((-TAB_PILL_INSET_Y, 0.0))
+        let tab_row = self.tab_row();
+        let row = if self.on_strip && tab_row.width() > 2.0 * TAB_PILL_INSET_Y {
+            tab_row.inset((-TAB_PILL_INSET_Y, 0.0))
         } else {
-            self.rect
+            tab_row
         };
         if !self.window_controls {
             return row;
@@ -3003,6 +3200,10 @@ pub const WINDOW_CLOSE_TARGET: &str = "window-close";
 const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
     + (super::window_controls::CONTROL_PX - ICON_W) / 2.0
     - PILL_PAD_X;
+/// The row the active tab's slots take under the tabs of a tabbed window.
+pub const TOOLBAR_ROW_HEIGHT: f64 = 40.0;
+/// Between the window's icon and its slots in the title's row.
+const TOOLBAR_LEAD_GAP: f64 = 8.0;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
@@ -3406,6 +3607,7 @@ impl Widget for TabBar {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
+        self.motion = EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
@@ -3413,7 +3615,7 @@ impl Widget for TabBar {
             clippy::cast_possible_truncation,
             reason = "TAB_BAR_HEIGHT is a small fixed layout constant"
         )]
-        let bar_height = TAB_BAR_HEIGHT as f32;
+        let bar_height = self.bar_height() as f32;
         let style = Style {
             size: Size {
                 width: Dimension::auto(),
@@ -3434,7 +3636,8 @@ impl Widget for TabBar {
                 self.tabbed_changed_at = Some(crate::time::now());
             }
             let history = self.history.contains_key(&self.active_id);
-            self.controls = super::window_controls::WindowControls::lay_out(self.rect, history);
+            self.controls =
+                super::window_controls::WindowControls::lay_out(self.tab_row(), history);
         } else {
             self.controls = super::window_controls::WindowControls::default();
         }
@@ -3468,8 +3671,8 @@ impl Widget for TabBar {
         let max_w = ACTION_W;
         let search_w = ACTION_W;
         let close_inset = CLOSE_INSET;
-        let pill_y0 = self.rect.y0 + TAB_PILL_INSET_Y;
-        let pill_y1 = self.rect.y1 - TAB_PILL_INSET_Y;
+        let pill_y0 = self.tab_row().y0 + TAB_PILL_INSET_Y;
+        let pill_y1 = self.tab_row().y1 - TAB_PILL_INSET_Y;
 
         // Absorbs float drift only — `fit_pill_widths` already sized the row to
         // fit. Disabled with no width yet, where clamping would collapse to the origin.
@@ -3481,10 +3684,7 @@ impl Widget for TabBar {
         };
         let mut x = row.x0;
         for (slot, &i) in visual_order.iter().enumerate() {
-            let is_pinned = self
-                .tabs
-                .get(i)
-                .is_some_and(|t| self.pinned_ids.contains(&t.id));
+            let is_pinned = self.tabs.get(i).is_some_and(|t| self.icon_only(t.id));
             let w = widths.get(slot).copied().unwrap_or(0.0);
             let x1 = (x + w).min(right_limit);
             let r = Rect::new(x, pill_y0, x1.max(x), pill_y1);
@@ -3564,6 +3764,7 @@ impl Widget for TabBar {
         } else {
             Rect::ZERO
         };
+        self.lay_out_toolbar_row();
     }
     fn draw(
         &mut self,
@@ -3617,8 +3818,8 @@ impl Widget for TabBar {
             self.controls.paint(
                 scene,
                 transform,
+                tr,
                 theme,
-                self.ground(theme),
                 super::window_controls::ControlsState {
                     hovered: self.hover_control,
                     pressed: self.pressed_control,
@@ -3630,12 +3831,41 @@ impl Widget for TabBar {
                 },
             );
         }
+        if self.window_controls {
+            // A frame of a tab switch or of the 1↔2 tabs motion moves the
+            // slots: follow them here, where every frame passes.
+            if self.tabbed_in_flight() {
+                let rect = self.toolbar_row_rect();
+                self.toolbar_row.lay_out(rect);
+            }
+            self.toolbar_row
+                .paint(scene, transform, tr, theme, presence);
+        }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // The location field, while edited, has the keyboard and its own
+        // pointer gestures (placing the caret, selecting).
+        if self.toolbar_row.is_editing() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            let in_field = self.toolbar_row.slots().location.contains(self.last_cursor);
+            let pointer = matches!(
+                event,
+                WindowEvent::MouseInput { .. } | WindowEvent::CursorMoved { .. }
+            );
+            if (!pointer || in_field) && self.toolbar_row.field_event(event, ctx) {
+                if pointer {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
+                return;
+            }
+        }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && event.logical_key == Key::Named(NamedKey::Escape)
@@ -3660,6 +3890,7 @@ impl Widget for TabBar {
                 self.hover_idx = None;
                 self.hover_control = None;
                 self.pressed_control = None;
+                self.toolbar_row.pointer_left();
                 self.hover_close_idx = None;
                 self.hover_max_idx = None;
                 self.hover_search_idx = None;
@@ -3718,8 +3949,16 @@ impl Widget for TabBar {
         let mut out = vec![("tabbar_new_tab".to_string(), self.new_tab_rect)];
         // By title, so a scenario can select "Files" by name instead of a
         // coordinate that moves with every layout change.
-        for (tab, rect) in self.tabs.iter().zip(self.tab_rects.iter()) {
+        for (i, (tab, rect)) in self.tabs.iter().zip(self.tab_rects.iter()).enumerate() {
             out.push((format!("tab:{}", tab.title), *rect));
+            out.push((format!("window_tab:{i}"), *rect));
+        }
+        // The active tab's slots in the window's bar.
+        if self.active_toolbar().is_some() {
+            let slots = self.toolbar_row.slots();
+            out.push(("window_back".to_string(), slots.back));
+            out.push(("window_forward".to_string(), slots.forward));
+            out.push(("window_location".to_string(), slots.location));
         }
         out
     }
@@ -3880,6 +4119,21 @@ impl Widget for TabBar {
                 crate::i18n::I18nManager::lookup_plain("host-window-close"),
                 WINDOW_CLOSE_TARGET,
             ));
+            // The active tab's slots, before the window's controls in
+            // reading order.
+            let slots = self.toolbar_row.accessibility();
+            if !slots.is_empty() {
+                let at = tab_children.len().saturating_sub(
+                    if self.history.contains_key(&self.active_id) {
+                        3
+                    } else {
+                        2
+                    },
+                );
+                for (offset, slot) in slots.into_iter().enumerate() {
+                    tab_children.insert(at + offset, slot);
+                }
+            }
         }
         node = node.with_children(tab_children);
         Some(node)
@@ -3900,6 +4154,9 @@ impl Widget for TabBar {
                 return false;
             }
             self.pending_new_tab = Some(());
+            return true;
+        }
+        if self.window_controls && self.toolbar_row.perform(target) {
             return true;
         }
         if self.window_controls {
@@ -3969,12 +4226,19 @@ impl Widget for TabBar {
     /// size change. Tab additions and removals are structural; peers arriving
     /// on or leaving a tab resize its pill for their faces.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.advance_changed || self.face_demand_stale
+        self.rect == Rect::ZERO
+            || self.advance_changed
+            || self.face_demand_stale
+            || (self.rect.height() - self.bar_height()).abs() > 0.5
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
     }
     fn set_focus(&mut self, focused: bool) {
+        // The location field keeps editing when the host moves its focus
+        // (a click on the window's bar activates the window): the shell
+        // routes the keyboard to it while it edits, and Esc, Enter or a
+        // press elsewhere ends it.
         self.keyboard_focus = focused;
     }
     fn is_focused(&self) -> bool {
@@ -4057,6 +4321,7 @@ impl Widget for TabBar {
             || drag_lift
             || resisting
             || self.tabbed_in_flight()
+            || self.toolbar_row.needs_animation_frame(crate::time::now())
     }
 }
 
@@ -4081,22 +4346,18 @@ impl TabBar {
         // stays untouched so caches keyed by data index still apply.
         let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
         for (i, t) in self.tabs.iter().enumerate() {
-            if self.pinned_ids.contains(&t.id) {
+            if self.icon_only(t.id) {
                 visual_order.push(i);
             }
         }
         for (i, t) in self.tabs.iter().enumerate() {
-            if !self.pinned_ids.contains(&t.id) {
+            if !self.icon_only(t.id) {
                 visual_order.push(i);
             }
         }
         let pinned_flags: Vec<bool> = visual_order
             .iter()
-            .map(|&i| {
-                self.tabs
-                    .get(i)
-                    .is_some_and(|t| self.pinned_ids.contains(&t.id))
-            })
+            .map(|&i| self.tabs.get(i).is_some_and(|t| self.icon_only(t.id)))
             .collect();
         // Fit at resting widths (pointer elsewhere) — see [`Reveal`] for why.
         let resting: Vec<f64> = visual_order
@@ -4261,7 +4522,8 @@ impl TabBar {
         transform: Affine,
         theme: &Theme,
     ) -> Vec<Rect> {
-        if !self.keyboard_focus {
+        // While the location is edited the field shows where typing goes.
+        if !self.keyboard_focus || self.toolbar_row.is_editing() {
             return Vec::new();
         }
         let Some((idx, _)) = self
@@ -4504,6 +4766,7 @@ impl TabBar {
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor = p;
+        self.toolbar_row.pointer_moved(p);
         self.hover_control = self.controls.hit(p);
         if self
             .pressed_control
@@ -4514,11 +4777,8 @@ impl TabBar {
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
         // skip them so a cursor crossing (0,0) doesn't latch a hover on a
         // glyph that isn't painted.
-        let is_pinned_at = |i: usize| {
-            self.tabs
-                .get(i)
-                .is_some_and(|t| self.pinned_ids.contains(&t.id))
-        };
+        let icon_only: Vec<bool> = self.tabs.iter().map(|t| self.icon_only(t.id)).collect();
+        let is_pinned_at = |i: usize| icon_only.get(i).copied().unwrap_or(false);
         // The red wash follows the painted glyph. Presses, and the hover
         // intent (which never opens a pill from its ×), use the forgiving
         // 32 px target from `clickable_controls`.
@@ -4619,15 +4879,17 @@ impl TabBar {
     fn on_left_press(&mut self, handled: &mut bool) {
         let cursor_pos = self.last_cursor;
         if let Some(control) = self.controls.hit(cursor_pos) {
+            self.toolbar_row.cancel_edit();
             self.pressed_control = Some(control);
             *handled = true;
             return;
         }
-        let is_pinned_at = |i: usize| {
-            self.tabs
-                .get(i)
-                .is_some_and(|t| self.pinned_ids.contains(&t.id))
-        };
+        if self.active_toolbar().is_some() && self.toolbar_row.press(cursor_pos) {
+            *handled = true;
+            return;
+        }
+        let icon_only: Vec<bool> = self.tabs.iter().map(|t| self.icon_only(t.id)).collect();
+        let is_pinned_at = |i: usize| icon_only.get(i).copied().unwrap_or(false);
         let close_idx = (0..self.tabs.len())
             .find(|&i| {
                 self.close_hit_rect(i)
@@ -7929,6 +8191,153 @@ mod tests {
             std::collections::HashMap::new();
         let node = b.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
         (taffy, node)
+    }
+
+    fn browser_slots() -> crate::window_toolbar::WindowToolbar {
+        use crate::window_toolbar::{
+            ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+        };
+        WindowToolbar {
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: false,
+            }),
+            location: Some(ToolbarLocation {
+                label: "duckduckgo.com".into(),
+                value: "https://duckduckgo.com/".into(),
+                editable: true,
+                name: "Address and search".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![ToolbarAction {
+                id: "reload".into(),
+                icon: "refresh".into(),
+                name: "Reload".into(),
+                enabled: true,
+                on: false,
+            }],
+        }
+    }
+
+    fn send_key(b: &mut TabBar, key: Key, text: Option<&str>) -> bool {
+        let (taffy, node) = built_layout(b);
+        let event = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            key,
+            text.map(Into::into),
+            ElementState::Pressed,
+        ));
+        Dispatch::new().layout(&taffy, node).send(b, &event).handled
+    }
+
+    // USER REQUIREMENT (2026-10-19): "apps shouldnt be responsible for
+    // rendering a top bar" -- the browser's address is its editable location
+    // in the window's bar: a click edits the whole address with a go button,
+    // Enter commits what was typed to the app, Esc puts it back.
+    #[test]
+    fn the_bar_edits_an_apps_location_and_commits_it_to_that_tab() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        assert!(b.set_toolbar(1, Some(browser_slots())));
+        assert!(!b.set_toolbar(1, Some(browser_slots())), "unchanged");
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(
+            (b.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON,
+            "one row"
+        );
+        let location = b.location_rect();
+        assert!(location.area() > 0.0);
+        assert!(
+            location.x1 <= b.window_controls().maximize.x0,
+            "the location stops before the window's controls"
+        );
+        assert!(
+            b.tab_rects()[0].width() <= PINNED_W + 0.5,
+            "the title is the icon"
+        );
+
+        let mut handled = false;
+        dispatch_cursor(&mut b, location.center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        assert!(
+            handled && b.editing_location(),
+            "a click edits the location"
+        );
+        assert_eq!(
+            b.toolbar_row.field_text(),
+            Some("https://duckduckgo.com/"),
+            "the whole address, not the domain"
+        );
+        assert!(send_key(&mut b, Key::Named(NamedKey::Escape), None));
+        assert!(!b.editing_location(), "Esc puts the location back");
+        assert!(b.take_toolbar_events().is_empty());
+
+        assert!(b.edit_location(), "Ctrl+L edits it too");
+        for ch in "example.org".chars() {
+            let text = ch.to_string();
+            assert!(send_key(
+                &mut b,
+                Key::Character(text.as_str().into()),
+                Some(&text)
+            ));
+        }
+        assert!(send_key(&mut b, Key::Named(NamedKey::Enter), None));
+        assert!(!b.editing_location());
+        assert_eq!(
+            b.take_toolbar_events(),
+            vec![(
+                1,
+                crate::window_toolbar::ToolbarEvent::Commit {
+                    text: "example.org".into()
+                }
+            )],
+            "typing replaced the selected address and Enter committed it"
+        );
+    }
+
+    /// Tabbed, the slots take a row of their own under the tabs, and the
+    /// window's controls stand exactly where they stand untabbed.
+    #[test]
+    fn tabbed_the_slots_take_a_row_under_the_tabs_and_the_controls_stay() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut solo = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        solo.set_window_controls(true);
+        solo.set_toolbar(1, Some(browser_slots()));
+        lay_out_at_width_with(&mut solo, 900.0, &theme);
+        let mut tabbed = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "DuckDuckGo"),
+                TabDescriptor::new(2, "Files"),
+            ],
+            1,
+        );
+        tabbed.set_window_controls(true);
+        tabbed.set_toolbar(1, Some(browser_slots()));
+        lay_out_at_width_with(&mut tabbed, 900.0, &theme);
+        assert!((tabbed.bar_height() - (TAB_BAR_HEIGHT + TOOLBAR_ROW_HEIGHT)).abs() < f64::EPSILON);
+        assert_eq!(tabbed.window_controls(), solo.window_controls());
+        let (back, _, location, _) = tabbed.toolbar_rects();
+        assert!(
+            back.y0 >= tabbed.get_rect().y0 + TAB_BAR_HEIGHT - 0.5,
+            "under the tabs"
+        );
+        assert!(
+            location.width() > solo.location_rect().width(),
+            "across the row"
+        );
+        assert!(
+            tabbed.tab_rects()[0].width() > PINNED_W,
+            "tabbed, the tab shows its label"
+        );
+
+        // A tab without slots: one row again, no slot rects.
+        tabbed.set_active(2);
+        lay_out_at_width_with(&mut tabbed, 900.0, &theme);
+        assert!((tabbed.bar_height() - TAB_BAR_HEIGHT).abs() < f64::EPSILON);
+        assert!(!tabbed.toolbar_hit(location.center()));
     }
 
     fn four_tab_bar() -> TabBar {

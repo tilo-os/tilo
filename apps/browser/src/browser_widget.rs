@@ -61,6 +61,7 @@ mod continuity;
 mod library;
 pub(crate) mod personal;
 mod toolbar;
+mod window_bar;
 
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
@@ -381,6 +382,8 @@ enum CompositionView {
 struct CompositionKey {
     theme: Theme,
     view: CompositionView,
+    /// The window's bar shows the browser's slots, so it draws no toolbar.
+    hosted: bool,
     compact: bool,
     immersive: bool,
     window_scale: f32,
@@ -471,6 +474,12 @@ pub struct BrowserWidget {
     /// Most recent URI the engine reported — recorded into history on
     /// load-finished.
     current_uri: String,
+    /// What the window's bar slots were last declared from
+    /// (`window_bar::BarInputs`), so an unchanged frame declares nothing.
+    declared_bar: Option<window_bar::BarInputs>,
+    /// The press that selected the whole address: its release is the
+    /// address bar's too, so the selection it made stays.
+    swallow_address_release: bool,
     load_error: Option<String>,
     /// A locally rejected address must outlive any late event from an earlier
     /// engine navigation. `WebView` events carry no request id, so this gate is
@@ -1076,6 +1085,12 @@ impl BrowserWidget {
     /// Put the caret in the address field, for a window opened without a
     /// page to show.
     pub(crate) fn focus_address_with_caret(&mut self) -> bool {
+        if ui::window_toolbar::is_hosted() {
+            // The address is the window bar's location: the caret waits
+            // there.
+            ui::window_toolbar::edit_location();
+            return false;
+        }
         self.focus_address_input()
     }
     /// Show `url` in another Browser in a desktop tab right after this one.
@@ -1284,6 +1299,8 @@ impl BrowserWidget {
             media_playing: false,
             media_document_generation: None,
             current_uri: String::new(),
+            declared_bar: None,
+            swallow_address_release: false,
             load_error: None,
             address_error_active: false,
             forced_load_error: false,
@@ -2730,6 +2747,7 @@ impl BrowserWidget {
                     find: self.daily.open,
                 }
             },
+            hosted: ui::window_toolbar::is_hosted(),
             compact: self.compact_chrome,
             immersive: self.content_fullscreen && self.window_fullscreen_active,
             window_scale: self.window_scale,
@@ -2770,8 +2788,12 @@ impl BrowserWidget {
         // under the toolbar and fills the rest of the window.
         let mut column = Column::new()
             .with_no_padding()
-            .with_gap(theme.tokens.spacing.s0)
-            .push(self.build_toolbar(theme));
+            .with_gap(theme.tokens.spacing.s0);
+        // In a Tilo session the toolbar is the window bar's slots
+        // (`window_bar`): the window draws no row of its own.
+        if !ui::window_toolbar::is_hosted() {
+            column = column.push(self.build_toolbar(theme));
+        }
         // Messages from the window: over a web page they run edge to edge
         // under the toolbar, over the settings or library page they are the
         // first part of the page.
@@ -2960,6 +2982,17 @@ impl BrowserWidget {
     /// user may be editing; focus alone does not imply an unsent draft).
     fn url_input_focused(&self) -> bool {
         self.control_focused(URL_INPUT_ID)
+    }
+
+    /// Whether the address field's go button was pressed since the last
+    /// look; clears it.
+    fn take_address_submit(&mut self) -> bool {
+        self.composed
+            .element_mut()
+            .and_then(|c| ui::widget::find_test_id_mut(c, URL_INPUT_ID))
+            .and_then(Widget::as_any_mut)
+            .and_then(|widget| widget.downcast_mut::<ui::widget::TextInput>())
+            .is_some_and(ui::widget::TextInput::take_submit)
     }
 
     fn control_focused(&self, id: &str) -> bool {
@@ -4016,7 +4049,15 @@ impl BrowserWidget {
         let f6 = key.state == ElementState::Pressed
             && key.logical_key == WKey::Named(WNamedKey::F6)
             && !modifiers.alt_key();
-        (requested || f6) && !self.show_settings && !self.show_library && self.focus_address_input()
+        if !(requested || f6) {
+            return false;
+        }
+        if ui::window_toolbar::is_hosted() {
+            // The address is the window bar's location: it edits there.
+            ui::window_toolbar::edit_location();
+            return true;
+        }
+        !self.show_settings && !self.show_library && self.focus_address_input()
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -4896,21 +4937,45 @@ impl Widget for BrowserWidget {
                 .find_rect(URL_INPUT_ID)
                 .is_some_and(|rect| rect.contains(self.cursor));
 
+        if click_into_address {
+            // The press only puts the whole address under the caret,
+            // selected: handed to the field as well, its release would
+            // collapse the selection where the press landed, and what the
+            // person types would be appended to the old address.
+            self.focus_address_input();
+            self.swallow_address_release = true;
+            *ctx.handled = true;
+            return;
+        }
+        if self.swallow_address_release
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            self.swallow_address_release = false;
+            *ctx.handled = true;
+            return;
+        }
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child_node) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
-        if click_into_address && self.url_input_focused() {
-            self.focus_address_input();
-        }
 
-        // Enter in the focused address bar submits it (no suggestion picked).
-        if let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == ElementState::Pressed
-            && key.logical_key == WKey::Named(WNamedKey::Enter)
-            && self.url_input_focused()
+        // Enter in the focused address bar, or its go button, submits it
+        // (no suggestion picked).
+        let go_pressed = self.take_address_submit();
+        if go_pressed
+            || matches!(event, WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key == WKey::Named(WNamedKey::Enter)
+                    && self.url_input_focused())
         {
             self.navigate_to_input();
             self.reset_omnibox();
@@ -5664,6 +5729,7 @@ impl BrowserWidget {
         self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
+        self.structure_dirty |= self.sync_window_toolbar();
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();

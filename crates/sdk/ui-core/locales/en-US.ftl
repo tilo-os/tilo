@@ -56,6 +56,9 @@ host-window-minimize = Minimize
 host-window-maximize = Maximize
 host-window-restore = Restore
 host-window-close = Close
+window-toolbar-back = Back
+window-toolbar-forward = Forward
+window-toolbar-go = Go
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }

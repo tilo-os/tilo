@@ -728,6 +728,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().strip_switcher_takes_keys() {
         return true;
     }
+    // A window's location is being edited in its bar: typing goes to the
+    // field, not to the window under it, until Enter or Esc.
+    if fb.host().window_location_editing() {
+        return true;
+    }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
     let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();

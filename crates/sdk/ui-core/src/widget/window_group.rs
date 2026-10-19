@@ -1611,6 +1611,9 @@ impl WindowGroup {
         if plus.area() > 0.0 && plus.contains(p) {
             return false;
         }
+        if self.bar.toolbar_hit(p) {
+            return false;
+        }
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
@@ -1624,7 +1627,7 @@ impl WindowGroup {
             return false;
         }
         let plus = self.bar.new_tab_rect();
-        !(plus.area() > 0.0 && plus.contains(p))
+        !(plus.area() > 0.0 && plus.contains(p)) && !self.bar.toolbar_hit(p)
     }
 
     /// True when `p` is in the group's trailing-edge resize target.
@@ -1706,6 +1709,79 @@ impl WindowGroup {
         self.style_dirty = true;
         true
     }
+    /// Show the slots tab `id`'s app declared for the window's bar
+    /// ([`crate::window_toolbar`]), or none. Returns whether that changed.
+    pub fn set_tab_toolbar(
+        &mut self,
+        id: u64,
+        toolbar: Option<crate::window_toolbar::WindowToolbar>,
+    ) -> bool {
+        let changed = self.bar.set_toolbar(id, toolbar);
+        if changed {
+            // The bar may change its height, and its row its content.
+            self.style_dirty = true;
+            self.grip_dirty = true;
+        }
+        changed
+    }
+
+    /// The slots tab `id` shows in the bar.
+    #[must_use]
+    pub fn tab_toolbar(&self, id: u64) -> Option<&crate::window_toolbar::WindowToolbar> {
+        self.bar.toolbar(id)
+    }
+
+    /// What the person did with the apps' slots in the bar, by tab.
+    pub fn take_toolbar_events(&mut self) -> Vec<(u64, crate::window_toolbar::ToolbarEvent)> {
+        self.bar.take_toolbar_events()
+    }
+
+    /// Whether the active tab's location is being edited in the bar.
+    #[must_use]
+    pub fn editing_location(&self) -> bool {
+        self.navigation_bar_visible() && self.bar.editing_location()
+    }
+
+    /// Hand a keyboard or text event to the location field while it is
+    /// edited; the shell routes the keyboard here while
+    /// [`Self::editing_location`]. Returns whether the field took it.
+    pub fn location_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let took = self.bar.location_event(event, ctx);
+        if took {
+            self.grip_dirty = true;
+        }
+        took
+    }
+
+    /// End the location's edit, putting it back. Returns whether it was
+    /// being edited.
+    pub fn cancel_location_edit(&mut self) -> bool {
+        let cancelled = self.bar.cancel_location_edit();
+        if cancelled {
+            self.grip_dirty = true;
+        }
+        cancelled
+    }
+
+    /// Where the active tab's location stands in the bar.
+    #[must_use]
+    pub fn location_rect(&self) -> Rect {
+        self.bar.location_rect()
+    }
+
+    /// Turn the active tab's editable location into a field (Ctrl+L).
+    pub fn edit_location(&mut self) -> bool {
+        let started = self.navigation_bar_visible() && self.bar.edit_location();
+        if started {
+            self.grip_dirty = true;
+        }
+        started
+    }
+
     pub fn tabs(&self) -> &[TabDescriptor] {
         self.bar.tabs()
     }
@@ -6073,5 +6149,70 @@ mod window_bar_tests {
             (g.get_rect().y0 - before.y0).abs() < 0.5,
             "and back up when it hides"
         );
+    }
+
+    fn slots() -> crate::window_toolbar::WindowToolbar {
+        use crate::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
+        WindowToolbar {
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: true,
+            }),
+            location: Some(ToolbarLocation {
+                label: "duckduckgo.com".into(),
+                value: "https://duckduckgo.com/".into(),
+                editable: true,
+                ..ToolbarLocation::default()
+            }),
+            actions: Vec::new(),
+        }
+    }
+
+    fn pages(count: u64) -> WindowGroup {
+        let tiles = (1..=count)
+            .map(|id| {
+                (
+                    TabDescriptor::new(id, format!("Page {id}")),
+                    TileContent::App(Box::new(PageApp(Page { rect: Rect::ZERO })) as Box<_>),
+                )
+            })
+            .collect();
+        WindowGroup::new(10, tiles, 1, WindowWidth::Normal)
+    }
+
+    // USER REQUIREMENT (2026-10-19): "apps shouldnt be responsible for
+    // rendering a top bar" -- an app's toolbar is slots in the window's bar,
+    // which stands above the app's content and never over it.
+    #[test]
+    fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark().with_reduce_motion(true);
+        for count in [1, 2] {
+            let mut g = pages(count);
+            assert!(g.set_tab_toolbar(1, Some(slots())));
+            lay_out(&mut g, &theme);
+            let bar = g.bar_rect();
+            let expected = if count == 1 {
+                crate::widget::tabs::TAB_BAR_HEIGHT
+            } else {
+                crate::widget::tabs::TAB_BAR_HEIGHT + crate::widget::tabs::TOOLBAR_ROW_HEIGHT
+            };
+            assert!(
+                (bar.height() - expected).abs() < 0.5,
+                "{count} tabs: {bar:?}"
+            );
+            let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
+            assert!(
+                content.y0 >= bar.y1 - 0.5,
+                "{count} tabs: the bar {bar:?} is over the content {content:?}"
+            );
+            let location = g.bar_for_tests().location_rect();
+            assert!(bar.contains(location.center()), "{count} tabs: in the bar");
+            assert!(
+                !g.bar_grab_hit(location.center()),
+                "the location is no drag handle"
+            );
+            assert!(g.edit_location() && g.editing_location());
+        }
     }
 }

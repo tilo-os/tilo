@@ -74,6 +74,9 @@ pub(super) struct FloatingRuntime {
     pub selection_capable_sent: bool,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
+    /// The [`crate::window_toolbar::revision`] of the slots last sent to
+    /// the shell on this connection.
+    pub toolbar_sent: Option<u64>,
 }
 
 impl FloatingRuntime {
@@ -128,6 +131,7 @@ impl FloatingRuntime {
             paint_capable_sent: false,
             selection_capable_sent: false,
             close_window_requested: false,
+            toolbar_sent: None,
         }
     }
 }
@@ -415,6 +419,9 @@ impl App {
             self.apply_unhosted_tab_request(request);
             changed = true;
         }
+        // No desktop bar to show the app's slots: it keeps its own toolbar.
+        changed |= crate::window_toolbar::set_hosted(false);
+        let _ = crate::window_toolbar::take_edit_request();
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         crate::shared_selection::set_agent_host_available(false);
@@ -509,6 +516,26 @@ impl App {
         let instance = crate::shell_tabs::launch_instance();
         for request in crate::shell_tabs::take_requests() {
             client.send(&tab_request_message(request, instance))?;
+            *changed = true;
+        }
+        // The window's bar shows the app's slots while the shell hears it.
+        if crate::window_toolbar::set_hosted(true) {
+            *changed = true;
+        }
+        let toolbar = crate::window_toolbar::revision();
+        if self.floating.toolbar_sent != Some(toolbar) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Toolbar {
+                    toolbar: crate::window_toolbar::declared(),
+                    instance,
+                },
+            )?;
+            self.floating.toolbar_sent = Some(toolbar);
+        }
+        if crate::window_toolbar::take_edit_request() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::EditLocation { instance },
+            )?;
             *changed = true;
         }
         if !self.floating.selection_capable_sent {
@@ -829,6 +856,9 @@ impl App {
                 FloatingSurfaceHostMessage::PaintStop => {
                     crate::webview::paint::set_share_watched(false);
                 }
+                FloatingSurfaceHostMessage::ToolbarEvent { event } => {
+                    crate::window_toolbar::deliver(event.clone());
+                }
                 FloatingSurfaceHostMessage::ShareSelection => {
                     let selection = self.selection_for_agent(
                         crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
@@ -861,6 +891,10 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        // The bar that showed the app's slots is gone with the shell; a new
+        // connection is told them afresh.
+        crate::window_toolbar::set_hosted(false);
+        self.floating.toolbar_sent = None;
         if self.floating.network_status_active {
             tilo_host::network_status::clear_host_status();
             self.floating.network_status_active = false;

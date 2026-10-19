@@ -14,7 +14,8 @@ use ui::theme::Theme;
 use ui::webview::WebViewCommand;
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
-    Button, Chip, ChipLead, MenuButton, MenuItem, Row, TextInput, TextInputKind, Widget,
+    AccessoryAction, Button, Chip, ChipLead, MenuButton, MenuItem, Row, TextInput, TextInputKind,
+    Widget,
 };
 
 use super::{BrowserWidget, URL_INPUT_ID};
@@ -57,7 +58,7 @@ impl BrowserWidget {
     }
 
     /// The resource and action a press of the library button performs.
-    fn library_command(&self) -> (&'static str, &'static str) {
+    pub(super) fn library_command(&self) -> (&'static str, &'static str) {
         if self.show_library {
             (crate::resource::Browser::KIND, "show-page")
         } else {
@@ -226,7 +227,10 @@ impl BrowserWidget {
             .with_kind(TextInputKind::Url)
             .with_id(URL_INPUT_ID)
             .with_accessible_name(t("browser-address"))
-            .with_placeholder(t("browser-address-placeholder"));
+            .with_placeholder(t("browser-address-placeholder"))
+            // The go button: while the field is edited, it commits it as
+            // Enter does (`BrowserWidget::handle_event` takes the submit).
+            .with_trailing_accessory(Icon::ArrowRight, &t("browser-go"), AccessoryAction::Submit);
 
         let mut row = Row::new()
             .no_wrap()

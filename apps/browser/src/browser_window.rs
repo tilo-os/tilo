@@ -57,6 +57,10 @@ pub struct BrowserWindow {
     /// A window opened without a page starts in the address field.
     focus_address: bool,
     address_focus_node: Option<NodeId>,
+    /// The caret was put in the address and the host has not been told yet:
+    /// every layout pass names the field's node anew, since a node id is
+    /// only good for the tree it was built in.
+    address_focus_pending: bool,
     layout_immersive: Option<bool>,
     exit_state: ExitState,
     exit_choice: ui::LocalState<Option<bool>>,
@@ -79,6 +83,7 @@ impl BrowserWindow {
             dirty: true,
             focus_address,
             address_focus_node: None,
+            address_focus_pending: false,
             layout_immersive: None,
             exit_state: ExitState::Normal,
             exit_choice: ui::LocalState::new(None),
@@ -392,6 +397,9 @@ impl Widget for BrowserWindow {
         let page = self.page.build_layout(taffy, theme, nodes);
         self.layout_immersive = Some(false);
         if std::mem::take(&mut self.focus_address) && self.page.focus_address_with_caret() {
+            self.address_focus_pending = true;
+        }
+        if self.address_focus_pending {
             self.address_focus_node = nodes.iter().find_map(|(id, widget)| {
                 // Nodes were built immediately above and all widgets are retained.
                 let widget = unsafe { &**widget };
@@ -487,6 +495,7 @@ impl Widget for BrowserWindow {
             return;
         }
         if let Some(address) = self.address_focus_node.take() {
+            self.address_focus_pending = false;
             *ctx.focus_target = Some(address);
         }
         if matches!(
@@ -1390,5 +1399,174 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// The URLs the page engine was told to navigate to, in order.
+    fn navigated(engine: &PageEngine) -> Vec<String> {
+        engine
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|command| match command {
+                WebViewCommand::ScopedNavigation {
+                    command: ui::webview::NavigationCommand::Navigate { url },
+                    ..
+                } => Some(url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// How a person reaches the address field before typing.
+    #[derive(Clone, Copy, Debug)]
+    enum Reach {
+        /// A new window starts in the field.
+        Launch,
+        /// A click into the field.
+        Click,
+        /// Ctrl+L.
+        Shortcut,
+    }
+
+    /// Open a live Browser window, reach the address field the given way,
+    /// type `typed`, and commit it with Enter or the go button.
+    fn type_and_commit(typed: &str, reach: Reach, go_button: bool) -> Vec<String> {
+        let engine = PageEngine::new();
+        engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
+        engine.emit(WebViewEvent::TitleChanged("DuckDuckGo".into()));
+        engine.emit(WebViewEvent::LoadFinished);
+        crate::browser_widget::test_window_engine::install(engine.clone());
+        let mut app =
+            ui::framework::testing::TestApp::<crate::BrowserShell>::new().expect("Browser opens");
+        let harness = app.harness();
+        for _ in 0..3 {
+            harness.relayout();
+        }
+        match reach {
+            Reach::Launch => {}
+            Reach::Click => {
+                // Into the page first, so the click comes from elsewhere:
+                // the first click into the address selects all of it.
+                harness.click_named("browser.surface").expect("the page");
+                harness.relayout();
+                harness
+                    .click_named("browser.url_input")
+                    .expect("address field");
+                harness.relayout();
+            }
+            Reach::Shortcut => {
+                harness.send_host_event(&WindowEvent::ModifiersChanged(
+                    winit::keyboard::ModifiersState::CONTROL.into(),
+                ));
+                harness.key("l");
+                harness.send_host_event(&WindowEvent::ModifiersChanged(
+                    winit::keyboard::ModifiersState::empty().into(),
+                ));
+                harness.relayout();
+            }
+        }
+        for ch in typed.chars() {
+            harness.key(&ch.to_string());
+            harness.relayout();
+        }
+        if go_button {
+            // The go button is the field's trailing square while it is edited.
+            let field = harness.targets()["browser.url_input"];
+            harness.click_at(field.x1 - field.height() / 2.0, field.center().y);
+        } else {
+            harness.key("Enter");
+        }
+        app.settle();
+        navigated(&engine)
+    }
+
+    // USER REQUIREMENT (2026-10-19): "typing a URL or search term and pressing
+    // Enter does nothing, and there is no arrow/go button" -- Enter and the go
+    // button both commit the field: an address opens over https, anything
+    // else searches.
+    #[test]
+    fn enter_or_the_go_button_opens_an_address_or_searches() {
+        let mut failures = Vec::new();
+        for reach in [Reach::Launch, Reach::Click, Reach::Shortcut] {
+            for go_button in [false, true] {
+                let urls = type_and_commit("example.org", reach, go_button);
+                if !urls
+                    .iter()
+                    .any(|url| url == "https://example.org/" || url == "https://example.org")
+                {
+                    failures.push(format!("example.org {reach:?} go={go_button}: {urls:?}"));
+                }
+                let urls = type_and_commit("rust lifetimes", reach, go_button);
+                let searched = urls.iter().any(|url| {
+                    url::Url::parse(url).is_ok_and(|url| {
+                        url.scheme() == "https"
+                            && url
+                                .query_pairs()
+                                .any(|(_, value)| value == "rust lifetimes")
+                    })
+                });
+                if !searched {
+                    failures.push(format!("rust lifetimes {reach:?} go={go_button}: {urls:?}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// In a Tilo session the address is the window bar's location
+    /// (`ui::window_toolbar`): what the bar commits navigates exactly as
+    /// Enter in the window's own field does, and the window declares its
+    /// slots: back and forward, the site as an editable location, reload,
+    /// bookmark and the library.
+    #[test]
+    fn the_window_bar_location_opens_an_address_or_searches() {
+        for typed in ["example.org", "rust lifetimes"] {
+            let engine = PageEngine::new();
+            engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
+            engine.emit(WebViewEvent::LoadFinished);
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                .expect("Browser opens");
+            let harness = app.harness();
+            for _ in 0..3 {
+                harness.relayout();
+            }
+            let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+            let location = declared.location.clone().expect("a location");
+            assert!(location.editable);
+            assert_eq!(location.label, "duckduckgo.com", "the site at rest");
+            assert_eq!(
+                location.value, "https://duckduckgo.com/",
+                "the address to edit"
+            );
+            assert!(declared.navigation.is_some());
+            assert_eq!(
+                declared
+                    .actions
+                    .iter()
+                    .map(|action| action.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["reload", "bookmark", "library"]
+            );
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Commit {
+                text: typed.into(),
+            });
+            harness.relayout();
+            app.settle();
+            let urls = navigated(&engine);
+            let ok = if typed == "example.org" {
+                urls.iter()
+                    .any(|url| url == "https://example.org/" || url == "https://example.org")
+            } else {
+                urls.iter().any(|url| {
+                    url::Url::parse(url).is_ok_and(|url| {
+                        url.query_pairs()
+                            .any(|(_, value)| value == "rust lifetimes")
+                    })
+                })
+            };
+            assert!(ok, "{typed}: {urls:?}");
+        }
     }
 }
