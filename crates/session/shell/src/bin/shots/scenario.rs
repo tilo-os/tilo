@@ -476,6 +476,11 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u32),
     SwitchWorkspace(usize),
+    /// Add a strip named so to the active workspace and go to it, as the
+    /// strip switcher's "New strip" does.
+    CreateStrip(&'static str),
+    /// Go to strip `n` (from 0) of the active workspace.
+    FocusStrip(usize),
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
@@ -546,6 +551,12 @@ pub enum MotionCue {
     QuickSettingsSection(Option<shell::shell::quick_settings::QsSection>),
     /// Click at this point.
     ClickAt(Point),
+    /// The overview opens (`true`) or closes, as `source` asks: Super+Tab is
+    /// the keyboard, "Overview" in the workspace menu a click.
+    Overview {
+        open: bool,
+        source: ui::tokens::MotionSource,
+    },
 }
 
 /// A named, ordered list of actions.
@@ -708,6 +719,14 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
             driver.with_chrome(|st| st.quick_settings.section = section);
         }
         MotionCue::ClickAt(point) => driver.click_at(*point),
+        MotionCue::Overview { open, source } => {
+            let open = *open;
+            driver.with_chrome(|st| {
+                st.overlays.overview = open;
+                st.bump();
+            });
+            driver.host_mut().latch_overview_transition_from(*source);
+        }
     }
 }
 
@@ -1811,6 +1830,15 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
 /// split out of [`apply`] to keep that dispatcher short.
 fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action) {
     match action {
+        Action::CreateStrip(name) => driver.with_chrome(|st: &mut ChromeState| {
+            if let Err(error) = st.create_strip(name) {
+                eprintln!("scenario: could not create strip {name}: {error}");
+            }
+        }),
+        Action::FocusStrip(index) => driver.with_chrome(|st: &mut ChromeState| {
+            st.focus_strip_index(*index);
+            st.bump();
+        }),
         Action::LoneWindow(idx) => {
             let idx = *idx;
             driver.with_chrome(|st: &mut ChromeState| {
@@ -2294,6 +2322,74 @@ fn motion_quick_settings_scenario() -> Scenario {
     }
 }
 
+/// The workspace overview opening and closing over a workspace of three
+/// strips (one of them empty): every window flies from its place on its
+/// strip into the overview's picture and back, frame by frame at 90 Hz on
+/// the toolkit's clock. Super+Tab flies them at `fast`; "Overview" in the
+/// workspace menu is a whole-view change at `slow`.
+fn motion_overview_scenario() -> Scenario {
+    use ui::tokens::MotionSource::{Keyboard, Pointer};
+    Scenario {
+        name: "motion_overview",
+        description: "The overview opens and closes over three strips, by Super+Tab and by the workspace menu, at 90 Hz (needs --features test-support).",
+        actions: vec![
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
+            Action::CreateStrip("Research"),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::OpenHostedWindow {
+                app: "Editor",
+                title: "Draft",
+            },
+            Action::CreateStrip("Later"),
+            Action::FocusStrip(0),
+            Action::Wait(12),
+            Action::Snapshot("overview-desktop"),
+            Action::MotionFrames {
+                prefix: "overview-key-open",
+                cue: MotionCue::Overview {
+                    open: true,
+                    source: Keyboard,
+                },
+                frames: 18,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "overview-key-close",
+                cue: MotionCue::Overview {
+                    open: false,
+                    source: Keyboard,
+                },
+                frames: 18,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "overview-click-open",
+                cue: MotionCue::Overview {
+                    open: true,
+                    source: Pointer,
+                },
+                frames: 44,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "overview-click-close",
+                cue: MotionCue::Overview {
+                    open: false,
+                    source: Pointer,
+                },
+                frames: 30,
+                every_ms: 11,
+            },
+        ],
+    }
+}
+
 /// The Notes window's sidebar collapsing and expanding by a click on its
 /// toggle: frame by frame at 90 Hz on the toolkit's clock.
 fn motion_sidebar_scenario() -> Scenario {
@@ -2337,6 +2433,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
+        motion_overview_scenario(),
         motion_sidebar_scenario(),
         Scenario {
             name: "personal_workspace_on_laptop",

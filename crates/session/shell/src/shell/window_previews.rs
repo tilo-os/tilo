@@ -90,17 +90,28 @@ impl WindowSource for ShellWindows {
                     }
                 }
             }
-            TileContent::LocalApp { app_id, .. }
-            | TileContent::PeerWindow { app_id, .. }
-            | TileContent::HostedWindow { app_id, .. } => {
+            // A peer's window is theirs: it is never pictured here.
+            TileContent::PeerWindow { app_id, .. } => {
                 if crate::shell::capture_protection::holds_secrets(app_id) {
                     PreviewSource::Withheld
                 } else {
                     PreviewSource::Unavailable
                 }
             }
-            TileContent::AppPlaceholder { .. } => PreviewSource::Unavailable,
-            TileContent::Stub { .. } | TileContent::WorkspaceActivity => {
+            // An app the shell draws, in process or from its interface
+            // description, is pictured from a live paint of the tab it shows,
+            // the same paint a screenshot of it takes; one that holds secrets
+            // never is.
+            TileContent::LocalApp { app_id, .. } | TileContent::HostedWindow { app_id, .. }
+                if crate::shell::capture_protection::holds_secrets(app_id) =>
+            {
+                PreviewSource::Withheld
+            }
+            TileContent::LocalApp { .. }
+            | TileContent::HostedWindow { .. }
+            | TileContent::AppPlaceholder { .. }
+            | TileContent::Stub { .. }
+            | TileContent::WorkspaceActivity => {
                 if shown {
                     PreviewSource::Painted {
                         capture_id: format!("group:{group}:tab:{tab}"),

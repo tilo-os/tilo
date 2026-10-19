@@ -369,11 +369,16 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceMenuChoice::Overview => {
-                let mut state = chrome.borrow_mut();
-                if !state.overlays.overview {
-                    state.overlays.overview = true;
-                    state.bump();
+                {
+                    let mut state = chrome.borrow_mut();
+                    if !state.overlays.overview {
+                        state.overlays.overview = true;
+                        state.bump();
+                    }
                 }
+                // A click on it is a whole-view change the windows fly
+                // through; a key that chose it keeps the flight short.
+                self.latch_overview_transition();
             }
             WorkspaceMenuChoice::NewDesk => {
                 if let Some(bar) = self
