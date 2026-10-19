@@ -247,12 +247,15 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     );
     let timer = app.state().timers.values().next().cloned().unwrap();
     assert_eq!(timer.ends_at_ms, None, "toggle pauses the running timer");
+    let paused = timer
+        .paused_remaining_ms
+        .expect("a paused timer keeps what is left");
     command("add-minute", Some(&id));
     app.settle();
     app.settle();
     let timer = app.state().timers.values().next().cloned().unwrap();
     assert!(
-        timer.ends_at_ms.is_none() && timer.remaining(chrono::Utc::now()).as_secs() > 2_700,
+        timer.ends_at_ms.is_none() && timer.paused_remaining_ms == Some(paused + 60_000),
         "a minute more, still paused: {timer:?}"
     );
 
