@@ -143,16 +143,28 @@ impl BrowserWidget {
         );
         if self.personal_bookmark_location.source.is_none() && !self.bookmarks.entries().is_empty()
         {
+            let workspace = Box::new(ui::widget::Section::titled(
+                CATALOG.t("browser-workspace-bookmarks"),
+                vec![crate::rows::separated(self.bookmark_rows(), theme)],
+            ));
+            // With no bookmarks of your own, "No bookmarks here" above the
+            // workspace's would contradict the list under it.
+            let own = view::visible_requests(
+                &view::ViewState {
+                    bookmarks: &self.personal_bookmarks.bookmarks,
+                    imported_trees: &self.personal_bookmarks.imported_trees,
+                },
+                &self.personal_bookmark_location,
+            );
+            if own.is_empty() {
+                return workspace;
+            }
             return Box::new(
                 ui::widget::Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .push(personal)
-                    .push(Box::new(
-                        ui::widget::Text::new(&CATALOG.t("browser-workspace-bookmarks"))
-                            .with_role(ui::tokens::TextRole::Title),
-                    ))
-                    .push(crate::rows::separated(self.bookmark_rows(), theme)),
+                    .push(workspace),
             );
         }
         personal
