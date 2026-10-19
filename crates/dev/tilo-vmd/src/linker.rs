@@ -7,13 +7,19 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
+use crate::build_user::BuildUser;
 use crate::error::DaemonError;
 
 const DRIVER: &str = "#!/bin/sh\nset -eu\nsysroot=$(rustc --print sysroot)\ntarget=$(rustc -vV | sed -n 's/^host: //p')\nexec cc -fuse-ld=lld \"-B$sysroot/lib/rustlib/$target/bin/gcc-ld\" \"$@\"\n";
 
 /// Select bundled LLVM for native GNU development builds. An explicit caller
 /// linker wins; release builds never call this function.
-pub fn configure(command: &mut Command, root: &Path, target: &str) -> Result<(), DaemonError> {
+pub fn configure(
+    command: &mut Command,
+    directory: &Path,
+    target: &str,
+    user: Option<&BuildUser>,
+) -> Result<(), DaemonError> {
     if !target.ends_with("-unknown-linux-gnu") {
         return Ok(());
     }
@@ -39,8 +45,10 @@ pub fn configure(command: &mut Command, root: &Path, target: &str) -> Result<(),
             purpose: "link native development components without GNU ld memory pressure".into(),
         });
     }
-    let directory = root.join("linkers");
-    fs::create_dir_all(&directory).map_err(DaemonError::io("create linker driver directory"))?;
+    fs::create_dir_all(directory).map_err(DaemonError::io("create linker driver directory"))?;
+    if let Some(user) = user {
+        user.own(directory)?;
+    }
     let name = format!("cc-lld-{}", hex::encode(Sha256::digest(DRIVER.as_bytes())));
     let driver = directory.join(name);
     if !driver.exists() {
@@ -57,6 +65,9 @@ pub fn configure(command: &mut Command, root: &Path, target: &str) -> Result<(),
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&driver, fs::Permissions::from_mode(0o755))
             .map_err(DaemonError::io("make native linker driver executable"))?;
+    }
+    if let Some(user) = user {
+        user.own(&driver)?;
     }
     if Path::new("/sys/fs/selinux/enforce").exists() {
         let status = Command::new("chcon")

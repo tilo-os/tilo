@@ -58,7 +58,12 @@ impl TargetStore {
         self.dir.join(worktree)
     }
 
-    fn record_path(&self, worktree: &str) -> PathBuf {
+    /// The build root: every synced tree and its record.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn record_path(&self, worktree: &str) -> PathBuf {
         self.dir.join(format!("{worktree}.json"))
     }
 

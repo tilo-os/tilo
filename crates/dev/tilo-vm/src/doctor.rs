@@ -302,6 +302,78 @@ pub fn local_build(root: &Path) -> Option<String> {
     script.is_file().then(|| script.display().to_string())
 }
 
+/// Build directories that hold files owned by root: every worktree's
+/// `target/` and the shared compiler cache. Older in-VM builders ran cargo
+/// as root, and what they left makes the next `cargo` as yourself fail
+/// with "permission denied". Only the first `depth` levels are looked at,
+/// which is where cargo writes (`target/<profile>/deps/*.d`).
+#[cfg(unix)]
+pub fn root_owned_build_dirs(
+    roots: &[std::path::PathBuf],
+    depth: usize,
+) -> Vec<std::path::PathBuf> {
+    roots
+        .iter()
+        .filter(|root| holds_files_of(root, 0, depth))
+        .cloned()
+        .collect()
+}
+
+#[cfg(not(unix))]
+pub fn root_owned_build_dirs(
+    _roots: &[std::path::PathBuf],
+    _depth: usize,
+) -> Vec<std::path::PathBuf> {
+    Vec::new()
+}
+
+/// Whether `root` or anything within `depth` levels below it belongs to `uid`.
+#[cfg(unix)]
+fn holds_files_of(root: &Path, uid: u32, depth: usize) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let mut pending = vec![(root.to_owned(), 0_usize)];
+    while let Some((path, level)) = pending.pop() {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.uid() == uid {
+            return true;
+        }
+        if meta.is_dir() && level < depth {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            pending.extend(entries.flatten().map(|entry| (entry.path(), level + 1)));
+        }
+    }
+    false
+}
+
+/// The verdict on [`root_owned_build_dirs`]' findings, with the command
+/// that gives them back to `user`.
+pub fn ownership_check(found: &[std::path::PathBuf], user: &str) -> Check {
+    const NAME: &str = "build file ownership";
+    if found.is_empty() {
+        return Check::ok(
+            NAME,
+            "worktree targets and the compiler cache belong to you",
+        );
+    }
+    let paths: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
+    let shown = paths.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    let more = paths.len().saturating_sub(3);
+    let detail = if more == 0 {
+        format!("root owns files in {shown}; cargo as {user} cannot overwrite them")
+    } else {
+        format!("root owns files in {shown} and {more} more; cargo as {user} cannot overwrite them")
+    };
+    Check::fail(
+        NAME,
+        detail,
+        format!("sudo chown -R {user}: {}", paths.join(" ")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +590,45 @@ mod tests {
                     .ends_with("os/dev/build-dev-image.sh")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    /// Root-owned files in a target or the compiler cache fail the check
+    /// with the exact chown that fixes them; none passes.
+    #[test]
+    fn root_owned_build_files_fail_with_the_chown_that_fixes_them() {
+        assert_eq!(ownership_check(&[], "bob").state, "ok");
+        let found = vec![
+            std::path::PathBuf::from("/w/a/target"),
+            std::path::PathBuf::from("/var/cache/tilo-vm/sccache"),
+        ];
+        let check = ownership_check(&found, "bob");
+        assert_eq!(check.state, "fail");
+        assert!(check.detail.contains("/w/a/target"));
+        assert_eq!(
+            check.fix.as_deref(),
+            Some("sudo chown -R bob: /w/a/target /var/cache/tilo-vm/sccache")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_walk_finds_an_owner_only_within_its_depth() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("debug/deps");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("x.d"), "").unwrap();
+        let me = std::fs::metadata(dir.path()).unwrap().uid();
+        assert!(holds_files_of(dir.path(), me, 0));
+        if me != 0 {
+            assert!(!holds_files_of(dir.path(), 0, 3));
+            assert!(root_owned_build_dirs(&[dir.path().to_owned()], 3).is_empty());
+        }
+        assert!(!holds_files_of(&dir.path().join("missing"), me, 3));
     }
 }

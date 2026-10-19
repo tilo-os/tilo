@@ -5,6 +5,7 @@
 pub mod apply;
 pub mod awake;
 pub mod boot;
+mod build_user;
 mod cohort;
 pub mod daemon;
 mod device_actions;
