@@ -256,7 +256,9 @@ mod photo_tests {
     }
 }
 
-#[cfg(all(test, unix, feature = "local-daemons"))]
+// `test` on its own, so clippy reads the module as test code.
+#[cfg(test)]
+#[cfg(all(unix, feature = "local-daemons"))]
 mod active_record_tests {
     use std::os::unix::fs::PermissionsExt as _;
 
