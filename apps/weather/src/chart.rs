@@ -30,7 +30,7 @@ use crate::wxcode::Sky;
 
 /// One hour's worth of data for a column of the strip.
 pub struct HourColumn {
-    /// Hour-of-day label, e.g. "14".
+    /// Hour-of-day label in the person's clock, e.g. "14:00" or "2:00 PM".
     pub hour: String,
     /// Temperature in the user's display units.
     pub temp: f64,
@@ -123,7 +123,11 @@ pub fn strip_rows(theme: &Theme, tr: &mut TextRenderer) -> StripRows {
 pub fn min_column_width(theme: &Theme, tr: &mut TextRenderer) -> f64 {
     let rows = strip_rows(theme, tr);
     let text = StripText::of(theme);
-    let widest = ["-00°", "00:00", "100%"]
+    // The widest hour label in the person's clock ("22:00", "10:00 PM").
+    let hour = chrono::NaiveTime::from_hms_opt(22, 0, 0)
+        .map(|time| ui::format::time(&time))
+        .unwrap_or_default();
+    let widest = ["-00°", hour.as_str(), "100%"]
         .iter()
         .map(|sample| {
             let style = if sample.ends_with('°') {
@@ -322,7 +326,7 @@ impl HourlyStrip<'_> {
             let (label, style, color) = if p.is_now {
                 ("Now".to_string(), &text.now, c.text_primary)
             } else {
-                (format!("{}:00", p.hour), &text.small, c.text_dim)
+                (p.hour.clone(), &text.small, c.text_dim)
             };
             let (lw, _) = tr.measure_style(&label, None, style);
             tr.draw_style(

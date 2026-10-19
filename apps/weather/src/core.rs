@@ -1832,10 +1832,14 @@ impl SunArc {
         today: &crate::model::DayForecast,
     ) -> Self {
         let sp = &ctx.theme.tokens.spacing;
-        let sunrise = detail::hhmm(&today.sunrise);
-        let sunset = detail::hhmm(&today.sunset);
-        let fraction = detail::sun_arc_fraction(&detail::hhmm(now), &sunrise, &sunset)
-            .unwrap_or(if is_day { 0.5 } else { 0.0 });
+        let fraction = detail::sun_arc_fraction(
+            &detail::hhmm(now),
+            &detail::hhmm(&today.sunrise),
+            &detail::hhmm(&today.sunset),
+        )
+        .unwrap_or(if is_day { 0.5 } else { 0.0 });
+        let sunrise = detail::clock_label(&today.sunrise);
+        let sunset = detail::clock_label(&today.sunset);
         let radius = f64::from(sp.s16);
         let labels =
             ctx.line_box(TextRole::Caption) + f64::from(sp.s1) + ctx.line_box(TextRole::Label);

@@ -199,12 +199,14 @@ pub struct HourPoint {
 }
 
 impl HourPoint {
-    /// "14" style hour-of-day label parsed from the ISO time.
+    /// The hour this point is for, in the person's clock ("14:00" or
+    /// "2:00 PM"), parsed from the ISO time "YYYY-MM-DDTHH:MM".
     pub fn hour_label(&self) -> String {
-        // "YYYY-MM-DDTHH:MM" → "HH"
         self.time
             .get(11..13)
-            .map(std::string::ToString::to_string)
+            .and_then(|hour| hour.parse::<u32>().ok())
+            .and_then(|hour| chrono::NaiveTime::from_hms_opt(hour, 0, 0))
+            .map(|time| ui::format::time(&time))
             .unwrap_or_default()
     }
 }
