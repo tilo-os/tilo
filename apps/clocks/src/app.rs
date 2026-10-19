@@ -14,11 +14,12 @@ use crate::native_timers::{
 use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
-use chrono::Utc;
+use chrono::{Offset, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
 use ui::prelude::Id;
+use ui::widget::primitives::{Fact, Facts};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
@@ -148,20 +149,43 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
         .join(", ")
 }
 
-fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
-    zone.parse::<chrono_tz::Tz>().map_or_else(
-        |_| "Time unavailable".into(),
-        |z| {
-            let there = now.with_timezone(&z);
-            format!(
-                "{} on {} {}",
-                ui::clock::time_of_day(&there),
-                ui::format::day_heading_short(there.date_naive()),
-                // format: machine (the zone's designation and offset are identifiers)
-                there.format("(%Z, UTC%:z)")
-            )
-        },
-    )
+/// A city's time of day, and beside it the facts that place it: its day
+/// when that is not today here, and how far ahead or behind here it is.
+pub(crate) fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> (String, Vec<Fact>) {
+    let Ok(zone) = zone.parse::<chrono_tz::Tz>() else {
+        return ("Time unavailable".into(), Vec::new());
+    };
+    let there = now.with_timezone(&zone);
+    let here = now.with_timezone(&chrono::Local);
+    let mut facts = Vec::new();
+    if there.date_naive() != here.date_naive() {
+        facts.push(Fact::text(ui::format::day_heading_short(
+            there.date_naive(),
+        )));
+    }
+    let difference = there.offset().fix().local_minus_utc() - here.offset().fix().local_minus_utc();
+    facts.push(Fact::text(offset_from_here(difference)));
+    (ui::clock::time_of_day(&there), facts)
+}
+
+/// How far a place is ahead of or behind here, in words.
+fn offset_from_here(seconds: i32) -> String {
+    if seconds == 0 {
+        return "Same time as here".into();
+    }
+    let minutes = seconds.unsigned_abs() / 60;
+    let (hours, minutes) = (minutes / 60, minutes % 60);
+    let amount = match (hours, minutes) {
+        (0, minutes) => format!("{minutes} min"),
+        (1, 0) => "1 hour".into(),
+        (hours, 0) => format!("{hours} hours"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
+    };
+    if seconds > 0 {
+        format!("{amount} ahead")
+    } else {
+        format!("{amount} behind")
+    }
 }
 
 fn timezone_label(zone: &str) -> String {
@@ -210,14 +234,19 @@ fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> Model
             .with_rhythm(ui::tokens::Rhythm::Related);
         if s.clocks.world_clocks.is_empty() {
             col = col.push(Box::new(
-                Text::new("No cities yet. Add one below to compare time at a glance.").dimmed(),
+                Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
             ));
         }
         for (id, clock) in s.clocks.world_clocks.iter() {
+            let (time, facts) = city_time(&clock.timezone.0, s.now());
             let row = Row::new()
                 .push(Box::new(
-                    Text::new(&city_time(&clock.timezone.0, s.now()))
-                        .with_role(ui::TextRole::Title),
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(Text::new(&time).with_role(ui::TextRole::Title)))
+                        .push(Box::new(Facts::new(facts))),
                 ))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(

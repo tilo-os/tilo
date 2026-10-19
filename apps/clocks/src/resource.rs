@@ -24,6 +24,11 @@ pub enum ClocksEffect {
         #[param("The alarm's id")]
         alarm: String,
     },
+    /// Show a section of Clocks on this device.
+    Show {
+        #[param("world, alarms, timers or stopwatch")]
+        section: String,
+    },
     /// Dismiss the due alarm or timer notice on this device.
     DismissNotice,
     /// Float a timer above other windows.
@@ -234,6 +239,17 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
                 self.state.update(|shown| shown.selected_alarm = Some(id));
                 self.set_mode(crate::app::ALARMS);
             }
+            ClocksEffect::Show { section } => self.set_mode(match section.as_str() {
+                "world" => crate::app::WORLD,
+                "alarms" => crate::app::ALARMS,
+                "timers" => crate::app::TIMERS,
+                "stopwatch" => crate::app::STOPWATCH,
+                other => {
+                    return Err(format!(
+                        "there is no section `{other}`: world, alarms, timers or stopwatch"
+                    ));
+                }
+            }),
             ClocksEffect::DismissNotice => self.notice.set(None),
             ClocksEffect::FloatTimer { timer, floating } => {
                 if !self

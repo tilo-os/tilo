@@ -372,9 +372,14 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
         "world shows its cities"
     );
     let shown = world.harness().inspection_json().unwrap();
+    let (time, facts) = crate::app::city_time("Asia/Tokyo", shot_now());
     assert!(
-        shown.contains("17:00 on Tue, Jun 30 (JST, UTC+09:00)"),
+        shown.contains(&time) && facts.iter().all(|fact| shown.contains(&fact.text)),
         "the cities read the capture's pinned moment, not the device clock: {shown}"
+    );
+    assert!(
+        !shown.contains("UTC+09:00"),
+        "a city says how far ahead it is in words, not as a zone offset: {shown}"
     );
     let alarms = TestApp::<ClocksShell>::capture(Some("alarms")).unwrap();
     assert_eq!(alarms.state().alarms.len(), 2, "alarms shows its alarms");
