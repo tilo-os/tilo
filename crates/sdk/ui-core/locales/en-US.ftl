@@ -167,7 +167,7 @@ history-chip-access = Access
 history-chip-access-short = Access
 history-chip-deletions = Deletions
 history-chip-deletions-short = Del.
-history-op-splice = Text / structure
+history-op-splice = Text and structure
 history-op-edit-meta = Metadata
 history-op-move = Move
 history-op-comment = Comments
@@ -586,7 +586,7 @@ block-editor-replace-placeholder = Replace with
 block-editor-replace = Replace
 
 block-editor-replace-all = Replace all
-block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
+block-editor-replace-all-help = Shift+Enter in the replacement field replaces all
 
 block-callout-note = Note
 block-callout-tip = Tip
@@ -657,7 +657,7 @@ terminal-service-invalid-lease = The shell session connection could not be valid
 framework-unreadable = This cannot be opened
 display-arrangement-offline = Offline
 display-arrangement-excluded = Not in layout
-display-arrangement-offline-excluded = Offline · Not in layout
+display-arrangement-offline-excluded = Offline, not in the layout
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
 
