@@ -20,7 +20,7 @@ use crate::shell::state::RoomId;
 use tilo_desktop::collaborators::RosterRow;
 
 /// Widest the line's "what people see" sentence runs before it wraps.
-const INTRO_WRAP: f32 = 300.0;
+const INTRO_WRAP: f32 = ui::tokens::Metrics::BASE.note_wrap_width;
 
 /// What the people in a public workspace see of the person, as the
 /// arrival line tells them the first time.

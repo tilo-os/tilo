@@ -363,6 +363,7 @@ pub fn paint_client_frame(
     let brush = ImageBrush::new(image)
         .with_extend(Extend::Pad)
         .with_quality(ImageQuality::Medium);
+    // ratchet-allow(raw_paint): the picture of another window is content
     scene.fill(
         Fill::NonZero,
         transform

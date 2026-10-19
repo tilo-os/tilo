@@ -25,7 +25,7 @@ const SHOWN_FOR: Duration = Duration::from_millis(2500);
 /// Faces shown before the rest are counted.
 const FACES_SHOWN: usize = 5;
 /// The faces' line.
-const FACE: f64 = 24.0;
+const FACE: f64 = ui::tokens::Metrics::BASE.avatar_inline as f64;
 /// How the faces stand: as the top bar's, five at most.
 const FACES: ui::presence::FaceStack = ui::presence::FaceStack {
     side: 20.0,
@@ -33,7 +33,7 @@ const FACES: ui::presence::FaceStack = ui::presence::FaceStack {
     max: FACES_SHOWN,
 };
 /// The space under the top bar.
-const BELOW_BAR: f64 = 8.0;
+const BELOW_BAR: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 
 /// Someone here now, as the line shows them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -330,9 +330,9 @@ impl ArrivalLine {
 }
 
 /// Widest the sentence about what people see runs before it wraps.
-const INTRO_WRAP: f32 = 300.0;
+const INTRO_WRAP: f32 = ui::tokens::Metrics::BASE.note_wrap_width;
 /// A control's height: the "Change" link's.
-const CONTROL: f64 = 28.0;
+const CONTROL: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
 
 /// "and 12 others" for the people past the faces shown, if any.
 fn others(shown: &Shown) -> Option<String> {

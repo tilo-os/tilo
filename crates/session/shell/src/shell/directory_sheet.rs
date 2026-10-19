@@ -41,15 +41,15 @@ use tilo_relay_protocol::rooms::RoomRole;
 /// Assistive targets this sheet publishes start with this.
 const TARGET_PREFIX: &str = "directory:";
 /// The tallest the sheet grows.
-const MAX_HEIGHT: f64 = 600.0;
+const MAX_HEIGHT: f64 = ui::tokens::Metrics::BASE.sheet_max_height as f64;
 /// One listing's row.
-const ROW_H: f64 = 76.0;
+const ROW_H: f64 = ui::tokens::Metrics::BASE.listing_row_height as f64;
 /// The workspace's mark at a row's start.
-const MARK: f64 = 40.0;
+const MARK: f64 = ui::tokens::Metrics::BASE.avatar_row as f64;
 /// One face of who is here now.
-const FACE: f64 = 18.0;
+const FACE: f64 = ui::tokens::Metrics::BASE.face_stack as f64;
 /// How far each face overlaps the one before.
-const FACE_STEP: f64 = 13.0;
+const FACE_STEP: f64 = ui::tokens::Metrics::BASE.face_stack_step as f64;
 /// Faces shown before the rest collapse into "+N".
 const FACES_SHOWN: usize = 4;
 
