@@ -1,0 +1,22 @@
+[package]
+name = "tilo-zone-globe"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The time-zone globe: the Earth with its land (Natural Earth's 1:110m polygons), the night side and every zone's city, turned by dragging, for choosing a time zone."
+
+[lib]
+name = "zone_globe"
+path = "src/lib.rs"
+
+[dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+tilo-actions = { path = "../../collab/actions" }
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

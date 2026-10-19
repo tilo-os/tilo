@@ -17,7 +17,6 @@
 //!   jobs through `timedatectl`; the setter needs privilege, so a denial is
 //!   the effect's failure, shown on the pane.
 
-mod globe;
 mod zone_rules;
 
 use std::collections::{HashMap, HashSet};
@@ -40,33 +39,13 @@ use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, block, error_row, note, rows, section, setting_row, value_row};
-use globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
+pub use zone_globe::TimeZonePoint;
+use zone_globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TimeZonePoint {
-    pub id: String,
-    pub region: String,
-    pub city: String,
-    /// Published by the installed tzdata `zone1970.tab`/`zone.tab`, not
-    /// guessed from the identifier. Stored as microdegrees so the model stays
-    /// `Eq` and exact enough for a compact picker.
-    pub latitude_e6: i32,
-    pub longitude_e6: i32,
-}
-
-impl TimeZonePoint {
-    fn latitude(&self) -> f64 {
-        f64::from(self.latitude_e6) / 1_000_000.0
-    }
-
-    fn longitude(&self) -> f64 {
-        f64::from(self.longitude_e6) / 1_000_000.0
-    }
-}
 
 /// A map-friendly model over the exact IANA ids accepted by timedated.
 /// Coordinates come from the same installed tzdata package; this deliberately
