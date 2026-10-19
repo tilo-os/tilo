@@ -233,7 +233,7 @@ fn in_order<T: Identified>(a: (&T, &str), b: (&T, &str)) -> Ordering {
 /// [`Identified::order`], then id. Stable, so this is a sort by id followed
 /// by a stable sort by order; items already in place are not moved.
 /// Whether any moved.
-fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) -> bool {
+fn settle_with_ids<T: Identified>(items: &mut [T], ids: &mut [Arc<str>]) -> bool {
     let held = || items.iter().zip(ids.iter().map(|id| &**id));
     if held()
         .zip(held().skip(1))
@@ -241,14 +241,19 @@ fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) -
     {
         return false;
     }
-    let mut pairs: Vec<(T, Arc<str>)> = std::mem::take(items)
-        .into_iter()
-        .zip(std::mem::take(ids))
-        .collect();
-    pairs.sort_by(|(a, a_id), (b, b_id)| in_order((a, a_id), (b, b_id)));
-    let (sorted, sorted_ids) = pairs.into_iter().unzip();
-    *items = sorted;
-    *ids = sorted_ids;
+    let swaps = {
+        let (held, held_ids): (&[T], &[Arc<str>]) = (items, ids);
+        crate::sort::swaps_to_sort(held.len(), &mut |a, b| {
+            match (held.get(a).zip(held_ids.get(a)), held.get(b).zip(held_ids.get(b))) {
+                (Some((a, a_id)), Some((b, b_id))) => in_order((a, &**a_id), (b, &**b_id)),
+                _ => Ordering::Equal,
+            }
+        })
+    };
+    for (a, b) in swaps {
+        items.swap(a, b);
+        ids.swap(a, b);
+    }
     true
 }
 
@@ -588,7 +593,7 @@ impl ItemStorage for ById {
             .keys(map)
             .map(|key| read_key::<T>(doc, map, &key))
             .collect::<Result<Vec<_>, _>>()?;
-        items.sort_by(T::order);
+        crate::sort::sort_by(&mut items, T::order);
         Ok(items)
     }
 
