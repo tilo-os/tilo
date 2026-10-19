@@ -12221,6 +12221,64 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
+
+    fn publish_search_index(
+        self: Rc<Self>,
+        params: channel_handle::PublishSearchIndexParams,
+        _results: channel_handle::PublishSearchIndexResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        // An application publishes only its own entries, in the workspace
+        // and record its certified route names.
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "publishSearchIndex appId must match the certified connection route".into(),
+            ));
+        }
+        let Some(room) = tilo_desktop_model::RoomId::parse(&route.cluster_id) else {
+            return Promise::err(capnp::Error::failed(
+                "publishSearchIndex route has no durable workspace room".into(),
+            ));
+        };
+        let delta = match request.get_delta_json() {
+            Ok(bytes) => bytes,
+            Err(error) => return Promise::err(error),
+        };
+        if delta.len() > crate::services::MAX_SEARCH_INDEX_DELTA_BYTES {
+            return Promise::err(capnp::Error::failed(
+                "publishSearchIndex delta exceeds its bound".into(),
+            ));
+        }
+        match self
+            .state
+            .services
+            .search_index
+            .as_ref()
+            .ok_or_else(|| "search index publication unsupported".to_string())
+            .and_then(|service| service.publish(room, &app_id, &route.record_id, delta))
+        {
+            Ok(()) => Promise::ok(()),
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
 }
 
 /// Validate every untrusted field before it reaches shell chrome, then

@@ -114,6 +114,11 @@ impl PasswordsModel {
     pub fn closed() -> Self {
         Self { store: None }
     }
+    /// Whether this window opens the vault at all: a past version or
+    /// another person's window does not, and says nothing about its lock.
+    pub fn opens_vault(&self) -> bool {
+        self.store.is_some()
+    }
     fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, String> {
         match self.store.as_ref().ok_or_else(|| CLOSED.to_owned())? {
             Vault::Local(store) => Ok(read(store)),

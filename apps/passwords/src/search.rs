@@ -5,6 +5,10 @@
 //! index. A hit is anchored at the item's row and opens it there, as an
 //! agent's `open` of that anchor does. A `kind:` facet narrows a
 //! query to logins, API keys, notes, Wi-Fi networks or other secrets.
+//!
+//! Every entry is secret-bearing: the system's search index keeps the
+//! metadata after Passwords closes, and finds it only while Passwords
+//! reports its vault unlocked ([`crate::vault::Core::secrets_unlocked`]).
 
 use accounts::{SecretItem, SecretItemKind};
 use ui::icons::Icon;
@@ -52,7 +56,8 @@ pub(crate) fn entries(items: &[SecretItem]) -> Vec<SearchEntry> {
                 .grouped(ITEM_KIND)
                 .with_icon(icon(item.kind).name())
                 .facet(KIND_FACET, "Kind", kind_slug(item.kind))
-                .field(crate::vault::identity(item), SearchWeight::Identity);
+                .field(crate::vault::identity(item), SearchWeight::Identity)
+                .secret_bearing();
             let summary = crate::vault::summary(item);
             if !summary.is_empty() {
                 entry = entry.subtitled(summary);
@@ -112,6 +117,12 @@ mod tests {
                 "{secret} must not be searchable"
             );
         }
+        assert!(
+            entries(&crate::demo::full_items())
+                .iter()
+                .all(|entry| entry.secret),
+            "every vault entry is secret-bearing, so the system index gates it on the lock"
+        );
         let hit = provider
             .search("Northstar")
             .into_iter()
@@ -123,6 +134,21 @@ mod tests {
             "a hit is anchored at the item's row"
         );
     }
+    #[test]
+    fn only_a_window_on_the_vault_reports_its_lock() {
+        // The fixture captures show opens no vault: it says nothing.
+        assert_eq!(crate::PasswordsSurface::demo().secrets_unlocked(), None);
+        let closed = crate::vault::Core::with_model(crate::PasswordsModel::closed());
+        assert_eq!(
+            closed.secrets_unlocked(),
+            None,
+            "a past version says nothing"
+        );
+        let home = tempfile::tempdir().unwrap();
+        let open = crate::vault::Core::with_model(crate::PasswordsModel::open_in(home.path()));
+        assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
+    }
+
     #[test]
     fn kind_facet_narrows_hits() {
         let mut app =

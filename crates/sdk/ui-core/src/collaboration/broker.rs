@@ -1253,6 +1253,10 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(app_id);
             meter.bytes(reports_json);
         }
+        CollabRequest::PublishSearchIndex { app_id, delta_json } => {
+            meter.string_capacity(app_id);
+            meter.bytes(delta_json);
+        }
         CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::RealtimeCommand {
             app_id, command, ..
@@ -7144,6 +7148,15 @@ async fn dispatch_sdk_request(
         } => {
             if let Err(error) = route.channel.report_playback(&app_id, &reports_json).await {
                 tracing::warn!(%error, "collab: reporting private playback handoff state failed");
+            }
+        }
+        CollabRequest::PublishSearchIndex { app_id, delta_json } => {
+            if let Err(error) = route
+                .channel
+                .publish_search_index(&app_id, &delta_json)
+                .await
+            {
+                tracing::warn!(%error, "collab: publishing search index entries failed");
             }
         }
         CollabRequest::NativeMediaCommand { request_id, .. } => {

@@ -24,6 +24,22 @@ pub trait SearchSource: Widget {
             .collect()
     }
 
+    /// What this source's entries for the system's persistent search index
+    /// are of now; `None` for a source that publishes none. Read every
+    /// frame that publishes, so it must not build anything:
+    /// [`search_index_entries`](Self::search_index_entries) is asked only
+    /// when this changes.
+    fn search_index_state(&self) -> Option<super::index_publication::IndexState> {
+        None
+    }
+
+    /// The entries the system's persistent search index keeps for this
+    /// source: short metadata keyed by the stable resource id a hit opens,
+    /// found after the app closes too.
+    fn search_index_entries(&self) -> Vec<super::index_publication::IndexEntry> {
+        Vec::new()
+    }
+
     /// Activate a hit: presentation (navigation), not a document action;
     /// mutate the model only if selecting changes shared state.
     fn activate_search_result(
@@ -101,6 +117,21 @@ impl SearchProviderDescriptor {
             ..self
         }
     }
+}
+
+/// What `widget`'s entries for the system's persistent search index are of
+/// now, if it publishes any.
+pub fn search_index_state(
+    widget: &(impl Widget + ?Sized),
+) -> Option<super::index_publication::IndexState> {
+    capability::<dyn SearchSource>(widget).and_then(SearchSource::search_index_state)
+}
+
+/// `widget`'s entries for the system's persistent search index.
+pub fn search_index_entries(
+    widget: &(impl Widget + ?Sized),
+) -> Vec<super::index_publication::IndexEntry> {
+    capability::<dyn SearchSource>(widget).map_or_else(Vec::new, SearchSource::search_index_entries)
 }
 
 /// Activate hit `action_id` in `widget`.

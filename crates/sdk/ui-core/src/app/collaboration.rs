@@ -695,6 +695,7 @@ impl App {
             );
             self.publish_continuation_metadata();
             self.publish_playback_handoff();
+            self.publish_search_index();
             self.broadcast_doc_delta();
             self.publish_action_surface();
         }

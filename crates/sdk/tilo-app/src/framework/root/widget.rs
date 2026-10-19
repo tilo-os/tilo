@@ -124,6 +124,8 @@ pub(crate) trait RootSearch {
     fn search_provider_descriptors(
         &self,
     ) -> Vec<ui_core::search::capability::SearchProviderDescriptor>;
+    fn search_index_state(&self) -> Option<ui_core::search::index_publication::IndexState>;
+    fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry>;
     fn activate_search_result(
         &mut self,
         action_id: &str,
@@ -475,6 +477,14 @@ impl SearchSource for RootWidget {
         &self,
     ) -> Vec<ui_core::search::capability::SearchProviderDescriptor> {
         self.0.search_provider_descriptors()
+    }
+
+    fn search_index_state(&self) -> Option<ui_core::search::index_publication::IndexState> {
+        self.0.search_index_state()
+    }
+
+    fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
+        self.0.search_index_entries()
     }
 
     fn activate_search_result(
