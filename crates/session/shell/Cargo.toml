@@ -114,7 +114,6 @@ tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
-tilo-render-service = { path = "../render-service" }
 
 serde.workspace = true
 # `raw_value`: the control socket splices a tree serialised once into its reply.
@@ -470,6 +469,8 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The room render service the compositor's broker starts (compositor::render_broker).
+tilo-render-service = { path = "../render-service" }
 account-custody = { path = "../../system/account-custody" }
 browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
 # The consent-gated NTFS mount service's protocol (shell::drives).

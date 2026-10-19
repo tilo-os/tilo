@@ -79,6 +79,7 @@ pub mod registration_gate;
 pub mod retained_view;
 #[cfg(target_os = "linux")]
 pub mod run;
+#[cfg(target_os = "linux")]
 pub mod runtime_resident;
 #[cfg(target_os = "linux")]
 pub mod sandbox;
