@@ -39,10 +39,10 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
         );
 
         // Narrow window: collapses to a closed overlay drawer.
-        app.harness().relayout_at((560, 720)).unwrap();
+        app.harness().relayout_at((480, 720)).unwrap();
         assert!(
             surface(&mut app, |notes| notes.built_narrow_for_test()),
-            "560px window should collapse the sidebar into the drawer"
+            "480px window should collapse the sidebar into the drawer"
         );
         assert!(
             !surface(&mut app, |notes| notes.drawer_open_for_test()),

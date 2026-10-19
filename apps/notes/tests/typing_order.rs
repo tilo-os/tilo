@@ -215,7 +215,7 @@ fn semantic_open_from_a_narrow_drawer_routes_the_first_printable_key_to_the_note
         .unwrap();
     app.settle();
     let page = app.read_document(read::list_pages)[0].id;
-    app.harness().relayout_at((780, 720)).unwrap();
+    app.harness().relayout_at((480, 720)).unwrap();
     assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
     let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
     app.harness().click_at(toggle.x, toggle.y);
@@ -246,7 +246,7 @@ fn semantic_new_page_from_a_narrow_drawer_routes_the_first_printable_key_to_the_
     app.call("new-note", serde_json::json!({"title": "Routing scratch"}))
         .unwrap();
     app.settle();
-    app.harness().relayout_at((780, 720)).unwrap();
+    app.harness().relayout_at((480, 720)).unwrap();
     assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
     let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
     app.harness().click_at(toggle.x, toggle.y);
@@ -285,7 +285,7 @@ fn focused_editor_behind_a_retained_narrow_drawer_does_not_lose_printable_input_
     app.call("new-note", serde_json::json!({"title": "Routing scratch"}))
         .unwrap();
     app.settle();
-    app.harness().relayout_at((780, 720)).unwrap();
+    app.harness().relayout_at((480, 720)).unwrap();
     assert!(surface(&mut app, |notes| notes.built_narrow_for_test()));
     let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
     app.harness().click_at(toggle.x, toggle.y);
