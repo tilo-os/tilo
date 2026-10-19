@@ -872,8 +872,10 @@ impl CalcScreen {
     }
 }
 
-/// The text of the history panel's destructive action.
-const CLEAR_HISTORY: &str = "Clear history";
+/// The text of the history panel's destructive action. Beside the
+/// "Calculations" heading one word says it; "Clear history" squeezed the
+/// heading to "Calculatio…" in a docked panel.
+const CLEAR_HISTORY: &str = "Clear";
 
 /// The control role of a keycap: the entry pad (digits and operators) is a
 /// key, the scientific functions are quiet, `=` is the one primary action
