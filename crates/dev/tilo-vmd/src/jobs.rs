@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use tilo_vm_protocol::manifest::{dev_override_features, valid_profile};
+use tilo_vm_protocol::manifest::{Component, dev_override_features, valid_profile};
 use tilo_vm_protocol::{
     AppInstallResult, BuildJob, BuildTarget, CiJob, JobLine, JobOutput, LayerSource, Manifest,
     Provenance,
@@ -228,6 +228,31 @@ impl Daemon {
         result
     }
 
+    /// The provenance of a component built in the VM: the job's, completed
+    /// with the builder, base image, toolchain and the build's choices.
+    fn vm_build_provenance(
+        &self,
+        job: &BuildJob,
+        component: &Component,
+        extra: &[String],
+    ) -> Provenance {
+        let mut provenance = job.provenance.clone();
+        provenance.component.clone_from(&component.name);
+        provenance.builder = Some("vm".into());
+        provenance
+            .builder_image_digest
+            .clone_from(&self.base.builder_image_digest);
+        provenance
+            .base_image_digest
+            .clone_from(&self.base.image_digest);
+        let (version, target) = toolchain();
+        provenance.toolchain = version;
+        provenance.target = target;
+        provenance.cargo_profile = Some(component.profile.clone());
+        provenance.features = component.build_features(extra);
+        provenance
+    }
+
     fn build_component(
         &mut self,
         job: &BuildJob,
@@ -306,20 +331,7 @@ impl Daemon {
                     .current_dir(src),
             )
         });
-        let mut provenance = job.provenance.clone();
-        provenance.component.clone_from(&component.name);
-        provenance.builder = Some("vm".into());
-        provenance
-            .builder_image_digest
-            .clone_from(&self.base.builder_image_digest);
-        provenance
-            .base_image_digest
-            .clone_from(&self.base.image_digest);
-        let (version, target) = toolchain();
-        provenance.toolchain = version;
-        provenance.target = target;
-        provenance.cargo_profile = Some(component.profile.clone());
-        provenance.features = component.build_features(&extra);
+        let provenance = self.vm_build_provenance(job, &component, &extra);
         let imported = assembled.and_then(|()| {
             timer.time("import", || {
                 let _vm = self.locks.vm_shared()?;

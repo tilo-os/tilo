@@ -41,8 +41,7 @@ impl BuildUser {
     /// # Errors
     /// The build root's owner has no account.
     pub fn for_build_root(build_root: &Path) -> Result<Option<Self>, DaemonError> {
-        // SAFETY: geteuid takes no arguments and cannot fail.
-        let euid = unsafe { libc::geteuid() };
+        let euid = rustix::process::geteuid().as_raw();
         let Ok(meta) = std::fs::metadata(build_root) else {
             return Ok(None);
         };

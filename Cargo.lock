@@ -19877,6 +19877,7 @@ dependencies = [
  "os-actions",
  "package-store",
  "runtime-bundle",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "settings-store",

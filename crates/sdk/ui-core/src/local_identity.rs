@@ -266,9 +266,9 @@ mod photo_tests {
 mod active_record_tests {
     use std::os::unix::fs::PermissionsExt as _;
 
-    fn private(path: &std::path::Path, bytes: &[u8]) {
-        std::fs::write(path, bytes).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    fn private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+        std::fs::write(path, bytes)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
     }
 
     /// A device set up with more than one identity keeps each as
@@ -282,8 +282,8 @@ mod active_record_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let record = runtime_identity::public_member_record("Ada", [10, 20, 30], [7; 32]).unwrap();
-        private(&dir.join("identity-ada.json"), &record);
-        private(&dir.join("active"), b"identity-ada\n");
+        private(&dir.join("identity-ada.json"), &record).unwrap();
+        private(&dir.join("active"), b"identity-ada\n").unwrap();
 
         let path = super::identity_record_in(config.path()).expect("the active record");
         assert_eq!(path, dir.join("identity-ada.json"));
