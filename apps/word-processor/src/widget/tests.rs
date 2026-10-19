@@ -6062,6 +6062,9 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     // Open the outline pane and redraw so its clickable entries are built.
     wp.apply_tool(&mut edits(&mut state.doc), ToolAction::ToggleOutline);
     assert!(wp.outline.is_open(), "outline toggled on");
+    // The drawer slides in over real time; land the slide so the next frame
+    // lays its entries at their full width.
+    wp.outline_drawer.snap(true);
     let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
     // The last heading ("Conclusion") is far down; it should be off-screen at
