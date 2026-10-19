@@ -220,6 +220,10 @@ mod tests {
                 resource: format!("settings.root{}other", crate::KEY_SEP),
                 ..invocation()
             },
+            Invocation {
+                action: format!("storage-summary{}other", crate::KEY_SEP),
+                ..invocation()
+            },
         ] {
             assert!(broken.check().is_err(), "{broken:?}");
         }

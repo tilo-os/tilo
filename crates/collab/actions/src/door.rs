@@ -1693,7 +1693,7 @@ mod tests {
         assert_eq!(ActionAddress::checked("", "edit"), None);
         assert_eq!(ActionAddress::checked("notes.note:1", ""), None);
         assert_eq!(
-            ActionAddress::checked(&format!("notes{KEY_SEP}note"), "edit"),
+            ActionAddress::checked(format!("notes{KEY_SEP}note"), "edit"),
             None
         );
         assert_eq!(
