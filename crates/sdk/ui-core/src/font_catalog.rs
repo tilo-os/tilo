@@ -15,6 +15,8 @@ pub use tilo_font_catalog::checkout_root;
 mod android;
 mod faces;
 mod fallback;
+#[cfg(unix)]
+pub(crate) mod index;
 pub(crate) mod matched;
 pub(crate) mod optical;
 #[cfg(test)]
@@ -31,16 +33,34 @@ pub(crate) use android::android_font_system;
 /// renderer gets its own copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] holds a catalog this build accepts.
+///
+/// The database is read from the font index the last launch recorded
+/// ([`index`]) when everything it was built from is unchanged, so a launch
+/// parses no font and hashes nothing; otherwise it is built and recorded.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
-        match load_first_catalog(
-            &catalog_roots(),
-            &locale,
-            fontdb::Database::load_system_fonts,
-        ) {
-            Ok(font_system) => Some(font_system.into_locale_and_db().1),
+        let roots = catalog_roots();
+        #[cfg(unix)]
+        let recorded = index::location();
+        #[cfg(unix)]
+        if let Some(db) = recorded.as_deref().and_then(|path| {
+            tilo_startup_metrics::span("font-index-read", || index::load(path, &roots))
+        }) {
+            return Some(db);
+        }
+        match load_first_catalog_at(&roots, &locale, fontdb::Database::load_system_fonts) {
+            Ok((root, font_system)) => {
+                let db = font_system.into_locale_and_db().1;
+                #[cfg(unix)]
+                if let Some(path) = recorded.as_deref() {
+                    index::store(path, &roots, &root, &db);
+                }
+                #[cfg(not(unix))]
+                let _ = root;
+                Some(db)
+            }
             Err(errors) => {
                 tracing::error!(?errors, "Tilo font catalog unavailable");
                 None
@@ -117,10 +137,26 @@ pub(crate) fn load_first_catalog(
     locale: &str,
     discover: impl Fn(&mut fontdb::Database),
 ) -> Result<FontSystem, Vec<FontCatalogError>> {
+    load_first_catalog_at(roots, locale, discover).map(|(_, font_system)| font_system)
+}
+
+/// [`load_first_catalog`], with the canonical root it loaded from.
+///
+/// # Errors
+///
+/// As [`load_first_catalog`].
+pub(crate) fn load_first_catalog_at(
+    roots: &[PathBuf],
+    locale: &str,
+    discover: impl Fn(&mut fontdb::Database),
+) -> Result<(PathBuf, FontSystem), Vec<FontCatalogError>> {
     let mut errors = Vec::new();
     for root in roots.iter().filter(|root| root.is_dir()) {
         match FontCatalog::product(root, locale).load_with_system(&discover) {
-            Ok(font_system) => return Ok(font_system),
+            Ok(font_system) => {
+                let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                return Ok((canonical, font_system));
+            }
             Err(error) => errors.push(error),
         }
     }
@@ -305,10 +341,12 @@ impl FontCatalog {
             .root
             .canonicalize()
             .map_err(|e| FontCatalogError::at(&self.root, e))?;
-        let bundle = verified_bundle(&root, self.fixtures)?;
+        let bundle = tilo_startup_metrics::span("font-catalog-verify", || {
+            verified_bundle(&root, self.fixtures)
+        })?;
         let mut db = bundle.db.clone();
         if self.system {
-            discover(&mut db);
+            tilo_startup_metrics::span("font-system-discover", || discover(&mut db));
             // Host copies of catalog families go before duplicates are
             // weighed: deduplication keeps the lowest path, and a system copy
             // under /usr would otherwise displace the catalog's own face.
