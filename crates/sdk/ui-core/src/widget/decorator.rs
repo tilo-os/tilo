@@ -130,6 +130,7 @@ fn stand_in(
 /// anything else are written out under `trait` and `impl`.
 macro_rules! decorator_trait {
     (
+        $d:tt
         $(#[$trait_attr:meta])*
         trait { $($trait_items:tt)* }
         $(#[$impl_attr:meta])*
@@ -176,10 +177,70 @@ macro_rules! decorator_trait {
                 }
             )*
         }
+
+        /// The same trait for the toolkit's own decorators that apps box
+        /// ([`concrete_decorator_widget`]): it has no blanket [`Widget`]
+        /// impl, so each such type gets a concrete one, compiled once into
+        /// the toolkit. Through the blanket impl a decorator's [`Widget`]
+        /// methods are generic, and every app that boxes one compiled them
+        /// again, with the inner widget they forward to.
+        pub mod concrete {
+            #[allow(
+                clippy::wildcard_imports,
+                reason = "the trait is the parent's, item for item, and names what it imports"
+            )]
+            use super::*;
+
+            $(#[$trait_attr])*
+            pub trait Decorator: Sized + 'static {
+                $($trait_items)*
+                $(
+                    $(#[$ref_attr])*
+                    fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
+                        self.inner().$ref($($ref_arg),*)
+                    }
+                )*
+                $(
+                    $(#[$mut_attr])*
+                    fn $mut(&mut self, $($mut_arg: $mut_ty),*) $(-> $mut_ret)? {
+                        self.inner_mut().$mut($($mut_arg),*)
+                    }
+                )*
+            }
+        }
+
+        /// [`Widget`] for `$ty`, a toolkit type that implements
+        /// [`concrete::Decorator`]: the blanket impl's methods, written for
+        /// the one type, so they are compiled here and every app links them
+        /// from the shared runtime instead of compiling its own copy.
+        macro_rules! concrete_decorator_widget {
+            ($d ty:ty) => {
+                const _: () = {
+                    use crate::widget::decorator::concrete::Decorator;
+
+                    impl Widget for $d ty {
+                        $($impl_items)*
+                        $(
+                            $(#[$ref_attr])*
+                            fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
+                                Decorator::$ref(self, $($ref_arg),*)
+                            }
+                        )*
+                        $(
+                            $(#[$mut_attr])*
+                            fn $mut(&mut self, $($mut_arg: $mut_ty),*) $(-> $mut_ret)? {
+                                Decorator::$mut(self, $($mut_arg),*)
+                            }
+                        )*
+                    }
+                };
+            };
+        }
     };
 }
 
 decorator_trait! {
+    $
     /// A widget that extends another by overriding a few [`Widget`] methods and
     /// forwarding the rest. See the [module docs](self).
     trait {
@@ -226,8 +287,8 @@ decorator_trait! {
         /// (which may add flags of its own), so by default it says
         /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
         /// its inner widget's change by overriding this.
-        fn take_structure_change(&mut self) -> super::StructureChange {
-            super::StructureChange::of(Decorator::take_structure_dirty(self))
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+            crate::widget::StructureChange::of(Decorator::take_structure_dirty(self))
         }
 
         /// A decorator composes from its allocation when anything it wraps does.
@@ -305,7 +366,7 @@ decorator_trait! {
             Decorator::as_any_mut(self)
         }
 
-        fn take_structure_change(&mut self) -> super::StructureChange {
+        fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             Decorator::take_structure_change(self)
         }
 
@@ -360,7 +421,7 @@ decorator_trait! {
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn tooltip() -> Option<&str>;
-        fn tooltip_side() -> super::tooltip::TooltipSide;
+        fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
         fn is_focused() -> bool;
@@ -381,7 +442,7 @@ decorator_trait! {
         fn opening() -> bool;
         fn text_review() -> Option<(usize, String)>;
         fn nav_availability() -> crate::gesture::NavAvailability;
-        fn dev_route() -> Option<super::router::RouteSnapshot>;
+        fn dev_route() -> Option<crate::widget::router::RouteSnapshot>;
         fn appearance_intent() -> Option<crate::theme::AppearanceIntent>;
         fn minimum_window_width() -> Option<f64>;
         fn needs_idle_sync() -> bool;
@@ -448,7 +509,7 @@ decorator_trait! {
             theme: &Theme,
             presence: &PresenceCtx,
         );
-        fn observe_physical_input(input: super::PhysicalInput);
+        fn observe_physical_input(input: crate::widget::PhysicalInput);
         fn handle_event(event: &WindowEvent, ctx: &mut EventCtx<'_>);
         fn children_mut() -> Vec<&mut (dyn Widget + '_)>;
         fn reveal_descendant(target: *const dyn Widget) -> bool;
@@ -483,7 +544,7 @@ decorator_trait! {
         ) -> bool;
         fn take_focus_reset() -> bool;
         fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
-        fn restore_dev_route(route: &super::router::RouteSnapshot) -> bool;
+        fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn apply_room_action(
             doc: &mut crate::widget::Edits<'_>,
@@ -491,7 +552,7 @@ decorator_trait! {
             payload: &[u8],
         ) -> bool;
         fn start_operation(
-            op: &super::ResourceOperation<'_>,
+            op: &crate::widget::ResourceOperation<'_>,
             doc: &mut crate::widget::Edits<'_>,
             path: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String>;
@@ -526,6 +587,10 @@ decorator_trait! {
         ) -> Result<(), tilo_actions::DoorError>;
     }
 }
+
+// The toolkit's decorators that apps box themselves. A type here implements
+// `concrete::Decorator` instead of `Decorator`.
+concrete_decorator_widget!(super::nav_list::NavList);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]

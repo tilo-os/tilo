@@ -1618,7 +1618,10 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
     found
 }
 
-impl crate::widget::Decorator for NavList {
+// Not the blanket `Decorator`: apps box a navigation list, and its Widget
+// methods (with the tree view they forward to) are compiled once, here
+// (`concrete_decorator_widget!` in decorator.rs).
+impl crate::widget::decorator::concrete::Decorator for NavList {
     type Inner = TreeView<(), NavModel>;
 
     fn inner(&self) -> &Self::Inner {
