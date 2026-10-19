@@ -1,15 +1,50 @@
 /** The toolkit's shared local media commands, executed by this browser peer.
  * Call bindings come from the retained component, never from page chrome.
  * The host still decides participation and direction through its grants.
+ *
+ * Joining a voice channel is being in its call with the microphone on, as
+ * on a Tilo device, unless the person last chose to be muted: that choice
+ * is remembered (`preferences`). The browser asks for the microphone itself.
  */
 const services = new WeakMap();
+const ROSTER_REFRESH_MS = 1000;
+const JOIN_MUTED_KEY = 'tilo.calls.joinMuted';
 
-export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true}) {
+/** The person's remembered mute choice, in this browser's storage. */
+export function storedCallPreferences(storage = globalThis.localStorage) {
+  return {
+    joinMuted() { try { return storage?.getItem(JOIN_MUTED_KEY) === 'true'; } catch { return false; } },
+    remember(muted) { try { storage?.setItem(JOIN_MUTED_KEY, muted ? 'true' : 'false'); } catch {} },
+  };
+}
+
+/** Who is in each active call of `app`'s `record`, one roster per voice
+ * channel with anyone in it, sorted by channel; each person once. */
+export function rostersOf(calls, app, record) {
+  const channels = new Map();
+  for (const call of calls ?? []) {
+    if (!call.active || call.app !== app || call.record !== record) continue;
+    const people = channels.get(call.channel) ?? new Set();
+    for (const participant of call.participants ?? []) if (participant.user) people.add(participant.user);
+    channels.set(call.channel, people);
+  }
+  return [...channels].filter(([, people]) => people.size > 0)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([channel_id, people]) => ({channel_id, people: [...people].sort()}));
+}
+
+export function createVoiceControls({voice, room, gesture = () => globalThis.navigator?.userActivation?.isActive === true, preferences = storedCallPreferences(), clock = Date}) {
   let generation = 0;
   let owner;
   let inventory = '';
   let revision = 0;
   let inputs = [];
+  let listedAt = -Infinity;
+  function refreshRosters() {
+    if (!voice.list || clock.now() - listedAt < ROSTER_REFRESH_MS) return;
+    listedAt = clock.now();
+    void voice.list().catch(() => {});
+  }
   const key = request => `${request.app}:${request.record}:${request.owner ?? request.instance ?? ''}`;
   function snapshot() {
     const state = voice.call.state;
@@ -23,27 +58,30 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? 'session_ended' : null,
-      inventory_revision: live ? revision : null, publication, publishers};
+      inventory_revision: live ? revision : null, publication, publishers, rosters: []};
   }
   return {
     async execute(request) {
       if (request.app !== 'so.tilo.chat' || request.room !== room || request.command?.version !== 1) throw new Error('unsupported local media route');
       const command = request.command.command;
       const route = key(request);
+      const rosters = () => rostersOf(voice.calls, request.app, request.record);
       if (command.op === 'status') {
-        if (owner && owner !== route) return {...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: []};
-        return snapshot();
+        refreshRosters();
+        if (owner && owner !== route) return {...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()};
+        return {...snapshot(), rosters: rosters()};
       }
       if (owner && owner !== route && command.op !== 'join') throw new Error('this route does not own the active call');
       if (command.op === 'join') {
         const ticket = ++generation;
         if (owner && owner !== route) voice.call.leave();
         owner = route;
-        const calls = await voice.list();
+        // Joining a voice channel opens its call: the host starts it when
+        // the channel has none yet.
+        const call = await voice.open({app: request.app, record: request.record, channel: command.channel_id});
         if (ticket !== generation) throw new Error('call join superseded');
-        const call = calls.find(call => call.app === request.app && call.record === request.record && call.channel === command.channel_id && call.active);
-        if (!call) throw new Error('channel has no active call');
-        voice.call.join(call.call, {muted: true});
+        if (!call?.active) throw new Error('channel has no active call');
+        voice.call.join(call.call, {muted: preferences.joinMuted()});
       } else if (command.op === 'leave') {
         generation++;
         voice.call.leave();
@@ -51,6 +89,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       } else if (command.op === 'set_muted') {
         if (!command.muted && !gesture()) throw new Error('microphone requires a user gesture');
         if (!command.muted && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('microphone requires a live publishing grant');
+        preferences.remember(command.muted);
         if (command.muted) generation++;
         await voice.call.setMuted(command.muted);
       } else if (command.op === 'select_input') {
@@ -59,7 +98,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       // Enumeration never prompts; update labels after consent without
       // delaying a stop command's completion.
       void voice.call.inputs().then(devices => {inputs = devices.filter(d => d.deviceId).map(d => ({id: d.deviceId, label: d.label || d.deviceId}));}).catch(() => {});
-      return snapshot();
+      return {...snapshot(), rosters: rosters()};
     },
     snapshot,
     release(request) {if (owner === key(request)) {generation++; voice.call.leave(); owner = undefined;}},

@@ -1,8 +1,15 @@
 use super::{Arc, CallTarget, Command, NativeWorkspaceOwner, Operation, Reply, Ticket, Weak};
 use crate::network::actor::{HostIdentity, native_ingress::NOT_CONNECTED};
 use crate::shell::{native_workspace_owner::NativeCommittedView, state::RoomId};
+use runtime_collab::native_media::Roster;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tilo_joined_room::voice::Channel;
+use tilo_relay_protocol::voice::CallSummary;
 use tilo_relay_session::coedit::{RelayCoeditSession, VoiceEvent};
+
+/// How often a room is asked for its calls while someone looks at them.
+const ROSTER_REFRESH: Duration = Duration::from_secs(1);
 
 /// The relay session of a joined room's workspace, when it is connected.
 pub(crate) type Sessions<'a> = &'a dyn Fn(u64) -> Option<Arc<RelayCoeditSession>>;
@@ -10,6 +17,13 @@ pub(crate) type Sessions<'a> = &'a dyn Fn(u64) -> Option<Arc<RelayCoeditSession>
 #[derive(Default)]
 pub(crate) struct Registry {
     tickets: Vec<Weak<Ticket>>,
+    /// Each room's calls, by its relay workspace, as last listed.
+    listed: HashMap<u64, Listed>,
+}
+#[derive(Default)]
+struct Listed {
+    asked: Option<Instant>,
+    calls: Vec<CallSummary>,
 }
 impl Registry {
     pub(crate) fn handle(
@@ -38,6 +52,9 @@ impl Registry {
                     ticket.leave(sessions(ticket.workspace()).as_deref());
                     Reply::Left
                 }),
+                Operation::Rosters { owner, target } => {
+                    self.rosters(&owner, &target, identity, sessions)
+                }
             },
         };
         // Dropping a successful Open reply also drops the only strong ticket.
@@ -50,6 +67,10 @@ impl Registry {
         event: &VoiceEvent,
         session: Option<&RelayCoeditSession>,
     ) {
+        if let VoiceEvent::Calls(result) = event {
+            self.listed.entry(ws).or_default().calls = result.clone().unwrap_or_default();
+            return;
+        }
         self.tickets.retain(|ticket| ticket.strong_count() != 0);
         let tickets: Vec<_> = self
             .tickets
@@ -95,6 +116,36 @@ impl Registry {
             return Err("foreign native media ticket".into());
         }
         Ok(())
+    }
+    /// The rosters of `target`'s record as last listed, asking the room
+    /// again when that was more than [`ROSTER_REFRESH`] ago.
+    fn rosters(
+        &mut self,
+        owner: &NativeWorkspaceOwner,
+        target: &CallTarget,
+        identity: &HostIdentity,
+        sessions: Sessions<'_>,
+    ) -> Result<Reply, String> {
+        let room = RoomId::parse(&target.workspace).ok_or("invalid native room route")?;
+        let workspace = owner.with_current(room, |view| {
+            check_identity(view, identity)?;
+            Ok(view.workspace())
+        })?;
+        let listed = self.listed.entry(workspace).or_default();
+        let now = Instant::now();
+        if listed
+            .asked
+            .is_none_or(|asked| now.saturating_duration_since(asked) >= ROSTER_REFRESH)
+            && let Some(session) = sessions(workspace)
+            && session.voice_calls().is_ok()
+        {
+            listed.asked = Some(now);
+        }
+        Ok(Reply::Rosters(rosters_of(
+            &listed.calls,
+            &target.app,
+            &target.record,
+        )))
     }
     fn open(
         &mut self,
@@ -144,4 +195,32 @@ fn check_identity(view: &NativeCommittedView, identity: &HostIdentity) -> Result
         return Err("native selected device revoked".into());
     }
     Ok(())
+}
+
+/// Who is in the active calls of record `record` of app `app`, one roster
+/// per voice channel with anyone in it, sorted by channel; each person once.
+pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<Roster> {
+    let mut by_channel: std::collections::BTreeMap<&str, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    for call in calls
+        .iter()
+        .filter(|call| call.state.active && call.app_id == app && call.record_id == record)
+    {
+        by_channel
+            .entry(call.channel_id.as_str())
+            .or_default()
+            .extend(
+                call.participants
+                    .iter()
+                    .map(|participant| hex::encode(participant.user_public_key)),
+            );
+    }
+    by_channel
+        .into_iter()
+        .map(|(channel, people)| Roster {
+            channel_id: channel.to_owned(),
+            people: people.into_iter().collect(),
+        })
+        .filter(|roster| !roster.people.is_empty() && roster.valid())
+        .collect()
 }

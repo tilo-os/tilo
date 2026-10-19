@@ -1,18 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createVoiceControls, createMediaPump} from './voice-controls.mjs';
+import {createVoiceControls, createMediaPump, rostersOf, storedCallPreferences} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
-function fixture() {
+function fixture({joinMuted = true} = {}) {
   const operations = [];
   const state = {phase: 'idle', call: null, muted: true, inputId: null, participants: []};
   const call = {state, join(id, options) { operations.push(['join', id, options]); Object.assign(state, {phase: 'joining', call: id, muted: options.muted}); },
     leave() {operations.push(['leave']); Object.assign(state, {phase: 'idle', call: null, participants: []});},
     async setMuted(value) {operations.push(['mute', value]); state.muted = value;},
     async selectInput(id) {state.inputId = id;}, inputs: async () => [], stats: () => ({captureActive: false})};
-  const voice = {call, list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}]};
-  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true});
+  const opened = [];
+  const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
+    async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
+  // Most cases are a person who chose to join muted; joining with the
+  // microphone on has its own case.
+  let muted = joinMuted;
+  const preferences = {joinMuted: () => muted, remember(value) { muted = value; }};
+  const controls = createVoiceControls({voice, room: 'room-1', gesture: () => true, preferences});
   const request = command => ({app: 'so.tilo.chat', room: 'room-1', record: '', command: {version: 1, intent: 0, command}});
-  return {voice, controls, request, operations, state};
+  return {voice, controls, request, operations, opened, state, preferences};
 }
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
   const f = fixture();
@@ -27,18 +33,18 @@ test('shared Chat commands join listening, mute, select an input and leave the g
 });
 test('leave supersedes a delayed call lookup and cannot reopen capture', async () => {
   const f = fixture();
-  let listed;
-  f.voice.list = () => new Promise(resolve => {listed = resolve;});
+  let opened;
+  f.voice.open = () => new Promise(resolve => {opened = resolve;});
   const joining = f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
   await f.controls.execute(f.request({op: 'leave'}));
-  listed([{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}]);
+  opened({call: CALL, epoch: 1, active: true});
   await assert.rejects(joining, /superseded/);
   assert.deepEqual(f.operations, [['leave']]);
 });
 test('foreign routes, absent calls and unmute without activation fail closed', async () => {
   const f = fixture();
   await assert.rejects(f.controls.execute({...f.request({op: 'status'}), room: 'other'}), /route/);
-  await assert.rejects(f.controls.execute(f.request({op: 'join', channel_id: 'absent'})), /active call/);
+  await assert.rejects(f.controls.execute(f.request({op: 'join', channel_id: 'absent'})), /binding/);
   const controls = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_muted', muted: false})), /gesture/);
   assert.equal(f.state.muted, true);
@@ -135,4 +141,42 @@ test('activation alone cannot unmute before a publishing grant is live', async (
   await assert.rejects(f.controls.execute(f.request({op: 'set_muted', muted: false})), /grant/);
   assert.equal(f.state.muted, true);
   assert.equal(f.operations.filter(op => op[0] === 'mute').length, 0);
+});
+
+test('joining a voice channel opens its call with the microphone on, and a mute is remembered', async () => {
+  const f = fixture({joinMuted: false});
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.deepEqual(f.opened, ['standup'], 'nobody has to start the call first');
+  assert.deepEqual(f.operations[0], ['join', CALL, {muted: false}]);
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  await f.controls.execute(f.request({op: 'set_muted', muted: true}));
+  assert.equal(f.preferences.joinMuted(), true);
+  await f.controls.execute(f.request({op: 'leave'}));
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.deepEqual(f.operations.at(-1), ['join', CALL, {muted: true}]);
+});
+
+test('a voice channel shows who is in its call before joining, each person once', async () => {
+  const f = fixture();
+  const ana = 'a'.repeat(64);
+  const ben = 'b'.repeat(64);
+  f.voice.calls = [
+    {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true,
+      participants: [{user: ben, device: '1'}, {user: ana, device: '2'}, {user: ana, device: '3'}]},
+    {app: 'so.tilo.chat', record: '', channel: 'empty', call: CALL, active: true, participants: []},
+    {app: 'so.tilo.chat', record: '', channel: 'ended', call: CALL, active: false, participants: [{user: ana}]},
+    {app: 'so.tilo.chat', record: 'other', channel: 'voice', call: CALL, active: true, participants: [{user: ana}]},
+  ];
+  const status = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(status.rosters, [{channel_id: 'voice', people: [ana, ben]}]);
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', 'other'), [{channel_id: 'voice', people: [ana]}]);
+});
+
+test('the remembered mute choice lives in the browser storage', () => {
+  const values = new Map();
+  const storage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
+  const preferences = storedCallPreferences(storage);
+  assert.equal(preferences.joinMuted(), false, 'joining has the microphone on by default');
+  preferences.remember(true);
+  assert.equal(storedCallPreferences(storage).joinMuted(), true);
 });

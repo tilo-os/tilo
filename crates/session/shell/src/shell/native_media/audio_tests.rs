@@ -297,6 +297,8 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
         super::super::personal_continuity::DeviceId::new("device-audio").unwrap(),
     );
     assert!(service.install_consent(grants, prompts.clone()));
+    // This person chose to join calls muted; they turn the microphone on.
+    service.preferences().remember(true);
     let evidence = Arc::new(Evidence::default());
     assert!(service.install_factory(Arc::new(AudioFactory {
         relay: relay.clone(),

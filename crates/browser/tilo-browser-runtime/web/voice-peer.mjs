@@ -81,6 +81,9 @@ export function createPeerVoice({peer, room, createCall = createVoiceCall, rando
         try { peer().voiceCalls(room); } catch (error) { waiter.reject(error); listings.splice(listings.indexOf(waiter), 1); }
       });
     },
+    /** Open a voice channel's call to join it, starting it when it has none
+     * (any member): resolves to `{call, epoch, active, allowed}`. */
+    open: ({app, record = '', channel}) => operate({kind: 'open', app, record, channel}),
     /** Start a call on a chat's voice channel (the room's owner only). */
     start: ({app, record = '', channel, allowed = {publish: true, subscribe: true}}) => operate({kind: 'start', app, record, channel, allowed}),
     /** End a call for everyone (the room's owner only). */

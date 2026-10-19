@@ -1,7 +1,10 @@
 //! Closed local call controls. Identity and capture authority never come from this wire.
 use serde::{Deserialize, Serialize};
 
-pub const MAX_WIRE_BYTES: usize = 8192;
+/// One message's bound. A call has no participant limit; a status names
+/// each participant's stream (129 bytes) and person (64), so this carries
+/// well over a thousand of them.
+pub const MAX_WIRE_BYTES: usize = 256 * 1024;
 pub const MAX_INPUTS: usize = 128;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,11 +67,10 @@ pub struct Inventory {
 }
 impl Inventory {
     pub fn valid(&self) -> bool {
-        if self.publishers.len() > 7
-            || self
-                .publishers
-                .windows(2)
-                .any(|pair| matches!(pair, [left, right] if left >= right))
+        if self
+            .publishers
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left >= right))
         {
             return false;
         }
@@ -118,6 +120,37 @@ pub struct Snapshot {
     pub publication: Option<String>,
     #[serde(default)]
     pub publishers: Vec<String>,
+    /// Who is in the call of each of this route's voice channels, before
+    /// and while this device takes part: what a voice channel shows.
+    #[serde(default)]
+    pub rosters: Vec<Roster>,
+}
+
+/// The people in one voice channel's call.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Roster {
+    pub channel_id: String,
+    /// Person ids (a user root key in lowercase hex), sorted and distinct:
+    /// a person on two devices is in the call once.
+    pub people: Vec<String>,
+}
+
+impl Roster {
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        identifier(&self.channel_id)
+            && self.people.iter().all(|person| {
+                person.len() == 64
+                    && person
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            && self
+                .people
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
+    }
 }
 
 impl Request {
@@ -186,6 +219,7 @@ impl Snapshot {
             inventory_revision: None,
             publication: None,
             publishers: Vec::new(),
+            rosters: Vec::new(),
         }
     }
 
@@ -206,6 +240,11 @@ impl Snapshot {
             && (!self.capture_active
                 || (!self.muted && self.state == State::Live && self.input_id.is_some()))
             && self.input_id.as_deref().is_none_or(identifier)
+            && self.rosters.iter().all(Roster::valid)
+            && self
+                .rosters
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left.channel_id < right.channel_id))
             && self.inputs.len() <= MAX_INPUTS
             && self.inputs.iter().all(|input| {
                 identifier(&input.id) && identifier(&input.label) && ids.insert(&input.id)

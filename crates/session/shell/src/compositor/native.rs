@@ -13505,6 +13505,10 @@ pub fn run() {
                 {
                     service
                         .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                    if let Some(path) = crate::shell::native_media::CallPreferences::default_path()
+                    {
+                        service.install_preferences(path);
+                    }
                 }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 remote_capture_runtime = realtime_fabric_bridge

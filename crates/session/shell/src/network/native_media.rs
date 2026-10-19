@@ -51,11 +51,18 @@ enum Operation {
     End {
         ticket: Arc<Ticket>,
     },
+    /// Who is in the calls of `target`'s record, as last heard from the
+    /// room (its `channel` is unused).
+    Rosters {
+        owner: NativeWorkspaceOwner,
+        target: CallTarget,
+    },
 }
 enum Reply {
     Opened(Arc<Ticket>),
     Sent,
     Left,
+    Rosters(Vec<runtime_collab::native_media::Roster>),
 }
 /// How long the governor may take to grant a fresh participation.
 const OPEN_DEADLINE: Duration = Duration::from_secs(10);

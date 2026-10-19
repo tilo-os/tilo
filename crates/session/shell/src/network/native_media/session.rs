@@ -40,6 +40,16 @@ impl Factory {
     }
 }
 impl MediaFactory for Factory {
+    fn rosters(&self, target: CallTarget) -> crate::shell::native_media::Rosters {
+        let commands = self.commands.clone();
+        let owner = self.owner.clone();
+        Box::pin(async move {
+            match command(&commands, Operation::Rosters { owner, target }).await {
+                Ok(Reply::Rosters(rosters)) => rosters,
+                _ => Vec::new(),
+            }
+        })
+    }
     #[allow(
         clippy::significant_drop_tightening,
         reason = "`runtime` is moved into the returned session after the maintenance task and \
