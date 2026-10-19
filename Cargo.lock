@@ -4553,7 +4553,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "unic-langid",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -18898,7 +18897,6 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-ui",
  "tilo-vello",
- "tilo-vello-encoding",
  "tracing",
  "workspace-hack",
 ]

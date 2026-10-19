@@ -2,6 +2,7 @@
 name = "tilo-render-service"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,7 +12,6 @@ description = "A room's render service: the one process that draws toolkit apps 
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 vello.workspace = true
-vello_encoding.workspace = true
 pollster.workspace = true
 serde.workspace = true
 thiserror.workspace = true
