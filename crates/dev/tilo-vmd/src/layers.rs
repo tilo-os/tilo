@@ -43,6 +43,7 @@ pub struct LayerFile {
 pub type Labeler<'a> = &'a mut dyn FnMut(&Path) -> Result<(), DaemonError>;
 
 pub struct LayerStore {
+    root: PathBuf,
     layers: PathBuf,
     staging: PathBuf,
 }
@@ -50,9 +51,25 @@ pub struct LayerStore {
 impl LayerStore {
     pub fn new(root: &Path) -> Self {
         Self {
+            root: root.to_owned(),
             layers: root.join("layers"),
             staging: root.join("staging"),
         }
+    }
+
+    /// The paths of `hashes` to merge, in order, leaving out the layers
+    /// held on the booted image ([`crate::image::held`]): those stay in the
+    /// store and in their generations, unmerged.
+    ///
+    /// # Errors
+    /// [`DaemonError::LayerNotFound`] for a layer that is not in the store.
+    pub fn merged_paths(&self, hashes: &[String]) -> Result<Vec<PathBuf>, DaemonError> {
+        let held = crate::image::held_hashes(&self.root);
+        hashes
+            .iter()
+            .filter(|hash| !held.contains(*hash))
+            .map(|hash| self.require(hash))
+            .collect()
     }
 
     pub fn path(&self, hash: &str) -> PathBuf {

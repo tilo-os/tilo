@@ -4705,7 +4705,10 @@ fn post_system_update_asks(frame_builder: &mut FrameBuilder, session: &SessionMa
         session.idle_for(Instant::now()),
         session.is_locked() || session.is_blanked(),
     );
-    let asks = crate::shell::system_update::drain();
+    // Deployed layers held on this image (a development machine only).
+    crate::shell::held_layers::start();
+    let mut asks = crate::shell::system_update::drain();
+    asks.extend(crate::shell::held_layers::drain());
     if asks.is_empty() {
         return false;
     }

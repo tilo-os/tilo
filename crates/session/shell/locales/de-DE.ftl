@@ -1011,6 +1011,13 @@ codec-app-name = Video- und Audioformate
 system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
+held-layers-app-name = Entwicklung
+held-layers-title = { $count ->
+    [one] Eine installierte Ebene wird zurückgehalten
+   *[other] { $count } installierte Ebenen werden zurückgehalten
+}
+held-layers-body = Sie bleiben erhalten, laufen aber nicht, weil sie nicht zu diesem Systemabbild passen. Ein neues Deployment oder tilo-vm rollback ersetzt sie.
+    { $layers }
 collaborator-needs-update = { $name } muss aktualisieren, damit ihr weiter zusammenarbeiten könnt
 collaborator-needs-update-body = Deine Änderungen erreichen { $name }, sobald das geschehen ist.
 collaborator-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren, damit ihr weiter zusammenarbeiten könnt

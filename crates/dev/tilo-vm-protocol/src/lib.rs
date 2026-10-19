@@ -626,6 +626,41 @@ pub struct Provenance {
     /// `host`, `vm` or `ci`.
     #[serde(default)]
     pub builder: Option<String>,
+    /// The system interface versions the layer was built for: the
+    /// `[interfaces]` of `system-interfaces.toml` in the tree it was built
+    /// from ([`system_interfaces`]). After an image change a layer built
+    /// against another base still merges when these match the booted
+    /// image's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub interfaces: BTreeMap<String, u32>,
+}
+
+/// Where a source tree declares the interfaces its image serves.
+pub const SYSTEM_INTERFACES_IN_TREE: &str = "os/usr/share/tilo/system-interfaces.toml";
+/// Where an image declares them.
+pub const SYSTEM_INTERFACES: &str = "/usr/share/tilo/system-interfaces.toml";
+
+/// The interfaces the source tree at `root` declares
+/// ([`SYSTEM_INTERFACES_IN_TREE`]); empty when it declares none.
+#[must_use]
+pub fn tree_interfaces(root: &std::path::Path) -> BTreeMap<String, u32> {
+    std::fs::read_to_string(root.join(SYSTEM_INTERFACES_IN_TREE))
+        .map(|text| system_interfaces(&text))
+        .unwrap_or_default()
+}
+
+/// The `[interfaces]` table of a `system-interfaces.toml`: each interface's
+/// one version. Empty when the text is not such a file.
+#[must_use]
+pub fn system_interfaces(text: &str) -> BTreeMap<String, u32> {
+    #[derive(Deserialize)]
+    struct File {
+        #[serde(default)]
+        interfaces: BTreeMap<String, u32>,
+    }
+    toml::from_str::<File>(text)
+        .map(|file| file.interfaces)
+        .unwrap_or_default()
 }
 
 fn local() -> String {
@@ -671,6 +706,7 @@ impl Provenance {
             cargo_profile: None,
             features: Vec::new(),
             builder: None,
+            interfaces: BTreeMap::new(),
         }
     }
 }
@@ -1010,10 +1046,11 @@ pub struct StatusResult {
 /// before. Layers are built against one image (its libraries, its
 /// protocols, its other components), so on another one they may run old
 /// programs against new ones. They are the person's deployed work all the
-/// same: every slot stays on its generation, and nothing is deleted, until
-/// the person rolls the slot back (`tilo-vm rollback --slot <slot> --to 0`
-/// runs the image as installed) or forward (a new swap builds against the
-/// booted image). An unknown previous image is never a change.
+/// same: every slot stays on its generation, and nothing is deleted. Each
+/// layer still merges when it was built against the booted base, or when
+/// its interface versions match the booted image's; any other is held,
+/// kept but not merged, and the person is told. Only an explicit rollback
+/// or gc deletes. An unknown previous image is never a change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageChange {
     /// The image recorded at the boot before. `None` only in a record an
@@ -1024,10 +1061,15 @@ pub struct ImageChange {
     pub to: String,
     /// RFC 3339, when the boot found the change.
     pub at: String,
-    /// Slots whose current generation was made on `from` and still runs
-    /// its layers on `to`.
+    /// Slots whose current generation was made on `from`: each stays on
+    /// it, its layers kept.
     #[serde(default)]
     pub kept: Vec<SlotLayers>,
+    /// Layers of any slot's generations held on `to`: kept, but not merged,
+    /// because neither their base image nor their interface versions match
+    /// it.
+    #[serde(default)]
+    pub held: Vec<HeldLayer>,
     /// Slots an older tilo-vmd put back on the image at this change,
     /// deleting their generations. tilo-vmd no longer drops anything; this
     /// stays readable so such a record is reported as what it was.
@@ -1036,6 +1078,17 @@ pub struct ImageChange {
     /// What that older tilo-vmd deleted of the dropped slots' layers.
     #[serde(default)]
     pub freed_bytes: u64,
+}
+
+/// A layer kept but not merged on the booted image, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldLayer {
+    /// Its content hash.
+    pub layer: String,
+    /// The component it carries.
+    pub component: String,
+    /// Why it does not fit the booted image, for people.
+    pub reason: String,
 }
 
 /// One slot's generation at an [`ImageChange`].
@@ -1091,6 +1144,19 @@ impl ImageChange {
                     slot.slot,
                     slot.generation,
                     slot.components_text()
+                ));
+            }
+        }
+        if !self.held.is_empty() {
+            lines.push(
+                "held, kept but not merged, until a new swap or a rollback replaces them:".into(),
+            );
+            for layer in &self.held {
+                lines.push(format!(
+                    "  {} {}: {}",
+                    layer.component,
+                    layer.layer.get(..12).unwrap_or(&layer.layer),
+                    layer.reason
                 ));
             }
         }

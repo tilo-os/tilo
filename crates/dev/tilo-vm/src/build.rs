@@ -216,6 +216,7 @@ pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) ->
     provenance.cargo_lock_hash = std::fs::read(worktree.root.join("Cargo.lock"))
         .ok()
         .map(|b| sha256_hex(&b));
+    provenance.interfaces = tilo_vm_protocol::tree_interfaces(&worktree.root);
     provenance
 }
 

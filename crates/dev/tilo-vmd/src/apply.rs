@@ -168,6 +168,9 @@ pub trait Apply {
     /// was added, replaced or removed (so `/usr` needs a refresh to match).
     fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError>;
     fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
+    /// Put the notice `name` where the owner's desktop reads it
+    /// (`/run/tilo-vm/<name>`, world-readable), or take it away (`None`).
+    fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError>;
     /// Create a vkms card with `connectors` connected outputs and a logind
     /// seat for it; return the seat name.
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError>;
@@ -819,6 +822,8 @@ pub struct RecordingApply {
     pub cohort_runtime_root: Option<PathBuf>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
+    /// Notices published for the owner's desktop, by name.
+    pub notices: BTreeMap<String, String>,
     /// Every call is copied here too, for a test that hands this to a daemon.
     pub mirror: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
 }
@@ -984,6 +989,20 @@ impl Apply for RecordingApply {
     }
     fn sysext_refresh(&mut self) -> Result<(), DaemonError> {
         self.call("sysext_refresh".into());
+        Ok(())
+    }
+    fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError> {
+        match contents {
+            Some(text) => {
+                self.call(format!("publish_notice {name}"));
+                self.notices.insert(name.to_owned(), text.to_owned());
+            }
+            None => {
+                if self.notices.remove(name).is_some() {
+                    self.call(format!("withdraw_notice {name}"));
+                }
+            }
+        }
         Ok(())
     }
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {
