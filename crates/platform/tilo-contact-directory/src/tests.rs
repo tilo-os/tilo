@@ -688,7 +688,7 @@ fn a_projected_picture_shows_for_the_one_person_with_that_mailbox() {
         )))
         .expect("projecting succeeds");
     let state = record.state().expect("readable");
-    assert_eq!(state.photo_for_email("Ada@Example.test"), Some("QUJD"));
+    assert_eq!(state.photo_for_email("ada@Example.TEST"), Some("QUJD"));
     assert_eq!(state.photo_for_email("nobody@example.test"), None);
 
     let third = Id::from_raw("00000000-0000-4000-8000-000000000003");
