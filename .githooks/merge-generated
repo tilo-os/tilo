@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Merge a generated file by taking main's side where both sides changed it.
+
+Git runs this for the paths .gitattributes marks `merge=generated` (the whole file is
+generated) or `merge=generated-blocks` (only the parts between generator markers are), set up
+by tools/dev/install-git-hooks.py:
+
+    merge-generated whole|blocks %O %A %B %P %L
+
+Changes on one side only merge as usual. Where both sides changed the same lines, the result
+takes %A's lines: in a rebase that is main, the side being rebased onto. The file may then lack
+what the rebased commit needed, which its generator puts back: the checks that verify these
+files declare a `fix`, and the pre-push hook runs `t fix` when they fail (docs/t.md).
+A conflict outside a generated block is left for a person, as git leaves any conflict.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import tomllib
+
+BEGIN = re.compile(r"^\s*#+\s*(BEGIN generated|generated apps: begin|BEGIN HAKARI SECTION)")
+END = re.compile(r"^\s*#+\s*(END generated|generated apps: end|END HAKARI SECTION)")
+
+
+def merge_file(ours: str, base: str, theirs: str, marker: int, *extra: str) -> tuple[int, str]:
+    """`git merge-file -p`: the number of conflicts (or -1 on failure) and the merged text."""
+    done = subprocess.run(
+        ["git", "merge-file", "-p", f"--marker-size={marker}", "-L", "ours", "-L", "base",
+         "-L", "theirs", *extra, ours, base, theirs],
+        capture_output=True, check=False,
+    )
+    if done.returncode < 0 or done.returncode > 127:
+        return -1, ""
+    return done.returncode, done.stdout.decode("utf-8", "surrogateescape")
+
+
+def valid(path: str, text: str) -> bool:
+    """Whether the merged text still parses, for the formats the drivers cover."""
+    try:
+        if path.endswith(".json"):
+            json.loads(text)
+        elif path.endswith(".toml") or path.endswith("Cargo.lock"):
+            data = tomllib.loads(text)
+            if path.endswith("Cargo.lock"):
+                keys = [(p.get("name"), p.get("version"), p.get("source")) for p in data.get("package", [])]
+                return len(keys) == len(set(keys))
+    except (ValueError, tomllib.TOMLDecodeError):
+        return False
+    return True
+
+
+def resolve_blocks(text: str, marker: int) -> tuple[str, int, int]:
+    """Take ours in each conflict inside a generated block: the text, resolved, left."""
+    start, middle, end = "<" * marker, "=" * marker, ">" * marker
+    out: list[str] = []
+    inside = False
+    resolved = left = 0
+    lines = text.splitlines(keepends=True)
+    i = 0
+
+    def track(chunk: list[str]) -> None:
+        nonlocal inside
+        for line in chunk:
+            if BEGIN.match(line):
+                inside = True
+            elif END.match(line):
+                inside = False
+
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith(start + " "):
+            track([line])
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        ours: list[str] = []
+        while j < len(lines) and not lines[j].startswith(middle):
+            ours.append(lines[j])
+            j += 1
+        k = j + 1
+        theirs: list[str] = []
+        while k < len(lines) and not lines[k].startswith(end + " "):
+            theirs.append(lines[k])
+            k += 1
+        crosses = any(BEGIN.match(l) or END.match(l) for l in ours + theirs)
+        if inside and not crosses:
+            out.extend(ours)
+            resolved += 1
+        else:
+            out.extend(lines[i:k + 1])
+            track(ours)
+            left += 1
+        i = k + 1
+    return "".join(out), resolved, left
+
+
+def main(argv: list[str]) -> int:
+    mode, base, ours, theirs, path = argv[1:6]
+    marker = int(argv[6]) if len(argv) > 6 and argv[6].isdigit() else 7
+    conflicts, merged = merge_file(ours, base, theirs, marker)
+    if conflicts < 0:
+        return 2
+    if conflicts == 0 and (mode != "whole" or valid(path, merged)):
+        with open(ours, "w", encoding="utf-8", errors="surrogateescape") as f:
+            f.write(merged)
+        return 0
+
+    if mode == "whole":
+        left = 0
+        _, merged = merge_file(ours, base, theirs, marker, "--ours")
+        if not valid(path, merged):
+            # Line by line the sides don't make one valid file: keep main's whole.
+            with open(ours, encoding="utf-8", errors="surrogateescape") as f:
+                merged = f.read()
+    else:
+        conflicted = merged
+        merged, _, left = resolve_blocks(conflicted, marker)
+        if not left and not valid(path, merged):
+            merged, left = conflicted, conflicts
+    with open(ours, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(merged)
+    if left:
+        print(f"merge-generated: {path}: {left} conflict(s) outside its generated parts", file=sys.stderr)
+        return 1
+    print(f"merge-generated: {path}: took main's side where both sides changed it; "
+          "the push gate regenerates it (t fix)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,46 +1,138 @@
 #!/usr/bin/env bash
-# Refuse a push that CI rejects in its first minute: a branch that no longer
-# merges with main (lint, check and app-sdk all test the merge with main), and
-# a dependency change that leaves crates/workspace-hack stale (lint.yml's
-# hakari step). Bypass with `git push --no-verify`.
+# A push to main runs t's push gate on exactly the commit being pushed (docs/t.md, "Testing a
+# change"). Failures that main has too pass; a failure the change causes refuses the push, and a
+# failure t can fix is fixed into the working tree for you to commit. Pushes to other branches
+# run nothing. Bypass with `git push --no-verify`.
 set -euo pipefail
-note() { printf '  %s\n' "$*" >&2; }
+note() { printf 'pre-push: %s\n' "$*" >&2; }
 
-pushed=()
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
-  # A deleted ref pushes no commit.
-  [[ $local_sha =~ ^0+$ ]] || pushed+=("$local_sha")
+# The fast whole-tree checks that keep main from going red for hours over a slip that takes
+# seconds to find: formatting, the lockfile, crates/workspace-hack, t.toml's and the code map's
+# generated parts, the SDK policy and the dependency policy. A check whose inputs the change
+# doesn't touch returns its cached result at once.
+gate=(fmt lockfile hakari t-toml codemap sdk-policy deny)
+
+remote=$1
+pushed=""
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = refs/heads/main ] || continue
+  # Deleting main is not a change to test.
+  [[ $local_sha =~ ^0+$ ]] && continue
+  # main moved since the last fetch: the push would be refused after the checks anyway.
+  if [[ ! $remote_sha =~ ^0+$ ]] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    note "main moved on $remote: git fetch $remote && git rebase $remote/main, then push again"
+    exit 1
+  fi
+  pushed=$local_sha
 done
-[ "${#pushed[@]}" -gt 0 ] || exit 0
+[ -n "$pushed" ] || exit 0
 
-# Main moves every few minutes; compare against its current tip.
-if ! timeout 30 git fetch --quiet origin main 2>/dev/null; then
-  note "pre-push: could not fetch origin/main; checking against the last fetched main"
+if ! git config --get merge.generated.driver >/dev/null; then
+  note "the merge drivers for generated files are not set up: run python3 tools/dev/install-git-hooks.py"
 fi
-main=$(git rev-parse --verify --quiet origin/main) || exit 0
+if ! command -v t >/dev/null; then
+  note "t is not installed, so the push gate can't run (docs/t.md, Setting up)"
+  exit 1
+fi
+# t compares failures with main at the commit the change branched from.
+git fetch --quiet "$remote" main 2>/dev/null || true
 
-fail=0
-for sha in "${pushed[@]}"; do
-  # Exit 1 is a conflict; anything else is git failing, not the branch.
-  status=0
-  merge=$(git merge-tree --write-tree --name-only --no-messages "$main" "$sha") || status=$?
-  if [ "$status" -eq 1 ]; then
-    note "pre-push: $(git rev-parse --short "$sha") conflicts with origin/main in:"
-    tail -n +2 <<< "$merge" | sed 's/^/    /' >&2
-    note "merge origin/main and resolve these files, then push again"
-    fail=1
+# Test the commit itself: the working tree when it is exactly that commit, else a checkout of it
+# kept for this worktree's pushes, so the next one updates only the files that changed.
+short=$(git rev-parse --short "$pushed")
+if [ "$pushed" = "$(git rev-parse HEAD)" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
+  dir=$(git rev-parse --show-toplevel)
+  own=1
+else
+  own=0
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/tilo/pre-push"
+  mkdir -p "$cache"
+  dir="$cache/$(git rev-parse --absolute-git-dir | sha256sum | cut -c1-16)"
+  exec 9>"$dir.lock"
+  if command -v flock >/dev/null; then flock 9; fi
+  if [ ! -f "$dir/.git" ]; then
+    rm -rf "$dir"
+    git worktree prune
+    git worktree add --quiet --detach --no-checkout "$dir" "$pushed"
   fi
+  git -C "$dir" checkout --quiet --detach --force "$pushed"
+  git -C "$dir" clean --quiet -fd
+  note "testing $short in a clean checkout ($dir): the working tree is not that commit"
+fi
 
-  # cargo hakari reads the working tree, so check only the commit checked out.
-  if [ "$sha" = "$(git rev-parse HEAD)" ] \
-     && git diff --name-only "$(git merge-base "$main" "$sha")" "$sha" \
-        | grep -qE '(^|/)Cargo\.(toml|lock)$' \
-     && cargo hakari --version >/dev/null 2>&1; then
-    if ! { cargo hakari generate --diff >/dev/null && cargo hakari manage-deps --dry-run >/dev/null; }; then
-      note "pre-push: crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result"
-      fail=1
-    fi
-  fi
-done
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+started=$SECONDS
+status=0
+t test -C "$dir" --priority high --json "${gate[@]}" >"$out/run.jsonl" 2>"$out/stderr" || status=$?
+took=$((SECONDS - started))
 
-exit "$fail"
+# The run's id, its fixable failures that may be the change's, and t's errors.
+read_run() {
+  python3 -I - "$out/run.jsonl" "$1" <<'EOF'
+import json, sys
+path, want = sys.argv[1], sys.argv[2]
+for line in open(path, encoding="utf-8", errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    kind = event.get("type")
+    if want == "run" and kind in ("planned", "done") and event.get("run"):
+        print(event["run"])
+        break
+    if want == "fixable" and kind == "result" and event.get("outcome") == "fail" \
+            and event.get("fix") and not event.get("fixed") \
+            and (event.get("blame") or {}).get("kind") not in ("inherited", "flaky"):
+        print(event["check"])
+    if want == "error" and kind == "error":
+        print(event.get("message", ""))
+        if event.get("hint"):
+            print(event["hint"])
+EOF
+}
+run=$(read_run run)
+show_run() {
+  if [ -n "$run" ]; then t show "$run" >&2 || true; else cat "$out/stderr" >&2; fi
+}
+
+case $status in
+  0) note "t passed $short in ${took}s"; exit 0 ;;
+  3) note "t passed $short in ${took}s: what fails also fails on main (t main)"; exit 0 ;;
+  1) ;;
+  *)
+    note "t could not run the push gate on $short (exit $status):"
+    { read_run error; tail -n 5 "$out/stderr"; } | sed 's/^/    /' >&2
+    note "if t is down, push with --no-verify and run the checks once it is back: t test ${gate[*]}"
+    exit 1
+    ;;
+esac
+
+show_run
+fixable=()
+while read -r check; do fixable+=("$check"); done < <(read_run fixable)
+if [ "${#fixable[@]}" -eq 0 ]; then
+  note "refused: $short fails the checks above (${took}s); fix it, commit, and push again"
+  exit 1
+fi
+
+# Never amend: what t fixes lands in the working tree for the pusher to commit.
+t fix -C "$dir" "${fixable[@]}" >"$out/fix" 2>&1 || true
+fixed=()
+while read -r file; do fixed+=("$file"); done < <(git -C "$dir" status --porcelain --untracked-files=normal | cut -c4-)
+if [ "${#fixed[@]}" -eq 0 ]; then
+  cat "$out/fix" >&2
+  note "refused: $short fails the checks above, and \`t fix ${fixable[*]}\` changed nothing"
+  exit 1
+fi
+if [ "$own" = 1 ]; then
+  note "t fixed ${fixed[*]}: commit them and push again"
+else
+  patch="$(git rev-parse --absolute-git-dir)/t-fix.patch"
+  git -C "$dir" add --all
+  git -C "$dir" diff --cached --binary >"$patch"
+  git -C "$dir" reset --quiet --hard
+  note "t fixed ${fixed[*]} in $short; your working tree is not that commit, so the fix is in"
+  note "  $patch: git apply it, commit, and push again"
+fi
+exit 1

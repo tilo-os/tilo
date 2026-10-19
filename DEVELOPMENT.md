@@ -1829,8 +1829,8 @@ builds each dependency once. Settings and the deliberate exclusions live in
 `.config/hakari.toml`.
 
 After adding, removing or changing a dependency or its features, regenerate and
-commit the result with your change (`cargo install --locked cargo-hakari
---version 0.9.39` once):
+commit the result with your change: `t fix hakari` does it on the server, or
+locally (`cargo install --locked cargo-hakari --version 0.9.39` once):
 
 ```bash
 cargo hakari generate      # rewrite crates/workspace-hack/Cargo.toml
@@ -1847,19 +1847,21 @@ browser runtime also builds for `wasm32-unknown-unknown` names it under
 `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` instead; the policy
 suite names a member that `manage-deps` gave the unconditional line.
 
-## Pre-commit hook
+## Git hooks and merge drivers
 
-Enable the repo's git hooks once per clone:
+Turn on the repo's git hooks and merge drivers once per clone:
 
 ```bash
 python3 tools/dev/install-git-hooks.py
 ```
 
-The tracked hooks do not activate automatically in a fresh clone. The installer
-verifies both hooks, preserves unrelated hook configuration, and uses worktree
-configuration when enabled. Run it in each linked worktree that needs its own
-managed hooks. It refuses an unrelated hooks path or custom default hooks;
-arrange explicit chaining rather than overwriting them.
+The settings go into the clone's config, so every worktree of the clone has them. The installer
+verifies the hooks, preserves unrelated hook configuration, and uses worktree configuration when
+enabled (then run it in each linked worktree). It refuses an unrelated hooks path or custom
+default hooks; arrange explicit chaining rather than overwriting them.
+
+`pre-push` runs t's push gate on a push to `main`, and the merge drivers resolve generated files
+in a rebase ([docs/t.md](docs/t.md), "How changes reach a release").
 
 `commit-msg` requires `type(optional-scope)!: description`. Types are `build`,
 `chore`, `ci`, `docs`, `dev`, `env`, `feat`, `fix`, `perf`, `refactor`, `revert`,
@@ -1909,7 +1911,8 @@ rustfmt skip it. rustfmt also skips a generated source, one with an
 registries); CI's `tools/ci/check-changed-rustfmt.sh` applies the same rule.
 
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
-except a declared single-crate update. Name the `cargo update` you ran (several
+except a relock that moves no version (what `t fix lockfile` writes after a
+rebase) and a declared single-crate update. Name the `cargo update` you ran (several
 separated by `;`):
 
 ```bash

@@ -96,27 +96,14 @@ see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
 targets, which is how test files have silently stopped building for days at a time.
 
-Before pushing:
+Before pushing, test the packages you touched: `t test clippy/<package> test/<package>`
+([docs/t.md](docs/t.md)). Then:
 
-1. Stage only the intended paths, then run `.githooks/pre-commit`; it checks changed-file
-   formatting, exact staged Rust blobs for unexplained `allow`s, repository contracts and secrets.
-2. Run the narrow tests that prove the change, plus the relevant all-target compile check
-   (for shell work, `cargo check -p shell --tests`).
-3. Commit the candidate, then inspect the affected plan with
-   `python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" --base origin/main --shards 2`.
-   Point `TILO_CI_TOOLS` at `tools/ci` in a current trusted checkout, even when this worktree
-   is older. Set `TILO_CURRENT_WORKTREE_METADATA_BUNDLE` to the exact-source CI bundle from
-   `dev-source-metadata.yml` (tools/ci/README.md). The launcher validates the committed clean
-   source, complete workspace/member manifests, lockfile and targets, remaps all metadata paths,
-   and runs this worktree's selector while forbidding every non-Git subprocess. A stale
-   selector cannot invoke local Cargo through a default, an absolute path or a shell fallback.
-   Do not reuse an unverified export or manufacture a partial graph. Without a verified bundle,
-   leave selection to normal CI. The current direct selector also rejects a local default;
-   older worktrees require the stable launcher rather than their historical relative command.
-   Unexpected full-workspace selection is a bug to understand before pushing.
-4. Test what you changed with `t test <check>` ([docs/t.md](docs/t.md)), rebase on `main`
-   and push straight to `main`. CI on `main` informs and never reverts; if `t inbox` shows a
-   failure you caused, fix it forward.
+1. Commit (once per clone, `python3 tools/dev/install-git-hooks.py` turns on the hooks).
+2. `git push origin HEAD:main`, in the background: the pre-push hook runs t's push gate.
+3. If it refuses, fix and commit (it says when `t fix` already fixed files for you to commit),
+   or `git fetch origin && git rebase origin/main` when main moved, then push again.
+4. Watch `t inbox`; fix forward what your commit broke on main.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
 `tilo`.
@@ -280,7 +267,8 @@ Move one crate at a time with `cargo update -p <crate> --precise <version>`. A f
 moves hundreds of transitive versions at once, and a break surfaces inside a dependency rather
 than where you touched. Treat a lock change as a real change: read the diff and rebuild before
 pushing. `--locked` in CI. Commit a lock-only update with the command declared,
-`TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`; the pre-commit hook refuses any
+`TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`. The relock `t fix lockfile`
+writes after a rebase needs no declaration: it moves no version. The pre-commit hook refuses any
 other lock change without a manifest beside it (DEVELOPMENT.md, "Pre-commit hook").
 
 Tilo's own crates use one RustCrypto generation, the one iroh uses; the versions are in
@@ -329,12 +317,9 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
 
-Push your work straight to `main`; there are no pull requests to land and nothing
-reverts automatically. Before pushing, test what you changed with `t test <check>` and fix
-what fails because of you (exit code `3`: everything that failed also fails on `main` already).
-Keep each push a small, coherent, tested increment, then `git pull --rebase` and push.
-CI on `main` informs: `t main` shows what fails there and who is on it. Fix your own
-failures forward, and `t claim` someone else's before you work on it. `stable` is
+Push straight to `main` as in "Before pushing" above: no pull requests, nothing reverts.
+Keep each push a small, coherent, tested increment. `t main` shows what fails on main and who
+is on it; `t claim` someone else's failure before you work on it. `stable` is
 moved by the stabilizer alone. The workflow and using t are in `docs/t.md`. A change that reaches the shell also
 runs the desktop smoke (`desktop_smoke::` in the shell `it` target): a frozen
 compositor fails it within half a second with every thread's backtrace, so treat that

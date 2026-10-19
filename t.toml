@@ -366,7 +366,18 @@ name = "t-toml"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/ci/t_toml.py check"
+fix = "python3 tools/ci/t_toml.py write"
 inputs = ["t.toml", "tools/ci/**", ".config/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/*.rs"]
+
+# docs/codemap.md lists every crate and what it owns. policy checks this too, in minutes; this
+# answers in seconds, and `t fix codemap` rewrites it.
+[[check]]
+name = "codemap"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+run = "python3 tools/docs/codemap.py --check"
+fix = "python3 tools/docs/codemap.py"
+inputs = ["docs/codemap.md", "tools/docs/codemap.py", "Cargo.toml", "**/Cargo.toml", "**/src/lib.rs", "**/src/main.rs"]
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +415,20 @@ if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; th
 fi
 cargo hakari verify
 """
+fix = "cargo hakari generate && cargo hakari manage-deps --yes"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".config/hakari.toml", "crates/workspace-hack/**"]
+
+# Cargo.lock holds what the manifests require. Every cargo check builds `--locked` and fails on
+# a stale lock too, but only once it gets to compile. The fix relocks without update flags, so it
+# adds and drops what the manifests now need and moves no locked version (AGENTS.md, "Cargo.lock
+# is committed").
+[[check]]
+name = "lockfile"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
+run = "cargo metadata --locked --format-version 1 >/dev/null"
+fix = "cargo metadata --format-version 1 >/dev/null"
+inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml"]
 
 [[check]]
 name = "deny"
@@ -1192,6 +1216,8 @@ python3 tools/policy/check_app_capabilities.py
 python3 tools/web/generate_web_desktop.py --check
 python3 tools/sdk/publish_check.py --report-only
 """
+# Of what it checks, tools/web/generate_web_desktop.py writes what it finds stale.
+fix = "python3 tools/web/generate_web_desktop.py"
 inputs = ["apps/**", "crates/**", "examples/**", "Cargo.toml", "Cargo.lock", "tools/policy/**", "tools/web/**", "tools/sdk/**"]
 
 # The web size budgets only go down: each budget is compared with the one on
