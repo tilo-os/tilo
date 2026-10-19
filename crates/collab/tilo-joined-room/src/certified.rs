@@ -342,7 +342,9 @@ impl VerifiedNativeEnrollment {
         }
         // Actual StatePeer validation checks certificate/revocation and authority input.
         // A alone admits the signed governance and publishes the durable peer.
-        tilo_peer_state::StatePeer::new(
+        // The roster is the room's admitted evidence: a guest whose
+        // certificate expired since is still in it.
+        tilo_peer_state::StatePeer::joined(
             &bootstrap.room,
             bootstrap.authority.clone(),
             bootstrap.certified_roster.clone(),
