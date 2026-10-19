@@ -24,13 +24,17 @@ use ui::theme::Theme;
 /// The visible choices of one document setting, in index order.
 pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
     match choice {
-        DocumentChoice::Scanner => &[],
+        // Until a scanner answers the field says so, never its raw index.
+        DocumentChoice::Scanner => &[NO_SCANNER],
         DocumentChoice::Resolution => &["150 DPI", "300 DPI", "600 DPI"],
         DocumentChoice::Color => &["Color", "Grayscale", "Black and white"],
         DocumentChoice::Source => &["Flatbed", "Feeder", "Duplex feeder"],
         DocumentChoice::Language => &["English", "German", "French", "Spanish"],
     }
 }
+
+/// The scanner field while no scanner is found.
+const NO_SCANNER: &str = "No scanner found";
 
 const CHOICES: [DocumentChoice; 5] = [
     DocumentChoice::Scanner,
@@ -117,7 +121,11 @@ impl CameraApp {
         let controls = &mut self.document_controls;
         if controls.scanners != scanners {
             if let Some(field) = controls.fields.first_mut() {
-                field.set_value_options(indexed(scanners.iter().cloned()));
+                if scanners.is_empty() {
+                    field.set_value_options(indexed([NO_SCANNER.to_owned()]));
+                } else {
+                    field.set_value_options(indexed(scanners.iter().cloned()));
+                }
             }
             controls.scanners = scanners;
         }

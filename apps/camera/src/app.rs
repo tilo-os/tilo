@@ -1100,12 +1100,16 @@ impl CameraApp {
             ),
             Action::SetDocumentChoice(choice, index) => (
                 Role::RadioButton,
-                document_view::choice_labels(*choice)
-                    .get(*index)
-                    .map_or_else(
-                        || format!("Option {}", index + 1),
-                        |label| (*label).to_owned(),
-                    ),
+                if matches!(choice, DocumentChoice::Scanner) {
+                    self.scanner_devices
+                        .get(*index)
+                        .map(|scanner| scanner.description.clone())
+                } else {
+                    document_view::choice_labels(*choice)
+                        .get(*index)
+                        .map(|label| (*label).to_owned())
+                }
+                .unwrap_or_else(|| format!("Option {}", index + 1)),
                 AccessState::new()
                     .focusable(true)
                     .disabled(self.document_job.is_some()),
@@ -1458,6 +1462,17 @@ impl CameraApp {
     }
 
     fn apply_nav(&mut self, s: Screen, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
+        self.go_to(s);
+    }
+
+    /// Show screen `s`, the same way from a control and from an action: the
+    /// settings sheet opens with the screen, not on the next input.
+    fn show_screen(&mut self, s: Screen) {
+        self.go_to(s);
+        self.present_controls();
+    }
+
+    fn go_to(&mut self, s: Screen) {
         // Remember which viewfinder an overlay was summoned from so its
         // back button returns there.
         if matches!(s, Screen::Settings)
@@ -2099,10 +2114,10 @@ impl CameraApp {
     ) -> EffectAnswer {
         self.dirty = true;
         match effect {
-            CameraEffect::OpenCamera => self.screen = Screen::Camera,
-            CameraEffect::OpenScanner => self.screen = Screen::Scanner,
-            CameraEffect::OpenDocument => self.screen = Screen::Document,
-            CameraEffect::OpenSettings => self.screen = Screen::Settings,
+            CameraEffect::OpenCamera => self.show_screen(Screen::Camera),
+            CameraEffect::OpenScanner => self.show_screen(Screen::Scanner),
+            CameraEffect::OpenDocument => self.show_screen(Screen::Document),
+            CameraEffect::OpenSettings => self.show_screen(Screen::Settings),
             CameraEffect::UseMode { mode } => {
                 if self.is_recording() {
                     return Err("Stop recording to switch modes".into());
@@ -5258,6 +5273,11 @@ mod tests {
         assert_eq!(
             app.with_surface::<CameraApp, _>(|camera| camera.screen),
             Some(Screen::Settings)
+        );
+        assert_eq!(
+            app.with_surface::<CameraApp, _>(|camera| camera.settings_sheet.dialog.is_open()),
+            Some(true),
+            "the action opens the settings sheet with the screen, as the button does"
         );
         assert!(
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::RotatePage)
