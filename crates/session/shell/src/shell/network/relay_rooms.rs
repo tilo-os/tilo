@@ -1044,6 +1044,7 @@ impl BotAsk {
             Self::Add { entry, version } => WorkspaceMembershipCommand::RequestBot(BotRequest {
                 entry: entry.clone(),
                 version: version.clone(),
+                inputs: std::collections::BTreeMap::new(),
             }),
             Self::Remove { entry } => WorkspaceMembershipCommand::WithdrawBotRequest {
                 entry: entry.clone(),

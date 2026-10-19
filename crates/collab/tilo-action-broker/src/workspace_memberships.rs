@@ -1135,6 +1135,7 @@ mod tests {
                 tilo_peer_state::workspace_membership::BotRequest {
                     entry: "so.tilo.bots.standup".into(),
                     version: "1.2.0".into(),
+                    inputs: std::collections::BTreeMap::new(),
                 }
             )
         );

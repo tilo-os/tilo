@@ -147,12 +147,31 @@ pub fn fetch_listed_bot(
         Err(RegistryError::NotListed(_)) => return Err(not_listed(entry, version)),
         Err(other) => return Err(other.into()),
     };
+    // `newest` asks for the most recently released version listed now: what
+    // an app that sets up a bot it ships beside (the Discord connector's
+    // bridge) asks for, without knowing the registry's numbering.
+    let resolved = if version == NEWEST {
+        listed
+            .entry
+            .versions
+            .iter()
+            .filter(|listed| listed.bot().is_some())
+            .max_by_key(|listed| listed.released_at_unix)
+            .map(|listed| listed.version.clone())
+            .ok_or_else(|| not_listed(entry, version))?
+    } else {
+        version.to_owned()
+    };
+    let version = resolved.as_str();
     let entries = [listed];
     let (_, artifact) = app_cli::bots::listed_version(&entries, entry, version)
         .ok_or_else(|| not_listed(entry, version))?;
     let bytes = app_cli::bots::fetch_bot_program(artifact)?;
     verify_listed_bot(&entries, &reg.owner_pubkey_hex, entry, version, &bytes)
 }
+
+/// The version a request names to get the most recently released one.
+pub const NEWEST: &str = "newest";
 
 /// Whether the host that will run the bot has a connector it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]

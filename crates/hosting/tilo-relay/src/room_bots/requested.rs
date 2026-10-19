@@ -86,6 +86,9 @@ pub struct Follower {
     pub state: PathBuf,
     /// The operator's bots, by entry.
     pub operator: BTreeSet<String>,
+    /// The connectors this host can run for a requested bot (the Discord
+    /// bridge); `None` where it runs none.
+    pub connectors: Option<installed::ConnectorHost>,
 }
 
 /// A requested bot running here.
@@ -139,20 +142,18 @@ impl Follower {
         let entry = &request.request.entry;
         let dir = self.dir(entry);
         let mut inputs = Map::new();
+        for (name, value) in &request.request.inputs {
+            inputs.insert(name.clone(), Value::String(value.clone()));
+        }
         inputs.insert(
             "version".into(),
             Value::String(request.request.version.clone()),
         );
-        let bot: InstalledBot = installed::install(&dir, entry, inputs).await?;
+        let mut bot: InstalledBot = installed::install(&dir, entry, inputs).await?;
         let shortcut = bot.shortcut()?;
-        if !InstalledBot::connectors(&shortcut).is_empty() {
-            // A connector carries the operator's secrets and settings (a
-            // Discord token, a server to link), which no room member can
-            // give it: such a bot is the operator's to start.
-            return Err(
-                "a bot that listens to a connector is started by the host's operator".into(),
-            );
-        }
+        let connectors = self
+            .connectors_for(&shortcut, &request.request.inputs, &mut bot)
+            .await?;
         let certifier = HostRootCertifier::new(self.root.clone());
         let runner = BotRunner::new(
             self.rooms.clone(),
@@ -160,7 +161,7 @@ impl Follower {
             self.host.clone(),
             certifier.device_key(&bot.installation),
             bot.clone(),
-            BTreeMap::new(),
+            connectors,
             dir.join("progress.json"),
         )?;
         let installation = bot.installation.clone();
@@ -179,6 +180,53 @@ impl Follower {
             installation,
             tasks,
         })
+    }
+
+    /// Start the connectors a requested bot listens to. A member who may
+    /// install bots sets one up as the room's operator would: its secret
+    /// through the room's `set-connector-secret` (kept in this host's store),
+    /// its settings as the request's inputs (a bridge's `guild=` and
+    /// `server=`). Only the Discord bridge is set up this way.
+    ///
+    /// # Errors
+    /// The host runs no connectors, the connector is not one a member can
+    /// set up, its secret has not been given, or the link was refused.
+    async fn connectors_for(
+        &self,
+        shortcut: &tilo_automation::Shortcut,
+        inputs: &BTreeMap<String, String>,
+        bot: &mut InstalledBot,
+    ) -> Result<BTreeMap<String, std::sync::Arc<tilo_connector::ConnectorProcess>>, String> {
+        use super::discord;
+        let wanted = InstalledBot::connectors(shortcut);
+        if wanted.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let host = self
+            .connectors
+            .as_ref()
+            .ok_or("this host runs no connectors for a requested bot")?;
+        let mut settings = BTreeMap::new();
+        for app in &wanted {
+            if app != discord::APP {
+                return Err(format!("{app} is not a connector a room member can set up"));
+            }
+            if !installed::has_connector_secret(app, discord::TOKEN_PURPOSE) {
+                return Err("the Discord bridge waits for its bot token".into());
+            }
+            let env = discord::link_bridge(
+                &self.rooms,
+                &self.room,
+                &self.host,
+                inputs,
+                bot,
+                host.avatars_url.as_deref(),
+            )
+            .await?;
+            settings.insert(app.clone(), env);
+        }
+        let blobs = host.blobs(&self.rooms);
+        installed::start_connectors(&wanted, &self.state, &host.workers, &settings, &blobs).await
     }
 
     async fn stop(&self, entry: &str, bot: Running) {
@@ -241,6 +289,7 @@ mod tests {
             request: BotRequest {
                 entry: entry.into(),
                 version: version.into(),
+                inputs: BTreeMap::new(),
             },
             requested_by: "ada".into(),
             requested_at_ns: 1,
