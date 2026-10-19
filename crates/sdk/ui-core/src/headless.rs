@@ -2360,6 +2360,16 @@ impl FrameHarness {
         if consistent {
             return;
         }
+        // A wake that came in during this frame announced new input (a
+        // reading landing off the UI thread): the frame was quiet for what it
+        // had, and the sync above took up what came after, which the woken
+        // next frame answers for. Only a difference nothing announced is a
+        // skipped sync.
+        self.drain_component_wakes();
+        if self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()) {
+            self.request_layout();
+            return;
+        }
         // Where the semantics first differ, with some context either side.
         let differs = before
             .0

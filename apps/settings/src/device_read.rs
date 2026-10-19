@@ -222,10 +222,16 @@ impl ErasedReading {
             return;
         }
         let this = self.clone();
+        // Woken before each reading becomes visible as well as after the work
+        // ends: a frame that reads the new value then always has a wake to
+        // answer for it, never a change that reached it unannounced.
+        let landing = ui::WakeHandle::new();
         let work = Box::new(move || {
             loop {
                 this.running.store(1, Ordering::Release);
-                this.value.set(Some((this.read)()));
+                let reading = (this.read)();
+                landing.wake();
+                this.value.set(Some(reading));
                 if this
                     .running
                     .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
@@ -254,7 +260,11 @@ fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let wake = ui::WakeHandle::new();
     let job: Box<dyn FnOnce() + Send> = Box::new(move || {
-        let _ = sender.send(work());
+        let result = work();
+        // Announced before it can be received, and again once it can: a
+        // frame that takes the result always has a wake to answer for it.
+        wake.wake();
+        let _ = sender.send(result);
         wake.wake();
     });
     ui::background::Background::current()
