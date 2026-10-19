@@ -44,20 +44,23 @@ const RECORDING_RECEIPT_DURATION: Duration = Duration::from_millis(3_000);
 /// without permanently replacing the rolling buffer's primary Save action.
 const REPLAY_SAVED_ACTION_DURATION: Duration = Duration::from_millis(3_000);
 const SCREENSHOT_RECEIPT_DURATION: Duration = Duration::from_millis(5_500);
-/// Top-bar selector geometry, shared by the mode and source groups so the
-/// two read as one control family, derived from the tokens because the bar
-/// has no theme when it lays out: each group is inset `s2` all round and
-/// the groups sit `s2` apart; the bar is a `bar_height` button row plus
-/// that inset top and bottom (56 px); a symbol button is as wide as the
-/// bar is tall and neighbours sit on a hairline gap of half the smallest
-/// step (2 px).
-const TOP_GROUP_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-const TOP_GROUP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-const TOP_BAR_H: f64 = crate::tokens::Metrics::BASE.bar_height as f64 + TOP_GROUP_PAD * 2.0;
-const TOP_BUTTON_W: f64 = TOP_BAR_H;
-/// Neighbouring buttons in a group keep one `s1`: the smallest token step,
-/// so two lifted faces never read as one bar (HIG §7 "nothing touches").
-const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+/// The studio's floating bars: controls of the regular size, inset `s2`,
+/// `s4` between clusters of controls and `s2` inside one. Compile-time,
+/// like the rest of the studio's geometry, which is laid out without a
+/// theme; the widths come from the labels as last measured.
+const CONTROL_H: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+const BAR_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const BAR_GAP: f64 = crate::tokens::Spacing::BASE.s4 as f64;
+const BAR_ITEM_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const BAR_H: f64 = CONTROL_H + 2.0 * BAR_PAD;
+/// The bottom bar stands this far above the screen's bottom edge, leaving
+/// room for the key hints under it.
+const BOTTOM_BAR_LIFT: f64 = HINT_GAP + HINT_H + crate::tokens::Spacing::BASE.s4 as f64;
+/// The key hints' line under the bottom bar.
+const HINT_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const HINT_H: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
+/// The delays a capture can wait, in seconds; `0` is none.
+const DELAY_CHOICES: [u8; 4] = [0, 3, 5, 10];
 const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 
 /// Height of one line of `size`-px text exactly as the renderer paints it.
@@ -102,9 +105,43 @@ pub struct CapturePreview {
     pub pixels: Vec<[u8; 4]>,
 }
 
+/// What became of a screenshot: kept as a file in Screenshots, put on the
+/// clipboard, or both (what the main action and Print Screen do).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenshotKept {
+    /// Saved into the Screenshots folder.
+    pub saved: bool,
+    /// On the clipboard.
+    pub copied: bool,
+}
+
+impl ScreenshotKept {
+    pub const SAVED_AND_COPIED: Self = Self {
+        saved: true,
+        copied: true,
+    };
+    pub const SAVED: Self = Self {
+        saved: true,
+        copied: false,
+    };
+    pub const COPIED: Self = Self {
+        saved: false,
+        copied: true,
+    };
+
+    /// The receipt's status line.
+    fn status_key(self) -> &'static str {
+        match (self.saved, self.copied) {
+            (true, true) => "widget-screenshot-copied-saved",
+            (false, true) => "widget-screenshot-copied",
+            _ => "widget-screenshot-saved",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ScreenshotReceipt {
-    copied: bool,
+    kept: ScreenshotKept,
     width: u32,
     height: u32,
     preview: CapturePreview,
@@ -466,6 +503,15 @@ pub struct CaptureStudio {
     /// see [`Self::remember_docked_content_widths`]. Render caches only.
     docked_pill_min_width: f64,
     docked_stop_width: f64,
+    /// The receipt's labels as last measured. Render caches only.
+    receipt_widths: ReceiptWidths,
+    /// The bars' controls as last measured. Render caches only.
+    bar_widths: BarWidths,
+    /// The open delay list under the Delay dropdown.
+    delay_menu: Option<crate::widget::context_menu::ContextMenu>,
+    /// Pin asked for this screenshot: once it is saved it becomes a
+    /// floating window.
+    pin_when_saved: bool,
 }
 
 impl Default for CaptureStudio {
@@ -510,16 +556,276 @@ impl Default for CaptureStudio {
             armed_capture: None,
             docked_pill_min_width: 0.0,
             docked_stop_width: 0.0,
+            receipt_widths: ReceiptWidths::default(),
+            bar_widths: BarWidths::default(),
+            delay_menu: None,
+            pin_when_saved: false,
         }
     }
 }
 
-/// The screenshot receipt's buttons are the minimum pointer target wide
-/// (HIG §9.6), `s1` apart; it keeps `s2` off the screen edge. Compile-time
-/// like the receipt's own geometry, which has no theme.
-const RECEIPT_BUTTON_W: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+/// The screenshot receipt's buttons are small controls, an icon-only one
+/// square, `s1` apart, inset `s1` in a bar that keeps `s2` off the screen
+/// edge. Compile-time like the receipt's own geometry, which has no theme.
+const RECEIPT_BUTTON_H: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
+const RECEIPT_BUTTON_W: f64 = RECEIPT_BUTTON_H;
 const RECEIPT_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+const RECEIPT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+/// The thumbnail's inset at rest ([`CaptureStudio::screenshot_receipt_preview_rect`]).
+const RECEIPT_THUMB_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const RECEIPT_HEIGHT: f64 = RECEIPT_BUTTON_H + 2.0 * RECEIPT_INSET;
+const RECEIPT_TEXT_GAP: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
+/// A labelled action on the screenshot receipt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiptAction {
+    /// Copy the saved screenshot, offered when copying it did not succeed.
+    Copy,
+    /// Open it for markup.
+    Edit,
+    /// Open it in the image viewer.
+    Open,
+    /// Show it in Files.
+    Reveal,
+    /// Send it to the workspace or another device.
+    Send,
+}
+
+impl ReceiptAction {
+    const ALL: [Self; 5] = [Self::Copy, Self::Edit, Self::Open, Self::Reveal, Self::Send];
+
+    /// What the receipt offers for a screenshot `kept` so: a file can be
+    /// edited, opened, shown and sent; one the clipboard refused, copied.
+    /// A copy alone has nothing to act on.
+    fn offered(kept: ScreenshotKept) -> Vec<Self> {
+        if !kept.saved {
+            return Vec::new();
+        }
+        let copy = (!kept.copied).then_some(Self::Copy);
+        copy.into_iter()
+            .chain([Self::Edit, Self::Open, Self::Reveal, Self::Send])
+            .collect()
+    }
+
+    fn label(self) -> String {
+        crate::i18n::widget_format(
+            match self {
+                Self::Copy => "widget-screenshot-copy",
+                Self::Edit => "widget-screenshot-edit",
+                Self::Open => "widget-screenshot-open",
+                Self::Reveal => "widget-screenshot-reveal",
+                Self::Send => "widget-screenshot-send",
+            },
+            &[],
+        )
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Copy => Icon::Copy,
+            Self::Edit => Icon::Pencil,
+            Self::Open => Icon::ExternalLink,
+            Self::Reveal => Icon::FolderOpen,
+            Self::Send => Icon::Send,
+        }
+    }
+
+    fn test_name(self) -> &'static str {
+        match self {
+            Self::Copy => "capture.copy-screenshot",
+            Self::Edit => "capture.edit-screenshot",
+            Self::Open => "capture.open-screenshot",
+            Self::Reveal => "capture.show-screenshot",
+            Self::Send => "capture.send-screenshot",
+        }
+    }
+}
+
+/// Where everything in the screenshot receipt sits.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ReceiptLayout {
+    pill: Rect,
+    preview: Rect,
+    actions: Vec<(ReceiptAction, Rect)>,
+    dismiss: Rect,
+    /// The actions show their labels (they fit), else only their icons.
+    labelled: bool,
+}
+
+/// The receipt's text as last measured: its status and each action's
+/// labelled width. Render caches only.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ReceiptWidths {
+    status: f64,
+    actions: [f64; 5],
+}
+
+impl Default for ReceiptWidths {
+    fn default() -> Self {
+        Self {
+            status: 110.0,
+            actions: [72.0, 64.0, 68.0, 110.0, 72.0],
+        }
+    }
+}
+
+impl ReceiptWidths {
+    fn index(action: ReceiptAction) -> usize {
+        ReceiptAction::ALL
+            .iter()
+            .position(|a| *a == action)
+            .unwrap_or(0)
+    }
+
+    fn action(&self, action: ReceiptAction) -> f64 {
+        self.actions[Self::index(action)]
+    }
+
+    fn set(&mut self, action: ReceiptAction, width: f64) {
+        self.actions[Self::index(action)] = width;
+    }
+}
+
+/// A control on the studio's bottom bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarControl {
+    /// The bar itself.
+    Bar,
+    Pointer,
+    SystemAudio,
+    Microphone,
+    Delay,
+    /// The extent of a window capture or the layout of several areas.
+    Options,
+    Secondary,
+    Primary,
+}
+
+impl BarControl {
+    /// Which cluster of the bar it stands in: what to include, the
+    /// options, the actions.
+    fn cluster(self) -> u8 {
+        match self {
+            Self::Bar | Self::Pointer | Self::SystemAudio | Self::Microphone | Self::Delay => 0,
+            Self::Options => 1,
+            Self::Secondary | Self::Primary => 2,
+        }
+    }
+}
+
+/// Every bar control's width as last measured at the type it is painted
+/// with. Render caches only; before the first paint, estimates.
+#[derive(Clone, Debug, PartialEq)]
+struct BarWidths {
+    mode: [f64; 3],
+    source: [f64; 4],
+    /// Pointer, system audio, microphone.
+    toggles: [f64; 3],
+    delay: f64,
+    options: [f64; 3],
+    secondary: f64,
+    primary: f64,
+}
+
+impl Default for BarWidths {
+    fn default() -> Self {
+        Self {
+            mode: [104.0, 98.0, 146.0],
+            source: [78.0, 82.0, 80.0, 80.0],
+            toggles: [98.0, 132.0, 120.0],
+            delay: 132.0,
+            options: [108.0, 108.0, 112.0],
+            secondary: 72.0,
+            primary: 160.0,
+        }
+    }
+}
+
+/// A studio string from the toolkit's catalogue.
+fn studio_text(key: &str) -> String {
+    crate::i18n::widget_format(key, &[])
+}
+
+fn mode_labels() -> Vec<String> {
+    [
+        "widget-capture-mode-screenshot",
+        "widget-capture-mode-recording",
+        "widget-capture-mode-pip",
+    ]
+    .into_iter()
+    .map(studio_text)
+    .collect()
+}
+
+fn source_labels() -> Vec<String> {
+    [
+        "widget-capture-source-region",
+        "widget-capture-source-window",
+        "widget-capture-source-display",
+        "widget-capture-source-several",
+    ]
+    .into_iter()
+    .map(studio_text)
+    .collect()
+}
+
+/// The options a source offers: how much of a window, or how several areas
+/// are laid out.
+fn option_labels(source: SourceMode) -> Vec<String> {
+    let keys = if source == SourceMode::Multi {
+        [
+            "widget-capture-layout-auto",
+            "widget-capture-layout-grid",
+            "widget-capture-layout-stack",
+        ]
+    } else {
+        [
+            "widget-capture-extent-visible",
+            "widget-capture-extent-full-app",
+            "widget-capture-extent-strip",
+        ]
+    };
+    keys.into_iter().map(studio_text).collect()
+}
+
+/// The toggles' labels and icons: the pointer, system audio, microphone.
+fn toggle_labels() -> [(String, Icon); 3] {
+    [
+        (studio_text("widget-capture-pointer"), Icon::MousePointer2),
+        (studio_text("widget-capture-system-audio"), Icon::Volume2),
+        (studio_text("widget-capture-microphone"), Icon::Mic),
+    ]
+}
+
+/// The delay dropdown's value for `seconds`.
+fn delay_value(seconds: u8) -> String {
+    if seconds == 0 {
+        studio_text("widget-capture-delay-off")
+    } else {
+        crate::i18n::widget_format(
+            "widget-capture-delay-seconds",
+            &[("seconds", i64::from(seconds).into())],
+        )
+    }
+}
+
+/// A delay's row in the dropdown's list.
+fn delay_choice(seconds: u8) -> String {
+    if seconds == 0 {
+        studio_text("widget-capture-delay-none")
+    } else {
+        crate::i18n::widget_format(
+            "widget-capture-delay-choice",
+            &[("seconds", i64::from(seconds).into())],
+        )
+    }
+}
+
+/// A count of things as a float, for laying them out.
+fn ui_count(n: usize) -> f64 {
+    crate::num::f64_of_usize(n)
+}
 
 impl CaptureStudio {
     /// Capture status belongs to compositor space, not to the picker node's
@@ -547,6 +853,8 @@ impl CaptureStudio {
         self.recording_finished_at = None;
         self.screenshot_receipt = None;
         self.screenshot_pin_pending = false;
+        self.pin_when_saved = false;
+        self.delay_menu = None;
         self.open = true;
         self.opened_at = Some(crate::time::now());
         self.regions.clear();
@@ -671,60 +979,13 @@ impl CaptureStudio {
         let Some(menu) = self.send_menu.as_mut() else {
             return false;
         };
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = e
-        {
-            self.close_send_menu();
-            return true;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = e
-            && !menu.contains([self.cursor.x, self.cursor.y])
-        {
-            // A press outside the picker dismisses it and nothing else.
-            self.close_send_menu();
-            return true;
-        }
-        let mut taffy = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return true;
-        };
-        let mut handled = false;
-        let mut focus = None;
-        menu.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &modifiers,
-                state: state.reborrow(),
-                path,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        // The menu leaves motion unhandled so presence can follow it; over
-        // the menu the motion is still the menu's, not the widgets below.
-        if matches!(e, WindowEvent::CursorMoved { .. })
-            && menu.contains([self.cursor.x, self.cursor.y])
-        {
-            handled = true;
-        }
-        if let Some(index) = menu.take_selection() {
+        let outcome = drive_menu(menu, self.cursor, e, (scale, modifiers), (state, path));
+        if let Some(index) = outcome.chosen {
             self.choose_send_target(index);
+        } else if outcome.dismissed {
+            self.close_send_menu();
         }
-        handled
+        outcome.handled
     }
 
     fn choose_send_target(&mut self, index: usize) {
@@ -736,9 +997,15 @@ impl CaptureStudio {
         self.open = false;
     }
 
+    /// What the receipt shown says became of the screenshot; `None` while
+    /// none shows.
+    pub fn screenshot_kept(&self) -> Option<ScreenshotKept> {
+        self.screenshot_receipt.as_ref().map(|receipt| receipt.kept)
+    }
+
     pub fn set_screenshot_finished(
         &mut self,
-        copied: bool,
+        kept: ScreenshotKept,
         width: u32,
         height: u32,
         preview: CapturePreview,
@@ -753,8 +1020,9 @@ impl CaptureStudio {
                     .map(|rect| rect.center())
             })
             .unwrap_or_else(|| self.rect.center());
+        let pin = std::mem::take(&mut self.pin_when_saved) && kept.saved;
         self.screenshot_receipt = Some(ScreenshotReceipt {
-            copied,
+            kept,
             width,
             height,
             preview,
@@ -764,6 +1032,13 @@ impl CaptureStudio {
         });
         self.screenshot_pin_pending = false;
         self.open = true;
+        if pin {
+            // Pin was the action: the saved pixels become a floating window,
+            // growing out of the receipt's thumbnail.
+            let spawn = self.screenshot_receipt_layout_at(0.0, origin).preview;
+            self.queue_screenshot_command(ScreenshotCommand::PinLast, Some(spawn));
+            self.screenshot_pin_pending = true;
+        }
     }
 
     pub fn set_screenshot_pin_pending(&mut self, pending: bool) {
@@ -1011,86 +1286,53 @@ impl CaptureStudio {
     /// as what it holds. The old fixed spans (180 / 300 in a 488 bar) left
     /// the mode group with no trailing inset and the source group with
     /// ~50 px of dead space after its last button.
-    fn top_group_width(buttons: usize) -> f64 {
-        let n = buttons as f64;
-        TOP_GROUP_PAD * 2.0 + n * TOP_BUTTON_W + (n - 1.0).max(0.0) * TOP_BUTTON_GAP
-    }
+    /// The top bar: the mode and the source, each a labelled segmented
+    /// strip, side by side on one floating bar.
     fn top_bar(&self) -> Rect {
-        let w = (Self::top_group_width(3) + TOP_GROUP_GAP + Self::top_group_width(4))
-            .min(self.rect.width() - 32.0);
+        let w = (BAR_PAD * 2.0
+            + self.bar_widths.mode.iter().sum::<f64>()
+            + BAR_GAP
+            + self.bar_widths.source.iter().sum::<f64>())
+        .min(self.rect.width() - 32.0);
         Rect::new(
             self.rect.center().x - w / 2.0,
             self.rect.y0 + 22.0,
             self.rect.center().x + w / 2.0,
-            self.rect.y0 + 22.0 + TOP_BAR_H,
+            self.rect.y0 + 22.0 + BAR_H,
         )
     }
-    fn mode_group_rect(&self) -> Rect {
+    fn mode_strip_rect(&self) -> Rect {
         let b = self.top_bar();
-        Rect::new(b.x0, b.y0, b.x0 + Self::top_group_width(3), b.y1)
-    }
-    fn source_group_rect(&self) -> Rect {
-        let b = self.top_bar();
-        let x0 = b.x0 + Self::top_group_width(3) + TOP_GROUP_GAP;
-        Rect::new(x0, b.y0, x0 + Self::top_group_width(4), b.y1)
-    }
-    /// The `i`th button of a group whose left edge is `group_x0`.
-    fn top_button_rect(&self, group_x0: f64, i: usize) -> Rect {
-        let b = self.top_bar();
-        let x = group_x0 + TOP_GROUP_PAD + i as f64 * (TOP_BUTTON_W + TOP_BUTTON_GAP);
+        let w: f64 = self.bar_widths.mode.iter().sum();
         Rect::new(
-            x,
-            b.y0 + TOP_GROUP_PAD,
-            x + TOP_BUTTON_W,
-            b.y1 - TOP_GROUP_PAD,
+            b.x0 + BAR_PAD,
+            b.y0 + BAR_PAD,
+            b.x0 + BAR_PAD + w,
+            b.y1 - BAR_PAD,
         )
     }
-    fn bottom_bar(&self) -> Rect {
-        let has_options = matches!(self.source, SourceMode::Window | SourceMode::Multi);
-        let extra_audio_controls = 42.0 * self.audio_control_count() as f64;
-        let desired: f64 = match (self.mode, has_options) {
-            (CaptureMode::Screenshot, false) => 300.0,
-            (CaptureMode::Screenshot, true) => 566.0,
-            (CaptureMode::Recording, false) => 318.0 + extra_audio_controls,
-            (CaptureMode::Recording, true) => 584.0 + extra_audio_controls,
-            (CaptureMode::Pip, false) => 162.0,
-            (CaptureMode::Pip, true) => 432.0,
-        };
-        let w = desired.min(self.rect.width() - 32.0);
-        Rect::new(
-            self.rect.center().x - w / 2.0,
-            self.rect.y1 - 82.0,
-            self.rect.center().x + w / 2.0,
-            self.rect.y1 - 22.0,
-        )
-    }
-    fn option_rects(&self) -> [Rect; 3] {
-        let b = self.bottom_bar();
-        let x = b.x0
-            + if self.mode == CaptureMode::Pip {
-                12.0
-            } else if self.mode == CaptureMode::Recording {
-                104.0 + 42.0 * self.audio_control_count() as f64
-            } else {
-                104.0
-            };
-        let each = 88.0;
-        std::array::from_fn(|i| {
-            Rect::new(
-                x + i as f64 * each,
-                b.y0 + 8.0,
-                x + (i + 1) as f64 * each - 6.0,
-                b.y1 - 8.0,
-            )
-        })
+    fn source_strip_rect(&self) -> Rect {
+        let mode = self.mode_strip_rect();
+        let w: f64 = self.bar_widths.source.iter().sum();
+        Rect::new(mode.x1 + BAR_GAP, mode.y0, mode.x1 + BAR_GAP + w, mode.y1)
     }
     fn mode_rects(&self) -> [Rect; 3] {
-        let group = self.mode_group_rect();
-        std::array::from_fn(|i| self.top_button_rect(group.x0, i))
+        let strip = self.mode_strip_rect();
+        let mut x = strip.x0;
+        std::array::from_fn(|i| {
+            let r = Rect::new(x, strip.y0, x + self.bar_widths.mode[i], strip.y1);
+            x = r.x1;
+            r
+        })
     }
     fn source_rects(&self) -> [Rect; 4] {
-        let group = self.source_group_rect();
-        std::array::from_fn(|i| self.top_button_rect(group.x0, i))
+        let strip = self.source_strip_rect();
+        let mut x = strip.x0;
+        std::array::from_fn(|i| {
+            let r = Rect::new(x, strip.y0, x + self.bar_widths.source[i], strip.y1);
+            x = r.x1;
+            r
+        })
     }
     fn candidate_picker_rects(&self) -> Vec<Rect> {
         let count = self.candidates.len().min(5);
@@ -1113,66 +1355,263 @@ impl CaptureStudio {
             })
             .collect()
     }
-    fn action_rects(&self) -> [Rect; 3] {
-        let b = self.bottom_bar();
+
+    /// The bottom bar's controls in order, as `(control, width)`: what to
+    /// include (the pointer, the audio sources a recording can take, the
+    /// delay), what to take from a window or several areas, and the
+    /// secondary and primary actions.
+    fn bottom_controls(&self) -> Vec<(BarControl, f64)> {
+        let w = &self.bar_widths;
+        let mut out = Vec::new();
+        if self.mode != CaptureMode::Pip {
+            out.push((BarControl::Pointer, w.toggles[0]));
+        }
+        if self.mode == CaptureMode::Recording && self.system_audio_available {
+            out.push((BarControl::SystemAudio, w.toggles[1]));
+        }
+        if self.mode == CaptureMode::Recording && self.microphone_available {
+            out.push((BarControl::Microphone, w.toggles[2]));
+        }
+        if self.mode != CaptureMode::Pip {
+            out.push((BarControl::Delay, w.delay));
+        }
+        if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
+            out.push((BarControl::Options, w.options.iter().sum()));
+        }
+        if self.mode != CaptureMode::Pip {
+            out.push((BarControl::Secondary, w.secondary));
+        }
+        out.push((BarControl::Primary, w.primary));
+        out
+    }
+
+    /// Where each bottom-bar control sits: a cluster for what to include, the
+    /// options, then the actions at the trailing end, `BAR_GAP` between
+    /// clusters and `BAR_ITEM_GAP` inside one.
+    fn bottom_layout(&self) -> Vec<(BarControl, Rect)> {
+        let controls = self.bottom_controls();
+        let mut gaps = 0.0;
+        for pair in controls.windows(2) {
+            gaps += if pair[0].0.cluster() == pair[1].0.cluster() {
+                BAR_ITEM_GAP
+            } else {
+                BAR_GAP
+            };
+        }
+        let content: f64 = controls.iter().map(|(_, w)| *w).sum::<f64>() + gaps;
+        let w = (content + BAR_PAD * 2.0).min(self.rect.width() - 32.0);
+        let bar = Rect::new(
+            self.rect.center().x - w / 2.0,
+            self.rect.y1 - BOTTOM_BAR_LIFT - BAR_H,
+            self.rect.center().x + w / 2.0,
+            self.rect.y1 - BOTTOM_BAR_LIFT,
+        );
+        let mut out = vec![(BarControl::Bar, bar)];
+        let mut x = bar.x0 + BAR_PAD;
+        let mut previous: Option<BarControl> = None;
+        for (control, width) in controls {
+            if let Some(previous) = previous {
+                x += if previous.cluster() == control.cluster() {
+                    BAR_ITEM_GAP
+                } else {
+                    BAR_GAP
+                };
+            }
+            out.push((
+                control,
+                Rect::new(x, bar.y0 + BAR_PAD, x + width, bar.y1 - BAR_PAD),
+            ));
+            x += width;
+            previous = Some(control);
+        }
+        out
+    }
+    fn bottom_rect(&self, control: BarControl) -> Rect {
+        self.bottom_layout()
+            .into_iter()
+            .find(|(c, _)| *c == control)
+            .map_or(Rect::ZERO, |(_, r)| r)
+    }
+    fn bottom_bar(&self) -> Rect {
+        self.bottom_rect(BarControl::Bar)
+    }
+    fn option_rects(&self) -> [Rect; 3] {
+        let strip = self.bottom_rect(BarControl::Options);
+        if strip.area() <= 0.0 {
+            return [Rect::ZERO; 3];
+        }
+        let mut x = strip.x0;
+        std::array::from_fn(|i| {
+            let r = Rect::new(x, strip.y0, x + self.bar_widths.options[i], strip.y1);
+            x = r.x1;
+            r
+        })
+    }
+    /// The secondary action (Pin, "Keep last 30 s") and the primary one
+    /// (take, start, create, or the indicator's Stop while recording).
+    fn action_rects(&self) -> (Rect, Rect) {
         if self.take.active {
             let (_, _, stop) = self.recording_indicator_rects();
-            return [Rect::ZERO, Rect::ZERO, stop];
+            return (Rect::ZERO, stop);
         }
-        match self.mode {
-            CaptureMode::Screenshot => [
-                Rect::new(b.x1 - 190.0, b.y0 + 8.0, b.x1 - 100.0, b.y1 - 8.0),
-                Rect::ZERO,
-                Rect::new(b.x1 - 94.0, b.y0 + 8.0, b.x1 - 8.0, b.y1 - 8.0),
-            ],
-            CaptureMode::Recording => [
-                Rect::ZERO,
-                Rect::new(b.x1 - 208.0, b.y0 + 8.0, b.x1 - 100.0, b.y1 - 8.0),
-                Rect::new(b.x1 - 94.0, b.y0 + 8.0, b.x1 - 8.0, b.y1 - 8.0),
-            ],
-            CaptureMode::Pip => [
-                Rect::ZERO,
-                Rect::new(b.x1 - 146.0, b.y0 + 8.0, b.x1 - 8.0, b.y1 - 8.0),
-                Rect::ZERO,
-            ],
-        }
+        (
+            self.bottom_rect(BarControl::Secondary),
+            self.bottom_rect(BarControl::Primary),
+        )
     }
-    fn audio_control_count(&self) -> usize {
-        if self.mode != CaptureMode::Recording {
-            return 0;
-        }
-        usize::from(self.system_audio_available) + usize::from(self.microphone_available)
-    }
-
-    fn control_slot_rect(&self, slot: usize) -> Rect {
-        let b = self.bottom_bar();
-        let x = b.x0 + 12.0 + slot as f64 * 42.0;
-        Rect::new(x, b.y0 + 12.0, x + 36.0, b.y1 - 12.0)
-    }
-
     fn pointer_rect(&self) -> Rect {
-        self.control_slot_rect(0)
+        self.bottom_rect(BarControl::Pointer)
     }
 
     fn system_audio_rect(&self) -> Rect {
-        if self.mode != CaptureMode::Recording || !self.system_audio_available {
-            return Rect::ZERO;
-        }
-        self.control_slot_rect(1)
+        self.bottom_rect(BarControl::SystemAudio)
     }
 
     fn microphone_rect(&self) -> Rect {
-        if self.mode != CaptureMode::Recording || !self.microphone_available {
-            return Rect::ZERO;
-        }
-        self.control_slot_rect(1 + usize::from(self.system_audio_available))
+        self.bottom_rect(BarControl::Microphone)
     }
 
     fn delay_rect(&self) -> Rect {
-        if self.mode == CaptureMode::Pip {
-            return Rect::ZERO;
+        self.bottom_rect(BarControl::Delay)
+    }
+
+    /// The key hints under the bottom bar, centred: what each key does.
+    fn hint_row(&self) -> Rect {
+        let bar = self.bottom_bar();
+        let y0 = bar.y1 + HINT_GAP;
+        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + HINT_H)
+    }
+
+    /// The segmented strips' labels in `theme`, measured, and every bar
+    /// control's width: what the bars are laid out from.
+    fn measure_bars(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        use crate::widget::ControlSize;
+        use crate::widget::toggle_group::SegmentedFace;
+        let segments = |labels: &[String], tr: &mut TextRenderer| -> Vec<f64> {
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let width = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, theme);
+            let rect = Rect::new(0.0, 0.0, width, 1.0);
+            SegmentedFace::partition(rect, &labels, ControlSize::Regular, tr, theme)
+                .iter()
+                .map(Rect::width)
+                .collect()
+        };
+        let mut widths = self.bar_widths.clone();
+        for (slot, width) in widths.mode.iter_mut().zip(segments(&mode_labels(), tr)) {
+            *slot = width;
         }
-        self.control_slot_rect(1 + self.audio_control_count())
+        for (slot, width) in widths.source.iter_mut().zip(segments(&source_labels(), tr)) {
+            *slot = width;
+        }
+        for (slot, width) in widths
+            .options
+            .iter_mut()
+            .zip(segments(&option_labels(self.source), tr))
+        {
+            *slot = width;
+        }
+        let face_width = |label: &str, icon: Icon, tr: &mut TextRenderer| {
+            ButtonFace::new(Rect::ZERO, label)
+                .icon(icon)
+                .control_size(ControlSize::Regular)
+                .intrinsic_width(tr, theme)
+        };
+        for (i, (label, icon)) in toggle_labels().into_iter().enumerate() {
+            widths.toggles[i] = face_width(&label, icon, tr);
+        }
+        let delay_values: Vec<String> = DELAY_CHOICES.iter().map(|s| delay_value(*s)).collect();
+        widths.delay = crate::widget::DropdownFace::new(Rect::ZERO, "")
+            .leading_icon(Icon::Timer)
+            .intrinsic_width(delay_values.iter().map(String::as_str), tr, theme);
+        widths.secondary = self
+            .secondary_action()
+            .map_or(0.0, |(label, icon)| face_width(&label, icon, tr));
+        let (label, icon) = self.primary_action();
+        widths.primary = face_width(&label, icon, tr);
+        self.bar_widths = widths;
+    }
+
+    /// The secondary action's label and icon: Pin for a screenshot, the
+    /// last 30 seconds for a recording, none for picture in picture.
+    fn secondary_action(&self) -> Option<(String, Icon)> {
+        match self.mode {
+            CaptureMode::Screenshot => Some((studio_text("widget-capture-pin"), Icon::Pin)),
+            CaptureMode::Recording => {
+                Some((studio_text("widget-capture-keep-recent"), Icon::History))
+            }
+            CaptureMode::Pip => None,
+        }
+    }
+
+    /// The primary action's label and icon: what Enter does.
+    fn primary_action(&self) -> (String, Icon) {
+        match self.mode {
+            CaptureMode::Screenshot => (studio_text("widget-capture-take"), Icon::Camera),
+            CaptureMode::Recording => (studio_text("widget-capture-record"), Icon::Video),
+            CaptureMode::Pip => (
+                studio_text("widget-capture-create-pip"),
+                Icon::PictureInPicture2,
+            ),
+        }
+    }
+
+    /// Where the primary action (and Enter) puts the capture. A screenshot
+    /// is saved and on the clipboard, as in every screenshot tool: paste it
+    /// anywhere at once, find it later.
+    fn primary_destination(&self) -> CaptureDestination {
+        match self.mode {
+            CaptureMode::Pip => CaptureDestination::FloatingWindow,
+            CaptureMode::Screenshot => CaptureDestination::FileAndClipboard,
+            CaptureMode::Recording => CaptureDestination::File,
+        }
+    }
+
+    /// Open the delay list under the Delay dropdown, the current one
+    /// checked.
+    fn open_delay_menu(&mut self) {
+        use crate::widget::context_menu::{ContextMenu, MenuItem};
+        let mut menu = ContextMenu::new();
+        for seconds in DELAY_CHOICES {
+            menu.push(
+                MenuItem::selection(delay_choice(seconds))
+                    .with_checked(seconds == self.delay_seconds),
+            );
+        }
+        menu.open_anchored(self.delay_rect(), self.status_rect());
+        menu.layout_at_position();
+        menu.focus_first_action();
+        self.delay_menu = Some(menu);
+    }
+
+    /// Route one event to the open delay list: a pick sets the delay, a
+    /// press elsewhere or Escape closes it. Returns whether it was taken.
+    fn route_delay_menu_event(
+        &mut self,
+        e: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        let Some(menu) = self.delay_menu.as_mut() else {
+            return false;
+        };
+        let outcome = drive_menu(menu, self.cursor, e, (scale, modifiers), (state, path));
+        if let Some(index) = outcome.chosen {
+            self.choose_delay(index);
+        } else if outcome.dismissed {
+            self.delay_menu = None;
+        }
+        outcome.handled
+    }
+
+    /// The delay list's row `index` was picked: wait that long, and close
+    /// the list.
+    fn choose_delay(&mut self, index: usize) {
+        if let Some(seconds) = DELAY_CHOICES.get(index) {
+            self.delay_seconds = *seconds;
+        }
+        self.delay_menu = None;
     }
 
     fn cycle_delay(&mut self) {
@@ -1570,155 +2009,32 @@ impl CaptureStudio {
                 && self.selected_candidate().is_some())
     }
 
-    /// Glyphs of the four sources, in [`Self::source_rects`] order: a dashed
-    /// frame for an area, a window for an app, a monitor for the screen and
-    /// merged squares for several areas as one.
-    const SOURCE_ICONS: [Icon; 4] = [
-        Icon::SquareDashed,
-        Icon::AppWindow,
-        Icon::Monitor,
-        Icon::SquaresUnite,
-    ];
-
-    /// What the control under the pointer does, for its tooltip: the control's
-    /// rect and a plain sentence, with the chord where it has one. `None` when
-    /// the pointer is over nothing that acts.
+    /// What the control under the pointer is, for its tooltip, where its
+    /// label cannot say it whole: an app in the picker (and whether it is
+    /// off screen), and a selection's remove control. `None` over anything
+    /// else; the bars' controls carry their labels.
     fn control_tip(&self) -> Option<(Rect, String)> {
         let at = self.cursor;
-        let caps = crate::keycaps::active();
-        let chord = |mods: &[&str], key: &str| caps.chord(mods.iter().copied(), key);
         let hit = |rect: Rect| rect.area() > 0.0 && rect.contains(at);
-        let recording = self.mode == CaptureMode::Recording;
-
-        let modes = [
-            format!("Screenshot ({})", chord(&["Super", "Shift"], "S")),
-            "Record the screen".to_string(),
-            format!("Picture in Picture ({})", chord(&["Super", "Shift"], "P")),
-        ];
-        if let Some((rect, label)) = self
-            .mode_rects()
-            .into_iter()
-            .zip(modes)
-            .find(|(r, _)| hit(*r))
-        {
-            return Some((rect, label));
-        }
-        let sources = [
-            "Select an area",
-            "Choose an app",
-            "Capture the whole screen",
-            "Combine several areas",
-        ];
-        if let Some((rect, label)) = self
-            .source_rects()
-            .into_iter()
-            .zip(sources)
-            .find(|(r, _)| hit(*r))
-        {
-            return Some((rect, label.to_string()));
-        }
         if self.source == SourceMode::Window {
             for (target, rect) in self.candidates.iter().zip(self.candidate_picker_rects()) {
                 if hit(rect) {
-                    let suffix = if target.visible_rect.area() <= 0.0 {
-                        " (off-screen)"
+                    let title = if target.visible_rect.area() <= 0.0 {
+                        crate::i18n::widget_format(
+                            "widget-capture-offscreen-app",
+                            &[("app", target.title.as_str().into())],
+                        )
                     } else {
-                        ""
+                        target.title.clone()
                     };
-                    return Some((rect, format!("{}{suffix}", target.title)));
+                    return Some((rect, title));
                 }
             }
         }
         if let Some(rect) = self.region_remove_rects.iter().copied().find(|r| hit(*r)) {
-            return Some((rect, "Remove this selection".to_string()));
+            return Some((rect, studio_text("widget-capture-remove-selection")));
         }
-        if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
-            let labels = if self.source == SourceMode::Multi {
-                [
-                    "Arrange the areas automatically",
-                    "Arrange the areas in a grid",
-                    "Stack the areas",
-                ]
-            } else {
-                [
-                    "Only what is visible",
-                    "The whole app, including what is scrolled out of view",
-                    "Every app in this strip",
-                ]
-            };
-            if let Some((rect, label)) = self
-                .option_rects()
-                .into_iter()
-                .zip(labels)
-                .find(|(r, _)| hit(*r))
-            {
-                return Some((rect, label.to_string()));
-            }
-        }
-        if self.mode != CaptureMode::Pip && hit(self.pointer_rect()) {
-            let text = if self.include_pointer {
-                "Pointer is shown. Click to hide it"
-            } else {
-                "Show the pointer in the capture"
-            };
-            return Some((self.pointer_rect(), text.to_string()));
-        }
-        if self.system_audio_available && hit(self.system_audio_rect()) {
-            let text = if self.audio.includes_system() {
-                "Desktop sound is recorded. Click to leave it out"
-            } else {
-                "Record desktop sound"
-            };
-            return Some((self.system_audio_rect(), text.to_string()));
-        }
-        if self.microphone_available && hit(self.microphone_rect()) {
-            let text = if self.audio.includes_microphone() {
-                "Microphone is recorded. Click to mute it"
-            } else {
-                "Record the microphone"
-            };
-            return Some((self.microphone_rect(), text.to_string()));
-        }
-        if self.mode != CaptureMode::Pip && hit(self.delay_rect()) {
-            let text = match self.delay_seconds {
-                0 => "Start right away. Click to add a delay",
-                3 => "Start after 3 seconds. Click to change",
-                _ => "Start after 10 seconds. Click to remove the delay",
-            };
-            return Some((self.delay_rect(), text.to_string()));
-        }
-        let actions = self.action_rects();
-        if recording && hit(actions[1]) {
-            let text = format!(
-                "Save the last 30 seconds ({})",
-                chord(&["Super", "Shift"], "R")
-            );
-            return Some((actions[1], text));
-        }
-        if self.mode == CaptureMode::Screenshot && hit(actions[0]) {
-            let text = if self.has_capture_source() {
-                "Copy to the clipboard"
-            } else {
-                "Choose what to capture first"
-            };
-            return Some((actions[0], text.to_string()));
-        }
-        let primary = match self.mode {
-            CaptureMode::Screenshot => Some((2, "Take the screenshot".to_string())),
-            CaptureMode::Recording if self.take.active => Some((2, "Stop recording".to_string())),
-            CaptureMode::Recording => Some((2, "Start recording".to_string())),
-            CaptureMode::Pip => Some((1, "Keep this live in a small floating window".to_string())),
-        };
-        let (i, label) = primary?;
-        if !hit(actions[i]) {
-            return None;
-        }
-        if self.has_capture_source() || (recording && self.take.active) {
-            Some((actions[i], label))
-        } else {
-            // A disabled button that says nothing reads as broken.
-            Some((actions[i], "Choose what to capture first".to_string()))
-        }
+        None
     }
 
     fn default_picker_context(&self) -> String {
@@ -1927,32 +2243,49 @@ impl CaptureStudio {
         )
     }
 
-    fn screenshot_receipt_rects(&self) -> (Rect, Rect, Rect, Rect, Rect) {
+    fn screenshot_receipt_layout(&self) -> ReceiptLayout {
         let Some(receipt) = self.screenshot_receipt.as_ref() else {
-            return (Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO);
+            return ReceiptLayout::default();
         };
-        self.screenshot_receipt_rects_at(Self::screenshot_receipt_motion(receipt), receipt.origin)
+        self.screenshot_receipt_layout_at(Self::screenshot_receipt_motion(receipt), receipt.origin)
     }
 
-    fn screenshot_receipt_rects_at(&self, p: f64, origin: Point) -> (Rect, Rect, Rect, Rect, Rect) {
+    /// The receipt at `p` of its way from the selected pixels (`0`) to its
+    /// place beside the clock (`1`): its ground, the thumbnail, the labelled
+    /// actions the screenshot offers and Dismiss.
+    fn screenshot_receipt_layout_at(&self, p: f64, origin: Point) -> ReceiptLayout {
         let Some(receipt) = self.screenshot_receipt.as_ref() else {
-            return (Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO);
+            return ReceiptLayout::default();
         };
         let bounds = self.status_rect();
         let compact = bounds.width() < 1000.0;
-        // Never wider than the bounds less the receipt's edge margin, so a
-        // narrow output shrinks it (its dimensions line gives way first)
-        // rather than pushing it past the screen edge.
-        let final_width = (if compact { 394.0 } else { 354.0_f64 })
-            .min((bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0));
+        let room = (bounds.width() - 2.0 * RECEIPT_EDGE_MARGIN).max(0.0);
+        let actions = ReceiptAction::offered(receipt.kept);
+        let final_height = RECEIPT_HEIGHT;
+        let thumb = Self::fit_screenshot_preview(receipt.width, receipt.height, 46.0, 24.0);
+        let fixed = RECEIPT_THUMB_INSET
+            + thumb.width
+            + RECEIPT_TEXT_GAP
+            + self.receipt_widths.status
+            + RECEIPT_TEXT_GAP
+            + RECEIPT_BUTTON_W
+            + RECEIPT_INSET;
+        let labelled_width: f64 = actions
+            .iter()
+            .map(|action| self.receipt_widths.action(*action) + RECEIPT_BUTTON_GAP)
+            .sum();
+        let icon_width = ui_count(actions.len()) * (RECEIPT_BUTTON_W + RECEIPT_BUTTON_GAP);
+        // Labelled while they fit; on a narrow display, icons named for
+        // assistive technology and their tooltip.
+        let labelled = fixed + labelled_width <= room;
+        let final_width = (fixed + if labelled { labelled_width } else { icon_width }).min(room);
         // Begin as a recognizable thumbnail rather than a nearly empty tiny
         // capsule. The object compresses vertically while it gains enough
-        // horizontal room for metadata and actions in the top bar.
+        // horizontal room for its status and actions.
         let start_preview =
             Self::fit_screenshot_preview(receipt.width, receipt.height, 144.0, 66.0);
         let start_width = start_preview.width + 12.0;
         let width = start_width + (final_width - start_width) * p;
-        let final_height = if compact { 28.0 } else { 34.0 };
         let start_height = start_preview.height + 12.0;
         let height = start_height + (final_height - start_height) * p;
         let clock_right = bounds.center().x + 180.0;
@@ -1965,7 +2298,7 @@ impl CaptureStudio {
         let final_x = requested_x
             .min(bounds.x1 - edge_inset)
             .max(bounds.x0 + edge_inset);
-        let final_y = bounds.y0 + 20.0;
+        let final_y = bounds.y0 + RECEIPT_INSET + final_height / 2.0;
         let start = Point::new(
             origin.x.clamp(bounds.x0 + 32.0, bounds.x1 - 32.0),
             origin.y.clamp(bounds.y0 + 20.0, bounds.y1 - 20.0),
@@ -1975,24 +2308,36 @@ impl CaptureStudio {
             start.y + (final_y - start.y) * p,
         );
         let pill = Rect::from_center_size(center, (width, height));
-        let inset = 4.0 + if compact { 0.0 } else { 2.0 * p };
-        let dismiss = Rect::new(
-            pill.x1 - RECEIPT_BUTTON_W - inset,
-            pill.y0 + inset,
-            pill.x1 - inset,
-            pill.y1 - inset,
-        );
-        let reveal = Self::screenshot_receipt_send_rect(dismiss);
-        let copy = Self::screenshot_receipt_send_rect(reveal);
-        let pin = Self::screenshot_receipt_send_rect(copy);
-        (pill, pin, copy, reveal, dismiss)
-    }
-
-    /// The receipt button left of `next` (Send is the one left of Pin):
-    /// each the minimum pointer target wide, `s1` apart.
-    fn screenshot_receipt_send_rect(next: Rect) -> Rect {
-        let x1 = next.x0 - RECEIPT_BUTTON_GAP;
-        Rect::new(x1 - RECEIPT_BUTTON_W, next.y0, x1, next.y1)
+        let button = |x1: f64, w: f64| {
+            let cy = pill.center().y;
+            Rect::new(
+                x1 - w,
+                cy - RECEIPT_BUTTON_H / 2.0,
+                x1,
+                cy + RECEIPT_BUTTON_H / 2.0,
+            )
+        };
+        let dismiss = button(pill.x1 - RECEIPT_INSET, RECEIPT_BUTTON_W);
+        let mut x1 = dismiss.x0 - RECEIPT_BUTTON_GAP;
+        let mut placed = Vec::with_capacity(actions.len());
+        for action in actions.iter().rev() {
+            let w = if labelled {
+                self.receipt_widths.action(*action)
+            } else {
+                RECEIPT_BUTTON_W
+            };
+            let rect = button(x1, w);
+            x1 = rect.x0 - RECEIPT_BUTTON_GAP;
+            placed.push((*action, rect));
+        }
+        placed.reverse();
+        ReceiptLayout {
+            pill,
+            preview: Self::screenshot_receipt_preview_rect(p, pill, receipt.width, receipt.height),
+            actions: placed,
+            dismiss,
+            labelled,
+        }
     }
 
     fn fit_screenshot_preview(
@@ -2571,34 +2916,53 @@ impl CaptureStudio {
                 return;
             }
             let origin = receipt.origin;
-            let (pill, pin, copy, reveal, dismiss) = self.screenshot_receipt_rects();
-            let preview = Self::screenshot_receipt_preview_rect(
-                Self::screenshot_receipt_motion(receipt),
-                pill,
-                receipt.width,
-                receipt.height,
-            );
-            if !receipt.copied && preview.contains(p) {
-                self.queue_screenshot_command(ScreenshotCommand::MarkupLast, Some(preview));
-                self.screenshot_receipt = None;
-                self.open = false;
-            } else if !receipt.copied && Self::screenshot_receipt_send_rect(pin).contains(p) {
-                self.open_send_menu(Self::screenshot_receipt_send_rect(pin));
-            } else if !receipt.copied && pin.contains(p) {
-                self.queue_screenshot_command(ScreenshotCommand::PinLast, Some(preview));
-                self.screenshot_pin_pending = true;
-            } else if !receipt.copied && copy.contains(p) {
-                self.screenshot_origin = Some(origin);
-                self.queue_screenshot_command(ScreenshotCommand::CopyLast, None);
-                self.screenshot_receipt = None;
-                self.open = false;
-            } else if !receipt.copied && reveal.contains(p) {
-                self.queue_screenshot_command(ScreenshotCommand::RevealLast, None);
-                self.screenshot_receipt = None;
-                self.open = false;
-            } else if dismiss.contains(p) {
-                self.screenshot_receipt = None;
-                self.open = false;
+            let saved = receipt.kept.saved;
+            let layout = self.screenshot_receipt_layout();
+            let action = layout
+                .actions
+                .iter()
+                .find(|(_, rect)| rect.contains(p))
+                .map(|(action, rect)| (*action, *rect));
+            match action {
+                // The thumbnail opens the screenshot for markup, as Edit does.
+                None if saved && layout.preview.contains(p) => {
+                    self.queue_screenshot_command(
+                        ScreenshotCommand::MarkupLast,
+                        Some(layout.preview),
+                    );
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                Some((ReceiptAction::Edit, _)) => {
+                    self.queue_screenshot_command(
+                        ScreenshotCommand::MarkupLast,
+                        Some(layout.preview),
+                    );
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                Some((ReceiptAction::Send, rect)) => self.open_send_menu(rect),
+                Some((ReceiptAction::Copy, _)) => {
+                    self.screenshot_origin = Some(origin);
+                    self.queue_screenshot_command(ScreenshotCommand::CopyLast, None);
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                Some((ReceiptAction::Open, _)) => {
+                    self.queue_screenshot_command(ScreenshotCommand::OpenLast, None);
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                Some((ReceiptAction::Reveal, _)) => {
+                    self.queue_screenshot_command(ScreenshotCommand::RevealLast, None);
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                None if layout.dismiss.contains(p) => {
+                    self.screenshot_receipt = None;
+                    self.open = false;
+                }
+                None => {}
             }
             return;
         }
@@ -2703,28 +3067,29 @@ impl CaptureStudio {
             return;
         }
         if self.delay_rect().contains(p) {
-            self.cycle_delay();
+            self.open_delay_menu();
             return;
         }
-        for (i, r) in self.action_rects().into_iter().enumerate() {
-            if r.area() > 0.0 && r.contains(p) {
-                if self.mode == CaptureMode::Recording && i == 1 {
-                    self.queue_replay_command(ReplayCommand::Start);
-                    return;
+        let (secondary, primary) = self.action_rects();
+        if secondary.area() > 0.0 && secondary.contains(p) {
+            match self.mode {
+                CaptureMode::Screenshot if self.has_capture_source() => {
+                    self.pin_when_saved = true;
+                    self.commit(CaptureDestination::FileAndClipboard);
                 }
-                self.commit(
-                    [
-                        CaptureDestination::Clipboard,
-                        CaptureDestination::FloatingWindow,
-                        if self.mode == CaptureMode::Screenshot {
-                            CaptureDestination::FileAndClipboard
-                        } else {
-                            CaptureDestination::File
-                        },
-                    ][i],
-                );
-                return;
+                CaptureMode::Recording => self.queue_replay_command(ReplayCommand::Start),
+                CaptureMode::Screenshot | CaptureMode::Pip => {}
             }
+            return;
+        }
+        if primary.area() > 0.0 && primary.contains(p) {
+            self.commit(self.primary_destination());
+            return;
+        }
+        // The bars' own ground is not the canvas: a press there never starts
+        // a selection under them.
+        if self.top_bar().contains(p) || self.bottom_bar().contains(p) {
+            return;
         }
         if self.selection_bounds().contains(p) || self.selection_handle_at(p).is_some() {
             if self.source == SourceMode::Window {
@@ -2761,76 +3126,6 @@ impl CaptureStudio {
                 current: p,
             })
         }
-    }
-
-    fn symbol_button(
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        r: Rect,
-        active: bool,
-        hovered: bool,
-        icon: Icon,
-        active_fill: Color,
-    ) {
-        let c = &theme.tokens.colors;
-        let fill = if active {
-            active_fill
-        } else if hovered {
-            c.lift(0.72)
-        } else {
-            c.lift(0.35)
-        };
-        // A resting face keeps a derived edge (HIG §9.5 Button Neutral): the
-        // 0.35 lift alone is a whisper on a white group. The active face is
-        // its own contrast step.
-        if active {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(r, 10.0),
-            );
-        } else {
-            surface::card(scene, t, r, 10.0, fill);
-        }
-        icons::draw_icon(
-            scene,
-            t,
-            Rect::new(
-                r.center().x - 9.0,
-                r.center().y - 9.0,
-                r.center().x + 9.0,
-                r.center().y + 9.0,
-            ),
-            icon,
-            if active || hovered {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
-    fn toggle_button(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        on: bool,
-        hovered: bool,
-        icon: Icon,
-    ) {
-        let face = if on {
-            ButtonFace::new(r, "").role(ButtonRole::Primary)
-        } else {
-            ButtonFace::new(r, "")
-        }
-        .icon(icon)
-        .hovered(hovered);
-        Button::paint(scene, t, tr, theme, &face);
     }
 
     /// The tint a capture in the current mode marks its selection with.
@@ -3150,89 +3445,6 @@ impl CaptureStudio {
         );
     }
 
-    fn delay_button(
-        scene: &mut Scene,
-        t: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        seconds: u8,
-        hovered: bool,
-    ) {
-        let colors = &theme.tokens.colors;
-        let active = seconds > 0;
-        let fill = if active {
-            colors.intent.on_state
-        } else if hovered {
-            colors.lift(0.72)
-        } else {
-            colors.lift(0.35)
-        };
-        if active {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(rect, 10.0),
-            );
-        } else {
-            surface::card(scene, t, rect, 10.0, fill);
-        }
-        icons::draw_icon(
-            scene,
-            t,
-            Rect::from_center_size(
-                Point::new(
-                    rect.center().x - if active { 3.0 } else { 0.0 },
-                    rect.center().y,
-                ),
-                (16.0, 16.0),
-            ),
-            Icon::Timer,
-            if active || hovered {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-            1.5,
-        );
-        if active {
-            // The count is a badge in the button's top-right corner, at the
-            // floor of the type scale rather than a 7 px glyph under it, and
-            // right-aligned by measurement so "3" and "10" share one edge
-            // instead of two hand-picked offsets. At 1× the badge and the
-            // 16 px icon (nudged 3 px left while armed) are disjoint; the
-            // slot itself is a fixed 36 px like the rest of this bar, so at
-            // 2× type the two meet — the bar's scaling is the shell's
-            // decision (see the F5 round-two report, R7).
-            let label = seconds.to_string();
-            let style = theme.text(TextRole::Caption);
-            let (lw, _) = text_renderer.measure_style(
-                &label,
-                None,
-                &style.clone().with_weight(TextWeight::Semibold),
-            );
-            text_renderer.draw_style(
-                scene,
-                &label,
-                colors.text_primary,
-                t.pre_translate((rect.x1 - 3.0 - f64::from(lw), rect.y0 + 2.0).into()),
-                None,
-                &style.clone().with_weight(TextWeight::Semibold),
-            );
-        }
-    }
-
-    fn option_face(rect: Rect, label: &str, icon: Icon, active: bool) -> ButtonFace<'_> {
-        if active {
-            ButtonFace::new(rect, label).role(ButtonRole::Primary)
-        } else {
-            ButtonFace::new(rect, label)
-        }
-        .icon(icon)
-    }
-
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
         let mut p = BezPath::new();
         add_rect(&mut p, self.rect);
@@ -3277,6 +3489,195 @@ impl CaptureStudio {
     /// Paint the delayed-capture countdown after the clean source has been
     /// built. The capsule is therefore visible to the person staging the shot
     /// but can never leak into a screenshot or the first encoded frame.
+    /// The floating bar under the studio's top edge: the mode and the
+    /// source, each a labelled segmented strip.
+    fn draw_top_bar(&self, s: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        use crate::widget::ControlSize;
+        use crate::widget::toggle_group::SegmentedFace;
+        let bar = self.top_bar();
+        let on_bar =
+            crate::widget::paint_surface(s, t, bar, crate::widget::SurfaceLevel::Floating, theme);
+        let theme = &on_bar;
+        let mode_labels = mode_labels();
+        let mode_labels: Vec<&str> = mode_labels.iter().map(String::as_str).collect();
+        let modes = self.mode_rects();
+        let mode = match self.mode {
+            CaptureMode::Screenshot => 0,
+            CaptureMode::Recording => 1,
+            CaptureMode::Pip => 2,
+        };
+        crate::widget::toggle_group::ToggleGroup::paint(
+            s,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&modes, &mode_labels, mode)
+                .control_size(ControlSize::Regular)
+                .hovered(modes.iter().position(|r| r.contains(self.cursor))),
+        );
+        let source_labels = source_labels();
+        let source_labels: Vec<&str> = source_labels.iter().map(String::as_str).collect();
+        let sources = self.source_rects();
+        let source = match self.source {
+            SourceMode::Region => 0,
+            SourceMode::Window => 1,
+            SourceMode::Display => 2,
+            SourceMode::Multi => 3,
+        };
+        crate::widget::toggle_group::ToggleGroup::paint(
+            s,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&sources, &source_labels, source)
+                .control_size(ControlSize::Regular)
+                .hovered(sources.iter().position(|r| r.contains(self.cursor))),
+        );
+    }
+
+    /// The floating bar over the studio's bottom edge: what to include, the
+    /// source's options, and the actions, the primary one last.
+    fn draw_bottom_bar(&self, s: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        use crate::widget::ControlSize;
+        use crate::widget::toggle_group::SegmentedFace;
+        let layout = self.bottom_layout();
+        let Some((_, bar)) = layout.first().copied() else {
+            return;
+        };
+        let on_bar =
+            crate::widget::paint_surface(s, t, bar, crate::widget::SurfaceLevel::Floating, theme);
+        let theme = &on_bar;
+        let ready = self.has_capture_source();
+        let [pointer, system, microphone] = toggle_labels();
+        for (control, rect) in layout.iter().skip(1).copied() {
+            let hovered = rect.contains(self.cursor);
+            match control {
+                BarControl::Bar => {}
+                BarControl::Pointer | BarControl::SystemAudio | BarControl::Microphone => {
+                    let ((label, icon), on) = match control {
+                        BarControl::Pointer => (&pointer, self.include_pointer),
+                        BarControl::SystemAudio => (&system, self.audio.includes_system()),
+                        _ => (&microphone, self.audio.includes_microphone()),
+                    };
+                    let face = ButtonFace::new(rect, label)
+                        .icon(*icon)
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Regular)
+                        .toggled(on)
+                        .hovered(hovered);
+                    Button::paint(s, t, tr, theme, &face);
+                }
+                BarControl::Delay => {
+                    let value = delay_value(self.delay_seconds);
+                    crate::widget::DropdownFace::new(rect, &value)
+                        .leading_icon(Icon::Timer)
+                        .control_size(ControlSize::Regular)
+                        .open(self.delay_menu.is_some())
+                        .hovered(hovered)
+                        .paint(s, t, tr, theme);
+                }
+                BarControl::Options => {
+                    let labels = option_labels(self.source);
+                    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    let options = self.option_rects();
+                    let chosen = if self.source == SourceMode::Multi {
+                        [PipLayout::Auto, PipLayout::Grid, PipLayout::Stack]
+                            .iter()
+                            .position(|layout| *layout == self.pip_layout)
+                    } else {
+                        [
+                            CaptureExtent::Visible,
+                            CaptureExtent::FullApp,
+                            CaptureExtent::WholeStrip,
+                        ]
+                        .iter()
+                        .position(|extent| *extent == self.extent)
+                    };
+                    crate::widget::toggle_group::ToggleGroup::paint(
+                        s,
+                        t,
+                        tr,
+                        theme,
+                        &SegmentedFace::new(&options, &labels, chosen.unwrap_or(0))
+                            .control_size(ControlSize::Regular)
+                            .hovered(options.iter().position(|r| r.contains(self.cursor))),
+                    );
+                }
+                BarControl::Secondary => {
+                    if let Some((label, icon)) = self.secondary_action() {
+                        // Pin needs something to capture; the last 30 seconds
+                        // do not.
+                        let enabled = ready || self.mode == CaptureMode::Recording;
+                        let face = ButtonFace::new(rect, &label)
+                            .icon(icon)
+                            .control_size(ControlSize::Regular)
+                            .hovered(hovered && enabled)
+                            .disabled(!enabled);
+                        Button::paint(s, t, tr, theme, &face);
+                    }
+                }
+                BarControl::Primary => {
+                    let (label, icon) = self.primary_action();
+                    let face = ButtonFace::new(rect, &label)
+                        .icon(icon)
+                        .role(ButtonRole::Primary)
+                        .control_size(ControlSize::Regular)
+                        .hovered(hovered && ready)
+                        .disabled(!ready);
+                    Button::paint(s, t, tr, theme, &face);
+                }
+            }
+        }
+    }
+
+    /// The keys the studio answers, drawn as keycaps under the bottom bar:
+    /// the mode, the source, the delay, the primary action and closing.
+    fn draw_key_hints(&self, s: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        use crate::widget::{KeyHint, KeyHintsFace};
+        let row = self.hint_row();
+        if row.y1 > self.rect.y1 {
+            return;
+        }
+        let mut hints = vec![
+            KeyHint::new(["S", "R", "P"], studio_text("widget-capture-hint-mode")),
+            KeyHint::new(
+                ["1", "2", "3", "4"],
+                studio_text("widget-capture-hint-source"),
+            ),
+        ];
+        if self.mode != CaptureMode::Pip {
+            hints.push(KeyHint::new(
+                ["T"],
+                studio_text("widget-capture-hint-delay"),
+            ));
+        }
+        hints.push(KeyHint::new(["Enter"], self.primary_action().0));
+        hints.push(KeyHint::new(
+            ["Escape"],
+            studio_text("widget-capture-hint-close"),
+        ));
+        let face = KeyHintsFace::new(&hints);
+        let width = face.width(tr, theme);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let backing = Rect::new(
+            row.center().x - width / 2.0 - pad,
+            row.y0,
+            row.center().x + width / 2.0 + pad,
+            row.y1,
+        );
+        crate::widget::floating_surface::paint_rounded(
+            s,
+            t,
+            backing,
+            f64::from(theme.tokens.radii.control),
+            theme,
+        );
+        face.paint(
+            &mut PaintCtx::new(s, t, tr, theme),
+            backing.inset(-pad).inflate(0.0, pad),
+        );
+    }
+
     pub fn draw_countdown_indicator(
         &mut self,
         scene: &mut Scene,
@@ -4217,6 +4618,30 @@ impl CaptureStudio {
         }
     }
 
+    /// Measure the receipt's status and action labels as they are painted,
+    /// so its layout fits them.
+    fn measure_receipt(&mut self, kept: ScreenshotKept, tr: &mut TextRenderer, theme: &Theme) {
+        let status_style = theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Medium);
+        let status = crate::i18n::widget_format(kept.status_key(), &[]);
+        // Rounded up, with a pixel to spare, so the measured text is never
+        // elided by the arithmetic that places it.
+        self.receipt_widths.status =
+            f64::from(tr.measure_style(&status, None, &status_style).0).ceil() + 1.0;
+        for action in ReceiptAction::ALL {
+            let label = action.label();
+            let face = ButtonFace::new(Rect::ZERO, &label)
+                .icon(action.icon())
+                .role(ButtonRole::Plain)
+                .control_size(crate::widget::ControlSize::Small);
+            self.receipt_widths.set(
+                action,
+                (face.intrinsic_width(tr, theme).ceil() + 2.0).max(RECEIPT_BUTTON_W),
+            );
+        }
+    }
+
     fn draw_screenshot_receipt(
         &mut self,
         scene: &mut Scene,
@@ -4227,6 +4652,7 @@ impl CaptureStudio {
         let Some(receipt) = self.screenshot_receipt.clone() else {
             return;
         };
+        self.measure_receipt(receipt.kept, text_renderer, theme);
         let elapsed = receipt.shown_at.elapsed();
         // Choosing a Send target holds the receipt fully shown.
         let choosing = self.send_menu.is_some();
@@ -4263,42 +4689,28 @@ impl CaptureStudio {
         };
         let alpha = crate::motion::unit_opacity(exit);
         let content_alpha = crate::motion::unit_opacity(crate::motion::stage(p, 0.32, 1.0) * exit);
-        let (pill, pin, copy, reveal, dismiss) =
-            self.screenshot_receipt_rects_at(p, receipt.origin);
+        let layout = self.screenshot_receipt_layout_at(p, receipt.origin);
+        let pill = layout.pill;
         let colors = &theme.tokens.colors;
-        let radius = 12.0 + (pill.height() / 2.0 - 12.0) * p;
-        surface::shadow(
-            scene,
-            transform,
-            pill,
-            radius,
-            &theme.tokens.elevation.floating.with_alpha_scaled(alpha),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised.with_alpha_factor(alpha),
-            None,
-            &RoundedRect::from_rect(pill, radius),
-        );
-        let compact = self.status_rect().width() < 1000.0;
-        let border_rect = if compact {
-            pill
-        } else {
-            pill.inflate(-0.5, -0.5)
-        };
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.intent.accent_hover.with_alpha_factor(0.30 * alpha),
-            None,
-            &RoundedRect::from_rect(border_rect, radius - if compact { 0.0 } else { 0.5 }),
-        );
+        // A floating surface: from the thumbnail's corners at the start to
+        // the single-row radius, concentric with its buttons, at rest.
+        let radius = 6.0 + (crate::widget::floating_surface::single_row_radius(theme) - 6.0) * p;
+        let fading = alpha < 1.0;
+        if fading {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &pill.inflate(48.0, 48.0),
+            );
+        }
+        crate::widget::floating_surface::paint_rounded(scene, transform, pill, radius, theme);
 
-        let preview = Self::screenshot_receipt_preview_rect(p, pill, receipt.width, receipt.height);
-        let preview_hovered = !receipt.copied && preview.contains(self.cursor);
-        let clip = RoundedRect::from_rect(preview, 5.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &clip);
+        let preview = layout.preview;
+        let preview_hovered = receipt.kept.saved && preview.contains(self.cursor);
+        let clip = RoundedRect::from_rect(preview, 4.0);
+        scene.push_clip_layer(Fill::NonZero, transform, &clip);
         let columns = usize::from(receipt.preview.columns.max(1));
         let rows = usize::from(receipt.preview.rows.max(1));
         let cell_width = preview.width() / columns as f64;
@@ -4325,224 +4737,90 @@ impl CaptureStudio {
         }
         scene.pop_layer();
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(if preview_hovered { 2.0 } else { 1.0 }),
             transform,
             if preview_hovered {
-                colors
-                    .intent
-                    .accent_hover
-                    .with_alpha_factor(0.72 * content_alpha)
+                colors.text_primary.with_alpha_factor(content_alpha)
             } else {
-                crate::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26)
-                    .with_alpha_factor(alpha)
+                crate::tokens::colors::Colors::hairline_on(
+                    crate::widget::floating_surface::card_ground(theme),
+                    26,
+                )
             },
             None,
-            &RoundedRect::from_rect(preview.inflate(-0.5, -0.5), 4.5),
+            &RoundedRect::from_rect(preview.inflate(-0.5, -0.5), 3.5),
         );
-        if preview_hovered {
-            let badge = Rect::from_center_size(preview.center(), (22.0, 22.0));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors
-                    .surfaces
-                    .raised
-                    .with_alpha_factor(0.88 * content_alpha),
-                None,
-                &RoundedRect::from_rect(badge, badge.height() / 2.0),
-            );
-            icons::draw_icon(
-                scene,
-                transform,
-                badge.inset(-5.0),
-                Icon::Pencil,
-                colors.text_primary.with_alpha_factor(content_alpha),
-                1.45,
-            );
-        }
 
-        let label_x = preview.x1 + 9.0;
-        let action_limit = if receipt.copied {
-            dismiss.x0
-        } else {
-            Self::screenshot_receipt_send_rect(pin).x0
-        };
-        let status = crate::i18n::widget_format(
-            if receipt.copied {
-                "widget-screenshot-copied"
-            } else {
-                "widget-screenshot-saved"
-            },
-            &[],
-        );
-        let status = status.as_str();
-        let dimensions = format!("{} × {}", receipt.width, receipt.height);
-        let (status_width, status_height) = text_renderer.measure_style(
-            status,
-            None,
-            &theme
-                .text(TextRole::Caption)
-                .with_weight(TextWeight::Semibold),
-        );
-        text_renderer.draw_style(
-            scene,
-            status,
-            colors.text_primary.with_alpha_factor(content_alpha),
-            transform
-                .pre_translate((label_x, pill.center().y - f64::from(status_height) / 2.0).into()),
-            None,
-            &theme
-                .text(TextRole::Caption)
-                .with_weight(TextWeight::Semibold),
-        );
-        let dimensions_x = label_x + f64::from(status_width) + 8.0;
-        let dimensions_width = (action_limit - dimensions_x - 5.0).max(0.0);
-        if dimensions_width >= 24.0 {
-            let (_, dimensions_height) = text_renderer.measure_style(
-                &dimensions,
-                Some(dimensions_width as f32),
-                &theme.text(TextRole::Caption),
+        let content_t = transform;
+        if content_alpha > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                content_alpha,
+                content_t,
+                &pill.inflate(24.0, 24.0),
             );
+            let status_style = theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium);
+            let status = crate::i18n::widget_format(receipt.kept.status_key(), &[]);
+            let status_x = preview.x1 + RECEIPT_TEXT_GAP;
+            let actions_x0 = layout
+                .actions
+                .first()
+                .map_or(layout.dismiss.x0, |(_, rect)| rect.x0);
+            let status_room = (actions_x0 - RECEIPT_TEXT_GAP - status_x).max(0.0);
+            let status = fit_label(text_renderer, &status, &status_style, status_room);
+            let status_top = centered_text_top(text_renderer, &status_style, pill.center().y);
             text_renderer.draw_style(
                 scene,
-                &dimensions,
-                colors.text_dim.with_alpha_factor(content_alpha),
-                transform.pre_translate(
-                    (
-                        dimensions_x,
-                        pill.center().y - f64::from(dimensions_height) / 2.0,
-                    )
-                        .into(),
-                ),
-                Some(dimensions_width as f32),
-                &theme.text(TextRole::Caption),
+                &status,
+                colors.text_primary,
+                content_t.pre_translate((status_x, status_top).into()),
+                None,
+                &status_style,
+            );
+            for (action, rect) in &layout.actions {
+                let label = action.label();
+                let hovered =
+                    rect.contains(self.cursor) || (*action == ReceiptAction::Send && choosing);
+                let face = if layout.labelled {
+                    ButtonFace::new(*rect, &label)
+                } else {
+                    ButtonFace::icon_only(*rect, action.icon(), &label)
+                }
+                .icon(action.icon())
+                .role(ButtonRole::Plain)
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(hovered);
+                Button::paint(scene, content_t, text_renderer, theme, &face);
+            }
+            let dismiss_name = crate::i18n::widget_format("widget-capture-dismiss", &[]);
+            let face = crate::widget::IconButton::face(layout.dismiss, Icon::X, &dismiss_name)
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(layout.dismiss.contains(self.cursor));
+            Button::paint(scene, content_t, text_renderer, theme, &face);
+            scene.pop_layer();
+        }
+        if !layout.labelled
+            && let Some((action, rect)) = layout
+                .actions
+                .iter()
+                .find(|(_, rect)| rect.contains(self.cursor))
+        {
+            super::tooltip::draw_hover_tooltip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                &action.label(),
+                self.rect,
             );
         }
-
-        if !receipt.copied {
-            let send = Self::screenshot_receipt_send_rect(pin);
-            let send_active = send.contains(self.cursor) || choosing;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if send_active {
-                    colors
-                        .intent
-                        .accent_hover
-                        .with_alpha_factor(0.20 * content_alpha)
-                } else {
-                    colors.lift(0.35).with_alpha_factor(content_alpha)
-                },
-                None,
-                &RoundedRect::from_rect(send, send.height() / 2.0),
-            );
-            icons::draw_icon(
-                scene,
-                transform,
-                send.inset(-6.0),
-                Icon::Send,
-                colors.text_dim.with_alpha_factor(content_alpha),
-                1.45,
-            );
-            let pin_hovered = pin.contains(self.cursor);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if self.screenshot_pin_pending {
-                    colors
-                        .intent
-                        .accent_hover
-                        .with_alpha_factor(0.28 * content_alpha)
-                } else if pin_hovered {
-                    colors
-                        .intent
-                        .accent_hover
-                        .with_alpha_factor(0.20 * content_alpha)
-                } else {
-                    colors.lift(0.35).with_alpha_factor(content_alpha)
-                },
-                None,
-                &RoundedRect::from_rect(pin, pin.height() / 2.0),
-            );
-            icons::draw_icon(
-                scene,
-                transform,
-                pin.inset(-6.0),
-                Icon::Pin,
-                if self.screenshot_pin_pending {
-                    colors.intent.accent_hover.with_alpha_factor(content_alpha)
-                } else {
-                    colors.text_dim.with_alpha_factor(content_alpha)
-                },
-                1.45,
-            );
-            let copy_hovered = copy.contains(self.cursor);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if copy_hovered {
-                    colors
-                        .intent
-                        .accent_hover
-                        .with_alpha_factor(0.20 * content_alpha)
-                } else {
-                    colors.lift(0.35).with_alpha_factor(content_alpha)
-                },
-                None,
-                &RoundedRect::from_rect(copy, copy.height() / 2.0),
-            );
-            icons::draw_icon(
-                scene,
-                transform,
-                copy.inset(-6.0),
-                Icon::Copy,
-                colors.text_dim.with_alpha_factor(content_alpha),
-                1.45,
-            );
-            let hovered = reveal.contains(self.cursor);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if hovered {
-                    colors
-                        .intent
-                        .accent_hover
-                        .with_alpha_factor(0.20 * content_alpha)
-                } else {
-                    colors.lift(0.35).with_alpha_factor(content_alpha)
-                },
-                None,
-                &RoundedRect::from_rect(reveal, reveal.height() / 2.0),
-            );
-            icons::draw_icon(
-                scene,
-                transform,
-                reveal.inset(-6.0),
-                Icon::FolderOpen,
-                colors.text_dim.with_alpha_factor(content_alpha),
-                1.45,
-            );
+        if fading {
+            scene.pop_layer();
         }
-        let dismiss_hovered = dismiss.contains(self.cursor);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if dismiss_hovered {
-                colors.lift(0.72).with_alpha_factor(content_alpha)
-            } else {
-                Color::TRANSPARENT
-            },
-            None,
-            &RoundedRect::from_rect(dismiss, dismiss.height() / 2.0),
-        );
-        icons::draw_icon(
-            scene,
-            transform,
-            dismiss.inset(-6.0),
-            Icon::X,
-            colors.text_dim.with_alpha_factor(content_alpha),
-            1.4,
-        );
     }
 
     fn draw_replay_indicator(
@@ -4827,15 +5105,15 @@ impl Widget for CaptureStudio {
             })
         };
         let eased = progress;
-        let top_t = t.pre_translate((0.0, -10.0 * f64::from(1.0 - eased)).into());
-        let bottom_t = t.pre_translate((0.0, 12.0 * f64::from(1.0 - eased)).into());
+        // A full-screen surface only fades in (`motion::Appear`): its bars
+        // stand where they rest from the first frame.
+        let _ = eased;
+        let top_t = t;
+        let bottom_t = t;
+        self.measure_bars(tr, theme);
         let c = &theme.tokens.colors;
         let selection_color = self.selection_color(theme);
-        let active_control_fill = match self.mode {
-            CaptureMode::Screenshot => c.intent.accent,
-            CaptureMode::Recording => c.semantic.danger.with_alpha_factor(0.28),
-            CaptureMode::Pip => c.semantic.info.with_alpha_factor(0.32),
-        };
+
         s.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -5022,74 +5300,7 @@ impl Widget for CaptureStudio {
             }
         }
         let top = self.top_bar();
-        for group in [self.mode_group_rect(), self.source_group_rect()] {
-            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.floating);
-            // Raised group under an edge derived from it (HIG §9.5): over the
-            // scrim the fill alone had no closed edge on the light preset.
-            surface::card(s, top_t, group, 14.0, c.surfaces.raised);
-        }
-        let [m0, m1, m2] = self.mode_rects();
-        Self::symbol_button(
-            s,
-            top_t,
-            theme,
-            m0,
-            self.mode == CaptureMode::Screenshot,
-            m0.contains(self.cursor),
-            Icon::Camera,
-            c.intent.accent,
-        );
-        Self::symbol_button(
-            s,
-            top_t,
-            theme,
-            m1,
-            self.mode == CaptureMode::Recording,
-            m1.contains(self.cursor),
-            Icon::Film,
-            c.semantic.danger.with_alpha_factor(0.28),
-        );
-        Self::symbol_button(
-            s,
-            top_t,
-            theme,
-            m2,
-            self.mode == CaptureMode::Pip,
-            m2.contains(self.cursor),
-            Icon::PictureInPicture2,
-            c.semantic.info.with_alpha_factor(0.32),
-        );
-        if self.mode == CaptureMode::Recording {
-            s.fill(
-                Fill::NonZero,
-                top_t,
-                c.semantic.danger,
-                None,
-                &vello::kurbo::Circle::new((m1.x0 + 9.0, m1.y0 + 9.0), 3.0),
-            );
-        }
-        for ((r, m), ic) in self
-            .source_rects()
-            .into_iter()
-            .zip([
-                SourceMode::Region,
-                SourceMode::Window,
-                SourceMode::Display,
-                SourceMode::Multi,
-            ])
-            .zip(Self::SOURCE_ICONS)
-        {
-            Self::symbol_button(
-                s,
-                top_t,
-                theme,
-                r,
-                self.source == m,
-                r.contains(self.cursor),
-                ic,
-                active_control_fill,
-            )
-        }
+        self.draw_top_bar(s, top_t, tr, theme);
         // The pill is the picker's status ("Drag to select"); what a control
         // does is the control's own tooltip, drawn beside it below.
         let context = self.default_picker_context();
@@ -5127,16 +5338,19 @@ impl Widget for CaptureStudio {
                     },
                     1.4,
                 );
-                let suffix = if target.visible_rect.area() <= 0.0 {
-                    " · off-screen"
+                let shown = if target.visible_rect.area() <= 0.0 {
+                    crate::i18n::widget_format(
+                        "widget-capture-offscreen-app",
+                        &[("app", target.title.as_str().into())],
+                    )
                 } else {
-                    ""
+                    target.title.clone()
                 };
                 let title_top =
                     centered_text_top(tr, &theme.text(TextRole::Label), rect.center().y);
                 let shown = fit_label(
                     tr,
-                    &format!("{}{suffix}", target.title),
+                    &shown,
                     &theme.text(TextRole::Label),
                     rect.width() - 40.0,
                 );
@@ -5190,140 +5404,11 @@ impl Widget for CaptureStudio {
                     .with_weight(TextWeight::Medium),
             );
         }
-        let bottom = self.bottom_bar();
-        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.floating);
-        // Raised bar under an edge derived from it (HIG §9.5).
-        surface::card(s, bottom_t, bottom, 14.0, c.surfaces.raised);
-        if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
-            let option_labels = if self.source == SourceMode::Multi {
-                ["Auto", "Grid", "Stack"]
-            } else {
-                ["Selection", "App", "Strip"]
-            };
-            let option_icons = if self.source == SourceMode::Multi {
-                [Icon::WandSparkles, Icon::LayoutGrid, Icon::Layers]
-            } else {
-                [
-                    Icon::SquareDashed,
-                    Icon::AppWindow,
-                    Icon::AlignHorizontalDistributeCenter,
-                ]
-            };
-            for (i, ((r, label), icon)) in self
-                .option_rects()
-                .into_iter()
-                .zip(option_labels)
-                .zip(option_icons)
-                .enumerate()
-            {
-                let active = if self.source == SourceMode::Multi {
-                    self.pip_layout == [PipLayout::Auto, PipLayout::Grid, PipLayout::Stack][i]
-                } else {
-                    self.extent
-                        == [
-                            CaptureExtent::Visible,
-                            CaptureExtent::FullApp,
-                            CaptureExtent::WholeStrip,
-                        ][i]
-                };
-                let face =
-                    Self::option_face(r, label, icon, active).hovered(r.contains(self.cursor));
-                Button::paint(s, bottom_t, tr, theme, &face);
-            }
-        }
-        let pointer = self.pointer_rect();
-        if self.mode != CaptureMode::Pip {
-            Self::toggle_button(
-                s,
-                bottom_t,
-                tr,
-                theme,
-                pointer,
-                self.include_pointer,
-                pointer.contains(self.cursor),
-                Icon::MousePointer2,
-            );
-        }
-        if self.system_audio_available {
-            Self::toggle_button(
-                s,
-                bottom_t,
-                tr,
-                theme,
-                self.system_audio_rect(),
-                self.audio.includes_system(),
-                self.system_audio_rect().contains(self.cursor),
-                Icon::Volume2,
-            );
-        }
-        if self.microphone_available {
-            Self::toggle_button(
-                s,
-                bottom_t,
-                tr,
-                theme,
-                self.microphone_rect(),
-                self.audio.includes_microphone(),
-                self.microphone_rect().contains(self.cursor),
-                Icon::Mic,
-            );
-        }
-        if self.mode != CaptureMode::Pip {
-            Self::delay_button(
-                s,
-                bottom_t,
-                tr,
-                theme,
-                self.delay_rect(),
-                self.delay_seconds,
-                self.delay_rect().contains(self.cursor),
-            );
-        }
-        let action_icons = if self.mode == CaptureMode::Recording {
-            [Icon::Copy, Icon::History, Icon::Download]
-        } else {
-            [Icon::Copy, Icon::PictureInPicture2, Icon::Download]
-        };
-        for (i, (r, icon)) in self
-            .action_rects()
-            .into_iter()
-            .zip(action_icons)
-            .enumerate()
-        {
-            if r.area() <= 0.0 {
-                continue;
-            }
-            let active = self.has_capture_source()
-                || (self.mode == CaptureMode::Recording && self.take.active && i == 2);
-            let hovered = active && r.contains(self.cursor);
-            let emphasized = match self.mode {
-                CaptureMode::Screenshot | CaptureMode::Recording => i == 2,
-                CaptureMode::Pip => i == 1,
-            };
-            let danger_action = self.mode == CaptureMode::Recording && i == 2;
-            let labeled = emphasized || (self.mode == CaptureMode::Recording && i == 1);
-            let label = if labeled {
-                match (self.mode, i) {
-                    (CaptureMode::Recording, 1) => "Last 30s",
-                    (CaptureMode::Screenshot, _) => "Save",
-                    (CaptureMode::Recording, _) if self.take.active => "Stop",
-                    (CaptureMode::Recording, _) => "Record",
-                    (CaptureMode::Pip, _) => "Create PiP",
-                }
-            } else {
-                ""
-            };
-            let face = if danger_action && emphasized {
-                ButtonFace::new(r, label).role(ButtonRole::Destructive)
-            } else if emphasized {
-                ButtonFace::new(r, label).role(ButtonRole::Primary)
-            } else {
-                ButtonFace::new(r, label)
-            }
-            .icon(icon)
-            .hovered(hovered)
-            .disabled(!active);
-            Button::paint(s, bottom_t, tr, theme, &face);
+        self.draw_bottom_bar(s, bottom_t, tr, theme);
+        self.draw_key_hints(s, bottom_t, tr, theme);
+        if let Some(menu) = self.delay_menu.as_mut() {
+            menu.layout_within(tr, theme);
+            menu.draw_overlay(s, t, tr, theme, &PresenceCtx::default());
         }
         if let Some((anchor, label)) = self.control_tip() {
             let side_t = if anchor.y0 < self.rect.center().y {
@@ -5398,13 +5483,13 @@ impl Widget for CaptureStudio {
             }
             match e {
                 WindowEvent::CursorMoved { .. } => {
-                    *ctx.handled = self.screenshot_receipt_rects().0.contains(self.cursor);
+                    *ctx.handled = self.screenshot_receipt_layout().pill.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
-                } if self.screenshot_receipt_rects().0.contains(self.cursor) => {
+                } if self.screenshot_receipt_layout().pill.contains(self.cursor) => {
                     *ctx.handled = true;
                     self.click(self.cursor);
                 }
@@ -5477,6 +5562,15 @@ impl Widget for CaptureStudio {
             return;
         }
         *ctx.handled = true;
+        if self.delay_menu.is_some() {
+            // The delay list is up: every event is its own until it closes.
+            if let WindowEvent::CursorMoved { position, .. } = e {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            self.route_delay_menu_event(e, ctx.scale_factor, *ctx.modifiers, state, ctx.path);
+            return;
+        }
         match e {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = ctx.logical(position);
@@ -5550,13 +5644,7 @@ impl Widget for CaptureStudio {
                         ..
                     },
                 ..
-            } => self.commit(match self.mode {
-                CaptureMode::Pip => CaptureDestination::FloatingWindow,
-                // A screenshot is saved and on the clipboard, as in every
-                // screenshot tool: paste it anywhere at once, find it later.
-                CaptureMode::Screenshot => CaptureDestination::FileAndClipboard,
-                CaptureMode::Recording => CaptureDestination::File,
-            }),
+            } => self.commit(self.primary_destination()),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -5637,27 +5725,15 @@ impl Widget for CaptureStudio {
             return rects;
         }
         if let Some(receipt) = self.screenshot_receipt.as_ref() {
-            let (pill, pin, copy, reveal, dismiss) = self.screenshot_receipt_rects();
-            let mut rects = Vec::with_capacity(5);
-            if !receipt.copied {
-                rects.push((
-                    "capture.open-screenshot".into(),
-                    Self::screenshot_receipt_preview_rect(
-                        Self::screenshot_receipt_motion(receipt),
-                        pill,
-                        receipt.width,
-                        receipt.height,
-                    ),
-                ));
-                rects.push((
-                    "capture.send-screenshot".into(),
-                    Self::screenshot_receipt_send_rect(pin),
-                ));
-                rects.push(("capture.pin-screenshot".into(), pin));
-                rects.push(("capture.copy-screenshot".into(), copy));
-                rects.push(("capture.show-screenshot".into(), reveal));
+            let layout = self.screenshot_receipt_layout();
+            let mut rects = Vec::with_capacity(6);
+            if receipt.kept.saved {
+                rects.push(("capture.screenshot-thumbnail".into(), layout.preview));
             }
-            rects.push(("capture.dismiss-screenshot".into(), dismiss));
+            for (action, rect) in &layout.actions {
+                rects.push((action.test_name().into(), *rect));
+            }
+            rects.push(("capture.dismiss-screenshot".into(), layout.dismiss));
             // The open "Send…" picker's rows, so a pointer test can reach
             // them by name like the receipt's own buttons.
             if let Some(menu) = self.send_menu.as_ref().filter(|menu| menu.is_open()) {
@@ -5721,12 +5797,13 @@ impl Widget for CaptureStudio {
         if self.mode == CaptureMode::Recording && self.microphone_available {
             o.push(("capture.microphone".into(), self.microphone_rect()));
         }
-        let action_names = match self.mode {
-            CaptureMode::Pip => ["copy", "create-pip", "save"],
-            CaptureMode::Recording => ["copy", "start-replay", "save"],
-            CaptureMode::Screenshot => ["copy", "float", "save"],
+        let (secondary, primary) = self.action_rects();
+        let (secondary_name, primary_name) = match self.mode {
+            CaptureMode::Pip => ("", "create-pip"),
+            CaptureMode::Recording => ("start-replay", "save"),
+            CaptureMode::Screenshot => ("pin", "save"),
         };
-        for (n, r) in action_names.into_iter().zip(self.action_rects()) {
+        for (n, r) in [(secondary_name, secondary), (primary_name, primary)] {
             if r.area() > 0.0 {
                 o.push((format!("capture.{n}"), r))
             }
@@ -5777,6 +5854,81 @@ impl Widget for CaptureStudio {
             }
         }
         o
+    }
+}
+
+/// What one event did to an open menu.
+struct MenuOutcome {
+    handled: bool,
+    /// Escape, or a press outside it.
+    dismissed: bool,
+    chosen: Option<usize>,
+}
+
+/// Drive an open menu with one event, the pointer at `cursor`: Escape or a
+/// press outside dismisses it, anything else goes to the menu.
+fn drive_menu(
+    menu: &mut crate::widget::context_menu::ContextMenu,
+    cursor: Point,
+    e: &WindowEvent,
+    (scale, modifiers): (f64, winit::event::Modifiers),
+    (state, path): (&mut crate::widget::Edits<'_>, &ObjId),
+) -> MenuOutcome {
+    let dismissed = MenuOutcome {
+        handled: true,
+        dismissed: true,
+        chosen: None,
+    };
+    if let WindowEvent::KeyboardInput {
+        event:
+            KeyEvent {
+                logical_key: Key::Named(NamedKey::Escape),
+                state: ElementState::Pressed,
+                ..
+            },
+        ..
+    } = e
+    {
+        return dismissed;
+    }
+    if let WindowEvent::MouseInput {
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+        ..
+    } = e
+        && !menu.contains([cursor.x, cursor.y])
+    {
+        // A press outside the menu dismisses it and nothing else.
+        return dismissed;
+    }
+    let mut taffy = TaffyTree::new();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return dismissed;
+    };
+    let mut handled = false;
+    let mut focus = None;
+    menu.handle_event(
+        e,
+        &mut crate::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state: state.reborrow(),
+            path,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
+    );
+    // The menu leaves motion unhandled so presence can follow it; over the
+    // menu the motion is still the menu's, not the widgets below.
+    if matches!(e, WindowEvent::CursorMoved { .. }) && menu.contains([cursor.x, cursor.y]) {
+        handled = true;
+    }
+    MenuOutcome {
+        handled,
+        dismissed: false,
+        chosen: menu.take_selection(),
     }
 }
 
@@ -5986,62 +6138,83 @@ mod tests {
         arrows_navigate_app_targets_scope_and_multi_layout_with_wraparound();
     }
 
+    /// One clear primary action, nothing duplicated, everything labelled:
+    /// in every mode and source the bottom bar holds one primary action and
+    /// at most one secondary, its controls stand apart inside it, the mode
+    /// and source strips name each choice in words, and no label is a glyph.
     #[test]
-    fn every_control_has_a_tooltip_and_none_is_a_decorative_glyph() {
+    fn the_bars_offer_one_primary_action_and_label_every_control() {
         let mut s = CaptureStudio::default();
         s.rect = Rect::new(0., 0., 1400., 800.);
         s.system_audio_available = true;
         s.microphone_available = true;
         s.open();
+        let words = |label: &str| {
+            assert!(label.chars().count() > 1, "{label:?} says what it does");
+            assert!(
+                !label.contains(['\u{2191}', '\u{21b5}', '\u{2318}', '\u{00b7}', '\u{2022}']),
+                "no glyph stands in for a word: {label:?}"
+            );
+        };
+        for label in mode_labels().iter().chain(&source_labels()) {
+            words(label);
+        }
         for mode in [
             CaptureMode::Screenshot,
             CaptureMode::Recording,
             CaptureMode::Pip,
         ] {
             s.set_mode(mode);
-            for source in [SourceMode::Region, SourceMode::Window, SourceMode::Multi] {
+            words(&s.primary_action().0);
+            if let Some((label, _)) = s.secondary_action() {
+                words(&label);
+            }
+            for source in [
+                SourceMode::Region,
+                SourceMode::Window,
+                SourceMode::Display,
+                SourceMode::Multi,
+            ] {
                 s.set_source_mode(source);
-                let mut rects: Vec<Rect> = s.mode_rects().to_vec();
-                rects.extend(s.source_rects());
-                if matches!(source, SourceMode::Window | SourceMode::Multi) {
-                    rects.extend(s.option_rects());
+                for label in option_labels(source) {
+                    words(&label);
                 }
-                if mode != CaptureMode::Pip {
-                    rects.extend([s.pointer_rect(), s.delay_rect()]);
-                }
-                if mode == CaptureMode::Recording {
-                    rects.extend([s.system_audio_rect(), s.microphone_rect()]);
-                }
-                rects.extend(s.action_rects().into_iter().filter(|r| r.area() > 0.0));
-                for rect in rects {
-                    s.cursor = rect.center();
-                    let (anchor, label) = s.control_tip().unwrap_or_else(|| {
-                        panic!("no tooltip for {rect:?} in {mode:?}/{source:?}")
-                    });
-                    assert_eq!(anchor, rect);
-                    assert!(label.chars().count() > 3, "{label:?}");
+                let layout = s.bottom_layout();
+                let bar = layout[0].1;
+                let controls: Vec<(BarControl, Rect)> = layout[1..].to_vec();
+                let primaries = controls
+                    .iter()
+                    .filter(|(c, _)| *c == BarControl::Primary)
+                    .count();
+                assert_eq!(primaries, 1, "{mode:?}/{source:?}: one primary action");
+                assert!(
+                    controls
+                        .iter()
+                        .filter(|(c, _)| *c == BarControl::Secondary)
+                        .count()
+                        <= 1
+                );
+                assert_eq!(
+                    controls.last().map(|(c, _)| *c),
+                    Some(BarControl::Primary),
+                    "the primary action ends the bar"
+                );
+                for (control, rect) in &controls {
                     assert!(
-                        !label.contains(['\u{2191}', '\u{21b5}', '\u{2318}']),
-                        "no glyph characters in a tooltip: {label:?}"
+                        bar.contains(rect.origin()) && bar.contains(Point::new(rect.x1, rect.y1)),
+                        "{control:?} inside the bar"
                     );
                 }
+                for pair in controls.windows(2) {
+                    assert!(pair[0].1.x1 < pair[1].1.x0, "{pair:?} stand apart");
+                }
+                let names: Vec<String> = s.test_rects().into_iter().map(|(n, _)| n).collect();
+                assert!(
+                    !names.iter().any(|n| n == "capture.copy"),
+                    "saving copies too: no separate Copy"
+                );
             }
         }
-        s.cursor = Point::new(700.0, 400.0);
-        assert!(s.control_tip().is_none(), "the canvas has no tooltip");
-    }
-
-    #[test]
-    fn source_and_extent_icons_say_what_they_pick() {
-        assert_eq!(
-            CaptureStudio::SOURCE_ICONS,
-            [
-                Icon::SquareDashed,
-                Icon::AppWindow,
-                Icon::Monitor,
-                Icon::SquaresUnite
-            ]
-        );
     }
 
     #[test]
@@ -6179,10 +6352,9 @@ mod tests {
                 Rect::new(100., 120., 420., 340.),
                 Rect::new(500., 180., 900., 520.),
             ]);
-            let actions = s.action_rects();
-            assert_eq!(actions[0], Rect::ZERO);
-            assert!(actions[1].area() > 0.0);
-            assert_eq!(actions[2], Rect::ZERO);
+            let (secondary, primary) = s.action_rects();
+            assert_eq!(secondary, Rect::ZERO, "picture in picture has one action");
+            assert!(primary.area() > 0.0);
             assert!(
                 !s.include_pointer,
                 "PiP does not inherit screenshot cursor trails"
@@ -6255,7 +6427,11 @@ mod tests {
             s.open();
             s.set_source_mode(SourceMode::Display);
             s.click(s.delay_rect().center());
+            assert!(s.delay_menu.is_some(), "Delay opens its list");
+            assert_eq!(s.delay_seconds, 0, "nothing changes before a pick");
+            s.choose_delay(1);
             assert_eq!(s.delay_seconds, 3);
+            assert!(s.delay_menu.is_none());
 
             s.commit(CaptureDestination::File);
             assert!(s.open, "the lightweight countdown remains present");
@@ -6283,19 +6459,19 @@ mod tests {
             assert!(pointer.x1 < system.x0);
             assert!(system.x1 < microphone.x0);
             assert!(microphone.x1 < delay.x0);
-            assert!(delay.x1 < s.action_rects()[2].x0);
+            assert!(delay.x1 < s.action_rects().0.x0);
+            assert!(s.action_rects().0.x1 < s.action_rects().1.x0);
 
             s.click(system.center());
             assert_eq!(s.audio, AudioCaptureMode::System);
             s.click(microphone.center());
             assert_eq!(s.audio, AudioCaptureMode::SystemAndMicrophone);
 
-            s.click(delay.center());
-            assert_eq!(s.delay_seconds, 3);
-            s.click(delay.center());
-            assert_eq!(s.delay_seconds, 10);
-            s.click(delay.center());
-            assert_eq!(s.delay_seconds, 0);
+            for (row, seconds) in [(1, 3), (2, 5), (3, 10), (0, 0)] {
+                s.click(delay.center());
+                s.choose_delay(row);
+                assert_eq!(s.delay_seconds, seconds);
+            }
         }
 
         fn display_source_is_whole_output_after_picker_controls_leave() {
@@ -6551,7 +6727,7 @@ mod tests {
             s.open();
             s.set_mode(CaptureMode::Recording);
             s.set_source_mode(SourceMode::Display);
-            s.click(s.action_rects()[1].center());
+            s.click(s.action_rects().0.center());
 
             let intent = s.take_intents().pop().expect("replay start intent");
             assert_eq!(intent.replay_command, Some(ReplayCommand::Start));
@@ -6573,91 +6749,121 @@ mod tests {
                     [84, 138, 220, 255],
                 ],
             };
-            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
+            let receipt = |s: &mut CaptureStudio, kept: ScreenshotKept| {
+                s.set_screenshot_finished(kept, 1_584, 716, preview.clone());
+                s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+                s.screenshot_receipt_layout()
+            };
+            s.set_screenshot_finished(
+                ScreenshotKept::SAVED_AND_COPIED,
+                1_584,
+                716,
+                preview.clone(),
+            );
             let origin = s.screenshot_receipt.as_ref().unwrap().origin;
-            let start = s.screenshot_receipt_rects_at(0.0, origin).0;
+            let start = s.screenshot_receipt_layout_at(0.0, origin).pill;
             let start_preview =
                 CaptureStudio::screenshot_receipt_preview_rect(0.0, start, 1_584, 716);
             assert_eq!(start.width(), 156.0);
             assert!((start.height() - 77.091).abs() < 0.01);
             assert_eq!(start_preview.width(), 144.0);
-            assert!((start_preview.height() - 65.091).abs() < 0.01);
             assert!(start.contains(start_preview.origin()));
             assert!(start.contains(Point::new(start_preview.x1, start_preview.y1)));
-            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
+
+            // Saved and copied: one status, and what a file offers, labelled.
+            // No Copy (it is on the clipboard already) and no Pin (Pin is
+            // the studio's own secondary action).
+            let layout = receipt(&mut s, ScreenshotKept::SAVED_AND_COPIED);
             assert!(s.modal_capture().is_none());
-            let (pill, pin, copy, reveal, dismiss) = s.screenshot_receipt_rects();
-            assert_eq!(pill.width(), 354.0);
-            assert!(pill.contains(copy.center()));
-            assert!(pill.contains(pin.center()));
-            assert!(pill.contains(reveal.center()));
-            assert!(pill.contains(dismiss.center()));
-            assert_eq!(pill.x0 - (s.rect.center().x + 180.0), 12.0);
-            assert_eq!(s.test_rects().len(), 6);
-            let preview_rect =
-                CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
-            s.click(preview_rect.center());
+            assert!(layout.labelled, "a wide display shows the labels");
+            let offered: Vec<ReceiptAction> = layout.actions.iter().map(|(a, _)| *a).collect();
+            assert_eq!(
+                offered,
+                [
+                    ReceiptAction::Edit,
+                    ReceiptAction::Open,
+                    ReceiptAction::Reveal,
+                    ReceiptAction::Send
+                ]
+            );
+            for (action, rect) in &layout.actions {
+                assert!(layout.pill.contains(rect.center()), "{action:?} inside");
+            }
+            assert!(layout.pill.contains(layout.dismiss.center()));
+            assert_eq!(layout.pill.x0 - (s.rect.center().x + 180.0), 12.0);
+            assert_eq!(
+                s.test_rects().len(),
+                6,
+                "thumbnail, four actions and Dismiss"
+            );
+            for (action, command) in [
+                (ReceiptAction::Edit, ScreenshotCommand::MarkupLast),
+                (ReceiptAction::Open, ScreenshotCommand::OpenLast),
+                (ReceiptAction::Reveal, ScreenshotCommand::RevealLast),
+            ] {
+                let layout = receipt(&mut s, ScreenshotKept::SAVED_AND_COPIED);
+                let rect = layout
+                    .actions
+                    .iter()
+                    .find(|(a, _)| *a == action)
+                    .map(|(_, r)| *r)
+                    .unwrap();
+                s.click(rect.center());
+                assert_eq!(
+                    s.take_intents().pop().unwrap().screenshot_command,
+                    Some(command),
+                    "{action:?}"
+                );
+                assert!(!s.is_open());
+            }
+            // The thumbnail edits too.
+            let layout = receipt(&mut s, ScreenshotKept::SAVED_AND_COPIED);
+            s.click(layout.preview.center());
             assert_eq!(
                 s.take_intents().pop().unwrap().screenshot_command,
                 Some(ScreenshotCommand::MarkupLast)
             );
-            assert!(!s.is_open());
 
-            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-            let (pill, pin, _, _, _) = s.screenshot_receipt_rects();
-            let pin_spawn = CaptureStudio::screenshot_receipt_preview_rect(1.0, pill, 1_584, 716);
-            s.click(pin.center());
-            let pin_intent = s.take_intents().pop().unwrap();
+            // Saved but the clipboard refused it: Copy is offered first.
+            let layout = receipt(&mut s, ScreenshotKept::SAVED);
             assert_eq!(
-                pin_intent.screenshot_command,
-                Some(ScreenshotCommand::PinLast)
+                layout.actions.first().map(|(a, _)| *a),
+                Some(ReceiptAction::Copy)
             );
-            assert_eq!(pin_intent.regions, vec![pin_spawn]);
-            assert!(
-                s.is_open(),
-                "the receipt proxies the source until shell adoption"
-            );
-            assert!(s.screenshot_pin_pending);
-            s.set_screenshot_pinned();
-            assert!(!s.is_open());
-
-            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-            let (_, _, copy, _, _) = s.screenshot_receipt_rects();
-            s.click(copy.center());
+            s.click(layout.actions[0].1.center());
             assert_eq!(
                 s.take_intents().pop().unwrap().screenshot_command,
                 Some(ScreenshotCommand::CopyLast)
             );
-            assert!(!s.is_open());
-
-            s.set_screenshot_finished(false, 1_584, 716, preview.clone());
-            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-            let (_, _, _, reveal, _) = s.screenshot_receipt_rects();
-            s.click(reveal.center());
-            assert_eq!(
-                s.take_intents().pop().unwrap().screenshot_command,
-                Some(ScreenshotCommand::RevealLast)
-            );
-            assert!(!s.is_open());
 
             // The picker node may be relaid out into a wider content strip after
             // modal chrome closes; status geometry must still use the compositor
-            // viewport supplied by its overlay pass.
+            // viewport supplied by its overlay pass. A copy alone offers only
+            // Dismiss.
             s.rect = Rect::new(100., 43., 1_300., 643.);
             s.set_overlay_rect(Rect::new(0., 0., 800., 600.));
-            s.set_screenshot_finished(true, 800, 600, preview);
-            s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-            let (pill, _, _, _, dismiss) = s.screenshot_receipt_rects();
-            assert_eq!(pill.width(), 394.0);
-            assert_eq!(pill.height(), 28.0);
-            assert_eq!(pill.center().x, 400.0);
-            assert_eq!(pill.y0, 6.0);
-            assert_eq!(s.test_rects().len(), 1, "copied shots need only Dismiss");
-            s.click(dismiss.center());
+            let layout = receipt(&mut s, ScreenshotKept::COPIED);
+            assert!(layout.actions.is_empty());
+            assert_eq!(layout.pill.height(), RECEIPT_HEIGHT);
+            assert_eq!(layout.pill.center().x, 400.0);
+            assert_eq!(layout.pill.y0, RECEIPT_INSET);
+            assert_eq!(s.test_rects().len(), 1, "a copy needs only Dismiss");
+            s.click(layout.dismiss.center());
             assert!(s.take_intents().is_empty());
             assert!(!s.is_open());
+
+            // On a narrow display a saved screenshot's actions keep their
+            // place as icons, each named for its tooltip.
+            s.set_overlay_rect(Rect::new(0., 0., 420., 600.));
+            let layout = receipt(&mut s, ScreenshotKept::SAVED_AND_COPIED);
+            assert!(!layout.labelled);
+            assert!(layout.pill.x0 >= 0.0 && layout.pill.x1 <= 420.0);
+            assert!(
+                layout
+                    .actions
+                    .iter()
+                    .all(|(_, r)| r.width() == RECEIPT_BUTTON_W)
+            );
         }
 
         fn replay_indicator_is_non_modal_and_supports_repeat_save_then_stop() {
@@ -6748,7 +6954,7 @@ mod tests {
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0.0, 0.0, 1_600.0, 900.0);
             s.set_screenshot_finished(
-                true,
+                ScreenshotKept::COPIED,
                 640,
                 360,
                 CapturePreview {
@@ -6941,68 +7147,54 @@ mod tests {
 
     #[test]
     fn top_bar_and_pill_geometry_follow_tokens_and_text_scale() {
-        /// The centring helper follows the renderer's measured line box — not
-        /// the font size, not a fraction of it — so it holds when the renderer
-        /// scales type. `(top + height / 2) == centre` at both scales.
-        /// Both top-bar groups hug their buttons: one inset before the first,
-        /// one after the last, one gap between neighbours — the source group
-        /// used to trail ~50 px of empty pill after its last button and the
-        /// mode group had no trailing inset at all.
-        fn top_bar_groups_hug_their_buttons_with_one_inset() {
-            let mut s = CaptureStudio::default();
-            s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let groups = [
-                (s.mode_group_rect(), s.mode_rects().to_vec()),
-                (s.source_group_rect(), s.source_rects().to_vec()),
-            ];
-            for (group, buttons) in &groups {
-                let first = buttons.first().expect("a group has buttons");
-                let last = buttons.last().expect("a group has buttons");
-                assert!(
-                    (first.x0 - group.x0 - TOP_GROUP_PAD).abs() < 1e-9,
-                    "leading inset of {group:?} is {}",
-                    first.x0 - group.x0
-                );
-                assert!(
-                    (group.x1 - last.x1 - TOP_GROUP_PAD).abs() < 1e-9,
-                    "trailing inset of {group:?} is {}",
-                    group.x1 - last.x1
-                );
-                for pair in buttons.windows(2) {
-                    assert!((pair[1].x0 - pair[0].x1 - TOP_BUTTON_GAP).abs() < 1e-9);
-                }
-                for b in buttons {
-                    assert!((b.width() - TOP_BUTTON_W).abs() < 1e-9);
-                    assert!(
-                        b.height() >= 32.0,
-                        "{b:?} is under the minimum pointer target"
-                    );
-                }
-            }
-            let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
-            assert!((source.x0 - mode.x1 - TOP_GROUP_GAP).abs() < 1e-9);
-            let bar = s.top_bar();
-            assert!((bar.x0 - mode.x0).abs() < 1e-9 && (bar.x1 - source.x1).abs() < 1e-9);
-        }
-
-        /// The bar's geometry is the tokens' arithmetic, not a restatement of
-        /// it: the buttons come out exactly one `bar_height` tall inside a bar
-        /// that is that plus an `s2` inset top and bottom, and the group inset
-        /// and gap are the same `s2`.
-        fn top_bar_buttons_are_one_bar_height_tall_inside_token_insets() {
-            let theme = Theme::dark();
+        /// The top bar is one floating bar holding the mode and the source as
+        /// labelled segmented strips of the regular control height: an `s2`
+        /// inset all round, `s4` between the strips, each strip's segments
+        /// side by side, and every segment wide enough for its label as it
+        /// is painted.
+        fn the_top_bar_holds_two_labelled_strips_inside_token_insets() {
+            let theme = Theme::dark().with_reduce_motion(true);
             let tokens = &theme.tokens;
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
-            let bar = s.top_bar();
-            let button = s.mode_rects()[0];
-            assert!((button.height() - f64::from(tokens.metrics.bar_height)).abs() < 1e-9);
-            assert!(
-                (bar.height() - button.height() - 2.0 * f64::from(tokens.spacing.s2)).abs() < 1e-9
+            s.open();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            Widget::draw(
+                &mut s,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
             );
-            assert!((TOP_GROUP_PAD - f64::from(tokens.spacing.s2)).abs() < 1e-9);
-            assert!((TOP_GROUP_GAP - f64::from(tokens.spacing.s2)).abs() < 1e-9);
-            assert!((TOP_BUTTON_W - bar.height()).abs() < 1e-9);
+            let bar = s.top_bar();
+            let (mode, source) = (s.mode_strip_rect(), s.source_strip_rect());
+            let s2 = f64::from(tokens.spacing.s2);
+            assert!((mode.x0 - bar.x0 - s2).abs() < 1e-9);
+            assert!((bar.x1 - source.x1 - s2).abs() < 1e-9);
+            assert!((mode.y0 - bar.y0 - s2).abs() < 1e-9);
+            assert!((source.x0 - mode.x1 - f64::from(tokens.spacing.s4)).abs() < 1e-9);
+            assert!(
+                (mode.height() - f64::from(tokens.metrics.min_pointer_target)).abs() < 1e-9,
+                "regular controls"
+            );
+            let label = theme.text(TextRole::Label);
+            for (rects, labels) in [
+                (s.mode_rects().to_vec(), mode_labels()),
+                (s.source_rects().to_vec(), source_labels()),
+            ] {
+                for pair in rects.windows(2) {
+                    assert!((pair[1].x0 - pair[0].x1).abs() < 1e-9, "side by side");
+                }
+                for (rect, text) in rects.iter().zip(&labels) {
+                    let (w, _) = tr.measure_style(text, None, &label);
+                    assert!(
+                        rect.width() >= f64::from(w),
+                        "{text:?} fits its segment {rect:?}"
+                    );
+                }
+            }
         }
 
         /// The docked recorder keeps its designed width at 1× and grows only
@@ -7055,35 +7247,6 @@ mod tests {
                 "the 2x pill ({}) did not grow around its content",
                 widths[1]
             );
-        }
-
-        /// The delay count is type, not a glyph decoration: nothing in the
-        /// button paints under the floor of the type scale.
-        fn delay_count_is_painted_at_the_type_floor_or_above() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            for seconds in [3_u8, 10] {
-                let mut scene = Scene::new();
-                CaptureStudio::delay_button(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    Rect::new(0.0, 0.0, 36.0, 36.0),
-                    seconds,
-                    false,
-                );
-                let runs = &scene.encoding().resources.glyph_runs;
-                assert!(!runs.is_empty(), "the count {seconds} was not painted");
-                for run in runs {
-                    assert!(
-                        run.font_size >= theme.tokens.typography.size(TextRole::Caption) - 1e-6,
-                        "count {seconds} painted at {}px, under the {}px floor",
-                        run.font_size,
-                        theme.tokens.typography.size(TextRole::Caption)
-                    );
-                }
-            }
         }
 
         fn label_centring_tracks_the_measured_line_box_at_every_text_scale() {
@@ -7157,158 +7320,10 @@ mod tests {
             );
         }
 
-        /// The floating groups and every resting button inside them keep a
-        /// **visible derived edge** at 1× on both presets, and neighbouring
-        /// buttons keep one `s1` between them (HIG §7, §9.5). Before, the groups
-        /// were bare raised fills over the scrim and the buttons a 0.35 lift
-        /// 2 px apart; on the light preset the shadow tint was `neutral[0]` —
-        /// that palette's paper — so the groups floated with no shadow either.
-        ///
-        /// Writes `$UX1X_F4_OUT/<theme>/capture_studio.png` plus the harness
-        /// inspection when that variable is set; asserts regardless.
-        fn ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets() {
-            use crate::offscreen::OffscreenRenderer;
-            const EDGE_MIN: f64 = 0.008;
-            let (w, h) = (1400.0, 900.0);
-            // Evidence first, for both presets, so a failing assertion on one
-            // preset still leaves the other's PNG and inspection on disk.
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                if let Some(png) = ux1x_out(&theme, "capture_studio.png") {
-                    let harness = crate::headless::FrameHarness::new_with_theme(
-                        crate::State::new(),
-                        Box::new(ux1x_fixture()),
-                        (1400, 900),
-                        theme.clone(),
-                    );
-                    harness.render_png(&png);
-                    if let Ok(json) = harness.inspection_json() {
-                        std::fs::write(png.with_extension("inspection.json"), json)
-                            .expect("write inspection");
-                    }
-                }
-            }
-            for theme in [Theme::dark(), Theme::light()] {
-                let theme = theme.with_reduce_motion(true);
-                let mut s = ux1x_fixture();
-                s.rect = Rect::new(0.0, 0.0, w, h);
-                let mut tr = TextRenderer::new();
-                let presence = PresenceCtx::default();
-                let mut scene = Scene::new();
-                Widget::draw(
-                    &mut s,
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &presence,
-                );
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a 1400x900 test surface"
-                )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32)
-                    .render(&scene, theme.tokens.colors.surfaces.content);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "a 1400x900 test surface"
-                )]
-                let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
-
-                // Group: its left edge against its own fill, on the group's centre
-                // line (clear of the 14 px corner arcs; the first button starts
-                // one `TOP_GROUP_PAD` in, so the columns beside the edge are fill).
-                let group = s.mode_group_rect();
-                let y = group.center().y;
-                let edge = lum(group.x0, y);
-                let fill = lum(group.x0 + 3.0, y);
-                assert!(
-                    (edge - fill).abs() >= EDGE_MIN,
-                    "{}: group edge {edge:.4} vs fill {fill:.4} did not register",
-                    theme.name
-                );
-
-                // Resting button: the second mode button (recording, not the
-                // active screenshot one) — its left edge against its own face.
-                let button = s.mode_rects()[1];
-                let bedge = lum(button.x0, button.center().y);
-                let face = lum(button.x0 + 3.0, button.center().y);
-                assert!(
-                    (bedge - face).abs() >= EDGE_MIN,
-                    "{}: button edge {bedge:.4} vs face {face:.4} did not register",
-                    theme.name
-                );
-
-                // Nothing touches: neighbours keep the smallest token step.
-                let s1 = f64::from(theme.tokens.spacing.s1);
-                for pair in s.mode_rects().windows(2) {
-                    let gap = pair[1].x0 - pair[0].x1;
-                    assert!(
-                        gap >= s1 - 1e-9,
-                        "{}: mode buttons {gap} px apart",
-                        theme.name
-                    );
-                }
-                for pair in s.source_rects().windows(2) {
-                    let gap = pair[1].x0 - pair[0].x1;
-                    assert!(
-                        gap >= s1 - 1e-9,
-                        "{}: source buttons {gap} px apart",
-                        theme.name
-                    );
-                }
-                let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
-                assert!(
-                    source.x0 - mode.x1 >= s1 - 1e-9,
-                    "{}: groups touch",
-                    theme.name
-                );
-            }
-        }
-
-        top_bar_groups_hug_their_buttons_with_one_inset();
-        top_bar_buttons_are_one_bar_height_tall_inside_token_insets();
+        the_top_bar_holds_two_labelled_strips_inside_token_insets();
         docked_recording_pill_grows_with_its_content_above_one_x();
-        delay_count_is_painted_at_the_type_floor_or_above();
         label_centring_tracks_the_measured_line_box_at_every_text_scale();
         docked_recording_label_stays_inside_its_pill_at_two_x();
-        ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets();
-    }
-
-    /// Relative luminance of the composited pixel at (`x`, `y`).
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "probe coordinates are non-negative pixel positions inside the test surface"
-    )]
-    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
-            rgba,
-            w,
-            x.floor() as u32,
-            y.floor() as u32,
-        );
-        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
-    }
-
-    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
-    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
-            .join(theme.name.to_lowercase());
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(name))
-    }
-
-    /// The studio open over an empty desktop in screenshot mode: both
-    /// top-bar groups, the bottom bar with its option and action buttons.
-    fn ux1x_fixture() -> CaptureStudio {
-        let mut s = CaptureStudio::default();
-        s.open();
-        s.set_mode(CaptureMode::Screenshot);
-        s.set_source_mode(SourceMode::Window);
-        s
     }
 
     #[test]
@@ -7324,11 +7339,19 @@ mod tests {
             rows: 1,
             pixels: vec![[20, 40, 60, 255]],
         };
-        s.set_screenshot_finished(false, 800, 600, preview.clone());
+        s.set_screenshot_finished(ScreenshotKept::SAVED_AND_COPIED, 800, 600, preview.clone());
         s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (pill, pin, ..) = s.screenshot_receipt_rects();
-        let send = CaptureStudio::screenshot_receipt_send_rect(pin);
-        assert!(pill.contains(send.center()), "Send sits inside the receipt");
+        let layout = s.screenshot_receipt_layout();
+        let send = layout
+            .actions
+            .iter()
+            .find(|(a, _)| *a == ReceiptAction::Send)
+            .map(|(_, r)| *r)
+            .unwrap();
+        assert!(
+            layout.pill.contains(send.center()),
+            "Send sits inside the receipt"
+        );
         assert!(
             s.test_rects()
                 .iter()
@@ -7374,10 +7397,16 @@ mod tests {
         // Without devices the workspace is still offered, and Escape backs
         // out of the picker without sending.
         s.set_screenshot_send_devices(Vec::new());
-        s.set_screenshot_finished(false, 800, 600, preview);
+        s.set_screenshot_finished(ScreenshotKept::SAVED_AND_COPIED, 800, 600, preview);
         s.screenshot_receipt.as_mut().unwrap().shown_at -= Duration::from_secs(1);
-        let (_, pin, ..) = s.screenshot_receipt_rects();
-        s.click(CaptureStudio::screenshot_receipt_send_rect(pin).center());
+        let send = s
+            .screenshot_receipt_layout()
+            .actions
+            .iter()
+            .find(|(a, _)| *a == ReceiptAction::Send)
+            .map(|(_, r)| *r)
+            .unwrap();
+        s.click(send.center());
         assert_eq!(
             s.send_menu_targets
                 .iter()

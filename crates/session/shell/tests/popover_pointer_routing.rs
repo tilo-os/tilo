@@ -255,7 +255,7 @@ fn the_screenshot_send_menu_keeps_the_pointer_until_a_row_is_picked() {
     );
 
     h.fb.set_capture_screenshot_finished(
-        false,
+        ui::widget::ScreenshotKept::SAVED,
         800,
         600,
         CapturePreview {

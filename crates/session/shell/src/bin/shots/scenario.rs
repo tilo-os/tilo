@@ -181,7 +181,9 @@ pub enum Action {
     CaptureReplayActive(bool),
     CaptureReplayBuffered(u8),
     CaptureReplaySaved,
+    /// A screenshot finished: kept as a file, on the clipboard, or both.
     CaptureScreenshotFinished {
+        saved: bool,
         copied: bool,
     },
     /// Pin the selected-pixels-to-screenshot-receipt morph for deterministic
@@ -217,6 +219,8 @@ pub enum Action {
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
+    /// Three strips in the shown workspace with people on two of them.
+    SeedStripsWithPeople,
     /// Admit a named agent and expose one real foreign surface to its live
     /// session through the compositor-authoritative privacy snapshot.
     SeedAgentScreenExposure {
@@ -482,7 +486,13 @@ pub enum Action {
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
 /// with `test-support` plays motion, so only it reads a cue.
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "test-support"), allow(dead_code))]
+#[cfg_attr(
+    not(feature = "test-support"),
+    allow(
+        dead_code,
+        reason = "only MotionFrames reads a cue, and it needs the test-support clock"
+    )
+)]
 pub enum MotionCue {
     /// Quick Settings opens, as a click on the tray opens it.
     OpenQuickSettings,
@@ -827,8 +837,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureReplaySaved => {
             driver.set_capture_replay_saved();
         }
-        Action::CaptureScreenshotFinished { copied } => {
-            driver.set_capture_screenshot_finished(*copied);
+        Action::CaptureScreenshotFinished { saved, copied } => {
+            driver.set_capture_screenshot_finished(ui::widget::ScreenshotKept {
+                saved: *saved,
+                copied: *copied,
+            });
         }
         Action::CaptureScreenshotTransition(permille) => {
             driver.set_capture_screenshot_transition_progress(*permille);
@@ -868,6 +881,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: attributed history requires a real change authored by Ada"
         ),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedStripsWithPeople => driver.seed_strips_with_people_for_shots(),
         Action::SeedAgentScreenExposure { surface_id } => {
             driver.seed_agent_screen_exposure_for_shots(*surface_id);
         }
@@ -2317,10 +2331,24 @@ fn build_scenarios() -> Vec<Scenario> {
                     steps: 8,
                 },
                 Action::Snapshot("capture-studio"),
-                Action::MoveCursor(Point::new(650.0, 50.0)),
+                Action::MoveCursorNamed("capture.record"),
                 Action::Snapshot("capture-mode-hover"),
-                Action::MoveCursor(Point::new(837.0, 50.0)),
+                Action::MoveCursorNamed("capture.window"),
                 Action::Snapshot("capture-source-hover"),
+                Action::MoveCursorNamed("capture.save"),
+                Action::Snapshot("capture-primary-hover"),
+                Action::ClickNamed("capture.delay"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::Snapshot("capture-delay-list"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("capture.window"),
+                Action::Snapshot("capture-window-source"),
+                Action::ClickNamed("capture.area"),
+                Action::ClickNamed("capture.record"),
+                Action::Snapshot("capture-recording-mode"),
+                Action::ClickNamed("capture.pip"),
+                Action::Snapshot("capture-pip-mode"),
             ],
         },
         Scenario {
@@ -2399,7 +2427,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
                 Action::ClickNamed("capture.screen"),
-                Action::ClickNamed("capture.delay"),
+                Action::Key(Key::Character("t".into())),
                 Action::Snapshot("countdown-armed"),
                 Action::ClickNamed("capture.save"),
                 Action::Snapshot("countdown-live"),
@@ -2418,7 +2446,10 @@ fn build_scenarios() -> Vec<Scenario> {
                     to: Point::new(980.0, 590.0),
                     steps: 8,
                 },
-                Action::CaptureScreenshotFinished { copied: false },
+                Action::CaptureScreenshotFinished {
+                    saved: true,
+                    copied: true,
+                },
                 Action::CaptureScreenshotTransition(0),
                 Action::Snapshot("receipt-enter-000"),
                 Action::CaptureScreenshotTransition(250),
@@ -2429,12 +2460,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("receipt-enter-750"),
                 Action::CaptureScreenshotTransition(1_000),
                 Action::Snapshot("receipt-enter-1000"),
+                Action::MoveCursorNamed("capture.screenshot-thumbnail"),
+                Action::Snapshot("receipt-thumbnail-hover"),
+                Action::MoveCursorNamed("capture.edit-screenshot"),
+                Action::Snapshot("receipt-edit-hover"),
                 Action::MoveCursorNamed("capture.open-screenshot"),
                 Action::Snapshot("receipt-open-hover"),
-                Action::MoveCursorNamed("capture.pin-screenshot"),
-                Action::Snapshot("receipt-pin-hover"),
-                Action::MoveCursorNamed("capture.copy-screenshot"),
-                Action::Snapshot("receipt-copy-hover"),
                 Action::MoveCursorNamed("capture.show-screenshot"),
                 Action::Snapshot("receipt-reveal-hover"),
                 Action::ClickNamed("capture.dismiss-screenshot"),
@@ -2454,7 +2485,10 @@ fn build_scenarios() -> Vec<Scenario> {
                     to: Point::new(620.0, 540.0),
                     steps: 8,
                 },
-                Action::CaptureScreenshotFinished { copied: true },
+                Action::CaptureScreenshotFinished {
+                    saved: false,
+                    copied: true,
+                },
                 Action::CaptureScreenshotTransition(1_000),
                 Action::Snapshot("receipt-copied"),
             ],
@@ -2476,7 +2510,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("capture.save"),
                 Action::Wait(1),
                 Action::CaptureScreenshotTransition(1_000),
-                Action::ClickNamed("capture.open-screenshot"),
+                Action::ClickNamed("capture.edit-screenshot"),
                 Action::Wait(1),
                 Action::Relayout,
                 Action::ScreenshotMarkupTransition(0),
@@ -2622,7 +2656,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("capture.save"),
                 Action::Wait(1),
                 Action::CaptureScreenshotTransition(1_000),
-                Action::ClickNamed("capture.open-screenshot"),
+                Action::ClickNamed("capture.edit-screenshot"),
                 Action::Wait(1),
                 Action::Relayout,
                 Action::ScreenshotMarkupTransition(1_000),
@@ -2672,14 +2706,11 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("capture.picker:Notes"),
                 Action::ClickNamed("capture.extent.full-app"),
                 Action::Snapshot("shot-full-app-ready"),
-                Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.save"),
-                Action::Wait(1),
-                Action::CaptureScreenshotTransition(1_000),
-                Action::Snapshot("shot-full-app-saved"),
-                Action::MoveCursorNamed("capture.pin-screenshot"),
+                Action::MoveCursorNamed("capture.pin"),
                 Action::Snapshot("shot-full-app-pin-hover"),
-                Action::ClickNamed("capture.pin-screenshot"),
+                Action::CaptureExecutionEnabled(true),
+                Action::ClickNamed("capture.pin"),
+                Action::Wait(2),
                 Action::CapturePipTransition(0),
                 Action::Snapshot("shot-full-app-pin-handoff-000"),
                 Action::CapturePipTransition(100),
@@ -2717,8 +2748,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ClickNamed("capture.screen"),
                 Action::ClickNamed("capture.system-audio"),
                 Action::ClickNamed("capture.microphone"),
-                Action::ClickNamed("capture.delay"),
                 Action::Snapshot("record-audio-ready"),
+                Action::ClickNamed("capture.delay"),
+                Action::Snapshot("record-audio-delay-list"),
             ],
         },
         Scenario {
@@ -3330,28 +3362,15 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "strip_switcher",
-            description: "The strip ribbon at rest, a new strip named from the keyboard \
-             (Super+S), the pointer coming to rest on the ribbon opening the card, \
-             renaming the first strip Lounge, and Escape closing it.",
+            description: "The strip switcher on three strips with people on two: the ribbon \
+             at rest with faces beside its marks, the pointer coming to rest on it laying \
+             out the strips' names, a label lit under the pointer, New strip making a \
+             strip and naming it in place, and Super+S for the keyboard.",
             actions: vec![
+                Action::SeedStripsWithPeople,
                 Action::MoveCursor(Point::new(800.0, 500.0)),
                 Action::WaitWall(1700),
                 Action::Snapshot("00-rest"),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(10),
-                Action::Snapshot("01-super-s"),
-                Action::Key(Key::Named(NamedKey::ArrowDown)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Type("Research"),
-                Action::Wait(4),
-                Action::Snapshot("02-naming-a-new-strip"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(4),
-                Action::Snapshot("03-created"),
-                Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(1700),
                 Action::MoveCursor(Point::new(1200.0, 462.0)),
                 Action::WaitWall(8),
                 Action::MoveCursor(Point::new(1350.0, 462.0)),
@@ -3374,18 +3393,63 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::WaitWall(8),
                 Action::WaitWall(120),
                 Action::Wait(10),
-                Action::Snapshot("04-aimed-open"),
-                Action::ClickNamed("strip_switcher.rename.1"),
-                Action::Key(Key::Named(NamedKey::Backspace)),
-                Action::Type("Lounge"),
+                Action::Snapshot("01-hover-labels"),
+                Action::MoveCursorNamed("strip_switcher.strip.2"),
+                Action::WaitWall(200),
                 Action::Wait(4),
-                Action::Snapshot("05-renaming"),
+                Action::Snapshot("02-label-lit"),
+                Action::ClickNamed("strip_switcher.new_strip"),
+                Action::Wait(6),
+                Action::Snapshot("03-new-strip-named-in-place"),
+                Action::Type("Sketches"),
+                Action::Wait(4),
+                Action::Snapshot("04-typing-the-name"),
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Wait(4),
-                Action::Snapshot("06-renamed"),
+                Action::Snapshot("05-named"),
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(300),
+                Action::Modifiers(ModifiersState::SUPER),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(10),
+                Action::Snapshot("06-super-s"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(4),
                 Action::Snapshot("07-closed"),
+            ],
+        },
+        Scenario {
+            name: "strip_switcher_scroll",
+            description: "The wheel over the strip ribbon moving through three strips, \
+             one per notch, down and back up, every few frames recorded.",
+            actions: vec![
+                Action::SeedStripsWithPeople,
+                Action::MoveCursor(Point::new(800.0, 500.0)),
+                Action::WaitWall(300),
+                Action::MoveCursorNamed("strip_switcher"),
+                Action::Wait(2),
+                Action::Snapshot("00-start"),
+                Action::MouseWheel { dx: 0.0, dy: -1.0 },
+                Action::SnapshotSequence {
+                    prefix: "01-down",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::WaitWall(450),
+                Action::MouseWheel { dx: 0.0, dy: -1.0 },
+                Action::SnapshotSequence {
+                    prefix: "02-down",
+                    frames: 8,
+                    gap_frames: 2,
+                },
+                Action::WaitWall(450),
+                Action::MouseWheel { dx: 0.0, dy: 1.0 },
+                Action::SnapshotSequence {
+                    prefix: "03-up",
+                    frames: 8,
+                    gap_frames: 2,
+                },
             ],
         },
         Scenario {

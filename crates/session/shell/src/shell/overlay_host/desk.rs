@@ -811,12 +811,12 @@ impl ShellOverlayHost {
             .filter(|press| press.dragging)
             .zip(self.last_cursor)
             .map(|(press, p)| (press.id, p - press.at));
-        // The strip switcher's card is where the person is looking: a widget
-        // glance under it steps aside while it is open, not over it.
+        // The strip switcher's labels are where the person is looking: a
+        // widget glance under them steps aside while they are open.
         let switcher_card = self
             .strip_switcher
             .is_open()
-            .then(|| self.strip_switcher.layout().card);
+            .then(|| self.strip_switcher.layout().bounds);
         for slot in self.desk.slots.clone() {
             let shown = self
                 .desk

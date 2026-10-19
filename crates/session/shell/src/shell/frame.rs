@@ -4452,13 +4452,13 @@ impl FrameBuilder {
 
     pub fn set_capture_screenshot_finished(
         &mut self,
-        copied: bool,
+        kept: ui::widget::ScreenshotKept,
         width: u32,
         height: u32,
         preview: ui::widget::CapturePreview,
     ) {
         self.host
-            .set_capture_screenshot_finished(copied, width, height, preview);
+            .set_capture_screenshot_finished(kept, width, height, preview);
     }
 
     pub fn set_capture_screenshot_transition_progress(&mut self, permille: u16) {

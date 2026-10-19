@@ -829,6 +829,12 @@ pub struct ShellOverlayHost {
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
     strip_rail_hover: Option<usize>,
+    /// Where the ribbon's long segment stands while it slides to the strip
+    /// that took focus (`ui::motion::ListChange::MOVE`), and the run it
+    /// slides along: a run of another length starts at rest.
+    strip_ribbon_focus: SlidingFocus,
+    /// The same for the rail: the window with focus along the strip shown.
+    strip_rail_focus: SlidingFocus,
     /// Shows the ribbon and the rail while the position they report is
     /// changing, and fades them out once it stops.
     strip_indicators: strip_indicators::StripIndicators,
@@ -2652,6 +2658,8 @@ impl ShellOverlayHost {
             session_action_policy: inputs.session_action_policy,
             strip_ribbon_hover: None,
             strip_rail_hover: None,
+            strip_ribbon_focus: SlidingFocus::default(),
+            strip_rail_focus: SlidingFocus::default(),
             strip_indicators: strip_indicators::StripIndicators::default(),
             top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             strip_pan_active: false,
@@ -3403,15 +3411,21 @@ impl ShellOverlayHost {
         self.bump_chrome();
     }
 
+    /// What the screenshot receipt shown says became of the screenshot:
+    /// saved, copied, or both. `None` while no receipt shows.
+    pub fn capture_screenshot_kept(&self) -> Option<ui::widget::ScreenshotKept> {
+        self.capture_studio.screenshot_kept()
+    }
+
     pub fn set_capture_screenshot_finished(
         &mut self,
-        copied: bool,
+        kept: ui::widget::ScreenshotKept,
         width: u32,
         height: u32,
         preview: ui::widget::CapturePreview,
     ) {
         self.capture_studio
-            .set_screenshot_finished(copied, width, height, preview);
+            .set_screenshot_finished(kept, width, height, preview);
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             if state.overlays.capture {
@@ -11252,13 +11266,14 @@ impl ShellOverlayHost {
         self.strip_switcher.takes_keys()
     }
 
-    /// Whether the pointer is on the open strip switcher's card: its
-    /// presses and motion are the shell's, not the window's beneath it.
+    /// Whether the pointer is on the open strip switcher, its ribbon or one
+    /// of its labels: its presses, wheel and motion are the shell's, not the
+    /// window's beneath it.
     pub fn strip_switcher_captures_pointer(&self) -> bool {
         self.strip_switcher.is_open()
-            && self
-                .last_cursor
-                .is_some_and(|p| self.strip_switcher.layout().card.contains(p))
+            && self.last_cursor.is_some_and(|p| {
+                self.strip_switcher_zone().contains(p) || self.strip_switcher.target_at(p).is_some()
+            })
     }
 
     /// Whether the last draw found the layout it was handed isn't what
@@ -12883,6 +12898,12 @@ impl ShellOverlayHost {
             count,
             focused,
         }
+    }
+
+    /// Where the ribbon's long segment is drawn at `now` while it slides to
+    /// the strip that took focus; `None` at rest.
+    fn strip_ribbon_focus_at(&self, now: Instant) -> Option<f64> {
+        self.strip_ribbon_focus.sliding_at(now)
     }
 
     /// Ribbon geometry for integration tests, so a scenario can click a
@@ -20097,8 +20118,9 @@ impl ShellOverlayHost {
         ctx: &mut ui::widget::EventCtx<'_>,
         children: &[NodeId],
     ) {
-        // First dibs: the open strip switcher floats over the windows.
-        if self.route_strip_switcher_pointer(event) {
+        // First dibs: the open strip switcher floats over the windows, and
+        // the wheel over the ribbon or its labels moves between strips.
+        if self.route_strip_switcher_pointer(event) || self.route_strip_switcher_wheel(event) {
             *ctx.handled = true;
             return;
         }
@@ -23383,6 +23405,8 @@ impl ShellOverlayHost {
         self.transition_started.is_some()
             || self.desk_animating(now)
             || self.strip_indicators.needs_animation_frame_at(now)
+            || self.strip_ribbon_focus.is_moving(now)
+            || self.strip_rail_focus.is_moving(now)
             || self.workspace_switch_holding_at(now)
             || qs_in_flight
             || ws_settings_in_flight
@@ -23599,6 +23623,61 @@ fn half_px_steps(px: f64) -> i64 {
         steps
     } else {
         0
+    }
+}
+
+/// Where the long segment of the strip ribbon or rail stands while focus
+/// moves along it: it slides from the segment it left to the one that took
+/// focus (`ui::motion::ListChange::MOVE`), and a shortcut's move lands at
+/// once. A run that gained or lost a segment starts at rest.
+#[derive(Default)]
+struct SlidingFocus {
+    value: Option<ui::motion::MotionValue<f64>>,
+    count: usize,
+}
+
+impl SlidingFocus {
+    /// Follow a run of `count` segments whose focus is `focused`; returns
+    /// where its long segment is drawn at `now`.
+    fn follow(
+        &mut self,
+        (count, focused): (usize, usize),
+        motion: ui::tokens::EffectiveMotion,
+        now: Instant,
+    ) -> f64 {
+        use ui::motion::{Direction, ListChange, MotionValue};
+        let target = ui::num::f64_of_usize(focused);
+        match self.value.as_mut() {
+            Some(value) if self.count == count => {
+                if value.target() != target {
+                    let timing = ListChange::MOVE.timing(
+                        Direction::Enter,
+                        motion,
+                        ui::motion::input_source(),
+                    );
+                    value.set(target, timing, now);
+                }
+            }
+            _ => {
+                self.value = Some(MotionValue::new(target));
+                self.count = count;
+            }
+        }
+        self.value.as_ref().map_or(target, |value| value.get(now))
+    }
+
+    fn is_moving(&self, now: Instant) -> bool {
+        self.value
+            .as_ref()
+            .is_some_and(|value| value.is_moving(now))
+    }
+
+    /// Where the long segment is drawn at `now`, while it slides.
+    fn sliding_at(&self, now: Instant) -> Option<f64> {
+        self.value
+            .as_ref()
+            .filter(|value| value.is_moving(now))
+            .map(|value| value.get(now))
     }
 }
 
@@ -24376,10 +24455,33 @@ impl ShellOverlayHost {
                 self.draw_strip_switcher_card(scene, transform, text_renderer, theme, now);
                 let ribbon = self.strip_ribbon();
                 let alpha = self.strip_ribbon_alpha(now, theme.reduce_motion);
-                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, alpha);
+                let focus = self.strip_ribbon_focus.follow(
+                    (ribbon.count, ribbon.focused),
+                    theme.motion(),
+                    now,
+                );
+                ribbon.draw_at(
+                    scene,
+                    transform,
+                    theme,
+                    (self.strip_ribbon_lit(), alpha),
+                    focus,
+                );
+                if alpha > 0.0 {
+                    self.draw_strip_ribbon_faces(scene, transform, text_renderer, theme, alpha);
+                }
             }
             let rail = self.strip_rail();
-            rail.draw(scene, transform, theme, self.strip_rail_hover, indicators);
+            let focus =
+                self.strip_rail_focus
+                    .follow((rail.count, rail.focused), theme.motion(), now);
+            rail.draw_at(
+                scene,
+                transform,
+                theme,
+                (self.strip_rail_hover, indicators),
+                focus,
+            );
         }
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
@@ -24471,18 +24573,29 @@ impl ShellOverlayHost {
             ])
         });
         let ribbon_alpha = self.strip_ribbon_alpha(now, theme.reduce_motion);
+        let ribbon_focus = {
+            let ribbon = self.strip_ribbon();
+            self.strip_ribbon_focus
+                .follow((ribbon.count, ribbon.focused), theme.motion(), now)
+        };
+        let rail_focus = {
+            let rail = self.strip_rail();
+            self.strip_rail_focus
+                .follow((rail.count, rail.focused), theme.motion(), now)
+        };
         overlay_part(scene, "shell.strip-ribbon", desktop, |scene| {
             if hidden_by_qs || ribbon_alpha <= 0.0 {
                 return None;
             }
             let ribbon = self.strip_ribbon();
-            ribbon.draw(
+            ribbon.draw_at(
                 scene,
                 transform,
                 theme,
-                self.strip_ribbon_hover,
-                ribbon_alpha,
+                (self.strip_ribbon_lit(), ribbon_alpha),
+                ribbon_focus,
             );
+            self.draw_strip_ribbon_faces(scene, transform, text_renderer, theme, ribbon_alpha);
             self.strip_ribbon_bounds(flags, quick_settings_transition_visible)
                 .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
         });
@@ -24491,7 +24604,13 @@ impl ShellOverlayHost {
                 return None;
             }
             let rail = self.strip_rail();
-            rail.draw(scene, transform, theme, self.strip_rail_hover, indicators);
+            rail.draw_at(
+                scene,
+                transform,
+                theme,
+                (self.strip_rail_hover, indicators),
+                rail_focus,
+            );
             self.strip_rail_bounds()
                 .map(|bounds| vec![transform.transform_rect_bbox(bounds)])
         });
@@ -24531,10 +24650,19 @@ impl ShellOverlayHost {
             return None;
         }
         let ribbon = self.strip_ribbon();
+        // The faces of the people on each strip stand beside its mark.
         strip_segments_bounds([
             ribbon.segment_rect(0),
             ribbon.segment_rect(ribbon.count.saturating_sub(1)),
         ])
+        .map(|bounds| {
+            Rect::new(
+                bounds.x0 - strip_switcher::REST_FACES_REACH,
+                bounds.y0 - strip_switcher::REST_FACES_REACH,
+                bounds.x1,
+                bounds.y1 + strip_switcher::REST_FACES_REACH,
+            )
+        })
     }
 
     /// Visual extent of the strip rail, `None` when it has nothing to show.

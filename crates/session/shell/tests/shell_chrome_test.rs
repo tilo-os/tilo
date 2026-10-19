@@ -296,7 +296,15 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     for name in &names {
         assert!(labels.contains(name), "{name} in {labels:?}");
     }
-    for row in ["Workspace settings…", "Overview", "New desk"] {
+    // Workspaces are switched, made and joined here, and only here: the
+    // strip switcher lists the strips of the workspace shown.
+    for row in [
+        "New workspace",
+        "Join a workspace…",
+        "Workspace settings…",
+        "Overview",
+        "New desk",
+    ] {
         assert!(
             labels.iter().any(|label| label == row),
             "{row} in {labels:?}"

@@ -4135,11 +4135,11 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
 }
 
 /// The strip switcher end to end through the host: Super+S opens it for the
-/// keyboard, its rows create and rename strips through the model's own
-/// commands, switch strips, add a workspace and go back to another, and
-/// Escape closes it.
+/// keyboard, "New strip" makes a strip at once and puts its name in place,
+/// F2 renames, arrows and Enter switch, the wheel over the ribbon moves a
+/// strip per notch, and Escape closes it.
 #[test]
-fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
+fn the_strip_switcher_makes_names_and_switches_strips() {
     use super::strip_switcher::Row;
     let mut h = build_harness();
     let doc = AutoCommit::new();
@@ -4164,7 +4164,8 @@ fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
     h.host.update(&doc, &automerge::ROOT);
     assert_eq!(strips(&h), ["Main"]);
 
-    // Super+S, then the pointer on "New strip".
+    // Super+S, then a click on "New strip": the strip is made and has focus
+    // at once, and its name is in place, selected, to type over.
     assert!(pump(&mut h, &key_press(Key::Character("s".into())), sup));
     assert!(h.chrome.borrow().strip_switcher_open(), "Super+S opens it");
     assert!(h.host.strip_switcher_takes_keys());
@@ -4172,15 +4173,17 @@ fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
         .host
         .strip_switcher_for_tests()
         .layout()
-        .row_rect(Row::NewStrip)
-        .expect("a New strip row");
+        .label_rect(Row::NewStrip)
+        .expect("a New strip label");
     pump(&mut h, &cursor_moved_at(new_strip.center()), none);
     assert!(pump(&mut h, &ui::synthetic_input::mouse_press(), none));
     pump(&mut h, &ui::synthetic_input::mouse_release(), none);
+    assert_eq!(strips(&h), ["Main", "Strip 2"], "made at once");
+    assert_eq!(focused(&h), 1, "and it has focus");
     type_text(&mut h, "Games");
     press(&mut h, Key::Named(NamedKey::Enter));
-    assert_eq!(strips(&h), ["Main", "Games"], "a named strip at the end");
-    assert_eq!(focused(&h), 1, "and it has focus");
+    assert_eq!(strips(&h), ["Main", "Games"], "named in place");
+    assert_eq!(focused(&h), 1);
 
     // F2 on the focused strip renames it; typing replaces the old name.
     pump(&mut h, &key_press(Key::Character("s".into())), sup);
@@ -4202,38 +4205,20 @@ fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
     assert_eq!(focused(&h), 0);
     assert!(!h.chrome.borrow().strip_switcher_open());
 
-    // The last row adds a workspace and shows it; the first workspace row
-    // goes back.
-    let first = h.chrome.borrow().tree().desktop.active;
-    let before = h.chrome.borrow().tree().desktop.workspaces.len();
-    pump(&mut h, &key_press(Key::Character("s".into())), sup);
-    press(&mut h, Key::Named(NamedKey::End));
-    press(&mut h, Key::Named(NamedKey::Enter));
-    let workspaces = h.chrome.borrow().tree().desktop.workspaces.len();
-    assert_eq!(workspaces, before + 1, "one workspace more");
-    assert_ne!(h.chrome.borrow().tree().desktop.active, first);
+    // The wheel over the ribbon: a notch toward the person is the strip
+    // below, away is the strip above.
     h.host.update(&doc, &automerge::ROOT);
-    pump(&mut h, &key_press(Key::Character("s".into())), sup);
-    h.host.update(&doc, &automerge::ROOT);
-    let row = h
-        .host
-        .strip_switcher_for_tests()
-        .layout()
-        .row_rect(Row::Workspace(
-            h.chrome
-                .borrow()
-                .tree()
-                .desktop
-                .workspaces
-                .iter()
-                .position(|w| w.id == first)
-                .expect("the first workspace is listed"),
-        ))
-        .expect("the first workspace's row");
-    pump(&mut h, &cursor_moved_at(row.center()), none);
-    pump(&mut h, &ui::synthetic_input::mouse_press(), none);
-    pump(&mut h, &ui::synthetic_input::mouse_release(), none);
-    assert_eq!(h.chrome.borrow().tree().desktop.active, first);
+    let zone = h.host.strip_switcher_zone();
+    pump(&mut h, &cursor_moved_at(zone.center()), none);
+    assert!(pump(
+        &mut h,
+        &ui::synthetic_input::mouse_wheel(0.0, -1.0),
+        none
+    ));
+    assert_eq!(focused(&h), 1, "down a strip");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    pump(&mut h, &ui::synthetic_input::mouse_wheel(0.0, 1.0), none);
+    assert_eq!(focused(&h), 0, "back up");
 
     // Escape closes it.
     if !h.chrome.borrow().strip_switcher_open() {
@@ -4245,7 +4230,7 @@ fn the_strip_switcher_names_strips_and_switches_strips_and_workspaces() {
 }
 
 /// A pointer that slows to a stop on the strip ribbon opens the strip
-/// switcher's card; one that only sweeps past the edge does not.
+/// switcher's labels; one that only sweeps past the edge does not.
 #[test]
 fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
     let mut h = build_harness();
@@ -4276,7 +4261,7 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
     h.host.update(&doc, &automerge::ROOT);
     assert!(
         h.chrome.borrow().strip_switcher_open(),
-        "resting on the ribbon opens the card"
+        "resting on the ribbon opens the labels"
     );
     // Leaving it closes it.
     pump(

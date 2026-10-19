@@ -232,6 +232,9 @@ pub struct CaptureExecutor {
     /// Live window previews for the switcher and the overview, rendered
     /// here because this is where live geometry and a GPU meet.
     window_previews: super::window_previews::WindowPreviewRenderer,
+    /// The folder the Screenshots folder is made in; `None`: the person's
+    /// Pictures folder (else their home).
+    pictures: Option<PathBuf>,
 }
 
 struct LiveMirror {
@@ -703,7 +706,7 @@ impl CaptureExecutor {
         for command in frame_builder.host_mut().take_screenshot_markup_commands() {
             let outcome = match command {
                 ui::widget::ScreenshotMarkupCommand::Save(export) => {
-                    match next_screenshot_path(self.sequence) {
+                    match next_screenshot_path(self.pictures.clone(), self.sequence) {
                         Ok(path) => {
                             self.sequence = self.sequence.saturating_add(1);
                             // The markup stays open until its pixels are on
@@ -1527,8 +1530,9 @@ impl CaptureExecutor {
                     {
                         return Err("the clipboard refused image data".to_string());
                     }
+                    // The copy is of the saved file: it is both now.
                     frame_builder.set_capture_screenshot_finished(
-                        true,
+                        ui::widget::ScreenshotKept::SAVED_AND_COPIED,
                         width,
                         height,
                         capture_preview(&rgba, width, height),
@@ -1585,7 +1589,12 @@ impl CaptureExecutor {
                     .outcome()
                     == Some(true);
                 if copied {
-                    frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    frame_builder.set_capture_screenshot_finished(
+                        ui::widget::ScreenshotKept::COPIED,
+                        width,
+                        height,
+                        preview,
+                    );
                     play_shutter(frame_builder);
                     Some(CaptureOutcome::Copied { width, height })
                 } else {
@@ -1593,7 +1602,7 @@ impl CaptureExecutor {
                 }
             }
             CaptureDestination::File | CaptureDestination::FileAndClipboard => {
-                let path = match next_screenshot_path(self.sequence) {
+                let path = match next_screenshot_path(self.pictures.clone(), self.sequence) {
                     Ok(path) => path,
                     Err(error) => return receipt.failed(error),
                 };
@@ -1664,7 +1673,15 @@ impl CaptureExecutor {
                     if also_copy && !copied {
                         tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                     }
-                    frame_builder.set_capture_screenshot_finished(copied, width, height, preview);
+                    frame_builder.set_capture_screenshot_finished(
+                        ui::widget::ScreenshotKept {
+                            saved: true,
+                            copied,
+                        },
+                        width,
+                        height,
+                        preview,
+                    );
                     announce
                 }
                 // A portal request heard its failure on the worker.
@@ -2353,8 +2370,8 @@ fn capture_folder(user_dir: Option<PathBuf>, name: &str) -> Result<PathBuf, Stri
         .ok_or_else(|| format!("no home folder to save {name} in"))
 }
 
-fn next_screenshot_path(sequence: u64) -> Result<PathBuf, String> {
-    let root = capture_folder(tilo_paths::picture_dir(), "Screenshots")?;
+fn next_screenshot_path(pictures: Option<PathBuf>, sequence: u64) -> Result<PathBuf, String> {
+    let root = capture_folder(pictures.or_else(tilo_paths::picture_dir), "Screenshots")?;
     // format: machine (file names sort by it and never change with the formats)
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
     let suffix = if sequence == 0 {
@@ -2825,6 +2842,78 @@ mod tests {
             assert_eq!(preview.pixels[18], [0, 150, 60, 255]);
             assert_eq!(preview.pixels[23], [150, 150, 160, 255]);
         }
+    }
+
+    /// A screenshot taken through the main action is a file in Screenshots
+    /// and an image/png offer on the clipboard, with the same pixels, and
+    /// its receipt says it is both.
+    #[test]
+    fn a_screenshot_is_saved_into_screenshots_and_offered_on_the_clipboard() {
+        use crate::compositor::selection::{
+            SelectionStore, Target, clipboard_publication_pending, host_services, mirror_bytes,
+            mirror_mime_types,
+        };
+        let store: crate::compositor::selection::SharedSelection =
+            std::sync::Arc::new(std::sync::Mutex::new(SelectionStore::default()));
+        let _host = ui::host::enter(&host_services(store.clone()));
+        let pictures = tempfile::tempdir().unwrap();
+        let mut executor = CaptureExecutor {
+            pictures: Some(pictures.path().to_path_buf()),
+            ..CaptureExecutor::default()
+        };
+        let mut frame_builder = FrameBuilder::new((800, 600));
+        frame_builder.relayout();
+        let (width, height) = (37_u32, 23_u32);
+        let rgba: Vec<u8> = (0..width * height)
+            .flat_map(|i| {
+                let i = u8::try_from(i % 251).unwrap();
+                [i, 255 - i, i / 2, 255]
+            })
+            .collect();
+        let path = next_screenshot_path(executor.pictures.clone(), 0).unwrap();
+        executor.write_screenshot(
+            ScreenshotToWrite {
+                path: path.clone(),
+                width,
+                height,
+                rgba: rgba.clone(),
+                preview: capture_preview(&rgba, width, height),
+            },
+            true,
+            ScreenshotReceipt::Shell,
+        );
+        let outcomes = executor.finish_io_blocking(&mut frame_builder);
+
+        assert_eq!(outcomes, vec![CaptureOutcome::Saved(path.clone())]);
+        assert!(
+            path.starts_with(pictures.path().join("Screenshots")),
+            "saved in Screenshots: {}",
+            path.display()
+        );
+        let (saved_width, saved_height, saved) = read_png_rgba(&path).unwrap();
+        assert_eq!((saved_width, saved_height), (width, height));
+        assert_eq!(saved, rgba, "the file holds the exact pixels");
+
+        assert!(
+            mirror_mime_types(&store, Target::Clipboard)
+                .iter()
+                .any(|mime| mime == "image/png"),
+            "the clipboard offers image/png"
+        );
+        assert!(
+            clipboard_publication_pending(&store),
+            "and the offer goes out to every app as the selection"
+        );
+        let png = mirror_bytes(&store, Target::Clipboard, "image/png").unwrap();
+        let copied = ui::png::decode_rgba8(&png).unwrap();
+        assert_eq!((copied.width, copied.height), (width, height));
+        assert_eq!(copied.rgba, rgba, "the clipboard holds the same pixels");
+
+        assert_eq!(
+            frame_builder.host().capture_screenshot_kept(),
+            Some(ui::widget::ScreenshotKept::SAVED_AND_COPIED),
+            "the receipt says it was copied and saved"
+        );
     }
 
     /// Pinning the last screenshot decodes it on the capture worker: while

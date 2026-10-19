@@ -1,67 +1,89 @@
-//! The strip switcher: the strip ribbon grown into a list when the pointer
+//! The strip switcher: the strip ribbon grown into labels when the pointer
 //! means it.
 //!
-//! At rest the switcher is the ribbon on the content's right edge: one small
-//! mark per strip, the focused one long. Reaching for it opens a card beside
-//! it, each row level with its ribbon segment so nothing under the pointer
-//! moves: the strip's name, who is on it, a way to rename it, a row that adds
-//! a strip, and below, the workspaces, which are switched less often but
-//! must stay one click away, with New workspace and "Join a workspace…".
+//! It has one job, the strips of the workspace shown. At rest it is the
+//! ribbon on the content's right edge: one small mark per strip, the focused
+//! one long, and the face of whoever else is on a strip beside its mark.
+//! Reaching for it lays each strip's name out as a label level with its mark
+//! (no panel around them: the labels are the switcher), with the faces of the
+//! people on it, and a "New strip" label under the last. Workspaces are not
+//! here; they are switched, made and joined from the workspace menu.
+//!
+//! - A wheel or two-finger scroll over the ribbon or its labels moves to the
+//!   strip above or below.
+//! - A click on a mark or a label moves to that strip.
+//! - A double click on a label renames its strip in place; "New strip" makes
+//!   a strip, moves to it and puts its name in place for typing.
 //!
 //! Opening follows aim, not contact ([`EdgeAim`]): a pointer that comes to
-//! rest on the ribbon opens the card, one sweeping past the screen edge on
-//! its way somewhere else does not, and a row lights under the pointer only
-//! once it settles there. The card closes the moment the pointer leaves it,
-//! unless a name is being typed. Super+S opens it for the keyboard: arrows
-//! choose a row, Enter takes it, F2 renames a strip, Escape closes.
+//! rest on the ribbon opens the labels, one sweeping past the screen edge on
+//! its way somewhere else does not, and a label lights under the pointer only
+//! once it settles there. The labels go the moment the pointer leaves them,
+//! unless a name is being typed: a name field never lives in a surface that
+//! hover alone keeps up, so naming pins the labels until Enter, Escape or a
+//! press elsewhere. Super+S opens them for the keyboard: arrows choose,
+//! Enter takes, F2 renames, Escape closes.
 //!
 //! The state is pure: every method takes the instant it reasons about, and
 //! the host turns a returned [`Command`] into the change on the desktop.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tilo_desktop::text_entry::{self, Edit, Mods};
 use ui::TextRole;
-use ui::chrome::shell::{RIBBON_HIT_W, StripRibbon};
+use ui::chrome::shell::{RIBBON_SEG_W, StripRibbon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::Selection;
 use ui::theme::Theme;
 use ui::widget::{EdgeAim, FieldFace, TextInput, Widget as _};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::shell::i18n::t;
+use crate::shell::i18n::{t, t_args};
 use crate::shell::search::providers::actions::{STRIP_NAME_MAX_CHARS, valid_strip_name};
-use crate::shell::state::{StripId, WorkspaceId};
+use crate::shell::state::StripId;
 use tilo_desktop_model::DesktopTree;
 
-/// The card's width, ribbon band included.
-pub(crate) const CARD_W: f64 = ui::tokens::Layout::BASE.strip_card_width as f64;
-/// A row that is not level with a ribbon segment: the minimum pointer target.
-const ROW_H: f64 = ui::tokens::Spacing::BASE.s8 as f64;
-/// The workspace's name above the strips.
-const HEADER_H: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
-/// "Workspaces" above the workspace rows.
-const SECTION_H: f64 = ui::tokens::Layout::BASE.section_height as f64;
-/// The hairline between the strips and the workspaces, with its air.
-const DIVIDER_H: f64 = ui::tokens::Layout::BASE.divider_height as f64;
-/// Inner padding of the card.
-const PAD: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
-/// The card keeps this far from the content's top and bottom.
-const MARGIN: f64 = ui::tokens::Spacing::BASE.s2 as f64;
-/// A pointer this far outside the card still counts as on it, so a hand that
-/// overshoots a row's edge by a few pixels does not close it.
+/// A label's height: a small control.
+const LABEL_H: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// Room inside a label around its text.
+const LABEL_PAD_X: f64 = ui::tokens::Spacing::BASE.s3 as f64;
+/// Between a label and the ribbon mark it names.
+const LABEL_GAP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// Between the name and the faces inside a label, and the icon and the text
+/// of "New strip".
+const INNER_GAP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// Widest a label grows before its name is elided.
+const LABEL_MAX_W: f64 = ui::tokens::Layout::BASE.strip_card_width as f64 - 32.0;
+/// The name field's width while a strip is named.
+const FIELD_W: f64 = ui::tokens::Layout::BASE.strip_card_width as f64 - 72.0;
+/// "New strip" sits this far under the last strip's pointer row.
+const NEW_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// A pointer this far outside the labels still counts as on them, so a hand
+/// that overshoots a label's edge by a few pixels does not close them.
 const GRACE: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// A face inside a label.
 const AVATAR: f64 = ui::tokens::Layout::BASE.avatar as f64;
 const AVATAR_STEP: f64 = ui::tokens::Layout::BASE.compact_avatar_step as f64;
 /// More people than this on a strip collapse into "+N".
 const AVATARS_SHOWN: usize = 3;
-/// The rename control at a strip row's end.
-const RENAME_W: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// A face beside a ribbon mark at rest: what fits the gutter beside it.
+const REST_FACE: f64 = ui::tokens::Spacing::BASE.s4 as f64;
+/// Between a face at rest and its mark.
+const REST_FACE_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// How far left of the marks the faces at rest reach.
+pub(crate) const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + 2.0;
+/// The icon in "New strip".
+const ICON: f64 = ui::tokens::Metrics::BASE.icon_sm as f64;
+/// One wheel notch, in the pixels a touchpad reports: a strip per notch, and
+/// per a bar's height of two-finger travel.
+const SCROLL_STEP_PX: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+/// A scroll that pauses this long starts counting afresh.
+const SCROLL_IDLE: Duration = Duration::from_millis(400);
 
 /// Someone other than this person, on a strip.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,7 +93,7 @@ pub(crate) struct Person {
     pub color: Color,
 }
 
-/// One strip of the active workspace, as the card lists it.
+/// One strip of the active workspace, as the switcher lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StripEntry {
     pub id: StripId,
@@ -81,30 +103,19 @@ pub(crate) struct StripEntry {
     pub renamable: bool,
 }
 
-/// One workspace, as the card lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceEntry {
-    pub id: WorkspaceId,
-    pub name: String,
-}
-
-/// What the card shows: the active workspace's strips and every workspace.
+/// What the switcher shows: the active workspace's strips.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SwitcherModel {
-    pub workspace_name: String,
     pub strips: Vec<StripEntry>,
     /// Index into `strips` of the strip with focus.
     pub focused: usize,
-    pub workspaces: Vec<WorkspaceEntry>,
-    /// Index into `workspaces` of the one shown.
-    pub active_workspace: usize,
 }
 
 impl SwitcherModel {
-    /// The card's model for `desktop` as the person `local_user` (`own_id`
-    /// on this device) sees it: the strips of the active workspace with the
-    /// others on each, and every workspace. `may_rename` says which strips
-    /// this machine names.
+    /// The switcher's model for `desktop` as the person `local_user`
+    /// (`own_id` on this device) sees it: the strips of the active workspace
+    /// with the others on each. `may_rename` says which strips this machine
+    /// names.
     pub(crate) fn of(
         desktop: &DesktopTree,
         local_user: &str,
@@ -149,26 +160,24 @@ impl SwitcherModel {
             .get(&workspace.id)
             .and_then(|id| strips.iter().position(|strip| strip.id == *id))
             .unwrap_or(0);
-        let workspaces: Vec<WorkspaceEntry> = desktop
-            .workspaces
-            .iter()
-            .map(|w| WorkspaceEntry {
-                id: w.id,
-                name: w.name.clone(),
-            })
-            .collect();
-        let active_workspace = workspaces
-            .iter()
-            .position(|w| w.id == workspace.id)
-            .unwrap_or(0);
-        Self {
-            workspace_name: workspace.name.clone(),
-            strips,
-            focused,
-            workspaces,
-            active_workspace,
+        Self { strips, focused }
+    }
+
+    /// The name a strip shows: its own, or "Strip N" while it has none.
+    fn shown_name(&self, i: usize) -> String {
+        match self.strips.get(i) {
+            Some(strip) if !strip.name.trim().is_empty() => strip.name.clone(),
+            _ => default_strip_name(i),
         }
     }
+}
+
+/// "Strip N", for the strip at index `i`.
+fn default_strip_name(i: usize) -> String {
+    t_args(
+        "strip-switcher-unnamed",
+        &[("number", i.saturating_add(1).to_string().into())],
+    )
 }
 
 /// The strip of the active workspace that `participant_id` has open, from
@@ -194,23 +203,17 @@ fn strip_of(desktop: &DesktopTree, participant_id: &str) -> Option<StripId> {
         .map(|strip| strip.id)
 }
 
-/// A row of the card.
+/// A label of the switcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
     Strip(usize),
     NewStrip,
-    Workspace(usize),
-    NewWorkspace,
-    /// "Join a workspace…": the directory of public workspaces.
-    JoinWorkspace,
 }
 
-/// Something in the card a press lands on.
+/// Something a press lands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Row(Row),
-    /// The rename control of strip `n`.
-    Rename(usize),
     /// The name field while a name is typed.
     Field,
 }
@@ -219,19 +222,20 @@ pub(crate) enum Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
     FocusStrip(StripId),
+    /// Move this many strips down (positive) or up (negative).
+    StepStrip(i32),
+    /// Make a strip with this name and move to it; the switcher then puts
+    /// its name in place for typing.
     CreateStrip(String),
     RenameStrip(StripId, String),
-    SelectWorkspace(WorkspaceId),
-    NewWorkspace,
-    JoinWorkspace,
 }
 
 /// The answer to a press.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Press {
-    /// Not the card's: the press goes on to whatever is under it.
+    /// Not the switcher's: the press goes on to whatever is under it.
     Outside,
-    /// The card's, and nothing for the host to do.
+    /// The switcher's, and nothing for the host to do.
     Consumed,
     Command(Command),
 }
@@ -246,7 +250,6 @@ pub(crate) enum KeyAnswer {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NameTarget {
-    New,
     Rename(StripId),
 }
 
@@ -259,104 +262,104 @@ struct Naming {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Opened {
-    at: Instant,
     /// Opened by Super+S: stays until a choice or Escape, and the keyboard
-    /// is the card's.
+    /// is the switcher's.
     by_keyboard: bool,
 }
 
-/// Where everything in the open card sits.
+/// Where everything in the open switcher sits.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Layout {
-    pub card: Rect,
-    pub header: Rect,
-    pub section: Rect,
-    pub divider_y: f64,
+    /// Every label and the ribbon band: the pointer on this (with
+    /// [`GRACE`]) keeps the labels up.
+    pub bounds: Rect,
+    /// Each label's pointer row: from the label's left edge to the screen
+    /// edge, as tall as its ribbon segment's pointer target, so the rows
+    /// tile with the marks and the way from a label to its mark never
+    /// crosses another row.
     pub rows: Vec<(Row, Rect)>,
+    /// Each label as painted.
+    pub labels: Vec<(Row, Rect)>,
 }
 
 impl Layout {
-    /// Lay the card out beside `ribbon`, inside `content`: each strip row
-    /// level with its segment's pointer target, the add row under the last,
-    /// then the workspaces. Moved as a whole only when it would leave
-    /// `content`.
-    pub(crate) fn beside(model: &SwitcherModel, ribbon: &StripRibbon, content: Rect) -> Self {
-        let x1 = content.x1;
-        let x0 = x1 - CARD_W;
-        let row = |y0: f64, h: f64| Rect::new(x0 + PAD, y0, x1 - PAD, y0 + h);
+    /// Lay the labels out beside `ribbon`, each centred on its segment, right
+    /// edges aligned a gap from the marks; `width` is each label's painted
+    /// width. `focus` is where the ribbon's long segment is drawn while it
+    /// slides to another strip; the labels stay level with their segments as
+    /// they move, and the pointer rows stay where the segments rest.
+    pub(crate) fn beside(
+        model: &SwitcherModel,
+        ribbon: &StripRibbon,
+        focus: Option<f64>,
+        width: impl Fn(Row) -> f64,
+    ) -> Self {
+        let edge = ribbon.content.x1;
+        let x1 = edge - RIBBON_SEG_W - LABEL_GAP;
         let mut rows = Vec::new();
-        let first_y = ribbon
-            .hit_rect(0)
-            .map_or_else(|| content.center().y - ROW_H / 2.0, |r| r.y0);
-        let header = row(first_y - HEADER_H, HEADER_H);
-        let mut y = first_y;
+        let mut labels = Vec::new();
+        let mut bottom = ribbon.content.center().y;
         for i in 0..model.strips.len() {
-            let r = ribbon
-                .hit_rect(i)
-                .map_or_else(|| row(y, ROW_H), |seg| row(seg.y0, seg.height()));
-            y = r.y1;
-            rows.push((Row::Strip(i), r));
+            let seg = match focus {
+                Some(focus) => ribbon.segment_rect_at(i, focus),
+                None => ribbon.segment_rect(i),
+            };
+            let (Some(seg), Some(hit)) = (seg, ribbon.hit_rect(i)) else {
+                continue;
+            };
+            let w = width(Row::Strip(i)).min(LABEL_MAX_W.max(FIELD_W));
+            let cy = seg.center().y;
+            let label = Rect::new(x1 - w, cy - LABEL_H / 2.0, x1, cy + LABEL_H / 2.0);
+            labels.push((Row::Strip(i), label));
+            rows.push((Row::Strip(i), Rect::new(label.x0, hit.y0, edge, hit.y1)));
+            bottom = hit.y1;
         }
-        rows.push((Row::NewStrip, row(y, ROW_H)));
-        y += ROW_H;
-        let divider_y = y + DIVIDER_H / 2.0;
-        y += DIVIDER_H;
-        let section = row(y, SECTION_H);
-        y += SECTION_H;
-        for i in 0..model.workspaces.len() {
-            rows.push((Row::Workspace(i), row(y, ROW_H)));
-            y += ROW_H;
-        }
-        rows.push((Row::NewWorkspace, row(y, ROW_H)));
-        y += ROW_H;
-        rows.push((Row::JoinWorkspace, row(y, ROW_H)));
-        y += ROW_H;
-        let card = Rect::new(x0, header.y0 - PAD, x1, y + PAD);
-        let low = content.y1 - MARGIN - card.y1;
-        let high = content.y0 + MARGIN - card.y0;
-        let dy = if low < 0.0 {
-            low.max(high)
-        } else if high > 0.0 {
-            high
-        } else {
-            0.0
-        };
-        let shift = |r: Rect| Affine::translate((0.0, dy)).transform_rect_bbox(r);
+        let w = width(Row::NewStrip).min(LABEL_MAX_W);
+        let y0 = bottom + NEW_GAP;
+        let label = Rect::new(x1 - w, y0, x1, y0 + LABEL_H);
+        labels.push((Row::NewStrip, label));
+        rows.push((
+            Row::NewStrip,
+            Rect::new(label.x0, bottom, edge, label.y1 + NEW_GAP),
+        ));
+        let bounds = rows
+            .iter()
+            .map(|(_, r)| *r)
+            .chain(labels.iter().map(|(_, r)| *r))
+            .reduce(|a, b| a.union(b))
+            .unwrap_or_default();
         Self {
-            card: shift(card),
-            header: shift(header),
-            section: shift(section),
-            divider_y: divider_y + dy,
-            rows: rows.into_iter().map(|(k, r)| (k, shift(r))).collect(),
+            bounds,
+            rows,
+            labels,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn row_rect(&self, row: Row) -> Option<Rect> {
         self.rows.iter().find(|(k, _)| *k == row).map(|(_, r)| *r)
     }
 
-    /// Where a row's own content ends: before the ribbon band, so a strip
-    /// row's segment stays its marker.
-    fn content_x1(&self) -> f64 {
-        self.card.x1 - RIBBON_HIT_W
+    pub(crate) fn label_rect(&self, row: Row) -> Option<Rect> {
+        self.labels.iter().find(|(k, _)| *k == row).map(|(_, r)| *r)
     }
+}
 
-    /// The rename control of a strip row.
-    pub(crate) fn rename_rect(&self, strip: usize) -> Option<Rect> {
-        let r = self.row_rect(Row::Strip(strip))?;
-        let x1 = self.content_x1() - 2.0;
-        Some(Rect::new(
-            x1 - RENAME_W,
-            r.center().y - RENAME_W / 2.0,
-            x1,
-            r.center().y + RENAME_W / 2.0,
-        ))
-    }
+/// A label's width before its text has been measured: a fair guess from its
+/// length, replaced by the measured width at the first paint.
+fn estimated_width(text: &str, faces: usize) -> f64 {
+    let chars = ui::num::f64_of_usize(text.chars().count());
+    LABEL_PAD_X * 2.0 + chars * 7.0 + faces_width(faces).map_or(0.0, |w| w + INNER_GAP)
+}
 
-    /// Where a row's text sits.
-    fn text_rect(&self, row: Rect) -> Rect {
-        Rect::new(row.x0 + 10.0, row.y0, self.content_x1() - 4.0, row.y1)
+/// The width of a face stack for `people` people, `None` for nobody.
+fn faces_width(people: usize) -> Option<f64> {
+    if people == 0 {
+        return None;
     }
+    let shown = people.min(AVATARS_SHOWN);
+    let slots = shown.saturating_add(usize::from(people > shown));
+    Some(AVATAR + AVATAR_STEP * ui::num::f64_of_usize(slots.saturating_sub(1)))
 }
 
 /// The switcher's state between frames.
@@ -365,19 +368,32 @@ pub(crate) struct StripSwitcher {
     model: SwitcherModel,
     open: Option<Opened>,
     aim: EdgeAim,
-    /// The last pointer position seen, and whether it was in the ribbon band.
+    /// The last pointer position seen.
     pointer: Option<Point>,
     /// Closed with the pointer on the ribbon: it has to leave before resting
-    /// there opens the card again.
+    /// there opens the labels again.
     disarmed: bool,
     /// What the pointer is on, once it has settled there.
     hover: Option<Target>,
-    /// The keyboard's row.
+    /// The keyboard's label.
     selected: Option<Row>,
     naming: Option<Naming>,
+    /// A strip made from "New strip" whose name goes in place for typing as
+    /// soon as the model lists it.
+    name_when_listed: bool,
+    /// The last press on a label and when, for a double click.
+    last_press: Option<(Row, Instant)>,
+    /// Scroll travel not yet turned into a step, and when it last moved.
+    scroll: (f64, Option<Instant>),
+    /// The ribbon the labels were last laid out beside, and where its long
+    /// segment was drawn.
+    ribbon: Option<StripRibbon>,
+    focus: Option<f64>,
+    /// Each label's measured width, by row, as of the last paint.
+    widths: Vec<(Row, f64)>,
     layout: Layout,
-    /// The card fading in (`ui::motion::Ambient`): nothing in it moves, so
-    /// the row under the pointer stays level with its segment.
+    /// The labels fading in (`ui::motion::Ambient`): nothing in them moves,
+    /// so the label under the pointer stays level with its mark.
     fade: ui::motion::Presence,
     /// The motion the person allows, as of the last paint.
     motion: ui::tokens::EffectiveMotion,
@@ -385,26 +401,86 @@ pub(crate) struct StripSwitcher {
 
 impl StripSwitcher {
     pub(crate) fn set_model(&mut self, model: SwitcherModel) {
-        if self.model != model {
-            self.model = model;
-            if let Some(Row::Strip(i) | Row::Workspace(i)) = self.selected {
-                let (strips, workspaces) = (self.model.strips.len(), self.model.workspaces.len());
-                if matches!(self.selected, Some(Row::Strip(_))) && i >= strips
-                    || matches!(self.selected, Some(Row::Workspace(_))) && i >= workspaces
-                {
-                    self.selected = None;
-                }
-            }
+        if self.model == model {
+            return;
         }
+        let known: Vec<StripId> = self.model.strips.iter().map(|s| s.id).collect();
+        self.model = model;
+        if let Some(Row::Strip(i)) = self.selected
+            && i >= self.model.strips.len()
+        {
+            self.selected = None;
+        }
+        if let Some(NameTarget::Rename(id)) = self.naming.as_ref().map(|n| n.target)
+            && !self.model.strips.iter().any(|s| s.id == id)
+        {
+            self.naming = None;
+        }
+        if std::mem::take(&mut self.name_when_listed)
+            && let Some(i) = self
+                .model
+                .strips
+                .iter()
+                .position(|s| !known.contains(&s.id))
+        {
+            self.begin_rename(i);
+        }
+        self.relayout();
     }
 
     pub(crate) fn model(&self) -> &SwitcherModel {
         &self.model
     }
 
-    /// Lay the card out beside `ribbon`; call before hit-testing or drawing.
-    pub(crate) fn place(&mut self, ribbon: &StripRibbon, content: Rect) {
-        self.layout = Layout::beside(&self.model, ribbon, content);
+    /// Lay the labels out beside `ribbon`; call before hit-testing or
+    /// drawing.
+    pub(crate) fn place(&mut self, ribbon: &StripRibbon) {
+        self.ribbon = Some(*ribbon);
+        self.relayout();
+    }
+
+    /// [`Self::place`] while the ribbon's long segment is drawn at `focus`,
+    /// sliding to the strip that took focus.
+    pub(crate) fn place_sliding(&mut self, ribbon: &StripRibbon, focus: Option<f64>) {
+        self.focus = focus;
+        self.place(ribbon);
+    }
+
+    fn relayout(&mut self) {
+        let Some(ribbon) = self.ribbon else {
+            return;
+        };
+        self.layout = Layout::beside(&self.model, &ribbon, self.focus, |row| {
+            self.label_width(row)
+        });
+    }
+
+    /// Whether strip `i`'s name is being typed.
+    fn is_renaming(&self, i: usize) -> bool {
+        match (self.naming.as_ref(), self.model.strips.get(i)) {
+            (Some(naming), Some(strip)) => naming.target == NameTarget::Rename(strip.id),
+            _ => false,
+        }
+    }
+
+    /// A label's width: the field's while it is named, else as measured at
+    /// the last paint, else estimated.
+    fn label_width(&self, row: Row) -> f64 {
+        if let Row::Strip(i) = row
+            && self.is_renaming(i)
+        {
+            return FIELD_W;
+        }
+        if let Some((_, w)) = self.widths.iter().find(|(r, _)| *r == row) {
+            return *w;
+        }
+        match row {
+            Row::Strip(i) => estimated_width(
+                &self.model.shown_name(i),
+                self.model.strips.get(i).map_or(0, |s| s.people.len()),
+            ),
+            Row::NewStrip => estimated_width(&t("strip-switcher-new-strip"), 0) + ICON + INNER_GAP,
+        }
     }
 
     pub(crate) fn layout(&self) -> &Layout {
@@ -415,9 +491,16 @@ impl StripSwitcher {
         self.open.is_some()
     }
 
-    /// The keyboard is the card's: opened by Super+S, or a name is typed.
+    /// The keyboard is the switcher's: opened by Super+S, or a name is
+    /// typed.
     pub(crate) fn takes_keys(&self) -> bool {
         self.naming.is_some() || self.open.is_some_and(|o| o.by_keyboard)
+    }
+
+    /// Whether the labels stay without the pointer on them: opened for the
+    /// keyboard, or a name is being typed.
+    fn pinned(&self) -> bool {
+        self.takes_keys()
     }
 
     #[cfg(test)]
@@ -441,12 +524,21 @@ impl StripSwitcher {
         self.naming.as_ref().map(|n| n.text.as_str())
     }
 
+    /// The strip whose mark the pointer or the keyboard is on, so the ribbon
+    /// lights that mark too.
+    pub(crate) fn lit_strip(&self) -> Option<usize> {
+        if self.open.is_none() {
+            return None;
+        }
+        match (self.hover, self.selected) {
+            (Some(Target::Row(Row::Strip(i))), _) | (_, Some(Row::Strip(i))) => Some(i),
+            _ => None,
+        }
+    }
+
     fn open_at(&mut self, now: Instant, by_keyboard: bool) {
         if self.open.is_none() {
-            self.open = Some(Opened {
-                at: now,
-                by_keyboard,
-            });
+            self.open = Some(Opened { by_keyboard });
             let source = if by_keyboard {
                 ui::tokens::MotionSource::Keyboard
             } else {
@@ -460,36 +552,38 @@ impl StripSwitcher {
         }
     }
 
-    /// Close the card, dropping a name being typed.
+    /// Close the labels, dropping a name being typed.
     pub(crate) fn close(&mut self) {
         if self.open.take().is_some() {
             self.disarmed = true;
         }
         self.naming = None;
+        self.name_when_listed = false;
         self.hover = None;
         self.selected = None;
+        self.last_press = None;
+        self.relayout();
     }
 
-    /// Super+S: open the card for the keyboard on the focused strip, or close
-    /// it when it is open.
+    /// Super+S: open the labels for the keyboard on the focused strip, or
+    /// close them when they are open.
     pub(crate) fn toggle_from_keyboard(&mut self, now: Instant) {
         if self.open.is_some() {
             self.close();
             return;
         }
-        self.open_at(now, true);
-        self.selected = Some(Row::Strip(self.model.focused));
+        self.open_for_choosing(now);
     }
 
-    /// Open the card for choosing, as a menu: on the focused strip, taking
+    /// Open the labels for choosing, as a menu: on the focused strip, taking
     /// the keyboard, and staying until a choice, Escape or a press
-    /// elsewhere. Already open, it stays as it is.
+    /// elsewhere. Already open, they take the keyboard as they are.
     pub(crate) fn open_for_choosing(&mut self, now: Instant) {
-        if self.open.is_some() {
-            return;
-        }
+        let was_open = self.open.is_some();
         self.open_at(now, true);
-        self.selected = Some(Row::Strip(self.model.focused));
+        if !was_open || self.selected.is_none() {
+            self.selected = Some(Row::Strip(self.model.focused));
+        }
     }
 
     /// The pointer moved to `p`; `zone` is the ribbon's pointer band. Returns
@@ -512,10 +606,8 @@ impl StripSwitcher {
                     self.open_at(now, false);
                 }
             }
-            Some(open) => {
-                let on_card =
-                    self.layout.card.inflate(GRACE, GRACE).contains(p) || zone.contains(p);
-                if !on_card && self.naming.is_none() && !open.by_keyboard {
+            Some(_) => {
+                if !self.on_switcher(p, zone) && !self.pinned() {
                     self.close();
                     // Left on purpose: the ribbon may open it again at once.
                     self.disarmed = false;
@@ -526,13 +618,18 @@ impl StripSwitcher {
         before != (self.open, self.hover)
     }
 
+    /// Whether `p` is on the ribbon or the labels, with grace.
+    fn on_switcher(&self, p: Point, zone: Rect) -> bool {
+        zone.contains(p) || self.layout.bounds.inflate(GRACE, GRACE).contains(p)
+    }
+
     /// The pointer left the display.
     pub(crate) fn pointer_left(&mut self) -> bool {
         self.aim.clear();
         self.pointer = None;
         self.disarmed = false;
         let was = self.hover.take().is_some();
-        if self.open.is_some_and(|o| !o.by_keyboard) && self.naming.is_none() {
+        if self.open.is_some() && !self.pinned() {
             self.close();
             self.disarmed = false;
             return true;
@@ -541,8 +638,8 @@ impl StripSwitcher {
     }
 
     /// Advance to `now` without input: a pointer that came to rest on the
-    /// ribbon opens the card, one that settled on a row lights it. Returns
-    /// whether anything visible changed.
+    /// ribbon opens the labels, one that settled on a label lights it.
+    /// Returns whether anything visible changed.
     pub(crate) fn settle(&mut self, now: Instant, zone: Rect) -> bool {
         let before = (self.open, self.hover);
         if self.open.is_none()
@@ -572,12 +669,9 @@ impl StripSwitcher {
         };
     }
 
-    /// What in the open card is at `p`.
+    /// What in the open switcher is at `p`.
     pub(crate) fn target_at(&self, p: Point) -> Option<Target> {
         self.open?;
-        if !self.layout.card.contains(p) {
-            return None;
-        }
         if let Some(naming) = &self.naming
             && self
                 .field_rect(naming.target)
@@ -585,61 +679,49 @@ impl StripSwitcher {
         {
             return Some(Target::Field);
         }
-        let (row, rect) = self
-            .layout
+        self.layout
             .rows
             .iter()
-            .find(|(_, r)| p.y >= r.y0 && p.y < r.y1)
-            .copied()?;
-        if let Row::Strip(i) = row
-            && self.model.strips.get(i).is_some_and(|s| s.renamable)
-            && self.layout.rename_rect(i).is_some_and(|r| r.contains(p))
-        {
-            return Some(Target::Rename(i));
-        }
-        (p.x >= rect.x0 - PAD).then_some(Target::Row(row))
+            .find(|(_, r)| r.contains(p))
+            .map(|(row, _)| Target::Row(*row))
     }
 
-    /// The name field for `target`: over the strip's name, or in the add row.
+    /// The name field for `target`: in place of the strip's label.
     fn field_rect(&self, target: NameTarget) -> Option<Rect> {
-        let row = match target {
-            NameTarget::New => self.layout.row_rect(Row::NewStrip)?,
-            NameTarget::Rename(id) => {
-                let i = self.model.strips.iter().position(|s| s.id == id)?;
-                self.layout.row_rect(Row::Strip(i))?
-            }
-        };
-        let text = self.layout.text_rect(row);
-        Some(Rect::new(
-            text.x0 - 4.0,
-            row.center().y - 13.0,
-            text.x1,
-            row.center().y + 13.0,
-        ))
+        let NameTarget::Rename(id) = target;
+        let i = self.model.strips.iter().position(|s| s.id == id)?;
+        self.layout.label_rect(Row::Strip(i))
     }
 
-    /// A left press at `p`.
-    pub(crate) fn press(&mut self, p: Point) -> Press {
+    /// A left press at `p` at `now`.
+    pub(crate) fn press(&mut self, p: Point, now: Instant) -> Press {
         let Some(target) = self.target_at(p) else {
-            if self.open.is_some() && (self.naming.is_some() || self.takes_keys()) {
-                // A press elsewhere ends naming, and a card opened for the
+            if self.open.is_some() && self.pinned() {
+                // A press elsewhere ends naming, and labels opened for the
                 // keyboard; the press itself still goes where it landed.
                 self.close();
             }
             return Press::Outside;
         };
-        if target == Target::Field {
+        let Target::Row(row) = target else {
+            return Press::Consumed;
+        };
+        let double = self.last_press.is_some_and(|(last, at)| {
+            last == row && now.saturating_duration_since(at) < ui::gesture::multi_click_interval()
+        });
+        self.last_press = Some((row, now));
+        if self.naming.is_some() {
+            // A press on another label ends the name being typed, unsaved,
+            // as Escape would.
+            self.naming = None;
+            self.relayout();
+        }
+        if double && let Row::Strip(i) = row {
+            self.last_press = None;
+            self.begin_rename(i);
             return Press::Consumed;
         }
-        self.naming = None;
-        match target {
-            Target::Field => Press::Consumed,
-            Target::Rename(i) => {
-                self.begin_rename(i);
-                Press::Consumed
-            }
-            Target::Row(row) => self.activate(row),
-        }
+        self.activate(row)
     }
 
     fn activate(&mut self, row: Row) -> Press {
@@ -648,21 +730,12 @@ impl StripSwitcher {
                 Press::Command(Command::FocusStrip(s.id))
             }),
             Row::NewStrip => {
-                self.naming = Some(Naming {
-                    target: NameTarget::New,
-                    text: String::new(),
-                    selection: Selection::collapsed(0),
-                    input: None,
-                });
+                self.name_when_listed = true;
                 self.selected = Some(Row::NewStrip);
-                Press::Consumed
+                Press::Command(Command::CreateStrip(default_strip_name(
+                    self.model.strips.len(),
+                )))
             }
-            Row::Workspace(i) if i == self.model.active_workspace => Press::Consumed,
-            Row::Workspace(i) => self.model.workspaces.get(i).map_or(Press::Consumed, |w| {
-                Press::Command(Command::SelectWorkspace(w.id))
-            }),
-            Row::NewWorkspace => Press::Command(Command::NewWorkspace),
-            Row::JoinWorkspace => Press::Command(Command::JoinWorkspace),
         }
     }
 
@@ -670,7 +743,7 @@ impl StripSwitcher {
         let Some(strip) = self.model.strips.get(i).filter(|s| s.renamable) else {
             return;
         };
-        let text = strip.name.clone();
+        let text = self.model.shown_name(i);
         let end = text.len();
         self.naming = Some(Naming {
             target: NameTarget::Rename(strip.id),
@@ -682,26 +755,67 @@ impl StripSwitcher {
             input: None,
         });
         self.selected = Some(Row::Strip(i));
+        self.relayout();
     }
 
     /// Rename the focused strip from the keyboard or an action that asks
-    /// for the field: opens the card with the name selected.
+    /// for the field: opens the labels with the name selected in place.
     pub(crate) fn rename_focused(&mut self, now: Instant) {
         self.open_at(now, true);
         self.begin_rename(self.model.focused);
     }
 
-    /// Every row in keyboard order.
+    /// A wheel or two-finger scroll over the switcher at `now`: a strip up
+    /// or down per notch, or per [`SCROLL_STEP_PX`] of travel. `None` until
+    /// the travel adds up to a step, or when the pointer is not on it.
+    pub(crate) fn scroll(
+        &mut self,
+        p: Point,
+        delta: MouseScrollDelta,
+        now: Instant,
+        zone: Rect,
+    ) -> Option<Command> {
+        let on = zone.contains(p) || (self.open.is_some() && self.target_at(p).is_some());
+        if !on || self.naming.is_some() {
+            return None;
+        }
+        // Winit's deltas are positive for a wheel turned away from the
+        // person (content moving down): the strip above.
+        let notches = match delta {
+            MouseScrollDelta::LineDelta(x, y) if y.abs() >= x.abs() => f64::from(y),
+            MouseScrollDelta::PixelDelta(d) if d.y.abs() >= d.x.abs() => d.y / SCROLL_STEP_PX,
+            _ => return None,
+        };
+        let (mut travel, last) = self.scroll;
+        // A pause, or a turn the other way, starts counting afresh.
+        if last.is_none_or(|at| now.saturating_duration_since(at) > SCROLL_IDLE)
+            || travel * notches < 0.0
+        {
+            travel = 0.0;
+        }
+        travel += notches;
+        let whole = travel.trunc();
+        self.scroll = (travel - whole, Some(now));
+        if whole.abs() < 1.0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a handful of notches per event, far inside i32"
+        )]
+        let steps = -(whole as i32);
+        Some(Command::StepStrip(steps))
+    }
+
+    /// Every label in keyboard order.
     fn rows_in_order(&self) -> Vec<Row> {
         (0..self.model.strips.len())
             .map(Row::Strip)
             .chain([Row::NewStrip])
-            .chain((0..self.model.workspaces.len()).map(Row::Workspace))
-            .chain([Row::NewWorkspace, Row::JoinWorkspace])
             .collect()
     }
 
-    /// A key while the card takes the keyboard.
+    /// A key while the switcher takes the keyboard.
     pub(crate) fn key(&mut self, key: &Key, mods: ModifiersState) -> KeyAnswer {
         if let Some(naming) = self.naming.as_mut() {
             return match text_entry::apply(
@@ -713,6 +827,8 @@ impl StripSwitcher {
                 Edit::Submit => self.commit_name(),
                 Edit::Cancel => {
                     self.naming = None;
+                    self.end_pointer_selection();
+                    self.relayout();
                     KeyAnswer::Consumed
                 }
                 Edit::Changed => {
@@ -766,21 +882,19 @@ impl StripSwitcher {
                     return KeyAnswer::Consumed;
                 };
                 match self.activate(row) {
+                    // A new strip stays open for its name.
+                    Press::Command(command @ Command::CreateStrip(_)) => {
+                        KeyAnswer::Command(command)
+                    }
                     Press::Command(command) => {
                         self.close();
                         KeyAnswer::Command(command)
                     }
-                    Press::Consumed | Press::Outside => {
-                        if matches!(row, Row::Workspace(_)) {
-                            // The workspace already shown: nothing to switch.
-                            self.close();
-                        }
-                        KeyAnswer::Consumed
-                    }
+                    Press::Consumed | Press::Outside => KeyAnswer::Consumed,
                 }
             }
-            // The card owns the keyboard while open for it; a stray key must
-            // not reach the window behind.
+            // The switcher owns the keyboard while open for it; a stray key
+            // must not reach the window behind.
             _ => KeyAnswer::Consumed,
         }
     }
@@ -802,31 +916,37 @@ impl StripSwitcher {
         let Some(naming) = self.naming.take() else {
             return KeyAnswer::Consumed;
         };
-        let Some(name) = valid_strip_name(&naming.text).map(str::to_owned) else {
-            return KeyAnswer::Consumed;
-        };
+        self.relayout();
         let by_keyboard = self.open.is_some_and(|o| o.by_keyboard);
-        let command = match naming.target {
-            NameTarget::New => Command::CreateStrip(name),
-            NameTarget::Rename(id) => {
-                if self
-                    .model
-                    .strips
-                    .iter()
-                    .any(|s| s.id == id && s.name == name)
-                {
-                    return KeyAnswer::Consumed;
-                }
-                Command::RenameStrip(id, name)
-            }
+        let NameTarget::Rename(id) = naming.target;
+        let name = valid_strip_name(&naming.text).map(str::to_owned);
+        let unchanged = |name: &str| {
+            self.model
+                .strips
+                .iter()
+                .any(|s| s.id == id && s.name == name)
+        };
+        let command = match name {
+            Some(name) if !unchanged(&name) => Some(Command::RenameStrip(id, name)),
+            _ => None,
         };
         if by_keyboard {
             self.close();
+        } else {
+            self.end_pointer_selection();
         }
-        KeyAnswer::Command(command)
+        command.map_or(KeyAnswer::Consumed, KeyAnswer::Command)
     }
 
-    /// Opacity of the card at `now`.
+    /// A name typed after a pointer asked for it is done: the keyboard ring
+    /// the field took goes with it, unless the keyboard opened the labels.
+    fn end_pointer_selection(&mut self) {
+        if !self.open.is_some_and(|o| o.by_keyboard) {
+            self.selected = None;
+        }
+    }
+
+    /// Opacity of the labels at `now`.
     fn alpha(&self, now: Instant) -> f32 {
         if self.open.is_none() {
             return 0.0;
@@ -834,19 +954,54 @@ impl StripSwitcher {
         ui::motion::unit_opacity(self.fade.progress(now))
     }
 
-    /// Frames are owed only while the card fades in.
+    /// Frames are owed only while the labels fade in.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
         self.open.is_some() && self.fade.is_moving(now)
     }
 
-    /// Paint the open card. The host paints the ribbon over its band.
+    /// Measure every label's text as it will be painted, and lay out again
+    /// when a width changed.
+    fn measure_labels(&mut self, cx: &mut DrawCx<'_>) {
+        let mut widths = Vec::with_capacity(self.model.strips.len().saturating_add(1));
+        for i in 0..self.model.strips.len() {
+            let active = i == self.model.focused;
+            let style = label_style(cx.theme, active);
+            let (w, _) = cx
+                .text
+                .measure_style(&self.model.shown_name(i), None, &style);
+            let faces = self
+                .model
+                .strips
+                .get(i)
+                .and_then(|s| faces_width(s.people.len()))
+                .map_or(0.0, |w| w + INNER_GAP);
+            widths.push((
+                Row::Strip(i),
+                (f64::from(w) + LABEL_PAD_X * 2.0 + faces).min(LABEL_MAX_W),
+            ));
+        }
+        let style = label_style(cx.theme, false);
+        let (w, _) = cx
+            .text
+            .measure_style(&t("strip-switcher-new-strip"), None, &style);
+        widths.push((
+            Row::NewStrip,
+            (f64::from(w) + ICON + INNER_GAP + LABEL_PAD_X * 2.0).min(LABEL_MAX_W),
+        ));
+        if widths != self.widths {
+            self.widths = widths;
+            self.relayout();
+        }
+    }
+
+    /// Paint the open labels. The host paints the ribbon over its band.
     pub(crate) fn draw(&mut self, cx: &mut DrawCx<'_>, now: Instant) {
         self.motion = cx.theme.motion();
         let alpha = self.alpha(now);
         if alpha <= 0.0 {
             return;
         }
-        let card = self.layout.card;
+        self.measure_labels(cx);
         let fading = alpha < 1.0;
         if fading {
             cx.scene.push_layer(
@@ -854,25 +1009,12 @@ impl StripSwitcher {
                 BlendMode::default(),
                 alpha,
                 cx.transform,
-                &card.inflate(32.0, 32.0),
+                &self.bounds(),
             );
         }
-        paint_card_ground(cx.scene, cx.transform, cx.theme, card);
-        self.draw_header(cx);
-        for (row, rect) in self.layout.rows.clone() {
-            self.draw_row(cx, row, rect);
+        for (row, rect) in self.layout.labels.clone() {
+            self.draw_label(cx, row, rect);
         }
-        let x_end = self.layout.content_x1();
-        ui::paint::stroke_line(
-            cx.scene,
-            cx.transform,
-            vello::kurbo::Line::new(
-                (card.x0 + 12.0, self.layout.divider_y),
-                (x_end, self.layout.divider_y),
-            ),
-            ui::chrome::chrome_hairline(cx.theme),
-            1.0,
-        );
         if let Some(target) = self.naming.as_ref().map(|n| n.target)
             && let Some(field) = self.field_rect(target)
         {
@@ -883,228 +1025,111 @@ impl StripSwitcher {
         }
     }
 
-    fn draw_header(&self, cx: &mut DrawCx<'_>) {
-        let style = cx.theme.text(TextRole::Caption);
-        let dim = cx.theme.tokens.colors.text_dim;
-        for (text, rect) in [
-            (self.model.workspace_name.clone(), self.layout.header),
-            (t("strip-switcher-workspaces"), self.layout.section),
-        ] {
-            let r = self.layout.text_rect(rect);
-            draw_line(cx, &text, r, dim, &style);
-        }
+    /// Everything the open labels paint, shadows included, for damage.
+    pub(crate) fn bounds(&self) -> Rect {
+        self.layout.bounds.inflate(32.0, 32.0)
     }
 
     fn row_state(&self, row: Row) -> (bool, bool) {
-        let active = match row {
-            Row::Strip(i) => i == self.model.focused,
-            Row::Workspace(i) => i == self.model.active_workspace,
-            Row::NewStrip | Row::NewWorkspace | Row::JoinWorkspace => false,
-        };
-        let hover = self.hover == Some(Target::Row(row))
-            || matches!((self.hover, row), (Some(Target::Rename(a)), Row::Strip(b)) if a == b)
-            || self.selected == Some(row);
+        let active = matches!(row, Row::Strip(i) if i == self.model.focused);
+        let hover = self.hover == Some(Target::Row(row)) || self.selected == Some(row);
         (active, hover)
     }
 
-    /// The row's selection wash and keyboard ring.
-    fn draw_wash(&self, cx: &mut DrawCx<'_>, row: Row, rect: Rect, (active, hover): (bool, bool)) {
-        let wash = Rect::new(
-            rect.x0,
-            rect.y0 + 2.0,
-            self.layout.content_x1(),
-            rect.y1 - 2.0,
+    /// One label: its floating ground, lifted when it is the focused strip
+    /// or under the pointer, the strip's name and who is on it.
+    fn draw_label(&self, cx: &mut DrawCx<'_>, row: Row, rect: Rect) {
+        if let Row::Strip(i) = row
+            && self.is_renaming(i)
+        {
+            // The field takes the label's place.
+            return;
+        }
+        let (active, hover) = self.row_state(row);
+        let radius = ui::chrome::ChromeRole::Control.radius(cx.theme, rect.height());
+        let ground = ui::widget::floating_surface::card_ground(cx.theme);
+        ui::widget::floating_surface::paint_rounded(cx.scene, cx.transform, rect, radius, cx.theme);
+        let shape = RoundedRect::from_rect(rect, radius);
+        let tier = ui::chrome::selection_tier_on(
+            cx.theme,
+            ui::chrome::SelectionState::new(active, hover, false),
+            ground,
         );
-        if active || hover {
-            let tier = ui::chrome::selection_tier(
-                cx.theme,
-                ui::chrome::SelectionState::new(active, hover, false),
-            );
-            let shape = RoundedRect::from_rect(
-                wash,
-                ui::chrome::ChromeRole::Control.radius(cx.theme, wash.height()),
-            );
+        if tier.fill.components[3] > 0.0 {
             cx.scene
                 .fill(Fill::NonZero, cx.transform, tier.fill, None, &shape);
-            if let Some(edge) = tier.border {
-                cx.scene
-                    .stroke(&Stroke::new(1.0), cx.transform, edge, None, &shape);
-            }
         }
         if self.selected == Some(row) {
-            let ring = RoundedRect::from_rect(
-                wash.inflate(1.0, 1.0),
-                ui::chrome::ChromeRole::Control.radius(cx.theme, wash.height()),
-            );
-            ui::paint::stroke_shape(
-                cx.scene,
-                cx.transform,
-                &ring,
-                cx.theme.tokens.colors.border_focus,
-                2.0,
-            );
+            ui::widget::paint_focus_ring(cx.scene, cx.transform, rect, radius, cx.theme);
         }
-    }
-
-    /// A strip's row: its name, who is on it, and the rename control once
-    /// the pointer settles on it.
-    fn draw_strip_row(
-        &self,
-        cx: &mut DrawCx<'_>,
-        i: usize,
-        rect: Rect,
-        (active, hover): (bool, bool),
-    ) {
         let colors = &cx.theme.tokens.colors;
-        let text_rect = self.layout.text_rect(rect);
-        let ink = if active {
+        let ink = if active || hover {
             colors.text_primary
         } else {
             colors.text_dim
         };
-        let mut style = cx.theme.text(TextRole::Label);
-        if active {
-            style = style.with_weight(TextWeight::Semibold);
-        }
-        let Some(strip) = self.model.strips.get(i) else {
-            return;
-        };
-        let renaming = self
-            .naming
-            .as_ref()
-            .is_some_and(|n| n.target == NameTarget::Rename(strip.id));
-        let mut x_end = text_rect.x1;
-        let show_rename = strip.renamable && hover && !renaming;
-        if show_rename && let Some(r) = self.layout.rename_rect(i) {
-            let lit = self.hover == Some(Target::Rename(i));
-            draw_glyph(
-                cx,
-                r,
-                ui::icons::Icon::Pencil,
-                if lit {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-            );
-            x_end = r.x0 - 2.0;
-        }
-        x_end = Self::draw_people(cx, &strip.people, x_end, rect.center().y);
-        if !renaming {
-            let name = if strip.name.trim().is_empty() {
-                crate::shell::i18n::t_args(
-                    "strip-switcher-unnamed",
-                    &[("number", i.saturating_add(1).to_string().into())],
-                )
-            } else {
-                strip.name.clone()
-            };
-            let r = Rect::new(text_rect.x0, rect.y0, x_end - 6.0, rect.y1);
-            draw_line(cx, &name, r, ink, &style);
-        }
-    }
-
-    fn draw_row(&self, cx: &mut DrawCx<'_>, row: Row, rect: Rect) {
-        let (active, hover) = self.row_state(row);
-        let colors = &cx.theme.tokens.colors;
-        self.draw_wash(cx, row, rect, (active, hover));
-        let text_rect = self.layout.text_rect(rect);
-        let ink = if active {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        let mut style = cx.theme.text(TextRole::Label);
-        if active {
-            style = style.with_weight(TextWeight::Semibold);
-        }
+        let inner = Rect::new(
+            rect.x0 + LABEL_PAD_X,
+            rect.y0,
+            rect.x1 - LABEL_PAD_X,
+            rect.y1,
+        );
         match row {
-            Row::Strip(i) => self.draw_strip_row(cx, i, rect, (active, hover)),
-            Row::Workspace(i) => {
-                let Some(workspace) = self.model.workspaces.get(i) else {
+            Row::Strip(i) => {
+                let Some(strip) = self.model.strips.get(i) else {
                     return;
                 };
-                let mut x_end = text_rect.x1;
-                if active {
-                    let r = Rect::from_center_size(
-                        Point::new(text_rect.x1 - 10.0, rect.center().y),
-                        (14.0, 14.0),
-                    );
-                    draw_glyph(cx, r, ui::icons::Icon::Check, colors.text_dim);
-                    x_end = r.x0 - 4.0;
-                }
-                let r = Rect::new(text_rect.x0, rect.y0, x_end, rect.y1);
-                draw_line(cx, &workspace.name, r, ink, &style);
-            }
-            Row::NewStrip | Row::NewWorkspace | Row::JoinWorkspace => {
-                if row == Row::NewStrip
-                    && self
-                        .naming
-                        .as_ref()
-                        .is_some_and(|n| n.target == NameTarget::New)
-                {
-                    return;
-                }
-                let glyph = Rect::from_center_size(
-                    Point::new(text_rect.x0 + 7.0, rect.center().y),
-                    (14.0, 14.0),
-                );
-                let icon = if row == Row::JoinWorkspace {
-                    ui::icons::Icon::Globe
+                let x_end = draw_people(cx, &strip.people, inner.x1, rect.center().y);
+                let text_x1 = if strip.people.is_empty() {
+                    x_end
                 } else {
-                    ui::icons::Icon::Plus
+                    x_end - INNER_GAP
                 };
-                draw_glyph(cx, glyph, icon, colors.text_dim);
-                let label = t(match row {
-                    Row::NewStrip => "strip-switcher-new-strip",
-                    Row::JoinWorkspace => "strip-switcher-join-workspace",
-                    _ => "strip-switcher-new-workspace",
-                });
-                let r = Rect::new(glyph.x1 + 8.0, rect.y0, text_rect.x1, rect.y1);
+                let style = label_style(cx.theme, active);
                 draw_line(
                     cx,
-                    &label,
-                    r,
-                    colors.text_dim,
-                    &cx.theme.text(TextRole::Label),
+                    &self.model.shown_name(i),
+                    Rect::new(inner.x0, rect.y0, text_x1, rect.y1),
+                    ink,
+                    &style,
+                );
+            }
+            Row::NewStrip => {
+                let icon = Rect::from_center_size(
+                    Point::new(inner.x0 + ICON / 2.0, rect.center().y),
+                    (ICON, ICON),
+                );
+                ui::icons::draw_icon(
+                    cx.scene,
+                    cx.transform,
+                    icon,
+                    ui::icons::Icon::Plus,
+                    ink,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+                draw_line(
+                    cx,
+                    &t("strip-switcher-new-strip"),
+                    Rect::new(icon.x1 + INNER_GAP, rect.y0, inner.x1, rect.y1),
+                    ink,
+                    &label_style(cx.theme, false),
                 );
             }
         }
-    }
-
-    /// The others on a strip, right-aligned to end at `x_end`; returns where
-    /// they begin.
-    fn draw_people(cx: &mut DrawCx<'_>, people: &[Person], x_end: f64, cy: f64) -> f64 {
-        if people.is_empty() {
-            return x_end;
-        }
-        let shown = people.len().min(AVATARS_SHOWN);
-        let extra = people.len().saturating_sub(shown);
-        let slots = shown.saturating_add(usize::from(extra > 0));
-        let width = AVATAR + AVATAR_STEP * ui::num::f64_of_usize(slots.saturating_sub(1));
-        let x0 = x_end - width;
-        let ground = cx.theme.tokens.colors.surfaces.overlay;
-        let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);
-        for (k, person) in people.iter().take(shown).enumerate() {
-            let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(k);
-            let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
-            ui::widget::AvatarFace::new(&person.label, &person.id)
-                .presence(person.color)
-                .ringed_on(ground)
-                .paint(&mut paint, rect);
-        }
-        if extra > 0 {
-            let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(shown);
-            let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
-            ui::widget::AvatarFace::paint_overflow(&mut paint, rect, extra, Some(ground));
-        }
-        x0
     }
 
     fn draw_field(&mut self, cx: &mut DrawCx<'_>, field: Rect) {
         let Some(naming) = self.naming.as_mut() else {
             return;
         };
+        let radius = ui::chrome::ChromeRole::Control.radius(cx.theme, field.height());
+        ui::widget::floating_surface::paint_rounded(
+            cx.scene,
+            cx.transform,
+            field,
+            radius,
+            cx.theme,
+        );
         let placeholder = t("strip-switcher-name-placeholder");
         let face = FieldFace::new(field, &naming.text)
             .placeholder(&placeholder)
@@ -1139,27 +1164,59 @@ impl StripSwitcher {
         );
     }
 
-    /// Named targets for harnesses: the card and each row.
+    /// The faces of the others on each strip, beside its mark, while the
+    /// labels are closed: who is where shows at a glance, as faces.
+    pub(crate) fn draw_rest_faces(
+        &self,
+        cx: &mut DrawCx<'_>,
+        (ribbon, focus): (&StripRibbon, Option<f64>),
+        alpha: f32,
+    ) {
+        if self.open.is_some() || alpha <= 0.0 {
+            return;
+        }
+        let ground = ui::widget::SurfaceLevel::Ground.color(cx.theme);
+        let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);
+        for (i, strip) in self.model.strips.iter().enumerate() {
+            let seg = match focus {
+                Some(focus) => ribbon.segment_rect_at(i, focus),
+                None => ribbon.segment_rect(i),
+            };
+            let (Some(person), Some(seg)) = (strip.people.first(), seg) else {
+                continue;
+            };
+            let rect = Rect::from_center_size(
+                Point::new(seg.x0 - REST_FACE_GAP - REST_FACE / 2.0, seg.center().y),
+                (REST_FACE, REST_FACE),
+            );
+            paint.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                paint.transform,
+                &rect.inflate(2.0, 2.0),
+            );
+            // One face per strip fits the gutter; the label lists them all.
+            ui::widget::AvatarFace::new(&person.label, &person.id)
+                .presence(person.color)
+                .ringed_on(ground)
+                .paint(&mut paint, rect);
+            paint.scene.pop_layer();
+        }
+    }
+
+    /// Named targets for harnesses: the ribbon, and each label when open.
     pub(crate) fn test_rects(&self, zone: Rect) -> Vec<(String, Rect)> {
         if self.open.is_none() {
             return vec![("strip_switcher".into(), zone)];
         }
-        let mut out = vec![("strip_switcher".into(), self.layout.card)];
-        for (row, rect) in &self.layout.rows {
+        let mut out = vec![("strip_switcher".into(), self.layout.bounds)];
+        for (row, rect) in &self.layout.labels {
             let name = match row {
                 Row::Strip(i) => format!("strip_switcher.strip.{}", i.saturating_add(1)),
                 Row::NewStrip => "strip_switcher.new_strip".into(),
-                Row::Workspace(i) => format!("strip_switcher.workspace.{}", i.saturating_add(1)),
-                Row::NewWorkspace => "strip_switcher.new_workspace".into(),
-                Row::JoinWorkspace => "strip_switcher.join_workspace".into(),
             };
             out.push((name, *rect));
-            if let Row::Strip(i) = row
-                && self.model.strips.get(*i).is_some_and(|s| s.renamable)
-                && let Some(r) = self.layout.rename_rect(*i)
-            {
-                out.push((format!("strip_switcher.rename.{}", i.saturating_add(1)), r));
-            }
         }
         if let Some(field) = self.naming.as_ref().and_then(|n| self.field_rect(n.target)) {
             out.push(("strip_switcher.name_field".into(), field));
@@ -1167,65 +1224,60 @@ impl StripSwitcher {
         out
     }
 
-    /// The semantic target of a row, for assistive technology and agents.
+    /// The semantic target of a label, for assistive technology and agents.
     pub(crate) fn target_name(target: Target) -> String {
         match target {
             Target::Row(Row::Strip(i)) => format!("{TARGET_PREFIX}strip:{i}"),
             Target::Row(Row::NewStrip) => format!("{TARGET_PREFIX}new-strip"),
-            Target::Row(Row::Workspace(i)) => format!("{TARGET_PREFIX}workspace:{i}"),
-            Target::Row(Row::NewWorkspace) => format!("{TARGET_PREFIX}new-workspace"),
-            Target::Row(Row::JoinWorkspace) => format!("{TARGET_PREFIX}join-workspace"),
-            Target::Rename(i) => format!("{TARGET_PREFIX}rename:{i}"),
             Target::Field => format!("{TARGET_PREFIX}field"),
         }
+    }
+
+    /// The semantic target that renames strip `i`.
+    fn rename_target_name(i: usize) -> String {
+        format!("{TARGET_PREFIX}rename:{i}")
     }
 
     /// Activate the target named `target` as a press on it would.
     pub(crate) fn activate_target(&mut self, target: &str) -> Option<Press> {
         let rest = target.strip_prefix(TARGET_PREFIX)?;
         let index = |s: &str| s.parse::<usize>().ok();
-        let target = match rest.split_once(':') {
-            Some(("strip", i)) => Target::Row(Row::Strip(index(i)?)),
-            Some(("workspace", i)) => Target::Row(Row::Workspace(index(i)?)),
-            Some(("rename", i)) => Target::Rename(index(i)?),
-            _ => match rest {
-                "new-strip" => Target::Row(Row::NewStrip),
-                "new-workspace" => Target::Row(Row::NewWorkspace),
-                "join-workspace" => Target::Row(Row::JoinWorkspace),
-                _ => return None,
-            },
-        };
-        Some(match target {
-            Target::Rename(i) => {
-                self.begin_rename(i);
-                Press::Consumed
-            }
-            Target::Row(row) => {
+        match rest.split_once(':') {
+            Some(("strip", i)) => {
+                let i = index(i)?;
                 self.naming = None;
-                self.activate(row)
+                Some(self.activate(Row::Strip(i)))
             }
-            Target::Field => Press::Consumed,
-        })
+            Some(("rename", i)) => {
+                self.begin_rename(index(i)?);
+                Some(Press::Consumed)
+            }
+            _ => match rest {
+                "new-strip" => {
+                    self.naming = None;
+                    Some(self.activate(Row::NewStrip))
+                }
+                "field" => Some(Press::Consumed),
+                _ => None,
+            },
+        }
     }
 
-    /// The open card for assistive technology: a group of buttons.
+    /// The open labels for assistive technology: a group of buttons, with
+    /// a rename for each strip this machine names.
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         self.open?;
-        let mut card = AccessNode::new(Role::Group)
+        let mut group = AccessNode::new(Role::Group)
             .with_name(t("strip-switcher-a11y"))
-            .with_bounds(self.layout.card);
-        for (row, rect) in &self.layout.rows {
+            .with_bounds(self.layout.bounds);
+        for (row, rect) in &self.layout.labels {
             let name = match row {
-                Row::Strip(i) => self.model.strips.get(*i).map(|s| s.name.clone()),
-                Row::Workspace(i) => self.model.workspaces.get(*i).map(|w| w.name.clone()),
-                Row::NewStrip => Some(t("strip-switcher-new-strip")),
-                Row::NewWorkspace => Some(t("strip-switcher-new-workspace")),
-                Row::JoinWorkspace => Some(t("strip-switcher-join-workspace")),
+                Row::Strip(i) => self.model.shown_name(*i),
+                Row::NewStrip => t("strip-switcher-new-strip"),
             };
-            let Some(name) = name else { continue };
             let (active, _) = self.row_state(*row);
-            card.children.push(
+            group.children.push(
                 AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_bounds(*rect)
@@ -1239,20 +1291,22 @@ impl StripSwitcher {
             );
             if let Row::Strip(i) = row
                 && self.model.strips.get(*i).is_some_and(|s| s.renamable)
-                && let Some(r) = self.layout.rename_rect(*i)
             {
-                card.children.push(
+                group.children.push(
                     AccessNode::new(Role::Button)
-                        .with_name(t("strip-switcher-rename"))
-                        .with_bounds(r)
-                        .with_action_target(Self::target_name(Target::Rename(*i))),
+                        .with_name(t_args(
+                            "strip-switcher-rename-named",
+                            &[("name", self.model.shown_name(*i).into())],
+                        ))
+                        .with_bounds(*rect)
+                        .with_action_target(Self::rename_target_name(*i)),
                 );
             }
         }
         if let Some(naming) = &self.naming
             && let Some(field) = self.field_rect(naming.target)
         {
-            card.children.push(
+            group.children.push(
                 AccessNode::new(Role::TextInput)
                     .with_name(t("strip-switcher-name-placeholder"))
                     .with_optional_value(Some(naming.text.clone()))
@@ -1261,7 +1315,7 @@ impl StripSwitcher {
                     .with_state(AccessState::new().focusable(true).focused(true)),
             );
         }
-        Some(card)
+        Some(group)
     }
 }
 
@@ -1276,44 +1330,41 @@ pub(crate) struct DrawCx<'a> {
     pub theme: &'a Theme,
 }
 
-/// The floating card's ground and edge
-/// ([`ui::widget::floating_surface::paint_card`]), square where it meets the
-/// screen's right edge like the ribbon it grows from, rounded inward.
-fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    ui::surface::shadow(
-        scene,
-        transform,
-        rect,
-        radius,
-        &theme.tokens.elevation.floating,
-    );
-    let shape = RoundedRect::from_rect(rect, RoundedRectRadii::new(radius, 0.0, 0.0, radius));
-    ui::paint::fill_shape(
-        scene,
-        transform,
-        &shape,
-        ui::widget::floating_surface::card_ground(theme),
-    );
-    ui::paint::stroke_shape(
-        scene,
-        transform,
-        &shape,
-        ui::chrome::panel_border(theme),
-        1.0,
-    );
+/// A label's text: the focused strip's in medium weight.
+fn label_style(theme: &Theme, active: bool) -> ui::text_render::TextStyle {
+    let style = theme.text(TextRole::Label);
+    if active {
+        style.with_weight(TextWeight::Medium)
+    } else {
+        style
+    }
 }
 
-fn draw_glyph(cx: &mut DrawCx<'_>, rect: Rect, icon: ui::icons::Icon, color: Color) {
-    let glyph = Rect::from_center_size(rect.center(), (14.0, 14.0));
-    ui::icons::draw_icon(
-        cx.scene,
-        cx.transform,
-        glyph,
-        icon,
-        color,
-        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
+/// The others on a strip, right-aligned to end at `x_end`; returns where
+/// they begin.
+fn draw_people(cx: &mut DrawCx<'_>, people: &[Person], x_end: f64, cy: f64) -> f64 {
+    let Some(width) = faces_width(people.len()) else {
+        return x_end;
+    };
+    let shown = people.len().min(AVATARS_SHOWN);
+    let extra = people.len().saturating_sub(shown);
+    let x0 = x_end - width;
+    let ground = ui::widget::floating_surface::card_ground(cx.theme);
+    let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);
+    for (k, person) in people.iter().take(shown).enumerate() {
+        let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(k);
+        let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
+        ui::widget::AvatarFace::new(&person.label, &person.id)
+            .presence(person.color)
+            .ringed_on(ground)
+            .paint(&mut paint, rect);
+    }
+    if extra > 0 {
+        let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(shown);
+        let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
+        ui::widget::AvatarFace::paint_overflow(&mut paint, rect, extra, Some(ground));
+    }
+    x0
 }
 
 /// One line of text, elided to `rect`'s width and centred in its height.
@@ -1338,9 +1389,13 @@ fn draw_line(
     );
 }
 
-/// The ribbon's weight while nothing moves and the card is closed: quiet,
+/// The ribbon's weight while nothing moves and the labels are closed: quiet,
 /// but there, so the switcher can be found.
 pub(crate) const RIBBON_REST_ALPHA: f32 = 0.35;
+
+/// The faces beside the marks keep this much while the marks rest: who is
+/// here is worth a glance even when nothing moves.
+const PEOPLE_REST_ALPHA: f32 = 0.85;
 
 impl super::ShellOverlayHost {
     /// Whether the switcher is offered: a desktop with strips, outside the
@@ -1357,7 +1412,7 @@ impl super::ShellOverlayHost {
     }
 
     /// The ribbon's pointer band: what the pointer comes to rest on to open
-    /// the card.
+    /// the labels.
     pub(super) fn strip_switcher_zone(&self) -> Rect {
         let ribbon = self.strip_ribbon();
         match (
@@ -1369,12 +1424,43 @@ impl super::ShellOverlayHost {
         }
     }
 
-    /// The open card's extent, for damage.
+    /// The open labels' extent, for damage.
     pub(super) fn strip_switcher_bounds(&self) -> Rect {
-        self.strip_switcher.layout().card.inflate(32.0, 32.0)
+        self.strip_switcher.bounds()
     }
 
-    /// The ribbon's opacity at `now`: full while the card is open, the
+    /// The ribbon mark to light: the one whose label the pointer or the
+    /// keyboard is on while the labels are open, else the one under the
+    /// pointer.
+    pub(super) fn strip_ribbon_lit(&self) -> Option<usize> {
+        self.strip_switcher.lit_strip().or(self.strip_ribbon_hover)
+    }
+
+    /// The faces beside the ribbon's marks while the labels are closed.
+    pub(super) fn draw_strip_ribbon_faces(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        alpha: f32,
+    ) {
+        let ribbon = self.strip_ribbon();
+        let focus = self.strip_ribbon_focus_at(Instant::now());
+        self.strip_switcher.draw_rest_faces(
+            &mut DrawCx {
+                scene,
+                transform,
+                text,
+                theme,
+            },
+            (&ribbon, focus),
+            // People are worth seeing while the marks rest quietly.
+            alpha.max(PEOPLE_REST_ALPHA),
+        );
+    }
+
+    /// The ribbon's opacity at `now`: full while the labels are open, the
     /// navigation fade while moving, and the quiet resting mark otherwise.
     pub(super) fn strip_ribbon_alpha(&self, now: Instant, reduce_motion: bool) -> f32 {
         if !self.strip_switcher_offered() {
@@ -1389,7 +1475,7 @@ impl super::ShellOverlayHost {
 
     /// Let the pointer timers settle at paint time too: a frame is what the
     /// wake deadline asks for, and a host that paints without updating
-    /// first must still see the card open under a resting pointer.
+    /// first must still see the labels open under a resting pointer.
     pub(super) fn settle_strip_switcher(&mut self, now: Instant) {
         let zone = self.strip_switcher_zone();
         if self.strip_switcher.settle(now, zone) {
@@ -1398,8 +1484,8 @@ impl super::ShellOverlayHost {
         }
     }
 
-    /// Rebuild the card's model when the chrome changed, and let pointer
-    /// timers settle. Returns whether the card needs a repaint.
+    /// Rebuild the switcher's model when the chrome changed, and let pointer
+    /// timers settle. Returns whether the labels need a repaint.
     pub(super) fn refresh_strip_switcher_model(&mut self) -> bool {
         let now = Instant::now();
         let mut dirty = false;
@@ -1450,10 +1536,10 @@ impl super::ShellOverlayHost {
 
     fn place_strip_switcher(&mut self) {
         let ribbon = self.strip_ribbon();
-        self.strip_switcher.place(&ribbon, ribbon.content);
+        self.strip_switcher.place(&ribbon);
     }
 
-    /// Mirror the card's open state into the chrome, which repaints.
+    /// Mirror the switcher's open state into the chrome, which repaints.
     pub(super) fn publish_strip_switcher_open(&self) {
         if let Some(chrome) = self.chrome.as_ref() {
             let open = self.strip_switcher.is_open();
@@ -1481,8 +1567,8 @@ impl super::ShellOverlayHost {
         self.publish_strip_switcher_open();
     }
 
-    /// The `strip.rename` action without a name: the card opens with the
-    /// focused strip's name selected in its field.
+    /// The `strip.rename` action without a name: the labels open with the
+    /// focused strip's name selected in place.
     fn rename_focused_strip_in_switcher(&mut self) {
         if !self.strip_switcher_offered() {
             return;
@@ -1493,7 +1579,7 @@ impl super::ShellOverlayHost {
         self.publish_strip_switcher_open();
     }
 
-    /// A key while the card takes the keyboard.
+    /// A key while the switcher takes the keyboard.
     pub(super) fn strip_switcher_key(&mut self, key: &Key, mods: ModifiersState) {
         match self.strip_switcher.key(key, mods) {
             KeyAnswer::Command(command) => self.apply_strip_switcher_command(command),
@@ -1521,8 +1607,8 @@ impl super::ShellOverlayHost {
         }
     }
 
-    /// A press or release for the open card. Returns whether it was the
-    /// card's.
+    /// A press or release for the open labels. Returns whether it was the
+    /// switcher's.
     pub(super) fn route_strip_switcher_pointer(&mut self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseInput { state, button, .. } = event else {
             return false;
@@ -1536,7 +1622,7 @@ impl super::ShellOverlayHost {
         if *state == ElementState::Released {
             return std::mem::take(&mut self.strip_switcher_owns_release);
         }
-        let answer = self.strip_switcher.press(p);
+        let answer = self.strip_switcher.press(p, Instant::now());
         let ours = !matches!(answer, Press::Outside);
         if let Press::Command(command) = answer {
             self.apply_strip_switcher_command(command);
@@ -1546,7 +1632,29 @@ impl super::ShellOverlayHost {
         ours
     }
 
-    /// A semantic target of the card, activated as a press would.
+    /// A wheel or two-finger scroll: over the ribbon or its labels it moves
+    /// a strip up or down. Returns whether it was the switcher's.
+    pub(super) fn route_strip_switcher_wheel(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        let Some(p) = self.last_cursor else {
+            return false;
+        };
+        if !self.strip_switcher_offered() {
+            return false;
+        }
+        let zone = self.strip_switcher_zone();
+        let on = zone.contains(p) || self.strip_switcher.target_at(p).is_some();
+        if let Some(command) = self.strip_switcher.scroll(p, *delta, Instant::now(), zone) {
+            self.apply_strip_switcher_command(command);
+            self.place_strip_switcher();
+            self.publish_strip_switcher_open();
+        }
+        on
+    }
+
+    /// A semantic target of the switcher, activated as a press would.
     pub(super) fn activate_strip_switcher_target(&mut self, target: &str) -> Option<bool> {
         let answer = self.strip_switcher.activate_target(target)?;
         if let Press::Command(command) = answer {
@@ -1556,39 +1664,42 @@ impl super::ShellOverlayHost {
         Some(true)
     }
 
-    fn apply_strip_switcher_command(&self, command: Command) {
+    fn apply_strip_switcher_command(&mut self, command: Command) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut state = chrome.borrow_mut();
-        let refused = match command {
-            Command::FocusStrip(strip) => {
-                state.focus_strip(strip);
-                None
+        let created = matches!(command, Command::CreateStrip(_));
+        let refused = {
+            let mut state = chrome.borrow_mut();
+            let refused = match command {
+                Command::FocusStrip(strip) => {
+                    state.focus_strip(strip);
+                    None
+                }
+                Command::StepStrip(steps) => {
+                    for _ in 0..steps.unsigned_abs() {
+                        if !state.switch_strip(steps.signum()) {
+                            break;
+                        }
+                    }
+                    None
+                }
+                Command::CreateStrip(name) => state.create_strip(&name).err(),
+                Command::RenameStrip(strip, name) => state.rename_strip(strip, &name).err(),
+            };
+            if let Some(message) = &refused {
+                state.push_warning_notification(t("strip-switcher-refused"), message);
             }
-            Command::CreateStrip(name) => state.create_strip(&name).err(),
-            Command::RenameStrip(strip, name) => state.rename_strip(strip, &name).err(),
-            Command::SelectWorkspace(workspace) => {
-                state.tree_mut().set_active(workspace);
-                state.bump();
-                None
-            }
-            Command::NewWorkspace => {
-                state.add_workspace(t("search-action-workspace-create-default-name"));
-                None
-            }
-            Command::JoinWorkspace => {
-                state.push_peer_sync_request(super::PeerSyncAction::BrowseDirectory);
-                state.bump();
-                None
-            }
+            refused
         };
-        if let Some(message) = refused {
-            state.push_warning_notification(t("strip-switcher-refused"), &message);
+        if created && refused.is_none() {
+            // The new strip is listed now, and its name goes in place.
+            self.strip_switcher_revision = None;
+            self.refresh_strip_switcher_model();
         }
     }
 
-    /// Paint the card when it is open.
+    /// Paint the labels when they are open.
     pub(super) fn draw_strip_switcher_card(
         &mut self,
         scene: &mut Scene,
@@ -1600,7 +1711,9 @@ impl super::ShellOverlayHost {
         if !self.strip_switcher.is_open() {
             return;
         }
-        self.place_strip_switcher();
+        let ribbon = self.strip_ribbon();
+        let focus = self.strip_ribbon_focus_at(now);
+        self.strip_switcher.place_sliding(&ribbon, focus);
         self.strip_switcher.draw(
             &mut DrawCx {
                 scene,
@@ -1612,17 +1725,17 @@ impl super::ShellOverlayHost {
         );
     }
 
-    /// The card's named targets, for harnesses.
+    /// The switcher's named targets, for harnesses.
     pub(super) fn strip_switcher_test_rects(&self) -> Vec<(String, Rect)> {
         self.strip_switcher.test_rects(self.strip_switcher_zone())
     }
 
-    /// The open card for assistive technology.
+    /// The open labels for assistive technology.
     pub(super) fn strip_switcher_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.strip_switcher.accessibility()
     }
 
-    /// Test access to the card's state.
+    /// Test access to the switcher's state.
     #[cfg(test)]
     pub(crate) fn strip_switcher_for_tests(&mut self) -> &mut StripSwitcher {
         self.place_strip_switcher();
@@ -1634,6 +1747,7 @@ impl super::ShellOverlayHost {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use winit::dpi::PhysicalPosition;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -1641,7 +1755,6 @@ mod tests {
 
     fn model(strips: &[&str]) -> SwitcherModel {
         SwitcherModel {
-            workspace_name: "Home".into(),
             strips: strips
                 .iter()
                 .enumerate()
@@ -1653,17 +1766,6 @@ mod tests {
                 })
                 .collect(),
             focused: 0,
-            workspaces: vec![
-                WorkspaceEntry {
-                    id: WorkspaceId(1),
-                    name: "Home".into(),
-                },
-                WorkspaceEntry {
-                    id: WorkspaceId(2),
-                    name: "Music".into(),
-                },
-            ],
-            active_workspace: 0,
         }
     }
 
@@ -1681,7 +1783,7 @@ mod tests {
         let mut s = StripSwitcher::default();
         s.set_model(model(strips));
         let r = ribbon(strips.len(), 0);
-        s.place(&r, CONTENT);
+        s.place(&r);
         let zone = zone(&r);
         (s, zone)
     }
@@ -1692,8 +1794,21 @@ mod tests {
         first.union(last)
     }
 
-    /// Glide from `from` to `to` in `steps` samples 8 ms apart, slowing to a
-    /// stop at the end; returns the instant of the last sample.
+    fn typed(s: &mut StripSwitcher, text: &str) {
+        for c in text.chars() {
+            s.key(
+                &Key::Character(c.to_string().into()),
+                ModifiersState::empty(),
+            );
+        }
+    }
+
+    fn enter(s: &mut StripSwitcher) -> KeyAnswer {
+        s.key(&Key::Named(NamedKey::Enter), ModifiersState::empty())
+    }
+
+    /// Glide from `from` to `to` in samples 8 ms apart, slowing to a stop at
+    /// the end; returns the instant of the last sample.
     fn glide(s: &mut StripSwitcher, zone: Rect, from: Point, to: Point, t0: Instant) -> Instant {
         let steps = 12;
         let mut t = t0;
@@ -1707,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pointer_coming_to_rest_on_the_ribbon_opens_the_card() {
+    fn a_pointer_coming_to_rest_on_the_ribbon_opens_the_labels() {
         let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
         let t0 = Instant::now();
         let end = glide(
@@ -1737,36 +1852,65 @@ mod tests {
     }
 
     #[test]
-    fn rows_sit_level_with_their_ribbon_segments() {
+    fn each_label_sits_level_with_its_mark_and_new_strip_under_the_last() {
         let (s, _) = switcher(&["Lounge", "Research", "Design"]);
         let r = ribbon(3, 0);
+        let mut x1 = None;
         for i in 0..3 {
+            let label = s.layout().label_rect(Row::Strip(i)).unwrap();
             let row = s.layout().row_rect(Row::Strip(i)).unwrap();
-            let seg = r.hit_rect(i).unwrap();
-            assert_eq!((row.y0, row.y1), (seg.y0, seg.y1), "row {i}");
-            assert!(row.x1 <= CONTENT.x1 && s.layout().card.x1 == CONTENT.x1);
+            let seg = r.segment_rect(i).unwrap();
+            let hit = r.hit_rect(i).unwrap();
+            assert!(
+                (label.center().y - seg.center().y).abs() < 0.5,
+                "label {i} is level with its mark"
+            );
+            assert!(label.x1 < seg.x0, "label {i} stands beside its mark");
+            assert_eq!(
+                (row.y0, row.y1, row.x1),
+                (hit.y0, hit.y1, CONTENT.x1),
+                "label {i}'s pointer row tiles with the marks"
+            );
+            assert!(x1.is_none_or(|x| x == label.x1), "right edges aligned");
+            x1 = Some(label.x1);
         }
-        assert!(s.layout().card.y0 >= CONTENT.y0 && s.layout().card.y1 <= CONTENT.y1);
+        let last = s.layout().label_rect(Row::Strip(2)).unwrap();
+        let new = s.layout().label_rect(Row::NewStrip).unwrap();
+        assert!(new.y0 >= last.y1, "New strip is under the last strip");
+    }
+
+    /// The switcher has one job: it lists this workspace's strips and makes
+    /// new ones, and nothing about workspaces.
+    #[test]
+    fn the_labels_are_this_workspaces_strips_and_new_strip_only() {
+        let (mut s, _) = switcher(&["Lounge", "Research"]);
+        s.open_at(Instant::now(), false);
+        let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
+        assert_eq!(rows, [Row::Strip(0), Row::Strip(1), Row::NewStrip]);
+        let a11y = s.accessibility().expect("open labels are published");
+        let names: Vec<String> = a11y
+            .children
+            .iter()
+            .filter_map(|n| n.name.clone())
+            .collect();
+        assert!(names.iter().any(|n| n == "Lounge"));
+        assert!(names.iter().any(|n| n == "New strip"));
+        assert!(
+            !names.iter().any(|n| n.contains("orkspace")),
+            "no workspaces here: {names:?}"
+        );
     }
 
     #[test]
-    fn leaving_the_card_closes_it_and_the_ribbon_waits_for_a_fresh_approach() {
+    fn leaving_the_labels_closes_them() {
         let (mut s, zone) = switcher(&["Lounge", "Research"]);
         let now = Instant::now();
-        s.toggle_from_keyboard(now);
-        s.close();
-        assert!(!s.is_open());
-        // Opened by the pointer, then left.
         s.open_at(now, false);
-        let card = s.layout().card;
-        s.pointer_moved(
-            Point::new(card.x0 + 40.0, card.center().y),
-            now + ms(8),
-            zone,
-        );
+        let label = s.layout().label_rect(Row::Strip(0)).unwrap();
+        s.pointer_moved(label.center(), now + ms(8), zone);
         assert!(s.is_open());
         s.pointer_moved(
-            Point::new(card.x0 - 120.0, card.center().y),
+            Point::new(label.x0 - 120.0, label.center().y),
             now + ms(16),
             zone,
         );
@@ -1774,92 +1918,150 @@ mod tests {
     }
 
     #[test]
-    fn clicks_switch_strips_and_workspaces_and_add_ones() {
-        let (mut s, zone) = switcher(&["Lounge", "Research"]);
+    fn a_click_on_a_label_switches_to_its_strip() {
+        let (mut s, _) = switcher(&["Lounge", "Research"]);
         let now = Instant::now();
         s.open_at(now, false);
-        let _ = zone;
-        let at = |s: &StripSwitcher, row| {
-            let r = s.layout().row_rect(row).unwrap();
-            Point::new(r.x0 + 30.0, r.center().y)
-        };
-        let p = at(&s, Row::Strip(1));
+        let p = s.layout().label_rect(Row::Strip(1)).unwrap().center();
         assert_eq!(
-            s.press(p),
+            s.press(p, now),
             Press::Command(Command::FocusStrip(StripId(101)))
         );
-        let p = at(&s, Row::Workspace(1));
+        // Between two short labels, left of them, is not a label.
+        let label = s.layout().label_rect(Row::Strip(1)).unwrap();
+        let left = Point::new(label.x0 - 40.0, label.center().y);
+        assert_eq!(s.press(left, now + ms(800)), Press::Outside);
+    }
+
+    /// No text field in a surface that hover alone keeps up: naming pins the
+    /// labels, so the pointer wandering off does not drop the name.
+    #[test]
+    fn new_strip_makes_a_strip_and_puts_its_name_in_place_and_pins_the_labels() {
+        let (mut s, zone) = switcher(&["Lounge"]);
+        let now = Instant::now();
+        s.open_at(now, false);
+        let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
         assert_eq!(
-            s.press(p),
-            Press::Command(Command::SelectWorkspace(WorkspaceId(2)))
+            s.press(new, now),
+            Press::Command(Command::CreateStrip("Strip 2".into())),
+            "a click makes the strip at once"
         );
-        let p = at(&s, Row::Workspace(0));
-        assert_eq!(s.press(p), Press::Consumed, "the shown workspace stays");
-        let p = at(&s, Row::NewWorkspace);
-        assert_eq!(s.press(p), Press::Command(Command::NewWorkspace));
-        let p = at(&s, Row::NewStrip);
-        assert_eq!(s.press(p), Press::Consumed);
-        assert!(s.is_naming() && s.takes_keys());
-        for c in "Games".chars() {
-            assert_eq!(
-                s.key(
-                    &Key::Character(c.to_string().into()),
-                    ModifiersState::empty()
-                ),
-                KeyAnswer::Consumed
-            );
-        }
+        // The host makes it and moves to it; the model lists it.
+        let mut m = model(&["Lounge", "Strip 2"]);
+        m.focused = 1;
+        s.set_model(m);
+        s.place(&ribbon(2, 1));
+        assert!(s.is_naming() && s.takes_keys(), "its name is in place");
+        assert_eq!(s.naming_text(), Some("Strip 2"), "selected, to type over");
+        let field = s.layout().label_rect(Row::Strip(1)).unwrap();
+        assert_eq!(field.width(), FIELD_W, "the label grows into the field");
+        // The pointer leaves: the field stays.
+        s.pointer_moved(Point::new(200.0, 400.0), now + ms(30), zone);
+        assert!(s.is_open() && s.is_naming(), "naming pins the labels");
+        typed(&mut s, "Games");
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), ModifiersState::empty()),
-            KeyAnswer::Command(Command::CreateStrip("Games".into()))
+            enter(&mut s),
+            KeyAnswer::Command(Command::RenameStrip(StripId(101), "Games".into()))
         );
+        assert!(!s.is_naming());
+        // With the name done, hover rules again.
+        s.pointer_moved(Point::new(210.0, 400.0), now + ms(60), zone);
+        assert!(!s.is_open());
+    }
+
+    #[test]
+    fn a_double_click_renames_and_an_empty_or_unchanged_name_does_nothing() {
+        let (mut s, _) = switcher(&["main", "Research"]);
+        let t0 = Instant::now();
+        s.open_at(t0, false);
+        let label = s.layout().label_rect(Row::Strip(0)).unwrap().center();
+        assert_eq!(
+            s.press(label, t0),
+            Press::Command(Command::FocusStrip(StripId(100)))
+        );
+        assert_eq!(s.press(label, t0 + ms(150)), Press::Consumed);
+        assert_eq!(s.naming_text(), Some("main"), "the old name, selected");
+        typed(&mut s, "Lounge");
+        assert_eq!(
+            enter(&mut s),
+            KeyAnswer::Command(Command::RenameStrip(StripId(100), "Lounge".into()))
+        );
+        // Unchanged.
+        let other = s.layout().label_rect(Row::Strip(1)).unwrap().center();
+        s.press(other, t0 + ms(1000));
+        s.press(other, t0 + ms(1100));
+        assert_eq!(enter(&mut s), KeyAnswer::Consumed);
+        // Emptied.
+        s.press(other, t0 + ms(2000));
+        s.press(other, t0 + ms(2100));
+        s.key(&Key::Named(NamedKey::Backspace), ModifiersState::empty());
+        assert_eq!(s.naming_text(), Some(""));
+        assert_eq!(enter(&mut s), KeyAnswer::Consumed);
+        // Two presses far apart are two switches, not a rename.
+        s.press(other, t0 + ms(3000));
+        s.press(other, t0 + ms(4000));
+        assert!(!s.is_naming());
+        // A strip another device writes is not renamed here.
+        let mut m = model(&["Theirs"]);
+        m.strips[0].renamable = false;
+        s.set_model(m);
+        s.place(&ribbon(1, 0));
+        let theirs = s.layout().label_rect(Row::Strip(0)).unwrap().center();
+        s.press(theirs, t0 + ms(5000));
+        s.press(theirs, t0 + ms(5100));
         assert!(!s.is_naming());
     }
 
     #[test]
-    fn the_pencil_renames_a_strip_and_an_empty_or_unchanged_name_does_nothing() {
-        let (mut s, _) = switcher(&["main", "Research"]);
-        s.open_at(Instant::now(), false);
-        let pencil = s.layout().rename_rect(0).unwrap().center();
-        assert_eq!(s.target_at(pencil), Some(Target::Rename(0)));
-        assert_eq!(s.press(pencil), Press::Consumed);
-        assert_eq!(s.naming_text(), Some("main"), "the old name, selected");
-        // Typing replaces the selection.
-        for c in "Lounge".chars() {
-            s.key(
-                &Key::Character(c.to_string().into()),
-                ModifiersState::empty(),
-            );
-        }
+    fn the_wheel_over_the_ribbon_or_its_labels_moves_a_strip_per_notch() {
+        let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
+        let t0 = Instant::now();
+        let on = zone.center();
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), ModifiersState::empty()),
-            KeyAnswer::Command(Command::RenameStrip(StripId(100), "Lounge".into()))
+            s.scroll(on, MouseScrollDelta::LineDelta(0.0, -1.0), t0, zone),
+            Some(Command::StepStrip(1)),
+            "a notch toward the person: the strip below"
         );
-        // Unchanged.
-        s.press(s.layout().rename_rect(1).unwrap().center());
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), ModifiersState::empty()),
-            KeyAnswer::Consumed
+            s.scroll(on, MouseScrollDelta::LineDelta(0.0, 1.0), t0 + ms(50), zone),
+            Some(Command::StepStrip(-1)),
+            "away: the strip above"
         );
-        // Emptied.
-        s.press(s.layout().rename_rect(1).unwrap().center());
-        s.key(&Key::Named(NamedKey::Backspace), ModifiersState::empty());
-        assert_eq!(s.naming_text(), Some(""));
+        // Two-finger travel adds up to a step.
+        let px = |y: f64| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
+        let t1 = t0 + ms(1000);
+        assert_eq!(s.scroll(on, px(-15.0), t1, zone), None);
+        assert_eq!(s.scroll(on, px(-15.0), t1 + ms(10), zone), None);
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), ModifiersState::empty()),
-            KeyAnswer::Consumed
+            s.scroll(on, px(-15.0), t1 + ms(20), zone),
+            Some(Command::StepStrip(1))
         );
-        // A strip another device writes has no pencil.
-        let mut m = model(&["Theirs"]);
-        m.strips[0].renamable = false;
-        s.set_model(m);
-        s.place(&ribbon(1, 0), CONTENT);
-        let spot = s.layout().rename_rect(0).unwrap().center();
-        assert_eq!(s.target_at(spot), Some(Target::Row(Row::Strip(0))));
+        // Over a window, the wheel is the window's.
+        assert_eq!(
+            s.scroll(
+                Point::new(400.0, 400.0),
+                MouseScrollDelta::LineDelta(0.0, -1.0),
+                t1 + ms(900),
+                zone
+            ),
+            None
+        );
+        // Over an open label it moves strips too.
+        s.open_at(t1, false);
+        let label = s.layout().label_rect(Row::Strip(0)).unwrap();
+        assert_eq!(
+            s.scroll(
+                label.center(),
+                MouseScrollDelta::LineDelta(0.0, -1.0),
+                t1 + ms(2000),
+                zone
+            ),
+            Some(Command::StepStrip(1))
+        );
     }
 
     #[test]
-    fn the_keyboard_walks_the_rows_and_takes_one() {
+    fn the_keyboard_walks_the_labels_and_takes_one() {
         let (mut s, _) = switcher(&["Lounge", "Research"]);
         s.toggle_from_keyboard(Instant::now());
         assert!(s.is_open() && s.takes_keys());
@@ -1868,10 +2070,13 @@ mod tests {
         s.key(&Key::Named(NamedKey::ArrowDown), none);
         assert_eq!(s.selected(), Some(Row::Strip(1)));
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), none),
+            enter(&mut s),
             KeyAnswer::Command(Command::FocusStrip(StripId(101)))
         );
-        assert!(!s.is_open(), "a choice closes a keyboard card");
+        assert!(
+            !s.is_open(),
+            "a choice closes labels opened by the keyboard"
+        );
 
         s.toggle_from_keyboard(Instant::now());
         s.key(&Key::Named(NamedKey::F2), none);
@@ -1885,16 +2090,12 @@ mod tests {
             "Escape leaves the name first"
         );
         s.key(&Key::Named(NamedKey::End), none);
-        assert_eq!(s.selected(), Some(Row::JoinWorkspace));
-        s.key(&Key::Named(NamedKey::ArrowUp), none);
-        assert_eq!(s.selected(), Some(Row::NewWorkspace));
-        s.key(&Key::Named(NamedKey::ArrowUp), none);
-        assert_eq!(s.selected(), Some(Row::Workspace(1)));
+        assert_eq!(s.selected(), Some(Row::NewStrip));
         assert_eq!(
-            s.key(&Key::Named(NamedKey::Enter), none),
-            KeyAnswer::Command(Command::SelectWorkspace(WorkspaceId(2)))
+            enter(&mut s),
+            KeyAnswer::Command(Command::CreateStrip("Strip 3".into()))
         );
-        s.toggle_from_keyboard(Instant::now());
+        assert!(s.is_open(), "the new strip's name comes next");
         assert_eq!(
             s.key(&Key::Named(NamedKey::Escape), none),
             KeyAnswer::Consumed
@@ -1903,20 +2104,21 @@ mod tests {
     }
 
     #[test]
-    fn rows_light_only_once_the_pointer_settles() {
+    fn labels_light_only_once_the_pointer_settles() {
         let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
         let t0 = Instant::now();
         s.open_at(t0, false);
-        let r0 = s.layout().row_rect(Row::Strip(0)).unwrap();
-        let r2 = s.layout().row_rect(Row::Strip(2)).unwrap();
-        // Crossing row 0 quickly on the way to row 2.
-        s.pointer_moved(Point::new(r0.x0 + 60.0, r0.y0 - 30.0), t0 + ms(8), zone);
-        s.pointer_moved(Point::new(r0.x0 + 60.0, r0.center().y), t0 + ms(16), zone);
-        assert_eq!(s.hover(), None, "in transit over row 0");
-        s.pointer_moved(Point::new(r2.x0 + 60.0, r2.center().y), t0 + ms(24), zone);
+        let r0 = s.layout().label_rect(Row::Strip(0)).unwrap();
+        let r2 = s.layout().label_rect(Row::Strip(2)).unwrap();
+        // Crossing label 0 quickly on the way to label 2.
+        s.pointer_moved(Point::new(r0.center().x, r0.y0 - 4.0), t0 + ms(8), zone);
+        s.pointer_moved(r0.center(), t0 + ms(16), zone);
+        assert_eq!(s.hover(), None, "in transit over label 0");
+        s.pointer_moved(r2.center(), t0 + ms(24), zone);
         assert!(s.deadline(t0 + ms(24), zone).is_some(), "wakes to light it");
         s.settle(t0 + ms(100), zone);
         assert_eq!(s.hover(), Some(Target::Row(Row::Strip(2))));
+        assert_eq!(s.lit_strip(), Some(2), "and its mark lights with it");
     }
 
     #[test]
@@ -1928,11 +2130,13 @@ mod tests {
             s.activate_target(&name),
             Some(Press::Command(Command::FocusStrip(StripId(101))))
         );
-        let rename = StripSwitcher::target_name(Target::Rename(0));
-        assert_eq!(s.activate_target(&rename), Some(Press::Consumed));
+        assert_eq!(
+            s.activate_target(&StripSwitcher::rename_target_name(0)),
+            Some(Press::Consumed)
+        );
         assert!(s.is_naming());
         assert_eq!(s.activate_target("palette:query"), None);
-        let a11y = s.accessibility().expect("open card is published");
-        assert!(a11y.children.len() >= 6);
+        let a11y = s.accessibility().expect("open labels are published");
+        assert!(a11y.children.len() >= 5);
     }
 }
