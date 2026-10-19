@@ -7529,10 +7529,24 @@ impl ShellNetwork {
         let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
             && self.peer_identities.get(&origin).is_none()
             && self.governed_identity(ws, peer).is_some();
-        if self.require_peer_identity
+        // A member's desktop pointer and liveness in an enrolled room reach
+        // this device through the room's host, which authenticated the
+        // device; the member sends no hello over it (hellos are
+        // neighbour-only). As with app presence, the room's governance
+        // admits it: a current member device may be seen by the others.
+        // The publisher is still bound to the authenticated endpoint below.
+        let governed_presence = self.native_topic_required(ws)
+            && matches!(
+                msg,
+                NeighbourMsg::PresenceMoved { .. }
+                    | NeighbourMsg::PresenceCleared { .. }
+                    | NeighbourMsg::Heartbeat { .. }
+            )
             && self.peer_identities.get(&origin).is_none()
-            && !governed_action
-        {
+            && self.governed_identity(ws, peer).is_some();
+        // Known from governance rather than a hello.
+        let governed = governed_action || governed_presence;
+        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() && !governed {
             if let NeighbourMsg::RemoteAction { frame } = msg {
                 self.hold_remote_action(HeldRemoteAction {
                     workspace_topic: ws,
@@ -7542,7 +7556,7 @@ impl ShellNetwork {
                     frame,
                 });
             } else {
-                tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+                tracing::warn!(peer = %peer, ws, kind = msg.kind(), "dropping collaboration message from an unauthenticated device");
             }
             return;
         }
@@ -7593,7 +7607,7 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity && !governed_action {
+        if self.require_peer_identity && !governed {
             let required = Self::required_room_action(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
             if !required.as_ref().is_some_and(|required| {
