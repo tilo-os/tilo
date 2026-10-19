@@ -1797,6 +1797,48 @@ impl App {
         self.last_playback_publish = Some(now);
     }
 
+    /// Publish what this window's search finds to the session's persistent
+    /// search index, over the certified primary route: only what changed
+    /// since the last publication on that route, coalesced to once a
+    /// second. The session keeps it after the app closes, so the app's
+    /// content stays findable whether or not it runs.
+    fn publish_search_index(&mut self) {
+        /// Changes in one second cross as one publication.
+        const COALESCE: Duration = Duration::from_secs(1);
+        let Some(state) = crate::search::capability::search_index_state(self.root_widget.as_ref())
+        else {
+            return;
+        };
+        let Some(route) = self.private_continuity_route() else {
+            return;
+        };
+        if !self.continuation.search_index.wants(state) {
+            return;
+        }
+        let now = crate::time::now();
+        if self
+            .continuation
+            .last_search_index_publish
+            .is_some_and(|last| now.duration_since(last) < COALESCE)
+        {
+            return;
+        }
+        let entries = crate::search::capability::search_index_entries(self.root_widget.as_ref());
+        let deltas = self.continuation.search_index.publish(state, entries);
+        self.continuation.last_search_index_publish = Some(now);
+        for delta in deltas {
+            let Some(delta_json) = delta.encode() else {
+                continue;
+            };
+            self.collaboration.manager.send(
+                crate::collaboration::CollabRequest::PublishSearchIndex {
+                    app_id: route.app_id.clone(),
+                    delta_json,
+                },
+            );
+        }
+    }
+
     fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
         let witness = self.collaboration.manager.primary_route()?.clone();
         let instance = self.collaboration.manager.private_window_instance()?;
@@ -1817,6 +1859,8 @@ impl App {
             }
             self.continuation.last_published = None;
             self.continuation.publication_initialized = false;
+            self.continuation.search_index.reset();
+            self.continuation.last_search_index_publish = None;
             self.last_published_playback = None;
             self.last_playback_publish = None;
             self.continuation.last_private_route = Some(witness.clone());

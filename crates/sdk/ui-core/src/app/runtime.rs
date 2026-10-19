@@ -363,6 +363,11 @@ pub(super) struct ContinuationRuntime {
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
+    /// What this route last published to the session's persistent search
+    /// index, so only changes cross again.
+    pub(super) search_index: crate::search::index_publication::Publisher,
+    /// When the search index was last published: changes coalesce.
+    pub(super) last_search_index_publish: Option<crate::time::Instant>,
 }
 
 impl ContinuationRuntime {
@@ -376,6 +381,8 @@ impl ContinuationRuntime {
             last_private_route: None,
             private_instance: None,
             retired: false,
+            search_index: crate::search::index_publication::Publisher::default(),
+            last_search_index_publish: None,
         }
     }
 }
