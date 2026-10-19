@@ -16883,6 +16883,12 @@ pub mod tests {
             let mut message = capnp::message::Builder::new_default();
             let mut descriptor = message.init_root::<exported_action::Builder<'_>>();
             descriptor.set_resource_kind("chat.agent");
+            // A published action names its kind, parameters and contract.
+            descriptor.set_operation_kind("effect");
+            descriptor.set_params_json("[]");
+            descriptor.set_contract_json(
+                &serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap(),
+            );
             let mut identity = descriptor.init_semantic_identity();
             identity.set_kind(kind);
             identity.set_key(key);
