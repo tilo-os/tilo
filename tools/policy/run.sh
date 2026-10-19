@@ -30,6 +30,7 @@ run 'Source blobs are text and LF or explicitly pinned assets' \
 run 'Tracked files reference no internal tracker' \
   python3 tools/policy/check_public_references.py
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
+run 'Package graph is acyclic' python3 tools/policy/check_dependency_cycles.py
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
   python3 tools/policy/check_integration_test_modules.py
