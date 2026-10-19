@@ -3187,7 +3187,7 @@ mod tests {
             assert_eq!(disabled.key_repeat_slider_value(), 0.0);
             assert_eq!(
                 disabled.key_repeat_description(),
-                "Repeat is off — move the slider to turn it on"
+                "Repeat is off. Move the slider to turn it on."
             );
 
             let exact = pane_with(

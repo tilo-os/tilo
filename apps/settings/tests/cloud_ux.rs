@@ -166,7 +166,7 @@ fn assert_connected_frame<A: ui::framework::ResourceApp>(
     assert!(!inspection.contains("drive.google.com"));
     assert!(inspection.contains("Import only"));
     assert!(inspection.contains("No ongoing sync"));
-    assert!(inspection.contains("Connected · not synced yet"));
+    assert!(inspection.contains("Connected, not synced yet"));
     assert!(!inspection.contains("Not checked yet"));
     assert!(!inspection.contains("No synchronization status"));
     for empty in [
