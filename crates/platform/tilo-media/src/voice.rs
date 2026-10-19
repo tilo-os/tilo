@@ -12,6 +12,11 @@ pub const RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 960;
 pub const FRAME_DURATION: Duration = Duration::from_millis(20);
 pub const MAX_PACKET_BYTES: usize = 4064;
+/// Voices this device plays at once: its decode budget, not a limit on a
+/// call. A call has any number of participants; with DTX a silent one sends a
+/// comfort-noise packet every 400 ms, so the voices that hold a slot are the
+/// ones speaking. A new voice takes the slot of the one quiet longest, and is
+/// not heard while every slot is speaking.
 pub const MAX_PUBLISHERS: usize = 8;
 pub const SEND_LIFETIME: Duration = Duration::from_millis(100);
 pub const RECEIVE_LIFETIME: Duration = Duration::from_millis(200);
@@ -293,8 +298,21 @@ impl JitterBuffer {
             }
         }
         if !self.publishers.contains_key(&name) {
-            if self.publishers.len() == MAX_PUBLISHERS {
-                return Err(AudioError::Capacity);
+            if self.publishers.len() >= MAX_PUBLISHERS {
+                let quiet = self
+                    .publishers
+                    .iter()
+                    .filter(|(_, publisher)| {
+                        publisher.active_until <= now && publisher.frames.is_empty()
+                    })
+                    .min_by_key(|(_, publisher)| publisher.last_receive)
+                    .map(|(name, _)| name.clone());
+                let Some(quiet) = quiet else {
+                    // Every slot is speaking: this voice waits for one.
+                    self.stats.overruns = self.stats.overruns.saturating_add(1);
+                    return Ok(());
+                };
+                self.publishers.remove(&quiet);
             }
             self.publishers.insert(
                 name.clone(),
@@ -439,6 +457,12 @@ impl JitterBuffer {
             }
         }
         out
+    }
+    /// Whether `publisher` holds one of the voices this device plays.
+    pub fn contains(&self, publisher: &PublicationId) -> bool {
+        self.publishers
+            .get(&publisher.namespace)
+            .is_some_and(|p| p.id == *publisher)
     }
     pub fn remove(&mut self, publisher: &PublicationId) {
         if self

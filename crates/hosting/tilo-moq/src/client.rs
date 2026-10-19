@@ -460,7 +460,6 @@ fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
         || scope.endpoint.len() > 2048
         || scope.fingerprints.len() > 2
         || (scope.publication.is_none() && scope.subscriptions.is_empty())
-        || scope.subscriptions.len() > 7
     {
         return Err(ClientError::Invalid);
     }

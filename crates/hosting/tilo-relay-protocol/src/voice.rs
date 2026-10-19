@@ -2,8 +2,14 @@
 //!
 //! A call belongs to a room's governance: the room's governor records each
 //! call, bound to one voice channel of a chat record, with the directions its
-//! participants may use and per-person denials. A room's owner or an
-//! administrator starts, ends and moderates calls with
+//! participants may use and per-person denials.
+//!
+//! Joining a voice channel is joining its call, as in any voice chat: a
+//! member opens the channel's call with [`CallOperation::Open`], which starts
+//! it when the channel has none yet (or its call was ended), and then joins
+//! it. Nobody has to start a call first; the call is empty once the last
+//! participant leaves. A room's owner or an administrator ends and moderates
+//! calls with the other operations of
 //! [`Envelope::VoiceCall`](crate::Envelope::VoiceCall).
 //!
 //! A device subscribed to the room joins an active call with
@@ -31,9 +37,6 @@ pub const HEARTBEAT: Duration = Duration::from_secs(5);
 /// A participation ends when its device has not repeated its join for this
 /// long.
 pub const PARTICIPATION_TTL: Duration = Duration::from_secs(15);
-/// Participants of one call at most: the voice carrier subscribes to at most
-/// seven other publishers.
-pub const MAX_PARTICIPANTS: usize = 8;
 
 /// What a call's participants may do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +50,18 @@ pub struct Directions {
 /// A change to a room's calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallOperation {
+    /// Open the call of voice channel `channel_id` of the chat record
+    /// `record_id` of app `app_id`, to join it: its active call, the call it
+    /// had restarted, or a new one where participants publish and subscribe.
+    /// Any member may open a channel's call.
+    Open {
+        /// The chat app.
+        app_id: String,
+        /// The chat record holding the channel.
+        record_id: String,
+        /// The voice channel.
+        channel_id: String,
+    },
     /// Start a call on voice channel `channel_id` of the chat record
     /// `record_id` of app `app_id`.
     Start {

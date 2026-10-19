@@ -25,7 +25,10 @@ pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
 use crate::session_authority::{AuthorityDriver, Verdict};
 use crate::voice;
 
-pub const MAX_SESSIONS: usize = 8;
+/// Sessions still being admitted at once. An admitted session is bounded by
+/// the authority that admitted it (one per participation of a member
+/// device), never by a count here, so a call has no participant limit.
+pub const MAX_ADMITTING: usize = 16;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
 /// Exact WebTransport path of the voice relay.
 pub const VOICE_PATH: &str = "/moq/voice";
@@ -206,7 +209,7 @@ pub struct Relay {
     authority: Arc<dyn RelayAuthority>,
     origin: moq_net::origin::Producer,
     counters: Arc<Counters>,
-    sessions: Arc<tokio::sync::Semaphore>,
+    admitting: Arc<tokio::sync::Semaphore>,
     publications: Publications,
     _origin: Arc<carrier::OriginTask>,
 }
@@ -276,7 +279,7 @@ impl Relay {
             authority,
             origin,
             counters: Arc::default(),
-            sessions: Arc::new(tokio::sync::Semaphore::new(MAX_SESSIONS)),
+            admitting: Arc::new(tokio::sync::Semaphore::new(MAX_ADMITTING)),
             publications: Arc::default(),
             _origin: Arc::new(task),
         }
@@ -312,8 +315,9 @@ impl Relay {
         (raw_authority == expected_authority && raw_target == VOICE_PATH).then_some(VoiceRoute(()))
     }
 
-    /// Serve a standalone listener for [`VOICE_PATH`]. At most eight admitted
-    /// or authorizing sessions exist. Dropping this future aborts every task
+    /// Serve a standalone listener for [`VOICE_PATH`]. At most
+    /// [`MAX_ADMITTING`] sessions are being admitted at once; admitted ones
+    /// are as many as the authority admits. Dropping this future aborts every task
     /// and its protocol session; no detached session survives shutdown.
     pub async fn serve(self, endpoint: quinn::Endpoint) {
         carrier::serve_endpoint(endpoint, &[VOICE_PATH], move |_, session| {
@@ -330,7 +334,7 @@ impl Relay {
     /// keeps the `MoQ` driver in this future: it is cancelled on any
     /// authorization failure or caller cancellation and never detached.
     pub async fn serve_session(&self, _route: VoiceRoute, transport: web_transport_quinn::Session) {
-        let Ok(_permit) = self.sessions.clone().try_acquire_owned() else {
+        let Ok(admitting) = self.admitting.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             transport.close(carrier::CLOSE_DENIED, b"relay busy");
             return;
@@ -356,6 +360,7 @@ impl Relay {
             Some((server, scopes))
         })
         .await;
+        drop(admitting);
         let Ok((accepted, scopes)) = accepted else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
             return;
@@ -442,26 +447,22 @@ impl Relay {
                     .map(String::as_str)
                     .filter(|name| Some(*name) != own)
                     .collect();
-                if names.len() > MAX_SESSIONS {
+                let mut lapsed = Vec::new();
+                let status = authorization.status_offered(&names, &mut lapsed);
+                let now = Instant::now();
+                offered.lapsed.retain(|name, _| lapsed.contains(name));
+                for name in lapsed {
+                    self.revoke_publication(&name);
+                    offered.lapsed.entry(name).or_insert(now);
+                }
+                let stale = offered
+                    .lapsed
+                    .values()
+                    .any(|since| now.duration_since(*since) >= LAPSED_OFFER_FENCE);
+                if stale {
                     AuthorizationStatus::Denied
                 } else {
-                    let mut lapsed = Vec::new();
-                    let status = authorization.status_offered(&names, &mut lapsed);
-                    let now = Instant::now();
-                    offered.lapsed.retain(|name, _| lapsed.contains(name));
-                    for name in lapsed {
-                        self.revoke_publication(&name);
-                        offered.lapsed.entry(name).or_insert(now);
-                    }
-                    let stale = offered
-                        .lapsed
-                        .values()
-                        .any(|since| now.duration_since(*since) >= LAPSED_OFFER_FENCE);
-                    if stale {
-                        AuthorizationStatus::Denied
-                    } else {
-                        status
-                    }
+                    status
                 }
             }
         };
@@ -808,7 +809,9 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
                         .is_some_and(|rest| !rest.contains('/'))
             });
     }
-    if (publication.is_none() && subscriptions.is_empty()) || subscriptions.len() > MAX_SESSIONS {
+    // An exact subscription set is bounded by the grant's size
+    // ([`MAX_AUTHORIZATION_BYTES`]), not by a count.
+    if publication.is_none() && subscriptions.is_empty() {
         return false;
     }
     if let Some(namespace) = publication

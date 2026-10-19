@@ -1,11 +1,19 @@
 //! Calls in the rooms this relay governs.
 //!
 //! A call is room governance: [`RoomMediaV1`] in the room document, which the
-//! governor authors and every member verifies. The relay's own user, and any
-//! member the room's governance grants its `call` action (no role preset
-//! below the owner's does), starts, ends and moderates calls; any member
-//! device joins an active one and gets a grant for the relay's `moq-lite`
-//! voice carrier (see [`tilo_relay_protocol::voice`]).
+//! governor authors and every member verifies. Any member opens a voice
+//! channel's call to join it ([`CallOperation::Open`]): the relay, as the
+//! governor, starts the channel's call when it has none, and restarts it
+//! when it was ended. The relay's own user, and any member the room's
+//! governance grants its `call` action (no role preset below the owner's
+//! does), ends and moderates calls; any member device joins an active one
+//! and gets a grant for the relay's `moq-lite` voice carrier (see
+//! [`tilo_relay_protocol::voice`]).
+//!
+//! A call has no participant limit. A device takes part in one call at a
+//! time: joining another call ends its earlier participation, so a call's
+//! participants, and the carrier's sessions, are bounded by the room's member
+//! devices, not by a constant.
 //!
 //! What a participation may do is the room's current policy for its device:
 //! the call is active, the device is a member, and neither the call's
@@ -27,8 +35,8 @@ use tilo_moq::relay::{
 use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
-    self as protocol, CallOperation, CallState, CallSummary, Directions, MAX_PARTICIPANTS,
-    PARTICIPATION_TTL, VoiceGrant, VoiceParticipant,
+    self as protocol, CallOperation, CallState, CallSummary, Directions, PARTICIPATION_TTL,
+    VoiceGrant, VoiceParticipant,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
@@ -389,6 +397,16 @@ fn transition(
         },
     };
     let id = match operation {
+        CallOperation::Open {
+            app_id,
+            record_id,
+            channel_id,
+        } => {
+            let binding = candidate
+                .media()
+                .resolve_media_binding(app_id, record_id, channel_id)?;
+            open(&mut policy, binding)?
+        }
         CallOperation::Start {
             app_id,
             record_id,
@@ -416,13 +434,44 @@ fn transition(
     Ok(id)
 }
 
+/// The call of `binding`'s channel in `policy`, active: its active call as
+/// it is, its ended call restarted, or a new call where participants publish
+/// and subscribe.
+fn open(policy: &mut RoomMediaV1, binding: media::ChatCallBindingV1) -> Result<[u8; 32], String> {
+    let existing = policy
+        .calls
+        .iter_mut()
+        .find(|(_, call)| call.binding.same_channel(&binding));
+    if let Some((id, call)) = existing {
+        if call.phase != CallPhaseV1::Active {
+            // A call's binding never changes; it names the channel by its
+            // id, which the current resolution shares.
+            call.phase = CallPhaseV1::Active;
+            call.epoch = media::next_counter(call.epoch).map_err(|error| error.to_string())?;
+        }
+        return Ok(*id);
+    }
+    start(
+        policy,
+        binding,
+        Directions {
+            publish: true,
+            subscribe: true,
+        },
+    )
+}
+
 /// Add an active call on `binding` to `policy`.
 fn start(
     policy: &mut RoomMediaV1,
     binding: media::ChatCallBindingV1,
     allowed: Directions,
 ) -> Result<[u8; 32], String> {
-    if policy.calls.values().any(|call| call.binding == binding) {
+    if policy
+        .calls
+        .values()
+        .any(|call| call.binding.same_channel(&binding))
+    {
         return Err("that channel already has a call; restart it".into());
     }
     if policy.calls.len() >= media::MAX_CALLS {
@@ -466,7 +515,9 @@ fn moderate(
         return Err("the call changed since that epoch".into());
     }
     let changed = match operation {
-        CallOperation::Start { .. } => return Err("not a moderation".into()),
+        CallOperation::Open { .. } | CallOperation::Start { .. } => {
+            return Err("not a moderation".into());
+        }
         CallOperation::End { .. } => {
             if entry.phase != CallPhaseV1::Active {
                 return Err("the call already ended".into());
@@ -483,7 +534,7 @@ fn moderate(
                 &entry.binding.record_id,
                 &entry.binding.channel_id,
             )?;
-            if binding != entry.binding {
+            if !binding.same_channel(&entry.binding) {
                 return Err("the call's channel changed".into());
             }
             entry.phase = CallPhaseV1::Active;
@@ -620,8 +671,9 @@ impl Rooms {
         self.inner.calls.carrier.get().is_some()
     }
 
-    /// Start, end or moderate a call of `room` for `caller`: a device of
-    /// the relay's user, or of a member the room lets run its calls.
+    /// Open, start, end or moderate a call of `room` for `caller`: opening
+    /// a channel's call takes a member, everything else a device of the
+    /// relay's user, or of a member the room lets run its calls.
     pub(crate) async fn voice_call(
         &self,
         room: &str,
@@ -642,13 +694,27 @@ impl Rooms {
     ) -> Result<CallState, String> {
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
-        self.authorize(
-            caller,
-            Some(&room),
-            RoomOp::Govern(governance::CALL),
-            tilo_clock::unix_now_ns(),
-        )
-        .map_err(|error| error.to_string())?;
+        if matches!(operation, CallOperation::Open { .. }) {
+            // Joining a voice channel is any member's: who may speak or
+            // hear in it is the call's directions and denials.
+            let access = room
+                .peer()
+                .governance()
+                .governed_access(SystemTime::now())?;
+            if !access.member_devices.contains(&caller.device_public_key)
+                && !access.member_user_roots.contains(&caller.user_public_key)
+            {
+                return Err("not a member of the room".into());
+            }
+        } else {
+            self.authorize(
+                caller,
+                Some(&room),
+                RoomOp::Govern(governance::CALL),
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         super::prepare_governance(&mut candidate, &self.inner.host.key, now)?;
@@ -716,9 +782,25 @@ impl Rooms {
             }
             id
         } else {
-            if state.in_call(&call).count() >= MAX_PARTICIPANTS {
-                return Err("the call is full".into());
+            // A device is in one call at a time: its earlier participation,
+            // in this call or another, ends with this join.
+            let earlier: Vec<[u8; 32]> = state
+                .participations
+                .iter()
+                .filter(|(_, existing)| existing.device == peer.device_public_key)
+                .map(|(id, _)| *id)
+                .collect();
+            let mut left = Vec::new();
+            for id in earlier {
+                if let Some(existing) = state.remove(&id)
+                    && existing.call != call
+                {
+                    left.push(existing.call);
+                }
             }
+            left.sort_unstable();
+            left.dedup();
+            calls.announce(&state, &left);
             let id = loop {
                 let id: [u8; 32] = rand::random();
                 if !state.participations.contains_key(&id) {
