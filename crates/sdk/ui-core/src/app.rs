@@ -2491,6 +2491,7 @@ impl App {
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
+        let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
         // presents search, so it never shows a second search control.
         self.offer_window_bar_to_header();

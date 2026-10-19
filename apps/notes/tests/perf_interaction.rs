@@ -24,3 +24,16 @@ fn start_cost() {
         .expect("notes opens")
         .print();
 }
+
+/// What launching notes costs cold, one process per launch as on a device:
+/// from the process starting to its first frame drawn, fonts and every
+/// other per-process cache empty.
+#[test]
+fn cold_start() {
+    ui::framework::testing::perf::cold_start(
+        "notes",
+        std::path::Path::new(env!("CARGO_BIN_EXE_notes")),
+        8,
+    )
+    .print();
+}

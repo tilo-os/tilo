@@ -24,3 +24,16 @@ fn start_cost() {
         .expect("file-explorer opens")
         .print();
 }
+
+/// What launching file-explorer costs cold, one process per launch as on a device:
+/// from the process starting to its first frame drawn, fonts and every
+/// other per-process cache empty.
+#[test]
+fn cold_start() {
+    ui::framework::testing::perf::cold_start(
+        "file-explorer",
+        std::path::Path::new(env!("CARGO_BIN_EXE_file-explorer")),
+        8,
+    )
+    .print();
+}
