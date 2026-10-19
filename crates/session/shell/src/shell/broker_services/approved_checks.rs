@@ -345,6 +345,12 @@ impl ApprovedCheckServices for NativeChecks {
             cleanup_observed: observed.cleanup_observed,
             stdout: diagnostic(observed.stdout.as_ref(), observed.stdout_sha256),
             stderr: diagnostic(observed.stderr.as_ref(), observed.stderr_sha256),
+            failure: observed.failure.as_ref().map(|reason| {
+                diagnostic(
+                    Some(reason),
+                    Some(hex::encode(Sha256::digest(reason.as_bytes()))),
+                )
+            }),
         };
         receipt.encode()?;
         Ok(receipt)
