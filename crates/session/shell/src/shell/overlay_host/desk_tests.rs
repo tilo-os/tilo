@@ -363,7 +363,10 @@ fn a_lone_strips_ribbon_rests_hidden_and_shows_when_reached_for() {
     assert_eq!(strips(&chrome), 1);
     assert_eq!(resting(&mut host), 0.0, "a lone strip's mark rests hidden");
     let zone = host.strip_switcher_zone();
-    assert!(zone.area() > 0.0, "the switcher is still offered by its mark");
+    assert!(
+        zone.area() > 0.0,
+        "the switcher is still offered by its mark"
+    );
     host.strip_ribbon_hover = Some(0);
     let reached = host.strip_indicator_alpha_at(ms(t0, 60_000), true);
     assert!(reached > 0.0, "reaching for the mark shows it: {reached}");
@@ -612,4 +615,39 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
         Some(ms(t0, 100) + GLANCE_AFTER_PAUSE),
         "only the pause wakes the desk"
     );
+}
+
+/// A face shown faintly reads as a ghost. The Team widget rests hidden with
+/// nobody else here; with people here it rests as a whole, legible face
+/// stack, and comes with the Appear motion, whole within its first moments,
+/// never resting translucent in between.
+#[test]
+fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
+    let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
+    assert!(shown_opacity(WidgetId::Team, 0.0, motion) <= f32::EPSILON);
+    assert!(
+        (shown_opacity(WidgetId::Team, 0.6, motion) - 1.0).abs() < 1e-6,
+        "whole before its motion ends"
+    );
+    assert!((shown_opacity(WidgetId::Team, 1.0, motion) - 1.0).abs() < 1e-6);
+
+    // Nobody else here: nothing to show, so it stays hidden at rest.
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.desktop.collaborators.clear();
+    for workspace in &mut tree.desktop.workspaces {
+        workspace.collaborators.clear();
+    }
+    let chrome = ChromeState::new(tree);
+    let mut alone = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    let t0 = Instant::now();
+    alone.update_desk(t0);
+    alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
+    assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
+
+    // Someone here: it rests in its glance form.
+    let (mut host, _chrome, _) = desk();
+    host.update_desk(t0);
+    assert_eq!(host.desk_form(WidgetId::Team), Form::Glance);
 }
