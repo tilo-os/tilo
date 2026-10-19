@@ -304,18 +304,53 @@ fn collect(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> io::Result<(
     Ok(())
 }
 
-/// One file's facts, read after it was sealed.
+/// One file's SHA-256 and its fs-verity digest when the filesystem sealed it.
+///
+/// The kernel seals the file (one pass over it) while this thread reads it
+/// once for both its SHA-256 and the fs-verity digest of the bytes read. The
+/// sealed file is then measured: equal to the digest of what was read, the
+/// SHA-256 is of the sealed bytes. Two passes run side by side instead of one
+/// after the other, which halves the time a large binary takes.
 fn seal_and_read(path: &Path) -> io::Result<(String, Option<String>)> {
-    match verity::enable(path) {
+    let (sealed, read) = std::thread::scope(|scope| {
+        let sealing = scope.spawn(|| verity::enable(path));
+        let read = (|| {
+            let mut file = open_nofollow(path)?;
+            let mut sha256 = Sha256::new();
+            let mut tree = verity::VerityHasher::new();
+            let mut buffer = vec![0u8; 1 << 20];
+            loop {
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                let bytes = buffer.get(..count).unwrap_or_default();
+                sha256.update(bytes);
+                tree.update(bytes);
+            }
+            Ok::<_, io::Error>((hex::encode(sha256.finalize()), hex::encode(tree.finalize())))
+        })();
+        let sealed = sealing
+            .join()
+            .unwrap_or_else(|_| Err(io::Error::other("sealing the file failed")));
+        (sealed, read)
+    });
+    let (sha256, digest) = read?;
+    match sealed {
         Ok(()) => {}
         // No fs-verity on this filesystem: the activation hashes the file.
-        Err(error) if error.kind() == io::ErrorKind::Unsupported => {}
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return Ok((sha256, None)),
         Err(error) => return Err(error),
     }
-    let mut file = open_nofollow(path)?;
-    let measured = verity::measure(&file).map(hex::encode);
-    let sha256 = sha256_of(&mut file)?;
-    Ok((sha256, measured))
+    let measured = verity::measure(&open_nofollow(path)?).map(hex::encode);
+    match measured {
+        Some(measured) if measured == digest => Ok((sha256, Some(measured))),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} changed while it was sealed", path.display()),
+        )),
+        None => Ok((sha256, None)),
+    }
 }
 
 /// Seal every regular file of the layer at `root` with fs-verity where the
@@ -324,8 +359,8 @@ fn seal_and_read(path: &Path) -> io::Result<(String, Option<String>)> {
 /// read after sealing and its measured fs-verity digest. `provenance.json`
 /// and the extension-release directory are not the layer's content.
 ///
-/// Files are sealed and read in parallel; a large file still takes one
-/// kernel pass and one read.
+/// Files are sealed and read in parallel, largest first; each takes one
+/// kernel pass and, beside it, one read.
 ///
 /// # Errors
 /// Unreadable entries, a special file ([`io::ErrorKind::InvalidData`]), or a
@@ -361,10 +396,19 @@ pub fn describe(root: &Path) -> io::Result<Vec<Entry>> {
             ));
         }
     }
+    // Largest first: the biggest file decides the time, so it starts at once.
+    files.sort_by_key(|slot| {
+        std::cmp::Reverse(
+            slots
+                .get(*slot)
+                .and_then(|(_, abs, _)| fs::symlink_metadata(abs).ok())
+                .map_or(0, |meta| meta.len()),
+        )
+    });
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<(usize, io::Result<(String, Option<String>)>)>> = Mutex::new(Vec::new());
-    let workers = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZeroUsize::get)
+    // Each file takes two threads: the kernel sealing it and the read.
+    let workers = (std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get) / 2)
         .min(files.len())
         .max(1);
     std::thread::scope(|scope| {
