@@ -128,15 +128,25 @@ fn main() -> Result<(), String> {
 
 fn recommend_pci() -> Result<(), String> {
     let recommendations = recommended_boot_packs()?;
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
+    reply(
+        &serde_json::to_string(&serde_json::json!({
             "schema_version": 1,
             "recommendations": recommendations,
         }))
-        .map_err(|error| error.to_string())?
-    );
-    Ok(())
+        .map_err(|error| error.to_string())?,
+    )
+}
+
+/// Answers the client on stdout, the request socket. The answer is optional:
+/// a client may close as soon as it has written its request, and a closed
+/// socket then means nobody is listening, not that the request failed.
+fn reply(line: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    match writeln!(stdout, "{line}").and_then(|()| stdout.flush()) {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error.to_string()),
+        _ => Ok(()),
+    }
 }
 
 fn stage_pending() -> Result<(), String> {
@@ -257,11 +267,7 @@ fn project_status_value(
         "error": error,
     });
     save_json(Path::new(STATUS_PATH), &value, 0o644)?;
-    println!(
-        "{}",
-        serde_json::to_string(&value).map_err(|error| error.to_string())?
-    );
-    Ok(())
+    reply(&serde_json::to_string(&value).map_err(|error| error.to_string())?)
 }
 
 fn read_catalog(id: &str) -> Result<SignedExtensionManifest, String> {
