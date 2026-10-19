@@ -235,23 +235,31 @@ fn complete_bounded_restore_validates_present_media_and_exact_chat_without_requi
     let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
     durable.base.documents.clear();
     checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).unwrap();
-    // Existing lazy checkpoints remain original, even when the live Chat is
-    // changed. Replacing the actual selected channel object must still fail.
-    let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
-    let mut chat = AutoCommit::load(&durable.base.documents[0].bytes).unwrap();
-    let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
-    chat.delete(&channels, "voice").unwrap();
-    let voice = {
-        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
-        chat.put_object(&entry, "v", ObjType::Map).unwrap()
-    };
-    chat.put(&voice, "kind", "voice").unwrap();
-    chat.put(&voice, "workspace", "home").unwrap();
-    durable.base.documents[0].bytes = chat.save();
-    assert!(matches!(
-        checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now),
-        Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Media))
-    ));
+    // A call binds its channel by app, record and channel id: the channel
+    // remade under the same id still binds, one that is no voice channel any
+    // more must fail.
+    for kind in ["voice", "text"] {
+        let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+        let mut chat = AutoCommit::load(&durable.base.documents[0].bytes).unwrap();
+        let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
+        chat.delete(&channels, "voice").unwrap();
+        let voice = {
+            let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+            chat.put_object(&entry, "v", ObjType::Map).unwrap()
+        };
+        chat.put(&voice, "kind", kind).unwrap();
+        chat.put(&voice, "workspace", "home").unwrap();
+        durable.base.documents[0].bytes = chat.save();
+        let result = checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now);
+        if kind == "voice" {
+            result.unwrap();
+        } else {
+            assert!(matches!(
+                result,
+                Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Media))
+            ));
+        }
+    }
     for mode in 0..3 {
         let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
         let mut room = AutoCommit::load(durable.base.room_bytes.as_ref().unwrap()).unwrap();

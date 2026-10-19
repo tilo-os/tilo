@@ -101,12 +101,12 @@ fn resolve<R: ObjectIdWrite>(
     room: &R,
 ) -> Result<Binding, Error> {
     // Chat keeps its channels as a collection: each entry holds its order
-    // key and, under `v`, the channel itself.
-    let channels = read::strict_map(room, &room.root(), "channels").map_err(strict_error)?;
-    let entry = read::strict_map(room, &channels, channel).map_err(strict_error)?;
-    // Two devices that made the same channel (a room's first `#voice`) each
-    // wrote its value; the document keeps both and every replica reads the
-    // same winner, as Chat itself does.
+    // key and, under `v`, the channel itself. Two devices that made the same
+    // channel (a room's first `#voice`) each created the collection, the
+    // entry and its value; the document keeps every copy and every replica
+    // reads the same winner at each level, as Chat itself does.
+    let channels = winner_map(room, &room.root(), "channels")?;
+    let entry = winner_map(room, &channels, channel)?;
     let object = winner_map(room, &entry, "v")?;
     if read::strict_string(room, &object, "kind").map_err(strict_error)? != "voice" {
         return Err(policy(MediaPolicyError::Binding));

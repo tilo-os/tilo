@@ -173,6 +173,8 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
             };
         }
         2 => chat.put(&object, "kind", "text").unwrap(),
+        // A call names its channel by app, record and channel id; the
+        // workspace a channel once named is recorded, not compared.
         3 => chat.put(&object, "workspace", "elsewhere").unwrap(),
         4 => chat.put(&object, "archived", true).unwrap(),
         _ => chat.put(&object, "name", "new title").unwrap(),
@@ -187,7 +189,7 @@ fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
 }
 #[test]
 fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
-    for operation in 0..5 {
+    for operation in [0, 1, 2, 4] {
         for snapshot in [false, true] {
             let (mut peer, key, now) = fixture();
             let value = policy(&peer);
@@ -210,17 +212,21 @@ fn room_media_active_chat_publication_rejects_destructive_edits_atomically() {
             );
         }
     }
+    // Chat dropped its workspaces: a channel's former workspace changing
+    // keeps the call bound.
+    let (mut peer, key, now) = fixture();
+    let value = policy(&peer);
+    install_policy(&mut peer, &key, now, &value).unwrap();
+    let (_, incremental) = edited_chat(&peer, 3);
+    peer.publish_incremental(APP, "", incremental, &key, now)
+        .unwrap();
+    assert_eq!(peer.validated_media_policy().unwrap(), Some(value));
 }
 #[test]
 fn room_media_room_policy_cannot_activate_a_present_mismatched_binding() {
     let (mut peer, key, now) = fixture();
     let mut value = policy(&peer);
-    value
-        .calls
-        .get_mut(&[7; 32])
-        .unwrap()
-        .binding
-        .chat_workspace_id = "wrong".into();
+    value.calls.get_mut(&[7; 32]).unwrap().binding.channel_id = "missing".into();
     let before = peer.durable().unwrap();
     assert!(install_policy(&mut peer, &key, now, &value).is_err());
     assert_eq!(before, peer.durable().unwrap());
@@ -373,7 +379,7 @@ fn room_media_signed_editor_edits_preserve_call_binding_and_reader_cannot_write(
     let (mut peer, authority, members, now) = members();
     let value = policy(&peer);
     install_policy(&mut peer, &authority, now, &value).unwrap();
-    for operation in 0..5 {
+    for operation in [0, 1, 2, 4] {
         let (_, delta) = edited_chat(&peer, operation);
         let (message, _) = peer
             .prepare_signed_mutation(
@@ -434,7 +440,7 @@ fn assert_invalid_then_valid_chat(
 ) {
     assert!(receiver.admission_v5_selected());
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let bad_bytes = edited_chat(author, 3).0;
+    let bad_bytes = edited_chat(author, 2).0;
     let (bad, coverage) = author
         .prepare_signed_mutation(APP, "", DocumentMutation::Snapshot(bad_bytes), key, now)
         .unwrap();
