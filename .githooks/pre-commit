@@ -135,6 +135,12 @@ if grep -qx 'Cargo.lock' <<< "$staged_names" \
    && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
 fi
+# A manifest change can close a cycle in the package graph, which leaves the
+# whole workspace unresolvable (cargo metadata, every build). Resolving it
+# compiles nothing and takes about a second.
+if grep -qE '(^|/)Cargo\.(toml|lock)$' <<< "$staged_names"; then
+  python3 "$root/tools/policy/check_dependency_cycles.py" || fail=1
+fi
 # A vendored crate's own lock file is a build artifact, not ours.
 if grep -qE '^vendor/[^/]+/Cargo\.lock$' <<< "$staged_names"; then
   note "a vendored crate's Cargo.lock is staged; it is a build artifact"
