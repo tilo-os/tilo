@@ -17,6 +17,7 @@ use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionOutput;
 use ui::tilo_resource::Id;
+use ui::tilo_resource::Resource as _;
 
 fn begun() -> (TestApp<ChatShell>, String) {
     let mut app = TestApp::<ChatShell>::new().unwrap();

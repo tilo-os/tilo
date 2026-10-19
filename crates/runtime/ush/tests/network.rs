@@ -208,11 +208,10 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
         .unwrap();
     assert!(
         env.grants
-            .0
             .iter()
             .any(|c| c.scope == collab_types::caps::Scope::NetHost("denied.test".into())),
         "{:?}",
-        env.grants.0
+        env.grants
     );
 }
 

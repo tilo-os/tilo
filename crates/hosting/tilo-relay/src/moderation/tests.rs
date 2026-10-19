@@ -256,7 +256,7 @@ fn a_report_restricts_through_the_room_and_undoes_the_flood_as_the_bot() {
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(decision.model, "fake-model");
     assert_eq!(
-        decision.reverted.0[0].changes, 3,
+        decision.reverted[0].changes, 3,
         "her posts, not her joining"
     );
     assert!(

@@ -514,7 +514,7 @@ pub fn environment_record(spec: &EnvironmentSpec) -> tilo_environment::Environme
         },
         ..tilo_environment::Environment::default()
     };
-    environment.grants.0 = spec
+    environment.grants = spec
         .grants
         .iter()
         .filter_map(|grant| {
@@ -899,7 +899,7 @@ mod tests {
         );
         assert_eq!(stored.runtime.release, "2026.10");
         // A guest-owned path is never granted, even if a device sent one.
-        assert_eq!(stored.grants.0.len(), 1);
+        assert_eq!(stored.grants.len(), 1);
         // A tool the session built lands in the record; the launcher reads
         // it back for the member's terminal.
         let tool = tilo_environment::PackageId::from_bytes([2; 32]).to_string();
