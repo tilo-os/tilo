@@ -1293,7 +1293,7 @@ mod tests {
     }
 
     /// busctl reads a negative nice value as an option unless `--` ends the
-    /// options first, and RealtimeKit looks a bare thread id up in the
+    /// options first, and `RealtimeKit` looks a bare thread id up in the
     /// calling process (busctl's own), so every call names the pid.
     #[test]
     fn realtime_kit_calls_end_options_and_name_the_process() {
