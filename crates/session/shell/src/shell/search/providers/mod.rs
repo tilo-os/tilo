@@ -3,6 +3,7 @@
 //! [`SearchProvider`]: crate::shell::search::SearchProvider
 
 pub mod actions;
+pub mod app_content;
 pub mod applications;
 pub(crate) mod authentication_prompts;
 mod background_index;
@@ -27,6 +28,7 @@ pub mod tray_items;
 pub mod unavailable_applications;
 
 pub use actions::ActionsProvider;
+pub use app_content::AppContentProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
 pub use continuity::{
     CallContinuityActionsProvider, ContinueFromDeviceProvider, DeviceContinuityActionsProvider,
