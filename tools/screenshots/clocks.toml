@@ -36,6 +36,9 @@ invoke = { resource = "clocks.collection", action = "add-alarm", args = { label 
 [[situation.steps]]
 invoke = { resource = "clocks.collection", action = "add-alarm", args = { label = "Pick up the dry cleaning", hour = 17, minute = 15, weekdays = [] } }
 
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "show", args = { section = "alarms" } }
+
 [[situation]]
 name = "timers"
 title = "Kitchen timers running"
@@ -48,6 +51,9 @@ invoke = { resource = "clocks.collection", action = "add-timer", args = { label 
 
 [[situation.steps]]
 invoke = { resource = "clocks.collection", action = "add-timer", args = { label = "Tea", seconds = 240 } }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "show", args = { section = "timers" } }
 
 [[situation]]
 name = "stopwatch"
@@ -64,3 +70,6 @@ invoke = { resource = "clocks.collection", action = "lap" }
 
 [[situation.steps]]
 invoke = { resource = "clocks.collection", action = "pause-stopwatch" }
+
+[[situation.steps]]
+invoke = { resource = "clocks.collection", action = "show", args = { section = "stopwatch" } }
