@@ -120,6 +120,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
         enter(&relay, &device.cert, &room.room).await;
         links.push(session(address.clone(), room.workspace_id, &device).await);
     }
+    let mut joined = Vec::new();
     for link in &links {
         link.send(Envelope::VoiceJoin {
             workspace_id: room.workspace_id,
@@ -127,7 +128,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
             participation: None,
         })
         .unwrap();
-        native(link, granted).await;
+        joined.push(native(link, granted).await.participation);
     }
     let full = native(&links[0], |envelope| {
         granted(envelope).filter(|grant| grant.participants.len() == 12)
@@ -147,7 +148,12 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
             participation: None,
         })
         .unwrap();
-    let rejoined = native(&links[1], granted).await;
+    // Grants announcing the later joins are still queued on this link; the
+    // answer to its fresh join names a new participation.
+    let rejoined = native(&links[1], |envelope| {
+        granted(envelope).filter(|grant| grant.participation != joined[1])
+    })
+    .await;
     assert_eq!(rejoined.participants.len(), 12);
 
     drop(web);
