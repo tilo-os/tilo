@@ -329,6 +329,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle.publishActionDirectory" = "@33 (appId:Text,directory:ActionDirectory)->()"
 "capnp:collab.capnp:ChannelHandle.publishActionSurface" = "@61 (appId:Text,reset:Bool,shapes:List(ActionShape),templates:List(ActionTemplate),resources:List(ActionResource),removed:List(Text))->()"
 "capnp:collab.capnp:ChannelHandle.publishActions" = "@13 (appId:Text,actions:List(ExportedAction))->()"
+"capnp:collab.capnp:ChannelHandle.publishSearchIndex" = "@67 (appId:Text,deltaJson:Data)->()"
 "capnp:collab.capnp:ChannelHandle.publishedInvocationObservation" = "@50 (host:Data,invocation:Data)->(observation:PublishedInvocationObservation)"
 "capnp:collab.capnp:ChannelHandle.publishedInvocationStatus" = "@22 (id:UInt64)->(found:Bool,updateJson:Text)"
 "capnp:collab.capnp:ChannelHandle.queryActionDirectory" = "@34 (query:ActionDirectoryQuery)->(page:ActionDirectoryPage)"
