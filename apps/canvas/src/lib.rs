@@ -460,9 +460,13 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool
         .collect();
     let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool).on_view("Tool", |_| {});
     if compact {
+        // At regular size the tools, the picture button and the paint well
+        // fit a phone-width window; the strip still scrolls when "All
+        // tools" adds more, without a scroll bar painted under the tools.
         return Box::new(
             Scrollable::new_horizontal()
                 .fit_content_height()
+                .with_scrollbar(false)
                 .with_child(Box::new(
                     Row::new()
                         .no_wrap()
@@ -470,8 +474,8 @@ fn rail_choices(tools: &tools::Tools, workspace: tools::Workspace, compact: bool
                             ui::tokens::Rhythm::Related,
                             ui::tokens::Rhythm::Related,
                         )
-                        .push(panels::header::add_picture(tools, ControlSize::Large))
-                        .push(Box::new(rail.control_size(ControlSize::Large)))
+                        .push(panels::header::add_picture(tools, ControlSize::Regular))
+                        .push(Box::new(rail.control_size(ControlSize::Regular)))
                         .push(Box::new(panels::well::Well::new(tools.clone()))),
                 )),
         );
