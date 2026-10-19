@@ -1033,7 +1033,12 @@ impl PdfApp {
             width: w,
             height: h,
         };
-        if thumbnail::encode_png(&swatch).is_some_and(|bytes| std::fs::write(&png, bytes).is_ok()) {
+        let written = thumbnail::encode_png(&swatch).is_some_and(|bytes| {
+            tilo_files::file_at(&png)
+                .and_then(|(dir, name)| tilo_files::blocking::write(&dir, &name, &bytes))
+                .is_ok()
+        });
+        if written {
             self.import_file(&png);
         }
     }
