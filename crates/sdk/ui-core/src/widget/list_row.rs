@@ -1572,6 +1572,7 @@ enum Leading {
         identity: String,
         image: Option<ImageData>,
         square: bool,
+        glyph: Option<Icon>,
     },
     Icon(Icon),
     Badge(String),
@@ -1889,7 +1890,19 @@ impl ListRow {
             identity: identity.into(),
             image: None,
             square: false,
+            glyph: None,
         });
+        self
+    }
+
+    /// An app without artwork of its own in the leading avatar: its glyph on
+    /// the neutral square, the mark the shell shows for it
+    /// ([`AvatarFace::glyph`]).
+    #[must_use]
+    pub fn avatar_glyph(mut self, icon: Icon) -> Self {
+        if let Some(Leading::Avatar { glyph, .. }) = &mut self.leading {
+            *glyph = Some(icon);
+        }
         self
     }
 
@@ -2358,8 +2371,12 @@ impl ListRow {
                     identity,
                     image,
                     square,
+                    glyph,
                 } => {
-                    let avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    let mut avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    if let Some(glyph) = glyph {
+                        avatar = avatar.glyph(*glyph);
+                    }
                     RowLeading::Avatar(if *square { avatar.square() } else { avatar })
                 }
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
@@ -2375,6 +2392,8 @@ impl ListRow {
                             MediaArt::Image(image)
                         }
                         (None, MediaSource::AppIcon(icon)) => MediaArt::AppIcon(icon),
+                        (None, MediaSource::Kind(icon)) => MediaArt::Kind(*icon),
+                        (None, MediaSource::Mosaic(images)) => MediaArt::Mosaic(images),
                         _ => MediaArt::Placeholder,
                     },
                     *aspect,
