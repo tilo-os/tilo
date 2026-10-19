@@ -364,5 +364,21 @@ class BrowserRuntimeRelease(unittest.TestCase):
             self.assertEqual(result.stderr, '')
 
 
+    def test_trusted_steps_without_git_name_their_commit(self):
+        # t's x86_64 micro-VM steps carry the commit's sources but no Git repository.
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(release, 'ROOT', Path(directory)), \
+                patch.dict(os.environ, {'T_COMMIT': 'b' * 40}), \
+                patch.object(release.subprocess, 'check_output', return_value='c' * 40 + '\n') as git:
+            self.assertEqual(release.head(), 'b' * 40)
+            git.assert_not_called()
+            (Path(directory) / '.git').mkdir()
+            self.assertEqual(release.head(), 'c' * 40)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(release, 'ROOT', Path(directory)), \
+                patch.dict(os.environ, {'T_COMMIT': 'not a commit'}), \
+                patch.object(release.subprocess, 'check_output', return_value='c' * 40 + '\n'):
+            self.assertEqual(release.head(), 'c' * 40)
+
 if __name__ == '__main__':
     unittest.main()

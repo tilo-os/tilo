@@ -607,6 +607,61 @@ on = ["stable"]
 cost = "minutes"
 
 [[matrix]]
+family = "engine"
+about = """
+The Browser's Chromium engine runtime (tools/apps/t-engine-release.sh; docs/publishing-on-t.md),
+`tilo-runtime/<RUNTIME_VERSION>` offered as so.tilo.runtime.chromium. Apps name it in
+`optional-runtimes`, so the collections don't carry it. Per architecture the pinned CEF host and
+the release tools are compiled and sealed with throwaway keys without credentials: `t test
+engine-build-x86_64` is what a release builds (from a committed tree; the provenance names the
+commit). On each new head of stable the release nodes seal those exact files with the runtime
+and app publisher identities (sign-engine-*, which compile nothing), upload the packages with
+the package token (upload-engine) and submit their publisher-signed registry entries
+(submit-engine). A runtime the registry already offers is left alone. Main publishes no engine."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+fields = { inputs = ["tools/apps/t-engine-release.sh", "tools/apps/release-lib.sh", "tools/apps/browser_runtime_release.py", "tools/apps/pack-runtime-package.sh", "tools/apps/publish-runtime-package.sh", "tools/upload_immutable_packages.sh", "tools/ci/python.py", "tools/ci/publish/lib.sh", "tools/ci/ensure-browser-dependencies.sh", "scripts/browser/**", "apps/browser/chromium/**", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh"], cargo_packages = ["tilo-app-package-cli", "runtime-bundle"], cargo_dev_dependencies = false }
+
+[[matrix.check]]
+name = "engine-build-{arch}"
+run = "bash tools/apps/t-engine-release.sh build {arch} /target/engine-release/{arch}"
+outputs = ["/target/engine-release/{arch}/compiled/**"]
+requires = ["{node}"]
+# scripts/browser/build-host.py keeps the CEF SDK and its CMake build under target/ in the tree,
+# as the chromium-host check does.
+writable_sources = true
+requirement = { cores = 8, memory = "8GiB" }
+cost = "heavy"
+default = false
+
+[[matrix.check]]
+name = "sign-engine-{arch}"
+run = "bash tools/apps/t-engine-release.sh sign {arch} /target/engine-release/{arch} /target/engine-release/{arch}/signed"
+needs = ["engine-build-{arch}"]
+outputs = ["/target/engine-release/{arch}/signed/**"]
+requires = ["{node}"]
+secrets = ["TAPP_PUBLISHER_IDENTITY", "RUNTIME_BUNDLE_SIGNING_KEY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "upload-engine"
+run = "bash tools/apps/t-engine-release.sh upload /target/engine-release/x86_64/signed /target/engine-release/aarch64/signed"
+needs = ["sign-engine-x86_64", "sign-engine-aarch64"]
+requires = ["arch=x86_64"]
+secrets = ["REGISTRY_TOKEN"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix.check]]
+name = "submit-engine"
+run = "bash tools/apps/t-engine-release.sh submit /target/engine-release/x86_64/signed /target/engine-release/aarch64/signed"
+needs = ["sign-engine-x86_64", "sign-engine-aarch64", "upload-engine"]
+requires = ["arch=x86_64"]
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+on = ["stable"]
+cost = "minutes"
+
+[[matrix]]
 family = "desktop"
 about = """
 Every distribution userspace of one architecture, built and install-tested in its own

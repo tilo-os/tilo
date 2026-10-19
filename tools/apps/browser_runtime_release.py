@@ -91,8 +91,20 @@ def signal_mode(environment, head):
     return True
 
 
+def t_checkout():
+    """The commit t checked these sources out at, when they carry no Git repository.
+
+    t's steps get the exact sources of their run without Git; a trusted run names its commit in
+    T_COMMIT (tools/apps/t-engine-release.sh, which names none for a working tree's rehearsal).
+    """
+    commit = os.environ.get('T_COMMIT', '')
+    if not (ROOT / '.git').exists() and re.fullmatch('[0-9a-f]{40}', commit):
+        return commit
+    return None
+
+
 def head():
-    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    return t_checkout() or subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 
 
 def runtime_version(root=ROOT):
@@ -266,7 +278,7 @@ def cargo_tools():
 
 def compile_engine(out, architecture, source):
     proof = provenance(architecture, source)
-    if not isinstance(source, Source) or source.snapshot_commit is None:
+    if (not isinstance(source, Source) or source.snapshot_commit is None) and t_checkout() is None:
         require(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'],
                                             cwd=ROOT, text=True).strip(),
                 'engine compilation requires a clean committed source')
