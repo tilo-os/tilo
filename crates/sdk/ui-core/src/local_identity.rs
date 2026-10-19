@@ -157,7 +157,6 @@ impl RuntimeIdentity {
     /// reach for the signing secret, which on a desktop with a Secret
     /// Service is a D-Bus round trip (and maybe an unlock prompt). The shell
     /// asks on its broker and network runtimes for every presence frame.
-    #[cfg(unix)]
     fn resolve(shell_config: bool) -> Option<LocalIdentity> {
         let id = runtime_identity::load_metadata().ok().or_else(|| {
             shell_config
@@ -170,11 +169,6 @@ impl RuntimeIdentity {
             display_name: id.display_name,
             avatar_color: id.avatar_color,
         })
-    }
-
-    #[cfg(not(unix))]
-    fn resolve(_shell_config: bool) -> Option<LocalIdentity> {
-        None
     }
 }
 
@@ -194,13 +188,13 @@ const fn default_bound() -> Option<LocalIdentity> {
 /// A device set up with more than one identity keeps them as
 /// `identity-<key>.json` beside that selector and no `primary.json`; reading
 /// only `primary.json` left such a person nameless on their own desktop.
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(feature = "local-daemons")]
 fn config_identity_path() -> Option<std::path::PathBuf> {
     identity_record_in(&crate::host::environment().paths.config_dir()?)
 }
 
 /// [`config_identity_path`] under the config directory `config`.
-#[cfg(all(unix, feature = "local-daemons"))]
+#[cfg(feature = "local-daemons")]
 fn identity_record_in(config: &std::path::Path) -> Option<std::path::PathBuf> {
     runtime_identity::resolve_active_identity(&config.join("tilo").join("identity"))
 }

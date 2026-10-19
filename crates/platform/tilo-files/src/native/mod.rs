@@ -21,6 +21,7 @@ pub mod bounded;
 pub mod checked;
 pub mod identity;
 pub mod lock;
+pub mod mapped;
 pub mod migration;
 pub mod nofollow;
 pub mod private;

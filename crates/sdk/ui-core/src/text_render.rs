@@ -3208,7 +3208,7 @@ impl TextRenderer {
             .get_font(face_id, weight)
             .map(|font| font.as_peniko())?;
         // A render service maps the same file instead of receiving the bytes.
-        #[cfg(all(feature = "native", target_os = "linux"))]
+        #[cfg(feature = "native")]
         if crate::render_thread::remote::active()
             && let Some(face) = self.font_system.db().face(face_id)
             && let cosmic_text::fontdb::Source::File(path)

@@ -8,6 +8,10 @@ pub struct HostClockBracket {
 /// Whether ordinary Wayland frames can be joined to the kernel monotonic clock.
 pub const SUPPORTS_WAYLAND_TIMING: bool = cfg!(target_os = "linux");
 
+/// Whether this target's compositor can report presentation through Metal's
+/// observer (a build that also links that observer measures it).
+pub const SUPPORTS_METAL_TIMING: bool = cfg!(target_os = "macos");
+
 pub const CLOCK_NAME: &str = if cfg!(target_os = "macos") {
     "mach_absolute_seconds"
 } else if cfg!(target_os = "linux") {

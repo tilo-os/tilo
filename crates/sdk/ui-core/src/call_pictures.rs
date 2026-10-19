@@ -9,22 +9,22 @@
 //! never shows a picture decoded against a reference it lacks.
 //!
 //! A build without real-time media decodes nothing: tiles keep showing the
-//! person, never a made-up picture. In a browser the page decodes the
-//! pictures itself and hands them over with [`CallPictures::insert`].
+//! person, never a made-up picture. In a browser the decoder is the page's
+//! (WebCodecs), which finishes pictures on its own schedule: [`CallPictures::poll`]
+//! collects them. A page may also decode pictures itself and hand them over
+//! with [`CallPictures::insert`].
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use runtime_collab::native_media::{Picture, PictureSource};
 use tilo_lock::MutexRecover as _;
 use vello::peniko::ImageData;
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::wake::WakeHandle;
 
 /// Coded pictures waiting for the decoder at most: past them a stream starts
 /// over at its next keyframe rather than fall further behind.
-#[cfg(not(target_arch = "wasm32"))]
 const QUEUED: usize = 32;
 
 #[derive(Default)]
@@ -41,19 +41,14 @@ pub struct CallPictures {
     decoded: Arc<Mutex<Decoded>>,
     /// Streams that dropped a picture: nothing of them until a keyframe.
     behind: BTreeSet<(String, PictureSource)>,
-    #[cfg(not(target_arch = "wasm32"))]
     work: Arc<Work>,
-    #[cfg(not(target_arch = "wasm32"))]
     wake: WakeHandle,
-    /// In a page there are no threads: pictures decode as they arrive.
-    #[cfg(target_arch = "wasm32")]
-    decoders: Decoders,
 }
 
 /// The pictures waiting for the decoder and its decoders: decoded by a
 /// background job that runs while there are any, and ends when there are
-/// none, so a quiet call holds no thread.
-#[cfg(not(target_arch = "wasm32"))]
+/// none, so a quiet call holds no thread. In a page the job runs on the
+/// page's one thread, after the frame that queued the pictures.
 #[derive(Default)]
 struct Work {
     queue: Mutex<std::collections::VecDeque<Picture>>,
@@ -83,18 +78,13 @@ impl CallPictures {
         Self {
             decoded: Arc::new(Mutex::new(Decoded::default())),
             behind: BTreeSet::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             work: Arc::new(Work::default()),
-            #[cfg(not(target_arch = "wasm32"))]
             wake: WakeHandle::new(),
-            #[cfg(target_arch = "wasm32")]
-            decoders: Decoders::default(),
         }
     }
 
     /// Hand over the pictures of one `Pictures` answer, oldest first.
     pub fn receive(&mut self, pictures: Vec<Picture>) {
-        #[cfg(not(target_arch = "wasm32"))]
         for picture in pictures {
             let Some(unit) = picture.unit() else {
                 continue;
@@ -116,30 +106,21 @@ impl CallPictures {
             queue.push_back(picture);
             drop(queue);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         self.start_decoding();
-        #[cfg(target_arch = "wasm32")]
-        for picture in pictures {
-            let Some(unit) = picture.unit() else {
-                continue;
-            };
-            let key = (picture.stream.clone(), picture.source);
-            if unit.keyframe {
-                self.behind.remove(&key);
-            } else if self.behind.contains(&key) {
-                continue;
-            }
-            if let Some(image) = decode_one(&picture, &mut self.decoders) {
-                self.insert(&picture.person, picture.source, image);
-            }
-        }
     }
 
-    /// Collect pictures the page's decoder finished since the last frame.
-    #[cfg(target_arch = "wasm32")]
+    /// Collect pictures a decoder finished after the unit that completed
+    /// them was handed over (a page's decoder works on its own schedule; a
+    /// quiet stream's last picture). Skipped while the decoding job holds
+    /// the decoders: the UI thread never waits for it, and the job hands
+    /// over what it decodes itself.
     pub fn poll(&mut self) {
-        let finished: Vec<_> = self
-            .decoders
+        let mut decoders = match self.work.decoders.try_lock() {
+            Ok(decoders) => decoders,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        let finished: Vec<_> = decoders
             .by_person
             .iter_mut()
             .filter_map(|((person, source), (_, decoder))| {
@@ -147,18 +128,13 @@ impl CallPictures {
                 Some((person.clone(), *source, image_of(picture)?))
             })
             .collect();
+        drop(decoders);
         for (person, source, image) in finished {
             self.insert(&person, source, image);
         }
     }
 
-    /// Collect pictures the decoder finished: the decoder thread hands
-    /// them over itself.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn poll(&mut self) {}
-
     /// Decode what is queued, on a background job, unless one runs.
-    #[cfg(not(target_arch = "wasm32"))]
     fn start_decoding(&self) {
         use std::sync::atomic::Ordering;
         if self.work.queue.lock_recover().is_empty()
@@ -191,8 +167,8 @@ impl CallPictures {
     /// sweeping across, shaded by `variant`) exactly as a call codes a
     /// camera or screen, and decode it for `person`'s `source`: screenshots
     /// and tests show pictures that went through the real encoder and
-    /// decoder. False when this build or machine has no encoder.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// decoder. False when this build or machine has no encoder (a page
+    /// has none).
     pub fn feed_test_pattern(
         &mut self,
         person: &str,
@@ -246,18 +222,6 @@ impl CallPictures {
         fed
     }
 
-    /// In a page nothing here encodes: the test picture is not shown.
-    #[cfg(target_arch = "wasm32")]
-    pub fn feed_test_pattern(
-        &mut self,
-        _person: &str,
-        _source: PictureSource,
-        _size: (u16, u16),
-        _variant: u8,
-    ) -> bool {
-        false
-    }
-
     /// Put a picture decoded elsewhere in place (a browser's page decodes
     /// its own).
     pub fn insert(&mut self, person: &str, source: PictureSource, image: ImageData) {
@@ -307,25 +271,17 @@ impl CallPictures {
     pub fn clear(&mut self) {
         self.retain(|_, _| false);
         self.behind.clear();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let dropped = std::mem::take(&mut *self.work.queue.lock_recover()).len();
-            let mut decoded = self.decoded.lock_recover();
-            decoded.pending = decoded.pending.saturating_sub(dropped);
-            drop(decoded);
-            *self.work.decoders.lock_recover() = Decoders::default();
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.decoders = Decoders::default();
-        }
+        let dropped = std::mem::take(&mut *self.work.queue.lock_recover()).len();
+        let mut decoded = self.decoded.lock_recover();
+        decoded.pending = decoded.pending.saturating_sub(dropped);
+        drop(decoded);
+        *self.work.decoders.lock_recover() = Decoders::default();
     }
 }
 
 /// The decoding job: every queued picture through its person's decoder,
 /// the newest picture of each person's source kept, the component woken for
 /// each; it ends once nothing is queued.
-#[cfg(not(target_arch = "wasm32"))]
 fn decode(work: &Work, decoded: &Mutex<Decoded>, wake: &WakeHandle) {
     use std::sync::atomic::Ordering;
     loop {
@@ -413,7 +369,6 @@ fn image_of(decoded: media::DecodedPicture) -> Option<ImageData> {
 
 /// One frame of the moving test picture: colour bars, shaded by `variant`,
 /// with a light block sweeping across by `frame`.
-#[cfg(not(target_arch = "wasm32"))]
 fn test_pattern(width: u16, height: u16, variant: u8, frame: u8) -> Vec<u8> {
     const BARS: [[u8; 3]; 7] = [
         [192, 192, 192],

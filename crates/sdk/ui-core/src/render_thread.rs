@@ -32,6 +32,11 @@ mod deferred_pipelines_tests;
 mod native_gpu_trace;
 #[cfg(target_os = "linux")]
 pub mod remote;
+/// Only a Linux session has a render service; elsewhere the same questions
+/// answer that nothing draws for this process.
+#[cfg(not(target_os = "linux"))]
+#[path = "render_thread/remote_absent.rs"]
+pub mod remote;
 #[cfg(test)]
 mod surface_lifecycle_tests;
 

@@ -72,7 +72,6 @@ pub(crate) fn required_state_choosing(app: &str, choose: impl FnMut() + 'static)
 /// person chooses there; the window hears the choice through the wait the
 /// launch started.
 pub fn choose() {
-    #[cfg(unix)]
     if let Some(link) = tilo_host::shell_choosers::ShellLink::inherited() {
         link.choose_identity(|outcome| {
             if let Err(reason) = outcome {
@@ -93,7 +92,6 @@ pub fn choose() {
     expect(dead_code, reason = "only a native launch waits for the identity")
 )]
 pub(crate) fn await_choice() {
-    #[cfg(unix)]
     if let Some(link) = tilo_host::shell_choosers::ShellLink::inherited() {
         let wake = crate::wake::WakeHandle::new();
         link.await_identity(move |outcome| match outcome {

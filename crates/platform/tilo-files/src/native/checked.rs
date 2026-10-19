@@ -8,7 +8,12 @@
 
 /// Identity comes from the opened file, including its inode so replacements
 /// cannot hide behind an equal length and modification time.
+///
+/// [`Identity::of_path`] identifies what a path names now; a caller that
+/// records an identity to compare against later (a cache built from files)
+/// stores it with the `json` feature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize, serde::Deserialize))]
 pub struct Identity {
     /// Length of the opened file in bytes.
     pub len: u64,
@@ -74,6 +79,17 @@ impl CheckedCopy {
     /// # Errors
     /// Always returns [`io::ErrorKind::Unsupported`].
     pub fn write(&self, _bytes: &[u8]) -> io::Result<Identity> {
+        Err(unsupported())
+    }
+}
+
+#[cfg(not(unix))]
+impl Identity {
+    /// Identify what `path` names now; unsupported on this target.
+    ///
+    /// # Errors
+    /// Always returns [`io::ErrorKind::Unsupported`].
+    pub fn of_path(_path: &Path) -> io::Result<Option<Self>> {
         Err(unsupported())
     }
 }

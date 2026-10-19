@@ -55,7 +55,6 @@ pub mod png;
 pub use tilo_dialogs::portal;
 /// The choosers the session shell draws itself (`tilo_dialogs::shell`), and
 /// the connection to it every app launched into a workspace is handed.
-#[cfg(unix)]
 pub use tilo_dialogs::shell as shell_choosers;
 // Android's Storage Access Framework chooser (main's Android host).
 #[cfg(all(feature = "native", target_os = "android"))]

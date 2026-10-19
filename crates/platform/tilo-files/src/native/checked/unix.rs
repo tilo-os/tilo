@@ -19,6 +19,21 @@ const FILE_FLAGS: OFlags = OFlags::NOFOLLOW
     .union(OFlags::CLOEXEC);
 
 impl Identity {
+    /// The identity of what `path` names now, following symbolic links;
+    /// `None` when nothing is there. Rewriting a file or touching its times
+    /// moves its change time, which no unprivileged process can set, and
+    /// adding or removing an entry moves a directory's times.
+    ///
+    /// # Errors
+    /// Preserves metadata errors other than a missing path.
+    pub fn of_path(path: &Path) -> io::Result<Option<Self>> {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Self::from_metadata(&metadata).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
         Ok(Self {
             len: metadata.len(),

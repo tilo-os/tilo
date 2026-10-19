@@ -859,9 +859,16 @@ impl LanguagePack {
             .chain(std::iter::once(
                 std::path::Path::new(self.source_dir).join(format!("{locale}.ftl")),
             ))
-            .find_map(|path| std::fs::read_to_string(path).ok())
+            .find_map(|path| {
+                let bytes =
+                    tilo_files::native::bounded::read(&path, MAX_LANGUAGE_PACK_BYTES).ok()??;
+                String::from_utf8(bytes).ok()
+            })
     }
 }
+
+/// A language pack's catalogue larger than this is not one.
+const MAX_LANGUAGE_PACK_BYTES: u64 = 4 << 20;
 
 thread_local! {
     /// The embedded catalogues this thread has loaded, by the address of

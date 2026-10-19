@@ -87,7 +87,8 @@ pub(crate) fn enabled() -> bool {
         // and clock bounds as the opt-in Metal observer.
         let diagnostics = &crate::host::environment().diagnostics;
         (tilo_presentation::clock::SUPPORTS_WAYLAND_TIMING && diagnostics.presentation_timing)
-            || (cfg!(all(target_os = "macos", feature = "presentation-feedback"))
+            || (tilo_presentation::clock::SUPPORTS_METAL_TIMING
+                && cfg!(feature = "presentation-feedback")
                 && diagnostics.presentation_profile)
     })
 }
