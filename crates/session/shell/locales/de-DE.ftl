@@ -256,9 +256,6 @@ guide-a11y-name = Tastenkürzel
 guide-a11y-description = Fenster fokussieren mit { $window-back } oder { $window-next }; Tabs mit { $tab-back } oder { $tab-next }; maximieren mit { $maximize } und wiederherstellen mit { $restore }; Leisten mit { $strip-back } oder { $strip-next } oder direkt eine mit { $strip-first } bis { $strip-last }; Arbeitsbereiche mit { $workspace-back } oder { $workspace-next }; Gruppen verschieben mit { $group-left } oder { $group-right }; Größe ändern mit { $narrower } oder { $wider }. Wichtige Desktop-Aktionen: { $essentials }. Klicke auf ein angezeigtes Navigationskürzel, um es zu ändern; Escape bricht eine laufende Änderung ab. Eine geänderte Zeile erhält eine Schaltfläche mit gebogenem Pfeil, die ihre Voreinstellungen wiederherstellt. Mit der Maus klickst du Fenster und Tabs an, ziehst Tabs oder freie Stellen der Tableiste zum Anordnen und ziehst Fensterzwischenräume, um die Größe zu ändern. Escape schließt diese Hilfe.
 
 # Geräte und Medien, die Detailansicht der Schnelleinstellungen
-devices-media-title = Geräte und Medien
-devices-media-description = Audioausgänge dieses Computers und deiner anderen Tilo-Geräte. Mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende bewegst du dich durch alle Ziele.
-devices-media-list = Medienziele
 
 # Schnelleinstellungen
 qs-title = Schnelleinstellungen
@@ -373,6 +370,11 @@ qs-vpn-settings = VPN-Einstellungen
 qs-vpn-details = VPN-Profile
 qs-sound-output = Tonausgabe
 qs-sound-settings = Ton-Einstellungen
+qs-devices-settings = Einstellungen für Geräte & Sync
+qs-clipboard-clear-history = Verlauf leeren
+qs-clipboard-copied = { $age }, von { $source }
+qs-hosted-row-a11y = { $title }. { $detail }
+qs-hosted-row-action-a11y = { $title }. { $detail }. { $action }
 
 # Schnelleinstellungen: Bluetooth
 qs-bluetooth-empty = Keine Geräte gefunden
@@ -651,19 +653,8 @@ a11y-at-a-glance = Auf einen Blick
 
 # Barrierefreiheitsbaum: Verlauf der Zwischenablage
 a11y-clipboard-data = Daten der Zwischenablage
-a11y-clipboard-item-description = Von { $source }; { $age }; { $bytes } Byte; { $pinned ->
-        [yes] angeheftet
-       *[no] nicht angeheftet
-    }
-a11y-clipboard-use = Eintrag verwenden
 a11y-clipboard-unpin = Eintrag lösen
 a11y-clipboard-pin = Eintrag anheften
-a11y-clipboard-remove = Eintrag entfernen
-a11y-clipboard-search = Verlauf der Zwischenablage durchsuchen
-a11y-clipboard-search-description = Tippe, um nach Vorschau, Inhaltstyp oder Quellgerät zu filtern. Rücktaste bearbeitet, Escape leert die Suche.
-a11y-clipboard = Zwischenablage
-a11y-clipboard-description = Privater Verlauf der Zwischenablage, geteilt nur mit deinen authentifizierten Geräten. Tippe zum Suchen. Wähle mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende einen Eintrag und verwende ihn mit Eingabe oder Leertaste.
-a11y-clipboard-list = Aufbewahrte Einträge der Zwischenablage
 
 # Barrierefreiheitsbaum: Bluetooth-Zubehör verschieben
 a11y-bluetooth-accessory = Bluetooth-Zubehör
@@ -817,9 +808,7 @@ qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestät
 qs-devices-showing = { $first }–{ $last } von { $total }
 
 # Schnelleinstellungen: Bereich Geräte und Medien
-qs-devices-header = Geräte & Medien
 qs-devices-no-identity = Richte deine persönliche Identität ein, um Geräte zu verbinden
-qs-devices-note = Direkt zwischen deinen Geräten, nie über die Cloud eines Herstellers
 qs-devices-empty = Keine Ausgänge oder Geräte
 qs-devices-place = { $display } { $side ->
         [left] links
@@ -926,23 +915,19 @@ qs-devices-place-this-above = Diesen Bildschirm oberhalb anordnen
 qs-devices-place-this-below = Diesen Bildschirm unterhalb anordnen
 
 # Schnelleinstellungen: Verlauf der Zwischenablage
-qs-clipboard-search-empty = Zwischenablage durchsuchen…
 qs-clipboard-search-matches = { $count ->
-        [one] Suche: { $query } · { $count } Treffer
-       *[other] Suche: { $query } · { $count } Treffer
+        [one] Ein Eintrag passt zu „{ $query }“
+       *[other] { $count } Einträge passen zu „{ $query }“
     }
 qs-clipboard-empty-hint = Noch nichts kopiert
-qs-clipboard-no-matches = Keine Treffer für „{ $query }“
-qs-clipboard-search-range = Zwischenablage durchsuchen … · { $first }–{ $last } von { $total }
+qs-clipboard-no-matches = Nichts passt zu „{ $query }“
+qs-clipboard-search-range = { $first } bis { $last } von { $total } Einträgen. Zum Suchen tippen.
 qs-clipboard-search-count = { $count ->
-        [one] Zwischenablage durchsuchen … · { $count } Eintrag
-       *[other] Zwischenablage durchsuchen … · { $count } Einträge
+        [one] Ein Eintrag. Zum Suchen tippen.
+       *[other] { $count } Einträge. Zum Suchen tippen.
     }
-qs-clipboard-clear = Leeren
 qs-clipboard-clear-a11y = Nicht angeheftete Einträge der Zwischenablage löschen
-qs-clipboard-use-a11y = Eintrag der Zwischenablage verwenden
 qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
-qs-clipboard-row-detail = { $source } · { $age }
 qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
 
 # Schnelleinstellungen: einem geschützten WLAN beitreten

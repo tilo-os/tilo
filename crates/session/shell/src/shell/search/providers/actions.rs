@@ -1734,7 +1734,7 @@ impl Action {
             "search-action-quick-settings-clipboard",
             "search-action-quick-settings-clipboard-subtitle",
             |st, _| {
-                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
                 Ok(())
             },
         ),
@@ -1761,7 +1761,7 @@ impl Action {
             "search-action-quick-settings-devices",
             "search-action-quick-settings-devices-subtitle",
             |st, _| {
-                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
+                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
                 Ok(())
             },
         ),
@@ -6036,14 +6036,14 @@ mod tests {
 
             invoke_action(&results, "quick-settings.clipboard", &chrome);
             assert_eq!(
-                chrome.borrow().quick_settings.current_level(),
-                &crate::shell::quick_settings::QsLevel::Clipboard
+                chrome.borrow().quick_settings.section,
+                Some(crate::shell::quick_settings::QsSection::Clipboard)
             );
 
             invoke_action(&results, "quick-settings.devices", &chrome);
             assert_eq!(
-                chrome.borrow().quick_settings.current_level(),
-                &crate::shell::quick_settings::QsLevel::Devices
+                chrome.borrow().quick_settings.section,
+                Some(crate::shell::quick_settings::QsSection::Devices)
             );
         }
 

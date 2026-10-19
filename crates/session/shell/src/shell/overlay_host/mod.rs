@@ -551,6 +551,9 @@ const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
 /// that the radio is not kept busy.
 const QS_WIFI_RESCAN: Duration = Duration::from_secs(10);
 
+/// Copies the Clipboard section shows at once.
+const QS_CLIPBOARD_ROWS: usize = 6;
+
 /// A launchpad card's app action awaiting admission: the app may be
 /// launching first. The card's title names it if it is refused.
 struct PendingLaunchpadAction {
@@ -1042,6 +1045,9 @@ pub struct ShellOverlayHost {
     /// When the open Wi-Fi section last asked for a scan: it scans again
     /// while it stays open, so the list follows the room.
     qs_wifi_scanned_at: Option<Instant>,
+    /// The section whose host-described rows were last read, so opening the
+    /// Clipboard afresh starts at the newest copy with no search.
+    qs_hosted_section: Option<crate::shell::quick_settings::QsSection>,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -2756,6 +2762,7 @@ impl ShellOverlayHost {
             qs_action_slot: inputs.qs_action_slot,
             qs_aux_drill_in: DrillInList::default(),
             qs_wifi_scanned_at: None,
+            qs_hosted_section: None,
             status_bridge: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
@@ -11760,6 +11767,13 @@ impl ShellOverlayHost {
         self.palette_transition.snap(self.palette_visible);
     }
 
+    /// Quick Settings reads nothing from the machine this host runs on: a
+    /// capture shows the state it is given, never the renderer's networks,
+    /// accessories or battery.
+    pub fn disable_quick_settings_os_reads(&mut self) {
+        self.qs_refresh.disable_os_reads();
+    }
+
     /// See [`Self::force_palette_settled`].
     pub fn force_quick_settings_settled(&mut self) {
         if !self.overlay_flags().quick_settings {
@@ -11774,6 +11788,12 @@ impl ShellOverlayHost {
         }
         self.qs_was_open = true;
         self.qs_motion = qs_motion::QsMotion::opened();
+        // An open section stands open too, not at the start of its motion.
+        if let Some(chrome) = self.chrome.clone() {
+            self.refresh_qs_hosted_rows();
+            self.qs_root
+                .settle_sections(&chrome.borrow().quick_settings);
+        }
     }
 
     /// Fixes the quick-settings visual to an in-flight opening pose for a
@@ -12245,8 +12265,9 @@ impl ShellOverlayHost {
         let y0 = area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
         let (desired_h, paste_origin) = self.chrome.as_ref().map_or((360.0, None), |chrome| {
             let state = chrome.borrow();
-            let origin = (state.quick_settings.current_level()
-                == &crate::shell::quick_settings::QsLevel::Clipboard)
+            let origin = state
+                .quick_settings
+                .pasting()
                 .then_some(state.quick_settings.paste_origin)
                 .flatten();
             (self.quick_settings_preferred_height(&state), origin)
@@ -12325,12 +12346,9 @@ impl ShellOverlayHost {
     /// Whether Quick Settings stands at a caret (clipboard history opened to
     /// paste) rather than under the tray.
     fn quick_settings_at_caret(&self) -> bool {
-        self.chrome.as_ref().is_some_and(|chrome| {
-            let state = chrome.borrow();
-            state.quick_settings.current_level()
-                == &crate::shell::quick_settings::QsLevel::Clipboard
-                && state.quick_settings.paste_origin.is_some()
-        })
+        self.chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().quick_settings.pasting())
     }
 
     /// A drill-in is a compact continuation of Quick Settings, not a blank
@@ -12363,27 +12381,13 @@ impl ShellOverlayHost {
                     self.quick_settings_width(),
                 )
             }),
-            QsLevel::Clipboard => {
-                let rows = self.filtered_clipboard_history().len().min(7);
-                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                    .clamp(160.0, 552.0)
-            }
-            QsLevel::Devices => self
-                .device_fabric_call(DeviceFabricUiAction::Snapshot)
-                .map_or(190.0, |view| {
-                    let realtime = self
-                        .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-                        .unwrap_or_default();
-                    let rows = device_fabric_pane_rows(&view, &realtime).len();
-                    (82.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                        .clamp(190.0, 552.0)
-                }),
         }
     }
 
     /// Number of complete notification rows the current compact pane shows.
     /// When the history overflows, the pager band's room is reserved so its
     /// position and keyboard hint never overlap the final row.
+    #[cfg(test)]
     fn qs_notification_visible_rows(&self) -> usize {
         self.chrome.as_ref().map_or(1, |chrome| {
             self.notification_center.visible_rows(
@@ -12522,8 +12526,10 @@ impl ShellOverlayHost {
         true
     }
 
+    /// How many copies the Clipboard section shows at once; typing
+    /// searches the rest, and the arrows page through them.
     fn qs_clipboard_visible_rows(&self) -> usize {
-        self.qs_notification_visible_rows()
+        QS_CLIPBOARD_ROWS
     }
 
     fn clamp_qs_clipboard_history_start(&mut self, history_len: usize) -> bool {
@@ -12572,13 +12578,11 @@ impl ShellOverlayHost {
     }
 
     fn handle_qs_clipboard_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        // Only the picker opened to paste pages its copies under the wheel;
+        // in Quick Settings the wheel scrolls the page.
         let clipboard_open = self.chrome.as_ref().is_some_and(|chrome| {
             let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Clipboard
-                )
+            state.overlays.quick_settings && state.quick_settings.pasting()
         });
         if !clipboard_open
             || !self
@@ -12606,6 +12610,41 @@ impl ShellOverlayHost {
             let _ = self.scroll_qs_clipboard_history(movement);
         }
         true
+    }
+
+    /// Whether the open Clipboard section takes `logical_key`: typing
+    /// searches its copies; the arrows and Enter choose among them while no
+    /// control holds keyboard focus (as when Super+V opened it to paste).
+    fn qs_clipboard_takes_key(
+        &self,
+        chrome: &Chrome,
+        logical_key: &Key,
+        control_down: bool,
+    ) -> bool {
+        let state = chrome.borrow();
+        let qs = &state.quick_settings;
+        if !state.overlays.quick_settings
+            || qs.current_level() != &crate::shell::quick_settings::QsLevel::Root
+            || qs.section != Some(crate::shell::quick_settings::QsSection::Clipboard)
+        {
+            return false;
+        }
+        match logical_key {
+            Key::Character(_) => !control_down,
+            Key::Named(NamedKey::Backspace) => true,
+            Key::Named(NamedKey::Escape) => !self.qs_clipboard_query.is_empty(),
+            Key::Named(
+                NamedKey::ArrowDown
+                | NamedKey::ArrowUp
+                | NamedKey::PageDown
+                | NamedKey::PageUp
+                | NamedKey::Home
+                | NamedKey::End
+                | NamedKey::Enter
+                | NamedKey::Space,
+            ) => !self.qs_root.has_keyboard_focus(),
+            _ => false,
+        }
     }
 
     fn handle_qs_clipboard_keyboard(&mut self, logical_key: &Key, control_down: bool) -> bool {
@@ -12737,8 +12776,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Devices
-                        | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                    crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
                 )
         });
         if !devices_open
@@ -17043,7 +17081,9 @@ impl ShellOverlayHost {
             } else if !matches!(
                 st.quick_settings.current_level(),
                 crate::shell::quick_settings::QsLevel::Root
-            ) {
+            ) || st.quick_settings.pasting()
+            {
+                // Clipboard history opened to paste has no page behind it.
                 st.quick_settings_back();
             } else if self.qs_root.close_section(&mut st.quick_settings) {
                 st.bump();
@@ -17847,10 +17887,6 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
                 self.handle_qs_bluetooth_details_click(p, address);
             }
-            crate::shell::quick_settings::QsLevel::Clipboard => self.handle_qs_clipboard_click(p),
-            crate::shell::quick_settings::QsLevel::Devices => {
-                self.handle_qs_device_fabric_click(p);
-            }
             crate::shell::quick_settings::QsLevel::Notifications => {
                 self.handle_qs_notifications_click(p);
             }
@@ -18046,6 +18082,8 @@ impl ShellOverlayHost {
         reason = "one click dispatcher maps every fabric pane row to its action"
     )]
     fn handle_qs_device_fabric_click(&mut self, point: Point) {
+        // The rows hit-tested are the ones the fabric has now.
+        self.refresh_qs_hosted_rows();
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             return;
         };
@@ -18054,13 +18092,10 @@ impl ShellOverlayHost {
             .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
             .unwrap_or_default();
         let rows = device_fabric_pane_rows(&view, &realtime);
-        let _ = self.clamp_qs_device_fabric_start(rows.len());
         let Some((row_index, item)) = rows
             .iter()
-            .skip(self.qs_device_fabric_start)
-            .take(self.qs_device_fabric_visible_rows())
             .enumerate()
-            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
+            .find(|(index, _)| self.qs_devices_row_rect(*index).contains(point))
             .map(|(index, item)| (index, item.clone()))
         else {
             return;
@@ -18073,7 +18108,7 @@ impl ShellOverlayHost {
         let action = match item {
             DeviceFabricPaneRow::CalibrationProposal(proposal) => {
                 let (apply, dismiss) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                    Self::qs_realtime_consent_actions(self.qs_devices_row_rect(row_index));
                 if apply.contains(point) {
                     Some((
                         DeviceFabricUiAction::ApplyCalibration {
@@ -18592,7 +18627,8 @@ impl ShellOverlayHost {
         let DeviceFabricPaneRow::Device(device) = item else {
             return None;
         };
-        let (placements, control) = Self::qs_device_row_actions(self.qs_device_row_rect(row_index));
+        let (placements, control) =
+            Self::qs_device_row_actions(self.qs_devices_row_rect(row_index));
         let edge = placements
             .iter()
             .position(|rect| rect.contains(point))
@@ -18678,53 +18714,312 @@ impl ShellOverlayHost {
         }
     }
 
-    fn handle_qs_clipboard_click(&mut self, point: Point) {
-        if self.qs_clipboard_clear_rect().contains(point) {
-            let _ = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
-            let history = self.filtered_clipboard_history();
-            let _ = self.clamp_qs_clipboard_history_start(history.len());
-            if !history
-                .iter()
-                .any(|item| Some(item.id) == self.qs_selected_clipboard)
-            {
-                self.qs_selected_clipboard = history.first().map(|item| item.id);
-            }
-            self.bump_chrome();
-            return;
-        }
+    /// A press on copy `index` of the Clipboard section: its pin, its
+    /// remove, or the copy itself (`point` is `None` from the keyboard).
+    fn press_qs_clipboard_row(&mut self, index: usize, point: Option<Point>) {
         let history = self.filtered_clipboard_history();
-        let visible_rows = self.qs_clipboard_visible_rows();
         let start = self.qs_clipboard_history_start;
-        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
-            let row = self.qs_clipboard_row_rect(visible_index);
-            if !row.contains(point) {
-                continue;
-            }
-            let (pin, remove) = Self::qs_clipboard_row_actions(row);
-            if pin.contains(point) {
-                self.qs_selected_clipboard = Some(item.id);
-                let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
-                    id: item.id,
-                    pinned: !item.pinned,
-                });
-            } else if remove.contains(point) {
-                let _ = self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
-                let remaining = self.filtered_clipboard_history();
-                let _ = self.clamp_qs_clipboard_history_start(remaining.len());
-                self.qs_selected_clipboard = remaining
-                    .get(
-                        start
-                            .saturating_add(visible_index)
-                            .min(remaining.len().saturating_sub(1)),
-                    )
-                    .map(|item| item.id);
-            } else {
-                self.choose_clipboard_item(item.id);
-                return;
-            }
-            self.bump_chrome();
+        let Some(item) = history.get(start.saturating_add(index)) else {
+            return;
+        };
+        let row = self.qs_clipboard_row_rect(index);
+        let (pin, remove) = crate::shell::quick_settings::hosted::pair_rects(row);
+        if point.is_some_and(|point| pin.contains(point)) {
+            self.qs_selected_clipboard = Some(item.id);
+            let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
+                id: item.id,
+                pinned: !item.pinned,
+            });
+        } else if point.is_some_and(|point| remove.contains(point)) {
+            let _ = self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
+            let remaining = self.filtered_clipboard_history();
+            let _ = self.clamp_qs_clipboard_history_start(remaining.len());
+            self.qs_selected_clipboard = remaining
+                .get(
+                    start
+                        .saturating_add(index)
+                        .min(remaining.len().saturating_sub(1)),
+                )
+                .map(|item| item.id);
+        } else {
+            self.choose_clipboard_item(item.id);
             return;
         }
+        self.refresh_qs_hosted_rows();
+        self.bump_chrome();
+    }
+
+    /// Clear the clipboard history's unpinned copies.
+    fn clear_qs_clipboard(&mut self) {
+        let _ = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+        let history = self.filtered_clipboard_history();
+        let _ = self.clamp_qs_clipboard_history_start(history.len());
+        if !history
+            .iter()
+            .any(|item| Some(item.id) == self.qs_selected_clipboard)
+        {
+            self.qs_selected_clipboard = history.first().map(|item| item.id);
+        }
+        self.refresh_qs_hosted_rows();
+        self.bump_chrome();
+    }
+
+    /// A press on row `index` of the Devices section. From the keyboard a
+    /// request is allowed and any other row does what its press does.
+    fn press_qs_device_row(&mut self, index: usize, point: Option<Point>) {
+        let point = match point {
+            Some(point) => point,
+            None => {
+                let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+                    return;
+                };
+                let realtime = self
+                    .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+                    .unwrap_or_default();
+                let rows = device_fabric_pane_rows(&view, &realtime);
+                let row = self.qs_devices_row_rect(index);
+                match rows.get(index) {
+                    Some(item) if Self::qs_device_row_asks(item) => {
+                        Self::qs_realtime_consent_actions(row).0.center()
+                    }
+                    _ => row.center(),
+                }
+            }
+        };
+        self.handle_qs_device_fabric_click(point);
+        self.refresh_qs_hosted_rows();
+    }
+
+    /// Whether a Devices row is a request to allow or decline.
+    fn qs_device_row_asks(item: &DeviceFabricPaneRow) -> bool {
+        matches!(
+            item,
+            DeviceFabricPaneRow::RemoteAudioConsent(_)
+                | DeviceFabricPaneRow::SpeakerConsent(_)
+                | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                | DeviceFabricPaneRow::RealtimeConsent(_)
+                | DeviceFabricPaneRow::GamepadAuthorization(_)
+        ) || matches!(
+            item,
+            DeviceFabricPaneRow::Tethering(status)
+                if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
+        )
+    }
+
+    /// Read what the open Devices or Clipboard section lists into chrome
+    /// state, for the root page to lay out and paint.
+    fn refresh_qs_hosted_rows(&mut self) {
+        use crate::shell::quick_settings::QsSection;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let section = {
+            let st = chrome.borrow();
+            (st.overlays.quick_settings)
+                .then_some(st.quick_settings.section)
+                .flatten()
+        };
+        if std::mem::replace(&mut self.qs_hosted_section, section) != section
+            && section == Some(QsSection::Clipboard)
+        {
+            self.qs_clipboard_query.clear();
+            self.qs_clipboard_history_start = 0;
+            self.qs_selected_clipboard = None;
+        }
+        // Without a device fabric or a clipboard manager (a capture, a
+        // test) the rows stay as they are.
+        match section {
+            Some(QsSection::Devices) => {
+                let Some(rows) = self.qs_device_section_rows() else {
+                    return;
+                };
+                let mut st = chrome.borrow_mut();
+                if st.quick_settings.device_rows != rows {
+                    st.quick_settings.device_rows = rows;
+                    st.bump();
+                }
+            }
+            Some(QsSection::Clipboard) => {
+                if self.clipboard_manager_bridge.is_none() {
+                    return;
+                }
+                let (caption, rows) = self.qs_clipboard_section_rows();
+                let mut st = chrome.borrow_mut();
+                if st.quick_settings.clipboard_rows != rows
+                    || st.quick_settings.clipboard_caption != caption
+                {
+                    st.quick_settings.clipboard_rows = rows;
+                    st.quick_settings.clipboard_caption = caption;
+                    st.bump();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The Devices section's rows, from the device fabric.
+    fn qs_device_section_rows(
+        &mut self,
+    ) -> Option<Vec<crate::shell::quick_settings::hosted::HostedRow>> {
+        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        let view = self
+            .device_fabric_call(DeviceFabricUiAction::Snapshot)
+            .ok()?;
+        self.normalise_qs_selected_media(&view);
+        let selected = self.qs_selected_media().and_then(|id| {
+            view.local_media
+                .iter()
+                .find(|media| &media.session_id == id)
+        });
+        let realtime = self
+            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+            .unwrap_or_default();
+        let rows = device_fabric_pane_rows(&view, &realtime)
+            .iter()
+            .map(|item| {
+                let (title, detail, icon, selected, enabled) =
+                    self.qs_device_row_face(&view, selected, item);
+                let names = Self::qs_device_row_button_names(item);
+                let actions = match (item, names.as_slice()) {
+                    (DeviceFabricPaneRow::Device(device), [l, r, a, b, control]) => {
+                        HostedActions::Placement {
+                            names: [l.clone(), r.clone(), a.clone(), b.clone()],
+                            control: control.clone(),
+                            controlling: device.controls_local,
+                            placeable: !device.is_local && device.online && device.display,
+                            controllable: !device.is_local && device.online,
+                        }
+                    }
+                    (_, [first, second]) => {
+                        let icons = if matches!(item, DeviceFabricPaneRow::LocalInput(_)) {
+                            [ui::icons::Icon::ArrowDown, ui::icons::Icon::ArrowUp]
+                        } else {
+                            [ui::icons::Icon::Check, ui::icons::Icon::X]
+                        };
+                        HostedActions::Pair {
+                            first: (icons[0], first.clone()),
+                            second: (icons[1], second.clone()),
+                        }
+                    }
+                    _ => item
+                        .select_action_key()
+                        .map_or(HostedActions::None, |key| HostedActions::Select(t(key))),
+                };
+                HostedRow {
+                    title,
+                    detail,
+                    icon,
+                    selected,
+                    enabled,
+                    actions,
+                }
+            })
+            .collect();
+        Some(rows)
+    }
+
+    /// The Clipboard section's caption and rows: the latest copies, or the
+    /// ones matching what was typed.
+    fn qs_clipboard_section_rows(
+        &mut self,
+    ) -> (String, Vec<crate::shell::quick_settings::hosted::HostedRow>) {
+        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        let history = self.filtered_clipboard_history();
+        let _ = self.clamp_qs_clipboard_history_start(history.len());
+        let visible = self.qs_clipboard_visible_rows();
+        let start = self.qs_clipboard_history_start;
+        let shown = visible.min(history.len().saturating_sub(start));
+        let caption = if history.is_empty() && !self.qs_clipboard_query.is_empty() {
+            t_args(
+                "qs-clipboard-no-matches",
+                &[("query", self.qs_clipboard_query.as_str().into())],
+            )
+        } else if !self.qs_clipboard_query.is_empty() {
+            t_args(
+                "qs-clipboard-search-matches",
+                &[
+                    ("query", self.qs_clipboard_query.as_str().into()),
+                    ("count", history.len().into()),
+                ],
+            )
+        } else if history.len() > visible {
+            t_args(
+                "qs-clipboard-search-range",
+                &[
+                    ("first", start.saturating_add(1).into()),
+                    ("last", start.saturating_add(shown).into()),
+                    ("total", history.len().into()),
+                ],
+            )
+        } else if history.is_empty() {
+            String::new()
+        } else {
+            t_args(
+                "qs-clipboard-search-count",
+                &[("count", history.len().into())],
+            )
+        };
+        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
+        let now_unix_ms = unix_now_ms();
+        let rows = history
+            .iter()
+            .skip(start)
+            .take(visible)
+            .map(|item| {
+                let title = item.text_preview.as_deref().map_or_else(
+                    || {
+                        item.mime_types.first().map_or_else(
+                            || t("a11y-clipboard-data"),
+                            |mime| {
+                                t_args(
+                                    "qs-clipboard-mime-bytes",
+                                    &[
+                                        ("mime", mime.as_str().into()),
+                                        ("bytes", item.byte_len.to_string().into()),
+                                    ],
+                                )
+                            },
+                        )
+                    },
+                    |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
+                );
+                let detail = t_args(
+                    "qs-clipboard-copied",
+                    &[
+                        (
+                            "source",
+                            clipboard_history_source_label(item, fabric.as_ref()).into(),
+                        ),
+                        (
+                            "age",
+                            clipboard_history_relative_time(item.created_unix_ms, now_unix_ms)
+                                .into(),
+                        ),
+                    ],
+                );
+                HostedRow {
+                    icon: if item.text_preview.is_some() {
+                        ui::icons::Icon::FileText
+                    } else {
+                        ui::icons::Icon::File
+                    },
+                    selected: self.qs_selected_clipboard == Some(item.id),
+                    enabled: true,
+                    actions: HostedActions::Clipboard {
+                        pinned: item.pinned,
+                        pin: t(if item.pinned {
+                            "a11y-clipboard-unpin"
+                        } else {
+                            "a11y-clipboard-pin"
+                        }),
+                        remove: t("qs-clipboard-remove-a11y"),
+                    },
+                    title,
+                    detail,
+                }
+            })
+            .collect();
+        (caption, rows)
     }
 
     /// Routes a click through the root-page component, then applies the
@@ -18777,20 +19072,14 @@ impl ShellOverlayHost {
             *handled = consumed;
             return consumed;
         }
-        if matches!(
-            history_level,
-            Some(crate::shell::quick_settings::QsLevel::Clipboard)
-        ) {
+        if self.qs_clipboard_takes_key(&chrome, logical_key, control_down) {
             let consumed = self.handle_qs_clipboard_keyboard(logical_key, control_down);
             *handled = consumed;
             return consumed;
         }
         if matches!(
             history_level,
-            Some(
-                crate::shell::quick_settings::QsLevel::Devices
-                    | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
-            )
+            Some(crate::shell::quick_settings::QsLevel::BluetoothDetails(_))
         ) {
             let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
             *handled = consumed;
@@ -19049,12 +19338,30 @@ impl ShellOverlayHost {
                                 sound_outputs_of(&view);
                         }
                     }
+                    crate::shell::quick_settings::QsSection::Clipboard
+                    | crate::shell::quick_settings::QsSection::Devices => {
+                        self.refresh_qs_hosted_rows();
+                    }
                 }
                 chrome.borrow_mut().bump();
             }
             RootAction::Wifi(intent) => self.apply_qs_wifi_intent(chrome, intent),
             RootAction::Bluetooth(intent) => self.apply_qs_bluetooth_intent(chrome, intent),
             RootAction::Vpn { name, enabled } => self.apply_qs_vpn_change(chrome, &name, enabled),
+            RootAction::Hosted {
+                section,
+                index,
+                point,
+            } => match section {
+                crate::shell::quick_settings::QsSection::Devices => {
+                    self.press_qs_device_row(index, point);
+                }
+                crate::shell::quick_settings::QsSection::Clipboard => {
+                    self.press_qs_clipboard_row(index, point);
+                }
+                _ => {}
+            },
+            RootAction::ClearClipboard => self.clear_qs_clipboard(),
             RootAction::SoundOutput(node_id) => {
                 // The same route the Devices page takes; its answer is the
                 // outputs as they stand now.
@@ -20931,6 +21238,9 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         self.rescan_open_wifi_section(Instant::now());
+        // Devices and the Clipboard follow the fabric and the history while
+        // they show.
+        self.refresh_qs_hosted_rows();
         let quick_settings_dirty = self.apply_quick_settings_readings();
         let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
@@ -22380,88 +22690,6 @@ impl Widget for ShellOverlayHost {
                                 &self.qs_notification_layout(),
                                 Instant::now(),
                             ));
-                        } else if matches!(
-                            state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Clipboard
-                        ) {
-                            let history = self.filtered_clipboard_history();
-                            let fabric =
-                                self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
-                            let now_unix_ms = unix_now_ms();
-                            let visible = self.qs_clipboard_visible_rows();
-                            let start = self
-                                .qs_clipboard_history_start
-                                .min(history.len().saturating_sub(visible));
-                            let shown = visible.min(history.len().saturating_sub(start));
-                            let items = history
-                                .iter()
-                                .skip(start)
-                                .take(shown)
-                                .enumerate()
-                                .map(|(index, item)| {
-                                    let name = item.text_preview.as_deref().map_or_else(
-                                        || t("a11y-clipboard-data"),
-                                        |text| {
-                                            text.split_whitespace().collect::<Vec<_>>().join(" ")
-                                        },
-                                    );
-                                    let source =
-                                        clipboard_history_source_label(item, fabric.as_ref());
-                                    let age = clipboard_history_relative_time(
-                                        item.created_unix_ms,
-                                        now_unix_ms,
-                                    );
-                                    AccessNode::new(Role::ListItem)
-                                        .with_name(name)
-                                        .with_description(t_args(
-                                            "a11y-clipboard-item-description",
-                                            &[
-                                                ("source", source.into()),
-                                                ("age", age.into()),
-                                                ("bytes", item.byte_len.to_string().into()),
-                                                (
-                                                    "pinned",
-                                                    if item.pinned { "yes" } else { "no" }.into(),
-                                                ),
-                                            ],
-                                        ))
-                                        .with_state(
-                                            AccessState::new().selected(
-                                                self.qs_selected_clipboard == Some(item.id),
-                                            ),
-                                        )
-                                        .with_position(index.saturating_add(1), shown)
-                                        .with_children(vec![
-                                            AccessNode::new(Role::Button)
-                                                .with_name(t("a11y-clipboard-use")),
-                                            AccessNode::new(Role::Button).with_name(
-                                                if item.pinned {
-                                                    t("a11y-clipboard-unpin")
-                                                } else {
-                                                    t("a11y-clipboard-pin")
-                                                },
-                                            ),
-                                            AccessNode::new(Role::Button)
-                                                .with_name(t("a11y-clipboard-remove")),
-                                        ])
-                                })
-                                .collect();
-                            let search = AccessNode::new(Role::TextInput)
-                                .with_name(t("a11y-clipboard-search"))
-                                .with_value(self.qs_clipboard_query.clone())
-                                .with_description(t("a11y-clipboard-search-description"));
-                            root.children.push(
-                                AccessNode::new(Role::Dialog)
-                                    .with_name(t("a11y-clipboard"))
-                                    .with_description(t("a11y-clipboard-description"))
-                                    .with_state(AccessState::new().modal(true))
-                                    .with_children(vec![
-                                        search,
-                                        AccessNode::new(Role::List)
-                                            .with_name(t("a11y-clipboard-list"))
-                                            .with_children(items),
-                                    ]),
-                            );
                         } else if let crate::shell::quick_settings::QsLevel::BluetoothDetails(
                             address,
                         ) = state.quick_settings.current_level()
@@ -22527,62 +22755,6 @@ impl Widget for ShellOverlayHost {
                                     .with_children(vec![
                                         AccessNode::new(Role::List)
                                             .with_name(t("a11y-bluetooth-destinations"))
-                                            .with_children(items),
-                                    ]),
-                            );
-                        } else if matches!(
-                            state.quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Devices
-                        ) {
-                            let view = self
-                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
-                                .unwrap_or_default();
-                            let selected_id = self.qs_selected_media().or_else(|| {
-                                view.local_media
-                                    .iter()
-                                    .find(|media| media.playing)
-                                    .or_else(|| view.local_media.first())
-                                    .map(|media| &media.session_id)
-                            });
-                            let selected = selected_id.and_then(|id| {
-                                view.local_media
-                                    .iter()
-                                    .find(|media| &media.session_id == id)
-                            });
-                            let realtime = self
-                                .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-                                .unwrap_or_default();
-                            let rows = device_fabric_pane_rows(&view, &realtime);
-                            let total = rows.len();
-                            let items = rows
-                                .iter()
-                                .enumerate()
-                                .map(|(index, item)| {
-                                    let (name, mut description, ..) =
-                                        self.qs_device_row_face(&view, selected, item);
-                                    if let Some(action) = item.select_action_key() {
-                                        description = format!("{description}. {}", t(action));
-                                    }
-                                    let buttons = Self::qs_device_row_button_names(item)
-                                        .into_iter()
-                                        .map(|name| AccessNode::new(Role::Button).with_name(name))
-                                        .collect();
-                                    AccessNode::new(Role::Button)
-                                        .with_name(name)
-                                        .with_description(description)
-                                        .with_position(index.saturating_add(1), total)
-                                        .with_state(AccessState::new().focusable(true))
-                                        .with_children(buttons)
-                                })
-                                .collect();
-                            root.children.push(
-                                AccessNode::new(Role::Dialog)
-                                    .with_name(t("devices-media-title"))
-                                    .with_description(t("devices-media-description"))
-                                    .with_state(AccessState::new().modal(true))
-                                    .with_children(vec![
-                                        AccessNode::new(Role::List)
-                                            .with_name(t("devices-media-list"))
                                             .with_children(items),
                                     ]),
                             );
@@ -28118,14 +28290,6 @@ impl ShellOverlayHost {
                 self.draw_qs_notification_history(scene, transform, text_renderer, theme);
                 true
             }
-            crate::shell::quick_settings::QsLevel::Clipboard => {
-                self.draw_qs_clipboard_history(scene, transform, text_renderer, theme);
-                true
-            }
-            crate::shell::quick_settings::QsLevel::Devices => {
-                self.draw_qs_device_fabric(scene, transform, text_renderer, theme);
-                true
-            }
             crate::shell::quick_settings::QsLevel::Root => false,
         }
     }
@@ -28213,38 +28377,70 @@ impl ShellOverlayHost {
         );
     }
 
-    fn qs_clipboard_clear_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
-    }
-
-    fn qs_clipboard_search_rect(&self) -> Rect {
-        let r = self.quick_settings_rect();
-        Rect::new(r.x0 + 12.0, r.y0 + 48.0, r.x1 - 12.0, r.y0 + 72.0)
-    }
-
     fn qs_device_row_rect(&self, index: usize) -> Rect {
         let panel = self.quick_settings_rect();
         let y0 = panel.y0 + 78.0 + f64_of_usize(index) * 58.0;
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
-    /// The named button of a row whose whole face is one action. Selecting
-    /// anywhere on the row does it; the button says what it is.
-    fn qs_device_row_select_action(row: Rect) -> Rect {
-        Rect::new(row.x1 - 84.0, row.y0 + 12.0, row.x1 - 8.0, row.y1 - 12.0)
+    /// Row `index` of the Devices section, where the page shows it while
+    /// that section is open.
+    fn qs_devices_row_rect(&self, index: usize) -> Rect {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| {
+                self.qs_root.hosted_row_rect(
+                    &chrome.borrow().quick_settings,
+                    crate::shell::quick_settings::QsSection::Devices,
+                    index,
+                )
+            })
+            .unwrap_or(Rect::ZERO)
+    }
+
+    /// Read the open section's rows and lay the page out settled, as the
+    /// next frame would.
+    #[cfg(test)]
+    fn lay_out_quick_settings_for_tests(&mut self) {
+        self.refresh_qs_hosted_rows();
+        let panel = self.quick_settings_rect();
+        if let Some(chrome) = self.chrome.clone() {
+            let st = chrome.borrow();
+            self.qs_root
+                .lay_out_settled_for_tests(panel, &st.quick_settings);
+        }
+    }
+
+    /// Open the Devices section in place and lay it out.
+    #[cfg(test)]
+    fn open_devices_for_tests(&mut self) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            if st.quick_settings.section != Some(crate::shell::quick_settings::QsSection::Devices)
+                || !st.overlays.quick_settings
+            {
+                st.open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
+            }
+        }
+        self.lay_out_quick_settings_for_tests();
+    }
+
+    /// Copy `index` of the Clipboard section, where the page shows it.
+    fn qs_clipboard_row_rect(&self, index: usize) -> Rect {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| {
+                self.qs_root.hosted_row_rect(
+                    &chrome.borrow().quick_settings,
+                    crate::shell::quick_settings::QsSection::Clipboard,
+                    index,
+                )
+            })
+            .unwrap_or(Rect::ZERO)
     }
 
     fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
-        (
-            [
-                Rect::new(row.x1 - 78.0, row.y0 + 5.0, row.x1 - 54.0, row.y0 + 24.0),
-                Rect::new(row.x1 - 52.0, row.y0 + 5.0, row.x1 - 28.0, row.y0 + 24.0),
-                Rect::new(row.x1 - 78.0, row.y1 - 24.0, row.x1 - 54.0, row.y1 - 5.0),
-                Rect::new(row.x1 - 52.0, row.y1 - 24.0, row.x1 - 28.0, row.y1 - 5.0),
-            ],
-            Rect::new(row.x1 - 26.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
-        )
+        crate::shell::quick_settings::hosted::placement_rects(row)
     }
 
     /// The Devices row text for a local input: whether it is the one in
@@ -28264,10 +28460,7 @@ impl ShellOverlayHost {
     }
 
     fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
-        (
-            Rect::new(row.x1 - 72.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
-            Rect::new(row.x1 - 34.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
-        )
+        crate::shell::quick_settings::hosted::pair_rects(row)
     }
 
     fn qs_selected_media(&self) -> Option<&String> {
@@ -28280,7 +28473,8 @@ impl ShellOverlayHost {
     /// Which of a device row's two trailing buttons `point` hits: `true` for
     /// the first (allow), `false` for the second (decline), `None` for neither.
     fn qs_device_row_choice(&self, row_index: usize, point: Point) -> Option<bool> {
-        let (first, second) = Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+        let (first, second) =
+            Self::qs_realtime_consent_actions(self.qs_devices_row_rect(row_index));
         if first.contains(point) {
             Some(true)
         } else if second.contains(point) {
@@ -29155,449 +29349,6 @@ impl ShellOverlayHost {
                 },
             ],
             _ => Vec::new(),
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the bounded device rows share paint geometry with their capability and transport status"
-    )]
-    fn draw_qs_device_fabric(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.draw_qs_drill_in_header(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &t("qs-devices-header"),
-        );
-        let panel = self.quick_settings_rect();
-        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &t("qs-devices-no-identity"),
-            );
-            return;
-        };
-        self.normalise_qs_selected_media(&view);
-        let selected = self.qs_selected_media().and_then(|id| {
-            view.local_media
-                .iter()
-                .find(|media| &media.session_id == id)
-        });
-        text_renderer.draw_style(
-            scene,
-            &t("qs-devices-note"),
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
-            Some(f32_of_f64(panel.width() - 24.0)),
-            &theme.text(TextRole::Caption),
-        );
-        let realtime = self
-            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-            .unwrap_or_default();
-        let rows = device_fabric_pane_rows(&view, &realtime);
-        if rows.is_empty() {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &t("qs-devices-empty"),
-            );
-            return;
-        }
-        let _ = self.clamp_qs_device_fabric_start(rows.len());
-        let visible_rows = self.qs_device_fabric_visible_rows();
-        for (index, item) in rows
-            .iter()
-            .skip(self.qs_device_fabric_start)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let row = self.qs_device_row_rect(index);
-            let (title, detail, icon, selected_row, enabled) =
-                self.qs_device_row_face(&view, selected, item);
-            let buttons = Self::qs_device_row_button_names(item);
-            // A row whose whole face is one action names it on a button.
-            let action = if buttons.is_empty() {
-                item.select_action_key().map(t)
-            } else {
-                None
-            };
-            let accessible = action.as_ref().map_or_else(
-                || format!("{title}. {detail}"),
-                |action| format!("{title}. {detail}. {action}"),
-            );
-            let row_hovered = enabled && self.last_cursor.is_some_and(|point| row.contains(point));
-            let mut face = ButtonFace::new(row, "")
-                .hovered(row_hovered)
-                .disabled(!enabled)
-                .accessible_name(&accessible);
-            if selected_row {
-                face = face.role(ButtonRole::Primary);
-            }
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            let trailing = if buttons.is_empty() && action.is_none() {
-                0.0
-            } else {
-                86.0
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
-                icon,
-                if selected_row {
-                    theme.tokens.colors.intent.on_accent
-                } else {
-                    theme.tokens.colors.text_primary
-                },
-                1.5,
-            );
-            let text_color = if selected_row {
-                theme.tokens.colors.intent.on_accent
-            } else {
-                theme.tokens.colors.text_primary
-            };
-            text_renderer.draw_style(
-                scene,
-                &title,
-                text_color,
-                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
-                Some(f32_of_f64(row.width() - 54.0 - trailing)),
-                &theme.text(TextRole::Label),
-            );
-            text_renderer.draw_style(
-                scene,
-                &detail,
-                if selected_row {
-                    theme.tokens.colors.intent.on_accent
-                } else {
-                    theme.tokens.colors.text_dim
-                },
-                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
-                Some(f32_of_f64(row.width() - 54.0 - trailing)),
-                &theme.text(TextRole::Caption),
-            );
-            if let (DeviceFabricPaneRow::Device(device), [placement_names @ .., control_name]) =
-                (item, buttons.as_slice())
-            {
-                let (placements, control) = Self::qs_device_row_actions(row);
-                let icons = [
-                    ui::icons::Icon::ArrowLeft,
-                    ui::icons::Icon::ArrowRight,
-                    ui::icons::Icon::ArrowUp,
-                    ui::icons::Icon::ArrowDown,
-                ];
-                for ((rect, icon), name) in placements.into_iter().zip(icons).zip(placement_names) {
-                    Button::paint(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        &ButtonFace::new(rect, "")
-                            .role(ButtonRole::Plain)
-                            .icon(icon)
-                            .hovered(
-                                device.online
-                                    && device.display
-                                    && self.last_cursor.is_some_and(|point| rect.contains(point)),
-                            )
-                            .disabled(device.is_local || !device.online || !device.display)
-                            .accessible_name(name),
-                    );
-                }
-                let mut control_face = ButtonFace::new(control, "")
-                    .role(ButtonRole::Plain)
-                    .icon(ui::icons::Icon::Mouse)
-                    .hovered(
-                        device.online
-                            && self
-                                .last_cursor
-                                .is_some_and(|point| control.contains(point)),
-                    )
-                    .disabled(device.is_local || !device.online)
-                    .accessible_name(control_name);
-                if device.controls_local {
-                    control_face = control_face.role(ButtonRole::Primary);
-                }
-                Button::paint(scene, transform, text_renderer, theme, &control_face);
-            } else if !buttons.is_empty() {
-                let (first, second) = Self::qs_realtime_consent_actions(row);
-                let icons = if matches!(item, DeviceFabricPaneRow::LocalInput(_)) {
-                    [ui::icons::Icon::ArrowDown, ui::icons::Icon::ArrowUp]
-                } else {
-                    [ui::icons::Icon::Check, ui::icons::Icon::X]
-                };
-                for ((rect, icon), name) in [first, second].into_iter().zip(icons).zip(&buttons) {
-                    Button::paint(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        &ButtonFace::new(rect, "")
-                            .role(ButtonRole::Plain)
-                            .icon(icon)
-                            .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
-                            .accessible_name(name),
-                    );
-                }
-            } else if let Some(action) = &action {
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(Self::qs_device_row_select_action(row), action)
-                        .hovered(row_hovered)
-                        .disabled(!enabled),
-                );
-            }
-        }
-        if rows.len() > visible_rows {
-            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
-            let position = t_args(
-                "qs-devices-showing",
-                &[
-                    (
-                        "first",
-                        self.qs_device_fabric_start.saturating_add(1).into(),
-                    ),
-                    (
-                        "last",
-                        self.qs_device_fabric_start.saturating_add(shown).into(),
-                    ),
-                    ("total", rows.len().into()),
-                ],
-            );
-            text_renderer.draw_style(
-                scene,
-                &position,
-                theme.tokens.colors.text_dim,
-                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
-                Some(f32_of_f64(panel.width() - 24.0)),
-                &theme.text(TextRole::Caption),
-            );
-        }
-    }
-
-    fn qs_clipboard_row_rect(&self, visible_index: usize) -> Rect {
-        const ROW_HEIGHT: f64 = 70.0;
-        let panel = self.quick_settings_rect();
-        let y0 = panel.y0 + 76.0 + f64_of_usize(visible_index) * ROW_HEIGHT;
-        Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + ROW_HEIGHT - 6.0)
-    }
-
-    fn qs_clipboard_row_actions(row: Rect) -> (Rect, Rect) {
-        (
-            Rect::new(row.x1 - 70.0, row.y0 + 14.0, row.x1 - 38.0, row.y1 - 14.0),
-            Rect::new(row.x1 - 34.0, row.y0 + 14.0, row.x1 - 2.0, row.y1 - 14.0),
-        )
-    }
-
-    fn draw_qs_clipboard_search(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        label: &str,
-    ) {
-        let search = self.qs_clipboard_search_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[1],
-            None,
-            &RoundedRect::from_rect(search, 7.0),
-        );
-        text_renderer.draw_style(
-            scene,
-            label,
-            if self.qs_clipboard_query.is_empty() {
-                theme.tokens.colors.text_dim
-            } else {
-                theme.tokens.colors.text_primary
-            },
-            transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
-            Some(f32_of_f64(search.width() - 18.0)),
-            &theme.text(TextRole::Caption),
-        );
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "clipboard rows intentionally share one geometry calculation for paint, privacy metadata, and their pin/remove controls"
-    )]
-    fn draw_qs_clipboard_history(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, &t("qs-clipboard"));
-        let colors = &theme.tokens.colors;
-        let history = self.filtered_clipboard_history();
-        if history.is_empty() {
-            self.qs_clipboard_history_start = 0;
-            let search_label = if self.qs_clipboard_query.is_empty() {
-                t("qs-clipboard-search-empty")
-            } else {
-                t_args(
-                    "qs-clipboard-search-matches",
-                    &[
-                        ("query", self.qs_clipboard_query.as_str().into()),
-                        ("count", 0.into()),
-                    ],
-                )
-            };
-            self.draw_qs_clipboard_search(scene, transform, text_renderer, theme, &search_label);
-            let empty = if self.qs_clipboard_query.is_empty() {
-                t("qs-clipboard-empty-hint")
-            } else {
-                t_args(
-                    "qs-clipboard-no-matches",
-                    &[("query", self.qs_clipboard_query.as_str().into())],
-                )
-            };
-            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, &empty);
-            return;
-        }
-        let visible_rows = self.qs_clipboard_visible_rows();
-        let _ = self.clamp_qs_clipboard_history_start(history.len());
-        let start = self.qs_clipboard_history_start;
-        let shown = visible_rows.min(history.len().saturating_sub(start));
-        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
-        let now_unix_ms = unix_now_ms();
-
-        let search_label = if !self.qs_clipboard_query.is_empty() {
-            t_args(
-                "qs-clipboard-search-matches",
-                &[
-                    ("query", self.qs_clipboard_query.as_str().into()),
-                    ("count", history.len().into()),
-                ],
-            )
-        } else if history.len() > visible_rows {
-            t_args(
-                "qs-clipboard-search-range",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", history.len().into()),
-                ],
-            )
-        } else {
-            t_args(
-                "qs-clipboard-search-count",
-                &[("count", history.len().into())],
-            )
-        };
-        self.draw_qs_clipboard_search(scene, transform, text_renderer, theme, &search_label);
-
-        let clear = self.qs_clipboard_clear_rect();
-        Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ButtonFace::new(clear, &t("qs-clipboard-clear"))
-                .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
-                .accessible_name(&t("qs-clipboard-clear-a11y")),
-        );
-        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
-            let row = self.qs_clipboard_row_rect(visible_index);
-            let (pin, remove) = Self::qs_clipboard_row_actions(row);
-            let body = Rect::new(row.x0, row.y0, pin.x0 - 4.0, row.y1);
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(body, "")
-                    .hovered(
-                        self.last_cursor.is_some_and(|point| body.contains(point))
-                            || self.qs_selected_clipboard == Some(item.id),
-                    )
-                    .accessible_name(&t("qs-clipboard-use-a11y")),
-            );
-            let preview = item.text_preview.as_deref().map_or_else(
-                || {
-                    item.mime_types.first().map_or_else(
-                        || t("a11y-clipboard-data"),
-                        |mime| {
-                            t_args(
-                                "qs-clipboard-mime-bytes",
-                                &[
-                                    ("mime", mime.as_str().into()),
-                                    ("bytes", item.byte_len.to_string().into()),
-                                ],
-                            )
-                        },
-                    )
-                },
-                |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
-            );
-            text_renderer.draw_style(
-                scene,
-                &preview,
-                colors.text_primary,
-                transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
-                Some(f32_of_f64(body.width() - 24.0)),
-                &theme.text(TextRole::Label),
-            );
-            let source = clipboard_history_source_label(item, fabric.as_ref());
-            let age = clipboard_history_relative_time(item.created_unix_ms, now_unix_ms);
-            let detail = t_args(
-                "qs-clipboard-row-detail",
-                &[
-                    ("source", source.into()),
-                    ("age", age.into()),
-                    ("bytes", item.byte_len.to_string().into()),
-                ],
-            );
-            text_renderer.draw_style(
-                scene,
-                &detail,
-                colors.text_dim,
-                transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
-                Some(f32_of_f64(body.width() - 24.0)),
-                &theme.text(TextRole::Caption),
-            );
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(pin, "")
-                    .hovered(self.last_cursor.is_some_and(|point| pin.contains(point)))
-                    .accessible_name(&if item.pinned {
-                        t("a11y-clipboard-unpin")
-                    } else {
-                        t("a11y-clipboard-pin")
-                    })
-                    .icon(ui::icons::Icon::Star),
-            );
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(remove, "")
-                    .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
-                    .accessible_name(&t("qs-clipboard-remove-a11y"))
-                    .icon(ui::icons::Icon::X),
-            );
         }
     }
 

@@ -567,6 +567,14 @@ pub struct QuickSettingsState {
     pub notification_count: usize,
     /// This machine's sound outputs, read when the popover opens.
     pub sound_outputs: Vec<crate::shell::quick_settings::SoundOutput>,
+    /// The Devices section's rows, in order. The overlay host reads the
+    /// device fabric for them; the root page lays them out and paints them.
+    pub device_rows: Vec<crate::shell::quick_settings::hosted::HostedRow>,
+    /// The Clipboard section's rows: the latest copies.
+    pub clipboard_rows: Vec<crate::shell::quick_settings::hosted::HostedRow>,
+    /// The line over the copies: how many there are, or what is being
+    /// searched for (typing while the section is open searches).
+    pub clipboard_caption: String,
 }
 
 /// Session-local drill-down into one app-published resource directory.
@@ -641,6 +649,9 @@ impl Default for QuickSettingsState {
             clipboard_items: 0,
             notification_count: 0,
             sound_outputs: Vec::new(),
+            device_rows: Vec::new(),
+            clipboard_rows: Vec::new(),
+            clipboard_caption: String::new(),
         }
     }
 }
@@ -689,6 +700,9 @@ impl QuickSettingsState {
             clipboard_items: 0,
             notification_count: 0,
             sound_outputs: Vec::new(),
+            device_rows: Vec::new(),
+            clipboard_rows: Vec::new(),
+            clipboard_caption: String::new(),
         }
     }
 
@@ -710,6 +724,15 @@ impl QuickSettingsState {
         if level != QsLevel::Root {
             self.nav_stack.push(level);
         }
+    }
+
+    /// Clipboard history opened to paste (Super+V): the Clipboard section
+    /// alone, at the caret, and a choice goes into the field.
+    #[must_use]
+    pub fn pasting(&self) -> bool {
+        self.paste_origin.is_some()
+            && self.section == Some(crate::shell::quick_settings::QsSection::Clipboard)
+            && self.current_level() == &crate::shell::quick_settings::QsLevel::Root
     }
 
     /// Open `section` in place on the root page, closing any other: one
@@ -2211,7 +2234,7 @@ impl ChromeState {
     /// Open clipboard history to paste (Super+V): at `origin` (the caret,
     /// else the focused window), and a choice goes into that field.
     pub fn open_clipboard_history_to_paste(&mut self, origin: PasteOrigin) {
-        self.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        self.open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
         self.quick_settings.paste_origin = Some(origin);
     }
 
@@ -4317,13 +4340,13 @@ mod panel_exclusion_tests {
         fn quick_settings_deep_link_replaces_stale_navigation_history() {
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             let mut state = chrome.borrow_mut();
-            state.quick_settings.push_level(QsLevel::Clipboard);
+            state.quick_settings.push_level(QsLevel::Notifications);
 
-            state.open_quick_settings_level(QsLevel::Devices);
+            state.open_quick_settings_level(QsLevel::BluetoothDetails("00:11".into()));
 
             assert_eq!(
                 state.quick_settings.nav_stack,
-                vec![QsLevel::Root, QsLevel::Devices]
+                vec![QsLevel::Root, QsLevel::BluetoothDetails("00:11".into())]
             );
             assert!(state.overlays.quick_settings);
             assert!(!state.overlays.ws_settings);

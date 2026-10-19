@@ -317,13 +317,15 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-        for _ in 0..12 {
+        // The footer ends the page: Edit, Settings, Lock, Power. Shift+Tab
+        // from no focus wraps to Power; two more reach Settings.
+        for _ in 0..3 {
             assert!(press_key(
                 &mut host,
                 &taffy,
                 host_node,
                 Key::Named(NamedKey::Tab),
-                ModifiersState::empty(),
+                ModifiersState::SHIFT,
             ));
         }
         assert!(press_key(
@@ -343,13 +345,14 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-        for _ in 0..11 {
+        // Edit leads the footer, before Settings, Lock and Power.
+        for _ in 0..4 {
             assert!(press_key(
                 &mut host,
                 &taffy,
                 host_node,
                 Key::Named(NamedKey::Tab),
-                ModifiersState::empty(),
+                ModifiersState::SHIFT,
             ));
         }
         assert!(press_key(
@@ -413,18 +416,16 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
         });
         let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-        // The control-first root puts Edit after two sliders, three live
-        // controls, two radio detail targets, Devices, Clipboard and Power
-        // profile. Space enters edit mode
-        // with no hidden selection. Two Tabs then select Bluetooth. Move it below
-        // Night Light with Ctrl+Down.
-        for _ in 0..11 {
+        // Edit leads the footer: four Shift+Tabs from no focus reach it.
+        // Space enters edit mode with no hidden selection. Two Tabs then
+        // select Bluetooth. Move it below Night Light with Ctrl+Down.
+        for _ in 0..4 {
             assert!(press_key(
                 &mut host,
                 &taffy,
                 host_node,
                 Key::Named(NamedKey::Tab),
-                ModifiersState::empty(),
+                ModifiersState::SHIFT,
             ));
         }
         assert!(press_key(
@@ -793,12 +794,21 @@ fn quick_settings_target(
 /// surface its label names instead of doing nothing.
 #[test]
 fn every_quick_settings_destination_click_lands_on_its_surface() {
-    use shell::shell::quick_settings::QsLevel;
+    use shell::shell::quick_settings::{QsLevel, QsSection};
 
-    for (target, level) in [
-        ("quick_settings_notifications", QsLevel::Notifications),
-        ("quick_settings_devices", QsLevel::Devices),
-        ("quick_settings_clipboard", QsLevel::Clipboard),
+    // Notifications is a page; Devices and the Clipboard open in place.
+    for (target, level, section) in [
+        ("quick_settings_notifications", QsLevel::Notifications, None),
+        (
+            "quick_settings_devices",
+            QsLevel::Root,
+            Some(QsSection::Devices),
+        ),
+        (
+            "quick_settings_clipboard",
+            QsLevel::Root,
+            Some(QsSection::Clipboard),
+        ),
     ] {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -815,6 +825,10 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
             st.quick_settings.current_level(),
             &level,
             "{target} must open its pane"
+        );
+        assert_eq!(
+            st.quick_settings.section, section,
+            "{target} must open its section"
         );
     }
 

@@ -1,5 +1,7 @@
 //! What Quick Settings' in-place sections hold: Wi-Fi's networks, the
-//! paired Bluetooth accessories, the VPN profiles and the battery.
+//! paired Bluetooth accessories, the VPN profiles, the sound outputs, the
+//! battery, and the rows of Devices and the Clipboard (whose faces the
+//! overlay host paints, since it holds the device fabric and the history).
 //!
 //! A section is laid out once at its full height, as a list of items with
 //! rects relative to its own top-left corner; the root page places it under
@@ -45,6 +47,10 @@ pub(crate) enum SectionStop {
     Mode(PowerProfile),
     /// A sound output in `sound_outputs`: play sound there.
     Output(usize),
+    /// A row the overlay host paints: a Devices row or a clipboard copy.
+    Hosted(usize),
+    /// Clear the clipboard history.
+    ClearClipboard,
 }
 
 /// The sizes a section is laid out with, from the root page's metrics.
@@ -66,6 +72,8 @@ pub(crate) struct SectionMetrics {
 pub(crate) enum ItemKind {
     /// A sentence standing for an empty or unavailable list.
     Message(String),
+    /// A caption over a list, on its rows' leading edge.
+    Caption(String),
     /// "Turn on" under a radio that is off.
     TurnOn(String),
     Network(usize),
@@ -85,6 +93,10 @@ pub(crate) enum ItemKind {
     Awake(String),
     /// A sound output.
     Output(usize),
+    /// A row the overlay host paints (see [`SectionStop::Hosted`]).
+    Hosted(usize),
+    /// "Clear history" under the clipboard's copies.
+    ClearClipboard(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -204,6 +216,8 @@ pub(crate) fn layout(
         QsSection::Vpn => vpn(&mut builder, state, m),
         QsSection::Battery => battery(&mut builder, state, m),
         QsSection::Sound => sound(&mut builder, state, m),
+        QsSection::Devices => devices(&mut builder, state, m),
+        QsSection::Clipboard => clipboard(&mut builder, state, m),
     }
     let height = builder.y + RELATED_GAP;
     SectionLayout {
@@ -370,6 +384,53 @@ fn sound(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
     b.push(ItemKind::Settings(t("qs-sound-settings")), m.row);
 }
 
+fn devices(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
+    if state.personal_devices.is_none() && state.device_rows.is_empty() {
+        b.push(ItemKind::Message(t("qs-devices-no-identity")), m.row);
+    } else if state.device_rows.is_empty() {
+        b.push(ItemKind::Message(t("qs-devices-empty")), m.row);
+    }
+    for index in 0..state.device_rows.len() {
+        b.push(ItemKind::Hosted(index), m.two_line);
+    }
+    b.push(ItemKind::Settings(t("qs-devices-settings")), m.row);
+}
+
+fn clipboard(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
+    if state.clipboard_rows.is_empty() {
+        // Nothing copied, or nothing matching what was typed.
+        let message = if state.clipboard_caption.is_empty() {
+            t("qs-clipboard-empty-hint")
+        } else {
+            state.clipboard_caption.clone()
+        };
+        b.push(ItemKind::Message(message), m.row);
+        return;
+    }
+    if !state.clipboard_caption.is_empty() {
+        b.push(ItemKind::Caption(state.clipboard_caption.clone()), m.row);
+    }
+    for index in 0..state.clipboard_rows.len() {
+        b.push(ItemKind::Hosted(index), m.two_line);
+    }
+    b.push(
+        ItemKind::ClearClipboard(t("qs-clipboard-clear-history")),
+        m.row,
+    );
+}
+
+/// The rows the overlay host describes for `section`.
+pub(crate) fn hosted_rows(
+    section: QsSection,
+    state: &QuickSettingsState,
+) -> &[super::hosted::HostedRow] {
+    match section {
+        QsSection::Devices => &state.device_rows,
+        QsSection::Clipboard => &state.clipboard_rows,
+        _ => &[],
+    }
+}
+
 /// The segments of the power-mode strip in `rect`, one per offered mode.
 pub(crate) fn mode_segments(state: &QuickSettingsState, rect: Rect) -> Vec<(PowerProfile, Rect)> {
     let modes = offered_modes(state);
@@ -463,12 +524,18 @@ pub(crate) fn stops(
             }
             ItemKind::Profile(index) => out.push((SectionStop::Profile(*index), item.rect)),
             ItemKind::Output(index) => out.push((SectionStop::Output(*index), item.rect)),
+            ItemKind::Hosted(index) => out.push((SectionStop::Hosted(*index), item.rect)),
+            ItemKind::ClearClipboard(_) => out.push((SectionStop::ClearClipboard, item.rect)),
             ItemKind::Modes => out.extend(
                 mode_segments(state, item.rect)
                     .into_iter()
                     .map(|(mode, rect)| (SectionStop::Mode(mode), rect)),
             ),
-            ItemKind::Message(_) | ItemKind::Password | ItemKind::Battery | ItemKind::Awake(_) => {}
+            ItemKind::Message(_)
+            | ItemKind::Caption(_)
+            | ItemKind::Password
+            | ItemKind::Battery
+            | ItemKind::Awake(_) => {}
         }
     }
     out
@@ -492,6 +559,7 @@ pub(crate) fn stop_at(
 
 /// How a section is painted this frame.
 pub(crate) struct SectionPaint<'a> {
+    pub section: QsSection,
     pub state: &'a QuickSettingsState,
     pub metrics: SectionMetrics,
     /// Where the section's top-left corner is.
@@ -520,6 +588,7 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
         let rect = item.rect;
         match &item.kind {
             ItemKind::Message(text) => paint_message(&mut ctx, rect, text),
+            ItemKind::Caption(text) => paint_caption(&mut ctx, rect, text),
             ItemKind::TurnOn(label) => {
                 let button = turn_on_button(rect);
                 Button::paint(
@@ -572,8 +641,8 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
                 );
             }
             ItemKind::Settings(label) => {
-                let mut face = ListRowFace::new(label)
-                    .leading(RowLeading::Icon(ui::icons::Icon::Settings2));
+                let mut face =
+                    ListRowFace::new(label).leading(RowLeading::Icon(ui::icons::Icon::Settings2));
                 if let Some(column) = column {
                     face = face.leading_column(column);
                 }
@@ -596,6 +665,24 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
                     .leading(RowLeading::Icon(ui::icons::Icon::Monitor))
                     .paint(&mut ctx, rect);
             }
+            ItemKind::Hosted(index) => {
+                if let Some(row) = hosted_rows(p.section, p.state).get(*index) {
+                    let stop = SectionStop::Hosted(*index);
+                    super::hosted::paint(&mut ctx, rect, row, p.cursor, focused(stop));
+                    focus_ring(&mut ctx, rect, focused(stop));
+                }
+            }
+            ItemKind::ClearClipboard(label) => {
+                ListRowFace::new(label)
+                    .leading(RowLeading::Icon(ui::icons::Icon::Trash2))
+                    .interaction(Interaction {
+                        hovered: hovered(rect),
+                        focused: focused(SectionStop::ClearClipboard),
+                        ..Interaction::default()
+                    })
+                    .paint(&mut ctx, rect);
+                focus_ring(&mut ctx, rect, focused(SectionStop::ClearClipboard));
+            }
         }
     }
 }
@@ -611,6 +698,24 @@ fn focus_ring(ctx: &mut PaintCtx<'_>, rect: Rect, focused: bool) {
             ctx.theme,
         );
     }
+}
+
+/// A dim caption on the rows' leading edge, centred on its line.
+fn paint_caption(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str) {
+    let style = ctx.theme.text(TextRole::Caption);
+    let inset = ui::chrome::row_bleed(ctx.theme);
+    let width = ui::num::f32_of_f64((rect.width() - 2.0 * inset).max(1.0));
+    let text = ctx.text.elide_to_width_style(text, width, &style);
+    let (_, h) = ctx.text.measure_style(&text, None, &style);
+    ctx.text.draw_style(
+        ctx.scene,
+        &text,
+        ctx.theme.tokens.colors.text_dim,
+        ctx.transform
+            .pre_translate((rect.x0 + inset, rect.center().y - f64::from(h) / 2.0).into()),
+        None,
+        &style,
+    );
 }
 
 fn paint_message(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str) {

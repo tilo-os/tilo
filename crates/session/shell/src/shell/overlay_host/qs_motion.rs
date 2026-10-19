@@ -187,7 +187,7 @@ mod tests {
         let now = ui::time::now();
         let motion = EffectiveMotion::new(Motion::default(), false);
         let root = [QsLevel::Root];
-        let wifi = [QsLevel::Root, QsLevel::Clipboard];
+        let wifi = [QsLevel::Root, QsLevel::Notifications];
         let mut qs = QsMotion::closed();
         qs.follow(&frame(true, &root, 420.0, now));
         assert!(qs.is_visible(now) && qs.is_animating(now), "it appears");

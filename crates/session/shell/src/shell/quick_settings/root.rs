@@ -45,7 +45,7 @@ fn f32v(value: f64) -> f32 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RootAction {
     None,
     /// Close the panel and open Settings, at a page when it names one.
@@ -67,6 +67,15 @@ pub enum RootAction {
     },
     /// Play sound through this output (its audio graph node).
     SoundOutput(u32),
+    /// A press on a row the host describes (a Devices row, a copy): at
+    /// `point` for a pointer, or `None` from the keyboard.
+    Hosted {
+        section: QsSection,
+        index: usize,
+        point: Option<Point>,
+    },
+    /// Clear the clipboard history's unpinned copies.
+    ClearClipboard,
 }
 
 /// What a press in the Wi-Fi section asks for.
@@ -230,6 +239,10 @@ struct PageLayout {
     sections: Vec<SectionSlot>,
     rows: Vec<(RootRow, Rect)>,
     footer: Vec<(FooterButton, Rect)>,
+    /// Edit controls, at the footer's leading end.
+    edit: Rect,
+    /// Opened to paste (Super+V): the page is the Clipboard section alone.
+    paste: bool,
     /// Where the page ends, its bottom padding included.
     bottom: f64,
 }
@@ -591,11 +604,13 @@ impl QuickSettingsRoot {
     fn anchor(&self, section: QsSection, state: &QuickSettingsState) -> Option<Anchor> {
         let control = match section {
             QsSection::Sound => return self.sound.then_some(Anchor::Sliders),
-            QsSection::Battery => {
-                return self
-                    .rows(state)
-                    .contains(&RootRow::Battery)
-                    .then_some(Anchor::Row(RootRow::Battery));
+            QsSection::Battery | QsSection::Devices | QsSection::Clipboard => {
+                let row = match section {
+                    QsSection::Battery => RootRow::Battery,
+                    QsSection::Devices => RootRow::Devices,
+                    _ => RootRow::Clipboard,
+                };
+                return self.rows(state).contains(&row).then_some(Anchor::Row(row));
             }
             QsSection::Wifi => QuickSettingsControl::Wifi,
             QsSection::Bluetooth => QuickSettingsControl::Bluetooth,
@@ -765,6 +780,21 @@ impl QuickSettingsRoot {
             }
         };
 
+        if state.pasting() {
+            // Opened to paste: the copies alone, at the caret, at once.
+            let laid = sections::layout(QsSection::Clipboard, state, width, metrics);
+            let top = panel.y0 + pad;
+            layout.bottom = top + laid.height + pad;
+            layout.sections.push(SectionSlot {
+                section: QsSection::Clipboard,
+                rect: Rect::new(x0, top, x1, top + laid.height),
+                shown: laid.height,
+                layout: laid,
+            });
+            layout.paste = true;
+            return layout;
+        }
+
         layout.sliders = self.sliders_block_in(panel);
         let mut y = layout.sliders.y1;
         place_sections(Anchor::Sliders, &mut y, &mut layout);
@@ -800,17 +830,21 @@ impl QuickSettingsRoot {
             place_sections(Anchor::Row(row), &mut y, &mut layout);
         }
 
+        // The footer: icon buttons, Edit controls at the leading end and
+        // Settings, Lock and Power at the trailing one. Each is named, and
+        // the name is its tooltip.
         y += section_gap;
-        let footer_h = self.one_line_height();
-        let count = f64_of_usize(FooterButton::ALL.len());
-        let button_w = (width - related_gap * (count - 1.0)) / count;
+        let side = Self::target_at(self.layout_scale);
+        layout.edit = Rect::new(x0, y, x0 + side, y + side);
+        let count = FooterButton::ALL.len();
         for (index, button) in FooterButton::ALL.into_iter().enumerate() {
-            let x = x0 + f64_of_usize(index) * (button_w + related_gap);
+            let from_end = f64_of_usize(count - index);
+            let x = x1 - from_end * side - (from_end - 1.0) * related_gap;
             layout
                 .footer
-                .push((button, Rect::new(x, y, x + button_w, y + footer_h)));
+                .push((button, Rect::new(x, y, x + side, y + side)));
         }
-        y += footer_h + pad;
+        y += side + pad;
         layout.bottom = y;
         layout
     }
@@ -1113,11 +1147,12 @@ impl QuickSettingsRoot {
             tracing::warn!(%error, "could not persist Quick Settings layout");
         }
     }
-    /// The slider block, one section gap under the title band: the same
-    /// in every state, since everything that changes is below it.
+    /// The slider block, first on the page: the panel has no title, so
+    /// it starts at the panel padding and stays put in every state, since
+    /// everything that changes is below it.
     fn sliders_block_in(&self, panel: Rect) -> Rect {
         let pad = self.scaled(PANEL_PAD);
-        let y = self.header_bottom(panel) + self.scaled(SECTION_GAP);
+        let y = panel.y0 + pad;
         Rect::new(
             panel.x0 + pad,
             y,
@@ -1275,6 +1310,14 @@ impl QuickSettingsRoot {
     }
 
     fn stops_in(&self, layout: &PageLayout, state: &QuickSettingsState) -> Vec<RootStop> {
+        if layout.paste {
+            return layout
+                .sections
+                .iter()
+                .flat_map(|slot| sections::stops(&slot.layout, state, self.section_metrics()))
+                .map(|(stop, _)| RootStop::Section(stop))
+                .collect();
+        }
         let mut stops: Vec<RootStop> = (0..self.slider_count())
             .filter(|&index| self.slider_available(state, index))
             .map(RootStop::Slider)
@@ -1329,9 +1372,6 @@ impl QuickSettingsRoot {
             None => self.keyboard_focus,
         }
     }
-    fn is_focused(&self, state: &QuickSettingsState, stop: RootStop) -> bool {
-        self.focused_stop(state) == Some(stop)
-    }
     /// The rect a stop paints and publishes to accessibility.
     fn stop_rect(&self, stop: RootStop, state: &QuickSettingsState) -> Rect {
         let layout = self.page_layout(state);
@@ -1375,7 +1415,7 @@ impl QuickSettingsRoot {
                 .iter()
                 .find(|(r, _)| *r == row)
                 .map_or(Rect::ZERO, |(_, rect)| *rect),
-            RootStop::Edit => self.edit_rect(),
+            RootStop::Edit => layout.edit,
             RootStop::Footer(button) => layout
                 .footer
                 .iter()
@@ -1392,16 +1432,9 @@ impl QuickSettingsRoot {
         let open = self.open_section(state)?;
         layout.sections.iter().find(|slot| slot.section == open)
     }
-    /// The pointer target of a stop. Edit is painted as a quiet square in
-    /// the title band but owns a wide target.
+    /// The pointer target of a stop.
     fn stop_hit_rect(&self, stop: RootStop, state: &QuickSettingsState) -> Rect {
-        match stop {
-            RootStop::Edit => Rect::from_center_size(
-                self.edit_rect().center(),
-                (self.scaled(Self::EDIT_ACTION_WIDTH), 44.0),
-            ),
-            _ => self.stop_rect(stop, state),
-        }
+        self.stop_rect(stop, state)
     }
     fn semantic_stop_name(&self, stop: RootStop, state: &QuickSettingsState) -> String {
         match stop {
@@ -1523,8 +1556,8 @@ impl QuickSettingsRoot {
             RootStop::SoundExpand => Self::toggle_section(QsSection::Sound, state),
             RootStop::Section(stop) => Self::activate_section_stop(stop, state),
             RootStop::Row(RootRow::Battery) => Self::toggle_section(QsSection::Battery, state),
-            RootStop::Row(RootRow::Devices) => RootAction::Enter(QsLevel::Devices),
-            RootStop::Row(RootRow::Clipboard) => RootAction::Enter(QsLevel::Clipboard),
+            RootStop::Row(RootRow::Devices) => Self::toggle_section(QsSection::Devices, state),
+            RootStop::Row(RootRow::Clipboard) => Self::toggle_section(QsSection::Clipboard, state),
             RootStop::Row(RootRow::Notifications) => RootAction::Enter(QsLevel::Notifications),
             RootStop::Edit => {
                 self.edit_mode = true;
@@ -1591,8 +1624,18 @@ impl QuickSettingsRoot {
                 Some(QsSection::Bluetooth) => "settings://bluetooth",
                 Some(QsSection::Battery) => "settings://power",
                 Some(QsSection::Sound) => "settings://sound",
+                Some(QsSection::Devices) => "settings://devices_sync",
                 _ => "settings://network",
             })),
+            SectionStop::Hosted(index) => match state.section {
+                Some(section) => RootAction::Hosted {
+                    section,
+                    index,
+                    point: None,
+                },
+                None => RootAction::None,
+            },
+            SectionStop::ClearClipboard => RootAction::ClearClipboard,
             SectionStop::Device(index) => {
                 state
                     .bt_devices
@@ -1656,17 +1699,6 @@ impl QuickSettingsRoot {
             0 => t("qs-notifications-none"),
             count => t_args("qs-notifications-count", &[("count", count.into())]),
         }
-    }
-    fn edit_rect(&self) -> Rect {
-        let pad = self.scaled(PANEL_PAD);
-        let target = Self::target_at(self.layout_scale);
-        let y = self.panel.y0 + pad + (self.header_height_at(self.layout_scale) - target) / 2.0;
-        Rect::new(
-            self.panel.x1 - pad - target,
-            y,
-            self.panel.x1 - pad,
-            y + target,
-        )
     }
 
     fn label(c: QuickSettingsControl) -> String {
@@ -1858,6 +1890,20 @@ impl QuickSettingsRoot {
         None
     }
 
+    /// Lay the page out in `panel` with every section where its motion
+    /// ends, as a frame would once it settled.
+    #[cfg(test)]
+    pub(crate) fn lay_out_settled_for_tests(&mut self, panel: Rect, state: &QuickSettingsState) {
+        self.settle_sections(state);
+        self.lay_out(panel, state);
+    }
+
+    /// Whether a stop holds keyboard focus.
+    #[must_use]
+    pub fn has_keyboard_focus(&self) -> bool {
+        self.root_focus.is_some() || self.keyboard_focus.is_some()
+    }
+
     pub fn focus_next(&mut self, state: &QuickSettingsState, backwards: bool) -> bool {
         let stops = (!self.edit_mode).then(|| self.root_stops(state));
         let (count, current) = match &stops {
@@ -2042,7 +2088,8 @@ impl QuickSettingsRoot {
             return RootAction::None;
         }
         let layout = self.page_layout(state);
-        for i in 0..self.slider_count() {
+        let sliders = if layout.paste { 0 } else { self.slider_count() };
+        for i in 0..sliders {
             let (bar, _) = self.slider_geometry_for(layout.sliders, i);
             // The pointer target is the painted face — the same rect the
             // accessibility tree publishes — not a second band around the track.
@@ -2059,10 +2106,18 @@ impl QuickSettingsRoot {
             && slot.clip().contains(point)
         {
             let local = point - slot.rect.origin().to_vec2();
-            return sections::stop_at(&slot.layout, state, self.section_metrics(), local)
-                .map_or(RootAction::None, |stop| {
-                    Self::activate_section_stop(stop, state)
-                });
+            return sections::stop_at(&slot.layout, state, self.section_metrics(), local).map_or(
+                RootAction::None,
+                |stop| match stop {
+                    // The host knows which of the row's buttons is where.
+                    SectionStop::Hosted(index) => RootAction::Hosted {
+                        section: slot.section,
+                        index,
+                        point: Some(point),
+                    },
+                    _ => Self::activate_section_stop(stop, state),
+                },
+            );
         }
         let stops = self.stops_in(&layout, state);
         // A tile's chevron is inside its tile: test it first.
@@ -2204,6 +2259,30 @@ impl QuickSettingsRoot {
 
     /// The inline Wi-Fi password field, where the host draws its secret
     /// input: inside the open Wi-Fi section, while it is revealed.
+    /// Where row `index` of the host-described rows of `section` is on the
+    /// page, while that section is the open one. The host hit-tests the
+    /// row's buttons against it with [`super::hosted`]'s geometry.
+    pub fn hosted_row_rect(
+        &self,
+        state: &QuickSettingsState,
+        section: QsSection,
+        index: usize,
+    ) -> Option<Rect> {
+        if self.edit_mode {
+            return None;
+        }
+        let layout = self.page_layout(state);
+        let slot = self.open_slot(&layout, state)?;
+        if slot.section != section {
+            return None;
+        }
+        slot.layout
+            .items
+            .iter()
+            .find(|item| item.kind == sections::ItemKind::Hosted(index))
+            .map(|item| item.rect + slot.rect.origin().to_vec2())
+    }
+
     pub fn wifi_password_field_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
         if self.edit_mode || state.wifi_password.is_none() {
             return None;
@@ -2266,8 +2345,10 @@ impl QuickSettingsRoot {
                 &self.visible_rect(),
             );
         }
-        self.header(scene, transform, text, theme, cursor, state);
         if self.edit_mode {
+            // Only the edit page has a title; the page itself starts with
+            // its sliders.
+            self.header(scene, transform, text, theme);
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
             self.draw_root(
@@ -2281,25 +2362,11 @@ impl QuickSettingsRoot {
             self.scroll.paint_bars(scene, transform, theme);
         }
     }
-    fn header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        cursor: Option<Point>,
-        state: &QuickSettingsState,
-    ) {
+    fn header(&self, scene: &mut Scene, transform: Affine, text: &mut TextRenderer, theme: &Theme) {
         let colors = &theme.tokens.colors;
-        // Panel title (HIG §9.6): `scale.base` semibold, centred on the
-        // header band by its measured height so it shares a centre line
-        // with the Edit button instead of sitting on an authored baseline
-        // that large text pushed into the action tiles.
-        let title = t(if self.edit_mode {
-            "qs-edit-controls"
-        } else {
-            "qs-title"
-        });
+        // The edit page's title (HIG §9.6): `scale.base` semibold, centred
+        // on the header band by its measured height.
+        let title = t("qs-edit-controls");
         let title = title.as_str();
         let title_style = theme.text(TextRole::Body);
         let header = self.header_rect();
@@ -2317,33 +2384,6 @@ impl QuickSettingsRoot {
             None,
             &title_style.with_weight(TextWeight::Semibold),
         );
-        if !self.edit_mode {
-            let r = self.edit_rect();
-            let icon = ui::icons::Icon::Pencil;
-            let name = t("qs-edit-controls");
-            let name = name.as_str();
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(r, "")
-                    .role(ButtonRole::Plain)
-                    .hovered(cursor.is_some_and(|p| r.contains(p)))
-                    .focused(self.is_focused(state, RootStop::Edit))
-                    .accessible_name(name),
-            );
-            // The standard glyph centred in the pointer-floor button.
-            let glyph = Self::glyph_at(self.layout_scale);
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::from_center_size(r.center(), (glyph, glyph)),
-                icon,
-                colors.text_primary,
-                1.5,
-            );
-        }
     }
     fn draw_root(&self, ctx: &mut PaintCtx<'_>, cursor: Option<Point>, state: &QuickSettingsState) {
         // One layout and one focus lookup for the whole frame.
@@ -2356,6 +2396,12 @@ impl QuickSettingsRoot {
                 .root_focus_index(&stops)
                 .and_then(|index| stops.get(index).copied()),
         };
+        if layout.paste {
+            for slot in &layout.sections {
+                self.draw_section(ctx, &frame, slot);
+            }
+            return;
+        }
         self.draw_sliders(ctx, &layout, &frame);
         for (index, (control, rect)) in layout.tiles.iter().enumerate() {
             self.draw_tile(ctx, &frame, (index, *control, *rect));
@@ -2366,6 +2412,14 @@ impl QuickSettingsRoot {
         for (row, rect) in &layout.rows {
             self.draw_row(ctx, &frame, *row, *rect);
         }
+        Self::draw_icon_button(
+            ctx,
+            &frame,
+            RootStop::Edit,
+            ui::icons::Icon::Pencil,
+            &t("qs-edit-controls"),
+            layout.edit,
+        );
         for (button, rect) in &layout.footer {
             self.draw_footer_button(ctx, &frame, *button, *rect);
         }
@@ -2647,14 +2701,17 @@ impl QuickSettingsRoot {
             &shape,
         );
         // The section is one surface under its control: a step off the
-        // panel, like the tiles, so it reads as theirs.
-        ui::surface::card(
-            ctx.scene,
-            ctx.transform,
-            slot.rect,
-            radius,
-            tilo_desktop::drill_in::control_fill(ctx.theme, false),
-        );
+        // panel, like the tiles, so it reads as theirs. Opened to paste it
+        // is the whole panel, and lies on it.
+        if !state.pasting() {
+            ui::surface::card(
+                ctx.scene,
+                ctx.transform,
+                slot.rect,
+                radius,
+                tilo_desktop::drill_in::control_fill(ctx.theme, false),
+            );
+        }
         ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2671,6 +2728,7 @@ impl QuickSettingsRoot {
             ctx,
             &slot.layout,
             &SectionPaint {
+                section: slot.section,
                 state,
                 metrics: self.section_metrics(),
                 origin,
@@ -2683,6 +2741,43 @@ impl QuickSettingsRoot {
         );
         ctx.scene.pop_layer();
         ctx.scene.pop_layer();
+    }
+
+    /// The section a row opens in place, if it opens one.
+    fn row_section(row: RootRow) -> Option<QsSection> {
+        match row {
+            RootRow::Battery => Some(QsSection::Battery),
+            RootRow::Devices => Some(QsSection::Devices),
+            RootRow::Clipboard => Some(QsSection::Clipboard),
+            RootRow::Notifications => None,
+        }
+    }
+
+    /// A section row's chevron, turning down as its section opens.
+    fn draw_row_chevron(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        section: QsSection,
+        state: &QuickSettingsState,
+    ) {
+        let bleed = ui::chrome::row_bleed(ctx.theme);
+        let glyph = Self::glyph_at(self.layout_scale);
+        let slot = Rect::new(
+            rect.x1 - bleed - glyph,
+            rect.center().y - glyph / 2.0,
+            rect.x1 - bleed,
+            rect.center().y + glyph / 2.0,
+        );
+        let turn = self.chevron_turn(section, state);
+        ui::icons::draw_icon(
+            ctx.scene,
+            ctx.transform * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
+            slot,
+            ui::icons::Icon::ChevronRight,
+            ctx.theme.tokens.colors.text_dim,
+            1.5,
+        );
     }
 
     fn draw_row(&self, ctx: &mut PaintCtx<'_>, frame: &RootFrame<'_>, row: RootRow, rect: Rect) {
@@ -2722,46 +2817,36 @@ impl QuickSettingsRoot {
                     face = face.value(value);
                 }
                 face.paint(ctx, rect);
-                let bleed = ui::chrome::row_bleed(ctx.theme);
-                let glyph = Self::glyph_at(self.layout_scale);
-                let slot = Rect::new(
-                    rect.x1 - bleed - glyph,
-                    rect.center().y - glyph / 2.0,
-                    rect.x1 - bleed,
-                    rect.center().y + glyph / 2.0,
-                );
-                let turn = self.chevron_turn(QsSection::Battery, state);
-                ui::icons::draw_icon(
-                    ctx.scene,
-                    ctx.transform
-                        * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
-                    slot,
-                    ui::icons::Icon::ChevronRight,
-                    ctx.theme.tokens.colors.text_dim,
-                    1.5,
-                );
+                self.draw_row_chevron(ctx, rect, QsSection::Battery, state);
             }
-            RootRow::Devices | RootRow::Clipboard | RootRow::Notifications => {
-                let (icon, title, value) = match row {
-                    RootRow::Devices => (
+            RootRow::Devices | RootRow::Clipboard => {
+                let (icon, title, value, section) = if row == RootRow::Devices {
+                    (
                         ui::icons::Icon::Monitor,
                         t("qs-devices"),
                         Self::devices_subline(state),
-                    ),
-                    RootRow::Clipboard => (
+                        QsSection::Devices,
+                    )
+                } else {
+                    (
                         ui::icons::Icon::ClipboardPaste,
                         t("qs-clipboard"),
                         Self::clipboard_subline(state),
-                    ),
-                    _ => (
-                        ui::icons::Icon::Bell,
-                        t("qs-notifications"),
-                        Self::notifications_subline(state),
-                    ),
+                        QsSection::Clipboard,
+                    )
                 };
                 ListRowFace::new(&title)
                     .leading(RowLeading::Icon(icon))
                     .value(&value)
+                    .trailing_width(self.scaled(GLYPH + RELATED_GAP))
+                    .interaction(interaction)
+                    .paint(ctx, rect);
+                self.draw_row_chevron(ctx, rect, section, state);
+            }
+            RootRow::Notifications => {
+                ListRowFace::new(&t("qs-notifications"))
+                    .leading(RowLeading::Icon(ui::icons::Icon::Bell))
+                    .value(&Self::notifications_subline(state))
                     .disclosure()
                     .interaction(interaction)
                     .paint(ctx, rect);
@@ -2786,19 +2871,32 @@ impl QuickSettingsRoot {
         button: FooterButton,
         rect: Rect,
     ) {
-        let cursor = frame.cursor;
-        let label = button.label();
+        Self::draw_icon_button(
+            ctx,
+            frame,
+            RootStop::Footer(button),
+            button.icon(),
+            &button.label(),
+            rect,
+        );
+    }
+    /// A footer icon button: quiet, named, lifting under the pointer.
+    fn draw_icon_button(
+        ctx: &mut PaintCtx<'_>,
+        frame: &RootFrame<'_>,
+        stop: RootStop,
+        icon: ui::icons::Icon,
+        name: &str,
+        rect: Rect,
+    ) {
         Button::paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             ctx.theme,
-            &ButtonFace::new(rect, &label)
-                .icon(button.icon())
-                .role(ButtonRole::Plain)
-                .hovered(cursor.is_some_and(|p| rect.contains(p)))
-                .focused(frame.focused == Some(RootStop::Footer(button)))
-                .accessible_name(&label),
+            &ui::widget::primitives::IconButton::face(rect, icon, name)
+                .hovered(frame.cursor.is_some_and(|p| rect.contains(p)))
+                .focused(frame.focused == Some(stop)),
         );
     }
     #[allow(
@@ -3148,9 +3246,11 @@ impl QuickSettingsRoot {
                                 && Self::section_of(control, state) == self.open_section(state),
                         );
                     }
-                    RootStop::Row(RootRow::Battery) => {
+                    RootStop::Row(
+                        row @ (RootRow::Battery | RootRow::Devices | RootRow::Clipboard),
+                    ) => {
                         node.state.expanded =
-                            Some(self.open_section(state) == Some(QsSection::Battery));
+                            Some(self.open_section(state) == Self::row_section(row));
                     }
                     RootStop::SoundExpand => {
                         node.state.expanded =
@@ -3332,6 +3432,14 @@ fn section_stop_name(stop: SectionStop, state: &QuickSettingsState) -> String {
                 .get(index)
                 .map_or(0, |output| output.node)
         ),
+        SectionStop::Hosted(index) => format!(
+            "{}_row_{index}",
+            match state.section {
+                Some(QsSection::Clipboard) => "clipboard",
+                _ => "devices",
+            }
+        ),
+        SectionStop::ClearClipboard => "clipboard_clear".into(),
         SectionStop::Mode(mode) => format!(
             "power_mode_{}",
             match mode {
@@ -3373,8 +3481,24 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
             Some(QsSection::Battery) => "qs-power-settings",
             Some(QsSection::Vpn) => "qs-vpn-settings",
             Some(QsSection::Sound) => "qs-sound-settings",
+            Some(QsSection::Devices) => "qs-devices-settings",
             _ => "qs-wifi-settings",
         })),
+        SectionStop::Hosted(index) => {
+            let rows = state
+                .section
+                .map_or(&[][..], |section| sections::hosted_rows(section, state));
+            let row = rows.get(index);
+            AccessNode::new(Role::Button)
+                .with_name(row.map_or_else(String::new, |row| row.title.clone()))
+                .with_description(row.map_or_else(String::new, |row| row.detail.clone()))
+                .with_state(
+                    ui::a11y::AccessState::new().disabled(row.is_some_and(|row| !row.enabled)),
+                )
+        }
+        SectionStop::ClearClipboard => AccessNode::new(Role::Button)
+            .with_name(t("qs-clipboard-clear-history"))
+            .with_description(t("qs-clipboard-clear-a11y")),
         SectionStop::Device(index) => {
             let device = state.bt_devices.get(index);
             AccessNode::new(Role::Button)
@@ -3939,15 +4063,14 @@ mod tests {
 
         // Every stop activates as what it is.
         let mut root = laid_out(&state);
-        let stops = root.root_stops(&state);
         for (stop, expected) in [
             (
                 RootStop::Row(RootRow::Devices),
-                RootAction::Enter(QsLevel::Devices),
+                RootAction::SectionOpened(QsSection::Devices),
             ),
             (
                 RootStop::Row(RootRow::Clipboard),
-                RootAction::Enter(QsLevel::Clipboard),
+                RootAction::SectionOpened(QsSection::Clipboard),
             ),
             (
                 RootStop::Row(RootRow::Notifications),
@@ -3960,6 +4083,8 @@ mod tests {
             (RootStop::Footer(FooterButton::Lock), RootAction::Lock),
             (RootStop::Edit, RootAction::LayoutChanged),
         ] {
+            // An opened section adds its stops: find this one afresh.
+            let stops = root.root_stops(&state);
             let path = stops.iter().position(|s| *s == stop).unwrap();
             assert!(root.focus_accessibility_path(&[path], &state));
             assert_eq!(root.focused_stop(&state), Some(stop));

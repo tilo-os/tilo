@@ -253,9 +253,6 @@ guide-a11y-name = Keyboard shortcuts
 guide-a11y-description = Focus windows with { $window-back } or { $window-next }; tabs with { $tab-back } or { $tab-next }; maximize with { $maximize } and restore with { $restore }; strips with { $strip-back } or { $strip-next }, or straight to one with { $strip-first } through { $strip-last }; workspaces with { $workspace-back } or { $workspace-next }; move groups with { $group-left } or { $group-right }; resize with { $narrower } or { $wider }. Essential desktop actions: { $essentials }. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.
 
 # Devices and media, the Quick Settings drill-in
-devices-media-title = Devices and media
-devices-media-description = Audio outputs on this computer and your other Tilo devices. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.
-devices-media-list = Media destinations
 
 # Quick Settings
 qs-title = Quick Settings
@@ -370,6 +367,11 @@ qs-vpn-settings = VPN settings
 qs-vpn-details = VPN profiles
 qs-sound-output = Sound output
 qs-sound-settings = Sound settings
+qs-devices-settings = Devices & sync settings
+qs-clipboard-clear-history = Clear history
+qs-clipboard-copied = { $age }, from { $source }
+qs-hosted-row-a11y = { $title }. { $detail }
+qs-hosted-row-action-a11y = { $title }. { $detail }. { $action }
 
 # Quick Settings: Bluetooth
 qs-bluetooth-empty = No devices found
@@ -648,19 +650,8 @@ a11y-at-a-glance = At a glance
 
 # Accessibility tree: clipboard history
 a11y-clipboard-data = Clipboard data
-a11y-clipboard-item-description = From { $source }; { $age }; { $bytes } bytes; { $pinned ->
-        [yes] pinned
-       *[no] not pinned
-    }
-a11y-clipboard-use = Use item
 a11y-clipboard-unpin = Unpin item
 a11y-clipboard-pin = Pin item
-a11y-clipboard-remove = Remove item
-a11y-clipboard-search = Search clipboard history
-a11y-clipboard-search-description = Type to filter by preview, content type, or source device. Backspace edits; Escape clears the search.
-a11y-clipboard = Clipboard
-a11y-clipboard-description = Private clipboard history shared only with your authenticated devices. Type to search. Use Up and Down, Page Up and Page Down, Home, or End to select an item, then Enter or Space to use it.
-a11y-clipboard-list = Retained clipboard items
 
 # Accessibility tree: moving a Bluetooth accessory
 a11y-bluetooth-accessory = Bluetooth accessory
@@ -814,9 +805,7 @@ qs-bluetooth-move-here = Move here after its local pairing is confirmed
 qs-devices-showing = { $first }–{ $last } of { $total }
 
 # Quick Settings: devices and media pane
-qs-devices-header = Devices & media
 qs-devices-no-identity = Set up your personal identity to connect devices
-qs-devices-note = Direct between your devices, never through a vendor's cloud
 qs-devices-empty = No outputs or devices
 qs-devices-place = Place { $display } { $side ->
         [left] left
@@ -923,23 +912,19 @@ qs-devices-place-this-above = Place this display above
 qs-devices-place-this-below = Place this display below
 
 # Quick Settings: clipboard history
-qs-clipboard-search-empty = Search clipboard…
 qs-clipboard-search-matches = { $count ->
-        [one] Search: { $query } · { $count } match
-       *[other] Search: { $query } · { $count } matches
+        [one] One copy matches “{ $query }”
+       *[other] { $count } copies match “{ $query }”
     }
 qs-clipboard-empty-hint = Nothing copied yet
-qs-clipboard-no-matches = No matches for ‘{ $query }’
-qs-clipboard-search-range = Search clipboard… · { $first }–{ $last } of { $total }
+qs-clipboard-no-matches = Nothing matches “{ $query }”
+qs-clipboard-search-range = { $first } to { $last } of { $total } copies. Type to search.
 qs-clipboard-search-count = { $count ->
-        [one] Search clipboard… · { $count } item
-       *[other] Search clipboard… · { $count } items
+        [one] One copy. Type to search.
+       *[other] { $count } copies. Type to search.
     }
-qs-clipboard-clear = Clear
 qs-clipboard-clear-a11y = Clear unpinned clipboard history
-qs-clipboard-use-a11y = Use clipboard item
 qs-clipboard-mime-bytes = { $mime } · { $bytes } bytes
-qs-clipboard-row-detail = { $source } · { $age }
 qs-clipboard-remove-a11y = Remove clipboard item
 
 # Quick Settings: joining a protected Wi-Fi network
