@@ -209,6 +209,25 @@ fn launch_target(arguments: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// The scheme desktop search hands the browser a web search under:
+/// `web+search:<percent-encoded query>`. The browser, not the desktop,
+/// knows which search engine the person chose.
+pub const WEB_SEARCH_SCHEME: &str = "web+search";
+
+/// The web search a launch names (`web+search:cats%20videos`), decoded;
+/// `None` for anything else or an empty query.
+fn launch_search(arguments: &[String]) -> Option<String> {
+    arguments.iter().find_map(|arg| {
+        let (scheme, rest) = arg.split_once(':')?;
+        if !scheme.eq_ignore_ascii_case(WEB_SEARCH_SCHEME) || arg.len() > 8 * 1024 {
+            return None;
+        }
+        let (query, _) = url::form_urlencoded::parse(rest.as_bytes()).next()?;
+        let query = query.trim();
+        (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
+    })
+}
+
 /// Framework app: the browser chrome is the surface over [`Browser`].
 pub struct BrowserShell;
 
@@ -303,10 +322,12 @@ impl ResourceApp for BrowserShell {
         // the address field; other pages are other windows, in the
         // desktop's tabs.
         let target = launch_target(cx.launch_arguments());
-        let focus_address = live && target.is_none();
-        let widget = match target {
-            Some(uri) => widget.with_initial_uri(uri),
-            None => widget,
+        let search = launch_search(cx.launch_arguments());
+        let focus_address = live && target.is_none() && search.is_none();
+        let widget = match (target, search) {
+            (Some(uri), _) => widget.with_initial_uri(uri),
+            (None, Some(query)) => widget.with_initial_search(query),
+            (None, None) => widget,
         };
         // A search hit on a bookmark, or an agent's `open`, shows its page.
         let (live, dispatch) = (cx.live().clone(), cx.dispatcher());
@@ -688,6 +709,26 @@ mod tests {
             "/tmp/portal-bypass.html",
         ] {
             assert_eq!(launch_target(&[value.into()]), None);
+        }
+    }
+
+    #[test]
+    fn a_web_search_launch_names_its_query_and_nothing_else() {
+        assert_eq!(
+            launch_search(&["web+search:cats%20%26%20dogs".into()]).as_deref(),
+            Some("cats & dogs")
+        );
+        assert_eq!(
+            launch_search(&["WEB+SEARCH:wetter+k%C3%B6ln".into()]).as_deref(),
+            Some("wetter köln")
+        );
+        for value in [
+            "web+search:",
+            "web+search:%20",
+            "https://example.test/",
+            "cats",
+        ] {
+            assert_eq!(launch_search(&[value.into()]), None, "{value}");
         }
     }
 

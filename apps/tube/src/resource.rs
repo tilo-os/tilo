@@ -184,6 +184,8 @@ impl ResourceApp for TubeShell {
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
     const ICON: Option<&'static str> = Some("tube");
+    /// A launch may name a search (`tube:search?q=cats`).
+    const ARGUMENTS: usize = 1;
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
@@ -225,7 +227,14 @@ impl ResourceApp for TubeShell {
                 Ok(())
             },
         );
-        cx.surface(Self::surface(cx.mode()))
+        let surface = Self::surface(cx.mode());
+        // A live window launched to search ("Search YouTube for cats" in
+        // desktop search) opens on those results.
+        let surface = match crate::search_type::launch_search(cx.launch_arguments()) {
+            Some(query) if cx.mode().is_live() => surface.searching(&query),
+            _ => surface,
+        };
+        cx.surface(surface)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

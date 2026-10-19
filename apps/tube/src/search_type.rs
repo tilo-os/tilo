@@ -74,9 +74,66 @@ pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
     }
 }
 
+/// The scheme a launch names a search under: `tube:search?q=<query>`,
+/// the query percent-encoded.
+pub const SEARCH_URI_PREFIX: &str = "tube:search?q=";
+
+/// The query a launch asks Tube to search for, decoded; `None` for any
+/// other launch, and for an empty or malformed query.
+pub fn launch_search(arguments: &[String]) -> Option<String> {
+    arguments.iter().find_map(|arg| {
+        let prefix = arg.get(..SEARCH_URI_PREFIX.len())?;
+        if !prefix.eq_ignore_ascii_case(SEARCH_URI_PREFIX) || arg.len() > 8 * 1024 {
+            return None;
+        }
+        let query = percent_decode(arg.get(SEARCH_URI_PREFIX.len()..)?)?;
+        let query = query.trim();
+        (!query.is_empty() && !query.chars().any(char::is_control)).then(|| query.to_owned())
+    })
+}
+
+/// `text` with `+` as a space and `%XX` as its byte; `None` when an escape
+/// is malformed or the bytes are not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.bytes();
+    while let Some(byte) = rest.next() {
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => {
+                let high = char::from(rest.next()?).to_digit(16)?;
+                let low = char::from(rest.next()?).to_digit(16)?;
+                bytes.push(u8::try_from(high * 16 + low).ok()?);
+            }
+            _ => bytes.push(byte),
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launch_names_a_search_by_its_uri() {
+        assert_eq!(
+            launch_search(&["tube:search?q=cats".into()]).as_deref(),
+            Some("cats")
+        );
+        assert_eq!(
+            launch_search(&["tube:search?q=lo-fi+k%C3%B6ln%20mix".into()]).as_deref(),
+            Some("lo-fi köln mix")
+        );
+        for value in [
+            "tube:search?q=",
+            "tube:search?q=%2",
+            "tube:video?v=1",
+            "cats",
+        ] {
+            assert_eq!(launch_search(&[value.into()]), None, "{value}");
+        }
+    }
 
     #[test]
     fn host_search_hits_open_videos_playlists_and_history() {

@@ -24,7 +24,7 @@ use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
 use crate::shell::search::providers::{
     ActionsProvider, ApplicationsProvider, SessionActionPolicy, SessionActionsProvider,
-    SettingsPagesProvider, SystemSettingsProvider,
+    SettingsPagesProvider, SystemSettingsProvider, WebProvider,
 };
 use crate::shell::search::{QueryArgs, SearchRegistry, SearchResult};
 
@@ -180,6 +180,26 @@ impl Palette {
 
     fn ask(&self, needle: &str) -> Vec<SearchResult> {
         self.with_args(needle, |args| self.registry.query(args))
+    }
+
+    /// The rows the palette shows for `needle`: grouped and budgeted.
+    fn shown(&self, needle: &str) -> Vec<SearchResult> {
+        self.with_args(needle, |args| {
+            self.registry
+                .query_grouped(args, ui::search::system::PALETTE_ROW_BUDGET)
+                .into_iter()
+                .flat_map(|group| group.results)
+                .collect()
+        })
+    }
+
+    /// The palette with the web as a provider too, on a device whose apps
+    /// are not installed through the launcher, so the web serves every
+    /// service.
+    fn with_web(mut self) -> Self {
+        self.registry
+            .register(Rc::new(WebProvider::with_installed(|_| None)));
+        self
     }
 }
 
@@ -641,5 +661,64 @@ fn a_query_against_the_full_index_is_fast() {
         worst < budget(Duration::from_millis(2)),
         "a keystroke against the full index took {worst:?}; the budget is {:?}",
         budget(Duration::from_millis(2))
+    );
+}
+
+fn titles(rows: &[SearchResult]) -> Vec<&str> {
+    rows.iter().map(|row| row.title.as_str()).collect()
+}
+
+// USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my unlocked
+// passwords, the app store for flatpaks – i cannot search ANYTHING."
+#[test]
+fn youtube_cats_offers_search_youtube_for_cats_among_the_first_three_rows() {
+    let palette = Palette::new().with_web();
+    for rows in [palette.ask("youtube cats"), palette.shown("youtube cats")] {
+        assert!(
+            titles(&rows)
+                .iter()
+                .take(3)
+                .any(|title| *title == "Search YouTube for cats"),
+            "{:?}",
+            titles(&rows)
+        );
+    }
+}
+
+// USER REQUIREMENT (2026-10-19): "i cant search spotify, youtube, my unlocked
+// passwords, the app store for flatpaks – i cannot search ANYTHING."
+#[test]
+fn spotify_ends_with_search_the_web_for_spotify() {
+    let palette = Palette::new().with_web();
+    for rows in [palette.ask("spotify"), palette.shown("spotify")] {
+        assert_eq!(
+            titles(&rows).last().copied(),
+            Some("Search the web for spotify"),
+            "{:?}",
+            titles(&rows)
+        );
+    }
+}
+
+#[test]
+fn a_service_named_alone_offers_its_site_below_the_app_that_serves_it() {
+    let palette = Palette::new().with_web();
+    let rows = palette.ask("youtube");
+    assert_eq!(
+        rows.first()
+            .map(|row| (row.provider_id.as_str(), row.id.as_str())),
+        Some(("applications", "so.tilo.tube")),
+        "{:?}",
+        titles(&rows)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.provider_id == "web" && row.id == "service:youtube"),
+        "{:?}",
+        titles(&rows)
+    );
+    assert_eq!(
+        titles(&rows).last().copied(),
+        Some("Search the web for youtube")
     );
 }

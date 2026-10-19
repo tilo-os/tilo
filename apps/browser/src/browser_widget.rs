@@ -424,6 +424,11 @@ pub struct BrowserWidget {
     /// The origins tracker protection is off for, as the document holds them.
     site_exceptions: std::collections::BTreeSet<String>,
     initial_url: String,
+    /// What a launch asked to search the web for (desktop search's "Search
+    /// the web for …"): the first page is its results on the person's own
+    /// search engine, which may arrive with the document after the window
+    /// is built.
+    initial_search: Option<String>,
     /// An address draft belongs to this window. Only an explicit Navigate
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
@@ -990,6 +995,16 @@ impl BrowserWidget {
         self
     }
 
+    /// Start on the results for `query` on the person's search engine, as a
+    /// launch from desktop search asks (`web+search:`).
+    #[must_use]
+    pub fn with_initial_search(mut self, query: String) -> Self {
+        self.initial_url = search_url(&self.settings.search_engine, &query);
+        self.address.set(self.initial_url.clone());
+        self.initial_search = Some(query);
+        self
+    }
+
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
@@ -1255,6 +1270,7 @@ impl BrowserWidget {
             native_closed: false,
             close_blocked: false,
             initial_url,
+            initial_search: None,
             can_go_back: false,
             loading_stopped: false,
             can_go_forward: false,
@@ -2910,6 +2926,14 @@ impl BrowserWidget {
             {
                 self.initial_url.clone_from(&next.homepage);
                 self.address.set(next.homepage.clone());
+            }
+            // A launch that asked for a web search searches on the engine
+            // the person chose, once their preferences are in.
+            if !self.bootstrap_done
+                && let Some(query) = &self.initial_search
+            {
+                self.initial_url = search_url(&next.search_engine, query);
+                self.address.set(self.initial_url.clone());
             }
             self.settings = next;
         }
