@@ -326,13 +326,19 @@ pub fn application_search_fields<'a>(
     fields
 }
 
-/// What a tier earns in an app's fields: the usual ranks, except that a
-/// keyword typed whole is the app's other name, and ranks like a name's
-/// start. "apps" is the Store's, whatever other app has the word in its name.
+/// What a tier earns in an app's fields: the usual ranks, except that an
+/// app's keywords are its other names (Finder and Explorer are Files, Task
+/// Manager is System Monitor), so a keyword typed whole or begun ranks like
+/// the start of its name. "explo" is already Files, ahead of every file
+/// that merely starts with it; "apps" is the Store's, whatever other app has
+/// the word in its name.
 #[must_use]
 pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
-    if tier == super::MatchTier::Exact && weight == super::FieldWeight::KEYWORD {
-        return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+    use super::MatchTier;
+    if weight == super::FieldWeight::KEYWORD
+        && matches!(tier, MatchTier::Exact | MatchTier::PrefixWord | MatchTier::Prefix)
+    {
+        return MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
     }
     tier.rank_in(weight)
 }

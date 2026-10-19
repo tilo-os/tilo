@@ -410,7 +410,7 @@ impl CaptureExecutor {
         let intent = CaptureIntent {
             mode: CaptureMode::Screenshot,
             source,
-            destination: CaptureDestination::File,
+            destination: CaptureDestination::FileAndClipboard,
             regions: vec![region],
             include_pointer,
             audio: AudioCaptureMode::None,
@@ -1657,14 +1657,14 @@ impl CaptureExecutor {
                     // The saved file is the durable result; a clipboard that
                     // refuses the pixels leaves it in place, so it is logged
                     // rather than failing the capture.
-                    if also_copy
+                    let copied = also_copy
                         && ui::clipboard_copy_image(width as usize, height as usize, &rgba)
                             .outcome()
-                            != Some(true)
-                    {
+                            == Some(true);
+                    if also_copy && !copied {
                         tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                     }
-                    frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                    frame_builder.set_capture_screenshot_finished(copied, width, height, preview);
                     announce
                 }
                 // A portal request heard its failure on the worker.

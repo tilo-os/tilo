@@ -1630,20 +1630,6 @@ impl CommandPalette {
         crate::widget::floating_surface::radius(theme)
     }
 
-    /// The radius of something inset `inset` inside the palette card:
-    /// concentric with the card's corner ([`crate::tokens::Radii::concentric`]).
-    fn inner_radius(theme: &Theme, inset: f64) -> f64 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "corner radii and insets are small logical-pixel lengths; f32 holds them exactly"
-        )]
-        let radius = theme
-            .tokens
-            .radii
-            .concentric(theme.tokens.radii.panel, inset as f32);
-        f64::from(radius)
-    }
-
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
         const ICON_W: f64 = 24.0;
         const EDGE: f64 = 12.0;
@@ -2797,30 +2783,22 @@ impl Widget for CommandPalette {
         // paints the card's shadow, fading it in with the card.
         crate::widget::floating_surface::paint_card_body(scene, transform, self.rect, theme);
 
-        // ONE control for the query — the magnifier lives inside its rounded
-        // body rather than floating beside it.
+        // The query row is the card's own first row, not a field boxed inside
+        // the card: one surface, one edge. Results, when there are any, are
+        // set off from it by a hairline across the card.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        let field_shape = RoundedRect::from_rect(
-            row_rect,
-            Self::inner_radius(theme, row_rect.x0 - self.rect.x0),
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &field_shape,
-        );
-        // A loud focus ring would be permanent noise — this is the
-        // palette's only input, focused the whole time it's open — so focus
-        // reads as the OS accent at low weight instead.
-        let (ring, ring_w) = if self.is_focused {
-            (colors.text_primary.with_alpha_factor(0.45), 1.0)
-        } else {
-            (crate::surface::edge_on(colors.surfaces.base), 1.0)
-        };
-        scene.stroke(&Stroke::new(ring_w), transform, ring, None, &field_shape);
+        if !self.shows_field_only() {
+            let y = row_rect.y1 + (row_rect.y0 - self.rect.y0).min(8.0);
+            let rule = vello::kurbo::Line::new((self.rect.x0, y), (self.rect.x1, y));
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::chrome::chrome_hairline(theme),
+                None,
+                &rule,
+            );
+        }
 
         // Inset inside its 24 px slot — edge to edge would read as a
         // button, not an ornament.
@@ -3426,17 +3404,12 @@ mod tests {
             }
         }
 
-        fn palette_card_is_a_panel_and_its_insides_are_concentric() {
+        fn palette_card_is_a_panel() {
             let theme = Theme::dark();
             assert_eq!(
                 CommandPalette::surface_radius_px(&theme),
                 f64::from(theme.tokens.radii.panel),
                 "the palette is a floating panel"
-            );
-            let inner = CommandPalette::inner_radius(&theme, PADDING);
-            assert!(
-                (inner - (f64::from(theme.tokens.radii.panel) - PADDING).max(4.0)).abs() < 1e-6,
-                "the query field nests concentrically inside the card"
             );
         }
 
@@ -3496,7 +3469,7 @@ mod tests {
         }
 
         large_text_palette_reserves_painted_rows_and_scales_fonts_once();
-        palette_card_is_a_panel_and_its_insides_are_concentric();
+        palette_card_is_a_panel();
         input_row_layout_gives_the_query_the_full_trailing_width();
         row_at_finds_visible_row_inside_the_post_layout_rect();
         the_card_ends_with_its_last_row_and_no_footer();

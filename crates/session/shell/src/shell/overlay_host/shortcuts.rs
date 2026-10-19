@@ -182,7 +182,6 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(String
         // its essentials slot names how to undo a close instead.
         ShortcutAction::ReopenClosedTab.id(),
         "fixed-new-window",
-        "fixed-add-tab",
         "fixed-duplicate-tab",
         ShortcutAction::Search.id(),
         // A lone Super tap opens the Super surface, whose field is this

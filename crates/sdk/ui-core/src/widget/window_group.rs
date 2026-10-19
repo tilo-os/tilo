@@ -294,9 +294,6 @@ pub struct WindowGroup {
     /// Drawn rect in flight between the tiled slot and the work area.
     /// Layout jumps to the destination; paint interpolates (no Taffy).
     rect_spring: Option<FrameSpring<Rect>>,
-    /// [`Self::draw_docked_strip`] stepped the rect spring for the frame
-    /// whose `draw` comes next.
-    spring_stepped: bool,
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
     width_spring: Option<FrameSpring<f64>>,
@@ -492,7 +489,7 @@ impl WindowGroup {
             .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
-        bar.set_on_strip(true);
+        bar.set_window_controls(true);
         Self {
             id,
             close_reports: vec![],
@@ -528,7 +525,6 @@ impl WindowGroup {
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
-            spring_stepped: false,
             width_spring: None,
             held_back: false,
             closing_hosts: HashMap::new(),
@@ -789,7 +785,9 @@ impl WindowGroup {
     }
 
     fn maximized_chrome_live(&self) -> bool {
-        self.maximized && self.navigation_bar_visible()
+        // A maximized window keeps its bar: the same bar, in the same place,
+        // as when it isn't.
+        false
     }
 
     /// Whether the shown bar's own surface is at `p`, so a press there is the
@@ -965,7 +963,7 @@ impl WindowGroup {
     /// its own for it. While the row is hidden (maximized, or navigation
     /// drawn elsewhere) the app's own header row may hold the control.
     fn offer_history_controls(&mut self) {
-        let tab_row = !self.maximized && self.navigation_bar_visible();
+        let tab_row = self.navigation_bar_visible();
         for (id, host) in &mut self.hosts {
             host.set_window_presents_history(tab_row);
             self.bar.set_history_control(*id, host.history_control());
@@ -1501,7 +1499,7 @@ impl WindowGroup {
         host.set_panic_scope(tab_id);
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
-        bar.set_on_strip(true);
+        bar.set_window_controls(true);
         Self {
             id,
             close_reports: vec![],
@@ -1537,7 +1535,6 @@ impl WindowGroup {
             last_cursor: Point::ZERO,
             spawned_at: None,
             rect_spring: None,
-            spring_stepped: false,
             width_spring: None,
             held_back: false,
             closing_hosts: HashMap::new(),
@@ -2276,79 +2273,6 @@ impl WindowGroup {
             transform
         };
         self.rect_draw_affine(transform)
-    }
-
-    /// Paint the body of this group's docked tab strip
-    /// ([`crate::chrome::SelectorRole::Strip`]) under where [`Widget::draw`]
-    /// puts its tabs, through the same fade and spring.
-    ///
-    /// Whoever draws the group calls this first, into the scene the group
-    /// is composed into rather than into a drawing of the group it keeps:
-    /// a frosted strip shows the desktop behind where it is, and
-    /// `desktop` (the desktop's coordinates in the scene's, moved by the
-    /// pan of a strip drawn in canvas coordinates) belongs to the row, not
-    /// to the group's drawing.
-    pub fn draw_docked_strip(
-        &mut self,
-        scene: &mut Scene,
-        (transform, desktop): (Affine, Affine),
-        theme: &Theme,
-    ) {
-        if self.maximized || !self.navigation_bar_visible() {
-            return;
-        }
-        // As `draw`: nothing paints until the group has something to show.
-        if !Widget::presented(self) && !Widget::opening(self) && !self.is_closing() {
-            return;
-        }
-        self.reduce_motion = theme.reduce_motion;
-        self.step_rect_spring();
-        self.spring_stepped = true;
-        let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
-        if fade_alpha <= 0.0 {
-            return;
-        }
-        let bar = self.bar.bar_rect();
-        if bar.width() <= 0.0 || bar.height() <= 0.0 {
-            return;
-        }
-        let fading = fade_alpha < 1.0;
-        if fading {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                fade_alpha,
-                transform,
-                &bar.inflate(16.0, 16.0),
-            );
-        }
-        let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
-        Self::paint_strip_body(&self.bar, scene, (transform, desktop), theme);
-        if fading {
-            scene.pop_layer();
-        }
-    }
-
-    /// The docked strip's body at the bar's rect, its capsule concentric
-    /// with the tabs inset in it.
-    fn paint_strip_body(
-        bar: &TabBar,
-        scene: &mut Scene,
-        (transform, desktop): (Affine, Affine),
-        theme: &Theme,
-    ) {
-        let strip = crate::chrome::strip_shape(
-            bar.bar_rect(),
-            f64::from(theme.tokens.radii.control),
-            crate::widget::tabs::TAB_PILL_INSET_Y,
-        );
-        crate::chrome::paint_selector(
-            scene,
-            transform,
-            &strip,
-            crate::chrome::SelectorRole::Strip(desktop),
-            theme,
-        );
     }
 
     /// Paints each still-fading closed tab (opacity 1→0, scale 1→0.95,
@@ -3286,16 +3210,6 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
-            // The client fills the whole window. Its bar (title, Full screen,
-            // Restore, close) hides at rest and appears over the window's top
-            // edge when the person reaches for it (`top_edge_reveal`); a
-            // Tilo app's header row takes it in as one bar
-            // (`WindowHeader::set_window_bar`).
-            if let Some(bar_node) = bar_node {
-                let mut bar_style = taffy.style(bar_node).cloned().unwrap_or_default();
-                bar_style.display = taffy::Display::None;
-                let _ = taffy.set_style(bar_node, bar_style);
-            }
         }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3337,11 +3251,7 @@ impl Widget for WindowGroup {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        // The strip under the tabs was drawn first and already moved the
-        // spring for this frame; stepping it twice would run it fast.
-        if !std::mem::take(&mut self.spring_stepped) {
-            self.step_rect_spring();
-        }
+        self.step_rect_spring();
         self.offer_history_controls();
         // An indicator that flashes in and out before an app has time to
         // draw would just be a flicker, so nothing paints until either
@@ -3391,7 +3301,8 @@ impl Widget for WindowGroup {
         let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if !self.maximized && self.navigation_bar_visible() {
+        if self.navigation_bar_visible() {
+            self.bar.set_maximized(self.maximized);
             self.bar
                 .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
@@ -3416,7 +3327,12 @@ impl Widget for WindowGroup {
             h.set_focused(focused);
             // A maximized window filling its display draws edge to edge;
             // under a docked bar, or mid-fade, it is still a card.
-            h.set_full_bleed(self.maximized && self.fills_display && !spawn_active);
+            h.set_full_bleed(
+                self.maximized
+                    && self.fills_display
+                    && !spawn_active
+                    && !self.navigation_bar_visible(),
+            );
             let source_is_lifted = dragged_tab == Some(active_id);
             if source_is_lifted {
                 scene.push_layer(
@@ -3433,7 +3349,7 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        if !self.maximized && self.navigation_bar_visible() {
+        if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);
         }
@@ -3447,11 +3363,7 @@ impl Widget for WindowGroup {
 
         // No outline rings around `self.rect` for drag/search/maximize:
         // per `crates/sdk/ui-core/HIG.md` §9.4 the accent means *live*, not *chosen*.
-        if self.maximized {
-            self.draw_maximized_chrome(scene, transform, tr, theme);
-        } else {
-            self.clear_maximized_controls();
-        }
+        self.clear_maximized_controls();
 
         // Matches the `spawn_active` push above.
         if spawn_active {
@@ -3842,84 +3754,6 @@ mod tests {
     /// dragging shows it.
     /// The docked strip is a body of its own under the tabs, and the tabs
     /// on it lift off its ground, inset from its ends as from its top.
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "sample points are small positive pixel coordinates"
-    )]
-    fn tabs_stand_on_the_docked_strip_and_lift_off_its_ground() {
-        use crate::color_compat::ColorCompat;
-        use crate::offscreen::OffscreenRenderer;
-        use taffy::prelude::TaffyMaxContent;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let mut group = make_group();
-            let mut tree = TaffyTree::new();
-            let node = group.build_layout(&mut tree, &theme, &mut Default::default());
-            let mut style = tree.style(node).unwrap().clone();
-            style.size.width = Dimension::length(360.0);
-            tree.set_style(node, style).unwrap();
-            let root = tree.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(360.0),
-                        height: Dimension::length(240.0),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            );
-            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
-            group.apply_layout(&tree, node, Point::new(20.0, 20.0));
-            let bar = group.bar_rect();
-            let first = group.tab_rects()[0];
-            assert!(
-                (first.x0 - bar.x0 - crate::widget::tabs::TAB_PILL_INSET_Y).abs() < 1e-6,
-                "{}: the first tab sits the strip's inset in from its end: {first:?} in {bar:?}",
-                theme.name
-            );
-            let mut scene = Scene::new();
-            group.draw_docked_strip(&mut scene, (Affine::IDENTITY, Affine::IDENTITY), &theme);
-            group.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let mut renderer = OffscreenRenderer::new(400, 300);
-            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.base);
-            let at = |x: f64, y: f64| {
-                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x as u32, y as u32);
-                (r, g, b)
-            };
-            let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
-            let ground = crate::chrome::strip_ground(&theme);
-            let close = |a: (u8, u8, u8), b: (u8, u8, u8)| {
-                a.0.abs_diff(b.0) <= 2 && a.1.abs_diff(b.1) <= 2 && a.2.abs_diff(b.2) <= 2
-            };
-            // Outside a backdrop recording the strip is its opaque ground.
-            let strip = at(bar.x0 + 3.0, bar.center().y);
-            assert!(
-                close(strip, rgb(ground)),
-                "{}: the strip's body {strip:?} is not its ground {:?}",
-                theme.name,
-                rgb(ground)
-            );
-            let active = crate::chrome::selector_tier(
-                &theme,
-                crate::chrome::SelectionState::active(true),
-                ground,
-            );
-            let pill = at(first.x0 + 5.0, first.center().y);
-            assert!(
-                close(pill, rgb(active.fill)),
-                "{}: the active tab {pill:?} is not the lift of the strip's ground {:?}",
-                theme.name,
-                rgb(active.fill)
-            );
-        }
-    }
 
     #[test]
     #[allow(

@@ -2716,7 +2716,11 @@ impl CaptureStudio {
                     [
                         CaptureDestination::Clipboard,
                         CaptureDestination::FloatingWindow,
-                        CaptureDestination::File,
+                        if self.mode == CaptureMode::Screenshot {
+                            CaptureDestination::FileAndClipboard
+                        } else {
+                            CaptureDestination::File
+                        },
                     ][i],
                 );
                 return;
@@ -5549,10 +5553,12 @@ impl Widget for CaptureStudio {
                         ..
                     },
                 ..
-            } => self.commit(if self.mode == CaptureMode::Pip {
-                CaptureDestination::FloatingWindow
-            } else {
-                CaptureDestination::File
+            } => self.commit(match self.mode {
+                CaptureMode::Pip => CaptureDestination::FloatingWindow,
+                // A screenshot is saved and on the clipboard, as in every
+                // screenshot tool: paste it anywhere at once, find it later.
+                CaptureMode::Screenshot => CaptureDestination::FileAndClipboard,
+                CaptureMode::Recording => CaptureDestination::File,
             }),
             WindowEvent::KeyboardInput {
                 event:

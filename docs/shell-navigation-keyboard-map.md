@@ -78,7 +78,8 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 
 | Intent | Keyboard | Pointer route |
 |---|---|---|
-| Open app as tab in current group | Super+T | Tab-strip `+` |
+| New tab of the focused app (every app) | Super+T | — |
+| Open another app as a tab | — | `+` on a tabbed window, or drag one window's bar onto another |
 | Open app as adjacent window | Super+N | Global search/open |
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
 | Open a terminal | Ctrl+Alt+T | Global search/open Terminal |
@@ -86,7 +87,6 @@ behavior"). Super+Left/Right clamps because it describes a spatial direction.
 | Full screen / restore focused window | Super+F | — |
 | Close focused tab | Super+W | Tab close |
 | Reopen last closed tab (this workspace) | Super+Shift+T | Close toast's Undo |
-| Duplicate focused tab | Super+D | Tab action |
 | Maximize/restore focused window group | Super+M | Frame maximize/restore |
 | Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
 | Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
@@ -187,8 +187,7 @@ granted to an app through the GlobalShortcuts portal.
 | Close tab | Alt+F4  /  Super+W |
 | Change workspace | Super+Page Up / Down |
 | New window | Super+N |
-| Add tab here | Super+T |
-| Duplicate tab | Super+D |
+| New tab of this app | Super+T |
 | Open terminal | Super+Enter |
 | Strip switcher | Super+S |
 | Display layout | Super+P |

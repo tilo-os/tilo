@@ -138,7 +138,7 @@ impl SystemStatus {
                 t_args("status-battery", &[("percent", pct.into())])
             });
         }
-        (!parts.is_empty()).then(|| parts.join(" · "))
+        (!parts.is_empty()).then(|| parts.join(", "))
     }
 }
 

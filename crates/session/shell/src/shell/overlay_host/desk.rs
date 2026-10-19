@@ -55,8 +55,6 @@ pub(crate) const SUPER_SCRIM: f32 = 0.35;
 
 /// The music widget's glance pill.
 const MUSIC_GLANCE: Size = Size::new(240.0, 40.0);
-/// Space between the Super surface's field and the time card under it.
-const SUPER_HEADER_GAP: f64 = 16.0;
 /// Width of every open card.
 const CARD_WIDTH: f64 = 320.0;
 /// The band above an open card holding its pin.
@@ -118,11 +116,6 @@ pub(crate) struct DeskState {
     shown: BTreeMap<WidgetId, ui::motion::Presence>,
     opened: BTreeMap<WidgetId, ui::motion::Presence>,
     super_surface: Option<SuperSurface>,
-    /// Where the time card was last painted.
-    super_header_rect: std::cell::Cell<Option<Rect>>,
-    /// The time card's own arrival, so it shows in the quiet stage before
-    /// the search field does.
-    super_header: ui::motion::Presence,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
     press: Option<Press>,
@@ -148,8 +141,6 @@ impl Default for DeskState {
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
             super_surface: None,
-            super_header_rect: std::cell::Cell::new(None),
-            super_header: ui::motion::Presence::closed(),
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
             press: None,
@@ -222,15 +213,13 @@ impl ShellOverlayHost {
     }
 
     /// The quiet first stage of a held Super: the widgets come to their
-    /// glance forms and the time card shows where it stands under the
-    /// field, so growing into the whole surface moves neither.
+    /// glance forms, so growing into the whole surface moves nothing.
     fn open_super_glimpse(&mut self) {
-        // Lay the palette out field-only, unseen, so the time card has the
-        // field's place to stand under before the field shows.
+        // Lay the palette out field-only, unseen, so it has its place before
+        // the field shows.
         self.palette.set_field_only_while_empty(true);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(SuperSurface::Glimpse);
-        self.open_super_header();
     }
 
     /// Open the Super surface: search with an empty field at the top, every
@@ -242,18 +231,7 @@ impl ShellOverlayHost {
         self.palette.set_field_only_while_empty(true);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
-        self.open_super_header();
         self.refresh_search_results(doc, root);
-    }
-
-    fn open_super_header(&mut self) {
-        self.desk.super_header.show(
-            true,
-            ui::motion::Ambient::ASKED,
-            self.desk.motion,
-            ui::tokens::MotionSource::Pointer,
-            ui::time::now(),
-        );
     }
 
     /// Close the Super surface (and the search it holds).
@@ -274,7 +252,6 @@ impl ShellOverlayHost {
 
     fn end_super_surface(&mut self) {
         self.desk.super_surface = None;
-        self.desk.super_header = ui::motion::Presence::closed();
         self.palette.set_field_only_while_empty(false);
         self.palette_layout_dirty = true;
     }
@@ -631,7 +608,6 @@ impl ShellOverlayHost {
             .shown
             .values()
             .chain(self.desk.opened.values())
-            .chain(std::iter::once(&self.desk.super_header))
             .any(|presence| presence.is_moving(now))
     }
 
@@ -1010,24 +986,6 @@ impl ShellOverlayHost {
         super::overlay_part(scene, "shell.desk", desktop, |scene| {
             Some(self.draw_desk(scene, transform, text_renderer, theme, presence))
         });
-        super::overlay_part(scene, "shell.super-header", desktop, |scene| {
-            // Typing lists results where the card stands: it steps away.
-            // It arrives with the quiet stage, before the field does.
-            let openness = if super_up && self.palette.shows_field_only() {
-                ui::motion::unit_opacity(
-                    self.palette_transition
-                        .progress(palette_now)
-                        .max(self.desk.super_header.progress(palette_now)),
-                )
-            } else {
-                0.0
-            };
-            if openness > f32::EPSILON {
-                self.draw_super_header(scene, transform, text_renderer, theme, openness)
-            } else {
-                Some(Vec::new())
-            }
-        });
         super::overlay_part(scene, "shell.palette", desktop, |scene| {
             palette_shown
                 .then(|| self.draw_palette_card(scene, transform, text_renderer, theme, presence))
@@ -1035,100 +993,6 @@ impl ShellOverlayHost {
         });
     }
 
-    /// Where the Super surface's time card was last painted.
-    pub fn super_header_rect_for_tests(&self) -> Option<Rect> {
-        self.desk.super_header_rect.get()
-    }
-
-    /// The time, the date and the machine's status under the Super
-    /// surface's search field.
-    pub(crate) fn draw_super_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        openness: f32,
-    ) -> Option<Vec<Rect>> {
-        if self.desk.super_surface.is_none() && openness <= f32::EPSILON {
-            return None;
-        }
-        // The same clock the top bar shows, a fixture's pinned one included.
-        let clock = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().hosted_inputs.fixture_clock())
-            .unwrap_or_else(crate::shell::topbar_chrome::clock_snapshot);
-        let status = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().status.reading());
-        let colors = &theme.tokens.colors;
-        let time_style = theme.text(TextRole::LargeTitle);
-        let date_style = theme.text(TextRole::Body);
-        let status_style = theme.text(TextRole::Caption);
-        let date = format!("{} {}", clock.weekday, clock.date);
-        let (time_w, time_h) = text.measure_style(&clock.clock, None, &time_style);
-        let (date_w, date_h) = text.measure_style(&date, None, &date_style);
-        // No reading, no line: the card never holds a stand-in.
-        let (status_w, status_h) = status.as_deref().map_or((0.0, 0.0), |status| {
-            text.measure_style(status, None, &status_style)
-        });
-        let width = f64::from(time_w.max(date_w).max(status_w)) + 32.0;
-        let height = f64::from(time_h + date_h + status_h) + 28.0;
-        // Under the field, on its left edge: the window's tab bar and
-        // toolbar end above the field's row, so the card never covers
-        // window chrome, and it never covers the field.
-        // Where the field stands, or will stand once the quiet stage grows:
-        // the card never moves between the two.
-        let frame = self.palette_frame(theme.text_scale);
-        let field = Rect::new(
-            frame.x0,
-            frame.y0,
-            frame.x1,
-            frame.y0 + self.palette.desired_size().1,
-        );
-        let card = Rect::new(
-            field.x0,
-            field.y1 + SUPER_HEADER_GAP,
-            field.x0 + width,
-            field.y1 + SUPER_HEADER_GAP + height,
-        );
-        self.desk.super_header_rect.set(Some(card));
-        with_alpha(
-            scene,
-            transform,
-            card.inflate(24.0, 24.0),
-            openness,
-            |scene| {
-                paint_card_ground(scene, transform, theme, card);
-                let mut y = card.y0 + 14.0;
-                let status_line = status
-                    .iter()
-                    .map(|status| (status, &status_style, colors.text_dim, status_h));
-                for (line, style, color, h) in [
-                    (&clock.clock, &time_style, colors.text_primary, time_h),
-                    (&date, &date_style, colors.text_primary, date_h),
-                ]
-                .into_iter()
-                .chain(status_line)
-                {
-                    text.draw_style(
-                        scene,
-                        line,
-                        color,
-                        transform.pre_translate((card.x0 + 16.0, y).into()),
-                        None,
-                        style,
-                    );
-                    y += f64::from(h);
-                }
-            },
-        );
-        Some(vec![
-            transform.transform_rect_bbox(card.inflate(24.0, 32.0)),
-        ])
-    }
 }
 
 /// What an open card shows, read once per frame.

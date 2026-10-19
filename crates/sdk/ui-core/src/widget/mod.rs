@@ -3128,6 +3128,7 @@ pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
     found
 }
 pub mod window_header;
+pub mod window_controls;
 pub use nav_shell::{
     ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,

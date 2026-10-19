@@ -16613,10 +16613,9 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Super+letter chords that open, close, or duplicate a window: `T`
-    /// (chord form of the tab strip's "+"), `N` (new window), `W`
-    /// (close focused tab), `D` (duplicate), `S` (summon the workspace
-    /// wheel to the pointer). Split out of `handle_shell_mod_chords`,
+    /// Super+letter chords that open or close a window: `T` (a new tab of
+    /// the focused app), `N` (new window), `W` (close focused tab), `S`
+    /// (summon the workspace wheel to the pointer). Split out of `handle_shell_mod_chords`,
     /// which was otherwise the single largest chord block.
     fn handle_shell_window_open_chords(
         &mut self,
@@ -16628,41 +16627,33 @@ impl ShellOverlayHost {
         handled: &mut bool,
     ) -> bool {
         match s {
-            // Chord form of the tab strip's "+": same
-            // question, same picker.
+            // Super+T — a new tab of the app you are looking at, in every
+            // app: the system's chord, so it works where the app keeps
+            // Ctrl+T for itself (a browser, a terminal). With no window
+            // yet, it opens the app picker instead.
             "t" | "T" => {
                 if repeat {
                     *handled = true;
                     return true;
                 }
-                let group = self
-                    .chrome
-                    .as_ref()
-                    .and_then(|c| crate::shell::window_actions::focused_group(&c.borrow()));
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    // A first-boot workspace intentionally has no group. Keep
-                    // Super+T useful there by falling back to the ordinary
-                    // placement rule, which creates the first group when the
-                    // selected app is opened. With a focused group this stays
-                    // the tab-strip '+' equivalent.
-                    st.open_target = group.map_or(
-                        crate::shell::chrome_state::OpenTarget::Beside,
-                        crate::shell::chrome_state::OpenTarget::Here,
-                    );
-                    st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
-                    st.bump();
-                    drop(st);
-                    self.active_kind_filter = app_kind_filter();
-                    self.palette_visible = true;
-                    self.palette.set_focus(true);
-                    self.palette.set_query("");
-                    self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-                    self.refresh_search_results(state, path);
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let focused = crate::shell::window_actions::focused_group(&chrome.borrow());
+                if focused.is_none() {
+                    self.open_app_launcher(state, path);
                     *handled = true;
                     return true;
                 }
-                false
+                let mut st = chrome.borrow_mut();
+                if let Err(err) = crate::shell::window_actions::duplicate_active_tab(&mut st) {
+                    st.push_warning_notification(
+                        t("host-tab-duplicate-failed"),
+                        err.user_message(),
+                    );
+                }
+                *handled = true;
+                true
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
@@ -16678,27 +16669,6 @@ impl ShellOverlayHost {
             // shell would swallow it ahead of the client.
             "w" | "W" => {
                 if repeat || self.close_focused_tab() {
-                    *handled = true;
-                    true
-                } else {
-                    false
-                }
-            }
-            // Super+D — a second instance of what you are
-            // already looking at.
-            "d" | "D" => {
-                if repeat {
-                    *handled = true;
-                    return true;
-                }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    if let Err(err) = crate::shell::window_actions::duplicate_active_tab(&mut st) {
-                        st.push_warning_notification(
-                            t("host-tab-duplicate-failed"),
-                            err.user_message(),
-                        );
-                    }
                     *handled = true;
                     true
                 } else {

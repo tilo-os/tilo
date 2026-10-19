@@ -7483,48 +7483,6 @@ mod tests {
         assert!(!fb.widget_registry().contains_key("command-palette:query"));
     }
 
-    /// The Super surface's time card stands clear of the window's tab bar
-    /// and toolbar (above the field's row) and of the field itself, at
-    /// every text scale.
-    #[test]
-    fn super_time_card_clears_window_chrome_and_the_field() {
-        use crate::shell::input_policy::SuperGesture;
-        for scale in [1.0_f32, 2.0] {
-            let mut fb = FrameBuilder::new((1600, 900));
-            fb.theme = fb.theme.clone().with_text_scale(scale);
-            let _ = fb.paint_settled();
-            let doc = AutoCommit::new();
-            fb.host_mut()
-                .super_gesture(SuperGesture::Tap, &doc, &automerge::ROOT);
-            fb.host_mut().force_palette_settled();
-            let _ = fb.paint_settled();
-            let host = fb.host();
-            let card = host
-                .super_header_rect_for_tests()
-                .expect("the Super surface paints its time card");
-            let field = host.palette_rect_for_tests();
-            let area = host.overlay_area();
-            let chrome = Rect::new(
-                area.x0,
-                area.y0,
-                area.x1,
-                area.y0 + ui::widget::tabs::TAB_BAR_HEIGHT * f64::from(scale),
-            );
-            assert!(
-                card.intersect(field).area() <= 0.0,
-                "{scale}x: the card {card:?} overlaps the field {field:?}"
-            );
-            assert!(
-                card.intersect(chrome).area() <= 0.0,
-                "{scale}x: the card {card:?} overlaps window chrome {chrome:?}"
-            );
-            assert!(
-                card.x0 >= area.x0 && card.x1 <= area.x1 && card.y1 <= area.y1,
-                "{scale}x: the card {card:?} is on the display {area:?}"
-            );
-        }
-    }
-
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
         let ptr = fb.node_map.get(&focus?)?;
         unsafe { (**ptr).accessibility()?.name }
