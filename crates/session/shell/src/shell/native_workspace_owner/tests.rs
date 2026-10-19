@@ -223,6 +223,34 @@ fn native_owner_commits_exact_chat_and_reopens() {
     );
 }
 
+/// A proof its host answered it never admitted and no longer can goes, and
+/// only that attempt's: kept, it would be resent and refused forever and no
+/// new proof for the room could be made.
+#[test]
+fn a_lapsed_proof_is_dropped_and_only_its_own_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let owner = open(tree.clone()).unwrap();
+    let (intent, _, _, _, now) = raw_fixture();
+    let id = prepare_enrollment(&owner, &intent, now).unwrap();
+    let other = tilo_joined_room::testing::pending_id(id.room(), id.generation() + 1);
+    assert!(owner.drop_lapsed_enrollment(id.room(), &other).is_err());
+    assert!(owner.pending_enrollment(id.room()).unwrap().is_some());
+    assert!(owner.drop_lapsed_enrollment(id.room(), &id).unwrap());
+    assert!(owner.pending_enrollment(id.room()).unwrap().is_none());
+    assert!(!owner.drop_lapsed_enrollment(id.room(), &id).unwrap());
+    drop(owner);
+    drop(tree);
+    let mut loaded = persist::load_tree_from(&path).unwrap();
+    loaded.persist_path = Some(path);
+    let reopened = open(loaded.shared()).unwrap();
+    assert!(
+        reopened.pending_enrollment(id.room()).unwrap().is_none(),
+        "the drop is durable"
+    );
+}
+
 #[test]
 fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_proof() {
     let directory = tempfile::tempdir().unwrap();

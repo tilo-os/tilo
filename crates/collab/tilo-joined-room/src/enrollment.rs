@@ -290,6 +290,35 @@ impl NativeWorkspaceOwner {
         self.publish_pending(&next, None)?;
         Ok(true)
     }
+    /// Drop the proof of attempt `id` into `room`, which its host answered
+    /// it never admitted and no longer can
+    /// ([`tilo_peer_state::join::JOIN_PROOF_LAPSED`]): resending it can only
+    /// be refused again, and while it is kept no new proof for the room can
+    /// be made. Answers whether it was dropped.
+    ///
+    /// # Errors
+    /// `id` names another attempt, or the record cannot be published.
+    pub fn drop_lapsed_enrollment(
+        &self,
+        room: RoomId,
+        id: &PendingEnrollmentId,
+    ) -> Result<bool, String> {
+        let _turn = self.0.mutation.lock();
+        let mut next = self.0.authority.read().clone();
+        let Some(pending) = next.pending.get(&room) else {
+            return Ok(false);
+        };
+        if &pending.id != id {
+            return Err("lapsed enrollment generation mismatch".into());
+        }
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or("native storage generation exhausted")?;
+        next.pending.remove(&room);
+        self.publish_pending(&next, None)?;
+        Ok(true)
+    }
     /// `required` is a room the owner must answer for from now on.
     fn publish_pending(
         &self,

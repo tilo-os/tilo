@@ -36,6 +36,14 @@ pub const TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1: &str =
     "iroh-workspace-host-endpoint-addr-v1";
 pub const TRANSPORT_TILO_SESSION_JOIN_HTTP_V1: &str = "tilo-session-join-http-v1";
 
+/// The `code` of a [`JoinTransportResponse::Error`] answering a Complete
+/// whose proof the host never admitted and no longer can: it holds neither
+/// a live challenge the proof answers nor a completion of its request. The
+/// proof is dead; the invitation is redeemed, if at all, through a new
+/// challenge. Every other refusal of a Complete may follow an admission the
+/// answer did not reach, so a retained proof is resent exactly.
+pub const JOIN_PROOF_LAPSED: u16 = 410;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberRole {
     Viewer,

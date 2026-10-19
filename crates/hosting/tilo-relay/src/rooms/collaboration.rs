@@ -68,17 +68,42 @@ pub struct GovernanceCompletion {
 
 /// Why the room authority refused or failed a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CollaborationError(String);
+pub struct CollaborationError {
+    message: String,
+    /// What a workspace join answer carries as its code: 403 for a
+    /// refusal, [`tilo_peer_state::join::JOIN_PROOF_LAPSED`] for a proof
+    /// this host never admitted and no longer can.
+    code: u16,
+}
 
 impl CollaborationError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            code: 403,
+        }
+    }
+
+    /// A Complete whose proof this host never admitted and no longer can:
+    /// it holds neither the challenge it answers nor a completion of its
+    /// request.
+    fn lapsed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: tilo_peer_state::join::JOIN_PROOF_LAPSED,
+        }
+    }
+
+    /// The code a workspace join answer carries for this refusal.
+    #[must_use]
+    pub const fn code(&self) -> u16 {
+        self.code
     }
 }
 
 impl fmt::Display for CollaborationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        self.message.fmt(formatter)
     }
 }
 
@@ -86,7 +111,7 @@ impl std::error::Error for CollaborationError {}
 
 impl From<String> for CollaborationError {
     fn from(message: String) -> Self {
-        Self(message)
+        Self::new(message)
     }
 }
 
@@ -1373,12 +1398,22 @@ impl Rooms {
         proof: &JoinProof,
         now: u64,
     ) -> Result<VerifiedRedemption, CollaborationError> {
+        // `complete` answers a request it completed before replaying it, so
+        // a proof whose challenge is gone or past was never admitted here
+        // and never will be: the joining device needs a new challenge.
         let challenge = room
             .collaboration()
             .join_challenges
             .iter()
             .find(|prior| prior.challenge == proof.challenge)
-            .ok_or_else(|| CollaborationError::new("join challenge was not issued by this host"))?;
+            .ok_or_else(|| {
+                CollaborationError::lapsed("join challenge was not issued by this host")
+            })?;
+        if challenge.challenge.expires_at_ns <= now {
+            return Err(CollaborationError::lapsed(
+                "join challenge expired before the join completed",
+            ));
+        }
         if challenge.remote_endpoint != remote_endpoint
             || challenge.device_cert.device_public_key != remote_endpoint
         {
@@ -1750,7 +1785,7 @@ impl WorkspaceJoinService for RoomJoinService {
             .handle_join(remote_endpoint, request)
             .await
             .unwrap_or_else(|error| JoinTransportResponse::Error {
-                code: 403,
+                code: error.code(),
                 message: error.to_string(),
             })
     }

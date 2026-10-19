@@ -318,6 +318,12 @@ pub fn finalize(
 ) -> Result<crate::VerifiedNativeEnrollment, String> {
     crate::VerifiedNativeEnrollment::finalize(intent, pending, bootstrap)
 }
+/// An enrollment attempt into `room` at `generation` that no store
+/// published, for a test naming another attempt than the retained one.
+#[must_use]
+pub fn pending_id(room: crate::RoomId, generation: u64) -> crate::PendingEnrollmentId {
+    crate::PendingEnrollmentId::new(room, generation, [0; 32])
+}
 /// The store an owner publishes through, for a host test to downcast.
 #[must_use]
 pub fn store(owner: &NativeWorkspaceOwner) -> Arc<dyn Store> {
