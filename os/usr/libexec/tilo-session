@@ -92,14 +92,16 @@ XDG_SESSION_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 
-# Fedora's glibc backs every heap and thread stack with transparent huge pages,
-# so each thread's 2 MiB malloc arena is resident the moment it allocates: an
-# idle compositor held 180 MiB for 34 MiB of live data. The compositor and
-# every service of this session start without them. glibc reads tunables only
-# when a process starts, so this is where they are set; the launcher gives
-# sandboxed apps the same value (`launcher::hardening::NO_HUGE_PAGES_TUNABLES`,
-# which a test holds to this line).
-export GLIBC_TUNABLES=glibc.malloc.hugetlb=0:glibc.pthread.stack_hugetlb=0
+# Fedora's glibc backs every malloc heap with transparent huge pages, so each
+# thread's 2 MiB malloc arena is resident the moment it allocates: an idle
+# compositor held 180 MiB for 34 MiB of live data. The compositor and every
+# service of this session start without them. glibc reads tunables only when a
+# process starts, so this is where they are set; the launcher gives sandboxed
+# apps the same value (`launcher::hardening::NO_HUGE_PAGES_TUNABLES`, which a
+# test holds to this line). Nothing here may make glibc call more: every app
+# the person starts inherits it, Chromium and Electron renderers included,
+# whose sandboxes refuse calls glibc would then fail on.
+export GLIBC_TUNABLES=glibc.malloc.hugetlb=0
 
 stop_target() {
   if [ "$target_started" = 1 ]; then

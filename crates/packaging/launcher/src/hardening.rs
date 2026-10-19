@@ -57,13 +57,24 @@ pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 /// compiler-rt sanitizer/toolchain payload it came from.
 pub const TILO_SCUDO_PATH: &str = "/usr/lib/tilo/libclang_rt.scudo_standalone.so";
 
-/// glibc tunables that keep transparent huge pages out of malloc arenas and
-/// thread stacks. Fedora's glibc asks the kernel for them by default, which
-/// makes every thread's 2 MiB arena resident when it first allocates (an idle
-/// compositor held 180 MiB for 34 MiB of live data). The session sets this
-/// for the compositor and its services (`os/usr/libexec/tilo-session`, held to
-/// this value by a test) and every sandboxed app gets it too.
-pub const NO_HUGE_PAGES_TUNABLES: &str = "glibc.malloc.hugetlb=0:glibc.pthread.stack_hugetlb=0";
+/// glibc tunables that keep transparent huge pages out of malloc arenas.
+/// Fedora's glibc asks the kernel for them by default, which makes every
+/// thread's 2 MiB arena resident when it first allocates (an idle compositor
+/// held 180 MiB for 34 MiB of live data). The session sets this for the
+/// compositor and its services (`os/usr/libexec/tilo-session`, held to this
+/// value by a test) and every sandboxed app gets it too.
+///
+/// Only settings that make glibc call less may go here, never more: this
+/// environment reaches code with syscall policies of its own (Chromium's
+/// renderers, every Electron app the person runs). `glibc.pthread.stack_hugetlb=0`
+/// was here and broke exactly that: it makes `pthread_create` call
+/// `madvise(MADV_NOHUGEPAGE)` on each new stack and fail when the call is
+/// refused, and Chromium's renderer sandbox refuses it with `EPERM`. Every
+/// renderer died on its first thread and the browser loaded no page. Thread
+/// stacks need no opt-out on Tilo: the kernel gives huge pages only to memory
+/// that asks for them (`CONFIG_TRANSPARENT_HUGEPAGE_MADVISE`), and nothing
+/// asks for a stack.
+pub const NO_HUGE_PAGES_TUNABLES: &str = "glibc.malloc.hugetlb=0";
 
 /// `GLIBC_TUNABLES` for one launch: [`NO_HUGE_PAGES_TUNABLES`], plus the
 /// shadow-stack request when the launch has it.
@@ -224,6 +235,128 @@ mod tests {
         assert_eq!(
             tunables(true),
             format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
+        );
+    }
+
+    /// Set in the re-executed test binary that runs the probe.
+    #[cfg(all(target_os = "linux", target_endian = "little"))]
+    const ENGINE_THREAD_PROBE: &str = "TILO_TEST_ENGINE_THREAD_PROBE";
+
+    /// Refuse huge-page advice with `EPERM`, as Chromium's renderer sandbox
+    /// does, then start a thread and report whether it started.
+    #[cfg(all(target_os = "linux", target_endian = "little"))]
+    fn start_a_thread_inside_an_engine_sandbox() -> bool {
+        let word = |value: i64| u32::try_from(value).expect("a BPF immediate");
+        // The low word of the third argument, `advice` (little-endian).
+        let advice = std::mem::offset_of!(libc::seccomp_data, args)
+            .checked_add(16)
+            .expect("an offset inside seccomp_data");
+        let statement = |code: u32, k: u32| libc::sock_filter {
+            code: u16::try_from(code).expect("a BPF opcode"),
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        let jump = |k: u32, jt: u8, jf: u8| libc::sock_filter {
+            jt,
+            jf,
+            ..statement(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K, k)
+        };
+        let filter = [
+            statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+            jump(word(libc::SYS_madvise), 0, 4),
+            statement(
+                libc::BPF_LD | libc::BPF_W | libc::BPF_ABS,
+                u32::try_from(advice).expect("a field offset"),
+            ),
+            jump(word(libc::MADV_NOHUGEPAGE.into()), 1, 0),
+            jump(word(libc::MADV_HUGEPAGE.into()), 0, 1),
+            statement(
+                libc::BPF_RET | libc::BPF_K,
+                libc::SECCOMP_RET_ERRNO | word(libc::EPERM.into()),
+            ),
+            statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+        ];
+        let program = libc::sock_fprog {
+            len: u16::try_from(filter.len()).expect("a short program"),
+            filter: filter.as_ptr().cast_mut(),
+        };
+        // SAFETY: scalar prctl calls on this process; `program` points at
+        // `filter`, which outlives the call, and the kernel copies it.
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            assert_eq!(
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &raw const program
+                ),
+                0,
+                "the probe's filter would not install"
+            );
+        }
+        std::thread::Builder::new()
+            .spawn(|| ())
+            .is_ok_and(|thread| thread.join().is_ok())
+    }
+
+    /// Run the probe in a fresh process: glibc reads `GLIBC_TUNABLES` only
+    /// when a process starts.
+    #[cfg(all(target_os = "linux", target_endian = "little"))]
+    fn thread_starts_under(tunables: &str) -> bool {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "hardening::tests::every_launch_environment_lets_a_web_engines_sandboxed_processes_start_threads",
+                "--nocapture",
+            ])
+            .env(ENGINE_THREAD_PROBE, "1")
+            .env("GLIBC_TUNABLES", tunables)
+            .output()
+            .expect("run the thread probe");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "the thread probe did not run: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if stdout.contains("engine thread: started") {
+            true
+        } else {
+            assert!(stdout.contains("engine thread: refused"), "{stdout}");
+            false
+        }
+    }
+
+    /// The browser loaded no page: every Chromium renderer logged
+    /// `pthread_create: Operation not permitted` and died, two thousand of
+    /// them in fourteen seconds. The launch environment carried
+    /// `glibc.pthread.stack_hugetlb=0`, which makes glibc advise every new
+    /// thread stack against huge pages and fail the thread when the advice
+    /// is refused, and Chromium's renderer sandbox refuses it. The tunables
+    /// every launch and the session hand on must leave thread creation to
+    /// what such a sandbox allows; the stack opt-out is the control that
+    /// shows the probe sees the failure.
+    #[test]
+    #[cfg(all(target_os = "linux", target_endian = "little"))]
+    fn every_launch_environment_lets_a_web_engines_sandboxed_processes_start_threads() {
+        if std::env::var_os(ENGINE_THREAD_PROBE).is_some() {
+            let started = start_a_thread_inside_an_engine_sandbox();
+            println!(
+                "engine thread: {}",
+                if started { "started" } else { "refused" }
+            );
+            return;
+        }
+        for tunables in [tunables(false), tunables(true)] {
+            assert!(
+                thread_starts_under(&tunables),
+                "GLIBC_TUNABLES={tunables} stops a sandboxed renderer from starting threads"
+            );
+        }
+        assert!(
+            !thread_starts_under("glibc.pthread.stack_hugetlb=0"),
+            "the probe must see the refusal that killed Chromium's renderers"
         );
     }
 
