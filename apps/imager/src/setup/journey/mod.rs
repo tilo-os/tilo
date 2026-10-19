@@ -1900,10 +1900,16 @@ impl InstallerPreview {
                 {
                     return Err("installer-guided-host-unavailable");
                 }
+                // The early check qualifies this disk for direct installation.
+                // A build without direct installation continues to the USB
+                // installer this choice offers, and facts this host already
+                // reported are not re-collected when the choice is revisited.
                 if page == Page::Destination
                     && self.live
                     && self.linux
                     && !self.windows.enabled
+                    && self.direct_route_enabled()
+                    && self.storage.facts.is_none()
                     && self.journey.destination == Some(Destination::Computer)
                 {
                     self.compatibility.pending = true;

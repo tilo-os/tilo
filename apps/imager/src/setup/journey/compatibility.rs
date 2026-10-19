@@ -67,6 +67,8 @@ mod tests {
 
     #[test]
     fn full_os_check_is_deferred_before_identity_and_not_used_for_another_computer() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "1");
         let mut preview = InstallerPreview {
             live: true,
             linux: true,
@@ -98,6 +100,46 @@ mod tests {
         assert!(!another.compatibility.pending);
         assert_eq!(another.journey.page, Page::Migration);
         assert!(another.storage.facts.is_none());
+    }
+
+    #[test]
+    fn full_os_check_is_skipped_when_this_build_offers_only_a_usb_installer() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "0");
+        let mut preview = InstallerPreview {
+            live: true,
+            linux: true,
+            ..Default::default()
+        };
+        preview.capabilities.prepared_installation = true;
+        preview.journey.destination = Some(Destination::Computer);
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert!(!preview.compatibility.pending);
+        assert!(!preview.direct.active);
+        assert_eq!(preview.journey.page, Page::Migration);
+        assert!(preview.storage.facts.is_none());
+    }
+
+    #[test]
+    fn full_os_check_is_not_repeated_for_facts_this_host_already_reported() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(crate::setup::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        let mut preview = InstallerPreview {
+            live: true,
+            linux: true,
+            ..Default::default()
+        };
+        preview.capabilities.prepared_installation = true;
+        preview.storage.stage();
+        preview.journey.destination = Some(Destination::Computer);
+        preview
+            .apply(InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        assert!(!preview.compatibility.pending);
+        assert!(!preview.direct.active);
+        assert_eq!(preview.journey.page, Page::Migration);
     }
 
     #[test]
