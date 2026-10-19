@@ -84,6 +84,9 @@ pub(super) struct Site {
     behind: Arc<Mutex<Behind>>,
     /// Whether the door admits people (else the site is invitation-only).
     pub open: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the door hands out invitations the host cancelled already,
+    /// which its join exchange then refuses.
+    pub stale: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The host a site's door admits people to.
@@ -173,6 +176,7 @@ fn door_join(
     handle: &tokio::runtime::Handle,
     behind: &Behind,
     request: &test_http::Request,
+    stale: bool,
 ) -> Option<test_http::Reply> {
     let asked: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
     let user: [u8; 32] = hex::decode(asked["userPublicKey"].as_str()?)
@@ -202,6 +206,18 @@ fn door_join(
             },
         ))
         .unwrap();
+    if stale {
+        handle
+            .block_on(behind.rooms.cancel(
+                &behind.room,
+                &behind.host_cert,
+                tilo_relay::rooms::CancelInvitationRequest {
+                    request_id: random(),
+                    invite_id: issued.invite_id,
+                },
+            ))
+            .unwrap();
+    }
     json(
         200,
         &serde_json::json!({
@@ -227,10 +243,12 @@ impl Site {
             origin: web.plain_origin.clone().unwrap(),
         }));
         let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let stale = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let door = {
             let handle = runtime.handle().clone();
             let behind = Arc::clone(&behind);
             let open = Arc::clone(&open);
+            let stale = Arc::clone(&stale);
             test_http::Responder::handle(move |request| {
                 let behind = behind.lock().unwrap().clone();
                 match (request.method.as_str(), request.target.as_str()) {
@@ -238,13 +256,19 @@ impl Site {
                         let mut home = serde_json::json!({
                             "name": "Lounge",
                             "host": {"origin": behind.origin},
+                            "app": CHAT,
                         });
                         if open.load(std::sync::atomic::Ordering::SeqCst) {
                             home["admission"] = "door/".into();
                         }
                         json(200, &serde_json::json!({ "home": home }))
                     }
-                    ("POST", "/door/join") => door_join(&handle, &behind, request),
+                    ("POST", "/door/join") => door_join(
+                        &handle,
+                        &behind,
+                        request,
+                        stale.load(std::sync::atomic::Ordering::SeqCst),
+                    ),
                     _ => Some(test_http::Reply::status(404)),
                 }
             })
@@ -261,6 +285,7 @@ impl Site {
             entry,
             behind,
             open,
+            stale,
         }
     }
 
@@ -308,6 +333,7 @@ impl Site {
             origin: self.origin(),
             admission: Some(self.entry.join("door/").unwrap()),
             directory: None,
+            app: None,
         };
         let answer = self
             .runtime
@@ -562,6 +588,129 @@ fn an_invitation_only_site_says_so() {
         net.join_site(&site.entry),
         Err(hosted_sites::SiteError::InvitationOnly("Lounge".into()))
     );
+    drop(net);
+    site.shutdown();
+}
+
+/// The site's Lounge was watched before: a page joined with a device
+/// certified for a moment, as a watching page is certified for an hour, and
+/// the room's roster keeps that certificate after it expires. A computer
+/// still joins: the roster is the room's evidence, and its expiry is
+/// checked only when that device acts. Each such room refused every
+/// computer before, with nothing on screen and nothing in the log.
+#[test]
+#[serial_test::serial]
+fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+
+    let grace = key(2);
+    let page = key(3);
+    let expires = tilo_clock::unix_now_ns() + 1_500_000_000;
+    let mut cert = certify(
+        &grace,
+        &page,
+        "Watching visitor",
+        DeviceCapabilities::member(),
+    );
+    cert.expires_at_ns = Some(expires);
+    sign_device_cert(&mut cert, &grace).unwrap();
+    site.admit_device(&cert, &page, "Grace");
+    until("the page's certificate to expire", || {
+        (tilo_clock::unix_now_ns() > expires).then_some(())
+    });
+
+    let ada = key(1);
+    let (net, tree) = computer(&dir.path().join("computer"), ada.clone(), "Ada's computer");
+    let joined = net.join_site(&site.entry).unwrap();
+    assert!(
+        matches!(joined, SiteJoin::Enrolling { room: named, .. } if named == room),
+        "{joined:?}"
+    );
+    assert_eq!(
+        net.site_joins()
+            .into_iter()
+            .map(|join| (join.room, join.progress))
+            .collect::<Vec<_>>(),
+        vec![(room, hosted_sites::JoinProgress::Joining)],
+        "the join shows while it runs"
+    );
+    held(&net, &tree, room);
+    assert!(site.member(ada.verifying_key().to_bytes()));
+    assert!(
+        net.site_joins().is_empty(),
+        "nothing is joining once the workspace installed"
+    );
+    assert_eq!(
+        net.take_arrivals(),
+        vec![hosted_sites::Arrival {
+            room,
+            app: Some(CHAT.into()),
+        }],
+        "the person arrives in the app the site's entry names, once"
+    );
+    assert!(net.take_arrivals().is_empty());
+    assert_eq!(
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.name == "Lounge")
+            .count(),
+        1,
+        "one workspace for the Lounge"
+    );
+    drop(net);
+    site.shutdown();
+}
+
+/// A join the host refuses says why where the person looks, is logged as
+/// the failure it is, and leaves no empty workspace behind; joining again
+/// once the host lets the person in makes exactly one workspace.
+#[test]
+#[serial_test::serial]
+fn a_refused_join_says_why_leaves_no_empty_workspace_and_joining_again_makes_one() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+    let (net, tree) = computer(&dir.path().join("computer"), key(1), "Ada's computer");
+    let workspaces =
+        |tree: &crate::shell::state::WorkspaceTreeHandle| tree.read().desktop.workspaces.len();
+    let before = workspaces(&tree);
+
+    // The door hands out an invitation its host cancelled: the host's join
+    // exchange refuses it once the computer redeems it.
+    site.stale.store(true, std::sync::atomic::Ordering::SeqCst);
+    let joined = net.join_site(&site.entry).unwrap();
+    assert!(matches!(joined, SiteJoin::Enrolling { .. }), "{joined:?}");
+    let reason = until("the join to fail", || {
+        net.tick();
+        net.site_joins()
+            .into_iter()
+            .find_map(|join| match join.progress {
+                hosted_sites::JoinProgress::Failed(reason) if join.room == room => Some(reason),
+                _ => None,
+            })
+    });
+    assert!(reason.contains("cancelled"), "{reason}");
+    assert_eq!(
+        workspaces(&tree),
+        before,
+        "the empty workspace the join made is gone with it"
+    );
+
+    site.stale.store(false, std::sync::atomic::Ordering::SeqCst);
+    net.join_site(&site.entry).unwrap();
+    held(&net, &tree, room);
+    assert_eq!(
+        workspaces(&tree),
+        before + 1,
+        "exactly one workspace for it"
+    );
+    assert!(net.site_joins().is_empty());
     drop(net);
     site.shutdown();
 }

@@ -925,7 +925,10 @@ impl ShellNetwork {
     /// after its exchange or its installation failed. A retry redeems exactly
     /// that invitation in that slot: a fresh one never matches the proof the
     /// slot retains, which the host resolves idempotently.
-    fn pending_host_room(&self, room: RoomId) -> Result<Option<(WorkspaceId, String)>, String> {
+    pub(super) fn pending_host_room(
+        &self,
+        room: RoomId,
+    ) -> Result<Option<(WorkspaceId, String)>, String> {
         let Some(pending) = self.native_owner()?.pending_enrollment(room)? else {
             return Ok(None);
         };
@@ -988,19 +991,37 @@ impl ShellNetwork {
             .is_ok_and(|shared| !shared.is_empty())
     }
 
-    /// Install every shared room whose enrollment completed.
+    /// Install every shared room whose enrollment completed. How each that
+    /// ended went is said where it is polled ([`Self::poll_enrollment`]).
     pub(super) fn finish_shared_rooms(&self) {
         let Ok(mut shared) = self.relay_rooms.shared.lock() else {
             return;
         };
-        shared.retain(|id| match self.poll_enrollment(*id) {
-            Ok(PeerSyncResponse::EnrollmentPending { .. }) => true,
-            Ok(_) => false,
-            Err(error) => {
-                tracing::warn!(%error, "a shared workspace was not enrolled");
-                false
-            }
+        shared.retain(|id| {
+            matches!(
+                self.poll_enrollment(*id),
+                Ok(PeerSyncResponse::EnrollmentPending { .. })
+            )
         });
+    }
+
+    /// The room and slot the running enrollment `id` is for.
+    pub(super) fn enrollment_target(&self, id: u64) -> Option<(RoomId, WorkspaceId)> {
+        let room = self
+            .relay_rooms
+            .joining
+            .lock()
+            .ok()?
+            .iter()
+            .find_map(|(room, joining)| (*joining == id).then_some(*room))?;
+        let local = self
+            .native_enrollment
+            .attempts
+            .lock()
+            .ok()?
+            .get(&id)?
+            .local();
+        Some((room, local))
     }
 }
 

@@ -961,6 +961,9 @@ pub struct ShellOverlayHost {
     peer_sync_overlay: PeerSyncOverlay,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
     directory_sheet: crate::shell::directory_sheet::DirectorySheet,
+    /// The workspace a join just installed, and who is in it, for a moment
+    /// under the top bar.
+    arrival_line: crate::shell::arrival_line::ArrivalLine,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
@@ -2678,6 +2681,7 @@ impl ShellOverlayHost {
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
+            arrival_line: crate::shell::arrival_line::ArrivalLine::default(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
@@ -4446,6 +4450,49 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Bring the person into each site workspace whose join installed: its
+    /// site's app opens there (off the loop), and the arrival line names it
+    /// and who is here. While the directory sheet is up, its rows follow
+    /// the joins. Answers whether anything changed.
+    fn pump_arrivals(&mut self) -> bool {
+        let now = Instant::now();
+        self.arrival_line.expire(now);
+        if self.directory_sheet.visible() {
+            self.directory_sheet.set_joins(self.peer_sync.site_joins());
+        }
+        let arrivals = self.peer_sync.arrive();
+        let Some(arrival) = arrivals.last() else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return true;
+        };
+        let shown = {
+            let state = chrome.borrow();
+            state
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == arrival.room)
+                .map(|workspace| {
+                    let people = workspace
+                        .collaborators
+                        .iter()
+                        .map(|person| crate::shell::arrival_line::Present {
+                            name: person.name.clone(),
+                            id: person.id.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    (workspace.name.clone(), people)
+                })
+        };
+        if let Some((name, people)) = shown {
+            self.arrival_line.show(&name, people, now);
+        }
+        true
+    }
+
     /// Open "Join a workspace…" and ask the directories for what they list.
     pub(super) fn open_directory(&mut self) {
         let request = self.directory_sheet.open();
@@ -4765,6 +4812,7 @@ impl ShellOverlayHost {
         for (follow, outcome) in answered {
             self.apply_peer_sync(follow, outcome);
         }
+        changed |= self.pump_arrivals();
         // One enrollment poll at a time: a poll that installs the room
         // publishes the state file on the worker.
         let polling = self
@@ -11492,6 +11540,21 @@ impl ShellOverlayHost {
             let state = self.chrome.as_ref()?.borrow();
             let tree = state.tree();
             let workspace = tree.desktop.workspaces.get(idx)?;
+            // A workspace still joining its site's room says so, and one
+            // whose join failed says why.
+            if let Some(join) = self
+                .peer_sync
+                .site_joins()
+                .into_iter()
+                .find(|join| join.workspace == Some(workspace.id))
+            {
+                return Some(match join.progress {
+                    crate::shell::network::JoinProgress::Joining => t("directory-joining"),
+                    crate::shell::network::JoinProgress::Failed(reason) => {
+                        t_args("directory-join-failed-line", &[("error", reason.into())])
+                    }
+                });
+            }
             let mut here: Vec<&str> = workspace
                 .collaborators
                 .iter()
@@ -14365,6 +14428,19 @@ impl ShellOverlayHost {
             return true;
         }
 
+        // Anything the person does dismisses the arrival line, and still
+        // does what it does.
+        if self.arrival_line.is_open()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            )
+        {
+            self.arrival_line.dismiss();
+        }
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
         if self.peer_sync_overlay.visible() && self.handle_peer_sync_event(event, *ctx.modifiers) {
@@ -23038,7 +23114,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 17] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 18] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -23123,6 +23199,7 @@ impl ShellOverlayHost {
             ),
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
             ("desk", self.desk_wake_deadline(now)),
+            ("arrival", self.arrival_line.deadline()),
         ]
     }
 
@@ -23296,6 +23373,7 @@ impl ShellOverlayHost {
             || self.window_previews.changed()
             || self.peer_sync_overlay.needs_animation_frame()
             || self.directory_sheet.needs_animation_frame()
+            || self.arrival_line.needs_animation_frame()
     }
 }
 
@@ -25681,6 +25759,15 @@ impl ShellOverlayHost {
             self.draw_directory_sheet(scene, transform, text_renderer, theme);
             None
         });
+
+        if self.arrival_line.visible() {
+            let host = self.rect;
+            overlay_part(scene, "shell.arrival", desktop, |scene| {
+                self.arrival_line
+                    .draw(host, scene, transform, text_renderer, theme);
+                None
+            });
+        }
 
         overlay_part(scene, "shell.peer-sync", desktop, |scene| {
             self.draw_peer_sync(scene, transform, text_renderer, theme);

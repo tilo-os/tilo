@@ -314,6 +314,8 @@ impl ShellNetwork {
     /// Returns an error if the attempt is no longer active, or if installing the
     /// enrolled room fails.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
+        // Which room and slot it is for: finishing it forgets its attempt.
+        let target = self.enrollment_target(id);
         let attempt = self
             .native_enrollment
             .attempts
@@ -362,6 +364,20 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "native enrollment registry unavailable")?
             .remove(&id);
+        match target {
+            Some((room, local)) => {
+                self.enrollment_ended(
+                    room,
+                    local,
+                    result.as_ref().map(|_| ()).map_err(Clone::clone),
+                );
+            }
+            None => {
+                if let Err(error) = &result {
+                    tracing::error!(%error, "a workspace was not enrolled");
+                }
+            }
+        }
         result.map(|room| PeerSyncResponse::EnrollmentJoined {
             id,
             room: room.to_string(),

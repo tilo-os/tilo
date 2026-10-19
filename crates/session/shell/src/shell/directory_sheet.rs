@@ -33,8 +33,8 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta, WindowEv
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::shell::i18n::{t, t_args};
-use crate::shell::network::DirectoryListing;
 use crate::shell::network::join_field::{self, JoinText};
+use crate::shell::network::{DirectoryListing, JoinProgress, SiteJoinState};
 use tilo_relay_protocol::directory::Activity;
 use tilo_relay_protocol::rooms::RoomRole;
 
@@ -130,6 +130,9 @@ pub struct DirectorySheet {
     /// The listing being joined, by its key, and why the last join failed.
     joining: Option<String>,
     note: Option<String>,
+    /// Where the joins this session runs stand, as the network last said:
+    /// a listing joining shows it, one that failed says why.
+    joins: Vec<SiteJoinState>,
     /// The first row shown.
     scroll: usize,
     /// The row the keyboard chose.
@@ -306,10 +309,40 @@ impl DirectorySheet {
         &self.query
     }
 
-    /// Whether the listing `key` names is being joined.
+    /// Whether the listing `key` names is being joined: asked here, or
+    /// joining in this session already.
     #[must_use]
     pub fn is_joining(&self, listing: &DirectoryListing) -> bool {
         self.joining.as_deref() == Some(key_of(listing).as_str())
+            || self.progress(listing) == Some(&JoinProgress::Joining)
+    }
+
+    /// Say where the joins this session runs stand.
+    pub fn set_joins(&mut self, joins: Vec<SiteJoinState>) {
+        self.joins = joins;
+    }
+
+    /// Where joining `listing` stands in this session, if it does.
+    #[must_use]
+    pub fn progress(&self, listing: &DirectoryListing) -> Option<&JoinProgress> {
+        if listing.joined {
+            return None;
+        }
+        let site = listing.site.as_ref().map(url::Url::as_str);
+        self.joins
+            .iter()
+            .find(|join| {
+                listing.room == Some(join.room) || (site.is_some() && join.site.as_deref() == site)
+            })
+            .map(|join| &join.progress)
+    }
+
+    /// Why joining `listing` failed last, if it did.
+    fn failure(&self, listing: &DirectoryListing) -> Option<&str> {
+        match self.progress(listing) {
+            Some(JoinProgress::Failed(reason)) => Some(reason),
+            _ => None,
+        }
     }
 
     /// Route one event to the sheet while it is open. Every key belongs to
@@ -484,6 +517,14 @@ impl DirectorySheet {
                 if listing.joined {
                     return DirectoryOutcome::request(DirectoryRequest::Open(Box::new(listing)));
                 }
+                if self.progress(&listing) == Some(&JoinProgress::Joining) {
+                    // Joining already: say so, and that it opens by itself.
+                    self.note = Some(t_args(
+                        "directory-already-joining",
+                        &[("name", listing.entry.name.clone().into())],
+                    ));
+                    return DirectoryOutcome::consumed();
+                }
                 if self.joining.is_some() {
                     // One join at a time: the first is still on its way.
                     return DirectoryOutcome::consumed();
@@ -538,7 +579,11 @@ impl DirectorySheet {
         let w = f64::from(theme.tokens.metrics.panel_width_sheet)
             .min(host_rect.width() - 2.0 * margin)
             .max(0.0);
-        let h = MAX_HEIGHT.min(host_rect.height() - 2.0 * margin).max(0.0);
+        let h = self
+            .content_height(theme)
+            .min(MAX_HEIGHT)
+            .min(host_rect.height() - 2.0 * margin)
+            .max(0.0);
         let center = host_rect.center();
         self.rect = Rect::from_center_size(center, (w, h));
         let pose = self.appearing.pose(self.rect, center);
@@ -548,6 +593,28 @@ impl DirectorySheet {
             pose.end(scene);
         }
         text.set_text_scale(renderer_scale);
+    }
+
+    /// How tall the sheet is with what it shows: its title, the search,
+    /// the note, the rows (or the line saying why there are none) and the
+    /// footer, so a short list makes a short sheet.
+    fn content_height(&self, theme: &Theme) -> f64 {
+        let tokens = &theme.tokens;
+        let pad = f64::from(tokens.spacing.s4);
+        let gap = f64::from(tokens.spacing.s2);
+        let control_h = f64::from(tokens.metrics.min_pointer_target);
+        let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let heading = f64::from(theme.text(TextRole::Heading).line_height_px());
+        let note = if self.note.is_some() {
+            caption + gap
+        } else {
+            0.0
+        };
+        let rows = match self.status {
+            Status::Ready if !self.shown().is_empty() => ROW_H * f64_of_usize(self.shown().len()),
+            _ => caption + gap * 2.0,
+        };
+        pad + heading + gap + control_h + gap + note + rows + gap + control_h + pad
     }
 
     #[expect(
@@ -716,6 +783,8 @@ impl DirectorySheet {
                 t("directory-open")
             } else if self.is_joining(listing) {
                 t("directory-joining")
+            } else if self.failure(listing).is_some() {
+                t("directory-try-again")
             } else {
                 t("directory-join")
             };
@@ -735,7 +804,8 @@ impl DirectorySheet {
                 paint.text,
                 theme,
                 &button_face(button, &label, primary).disabled(
-                    self.joining.is_some() && !self.is_joining(listing) && !listing.joined,
+                    (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
+                        || self.progress(listing) == Some(&JoinProgress::Joining),
                 ),
             );
             self.targets.push((Target::Row(index), button));
@@ -746,15 +816,34 @@ impl DirectorySheet {
             let text_x = mark.x1 + gap * 1.5;
             let text_w = (faces_start - gap - text_x).max(0.0);
             let name_style = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
-            let mut name = listing.entry.name.clone();
-            if listing.entry.community {
-                name = t_args(
-                    "directory-community",
-                    &[("name", name.into()), ("host", listing.host.clone().into())],
-                );
-            }
+            // A site's own workspace carries a tag saying whose it is,
+            // after its name: two things, never joined into one string.
+            let tag = listing.entry.community.then(|| {
+                t_args(
+                    "directory-community-tag",
+                    &[("host", listing.host.clone().into())],
+                )
+            });
+            let tag_w = tag.as_deref().map_or(0.0, |tag| {
+                ui::widget::BadgeFace::intrinsic_width(tag, paint.text, theme).min(text_w / 2.0)
+            });
+            let name_w = if tag_w > 0.0 {
+                (text_w - tag_w - gap).max(0.0)
+            } else {
+                text_w
+            };
+            let third = match self.failure(listing) {
+                Some(reason) => (
+                    t_args(
+                        "directory-join-failed-line",
+                        &[("error", reason.to_owned().into())],
+                    ),
+                    colors.semantic.danger,
+                ),
+                None => (activity_line(listing, now_ms), colors.text_dim),
+            };
             let lines = [
-                (name, name_style, colors.text_primary),
+                (listing.entry.name.clone(), name_style, colors.text_primary),
                 (
                     if listing.entry.description.is_empty() {
                         listing.host.clone()
@@ -764,18 +853,15 @@ impl DirectorySheet {
                     caption.clone(),
                     colors.text_dim,
                 ),
-                (
-                    activity_line(listing, now_ms),
-                    caption.clone(),
-                    colors.text_dim,
-                ),
+                (third.0, caption.clone(), third.1),
             ];
             let line_h = f64::from(caption.line_height_px());
             let mut line_y = row.center().y - (line_h * 3.0) / 2.0 - 2.0;
-            for (content, style, color) in lines {
+            for (index, (content, style, color)) in lines.into_iter().enumerate() {
+                let width = if index == 0 { name_w } else { text_w };
                 let shown = paint
                     .text
-                    .elide_to_width_style(&content, f32_of_f64(text_w), &style);
+                    .elide_to_width_style(&content, f32_of_f64(width), &style);
                 paint.text.draw_style(
                     paint.scene,
                     &shown,
@@ -784,7 +870,19 @@ impl DirectorySheet {
                     None,
                     &style,
                 );
-                line_y += f64::from(style.line_height_px()).max(line_h);
+                let line = f64::from(style.line_height_px()).max(line_h);
+                if index == 0
+                    && let Some(tag) = tag.as_deref()
+                {
+                    let tag_x =
+                        text_x + f64::from(paint.text.measure_style(&shown, None, &style).0) + gap;
+                    ui::widget::BadgeFace::new(
+                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + line),
+                        tag,
+                    )
+                    .paint(paint.scene, transform, paint.text, theme);
+                }
+                line_y += line;
             }
             y += ROW_H;
         }
@@ -860,10 +958,21 @@ impl DirectorySheet {
                     } else {
                         "directory-join-named"
                     };
+                    let standing = match self.progress(listing) {
+                        Some(JoinProgress::Joining) => format!(" {}", t("directory-joining")),
+                        Some(JoinProgress::Failed(reason)) => format!(
+                            " {}",
+                            t_args(
+                                "directory-join-failed-line",
+                                &[("error", reason.clone().into())]
+                            )
+                        ),
+                        None => String::new(),
+                    };
                     AccessNode::new(Role::Button)
                         .with_name(t_args(verb, &[("name", listing.entry.name.clone().into())]))
                         .with_description(format!(
-                            "{} {}. {}.",
+                            "{} {}. {}.{standing}",
                             listing.entry.description,
                             activity_line(listing, tilo_clock::unix_now_ms()),
                             joins_as(listing)
@@ -1109,6 +1218,67 @@ mod tests {
         ));
         sheet.joined();
         assert!(!sheet.is_open(), "a join that finished closes the sheet");
+    }
+
+    #[test]
+    fn a_workspace_joining_says_so_and_pressing_join_again_says_it_is_on_its_way() {
+        let mut sheet = DirectorySheet::default();
+        let _ = sheet.open();
+        let joining = listing("Lounge", false);
+        let failed = listing("Garden", false);
+        sheet.show(vec![joining.clone(), failed.clone()]);
+        let state = |listing: &DirectoryListing, progress| SiteJoinState {
+            room: listing.room.unwrap(),
+            site: None,
+            workspace: None,
+            progress,
+        };
+        sheet.set_joins(vec![
+            state(&joining, JoinProgress::Joining),
+            state(&failed, JoinProgress::Failed("the host refused".into())),
+        ]);
+        assert!(
+            sheet.is_joining(&joining),
+            "a join running shows on its row"
+        );
+        assert_eq!(
+            sheet.activate(&Target::Row(0)).request,
+            None,
+            "a join already on its way is not asked again"
+        );
+        let note = sheet
+            .note
+            .clone()
+            .expect("the sheet says why nothing happened");
+        assert!(note.contains("already joining Lounge"), "{note}");
+        assert_eq!(sheet.failure(&failed), Some("the host refused"));
+        assert!(
+            matches!(
+                sheet.activate(&Target::Row(1)).request,
+                Some(DirectoryRequest::Join(_))
+            ),
+            "a failed join is tried again"
+        );
+    }
+
+    #[test]
+    fn a_short_list_makes_a_short_sheet() {
+        let theme = Theme::default();
+        let mut sheet = DirectorySheet::default();
+        let _ = sheet.open();
+        sheet.show(vec![listing("Lounge", false)]);
+        let one = sheet.content_height(&theme);
+        sheet.show(
+            (0..12)
+                .map(|k| listing(&format!("Room {k}"), false))
+                .collect(),
+        );
+        let twelve = sheet.content_height(&theme);
+        assert!(
+            one < MAX_HEIGHT,
+            "one row does not fill the tallest sheet: {one}"
+        );
+        assert!((twelve - one - ROW_H * 11.0).abs() < 0.5, "{one} {twelve}");
     }
 
     #[test]

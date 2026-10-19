@@ -298,6 +298,7 @@ impl ShellNetwork {
                 origin: origin.to_owned(),
                 site: None,
                 host: Some(hex::encode(host)),
+                app: None,
             },
         )?;
         let local = tree.write().append_empty_workspace(&name);

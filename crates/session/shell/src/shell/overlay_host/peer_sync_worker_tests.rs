@@ -73,6 +73,9 @@ fn a_slow_invitation_never_holds_a_frame_and_lands_on_the_card() {
     let recorded = Arc::clone(&calls);
     host.set_peer_sync_worker(PeerSyncWorker {
         site_rooms: Arc::new(Vec::new),
+        site_joins: Arc::new(Vec::new),
+        arrivals: Arc::new(Vec::new),
+        arrive: Arc::new(|_| {}),
         call: Arc::new(move |workspace, request| {
             recorded.lock().expect("the call log").push((
                 std::thread::current().id(),
@@ -155,6 +158,9 @@ fn an_invitation_action_answers_once_its_request_is_back() {
     let answered = Mutex::new(answered);
     host.set_peer_sync_worker(PeerSyncWorker {
         site_rooms: Arc::new(Vec::new),
+        site_joins: Arc::new(Vec::new),
+        arrivals: Arc::new(Vec::new),
+        arrive: Arc::new(|_| {}),
         call: Arc::new(move |_, request| match request {
             PeerSyncRequest::IssueInvitation(_) => {
                 // Stands for the relay: it answers when the test says so.

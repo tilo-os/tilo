@@ -29,12 +29,25 @@ pub type PeerSyncRunner = std::rc::Rc<dyn Fn(PeerSyncJob) -> Result<(), PeerSync
 /// can leave.
 pub type SiteRooms = Arc<dyn Fn() -> Vec<crate::shell::network::SiteRoom> + Send + Sync>;
 
+/// Where the joins of site workspaces this session runs stand.
+pub type SiteJoins = Arc<dyn Fn() -> Vec<crate::shell::network::SiteJoinState> + Send + Sync>;
+
+/// The site workspaces whose joins installed since last asked.
+pub type Arrivals = Arc<dyn Fn() -> Vec<crate::shell::network::Arrival> + Send + Sync>;
+
+/// Bring the person into an installed site workspace: open the app its
+/// site names there, once. Waits on the launch: run it off the loop.
+pub type Arrive = Arc<dyn Fn(&crate::shell::network::Arrival) + Send + Sync>;
+
 /// A network that carries requests out on a worker, never on the loop.
 #[derive(Clone)]
 pub struct PeerSyncWorker {
     pub call: PeerSyncCall,
     pub run: PeerSyncRunner,
     pub site_rooms: SiteRooms,
+    pub site_joins: SiteJoins,
+    pub arrivals: Arrivals,
+    pub arrive: Arrive,
 }
 
 impl PeerSyncWorker {
@@ -45,10 +58,20 @@ impl PeerSyncWorker {
         let carrier = Arc::clone(network);
         let runner = Arc::clone(network);
         let sites = Arc::clone(network);
+        let joins = Arc::clone(network);
+        let arrivals = Arc::clone(network);
+        let arrive = Arc::clone(network);
         Self {
             call: Arc::new(move |workspace, request| carrier.peer_sync_request(workspace, request)),
             run: std::rc::Rc::new(move |job| runner.run_off_loop(job)),
             site_rooms: Arc::new(move || sites.site_room_labels()),
+            site_joins: Arc::new(move || joins.site_joins()),
+            arrivals: Arc::new(move || arrivals.take_arrivals()),
+            arrive: Arc::new(move |arrival| {
+                if let Err(error) = arrive.open_arrival(arrival) {
+                    tracing::error!(%error, room = %arrival.room, "the joined workspace's app did not open");
+                }
+            }),
         }
     }
 }
@@ -149,6 +172,33 @@ impl PeerSyncDispatch {
             .as_ref()
             .map(|worker| (worker.site_rooms)())
             .unwrap_or_default()
+    }
+
+    /// Where the joins of site workspaces stand; none without a network.
+    pub(super) fn site_joins(&self) -> Vec<crate::shell::network::SiteJoinState> {
+        self.worker
+            .as_ref()
+            .map(|worker| (worker.site_joins)())
+            .unwrap_or_default()
+    }
+
+    /// The site workspaces whose joins installed since last asked; each
+    /// one's app is opened off the loop.
+    pub(super) fn arrive(&self) -> Vec<crate::shell::network::Arrival> {
+        let Some(worker) = self.worker.as_ref() else {
+            return Vec::new();
+        };
+        let arrivals = (worker.arrivals)();
+        for arrival in arrivals.iter().filter(|arrival| arrival.app.is_some()) {
+            let arrive = Arc::clone(&worker.arrive);
+            let arrival = arrival.clone();
+            if (worker.run)(Box::new(move || arrive(&arrival))).is_err() {
+                tracing::error!(
+                    "the joined workspace's app could not be opened off the frame loop"
+                );
+            }
+        }
+        arrivals
     }
 
     /// Whether a request like `request` is still being carried out: the
