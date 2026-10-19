@@ -171,6 +171,137 @@ fn find(rows: &[tilo_actions::Resource], id: &str) -> bool {
     rows.iter()
         .any(|row| row.id.as_str() == id || find(&row.children, id))
 }
+fn hits<P: SearchProvider>(
+    search: &P,
+    text: &str,
+    scope: Option<&str>,
+) -> Vec<ui::search::SearchResult> {
+    let query = scope.map_or_else(
+        || ui::search::SearchQuery::new(text),
+        |scope| ui::search::SearchQuery::new(text).within(scope),
+    );
+    search.search_page(&query, None, 256, 20).results
+}
+#[test]
+fn personal_search_entries_join_the_bookmarks_scope_and_no_other_library_section() {
+    let (mut app, _engine) = live();
+    let bundle = bundle();
+    import(&mut app, &bundle);
+    let flat_url = "https://continuity.test/flat";
+    app.person::<PersonalBookmarks>()
+        .unwrap()
+        .apply(&PersonalBookmarkAction::Add {
+            url: flat_url.into(),
+            title: "Personal flat page".into(),
+            tag: "bookmark:personal-search-boundary".into(),
+        })
+        .unwrap();
+    app.settle();
+    assert!(app.state().bookmarks.is_empty());
+
+    let entries = app
+        .with_surface::<crate::BrowserWindow, _>(|surface| surface.page().search_entries())
+        .unwrap();
+    let search = ui::framework::testing::search_source::<crate::Browser>(entries);
+
+    let bookmarks = hits(
+        &search,
+        "Personal flat page",
+        Some(crate::actions::BOOKMARKS_SCOPE),
+    );
+    assert_eq!(bookmarks.len(), 1);
+    let flat = bookmarks[0].action_address().unwrap();
+    assert_eq!(flat.resource, flat_id(flat_url));
+    assert_eq!(flat.action, "open");
+
+    let imported = hits(
+        &search,
+        "Personal page 62",
+        Some(crate::actions::BOOKMARKS_SCOPE),
+    );
+    assert_eq!(imported.len(), 1);
+    let placement = imported[0].action_address().unwrap();
+    assert_eq!(placement.resource, node_id(&bundle.source, "page62"));
+    assert_eq!(placement.action, "open");
+
+    for scope in [
+        crate::actions::HISTORY_SCOPE,
+        crate::actions::DOWNLOADS_SCOPE,
+    ] {
+        for text in ["Personal flat page", "Personal page 62"] {
+            assert!(
+                hits(&search, text, Some(scope)).is_empty(),
+                "{text} must not appear under {scope}"
+            );
+        }
+    }
+    for text in ["Personal flat page", "Personal page 62"] {
+        assert_eq!(hits(&search, text, Some(SCOPE)).len(), 1);
+        assert_eq!(hits(&search, text, None).len(), 1);
+    }
+    assert!(app.state().bookmarks.is_empty());
+}
+#[test]
+fn removing_a_personal_placement_removes_only_its_own_search_hit() {
+    let (mut app, _engine) = live();
+    let bundle = bundle();
+    import(&mut app, &bundle);
+    let entries = app
+        .with_surface::<crate::BrowserWindow, _>(|surface| surface.page().search_entries())
+        .unwrap();
+    let search = ui::framework::testing::search_source::<crate::Browser>(entries);
+    assert_eq!(
+        hits(
+            &search,
+            "First placement",
+            Some(crate::actions::BOOKMARKS_SCOPE)
+        )
+        .len(),
+        1
+    );
+
+    app.call_on(
+        &node_id(&bundle.source, "first"),
+        "remove-personal-imported-node",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    app.settle();
+    import(&mut app, &bundle);
+    assert!(app.state().bookmarks.is_empty());
+
+    let entries = app
+        .with_surface::<crate::BrowserWindow, _>(|surface| surface.page().search_entries())
+        .unwrap();
+    let search = ui::framework::testing::search_source::<crate::Browser>(entries);
+    assert!(
+        hits(
+            &search,
+            "First placement",
+            Some(crate::actions::BOOKMARKS_SCOPE)
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        hits(
+            &search,
+            "Repeated placement",
+            Some(crate::actions::BOOKMARKS_SCOPE)
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        hits(
+            &search,
+            "Personal page 62",
+            Some(crate::actions::BOOKMARKS_SCOPE)
+        )
+        .len(),
+        1
+    );
+    assert!(app.state().bookmarks.is_empty());
+}
 fn assert_folder_controls(app: &mut TestApp<TestBrowser>, bundle: &ImportBundle) {
     use crate::personal_bookmark_view::ViewRequest;
     let record = app.person::<PersonalBookmarks>().unwrap();
