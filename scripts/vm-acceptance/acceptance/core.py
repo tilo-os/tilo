@@ -22,6 +22,7 @@ AREAS = {
     "basics": "Basics: hardware controls, keyboard, displays",
     "agent": "Agent door: the in-session MCP path",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
+    "trust": "Signed layers: the production merge with a development key",
 }
 
 

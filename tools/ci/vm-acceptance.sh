@@ -15,6 +15,11 @@
 #   gl       virgl: auto, on or off
 #
 # The report and the performance records land in /target/vm-acceptance/report.
+#
+# TILO_ACCEPTANCE_IMAGE_DIR names a dev image built from this very tree
+# (os-dev-image-x86_64's output: image.oci.tar, digest, revision) to boot instead
+# of a published one; t's dev-trust-acceptance check runs it so, for checks that
+# need the tree's own image (the trust area: the image's merge path itself).
 set -euo pipefail
 
 arch=x86_64
@@ -55,11 +60,18 @@ cp -a --reflink=auto "$PWD" "$src"
 
 # The tree under test, its base disk, the swaps and the checks.
 target=$(git rev-parse HEAD)
-commit="" disk_url="" image=""
+commit="" disk_url="" image="" image_archive=""
 packages=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk
 auth=()
 [[ -z ${REGISTRY_TOKEN:-} ]] || auth=(-H "Authorization: Bearer $REGISTRY_TOKEN")
-for c in $(git rev-list --first-parent -n 1000 main); do
+tree_image=${TILO_ACCEPTANCE_IMAGE_DIR:-}
+if [[ -n $tree_image ]]; then
+  [[ $(cat "$tree_image/revision") == "$target" ]] \
+    || { echo "$tree_image is the dev image of $(cat "$tree_image/revision"), not of ${target:0:12}" >&2; exit 1; }
+  commit=$target image_archive=$tree_image/image.oci.tar
+  image="localhost/tilo-vm@$(cat "$tree_image/digest")"
+fi
+for c in $( [[ -n $commit ]] || git rev-list --first-parent -n 1000 main); do
   git merge-base --is-ancestor "$c" "$target" || continue
   tag="main-${c:0:7}-ci"
   if curl -fsS "${auth[@]}" -o "$work/disk.json" "$packages/$tag/tilo-vm-disk-$arch.json" 2>/dev/null; then
@@ -139,8 +151,13 @@ if [[ -n $image ]]; then
   losetup --find >/dev/null
   ./os/dev/ci-native-podman-store.sh
   mkdir -p "$work/install" "$work/install-run"
-  podman pull "$image"
-  podman tag "$image" localhost/tilo-vm:ci
+  if [[ -n $image_archive ]]; then
+    id=$(podman pull -q "oci-archive:$image_archive")
+    podman tag "$id" localhost/tilo-vm:ci
+  else
+    podman pull "$image"
+    podman tag "$image" localhost/tilo-vm:ci
+  fi
   TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
     TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
     TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${commit:0:7}-ci" ./os/dev/build-image.sh

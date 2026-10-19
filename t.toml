@@ -2827,6 +2827,30 @@ only = ""
 outputs = "1920x1080@1,1280x800@1.25"
 gl = "auto"
 
+# Signed layers on this tree's own dev image (crates/dev/tilo-vm/guide/trust.md): the dev
+# image os-dev-image-x86_64 built from the tree, installed onto a disk and booted under KVM,
+# a tilo-vmd layer swapped into its vm slot (tilo-vm signs it with the run's development key
+# and enrolls that key, as in any VM it runs), then the trust checks of the acceptance suite
+# (scripts/vm-acceptance/acceptance/checks/trust.py): only tilo-extension-activate merges, a
+# tampered, an unsigned and an unenrolled-key layer are refused, a signed one stays merged
+# across a reboot. `t dispatch dev-trust-acceptance` on a branch; `t outputs` the report.
+[[check]]
+name = "dev-trust-acceptance"
+needs = ["os-dev-image-x86_64"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requirement = { cores = 1, memory = "6GiB" }
+privileged = true
+git = true
+writable_sources = true
+run = "TILO_ACCEPTANCE_IMAGE_DIR=/target/publish/os-dev/x86_64 T_INPUT_SWAP=vmd T_INPUT_ONLY=trust bash tools/ci/vm-acceptance.sh"
+inputs = ["**"]
+outputs = ["/target/vm-acceptance/report/**"]
+cache = false
+timeout_secs = 10800
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
 [[check]]
 name = "vm-acceptance-perf"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"

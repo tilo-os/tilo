@@ -31,7 +31,7 @@ sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
-                               provenance, resources, search, startup, ui, window)
+                               provenance, resources, search, startup, trust, ui, window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -114,6 +114,8 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
          "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07",
+         # The trust checks run only on request (ON_REQUEST); T05 reboots the VM.
+         "T01", "T02", "T03", "T04", "T05",
          "R09", "R07", "A16", "R05", "R08", "P03"]
 
 
@@ -616,10 +618,16 @@ def main() -> int:
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
 
 
+# Areas a run includes only when it names them: they change the VM itself (the trust
+# checks tamper with its layers and reboot it), and need an image built from the commit
+# under test with a layer in its vm slot (t's dev-trust-acceptance check).
+ON_REQUEST = {"trust"}
+
+
 def select(only: str | None) -> set[str]:
     ids = {c.id for c in core.REGISTRY}
     if not only:
-        return ids
+        return {c.id for c in core.REGISTRY if c.area not in ON_REQUEST}
     want = {w.strip() for w in only.split(",")}
     chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}
     # A check that needs a fact runs after the check that establishes it.
