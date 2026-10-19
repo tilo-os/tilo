@@ -836,12 +836,15 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_format_as_a_24h_clock_and_a_relative_day() {
-        // Phase: clock_formats_24h.
+    fn timestamps_format_as_the_persons_clock_and_a_relative_day() {
+        // Phase: clock_reads_the_time_of_day_in_the_configured_style.
         {
-            assert_eq!(clock(0), "00:00");
-            assert_eq!(clock(14 * 3600 + 32 * 60), "14:32");
-            assert_eq!(clock(23 * 3600 + 59 * 60), "23:59");
+            let hm = ui::clock::hour_minute;
+            assert_eq!(clock(0), hm(0, 0));
+            assert_eq!(clock(14 * 3600 + 32 * 60), hm(14, 32));
+            assert_eq!(clock(23 * 3600 + 59 * 60), hm(23, 59));
+            assert_eq!(clock(3 * 86_400 + 14 * 3600 + 32 * 60), hm(14, 32));
+            assert_eq!(clock(-60), hm(23, 59), "before the epoch wraps the day");
         }
         // Phase: day_label_relative.
         {
