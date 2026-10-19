@@ -883,6 +883,17 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             || self.right.is_layout_dirty()
     }
 
+    /// A moved divider or a reset to the content size changes the panes'
+    /// sizes, so the host must re-solve them, not just reposition the boxes
+    /// it solved before. The default asks only the children, which have not
+    /// changed, and the panes would then trail the divider by a frame.
+    fn layout_needs_measure(&self) -> bool {
+        self.layout_dirty
+            || self.handle.layout_dirty
+            || self.left.layout_needs_measure()
+            || self.right.layout_needs_measure()
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -1417,6 +1428,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn hosted_panes_follow_the_divider_in_the_frame_that_moves_it() {
+        let mut first = TestLeaf::new();
+        first.width = Some(120.0);
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            ResizableSplit::new(first, TestLeaf::new(), SplitOrientation::Horizontal)
+                .with_content_sized_first()
+                .with_divider_id("request-divider"),
+            (400, 300),
+            Theme::dark(),
+        );
+        let pane = |harness: &crate::headless::FrameHarness| {
+            harness
+                .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                .left()
+                .get_rect()
+        };
+        assert_eq!(pane(&harness).width(), 120.0);
+        harness
+            .perform_named("request-divider", &crate::a11y::Action::Focus)
+            .unwrap();
+        harness.key("ArrowRight");
+        let divider = harness.targets()["request-divider"].center().x;
+        assert!(divider > 120.0, "the divider moved: {divider}");
+        assert_eq!(
+            pane(&harness).x1,
+            divider,
+            "the first pane ends at the moved divider in the same frame"
+        );
     }
 
     #[test]
