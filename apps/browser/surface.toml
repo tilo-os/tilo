@@ -40,12 +40,59 @@ params = [
 ]
 
 [[resources]]
+kind = "browser.personal-bookmarks"
+label = "Personal bookmarks"
+version = 2
+person = true
+fields = [
+  { path = "added", type = "Map<Added>", readonly = true },
+  { path = "removed", type = "Set<String>", readonly = true },
+  { path = "receipts", type = "Map<Atom>", readonly = true },
+  { path = "trees", type = "Map<ImportedTree>", readonly = true },
+  { path = "hidden", type = "Set<String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "add-bookmark"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-bookmark"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "observed_tags", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "import-bookmarks"
+kind = "undoable"
+params = [
+  { name = "bundle", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-imported-node"
+kind = "undoable"
+params = [
+  { name = "source", required = true, schema = { type = "string" } },
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
 kind = "browser.browsing-history"
 label = "Browsing history"
 version = 1
 person = true
 fields = [
   { path = "visits", type = "BTreeMap<String, Visit>", readonly = true },
+  { path = "imported", type = "BTreeMap<String, ImportedVisit>", readonly = true },
+  { path = "import_receipts", type = "BTreeMap<String, Atom>", readonly = true },
+  { path = "forgotten_imports", type = "tilo_resource::Set<String>", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -55,6 +102,13 @@ params = [
   { name = "url", required = true, schema = { type = "string" } },
   { name = "title", required = true, schema = { type = "string" } },
   { name = "at", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "import-history-bundle"
+kind = "undoable"
+params = [
+  { name = "bundle", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
