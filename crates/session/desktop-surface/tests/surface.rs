@@ -1600,9 +1600,15 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
 #[test]
 fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // Mounted as its own type, so the test can find the control to press.
+    // A window of one tab shows it as its title and offers no new tab, so
+    // the focused window holds two.
     let mut minter = IdMinter::new(7);
-    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
-    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let tabs = vec![tab(&mut minter, "Notes")];
+    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let scratch = tab(&mut minter, "Scratch");
+    tree.workspaces[0].strips[0].window_groups[0]
+        .tabs
+        .push(scratch);
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
     handle.set_viewport_width(1200.0);
     let mut driver = ui::headless::FrameHarness::for_root(

@@ -2374,30 +2374,24 @@ mod tests {
     #[test]
     fn a_windows_search_control_opens_search() {
         let (surface, handle) = desktop(1);
-        let tree = handle.shared_tree();
-        let tab = tree
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .next()
-            .unwrap();
-        let mut frame = ui::headless::FrameHarness::new(
+        let mut frame = ui::headless::FrameHarness::for_root(
             ui::state::State::new(),
-            Box::new(surface),
+            surface,
             (1000, 700),
+            Theme::dark(),
         );
         frame.relayout();
         assert!(!handle.search_open());
-        frame
-            .perform_semantic_named(
-                "tabs",
-                Some(&format!("tab-search:{tab}")),
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
+        // The window bar's own search control: with nothing to search in
+        // place, it opens the platform search narrowed to the window's app.
+        let control = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .and_then(|row| row.groups.first())
+            .map(|group| group.window_search().anchor())
+            .expect("the window offers its search control");
+        assert!(control.area() > 0.0, "the search control is shown");
+        frame.click_at(control.center().x, control.center().y);
         for _ in 0..3 {
             frame.relayout();
         }
