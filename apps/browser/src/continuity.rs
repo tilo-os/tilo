@@ -266,20 +266,17 @@ mod tests {
             ("OldestLegacyNeedle", "https://migration.test/00000"),
             ("LastLegacyNeedle", "https://migration.test/10000"),
         ] {
+            // A hit is anchored at its history row; the row the window
+            // publishes for it carries the action that opens the page.
             let provider = index.provider();
             let hits = provider.search(needle);
             let hit = hits.iter().find(|hit| hit.title == needle).unwrap();
-            let address = hit.action_address().unwrap();
-            assert_eq!(
-                address.resource.as_str(),
-                crate::actions::history_resource_id(url)
-            );
-            let resource = provider.resolve_action_resource(&address).unwrap();
-            let action = resource
-                .actions
-                .iter()
-                .find(|a| a.id == address.action)
-                .unwrap();
+            assert_eq!(hit.action_id, crate::actions::history_resource_id(url));
+            let resource = index.resource(&hit.action_id).unwrap();
+            assert_eq!(resource.kind, "browser.history-entry");
+            let [action] = resource.actions.as_slice() else {
+                panic!("a history row offers one action: open its page");
+            };
             let encoded = action.build_json(&serde_json::Map::new()).unwrap();
             let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
             let effect = crate::effects::BrowserEffect::decode(

@@ -13,7 +13,8 @@
 //!
 //! 1. **match quality** — a contiguous run (or a prefix / word-boundary
 //!    start) scores higher than the same characters scattered with gaps,
-//!    so typing `git` surfaces `github.com` above `go-i-t.example`;
+//!    so typing `git` surfaces `github.com` above `go-i-t.example`; a
+//!    match inside a word needs four letters (`code` finds `barcode`);
 //! 2. **recency** — a half-life decay on `last_visit`, so a page seen
 //!    minutes ago outranks a stale one of equal match quality;
 //! 3. **frequency** — a saturating function of `visit_count`, so a
@@ -802,14 +803,18 @@ mod tests {
         assert!(!matches("acb", entry("abc", "", 1, 1)));
 
         let mut history = History::new();
-        history.entries.push(entry("legit", "", 1, 1));
-        history.entries.push(entry("github", "", 1, 1));
+        history.entries.push(entry("barcode", "", 1, 1));
+        history.entries.push(entry("codeberg", "", 1, 1));
         let urls: Vec<_> = history
-            .suggest_at("git", 2, 1)
+            .suggest_at("code", 2, 1)
             .into_iter()
             .map(|row| row.url)
             .collect();
-        assert_eq!(urls, ["github", "legit"], "a prefix beats an infix");
+        assert_eq!(urls, ["codeberg", "barcode"], "a prefix beats an infix");
+        assert!(
+            !matches("git", entry("legit", "", 1, 1)),
+            "a match inside a word needs four letters"
+        );
     }
 
     /// Suggestion filtering, ranking signals and tie-breaks.
@@ -835,17 +840,17 @@ mod tests {
                 first: None,
             },
             // Equal recency + frequency isolates the match-quality signal;
-            // both hold 'git'.
+            // both hold 'code'.
             Case {
                 name: "the prefix match ranks first",
                 rows: &[
-                    ("https://legit.example", "Legit", 1_000, 1),
-                    ("https://github.com", "GitHub", 1_000, 1),
+                    ("https://barcode.example", "Barcode", 1_000, 1),
+                    ("https://codeberg.org", "Codeberg", 1_000, 1),
                 ],
-                query: "git",
+                query: "code",
                 now: 2_000,
                 len: Some(2),
-                first: Some("https://github.com"),
+                first: Some("https://codeberg.org"),
             },
             Case {
                 name: "only the entry matching 'git' survives",
