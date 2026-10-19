@@ -1,10 +1,10 @@
 //! Ed25519 keys in the formats OpenSSL writes, and the enrolled authorities.
 //!
-//! A public key is a PEM `PUBLIC KEY` (SubjectPublicKeyInfo); a secret key a
+//! A public key is a PEM `PUBLIC KEY` (`SubjectPublicKeyInfo`); a secret key a
 //! PEM `PRIVATE KEY` (PKCS#8 v1). Both are what
 //! `openssl genpkey -algorithm ed25519` and `openssl pkey -pubout` write, so a
 //! key can be inspected or made with standard tools. A key's fingerprint is
-//! `sha256:` and the hex SHA-256 of its SubjectPublicKeyInfo DER, which is
+//! `sha256:` and the hex SHA-256 of its `SubjectPublicKeyInfo` DER, which is
 //! `openssl pkey -pubin -outform DER | sha256sum`.
 //!
 //! A signature is the base64 of the 64-byte Ed25519 signature over
@@ -25,7 +25,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::SIGNING_DOMAIN;
 
-/// SubjectPublicKeyInfo DER of an Ed25519 key, up to the 32 key bytes.
+/// `SubjectPublicKeyInfo` DER of an Ed25519 key, up to the 32 key bytes.
 const SPKI_PREFIX: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
@@ -125,7 +125,7 @@ impl PublicKey {
         pem("PUBLIC KEY", &self.spki())
     }
 
-    /// `sha256:<hex>` of the SubjectPublicKeyInfo DER.
+    /// `sha256:<hex>` of the `SubjectPublicKeyInfo` DER.
     pub fn fingerprint(&self) -> String {
         format!("sha256:{}", hex::encode(Sha256::digest(self.spki())))
     }

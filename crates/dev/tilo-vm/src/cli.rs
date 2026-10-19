@@ -1164,12 +1164,20 @@ pub struct UpgradeArgs {
     /// With `--from local`: rebuild the production base even if its inputs look unchanged.
     #[arg(long, requires = "from")]
     pub rebuild_base: bool,
-    /// Go ahead when the new image's production base is older than the VM's.
-    #[arg(long)]
-    pub allow_older_base: bool,
+    /// What the upgrade goes ahead despite.
+    #[command(flatten)]
+    pub allow: UpgradeAllow,
     /// Stage the image for the next boot instead of rebooting now.
     #[arg(long)]
     pub no_reboot: bool,
+}
+
+/// `vm upgrade`'s overrides of its own refusals.
+#[derive(Debug, Args)]
+pub struct UpgradeAllow {
+    /// Go ahead when the new image's production base is older than the VM's.
+    #[arg(long)]
+    pub allow_older_base: bool,
     /// Go ahead although layers merged into the machine's /usr are not signed
     /// by a key it enrolled: the new image's activation leaves them out, so
     /// the vm and device slots come up on the image as installed.

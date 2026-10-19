@@ -1547,38 +1547,7 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
         if !foreign.is_empty() {
             // The sealed image merges only what this helper verified; something
             // else in the search path means /var or /etc was written behind it.
-            for name in &ours {
-                live_remove(layout, name)?;
-            }
-            let listed = foreign.join(", ");
-            if let Some(signed) = signed.as_mut() {
-                crate::signed::refuse_all(
-                    layout,
-                    signed,
-                    &format!(
-                        "not merged: unexpected system extensions are present ({})",
-                        py::truncate(&listed, 200)
-                    ),
-                )?;
-            }
-            for catalogue in &catalogues {
-                if !layout.desired(&catalogue.id).exists() {
-                    continue;
-                }
-                Status::new(layout, &catalogue.id).write(changes([
-                    ("state", json!("failed")),
-                    ("parts", off(catalogue)),
-                    (
-                        "last_error",
-                        json!(format!(
-                            "Not merged: unexpected system extensions are present ({}).",
-                            py::truncate(&listed, 200)
-                        )),
-                    ),
-                ]))?;
-            }
-            host.sysext_unmerge(layout)?;
-            let _ = fs::remove_file(&live_marker);
+            refuse_foreign(host, layout, &catalogues, &foreign, signed.as_mut())?;
             return Ok(1);
         }
         host.sysext_refresh(layout)?;
@@ -1594,6 +1563,52 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
         .as_ref()
         .is_some_and(crate::signed::Outcome::refused_any);
     Ok(if refused { 1 } else { reported })
+}
+
+/// Merge nothing: something this helper neither built nor verified is in the
+/// sysext search path. Every part and signed layer is taken out and says why.
+fn refuse_foreign(
+    host: &dyn Host,
+    layout: &Layout,
+    catalogues: &[Catalogue],
+    foreign: &[String],
+    signed: Option<&mut crate::signed::Outcome>,
+) -> Result<()> {
+    for catalogue in catalogues {
+        for name in &catalogue.parts {
+            live_remove(layout, name)?;
+        }
+    }
+    let listed = foreign.join(", ");
+    if let Some(signed) = signed {
+        crate::signed::refuse_all(
+            layout,
+            signed,
+            &format!(
+                "not merged: unexpected system extensions are present ({})",
+                py::truncate(&listed, 200)
+            ),
+        )?;
+    }
+    for catalogue in catalogues {
+        if !layout.desired(&catalogue.id).exists() {
+            continue;
+        }
+        Status::new(layout, &catalogue.id).write(changes([
+            ("state", json!("failed")),
+            ("parts", off(catalogue)),
+            (
+                "last_error",
+                json!(format!(
+                    "Not merged: unexpected system extensions are present ({}).",
+                    py::truncate(&listed, 200)
+                )),
+            ),
+        ]))?;
+    }
+    host.sysext_unmerge(layout)?;
+    let _ = fs::remove_file(crate::live::merged_marker(layout));
+    Ok(())
 }
 
 /// What each extension's status says after an activation; 1 when a part

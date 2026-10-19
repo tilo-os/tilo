@@ -958,7 +958,7 @@ impl Daemon {
                     endorse::enroll(&self.authorities_dir, &p.name, &p.public_key)?;
                 to_value(&tilo_vm_protocol::TrustEnrollResult {
                     authority: tilo_vm_protocol::AuthorityInfo {
-                        name: p.name.clone(),
+                        name: p.name,
                         fingerprint: key.fingerprint(),
                     },
                     changed,
@@ -3645,10 +3645,10 @@ mod tests {
         )
         .unwrap();
         assert!(!pending.activation_takes_signed_layers);
-        assert_eq!(pending.current, [vmd.clone()]);
+        assert_eq!(pending.current, std::slice::from_ref(&vmd));
         assert_eq!(
             pending.unsigned_mergers,
-            [vmd.clone()],
+            std::slice::from_ref(&vmd),
             "the old daemon is named"
         );
         assert_eq!(pending.pending.len(), 1);
@@ -3656,7 +3656,7 @@ mod tests {
             daemon
                 .handle(Request::LayerEndorse(LayerEndorse {
                     endorsements: vec![Endorsement {
-                        layer: vmd.clone(),
+                        layer: vmd,
                         signature: dev.sign(pending.pending[0].manifest.as_bytes()),
                     }],
                     merge: true,

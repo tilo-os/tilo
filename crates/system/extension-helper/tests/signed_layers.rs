@@ -116,8 +116,10 @@ fn refusal(machine: &Machine, name: &str) -> String {
         .unwrap()
         .iter()
         .find(|r| r["name"] == name)
-        .map(|r| r["reason"].as_str().unwrap().to_owned())
-        .unwrap_or_else(|| panic!("{name} was not refused: {}", status(machine)))
+        .map_or_else(
+            || panic!("{name} was not refused: {}", status(machine)),
+            |r| r["reason"].as_str().unwrap().to_owned(),
+        )
 }
 
 fn merged(machine: &Machine) -> Vec<String> {
@@ -139,7 +141,7 @@ fn a_signed_layer_by_an_enrolled_authority_merges_and_stays_merged_across_a_rebo
     desire(&machine, &path, &manifest, Some(&dev));
 
     assert_eq!(machine.run("activate"), 0, "{}", status(&machine));
-    assert_eq!(merged(&machine), [manifest.name.clone()]);
+    assert_eq!(merged(&machine), std::slice::from_ref(&manifest.name));
     let link = signed::link(&machine.layout, &manifest.name);
     assert_eq!(
         fs::read_link(&link).unwrap(),
@@ -181,7 +183,7 @@ fn a_tampered_layer_is_refused_and_the_others_still_merge() {
     assert!(reason.contains("usr/bin/shell"), "{reason}");
     assert_eq!(
         merged(&machine),
-        [launcher_manifest.name.clone()],
+        std::slice::from_ref(&launcher_manifest.name),
         "the untouched layer merges"
     );
     assert!(fs::symlink_metadata(signed::link(&machine.layout, &shell_manifest.name)).is_err());
@@ -292,7 +294,7 @@ fn a_layer_no_longer_desired_is_unmerged() {
     let (path, manifest) = layer(&machine, "shell", b"shell v1");
     desire(&machine, &path, &manifest, Some(&dev));
     assert_eq!(machine.run("activate"), 0);
-    assert_eq!(merged(&machine), [manifest.name.clone()]);
+    assert_eq!(merged(&machine), std::slice::from_ref(&manifest.name));
 
     fs::remove_dir_all(signed::desired_dir(&machine.layout).join(&manifest.name)).unwrap();
     assert_eq!(machine.run("activate"), 0);

@@ -280,7 +280,7 @@ mod tests {
         let bytes = manifest.to_bytes().unwrap();
         assert_eq!(LayerManifest::parse(&bytes).unwrap(), manifest);
 
-        let mut changed = manifest.clone();
+        let mut changed = manifest;
         if let Entry::File { executable, .. } = &mut changed.entries[0] {
             *executable = false;
         }

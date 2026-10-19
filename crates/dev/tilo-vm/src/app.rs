@@ -2960,7 +2960,7 @@ impl App {
         imageup::check_image(image, image_facts)?;
         let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
         match imageup::check_base_age(image, facts.base.as_ref(), image_facts.base.as_ref()) {
-            Err(error) if !args.allow_older_base => return Err(error),
+            Err(error) if !args.allow.allow_older_base => return Err(error),
             Err(error) => self
                 .warnings
                 .push(format!("{error}; going ahead (--allow-older-base)")),
@@ -5371,7 +5371,7 @@ impl App {
         vm: &Resolved,
         args: &UpgradeArgs,
     ) -> Result<Option<Value>, CliError> {
-        if args.allow_unsigned_layers {
+        if args.allow.allow_unsigned_layers {
             return Ok(None);
         }
         let vmd_from = match args.from.as_deref() {
@@ -5419,129 +5419,147 @@ impl App {
             crate::cli::TrustCommand::Status => remote,
         };
         match command {
-            crate::cli::TrustCommand::Status => {
-                let key = crate::devtrust::load(&key_path)?;
-                let fingerprint = key.as_ref().map(|key| key.public().fingerprint());
-                let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
-                    slot: None,
-                    layers: Vec::new(),
-                })?;
-                let enrolled = fingerprint.as_ref().is_some_and(|fingerprint| {
-                    pending
-                        .authorities
-                        .iter()
-                        .any(|authority| authority.fingerprint == *fingerprint)
-                });
-                let mut text = match &fingerprint {
-                    Some(fingerprint) => {
-                        format!("this host's key: {} ({fingerprint})", key_path.display())
-                    }
-                    None => format!(
-                        "this host has no development key yet ({} is made at the first enroll)",
-                        key_path.display()
-                    ),
-                };
-                if pending.authorities.is_empty() {
-                    let _ = write!(text, "\n{} has enrolled no extension authority", vm.name);
-                }
-                for authority in &pending.authorities {
-                    let _ = write!(
-                        text,
-                        "\n{} trusts {} {}{}",
-                        vm.name,
-                        authority.name,
-                        authority.fingerprint,
-                        if fingerprint.as_deref() == Some(authority.fingerprint.as_str()) {
-                            " (this host)"
-                        } else {
-                            ""
-                        }
-                    );
-                }
-                let _ = write!(
-                    text,
-                    "\n{} layers of the vm and device slots wait for a signature",
-                    pending.pending.len()
-                );
-                let mut outcome = Outcome::new(
-                    text,
-                    json!({
-                        "key": key_path,
-                        "fingerprint": fingerprint,
-                        "enrolled": enrolled,
-                        "authorities": pending.authorities,
-                        "unsigned_layers": pending.pending.iter().map(|p| &p.layer).collect::<Vec<_>>(),
-                    }),
-                );
-                if !enrolled || !pending.pending.is_empty() {
-                    outcome = outcome.next(&["tilo-vm trust enroll"]);
-                }
-                Ok(outcome)
-            }
+            crate::cli::TrustCommand::Status => Self::trust_status(&vm, &key_path, &mut remote),
             crate::cli::TrustCommand::Enroll { .. } => {
-                let (key, made) = crate::devtrust::load_or_create(&key_path)?;
-                let enrolled = remote.call(tilo_vm_protocol::TrustEnroll {
-                    name: tilo_vm_protocol::DEV_AUTHORITY.into(),
-                    public_key: key.public().to_pem(),
-                })?;
-                let endorsed = remote.endorse(None, Vec::new(), true)?;
-                let signed = endorsed.as_ref().map_or(0, |result| result.endorsed.len());
-                let merged = endorsed.as_ref().is_some_and(|result| result.merged);
-                let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
-                    slot: None,
-                    layers: Vec::new(),
-                })?;
-                let mut text = String::new();
-                if made {
-                    let _ = writeln!(
-                        text,
-                        "made this host's development key {}",
-                        key_path.display()
-                    );
-                }
-                let _ = write!(
-                    text,
-                    "{} {} this host's key as the extension authority {} ({})\nsigned {signed} layers of the vm and device slots; {}",
-                    vm.name,
-                    if enrolled.changed {
-                        "enrolled"
-                    } else {
-                        "already trusts"
-                    },
-                    enrolled.authority.name,
-                    enrolled.authority.fingerprint,
-                    if merged {
-                        "they are merged into its /usr"
-                    } else {
-                        "its image merges them unsigned until it moves onto one that verifies them, which then merges them at its first boot"
-                    },
-                );
-                for layer in &pending.unsigned_mergers {
-                    let _ = write!(
-                        text,
-                        "\nlayer {} carries a tilo-vmd from before signed layers: it would merge layers behind the activation; bring a current one first: tilo-vm rollback --slot vm --to 0, or swap vmd once the machine runs a current image",
-                        short(layer)
-                    );
-                }
-                let next = if merged {
-                    "tilo-vm slot restart device   (the desktop restarts in place on its layers)"
-                } else {
-                    "tilo-vm vm upgrade   (onto an image that verifies them; it checks they are signed first)"
-                };
-                Ok(Outcome::new(
-                    text,
-                    json!({
-                        "key": key_path,
-                        "authority": enrolled.authority,
-                        "changed": enrolled.changed,
-                        "signed": endorsed.map(|result| result.endorsed).unwrap_or_default(),
-                        "merged": merged,
-                        "unsigned_mergers": pending.unsigned_mergers,
-                    }),
-                )
-                .next(&[next]))
+                Self::trust_enroll(&vm, &key_path, &mut remote)
             }
         }
+    }
+
+    /// `trust status`: this host's key, the machine's authorities, the layers
+    /// that wait for a signature.
+    fn trust_status(
+        vm: &Resolved,
+        key_path: &Path,
+        remote: &mut Remote,
+    ) -> Result<Outcome, CliError> {
+        let key = crate::devtrust::load(key_path)?;
+        let fingerprint = key.as_ref().map(|key| key.public().fingerprint());
+        let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
+            slot: None,
+            layers: Vec::new(),
+        })?;
+        let enrolled = fingerprint.as_ref().is_some_and(|fingerprint| {
+            pending
+                .authorities
+                .iter()
+                .any(|authority| authority.fingerprint == *fingerprint)
+        });
+        let mut text = match &fingerprint {
+            Some(fingerprint) => {
+                format!("this host's key: {} ({fingerprint})", key_path.display())
+            }
+            None => format!(
+                "this host has no development key yet ({} is made at the first enroll)",
+                key_path.display()
+            ),
+        };
+        if pending.authorities.is_empty() {
+            let _ = write!(text, "\n{} has enrolled no extension authority", vm.name);
+        }
+        for authority in &pending.authorities {
+            let _ = write!(
+                text,
+                "\n{} trusts {} {}{}",
+                vm.name,
+                authority.name,
+                authority.fingerprint,
+                if fingerprint.as_deref() == Some(authority.fingerprint.as_str()) {
+                    " (this host)"
+                } else {
+                    ""
+                }
+            );
+        }
+        let _ = write!(
+            text,
+            "\n{} layers of the vm and device slots wait for a signature",
+            pending.pending.len()
+        );
+        let mut outcome = Outcome::new(
+            text,
+            json!({
+                "key": key_path,
+                "fingerprint": fingerprint,
+                "enrolled": enrolled,
+                "authorities": pending.authorities,
+                "unsigned_layers": pending.pending.iter().map(|p| &p.layer).collect::<Vec<_>>(),
+            }),
+        );
+        if !enrolled || !pending.pending.is_empty() {
+            outcome = outcome.next(&["tilo-vm trust enroll"]);
+        }
+        Ok(outcome)
+    }
+
+    /// `trust enroll`: enroll this host's key, sign every vm and device layer,
+    /// merge them (or stage them, on an image from before signed layers).
+    fn trust_enroll(
+        vm: &Resolved,
+        key_path: &Path,
+        remote: &mut Remote,
+    ) -> Result<Outcome, CliError> {
+        let (key, made) = crate::devtrust::load_or_create(key_path)?;
+        let enrolled = remote.call(tilo_vm_protocol::TrustEnroll {
+            name: tilo_vm_protocol::DEV_AUTHORITY.into(),
+            public_key: key.public().to_pem(),
+        })?;
+        let endorsed = remote.endorse(None, Vec::new(), true)?;
+        let signed = endorsed.as_ref().map_or(0, |result| result.endorsed.len());
+        let merged = endorsed.as_ref().is_some_and(|result| result.merged);
+        let pending = remote.call(tilo_vm_protocol::LayerEndorsePending {
+            slot: None,
+            layers: Vec::new(),
+        })?;
+        let mut text = String::new();
+        if made {
+            let _ = writeln!(
+                text,
+                "made this host's development key {}",
+                key_path.display()
+            );
+        }
+        let _ = write!(
+            text,
+            "{} {} this host's key as the extension authority {} ({})\nsigned {signed} layers of the vm and device slots; {}",
+            vm.name,
+            if enrolled.changed {
+                "enrolled"
+            } else {
+                "already trusts"
+            },
+            enrolled.authority.name,
+            enrolled.authority.fingerprint,
+            if merged {
+                "they are merged into its /usr"
+            } else {
+                "its image merges them unsigned until it moves onto one that verifies them, which then merges them at its first boot"
+            },
+        );
+        for layer in &pending.unsigned_mergers {
+            let _ = write!(
+                text,
+                "\nlayer {} carries a tilo-vmd from before signed layers: it would merge layers behind the activation; bring a current one first: tilo-vm rollback --slot vm --to 0, or swap vmd once the machine runs a current image",
+                short(layer)
+            );
+        }
+        let next = if merged {
+            "tilo-vm slot restart device   (the desktop restarts in place on its layers)"
+        } else {
+            "tilo-vm vm upgrade   (onto an image that verifies them; it checks they are signed first)"
+        };
+        Ok(Outcome::new(
+            text,
+            json!({
+                "key": key_path,
+                "authority": enrolled.authority,
+                "changed": enrolled.changed,
+                "signed": endorsed.map(|result| result.endorsed).unwrap_or_default(),
+                "merged": merged,
+                "unsigned_mergers": pending.unsigned_mergers,
+            }),
+        )
+        .next(&[next]))
     }
 
     fn gc(

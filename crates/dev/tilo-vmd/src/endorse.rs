@@ -26,6 +26,9 @@ use crate::layers::LayerStore;
 
 /// Write a file anyone may read and only its owner write, as the activation
 /// requires of everything it trusts.
+///
+/// # Errors
+/// The file cannot be written.
 pub fn write_public(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     tilo_files::native::atomic::write_creating_parent_with_mode(path, bytes, 0o644)
         .map_err(DaemonError::io(format!("write {}", path.display())))
@@ -33,6 +36,9 @@ pub fn write_public(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
 
 /// Create `dir` (and its parents) and give it mode 0755: nobody but its
 /// owner may add to what the activation trusts.
+///
+/// # Errors
+/// The directory cannot be created or its mode set.
 pub fn create_public_dir(dir: &Path) -> Result<(), DaemonError> {
     use std::os::unix::fs::PermissionsExt as _;
     fs::create_dir_all(dir).map_err(DaemonError::io(format!("create {}", dir.display())))?;

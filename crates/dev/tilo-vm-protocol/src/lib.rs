@@ -395,7 +395,7 @@ pub struct LayerEndorsePending {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorityInfo {
     pub name: String,
-    /// `sha256:<hex>` of the key's SubjectPublicKeyInfo.
+    /// `sha256:<hex>` of the key's `SubjectPublicKeyInfo`.
     pub fingerprint: String,
 }
 

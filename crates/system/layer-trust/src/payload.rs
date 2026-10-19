@@ -304,6 +304,9 @@ fn collect(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> io::Result<(
     Ok(())
 }
 
+/// A file's SHA-256, and its fs-verity digest when the filesystem sealed it.
+type Described = (String, Option<String>);
+
 /// One file's SHA-256 and its fs-verity digest when the filesystem sealed it.
 ///
 /// The kernel seals the file (one pass over it) while this thread reads it
@@ -311,7 +314,7 @@ fn collect(root: &Path, relative: &Path, out: &mut Vec<PathBuf>) -> io::Result<(
 /// sealed file is then measured: equal to the digest of what was read, the
 /// SHA-256 is of the sealed bytes. Two passes run side by side instead of one
 /// after the other, which halves the time a large binary takes.
-fn seal_and_read(path: &Path) -> io::Result<(String, Option<String>)> {
+fn seal_and_read(path: &Path) -> io::Result<Described> {
     let (sealed, read) = std::thread::scope(|scope| {
         let sealing = scope.spawn(|| verity::enable(path));
         let read = (|| {
@@ -406,7 +409,7 @@ pub fn describe(root: &Path) -> io::Result<Vec<Entry>> {
         )
     });
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<(usize, io::Result<(String, Option<String>)>)>> = Mutex::new(Vec::new());
+    let results: Mutex<Vec<(usize, io::Result<Described>)>> = Mutex::new(Vec::new());
     // Each file takes two threads: the kernel sealing it and the read.
     let workers = (std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get) / 2)
         .min(files.len())
