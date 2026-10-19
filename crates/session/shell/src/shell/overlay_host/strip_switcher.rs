@@ -77,8 +77,8 @@ const REST_FACE: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 const REST_FACE_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 /// How far inside its square a face at rest's disc sits, and how far past
 /// the square its ring (2 px, with a pixel of ground either side) reaches.
-const REST_FACE_INSET: f64 = 1.0;
-const REST_FACE_RING: f64 = 4.0 - REST_FACE_INSET;
+const REST_FACE_INSET: f64 = ui::presence::Face::GROUND_GAP;
+const REST_FACE_RING: f64 = ui::presence::Face::REACH - REST_FACE_INSET;
 /// How far left of the marks the faces at rest reach.
 pub(crate) const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + REST_FACE_RING;
 /// The icon in "New strip".
