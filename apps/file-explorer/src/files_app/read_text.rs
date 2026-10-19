@@ -26,9 +26,8 @@ impl FileExplorerWidget {
             return Ok(path);
         }
         if let Some(entry) = self
-            .entries
-            .iter()
-            .find(|entry| Self::entry_resource_id(entry) == file || entry.name == file)
+            .entry_by_resource_id(file)
+            .or_else(|| self.entries.iter().find(|entry| entry.name == file))
         {
             return Ok(entry.path.clone());
         }

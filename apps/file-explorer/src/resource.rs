@@ -1313,10 +1313,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     /// The listing's entries, remote accounts, nearby transfers and a
     /// failed listing's retry.
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_rows()
-            .into_iter()
-            .map(LiveRow::from_resource)
-            .collect()
+        self.published_live_rows()
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
