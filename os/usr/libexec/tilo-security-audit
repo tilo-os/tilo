@@ -639,8 +639,15 @@ for tool in p11tool gnutls-cli; do
   fi
 done
 
+policy_enforced=0
 if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then
-  warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
+  if [ "$image_flavour" = dev ]; then
+    # Reported under development posture, from the live policy, with every way
+    # it lets an image in unsigned.
+    note "dev image: $policy is not the production signature policy (${policy_report:-no verdict}); see development posture"
+  else
+    warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
+  fi
 elif [ ! -s /usr/share/tilo/release/rekor.pub ]; then
   warn "Tilo image signature policy requires a transparency-log entry, but /usr/share/tilo/release/rekor.pub is missing or empty"
 elif [ -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/release/root.crt ]; then
@@ -648,6 +655,7 @@ elif [ -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/release/r
 elif [ ! -e /usr/share/tilo/release/root.crt ] && [ ! -s /usr/share/tilo/cosign.pub ]; then
   warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
 else
+  policy_enforced=1
   ok "container signature policy pins signed Tilo images to the installed release trust: ${policy_report#*: }"
 fi
 
@@ -664,8 +672,10 @@ if [ -e /var/lib/tilo/image-trust/required ]; then
   else
     warn "owner image trust is required but its root-owned artifacts or update gate are incomplete"
   fi
+elif [ "$policy_enforced" = 1 ]; then
+  note "owner identity image-endorsement gate is not enabled; the release signature policy above applies to every image update"
 else
-  note "owner identity image-endorsement gate is not enabled; official Cosign policy remains mandatory"
+  note "owner identity image-endorsement gate is not enabled, and the live container policy does not require the release signature"
 fi
 
 # systemd-homed available (per-user encrypted homes; homed users get a
@@ -690,6 +700,56 @@ if [ "$maxns" = "0" ]; then
   warn "user.max_user_namespaces=0 — the app sandbox CANNOT start; something 'hardened' this"
 else
   ok "unprivileged user namespaces available (bwrap requires them); max=$maxns"
+fi
+
+# Development posture: every way this machine differs from a production
+# device, read from what is enforced now. On a dev image these are facts, so
+# the machine stays usable; on a production image each one is a failure.
+posture_file="${TILO_SECURITY_POSTURE:-/run/tilo-security-audit.posture}"
+authorities_dir="${TILO_SECURITY_AUTHORITIES:-/etc/tilo/extension-authorities.d}"
+compositor="${TILO_SECURITY_SHELL:-/usr/bin/shell}"
+deviation() {
+  if [ "$image_flavour" = dev ]; then
+    echo "[dev]    $*"
+  else
+    warn "$*"
+  fi
+}
+echo "=== development posture ==="
+if [ "$image_flavour" = dev ]; then
+  note "dev image (/usr/lib/tilo/image-flavour): the deviations below are expected here and fail a production image"
+fi
+# Secure Boot, from the firmware state read above.
+[ "$sb" = 1 ] || deviation "Secure Boot is off (SecureBoot=$sb)"
+# Extension authorities the owner enrolled: whoever holds one of these keys can
+# put signed layers into /usr. Production images ship the directory empty.
+for key in "$authorities_dir"/*.pub; do
+  [ -e "$key" ] || continue
+  fingerprint="$(sed '/^-----/d' "$key" 2>/dev/null | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  deviation "extension authority enrolled: $(basename "$key" .pub) sha256:$fingerprint ($key)"
+done
+# The compositor honours a fixed lock-screen password and a session-driving
+# socket from the environment when built with dev-overrides.
+if grep -aFq 'dev-overrides build: developer environment overrides' "$compositor" 2>/dev/null; then
+  deviation "the compositor ($compositor) is a dev-overrides build"
+fi
+# The privileged snapshot (the unit's ExecStartPre) lists listening sockets,
+# sudoers files granting NOPASSWD; bootc status names the booted image.
+posture_value() { sed -n "s/^$1 //p" "$posture_file" 2>/dev/null; }
+sshd="$(posture_value listen | grep -F '"sshd"' | awk '{print $4}' | sort -u | tr '\n' ' ')"
+[ -z "$sshd" ] || deviation "sshd is listening on ${sshd% }"
+nopasswd="$(posture_value nopasswd | tr '\n' ' ')"
+[ -z "$nopasswd" ] || deviation "sudo without a password (NOPASSWD) is granted in ${nopasswd% }"
+bootc_status="${TILO_SECURITY_BOOTC_STATUS:-/run/tilo-security-audit.bootc.json}"
+[ -s "$bootc_status" ] || bootc_status=
+if unsigned="$("$image_policy_check" --unsigned "$policy" ${bootc_status:+"$bootc_status"} 2>&1)"; then
+  while IFS= read -r line; do
+    [ -n "$line" ] && deviation "container policy: $line"
+  done <<EOF_UNSIGNED
+$unsigned
+EOF_UNSIGNED
+else
+  warn "container policy cannot be read for unsigned admissions: $unsigned"
 fi
 
 echo "=== end Tilo security audit ==="
