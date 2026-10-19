@@ -3,7 +3,7 @@
 # merely near its category. Desktop search matches every language's words
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
-search-keywords = ide, text editor, programming, coding, source code, developer
+search-keywords = ide, text editor, programming, coding, source code, developer, vs code, vscode, visual studio code, sublime text, zed, kate, gedit, vim, neovim, emacs
 # What the app does, in one plain phrase (English): the tag line under its
 # name in the Store and in search. No marketing; the packer signs it into the
 # manifest.
