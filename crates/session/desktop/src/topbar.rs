@@ -3296,6 +3296,24 @@ impl TopBarChrome {
         })
     }
 
+    /// Whether the centre on screen is not the centre as it is now: the
+    /// cached frame was painted part-way through a cross-fade that has
+    /// since settled, or the activity came or went since. Without this the
+    /// last frame painted while the fade moved stays up, the time and the
+    /// activity both at part opacity, because nothing else asks to paint
+    /// once the motion has settled.
+    fn center_frame_stale(&self) -> bool {
+        // A bar that paints nothing has no centre on screen to go stale.
+        if self.presence() == TopBarPresence::Hidden
+            || self.rect.width() <= 0.0
+            || self.rect.height() <= 0.0
+        {
+            return false;
+        }
+        self.center_fade_key() != self.cache_fp.center_fade
+            || self.activity_is_visible() != self.cache_fp.activity_visible
+    }
+
     fn activity_is_visible(&self) -> bool {
         self.activity_headline.is_some()
             && self
@@ -4696,11 +4714,11 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_fade.is_moving(ui::time::now())
+        self.center_fade.is_moving(ui::time::now()) || self.center_frame_stale()
     }
 
     fn needs_redraw(&self) -> bool {
-        if self.center_fade.is_moving(ui::time::now()) {
+        if self.center_fade.is_moving(ui::time::now()) || self.center_frame_stale() {
             return true;
         }
         if self.presence() != self.cache_fp.presence {
@@ -6075,6 +6093,102 @@ mod tests {
             1.0,
             "the pill shows with it"
         );
+    }
+
+    // The centre showed the time and an activity on top of each other, both
+    // at part opacity: the frame painted mid cross-fade stayed on screen
+    // because nothing asked to paint once the fade had settled.
+    #[test]
+    fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size::from_lengths(1600.0, TOPBAR_HEIGHT_PX),
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut paint = |bar: &mut TopBarChrome| {
+            let mut scene = Scene::new();
+            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        };
+        paint(&mut bar);
+        let start = ui::time::now();
+        let mut at = start;
+        for (round, unread) in [3_usize, 0, 2, 0, 5].into_iter().enumerate() {
+            chrome.borrow_mut().publish_activity_glance(
+                Some(format!("Ada prepared launch brief {round}")),
+                unread,
+                100 + round as u64,
+                None,
+            );
+            // A swap is drawn on its first frame and a few mid-fade ones.
+            for step in 0..4_u32 {
+                ui::time::testing::with_monotonic_time(at, || {
+                    bar.refresh_status_and_media_state();
+                    if step == 0 || bar.needs_redraw() {
+                        paint(&mut bar);
+                    }
+                });
+                at += Duration::from_millis(40);
+            }
+            // Then the fade settles with no other reason to paint.
+            let settled = bar.center_fade.settles_at().map_or(at, |end| end.max(at))
+                + Duration::from_millis(1);
+            ui::time::testing::with_monotonic_time(settled, || {
+                assert!(
+                    bar.needs_redraw(),
+                    "round {round}: the settled centre still has to be painted"
+                );
+                assert!(
+                    bar.needs_animation_frame(),
+                    "round {round}: and asks for it"
+                );
+                paint(&mut bar);
+                assert!(!bar.needs_redraw(), "round {round}: then it is quiet");
+                assert!(!bar.needs_animation_frame(), "round {round}");
+                assert_eq!(
+                    bar.cache_fp.center_fade, None,
+                    "round {round}: no fade on screen"
+                );
+                assert!(
+                    bar.center_fade.outgoing(settled).is_none(),
+                    "round {round}: exactly one label is drawn"
+                );
+                assert_eq!(bar.center_fade.incoming(settled), 1.0, "round {round}");
+                assert_eq!(*bar.center_fade.shown(), unread > 0, "round {round}");
+            });
+            at = settled + Duration::from_millis(1);
+        }
     }
 
     #[test]

@@ -408,6 +408,11 @@ struct ResumeSnapshot {
 }
 
 fn author_is_local(author: &ui::widget::history::HistoryAuthor, local: &str) -> bool {
+    // History already knows the reader's own changes, whatever name the
+    // writer gave them.
+    if author.relation == ui::widget::history::AuthorRelation::Reader {
+        return true;
+    }
     if local.is_empty() {
         return false;
     }

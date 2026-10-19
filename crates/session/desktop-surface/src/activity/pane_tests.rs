@@ -5741,3 +5741,24 @@ mod morning_source_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    /// The person's own changes are never news to them, even when the writer
+    /// named them differently from the device's user name: history marks
+    /// them as the reader's.
+    #[test]
+    fn the_readers_own_changes_never_reach_the_passive_activity() {
+        let own = ui::widget::history::HistoryAuthor::new("Workspace setup", 10.0, "a1b2")
+            .with_relation(ui::widget::history::AuthorRelation::Reader);
+        assert!(author_is_local(&own, "ada"));
+        assert!(
+            author_is_local(&own, ""),
+            "known as the reader without a name"
+        );
+        let other = ui::widget::history::HistoryAuthor::new("Ada", 10.0, "c3d4");
+        assert!(!author_is_local(&other, "ada"));
+    }
+}
