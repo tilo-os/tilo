@@ -572,6 +572,8 @@ fn run_owned_actor(selector: &str) {
     command
         .arg("--exact")
         .arg(selector)
+        // The positive journeys are ignored outside this harness.
+        .arg("--include-ignored")
         .arg("--nocapture")
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", control.display()))

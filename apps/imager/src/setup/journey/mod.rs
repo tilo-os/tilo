@@ -9194,6 +9194,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[ignore = "needs the owned-GPT native harness as root (os/scripts/installer-source-fixture/native_journey_tests.py)"]
     fn same_computer_permission_accepts_semantic_grant_and_persists_review_before_advancing() {
         if !prepared_media::native_retained::enter_owned_journey(
             "setup::journey::tests::same_computer_permission_accepts_semantic_grant_and_persists_review_before_advancing",
