@@ -961,6 +961,19 @@ incremental = false
 # strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
 # reports the message, then the module traps and the page must reload.
 # No debug info or symbol table: the bundle size is what matters in a browser.
+# Local development builds that must run at near-release speed (the desktop,
+# screenshots, a device swap). `release` links with fat LTO and one codegen
+# unit: a single rustc for the shell reached 24 GB and took the laptop down.
+# Without LTO, with parallel codegen and incremental builds, this compiles in
+# a fraction of the time and memory and still runs smoothly.
+[profile.fast]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 16
+incremental = true
+debug = "line-tables-only"
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
