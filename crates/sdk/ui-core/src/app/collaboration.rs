@@ -1070,7 +1070,13 @@ impl App {
                             message,
                         })
                     }
-                    ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                    ReceiptStatus::Rejected { error } => {
+                        #[cfg(any(test, feature = "test-support"))]
+                        {
+                            self.actions.refused_broker_receipt = Some(error.to_string());
+                        }
+                        Err(error.to_string())
+                    }
                 };
                 (BrokerReply::Receipt(invocation), update)
             }

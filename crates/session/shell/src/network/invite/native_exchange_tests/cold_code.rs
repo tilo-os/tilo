@@ -368,6 +368,7 @@ fn open_semantic_resource(app: &mut ui::App) {
         "native Code open effect to finish on the original worker",
         || {
             app.surface_frame(&LocalSurface, &mut scene);
+            assert_no_refused_action(app);
             app.controlled_native_input_snapshot_for_test()
                 .is_some_and(|snapshot| snapshot["buffer_id"] == FILE && snapshot["ready"] == true)
         },
@@ -382,6 +383,15 @@ fn open_semantic_resource(app: &mut ui::App) {
         snapshot["ready"], true,
         "native local rendering must bind the admitted resource"
     );
+}
+
+/// Fail at once on an action the session host refused: it will never run,
+/// so waiting for its effect would only sit out the hang bound.
+#[track_caller]
+pub(super) fn assert_no_refused_action(app: &ui::App) {
+    if let Some(reason) = app.controlled_refused_action_for_test() {
+        panic!("the session host refused a Code action: {reason}");
+    }
 }
 
 fn connect_manager(

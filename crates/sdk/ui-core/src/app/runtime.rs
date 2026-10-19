@@ -209,6 +209,10 @@ pub(super) struct ActionRuntime {
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
+    /// Why the session action host last refused an invocation outright, so
+    /// a fixture fails on the refusal instead of waiting out what it asked.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) refused_broker_receipt: Option<String>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
     /// Dirty tracking for the hosted worker pump (no window event loop).
@@ -265,6 +269,8 @@ impl ActionRuntime {
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            refused_broker_receipt: None,
             next_broker_request_id: Some(0),
             hosted: super::model_lifecycle::HostedPumpState::default(),
             history_previews: super::history_actions::HistoryPreviews::default(),
