@@ -115,6 +115,11 @@ impl OwnerWakeSink {
     /// Queue a signal only if its original scope and registration remain open.
     /// `true` means queued; it is not a checked document or callback admission.
     pub fn enqueue(&self, event: WakeEvent) -> bool {
+        let _profile = tilo_resource::profiling::Phase::start(if event.requires_sync() {
+            "ui.owner_wake.enqueue_sync"
+        } else {
+            "ui.owner_wake.enqueue_events"
+        });
         let (Some(token), Some(pending)) = (self.token.upgrade(), self.pending.upgrade()) else {
             return false;
         };

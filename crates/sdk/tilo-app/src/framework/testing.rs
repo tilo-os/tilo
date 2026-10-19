@@ -1218,8 +1218,39 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Run the frame the app runs after an event: edits the views and
     /// effects submitted are applied, and what they change is drawn.
     pub fn settle(&mut self) {
+        self.service_owner_wakes();
         self.harness()
             .wait_until(ui_core::time::Duration::ZERO, |_| true);
+    }
+
+    /// What the live window does once input stops, and no more: what its
+    /// components' workers woke them for taken up, the frame the input
+    /// asked for, control invocations dispatched and edits offered to the
+    /// record's writer ([`FrameHarness::idle`]). Unlike [`Self::settle`] it
+    /// forces no frame to sync and publish, so it costs what the live window
+    /// costs: what the perf measurements run after each interaction.
+    pub fn idle(&mut self) {
+        self.service_owner_wakes();
+        self.harness().idle();
+    }
+
+    /// One frame of the live window, when it asks for one: what its
+    /// components' workers woke them for taken up, as the window's frame
+    /// takes it, then the frame a redraw, an animation or a due deadline
+    /// asks for. Whether a frame ran.
+    pub fn frame(&mut self) -> bool {
+        self.service_owner_wakes();
+        self.harness().poll_frame().unwrap_or(false)
+    }
+
+    /// Take up what the app's workers woke its components for, as the live
+    /// window does at the start of each frame. Left queued, a wake kept
+    /// every later frame syncing and publishing, which the live window
+    /// never does.
+    fn service_owner_wakes(&mut self) {
+        if let Err(error) = self.harness().service_pending_owner_models() {
+            tracing::warn!(?error, "test app: a woken component's model was refused");
+        }
     }
 
     /// Invoke any published action of the resource by id with JSON

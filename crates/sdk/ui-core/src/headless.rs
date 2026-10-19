@@ -429,6 +429,9 @@ pub struct FrameHarness {
     /// Opt-in: a wheel event's frame is left to the host's next frame
     /// ([`Self::set_coalesce_wheel_frames`]).
     coalesce_wheel_frames: bool,
+    /// The pointer buttons held, one bit each: motion with one held is a
+    /// drag, never inert ([`Self::is_inert_input`]).
+    pointer_buttons: u32,
     /// A coalesced wheel event was dispatched since the last frame.
     wheel_frame_pending: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
@@ -947,6 +950,7 @@ impl FrameHarness {
             self.owner_service_layout_retired = true;
         }
         while let Some(work) = batch.front() {
+            let _profile = tilo_resource::profiling::Phase::start("ui.owner_wake.service");
             crate::bound_dispatch::service_retained_owner_model(
                 self.root.as_mut(),
                 &mut self.state.doc,
@@ -1571,6 +1575,7 @@ impl FrameHarness {
             profiler: None,
             last_send_skipped_relayout: false,
             coalesce_wheel_frames: false,
+            pointer_buttons: 0,
             wheel_frame_pending: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
@@ -2150,8 +2155,7 @@ impl FrameHarness {
             && !self.owner_service_layout_retired
             && self.pending_app_activation.is_none()
             && !self.framework_input.get()
-            && self.history.is_none()
-            && !self.history_chrome_enabled
+            && self.history_hosts_rest()
             && self.records.is_none()
             && self.record_persistence.is_none()
             && self
@@ -2177,6 +2181,75 @@ impl FrameHarness {
                 self.root.as_ref(),
                 &self.state.doc,
             ),
+        }
+    }
+
+    /// What of `witness` no longer stands, named for a profile: `None` when
+    /// everything it read stands as it did ([`Self::witness_holds`]).
+    fn witness_moved(&self, witness: &FrameWitness) -> Option<&'static str> {
+        if self.witness_holds(witness) {
+            return None;
+        }
+        Some(if witness.local_epoch != self.local_epoch {
+            "ui.loud.entry_point"
+        } else if witness.focused != self.focused {
+            "ui.loud.focus"
+        } else if witness.presentation != crate::widget::resource_presentation_epoch() {
+            "ui.loud.presentation"
+        } else if witness.document.1 != 0 {
+            "ui.loud.uncommitted"
+        } else if !self.bookkeeping_followed() {
+            self.unfollowed_bookkeeping()
+        } else if witness.document != crate::doc::settle_mark(&self.state.doc) {
+            "ui.loud.document"
+        } else if witness.permissions != self.permissions.directory_witness() {
+            "ui.loud.permissions"
+        } else {
+            "ui.loud.owners"
+        })
+    }
+
+    /// Whether the History this harness hosts around the app rests: closed,
+    /// nothing selected, no return to live content under way, and nothing
+    /// new for it to show. A frame then does with it exactly what the last
+    /// one did, as the live window's frame does, so it keeps no frame loud.
+    fn history_hosts_rest(&self) -> bool {
+        let host_rests = self.history.as_ref().is_none_or(|history| {
+            !history.captures_input()
+                && !history.returning_live()
+                && !history.has_settled_control_return()
+                && history.validate_root(self.root.as_ref()).is_ok()
+                && !history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
+        });
+        let chrome_rests = !self.history_chrome_enabled || !self.document_history.is_open();
+        host_rests && chrome_rests
+    }
+
+    /// The first thing [`Self::bookkeeping_followed`] finds that a witness
+    /// does not follow, named for a profile.
+    fn unfollowed_bookkeeping(&self) -> &'static str {
+        if self.layout_requested {
+            "ui.loud.layout_requested"
+        } else if self.owner_service_layout_retired {
+            "ui.loud.owner_layout_retired"
+        } else if self.has_pending_owner_models() {
+            "ui.loud.owner_models_pending"
+        } else if self.pending_app_activation.is_some() {
+            "ui.loud.activation"
+        } else if self.framework_input.get() {
+            "ui.loud.framework_input"
+        } else if !self.history_hosts_rest() {
+            if self.history.is_some() {
+                "ui.loud.history_host"
+            } else {
+                "ui.loud.history_chrome"
+            }
+        } else if self.records.is_some() || self.record_persistence.is_some() {
+            "ui.loud.records"
+        } else if self.bindings.has_legacy() {
+            "ui.loud.legacy"
+        } else {
+            "ui.loud.palette_or_search"
         }
     }
 
@@ -2987,12 +3060,47 @@ impl FrameHarness {
     )]
     pub fn relayout(&mut self) {
         self.invalidate_local();
+        self.run_frame();
+    }
+
+    /// The frame an event or an idle pass asks for, as the live window runs
+    /// it: it syncs and publishes only when something its witness follows
+    /// moved since the last one ([`FrameWitness`]), unlike
+    /// [`Self::relayout`], which a caller asks for after changing anything.
+    fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout() {
             tracing::error!(
                 ?error,
                 "headless: widget layout did not settle; skipping frame"
             );
+        }
+    }
+
+    /// What the live window does once input stops: the frame the input
+    /// asked for if it has not run yet, control invocations dispatched,
+    /// edits offered to the record's writer, and the frame that asks for.
+    /// Unlike [`Self::wait_until`] it forces nothing: a frame runs only when
+    /// something asks for one, and syncs and publishes only when something
+    /// it reads moved, as in the live window.
+    pub fn idle(&mut self) {
+        // A host that idles polls its frames: what a frame read is kept
+        // for the next to compare ([`FrameWitness`]).
+        self.polls_frames = true;
+        self.pump_component_wakes();
+        let _ = self.poll_frame();
+        let before = crate::doc::settle_mark(&self.state.doc);
+        self.idle_control_tick();
+        if let Some(wake) = &self.component_wake {
+            wake.binding.records.tick();
+        } else if let Some(set) = self.records.as_mut() {
+            set.tick(&mut self.state.doc);
+        }
+        if crate::doc::settle_mark(&self.state.doc) == before {
+            let _ = self.poll_frame();
+        } else {
+            self.invalidate_local();
+            self.run_frame();
         }
     }
 
@@ -3087,10 +3195,12 @@ impl FrameHarness {
         };
         // Read before anything below can move it: whether this frame's sync
         // and publication would only repeat the last frame's.
-        let held = self
-            .frame_witness
-            .take()
-            .filter(|witness| self.witness_holds(witness));
+        let last_witness = self.frame_witness.take();
+        let unwitnessed = match &last_witness {
+            None => Some("ui.loud.unwitnessed"),
+            Some(witness) => self.witness_moved(witness),
+        };
+        let held = last_witness.filter(|_| unwitnessed.is_none());
         let witnessed = held.is_some();
         let focused_at_start = self.focused;
         let epoch_at_start = self.local_epoch;
@@ -3149,6 +3259,20 @@ impl FrameHarness {
         if quiet {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
+            // Name, for a profile, why this frame syncs and publishes.
+            drop(tilo_resource::profiling::Phase::start(
+                unwitnessed.unwrap_or(if woken {
+                    "ui.loud.wake"
+                } else if history_at_rest.is_none() {
+                    "ui.loud.history"
+                } else if updated {
+                    "ui.loud.update"
+                } else if structure_changed {
+                    "ui.loud.structure"
+                } else {
+                    "ui.loud.control"
+                }),
+            ));
             let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
             self.sync_frame();
             if let Some(p) = self.profiler.as_mut() {
@@ -3848,6 +3972,11 @@ impl FrameHarness {
             self.settled_history_frames = self.settled_history_frames.saturating_add(1);
         }
         // Only a polled frame reads it, and only while it follows everything.
+        if self.polls_frames && !self.bookkeeping_followed() {
+            drop(tilo_resource::profiling::Phase::start(
+                self.unfollowed_bookkeeping(),
+            ));
+        }
         let witness =
             (self.polls_frames && self.bookkeeping_followed()).then(|| self.read_witness());
         // What this quiet frame's History walk answered still stands for the
@@ -5993,8 +6122,9 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
-        self.invalidate_local();
         crate::motion::note_input(event);
+        // Whether the event can have changed what a frame reads is judged
+        // once it is dispatched, as the live window judges it.
         if self.pump_component_wakes_checked().is_err() {
             return;
         }
@@ -6086,6 +6216,19 @@ impl FrameHarness {
                 crate::doc::settle_mark(&self.state.doc),
                 crate::widget::resource_presentation_epoch(),
                 self.focused,
+            )
+        });
+        // Input that activates nothing by itself (hover, a key's release, a
+        // modifier) changes nothing a frame reads unless something took it
+        // or it moved what the frame reads; read that before dispatch, as
+        // the live App does (`App::resource_input_mark`).
+        self.track_pointer_buttons(event);
+        let inert_before = (!history_input && self.is_inert_input(event)).then(|| {
+            (
+                crate::doc::settle_mark(&self.state.doc),
+                crate::widget::resource_presentation_epoch(),
+                self.focused,
+                crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
             )
         });
         let detected = if self.dispatching_touch_pointer {
@@ -6250,10 +6393,25 @@ impl FrameHarness {
                             self.focused,
                         )
                 }));
-        let coalesced_view_only =
-            self.coalesce_wheel_frames && !history_input && focus_target.is_none();
-        if !(coalesced_view_only && view_only_wheel) {
-            // Anything but such a wheel may have changed what the next
+        let kept_view_only = view_only_wheel && !history_input && focus_target.is_none();
+        let inert_unchanged = !handled
+            && focus_target.is_none()
+            && inert_before.as_ref().is_some_and(|before| {
+                before.0.1 == 0
+                    && before.0 == crate::doc::settle_mark(&self.state.doc)
+                    && before.1 == crate::widget::resource_presentation_epoch()
+                    && before.2 == self.focused
+                    && crate::bound_dispatch::same_owner_standing(
+                        &before.3,
+                        &crate::bound_dispatch::bound_owner_standing(
+                            self.root.as_ref(),
+                            &self.state.doc,
+                        ),
+                    )
+            });
+        if !(kept_view_only || inert_unchanged) {
+            // Anything but a wheel that only panned, or input that activated
+            // nothing and moved nothing, may have changed what the next
             // frame's sync and publication read.
             self.invalidate_local();
         }
@@ -6297,7 +6455,7 @@ impl FrameHarness {
                         &self.permissions,
                     );
                 }
-            } else if !(coalesced_view_only && view_only_wheel) {
+            } else if !kept_view_only {
                 self.host_tick();
             }
         }
@@ -6324,7 +6482,7 @@ impl FrameHarness {
         if coalesced {
             self.wheel_frame_pending = true;
         } else if !inert {
-            self.relayout();
+            self.run_frame();
         }
         // Frames restore the thread-wide flag they captured, so they must
         // close in reverse order of opening.
@@ -6354,6 +6512,53 @@ impl FrameHarness {
     /// the wheel does, and no floating surface takes it.
     fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.may_pan_view_only(event) && self.root.view_only_scroll(event)
+    }
+
+    /// Follow which pointer buttons are down, as the live App does.
+    fn track_pointer_buttons(&mut self, event: &WindowEvent) {
+        if let WindowEvent::MouseInput { state, button, .. } = event {
+            let bit = match button {
+                winit::event::MouseButton::Left => 1,
+                winit::event::MouseButton::Right => 1 << 1,
+                winit::event::MouseButton::Middle => 1 << 2,
+                winit::event::MouseButton::Back => 1 << 3,
+                winit::event::MouseButton::Forward => 1 << 4,
+                winit::event::MouseButton::Other(n) => 1 << (5 + u32::from(*n) % 27),
+            };
+            match state {
+                ElementState::Pressed => self.pointer_buttons |= bit,
+                ElementState::Released => self.pointer_buttons &= !bit,
+            }
+        }
+    }
+
+    /// Input that activates nothing by itself, as the live App reads it
+    /// (`App::is_inert_input`): hover with no button held, a key's release,
+    /// a modifier key's press and a modifier change.
+    fn is_inert_input(&self, event: &WindowEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Released
+                    || matches!(
+                        event.logical_key,
+                        Key::Named(
+                            NamedKey::Shift
+                                | NamedKey::Control
+                                | NamedKey::Alt
+                                | NamedKey::AltGraph
+                                | NamedKey::Super
+                                | NamedKey::Meta
+                                | NamedKey::Hyper
+                        )
+                    )
+            }
+            WindowEvent::ModifiersChanged(_)
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. } => true,
+            WindowEvent::CursorMoved { .. } => self.pointer_buttons == 0,
+            _ => false,
+        }
     }
 
     /// Whether a wheel `event` arrives where the live App lets it prove
@@ -8376,7 +8581,8 @@ impl FrameHarness {
     /// Send wheel line-deltas at the last pointer position. Move the pointer
     /// inside the intended content viewport first, as a live user would.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
-        self.invalidate_local();
+        // `send` judges whether the wheel can have changed what a frame
+        // reads: one that only panned a view did not.
         self.pump_component_wakes();
         // Deltas are line counts chosen by the driver's own caller (test
         // code or an agent), always small integers; there is no fallible
