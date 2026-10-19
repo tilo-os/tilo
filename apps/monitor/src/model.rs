@@ -80,6 +80,13 @@ pub struct Metrics {
 }
 
 impl Metrics {
+    /// Whether these are a reading of the machine at all: one with no core
+    /// and no memory is the empty value before (or without) a reading, and
+    /// showing it would present "unavailable" as a measured zero.
+    pub fn measured(&self) -> bool {
+        !self.cores.is_empty() || self.mem_total > 0
+    }
+
     /// Mean of every core's current load (0..=100).
     pub fn cpu_overall(&self) -> f32 {
         if self.cores.is_empty() {
