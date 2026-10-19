@@ -27,6 +27,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Installs share the bundle root's collection lock; a collection holds it alone.
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
+# fs-verity (enable, measure, the digest itself).
+tilo-layer-trust = { path = "../../system/layer-trust" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

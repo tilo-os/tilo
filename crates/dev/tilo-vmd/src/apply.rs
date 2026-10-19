@@ -164,10 +164,20 @@ pub trait Apply {
     fn unit_state(&mut self, unit: &str) -> String;
     /// Give a staged layer the `SELinux` labels its files get under `/`.
     fn label_layer(&mut self, layer: &std::path::Path) -> Result<(), DaemonError>;
-    /// Point the VM-wide sysext set at exactly `layers`; `true` when a link
-    /// was added, replaced or removed (so `/usr` needs a refresh to match).
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError>;
-    fn sysext_refresh(&mut self) -> Result<(), DaemonError>;
+    /// Make exactly `layers` the machine's desired signed layers
+    /// (`/var/lib/tilo/signed-layers`), each with its endorsement; `true`
+    /// when one was added, replaced or removed (so `/usr` needs an
+    /// activation to match).
+    ///
+    /// # Errors
+    /// [`DaemonError::Unendorsed`] for a layer no enrolled authority signed.
+    fn stage_system_layers(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError>;
+    /// Merge the desired signed layers through the system extension
+    /// activation (`tilo-extension activate`), which verifies each again.
+    ///
+    /// # Errors
+    /// [`DaemonError::LayerRefused`] for a layer the activation refused.
+    fn activate_system_layers(&mut self) -> Result<(), DaemonError>;
     /// Put the notice `name` where the owner's desktop reads it
     /// (`/run/tilo-vm/<name>`, world-readable), or take it away (`None`).
     fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError>;
@@ -539,8 +549,8 @@ pub fn activate(
 ) -> Result<Vec<Action>, DaemonError> {
     let mut actions = Vec::new();
     let Some(session) = record.session() else {
-        apply.link_sysext(layers)?;
-        apply.sysext_refresh()?;
+        apply.stage_system_layers(layers)?;
+        apply.activate_system_layers()?;
         actions.push(Action::SysextRefresh);
         for unit in &restarts.units {
             // The greeter component is VM-wide, but its manager also owns
@@ -637,7 +647,8 @@ pub fn activate(
 
 /// [`activate`] for the owner's greetd login on a laptop. greetd runs the
 /// login in the host's mount namespace, so `layers` (this slot's and the
-/// `vm` slot's: one system-wide set) merge with `systemd-sysext`, and a
+/// `vm` slot's: one system-wide set) merge as signed layers through the
+/// system extension activation, and a
 /// restart restarts the changed user units and then the desktop in place;
 /// the owner stays logged in.
 fn activate_login(
@@ -648,8 +659,8 @@ fn activate_login(
     restarts: &Restarts,
     change: SessionChange,
 ) -> Result<Vec<Action>, DaemonError> {
-    apply.link_sysext(layers)?;
-    apply.sysext_refresh()?;
+    apply.stage_system_layers(layers)?;
+    apply.activate_system_layers()?;
     let mut actions = vec![Action::SysextRefresh];
     match change {
         // A login is started by its owner at the greeter, never by tilo-vmd.
@@ -981,14 +992,14 @@ impl Apply for RecordingApply {
         self.call("label_layer".into());
         Ok(())
     }
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
-        self.call(format!("link_sysext {}", layers.len()));
+    fn stage_system_layers(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
+        self.call(format!("stage_system_layers {}", layers.len()));
         let changed = self.sysext != layers;
         self.sysext = layers.to_vec();
         Ok(changed)
     }
-    fn sysext_refresh(&mut self) -> Result<(), DaemonError> {
-        self.call("sysext_refresh".into());
+    fn activate_system_layers(&mut self) -> Result<(), DaemonError> {
+        self.call("activate_system_layers".into());
         Ok(())
     }
     fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError> {
@@ -1489,7 +1500,11 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["link_sysext 1", "sysext_refresh", "try-restart fs.service"]
+                [
+                    "stage_system_layers 1",
+                    "activate_system_layers",
+                    "try-restart fs.service"
+                ]
             );
         }
     }
@@ -1744,8 +1759,8 @@ mod tests {
                 apply.calls,
                 [
                     "account_uid quickuser",
-                    "link_sysext 2",
-                    "sysext_refresh",
+                    "stage_system_layers 2",
+                    "activate_system_layers",
                     "restart_user_unit quickuser tilo-ush.service",
                     "restart_desktop quickuser",
                 ],
@@ -1777,7 +1792,11 @@ mod tests {
             .unwrap();
             assert_eq!(
                 apply.calls,
-                ["account_uid quickuser", "link_sysext 2", "sysext_refresh"]
+                [
+                    "account_uid quickuser",
+                    "stage_system_layers 2",
+                    "activate_system_layers"
+                ]
             );
             assert!(
                 matches!(actions.last(), Some(Action::Deferred { reason }) if reason.contains("next login")),

@@ -1,8 +1,11 @@
-//! [`Apply`] on a real dev image: users, systemd drop-ins, sysext, vkms seats.
+//! [`Apply`] on a real dev image: users, systemd drop-ins, signed layers,
+//! vkms seats.
 //!
 //! Everything here shells out to the same tools an administrator would use
-//! (`useradd`, `systemctl`, `systemd-sysext`, `loginctl`, `journalctl`), so
-//! what tilo-vmd does can be reproduced and inspected by hand.
+//! (`useradd`, `systemctl`, `loginctl`, `journalctl`), so what tilo-vmd does
+//! can be reproduced and inspected by hand. System layers merge only through
+//! the production system extension activation
+//! (`systemctl start tilo-extension-activate.service`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,9 +16,11 @@ use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction
 
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
+use crate::endorse::Endorsements;
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, write_atomic};
 use crate::input;
+use crate::signed_layers;
 use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
@@ -23,6 +28,9 @@ const SYSEXT_DIR: &str = "/var/lib/extensions";
 /// Where tilo-vmd leaves notices for the owner's desktop; the shell reads
 /// `held-layers.json` from here.
 const NOTICE_DIR: &str = "/run/tilo-vm";
+/// The one merger of system layers: the production system extension
+/// activation (`tilo-extension activate`).
+pub const ACTIVATION_UNIT: &str = "tilo-extension-activate.service";
 /// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
 const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSEXT_DIR];
 /// A registry larger than this is not one `tilo-install` wrote.
@@ -38,6 +46,10 @@ const SLOT_USER_GROUPS: &str = "tilo-identity,video";
 pub struct SystemdApply {
     layers_dir: PathBuf,
     views_dir: PathBuf,
+    endorsements: Endorsements,
+    /// What [`Apply::stage_system_layers`] last staged, which the activation
+    /// must then have merged.
+    staged: Vec<PathBuf>,
     boot: Boot,
     cohort_view: Option<(String, Vec<PathBuf>, PathBuf)>,
 }
@@ -58,6 +70,8 @@ impl SystemdApply {
         Self {
             layers_dir: root.join("layers"),
             views_dir: root.join("views"),
+            endorsements: Endorsements::new(root),
+            staged: Vec::new(),
             boot: Boot::new(root),
             cohort_view: None,
         }
@@ -680,47 +694,27 @@ impl Apply for SystemdApply {
         run("setfiles", &mut command).map(drop)
     }
 
-    // Provisional: systemd-sysext accepting symlinks to directories in
-    // /var/lib/extensions (named after the image, i.e. the content hash).
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
-        let dir = Path::new(SYSEXT_DIR);
-        let mut changed = false;
-        fs::create_dir_all(dir).map_err(DaemonError::io("create /var/lib/extensions"))?;
-        // Drop our stale links, never anything another tool put there.
-        for entry in fs::read_dir(dir)
-            .map_err(DaemonError::io("read /var/lib/extensions"))?
-            .flatten()
-        {
-            let link = entry.path();
-            if let Ok(target) = fs::read_link(&link)
-                && target.starts_with(&self.layers_dir)
-                && !layers.contains(&target)
-            {
-                fs::remove_file(&link)
-                    .map_err(DaemonError::io(format!("unlink {}", link.display())))?;
-                changed = true;
-            }
-        }
-        for layer in layers {
-            let Some(name) = layer.file_name() else {
-                continue;
-            };
-            let link = dir.join(name);
-            if fs::read_link(&link).ok().as_deref() != Some(layer.as_path()) {
-                let _ = fs::remove_file(&link);
-                symlink(layer, &link)
-                    .map_err(DaemonError::io(format!("link {}", link.display())))?;
-                changed = true;
-            }
-        }
-        Ok(changed)
+    fn stage_system_layers(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
+        // An older tilo-vmd linked its layers into /var/lib/extensions for
+        // systemd-sysext.service; the activation merges nothing while
+        // anything it did not verify is in the search path.
+        let legacy = signed_layers::remove_legacy_links(Path::new(SYSEXT_DIR), &self.layers_dir)?;
+        let staged = signed_layers::stage(
+            Path::new(tilo_layer_trust::SIGNED_LAYERS_DIR),
+            &self.layers_dir,
+            &self.endorsements,
+            layers,
+        )?;
+        self.staged = layers.to_vec();
+        Ok(legacy || staged)
     }
 
-    fn sysext_refresh(&mut self) -> Result<(), DaemonError> {
-        run(
-            "systemd-sysext refresh",
-            Command::new("systemd-sysext").arg("refresh"),
-        )?;
+    fn activate_system_layers(&mut self) -> Result<(), DaemonError> {
+        // The production verifier merges: it checks every signature and tree
+        // again, then refreshes /usr. A oneshot: `start` returns once it ran.
+        let ran = systemctl("start", ACTIVATION_UNIT);
+        let status = fs::read(tilo_layer_trust::SIGNED_LAYERS_STATUS).ok();
+        signed_layers::check_activation(&self.staged, status.as_deref(), ran)?;
         // A layer may bring a system account (a sysusers.d entry, as the
         // relay's does): create it as the image build would.
         run("systemd-sysusers", &mut Command::new("systemd-sysusers")).map(drop)

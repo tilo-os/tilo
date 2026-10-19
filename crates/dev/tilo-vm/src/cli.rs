@@ -108,7 +108,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, trust, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -120,6 +120,9 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// The development key that signs this host's layers for a machine's /usr, and what the machine trusts.
+    #[command(subcommand)]
+    Trust(TrustCommand),
     /// Import an exact same-run layer artifact without invoking Cargo or a builder.
     #[command(
         after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
@@ -466,6 +469,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
+                | Command::Trust(TrustCommand::Status)
                 | Command::Vm(
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
                 )
@@ -1279,6 +1283,20 @@ pub enum SlotAppsCommand {
         #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
         timeout: u64,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TrustCommand {
+    /// This host's development key, the extension authorities the machine has enrolled, and the layers that wait for a signature.
+    #[command(
+        after_help = "Examples:\n  tilo-vm trust status\n  tilo-vm --target yoga trust status --json\n\nThe key is keys/dev-trust.key beside vms.toml; it never leaves this host."
+    )]
+    Status,
+    /// Enroll this host's development key on the machine, sign every layer of its vm and device slots, and merge them.
+    #[command(
+        after_help = "Examples:\n  tilo-vm trust enroll\n  tilo-vm --target yoga trust enroll\n\nEnrolling is the owner's decision: whoever holds this host's key can then put\nlayers into the machine's /usr. It writes /etc/tilo/extension-authorities.d/dev.pub,\nwhich tilo-security-audit lists under development posture. Run it again at any\ntime: it changes nothing that is already in place. A VM tilo-vm runs itself takes\nthe key at its first swap; see tilo-vm guide trust."
+    )]
+    Enroll,
 }
 
 #[derive(Debug, Subcommand)]

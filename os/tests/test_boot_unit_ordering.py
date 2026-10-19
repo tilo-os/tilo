@@ -233,20 +233,26 @@ class BootOrdering(unittest.TestCase):
     def test_extension_activation_starts_only_when_the_helper_has_work(self):
         # It sits before the greeter, and a Python start of the helper alone
         # cost 0.4-1.4 s per boot. The unit's triggering conditions are the
-        # helper's own early return: nothing turned on and no part (directory
-        # or sysext image) left in /var/lib/extensions.
+        # helper's own early return: nothing turned on, no part (directory or
+        # sysext image) left in /var/lib/extensions, no signed layer desired
+        # in /var/lib/tilo/signed-layers and none left linked in
+        # /run/extensions.
         unit = parse(shipped_units()["tilo-extension-activate.service"])
         self.assertEqual(unit["Unit"]["ConditionPathExistsGlob"], ["|/var/lib/tilo/extensions/*/enabled"])
-        self.assertEqual(unit["Unit"]["ConditionDirectoryNotEmpty"], ["|/var/lib/extensions"])
+        self.assertEqual(unit["Unit"]["ConditionDirectoryNotEmpty"],
+                         ["|/var/lib/extensions", "|/var/lib/tilo/signed-layers", "|/run/extensions"])
         helper = (REPO / "crates/system/extension-helper/src/machine.rs").read_text()
         self.assertIn('self.at("/var/lib/tilo/extensions")', helper)
         self.assertIn('self.state(ident).join("enabled")', helper)
         self.assertIn('self.at("/var/lib/extensions")', helper)
         self.assertIn("    layout.extensions().join(name).exists() || raw_path(layout, name).exists()\n", helper)
         self.assertIn('    layout.extensions().join(format!("{name}{RAW_SUFFIX}"))\n', helper)
-        self.assertIn("    let any_part_present = || ours.iter().any(|name| live_exists(layout, name));\n"
-                      "    if !catalogues.iter().any(|c| layout.desired(&c.id).exists()) && !any_part_present() {\n"
+        self.assertIn("    if !wanted && !live_linked && !live_was_merged && !signed_wanted {\n"
                       "        return Ok(0);\n", helper)
+        layer_trust = (REPO / "crates/system/layer-trust/src/lib.rs").read_text()
+        self.assertIn('pub const SIGNED_LAYERS_DIR: &str = "/var/lib/tilo/signed-layers";', layer_trust)
+        signed = (REPO / "crates/system/extension-helper/src/signed.rs").read_text()
+        self.assertIn('layout.at("/run/extensions").join(name)', signed)
 
     def test_nothing_before_tmpfiles_setup_is_ordered_after_it(self):
         after = after_graph(shipped_units())

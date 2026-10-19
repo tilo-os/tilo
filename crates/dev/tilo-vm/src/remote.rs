@@ -219,6 +219,9 @@ pub struct Remote {
     /// Over the peer network: the dial helper closes the connection itself
     /// once its stdin ends, so the device's session ends at once.
     peer: bool,
+    /// How to sign the layers a request brings into the machine's `/usr`;
+    /// `None`: sign nothing (a test fixture, a one-off connection).
+    trust: Option<crate::devtrust::Trust>,
 }
 
 impl Remote {
@@ -320,6 +323,7 @@ impl Remote {
                 client: Some(client),
                 hello,
                 peer: false,
+                trust: None,
             }),
             Err(ClientError::Io(_) | ClientError::Closed) => {
                 let _ = child.kill();
@@ -384,7 +388,8 @@ impl Remote {
                 ),
             ));
         }
-        let replacement = Self::connect_line(vm, line, endpoint, debug)?;
+        let mut replacement = Self::connect_line(vm, line, endpoint, debug)?;
+        replacement.trust.clone_from(&self.trust);
         if replacement.hello.root != self.hello.root || replacement.hello.arch != self.hello.arch {
             return Err(CliError::io("upgrade the guest daemon")(
                 std::io::Error::other(
@@ -441,6 +446,7 @@ impl Remote {
                     client: Some(client),
                     hello,
                     peer: true,
+                    trust: None,
                 },
                 session,
             )),
@@ -459,12 +465,97 @@ impl Remote {
     /// # Errors
     /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
-        let request = params.into();
+        let request: tilo_vm_protocol::Request = params.into();
+        if let Some((slot, layers)) = crate::devtrust::changes_usr(&request) {
+            self.endorse(Some(&slot), layers, false)?;
+        }
         self.client
             .as_mut()
             .ok_or_else(|| CliError::from(ClientError::Closed))?
             .call(Forward::<C::Output>(request, std::marker::PhantomData))
             .map_err(CliError::from)
+    }
+
+    /// Sign the layers this session's machine would take into `/usr`.
+    pub fn set_trust(&mut self, trust: crate::devtrust::Trust) {
+        self.trust = Some(trust);
+    }
+
+    /// Whether the daemon merges system layers only as signed layers.
+    pub fn takes_endorsements(&self) -> bool {
+        self.hello
+            .capabilities
+            .iter()
+            .any(|capability| capability == tilo_vm_protocol::ENDORSE_CAPABILITY)
+    }
+
+    /// Sign what the machine needs before a change to `slot` that brings
+    /// `layers` (`slot: None`: every layer of the `vm` and `device` slots),
+    /// enrolling this host's key first on a VM tilo-vm runs itself. With
+    /// `merge`, the daemon merges those slots' layers once they are signed.
+    /// Nothing happens without a trust context or on a daemon that does not
+    /// take endorsements (it merges the old way, unsigned).
+    ///
+    /// # Errors
+    /// [`CliError::DevKeyNotEnrolled`] on a real machine that does not trust
+    /// this host's key, a manifest that describes another layer, and RPC
+    /// failures.
+    pub fn endorse(
+        &mut self,
+        slot: Option<&str>,
+        layers: Vec<String>,
+        merge: bool,
+    ) -> Result<Option<tilo_vm_protocol::LayerEndorseResult>, CliError> {
+        let Some(trust) = self.trust.clone() else {
+            return Ok(None);
+        };
+        if !self.takes_endorsements() {
+            return Ok(None);
+        }
+        let pending = self.call(tilo_vm_protocol::LayerEndorsePending {
+            slot: slot.map(str::to_owned),
+            layers,
+        })?;
+        if pending.pending.is_empty() && !merge {
+            return Ok(None);
+        }
+        let (key, made) = crate::devtrust::load_or_create(&trust.key)?;
+        let fingerprint = key.public().fingerprint();
+        if made {
+            eprintln!(
+                "tilo-vm: made this host's development key {} ({fingerprint})",
+                trust.key.display()
+            );
+        }
+        let enrolled = pending
+            .authorities
+            .iter()
+            .any(|authority| authority.fingerprint == fingerprint);
+        if !enrolled && !pending.pending.is_empty() {
+            if !trust.auto_enroll {
+                return Err(CliError::DevKeyNotEnrolled {
+                    vm: trust.vm,
+                    fingerprint,
+                });
+            }
+            self.call(tilo_vm_protocol::TrustEnroll {
+                name: tilo_vm_protocol::DEV_AUTHORITY.into(),
+                public_key: key.public().to_pem(),
+            })?;
+            eprintln!(
+                "tilo-vm: {} now trusts this host's development key ({fingerprint})",
+                trust.vm
+            );
+        }
+        let endorsements = crate::devtrust::sign_pending(&key, &pending.pending)?;
+        if endorsements.is_empty() && !merge {
+            return Ok(None);
+        }
+        self.call(tilo_vm_protocol::LayerEndorse {
+            endorsements,
+            merge,
+        })
+        .map(Some)
     }
 
     /// # Errors

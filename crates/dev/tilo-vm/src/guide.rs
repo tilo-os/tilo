@@ -55,6 +55,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         include_str!("../guide/devices.md"),
     ),
     (
+        "trust",
+        "signed layers: the development key, trust enroll, moving a machine from unsigned layers",
+        include_str!("../guide/trust.md"),
+    ),
+    (
         "troubleshooting",
         "when something does not work",
         include_str!("../guide/troubleshooting.md"),
@@ -105,10 +110,23 @@ mod tests {
                 "storage",
                 "platforms",
                 "devices",
+                "trust",
                 "troubleshooting",
                 "fedora-loop",
             ] {
                 assert!(topic(name).is_some_and(|t| t.starts_with("# ")), "{name}");
+            }
+            // How a machine moves from unsigned layers, and what a refusal looks like.
+            let trust = topic("trust").unwrap();
+            for needle in [
+                "tilo-vm --target yoga trust enroll",
+                "tilo-vm slot restart device",
+                "/etc/tilo/extension-authorities.d/dev.pub",
+                "## Moving a machine from unsigned layers",
+                "no reinstall",
+                "/run/tilo/signed-layers.json",
+            ] {
+                assert!(trust.contains(needle), "trust guide lacks {needle}");
             }
             let scenarios = topic("scenarios").unwrap();
             for needle in [

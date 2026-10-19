@@ -25,6 +25,8 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 tilo-advisory-lock = { path = "../advisory-lock" }
+# Signed layers: enrolled authorities, layer manifests, payload checks.
+tilo-layer-trust = { path = "../layer-trust" }
 # The one blocking HTTP client builder on Tilo's TLS provider and trust.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-pycompat = { path = "../tilo-pycompat" }

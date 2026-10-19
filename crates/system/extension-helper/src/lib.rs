@@ -8,8 +8,10 @@
 //! tilo-extension refresh:all    refresh every extension the owner opted in to
 //! tilo-extension status:<id>    print the status JSON
 //! tilo-extension activate       rebuild every part from verified bytes for the
-//!                               booted base and merge exactly those (at boot,
-//!                               offline, and after every change)
+//!                               booted base, verify every signed layer against
+//!                               the enrolled authorities ([`signed`]), and
+//!                               merge exactly those (at boot, offline, and
+//!                               after every change)
 //! tilo-extension live:system    apply the staged system image's components
 //!                               that need no desktop restart ([`live`])
 //! tilo-extension live:session   apply the rest and restart the desktops in
@@ -51,6 +53,7 @@ pub mod live;
 mod machine;
 mod model;
 pub mod py;
+pub mod signed;
 
 pub use host::{Header, Host, HttpError, Response, System};
 pub use machine::{Layout, activate, main};

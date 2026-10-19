@@ -188,8 +188,12 @@ impl Host for Fake {
 
     fn sysext_refresh(&self, layout: &Layout) -> Result<()> {
         self.merges.set(self.merges.get() + 1);
-        let mut names: Vec<String> = fs::read_dir(layout.extensions())
-            .unwrap()
+        // What systemd-sysext would merge: /var/lib/extensions, and the
+        // links in /run/extensions (the live update's, signed layers).
+        let mut names: Vec<String> = [layout.extensions(), layout.at("/run/extensions")]
+            .iter()
+            .filter_map(|dir| fs::read_dir(dir).ok())
+            .flatten()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|n| !n.starts_with('.'))
             .collect();

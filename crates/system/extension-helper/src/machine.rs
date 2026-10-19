@@ -1319,8 +1319,13 @@ fn choose_parts<'a>(
     choices
 }
 
-/// Anything systemd-sysext would merge that this helper did not build.
-fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<String>> {
+/// Anything systemd-sysext would merge that this helper did not build, or
+/// (`signed`) did not link this activation after verifying it.
+fn foreign_extensions(
+    layout: &Layout,
+    ours: &BTreeSet<String>,
+    signed: &BTreeSet<String>,
+) -> Result<Vec<String>> {
     let mut found = Vec::new();
     let extensions = layout.extensions();
     for directory in layout.sysext_dirs() {
@@ -1345,6 +1350,13 @@ fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<St
             // The live update's layer, linked from /run where only it links,
             // to where only it builds layers from the verified staged image.
             if entry == crate::live::link(layout) && crate::live::linked(layout) {
+                continue;
+            }
+            // A signed layer this activation verified and linked.
+            if signed.contains(&name)
+                && entry == crate::signed::link(layout, &name)
+                && entry.is_symlink()
+            {
                 continue;
             }
             if directory == extensions
@@ -1485,7 +1497,10 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
     let live_linked = crate::live::linked(layout);
     let live_marker = crate::live::merged_marker(layout);
     let live_was_merged = live_marker.exists();
-    if !wanted && !live_linked && !live_was_merged {
+    // Signed layers (crate::signed): verified and linked, or unlinked when
+    // they are no longer desired.
+    let signed_wanted = crate::signed::wanted(layout);
+    if !wanted && !live_linked && !live_was_merged && !signed_wanted {
         return Ok(0);
     }
     let mut outcome = Vec::new();
@@ -1509,13 +1524,23 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
             outcome.push(result?);
         }
     }
+    let mut signed = if signed_wanted {
+        Some(crate::signed::activate(layout)?)
+    } else {
+        None
+    };
+    let signed_linked = signed
+        .as_ref()
+        .map(|signed| signed.linked.clone())
+        .unwrap_or_default();
     if outcome.iter().any(|result| result.changed)
         || any_part_present()
         || live_linked
         || live_was_merged
+        || signed.is_some()
     {
         let foreign = if host.sysext_masked()? {
-            foreign_extensions(layout, &ours)?
+            foreign_extensions(layout, &ours, &signed_linked)?
         } else {
             Vec::new()
         };
@@ -1526,6 +1551,16 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
                 live_remove(layout, name)?;
             }
             let listed = foreign.join(", ");
+            if let Some(signed) = signed.as_mut() {
+                crate::signed::refuse_all(
+                    layout,
+                    signed,
+                    &format!(
+                        "not merged: unexpected system extensions are present ({})",
+                        py::truncate(&listed, 200)
+                    ),
+                )?;
+            }
             for catalogue in &catalogues {
                 if !layout.desired(&catalogue.id).exists() {
                     continue;
@@ -1553,7 +1588,12 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
             let _ = fs::remove_file(&live_marker);
         }
     }
-    report_activation(layout, &catalogues, outcome)
+    let reported = report_activation(layout, &catalogues, outcome)?;
+    // A refused signed layer fails the activation, so the unit says so.
+    let refused = signed
+        .as_ref()
+        .is_some_and(crate::signed::Outcome::refused_any);
+    Ok(if refused { 1 } else { reported })
 }
 
 /// What each extension's status says after an activation; 1 when a part

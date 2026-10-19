@@ -284,6 +284,7 @@ impl LayerStore {
         if !stage.join("usr").is_dir() {
             return Err(DaemonError::InvalidLayer("no usr/ directory".into()));
         }
+        normalize_modes(stage).map_err(DaemonError::io("set the layer's modes"))?;
         let hash = tree_hash(stage)?;
         let target = self.path(&hash);
         if target.is_dir() {
@@ -326,6 +327,29 @@ fn cleanup(stage: &Path) {
     if stage.exists() {
         let _ = fs::remove_dir_all(stage);
     }
+}
+
+/// Nothing in a layer is writable by anyone but its owner or set-user/group-ID:
+/// a layer becomes system code, and the activation refuses one that is
+/// (`tilo_layer_trust::verify_payload`). A build host's umask (Fedora gives
+/// its users 002) must not decide that. The executable bit, which is part of
+/// the layer's identity, is kept.
+fn normalize_modes(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & 0o6022 != 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o6022))?;
+    }
+    if meta.file_type().is_dir() {
+        for entry in fs::read_dir(path)? {
+            normalize_modes(&entry?.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_top(stage: &Path) -> Result<(), DaemonError> {

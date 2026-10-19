@@ -109,6 +109,9 @@ pub mod code {
     pub const TOOL: i64 = 10;
     /// The build or extraction itself failed; its output says why.
     pub const JOB: i64 = 11;
+    /// A layer is not signed by an enrolled extension authority, or the
+    /// activation refused it.
+    pub const TRUST: i64 = 12;
 }
 
 /// Every method, tagged by its wire name.
@@ -141,6 +144,12 @@ pub enum Request {
     LayerList(LayerList),
     #[serde(rename = "layer.verify")]
     LayerVerify(LayerVerify),
+    #[serde(rename = "layer.endorse.pending")]
+    LayerEndorsePending(LayerEndorsePending),
+    #[serde(rename = "layer.endorse")]
+    LayerEndorse(LayerEndorse),
+    #[serde(rename = "trust.enroll")]
+    TrustEnroll(TrustEnroll),
     #[serde(rename = "swap")]
     Swap(Swap),
     #[serde(rename = "userspace.apply")]
@@ -193,6 +202,9 @@ impl Request {
             Self::LayerImport(_) => "layer.import",
             Self::LayerList(_) => "layer.list",
             Self::LayerVerify(_) => "layer.verify",
+            Self::LayerEndorsePending(_) => "layer.endorse.pending",
+            Self::LayerEndorse(_) => "layer.endorse",
+            Self::TrustEnroll(_) => "trust.enroll",
             Self::Swap(_) => "swap",
             Self::UserspaceApply(_) => "userspace.apply",
             Self::Rollback(_) => "rollback",
@@ -243,6 +255,9 @@ call! {
     LayerImport => LayerImportResult,
     LayerList => Vec<LayerInfo>,
     LayerVerify => LayerInfo,
+    LayerEndorsePending => EndorsementsPending,
+    LayerEndorse => LayerEndorseResult,
+    TrustEnroll => TrustEnrollResult,
     Swap => ApplyResult,
     UserspaceApply => UserspaceResult,
     Rollback => ApplyResult,
@@ -354,6 +369,85 @@ pub struct LayerList {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerVerify {
     pub hash: String,
+}
+
+/// The daemon capability that says it merges system layers only as signed
+/// layers, through `tilo-extension activate`, and takes endorsements.
+pub const ENDORSE_CAPABILITY: &str = "layer.endorse";
+
+/// The authority name `tilo-vm trust enroll` gives the build host's key.
+pub const DEV_AUTHORITY: &str = "dev";
+
+/// Which layers need an endorsement before a change to `slot`: those of
+/// `layers` and every layer a generation of the `vm` or `device` slot names
+/// that no enrolled extension authority has signed. Only the `vm` and
+/// `device` slots merge into the machine's `/usr`; for another slot the
+/// answer is empty. `slot: None` asks for every layer those slots name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerEndorsePending {
+    #[serde(default)]
+    pub slot: Option<String>,
+    #[serde(default)]
+    pub layers: Vec<String>,
+}
+
+/// An enrolled extension authority (`/etc/tilo/extension-authorities.d`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorityInfo {
+    pub name: String,
+    /// `sha256:<hex>` of the key's SubjectPublicKeyInfo.
+    pub fingerprint: String,
+}
+
+/// One signed-layer manifest the daemon wrote for a layer; the signer signs
+/// exactly these bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingEndorsement {
+    pub layer: String,
+    pub manifest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndorsementsPending {
+    pub authorities: Vec<AuthorityInfo>,
+    pub pending: Vec<PendingEndorsement>,
+}
+
+/// Signatures for pending manifests: base64 Ed25519, as a `.sig` holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerEndorse {
+    pub endorsements: Vec<Endorsement>,
+    /// Merge the `vm` and `device` slots' current layers once the signatures
+    /// are kept: an enrollment, whose layers were waiting for them.
+    #[serde(default)]
+    pub merge: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Endorsement {
+    pub layer: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerEndorseResult {
+    pub endorsed: Vec<String>,
+    pub authority: AuthorityInfo,
+}
+
+/// Enroll `public_key` (PEM) as the extension authority `name`. An owner
+/// decision: whoever holds the key's secret half can then change `/usr`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustEnroll {
+    pub name: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustEnrollResult {
+    pub authority: AuthorityInfo,
+    /// `false` when exactly this key was already enrolled under that name.
+    pub changed: bool,
 }
 
 /// Replace (or add) one component's layer in a slot.
