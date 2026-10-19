@@ -3101,7 +3101,7 @@ mod tests {
         let desktop = DesktopTree::default();
         let user = "owner".to_string();
         let name = format!("Project start {} final name", "W".repeat(38));
-        for (label, width, height, theme, editing) in [
+        for (label, width, height, theme, editing) in vec![
             ("dark-edit", 1280, 800, Theme::dark(), true),
             ("light-edit", 1280, 800, Theme::light(), true),
             (
