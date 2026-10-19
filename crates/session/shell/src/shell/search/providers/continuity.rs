@@ -78,6 +78,7 @@ impl<A: 'static> ContinuityAction<A> {
             confirm,
         } = self;
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
@@ -1086,6 +1087,7 @@ fn wake_search_result(
 ) -> SearchResult {
     let bridge = Rc::clone(bridge);
     SearchResult {
+            facts: Vec::new(),
         shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::Effect,
@@ -1401,6 +1403,7 @@ impl ContinueFromDeviceProvider {
     ) -> SearchResult {
         let expected = expected.clone();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,

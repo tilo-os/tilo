@@ -122,6 +122,7 @@ impl SearchProvider for PermissionPromptsProvider {
         ]
         .into_iter()
         .map(|(decision, choice)| SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,

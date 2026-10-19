@@ -110,6 +110,7 @@ impl ShortcutsProvider {
         let open = Rc::clone(&invoke);
         let (subtitle, params) = subtitle_and_params(&descriptor, quick);
         Some(SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,

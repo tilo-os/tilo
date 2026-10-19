@@ -506,6 +506,7 @@ impl ApplicationsProvider {
                 ),
             };
             out.push(SearchResult {
+            facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Application,
                 operation_kind: tilo_actions::OperationKind::Effect,

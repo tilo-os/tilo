@@ -68,6 +68,7 @@ fn row(
     let tray = Arc::clone(tray);
     let key = item.key.clone();
     SearchResult {
+        facts: Vec::new(),
         shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::Effect,

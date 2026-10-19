@@ -228,6 +228,10 @@ pub struct CommandEntry {
     /// end when it doesn't fit: the root and the item's own folder carry
     /// more than what lies between them. Prose loses its end.
     pub description_is_path: bool,
+    /// The description as separate facts, drawn as runs of their own with
+    /// space between them ([`Self::facts`]). Empty: the description is one
+    /// run.
+    pub description_facts: Vec<String>,
     /// Its value steps with ←/→ while the row is selected and the query's
     /// caret is at its end ([`CommandPalette::take_adjustment`]): a volume,
     /// a timeout, a mode.
@@ -253,6 +257,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .field("alternates", &self.alternates)
             .field("description_is_path", &self.description_is_path)
+            .field("description_facts", &self.description_facts)
             .field("adjustable", &self.adjustable)
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
@@ -277,6 +282,7 @@ impl CommandEntry {
             on_select: None,
             alternates: Vec::new(),
             description_is_path: false,
+            description_facts: Vec::new(),
             adjustable: false,
             action_address: None,
             action_argument: None,
@@ -297,6 +303,18 @@ impl CommandEntry {
             modifier,
             label: label.into(),
         });
+        self
+    }
+
+    /// Show the description as separate facts ([`Self::description_facts`]).
+    /// Its text for assistive technology and matching is the facts joined
+    /// by commas.
+    #[must_use]
+    pub fn facts(mut self, facts: Vec<String>) -> Self {
+        if !facts.is_empty() {
+            self.description = Some(facts.join(", "));
+        }
+        self.description_facts = facts;
         self
     }
 
@@ -2419,14 +2437,49 @@ impl CommandPalette {
                 label_ink,
                 &label_style,
             );
-            Self::draw_marked(
-                &mut ctx,
-                &sub,
-                &desc_marks,
-                Point::new(text_x, ly + f64::from(label_height) + gap),
-                subtitle_ink,
-                &desc_style,
-            );
+            let sub_y = ly + f64::from(label_height) + gap;
+            if entry.description_facts.len() > 1 {
+                // Facts are runs of their own with space between them, the
+                // last losing its end when the row runs out.
+                let fact_gap = 12.0 * self.layout_scale();
+                let mut x = text_x;
+                let right = text_x + avail;
+                for fact in &entry.description_facts {
+                    let room = right - x;
+                    if room <= fact_gap {
+                        break;
+                    }
+                    let shown = ctx.text.elide_to_width_style(
+                        fact,
+                        f32_of_f64(room),
+                        &desc_style,
+                    );
+                    let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
+                    let marks = if label_marks.is_empty() {
+                        self.match_ranges(&shown)
+                    } else {
+                        Vec::new()
+                    };
+                    Self::draw_marked(
+                        &mut ctx,
+                        &shown,
+                        &marks,
+                        Point::new(x, sub_y),
+                        subtitle_ink,
+                        &desc_style,
+                    );
+                    x += f64::from(w) + fact_gap;
+                }
+            } else {
+                Self::draw_marked(
+                    &mut ctx,
+                    &sub,
+                    &desc_marks,
+                    Point::new(text_x, sub_y),
+                    subtitle_ink,
+                    &desc_style,
+                );
+            }
         } else {
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;

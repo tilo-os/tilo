@@ -123,6 +123,7 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
             return Vec::new();
         }
         vec![crate::shell::search::SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: crate::shell::search::ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,

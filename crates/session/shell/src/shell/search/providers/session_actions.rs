@@ -393,6 +393,7 @@ impl SessionActionsProvider {
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
@@ -420,6 +421,7 @@ impl SessionActionsProvider {
         let contract = logout_contract();
         let policy = self.policy.clone();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
@@ -457,6 +459,7 @@ fn retirement_admin(chrome: &crate::shell::chrome_state::ChromeState) -> bool {
 #[cfg(target_os = "linux")]
 fn retirement_result() -> SearchResult {
     SearchResult {
+        facts: Vec::new(),
         shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::View,

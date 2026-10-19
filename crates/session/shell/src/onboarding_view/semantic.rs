@@ -301,6 +301,7 @@ impl Provider {
             requests: self.requests.clone(),
         };
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: if operation == "inspect" {

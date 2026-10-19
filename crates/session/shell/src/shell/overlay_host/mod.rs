@@ -9854,7 +9854,9 @@ impl ShellOverlayHost {
             }
             _ => {}
         }
-        if let Some(sub) = &r.subtitle {
+        if !r.facts.is_empty() {
+            e = e.facts(r.facts.clone());
+        } else if let Some(sub) = &r.subtitle {
             e = e.description(sub.clone());
             if matches!(r.kind, ResourceKind::File | ResourceKind::Folder) {
                 e = e.path_description();
