@@ -20,6 +20,9 @@ use crate::slots::{DeviceSession, Login};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
+/// Where tilo-vmd leaves notices for the owner's desktop; the shell reads
+/// `held-layers.json` from here.
+const NOTICE_DIR: &str = "/run/tilo-vm";
 /// Where `systemd-sysext` finds extension trees, `SYSEXT_DIR` among them.
 const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSEXT_DIR];
 /// A registry larger than this is not one `tilo-install` wrote.
@@ -721,6 +724,25 @@ impl Apply for SystemdApply {
         // A layer may bring a system account (a sysusers.d entry, as the
         // relay's does): create it as the image build would.
         run("systemd-sysusers", &mut Command::new("systemd-sysusers")).map(drop)
+    }
+
+    fn publish_notice(&mut self, name: &str, contents: Option<&str>) -> Result<(), DaemonError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Path::new(NOTICE_DIR);
+        let path = dir.join(name);
+        let Some(text) = contents else {
+            return match fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    Err(DaemonError::io(format!("remove {}", path.display()))(e))
+                }
+                _ => Ok(()),
+            };
+        };
+        fs::create_dir_all(dir).map_err(DaemonError::io(format!("create {NOTICE_DIR}")))?;
+        crate::fsutil::write_atomic(&path, text.as_bytes())?;
+        // The owner's desktop reads it as its own user.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .map_err(DaemonError::io(format!("make {} readable", path.display())))
     }
 
     fn allocate_seat(&mut self, slot: &str, connectors: u32) -> Result<String, DaemonError> {

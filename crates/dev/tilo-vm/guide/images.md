@@ -15,16 +15,17 @@ No new disk and no new VM: slots, layers and in-VM build dirs live in `/var`,
 which bootc keeps across images. Sessions restart with the reboot.
 
 Slots keep their layers across the change: they are your deployed work, and
-nothing takes them off a slot or deletes them but you. Each layer was built
-against the image before, though, and on the new one it may run an old program
-against the new image's (an old shell against a new launcher, an old tilo-vmd
-against a new protocol). So every boot records the booted image
-(`tilo-vm-reconcile-image.service`), and when it differs from the one before,
-`vm upgrade` and `tilo-vm status` name each slot still on a generation built
-for the old image. Then decide per slot: `tilo-vm rollback --slot <slot> --to 0`
-runs the image as installed (the generations stay, to roll forward again), and
-a new swap builds against the new image. A machine whose previous image was
-never recorded counts as no change.
+only an explicit `tilo-vm rollback` or `tilo-vm gc` deletes any (gc never the
+device slot's current generation or one with a held layer). Each layer was
+built against the image before, though, so the first boot of a new image
+(`tilo-vm-reconcile-image.service` records every booted image) checks each one:
+built against the new base, it merges; otherwise it still merges when the
+interface versions it was built for match the new image's
+`system-interfaces.toml`; otherwise it is held, kept but not merged, so the
+image's own component runs, and the desktop tells you which layers are held and
+why. `vm upgrade` and `tilo-vm status` say the same. A new swap of the component
+builds against the new image; swapping a held layer again brings it back. A
+machine whose previous image was never recorded counts as no change.
 
 bootc fetches only the layers of the new image it does not hold yet, and needs
 room for those alone: what an earlier attempt downloaded before it was cut

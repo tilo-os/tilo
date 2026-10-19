@@ -578,8 +578,9 @@ impl SlotStore {
             .ok()
     }
 
-    /// Delete generations older than the newest `keep` (the current one is
-    /// always kept) and return the survivors' layers plus what was deleted.
+    /// Delete generations older than the newest `keep` (the current one, an
+    /// interrupted transition's and `also_keep` are always kept) and return
+    /// the survivors' layers plus what was deleted.
     ///
     /// # Errors
     /// I/O failures.
@@ -587,6 +588,7 @@ impl SlotStore {
         &self,
         record: &SlotRecord,
         keep: u32,
+        also_keep: &std::collections::BTreeSet<u64>,
         dry_run: bool,
     ) -> Result<(Vec<String>, Vec<u64>), DaemonError> {
         let numbers = self.generations(&record.name);
@@ -596,7 +598,8 @@ impl SlotStore {
         let mut removed = Vec::new();
         for (index, number) in numbers.into_iter().enumerate() {
             let pending = self.pending(&record.name) == Some(number);
-            if index >= cutoff || number == record.current || pending {
+            if index >= cutoff || number == record.current || pending || also_keep.contains(&number)
+            {
                 referenced.extend(self.generation(&record.name, number)?.layers);
             } else {
                 if !dry_run {
@@ -871,14 +874,18 @@ mod tests {
                 swap(&store, &mut record, "shell", layer);
             }
             store.set_current(&mut record, 1).unwrap();
-            let (referenced, removed) = store.prune(&record, 2, true).unwrap();
+            let (referenced, removed) = store
+                .prune(&record, 2, &std::collections::BTreeSet::new(), true)
+                .unwrap();
             assert_eq!(removed, [2]);
             assert_eq!(
                 store.generations("a"),
                 [1, 2, 3, 4],
                 "dry run deletes nothing"
             );
-            let (_, removed) = store.prune(&record, 2, false).unwrap();
+            let (_, removed) = store
+                .prune(&record, 2, &std::collections::BTreeSet::new(), false)
+                .unwrap();
             assert_eq!(removed, [2]);
             assert_eq!(store.generations("a"), [1, 3, 4]);
             assert!(

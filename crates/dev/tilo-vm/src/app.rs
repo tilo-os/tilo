@@ -3479,7 +3479,9 @@ impl App {
         self.warnings.extend(self.receipt.slow());
         let change = self.image_change_of_this_boot(vm, endpoint);
         let slots = match &change {
-            Some(change) if !change.kept.is_empty() => change.describe().join("\n  "),
+            Some(change) if !change.kept.is_empty() || !change.held.is_empty() => {
+                change.describe().join("\n  ")
+            }
             Some(_) => "no slot runs layers: every slot runs the new image as installed".into(),
             None => "slots: tilo-vmd did not report which slots keep layers built on the previous image (tilo-vm status)".into(),
         };
@@ -3526,6 +3528,7 @@ impl App {
                 to: booted,
                 at: String::new(),
                 kept: Vec::new(),
+                held: Vec::new(),
                 dropped: Vec::new(),
                 freed_bytes: 0,
             }),

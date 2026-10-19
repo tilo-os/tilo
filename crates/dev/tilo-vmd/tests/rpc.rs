@@ -921,9 +921,10 @@ fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::
 }
 
 /// Layers are the person's deployed work. Booting another image keeps the
-/// slot on its generation with its layer in place, and status names the
-/// slot as running a layer built on the previous image; the person rolls it
-/// back to the image deliberately and can roll forward again. A state root
+/// slot on its generation with its layer in place; a layer that fits
+/// neither the new base nor its interfaces is held, not deleted, and status
+/// names it. The person rolls the slot back to the image deliberately and
+/// can roll forward again. A state root
 /// that never recorded an image (2026-10-19: the first boot of a tilo-vmd
 /// that records them dropped every slot's layers) is no change at all.
 #[test]
@@ -995,6 +996,11 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     assert_eq!(change.kept[0].slot, "agent-a");
     assert_eq!(change.kept[0].components, vec!["shell".to_owned()]);
     assert!(change.dropped.is_empty());
+    // Built here with neither a base digest nor interface versions: held,
+    // kept but not merged, until a swap names it again.
+    assert_eq!(change.held.len(), 1, "{:?}", change.held);
+    assert_eq!(change.held[0].layer, shell);
+    assert_eq!(change.held[0].component, "shell");
     let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
     assert_eq!(slot.generation, 1, "the slot keeps its generation");
     assert!(

@@ -107,11 +107,7 @@ pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) 
 }
 
 fn layer_paths(layers: &LayerStore, generation: &Generation) -> Result<Vec<PathBuf>, DaemonError> {
-    generation
-        .layers
-        .iter()
-        .map(|hash| layers.require(hash))
-        .collect()
+    layers.merged_paths(&generation.layers)
 }
 
 fn system_layers(
@@ -585,7 +581,12 @@ impl Daemon {
     pub fn reconcile_image(&mut self, booted: &str) -> Result<Option<ImageChange>, DaemonError> {
         image::ensure_root(&self.root)?;
         let _vm = self.locks.vm_exclusive()?;
-        image::reconcile(&self.root, &self.slots, booted)
+        let booted = image::BootedImage::read(
+            booted,
+            self.base.image_digest.clone(),
+            Path::new(tilo_vm_protocol::SYSTEM_INTERFACES),
+        );
+        image::reconcile(&self.root, &self.slots, &self.layers, &booted)
     }
 
     /// Bring every slot back after the VM boots. First the booted image is
@@ -602,6 +603,18 @@ impl Daemon {
                 slot: VM_SLOT.into(),
                 problem: format!("the booted image {booted} could not be recorded: {error}"),
                 hint: "tilo-vm doctor; the next boot tries again".into(),
+            });
+        }
+        // The person is told which layers are held, and why.
+        let notice = image::held_notice(&self.root);
+        if let Err(error) = self
+            .apply
+            .publish_notice(image::HELD_NOTICE, notice.as_deref())
+        {
+            issues.push(Issue {
+                slot: VM_SLOT.into(),
+                problem: format!("the notice about held layers could not be published: {error}"),
+                hint: "tilo-vm status names them".into(),
             });
         }
         let merged = self
@@ -1241,11 +1254,7 @@ impl Daemon {
     }
 
     fn layer_paths(&self, generation: &Generation) -> Result<Vec<PathBuf>, DaemonError> {
-        generation
-            .layers
-            .iter()
-            .map(|h| self.layers.require(h))
-            .collect()
+        layer_paths(&self.layers, generation)
     }
 
     fn create(
@@ -1471,6 +1480,8 @@ impl Daemon {
     ) -> Result<ApplyResult, DaemonError> {
         let mut record = self.load_slot(name)?;
         let layer_path = self.layers.require(layer)?;
+        // Naming a held layer in a swap brings it back deliberately.
+        image::release(&self.root, layer)?;
         let provenance = self
             .layers
             .provenance(layer)
@@ -1914,8 +1925,24 @@ impl Daemon {
         if !records.iter().any(|r| r.name == VM_SLOT) {
             records.push(self.slots.load(VM_SLOT)?);
         }
+        // The device slot's generations that carry a held layer are the
+        // person's system waiting on a deliberate choice: gc keeps them.
+        let held = image::held_hashes(&self.root);
         for record in &records {
-            let (layers, removed) = self.slots.prune(record, keep, dry_run)?;
+            let also_keep: BTreeSet<u64> = if record.name == DEVICE_SLOT {
+                self.slots
+                    .generations(&record.name)
+                    .into_iter()
+                    .filter(|number| {
+                        self.slots
+                            .generation(&record.name, *number)
+                            .is_ok_and(|g| g.layers.iter().any(|layer| held.contains(layer)))
+                    })
+                    .collect()
+            } else {
+                BTreeSet::new()
+            };
+            let (layers, removed) = self.slots.prune(record, keep, &also_keep, dry_run)?;
             referenced.extend(layers);
             removed_generations.extend(removed.into_iter().map(|n| format!("{}/{n}", record.name)));
         }
@@ -2777,6 +2804,58 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].slot, "proof");
         assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
+    }
+
+    /// gc deletes only what nobody holds: it never touches the device
+    /// slot's current generation or a generation with a held layer, nor the
+    /// held layer itself, however few generations it is asked to keep.
+    #[test]
+    fn gc_never_touches_the_device_slots_current_or_held_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let apply = RecordingApply::with_login("owner");
+        let mut record = slots.load_with(DEVICE_SLOT, apply.device.clone()).unwrap();
+        slots.save(&record).unwrap();
+        let mut hashes = Vec::new();
+        for n in 1..=4u8 {
+            let hash = format!("{n:02x}").repeat(32);
+            fs::create_dir_all(layers.path(&hash).join("usr")).unwrap();
+            let (_, generation) = slots
+                .prepare_swap(
+                    &record,
+                    &format!("component-{n}"),
+                    &hash,
+                    ComponentInfo::new(Scope::Session, Vec::new()),
+                )
+                .unwrap()
+                .unwrap();
+            slots.set_current(&mut record, generation.number).unwrap();
+            hashes.push(hash);
+        }
+        // Back on generation 1 (component-1 only); generation 2 added the
+        // held layer, generations 3 and 4 build on it.
+        slots.set_current(&mut record, 1).unwrap();
+        let held = serde_json::json!([{
+            "layer": hashes[1], "component": "component-2", "reason": "speaks shell-ui 9"
+        }]);
+        fs::write(root.path().join("held-layers.json"), held.to_string()).unwrap();
+        let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
+        let result = daemon
+            .gc(&tilo_vm_protocol::Gc {
+                keep: 0,
+                dry_run: false,
+                keep_targets: None,
+                free_goal_bytes: None,
+                min_age_seconds: Some(0),
+            })
+            .unwrap();
+        // Every generation from 2 on names the held layer: all are kept.
+        assert_eq!(slots.generations(DEVICE_SLOT), vec![1, 2, 3, 4]);
+        assert!(result.removed_generations.is_empty(), "{result:?}");
+        for hash in &hashes {
+            assert!(layers.require(hash).is_ok(), "{hash} kept");
+        }
     }
 
     /// The device slot comes up on its current generation at every boot:

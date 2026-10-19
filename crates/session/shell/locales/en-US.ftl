@@ -1008,6 +1008,13 @@ codec-app-name = Video and audio formats
 system-update-app-name = Updates
 system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.
+held-layers-app-name = Development
+held-layers-title = { $count ->
+    [one] A deployed layer is held on this system
+   *[other] { $count } deployed layers are held on this system
+}
+held-layers-body = They are kept but not running, because they do not fit this system image. A new deploy or tilo-vm rollback replaces them.
+    { $layers }
 collaborator-needs-update = { $name } needs to update to keep working together
 collaborator-needs-update-body = Your changes reach { $name } once they have.
 collaborator-host-needs-update = This workspace’s host needs to update to keep working together
