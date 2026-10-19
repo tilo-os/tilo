@@ -164,15 +164,16 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
 
     // The already-connected writer gets an explicit authenticated refusal;
     // closure or lack of fanout alone is not sufficient revocation evidence.
-    alice_client
-        .send(Envelope::Delta {
-            workspace_id: 701,
-            author_device_public_key: alice_a_key,
-            authored_at_ns: 2,
-            delta: retained_delta(b"removed-live-writer"),
-            signature: [0; 64],
-        })
-        .unwrap();
+    // The relay sends it as it removes her, before an audit may close her
+    // stream, so a write racing the removal can find the session already
+    // ended (the client fails closed when the relay closes); it never lands.
+    let _ = alice_client.send(Envelope::Delta {
+        workspace_id: 701,
+        author_device_public_key: alice_a_key,
+        authored_at_ns: 2,
+        delta: retained_delta(b"removed-live-writer"),
+        signature: [0; 64],
+    });
     assert!(matches!(
     tilo_test_env::within("a message on alice_client", alice_client.recv()).await,
     Some(Envelope::NotAuthorised { workspace_id: 701, reason })
