@@ -76,7 +76,10 @@ PDF engine, tilo-pdf with the hayro rasteriser, the pdfium helper's client and
 PDF export: `libtilo_pdf_engine.so` for PDF Viewer, Files, Writer and Print
 Centre, which hand its first-page rasteriser to the thumbnailer every app
 shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
-fuser: `libtilo_fuse_engine.so` for Imager's projection worker). It is
+fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
+from another browser's profile, browser-continuity's capture with the SQLite
+it reads Chromium's and Firefox's databases with:
+`libtilo_browser_import_engine.so` for Browser). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
@@ -95,7 +98,7 @@ relies on:
   another);
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
-  Contacts, Messages, PDF Viewer, Files, Writer, Print Centre and Imager), named in `dist/apps/app-collections.toml`, the
+  Contacts, Messages, PDF Viewer, Files, Writer, Print Centre, Imager and Browser), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
 - one app may not load two engine libraries that both carry a crate (rustc

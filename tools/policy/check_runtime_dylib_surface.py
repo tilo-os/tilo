@@ -132,6 +132,11 @@ ENGINES = {
     "tilo-content-blocker": "the ad-block compiler, which the toolkit opens from "
                             "libtilo_adblock_engine.so the first time an app compiles lists",
     "adblock": "adblock-rust, in libtilo_adblock_engine.so",
+    "tilo-browser-import-engine": "the browser import's engine library "
+                                  "(libtilo_browser_import_engine.so)",
+    "browser-continuity": "the import from another browser's profile, which Browser loads from "
+                          "libtilo_browser_import_engine.so (the runtime keeps "
+                          "browser-continuity-core)",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",

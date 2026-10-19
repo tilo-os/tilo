@@ -5,6 +5,10 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// The import from another browser's profile comes from its engine library,
+// not the tapp.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_browser_import_engine;
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

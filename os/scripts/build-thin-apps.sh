@@ -93,9 +93,16 @@ for requested in $BUILD_PACKAGES; do
     }
 done
 feature_csv="$(IFS=,; echo "${features[*]}")"
-if [ -n "$APP_FEATURES" ]; then
-    feature_csv="$feature_csv,$APP_FEATURES"
-fi
+# The collection's features name apps by package. An app this run leaves out
+# (EXCLUDE_PACKAGES, or outside INCLUDE_PACKAGES: the image without Browser)
+# is not selected, and Cargo refuses the whole build for a feature of a
+# package it does not select, so its features are left out with it.
+IFS=, read -r -a app_feature_pairs <<< "$APP_FEATURES"
+for pair in ${app_feature_pairs[@]+"${app_feature_pairs[@]}"}; do
+    case " ${packages[*]} " in
+        *" -p ${pair%%/*} "*) feature_csv="$feature_csv,$pair" ;;
+    esac
+done
 # The protected-grant probe must resolve the very SDK shipped for every app
 # selection; building it separately would permit a different unified graph.
 binary_crates+=(tilo_runtime_account_capability)

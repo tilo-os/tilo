@@ -98,6 +98,23 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches rustypipe", found[0])
         self.assertIn("libtilo_youtube_engine.so", found[0])
 
+    def test_the_browser_import_back_in_the_runtime_fails(self) -> None:
+        # Browser loads browser-continuity's capture, with the SQLite it reads
+        # profiles with, from libtilo_browser_import_engine.so; the runtime
+        # depending on it again maps it into every app process.
+        tree = CLEAN.replace(
+            "4serde v1.0.228\n",
+            "4serde v1.0.228\n2browser-continuity v0.1.0 (/repo/crates/browser/browser-continuity)\n",
+        ).replace(
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
+            "1browser-continuity v0.1.0 (/repo/crates/browser/browser-continuity) (*)\n0store",
+        )
+        found = checker.violations(tree, ["notes", "store"], TARGET)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("reaches browser-continuity", found[0])
+        self.assertIn("libtilo_browser_import_engine.so", found[0])
+
     def test_account_custody_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
         # Mail and Settings load account custody from
         # libtilo_accounts_engine.so, Calendar and Clocks the zone database

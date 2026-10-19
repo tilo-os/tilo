@@ -302,11 +302,15 @@ app-sdk = { path = "../../app_sdk" }
         with self.subTest(phase="a_divergent_graph_unifies_more_into_runtime_text"):
             # A thin graph that pulls in a package or feature the collection
             # leaves out unifies more code into the shared crates (#1158).
+            # The collection's feature of an app the run leaves out (the
+            # image without Browser) is left out with it: Cargo would refuse
+            # a feature of a package it does not select.
             ci = self.run_command(
                 "bash", "os/scripts/build-thin-apps.sh",
                 INCLUDE_PACKAGES="calculator other",
                 EXCLUDE_PACKAGES="extra",
                 BUILD_PACKAGES="calculator",
+                APP_FEATURES="extra/bloat",
             )
             self.assertEqual(ci.returncode, 0, ci.stdout + ci.stderr)
             ci_app = text_size(self.root / "target/thin-app/calculator")
