@@ -135,6 +135,21 @@ mod tests {
         );
     }
     #[test]
+    fn only_a_window_on_the_vault_reports_its_lock() {
+        // The fixture captures show opens no vault: it says nothing.
+        assert_eq!(crate::PasswordsSurface::demo().secrets_unlocked(), None);
+        let closed = crate::vault::Core::with_model(crate::PasswordsModel::closed());
+        assert_eq!(
+            closed.secrets_unlocked(),
+            None,
+            "a past version says nothing"
+        );
+        let home = tempfile::tempdir().unwrap();
+        let open = crate::vault::Core::with_model(crate::PasswordsModel::open_in(home.path()));
+        assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
+    }
+
+    #[test]
     fn kind_facet_narrows_hits() {
         let mut app =
             ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::capture(None)
