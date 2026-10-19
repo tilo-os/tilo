@@ -407,11 +407,12 @@ impl ProfileCard {
         // Colour: the twelve people colours.
         let chosen = Rc::clone(&self.chosen);
         let hues = ui::tokens::PresenceHue::ALL;
+        // The colours as people travel in them: the dark material's presence
+        // palette, the one identity colours are defined at.
+        let palette = Theme::dark().tokens.colors.presence;
         let mut colours = ColorSwatchPicker::new(
-            hues.iter().map(|hue| {
-                let (r, g, b) = ui::presence::identity_rgb(*hue);
-                ColorSwatch::named(Color::from_rgb8(r, g, b), hue.label())
-            }),
+            hues.iter()
+                .map(|hue| ColorSwatch::named(palette.hue(*hue), hue.label())),
             // Two rows of six: the card's width, never past it.
             hues.len() / 2,
         )
