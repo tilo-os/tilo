@@ -218,12 +218,15 @@ def assemble_inside(args):
     dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
     closure = native_dependencies([toolkit, *engines, *binaries], dependency_env)
     fonts = prepare_runtime_fonts(repo, stage / 'work')
+    bundle = target / 'release/tilo-runtime-bundle'
+    # Every process that sets text from this catalog reads its faces from
+    # the record instead of parsing each font; the copies below carry it.
+    run([str(bundle), 'font-index', str(fonts)])
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
     if args.source_inventory is not None:
         includes.append(source_membership(repo, stage / 'work/system-app-cohort.json',
                                           args.source_inventory))
-    bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
     run([str(bundle), 'key', 'generate', '--out', str(identity)])

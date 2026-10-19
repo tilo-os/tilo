@@ -13259,6 +13259,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-font-catalog",
  "tilo-lock",
  "tilo-paths",
  "tilo-test-env",
@@ -17553,10 +17554,12 @@ dependencies = [
 name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [
+ "fontdb",
  "hex",
  "libc",
  "rustix 1.1.4",
  "serde",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",

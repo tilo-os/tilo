@@ -154,7 +154,7 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device", optional = true }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
-tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
+tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # `storage`: app files through tilo-files in tilo-paths' per-app locations.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
