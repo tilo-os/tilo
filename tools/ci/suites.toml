@@ -1370,8 +1370,6 @@ inputs = [
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
-  "apps/store/fixtures/published/snapshot379.json.gz.b64",
-  "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
   # The search relevance table runs over every app's manifest and keywords.
   "apps/*/tilo-app.toml",
   "apps/*/search/*.ftl",

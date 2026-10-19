@@ -1807,8 +1807,8 @@ mod tests {
     }
 
     #[test]
-    fn package_import_published_worker_preserves_verified_offer_install_route() {
-        check_import_worker(crate::package_import::tests::published_fixture());
+    fn package_import_offered_worker_preserves_verified_offer_install_route() {
+        check_import_worker(crate::package_import::tests::catalogue_fixture());
     }
 
     fn check_import_worker((bytes, item): (Vec<u8>, StoreItem)) {

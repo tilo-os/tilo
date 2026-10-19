@@ -191,75 +191,132 @@ pub(crate) mod tests {
     use super::*;
     use tilo_app_package::DiscardBlobs;
 
-    fn published_bytes(encoded: &str) -> Vec<u8> {
-        use base64::Engine as _;
-        use std::io::Read as _;
-        let packed = base64::engine::general_purpose::STANDARD
-            .decode(encoded.lines().collect::<String>())
-            .unwrap();
-        let mut bytes = Vec::new();
-        flate2::read::GzDecoder::new(packed.as_slice())
-            .take(8 * 1024 * 1024)
-            .read_to_end(&mut bytes)
-            .unwrap();
-        bytes
+    /// The architecture this test runs on, as a manifest names it and as a
+    /// registry target names it.
+    fn native_target() -> (&'static str, &'static str, &'static str) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            ("aarch64", "armv8-a", "aarch64")
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            ("x86_64", "baseline", "x86_64")
+        }
     }
 
-    pub(crate) fn published_fixture() -> (Vec<u8>, StoreItem) {
-        let snapshot_bytes = published_bytes(include_str!(
-            "../fixtures/published/snapshot379.json.gz.b64"
-        ));
-        let snapshot = registry_types::CatalogueSnapshot::from_json(&snapshot_bytes).unwrap();
-        // Historical fixture time, not a runtime freshness override. The owner
-        // anchor is independently recorded in the booted production OS history.
-        let entries = app_cli::client::classify_snapshot(
-            &snapshot,
-            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
-            1_791_214_328,
+    /// A complete archive offered the way the registry offers one: an
+    /// owner-signed catalogue lists it with a publisher-signed entry whose
+    /// size and hash are the full archive's, and the Store's offer comes from
+    /// verifying that catalogue, not from the test.
+    pub(crate) fn catalogue_fixture() -> (Vec<u8>, StoreItem) {
+        use ed25519_dalek::SigningKey;
+        let (arch, isa, target_isa) = native_target();
+        let publisher = SigningKey::from_bytes(&[74; 32]);
+        let identity = tilo_app_package::SigningIdentity::from_signing_key(publisher.clone());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        std::fs::write(
+            dir.path().join("bin/app"),
+            b"#!/bin/true\ncatalogue-fixture\n",
         )
         .unwrap();
-        let verified = entries
-            .iter()
-            .find(|entry| entry.entry.package_id == "so.tilo.store")
-            .unwrap();
-        let bytes = published_bytes(include_str!(
-            "../fixtures/published/store70738-x86_64.tapp.gz.b64"
-        ));
-        let offered = verified
-            .entry
-            .versions
-            .iter()
-            .find(|version| {
-                version.version.starts_with("0.1.70738+")
-                    && version.target().unwrap().architecture == "x86_64"
-            })
-            .and_then(registry_types::RegistryVersion::tapp)
-            .unwrap();
-        assert_eq!(bytes.len() as u64, offered.tapp_size_bytes);
-        assert_eq!(
-            ui::framework::content::hash_bytes(&bytes),
-            offered.tapp_blake3_hex
-        );
-        let mut item = crate::sources::tilo_to_store_item(verified, "Tilo historical fixture", &[]);
-        item.versions.retain(|version| {
-            version.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str())
-        });
-        assert_eq!(
-            item.versions.len(),
-            1,
-            "the real native target remains offered"
-        );
+        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+            r#"[package]
+id = "so.tilo.catalogue-fixture"
+version = "1.2.0"
+kind = "app"
+name = "Catalogue fixture"
+[package.isa]
+{arch} = "{isa}"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+            hex::encode(identity.public_key_bytes())
+        ))
+        .unwrap();
+        let packed = tilo_app_package::pack(dir.path(), &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+        let mut entry = registry_types::RegistryEntry {
+            package_id: manifest.package.id,
+            kind: registry_types::EntryKind::App,
+            name: "Catalogue fixture".into(),
+            description: "A signed test app".into(),
+            tagline: "Signed and listed".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
+            categories: Vec::new(),
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
+            versions: vec![registry_types::RegistryVersion {
+                version: "1.2.0".into(),
+                released_at_unix: 1,
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://packages.test/catalogue-fixture.tapp".into(),
+                    tapp_root_hash_hex: packed.id().to_hex(),
+                    tapp_size_bytes: bytes.len() as u64,
+                    tapp_blake3_hex: ui::framework::content::hash_bytes(&bytes),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: arch.into(),
+                        isa: target_isa.into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
+            }],
+            updated_at_unix: 2,
+            signature_hex: String::new(),
+        };
+        registry_types::sign_entry(&mut entry, &publisher);
+        let owner = SigningKey::from_bytes(&[75; 32]);
+        let now = 1_800_000_000;
+        let mut snapshot = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
+            sequence: 1,
+            issued_at_unix: now,
+            expires_at_unix: now + 3600,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: vec![registry_types::PublisherAuthorization {
+                pubkey_hex: entry.publisher_pubkey_hex.clone(),
+                can_add_new: true,
+            }],
+            entries: vec![entry],
+            owner_signature_hex: String::new(),
+            channel_authorization: None,
+        };
+        registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
+        let entries = app_cli::client::classify_snapshot(
+            &registry_types::CatalogueSnapshot::Full(snapshot),
+            &hex::encode(owner.verifying_key().to_bytes()),
+            now,
+        )
+        .unwrap();
+        let item = crate::sources::tilo_to_store_item(&entries[0], "Signed catalogue", &[]);
+        assert_eq!(item.versions.len(), 1, "the native build is offered");
+        assert_eq!(item.versions[0].size_bytes, bytes.len() as u64);
         (bytes, item)
     }
 
     #[test]
-    fn package_import_published_full_and_thin_preserve_actual_offer_size() {
-        let (bytes, item) = published_fixture();
+    fn package_import_offered_full_and_thin_preserve_actual_offer_size() {
+        let (bytes, item) = catalogue_fixture();
         let full = review(bytes.clone(), std::slice::from_ref(&item)).unwrap();
         let decoded = tilo_app_package::tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
         assert!(
             decoded.is_complete(),
-            "the actual public archive carries all payloads"
+            "the offered archive carries all payloads"
         );
         let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
         assert!(thin.len() < bytes.len());
