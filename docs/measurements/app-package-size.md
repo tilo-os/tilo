@@ -37,6 +37,14 @@ enforces the budgets in four places:
   brings its budget. A new app may start at the 6 MB max target until it is
   measured.
 
+The OS image's app store holds each app to the same budgets when it packs it:
+`os/scripts/pack-apps.sh` reads `budget.toml` and the raise files and refuses
+a package over its budget for the build's architecture, naming the app, its
+size and its budget, before it applies the format's 8 MB ceiling
+(`crates/packaging/tilo-app-package/max-app-bytes`). A build whose binaries are
+not the release profile the budgets measure (`TILO_RUST_LTO=off`) reports the
+app instead of refusing it (`TAPP_BUDGET=report`).
+
 The population is the default collection's apps. The runtime package is the
 runtime's own KPI. The runtime and provider stubs are not apps, and apps the
 registry still lists but this repository no longer builds are not counted. The

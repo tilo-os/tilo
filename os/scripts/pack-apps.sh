@@ -37,6 +37,13 @@
 #                  application-format ceiling (the byte count in
 #                  crates/packaging/tilo-app-package/max-app-bytes, which the
 #                  Rust package checks compile in) and may only be made stricter
+#   BUDGET_DIR     the per-app size budgets: budget.toml plus raises/*.toml
+#                  [default: tools/perf/tapp-size-budget beside this script]
+#   TAPP_ARCH      the architecture the apps were built for, as budget.toml
+#                  names it                                  [default: uname -m]
+#   TAPP_BUDGET    `enforce` refuses an app over its budget; `report` names it
+#                  and packs it (a build whose binaries are not the release
+#                  profile the budgets measure)            [default: enforce]
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
@@ -97,6 +104,69 @@ MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
     || die "MAX_TAPP_BYTES must be an integer"
 (( MAX_TAPP_BYTES <= POLICY_MAX_TAPP_BYTES )) \
     || die "MAX_TAPP_BYTES cannot exceed the $POLICY_MAX_TAPP_BYTES-byte application policy"
+
+# --- per-app size budgets ---------------------------------------------------
+# Each app's budget is far below the format ceiling above. Checking only the
+# ceiling let an app grow fourfold and surface as "over 8 MB" when a whole
+# layer failed; here the package that grew is named, with its size and its
+# budget, the moment it is packed. tools/perf/tapp_size_ratchet.py reads the
+# same files (budget.toml's [apps."<id>"] tables, plus every raise file's).
+BUDGET_DIR="${BUDGET_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../tools/perf/tapp-size-budget}"
+TAPP_ARCH="${TAPP_ARCH:-$(uname -m)}"
+TAPP_BUDGET="${TAPP_BUDGET:-enforce}"
+case "$TAPP_BUDGET" in
+    enforce|report) ;;
+    *) die "TAPP_BUDGET must be enforce or report" ;;
+esac
+[ -f "$BUDGET_DIR/budget.toml" ] || die "no per-app size budgets at $BUDGET_DIR/budget.toml"
+
+# The budget of package $1 on architecture $2 in bytes, raises included;
+# nothing when the app has none (it is not in the default collection).
+app_budget() {
+    local files=("$BUDGET_DIR/budget.toml") raise
+    for raise in "$BUDGET_DIR"/raises/*.toml; do
+        [ -f "$raise" ] && files+=("$raise")
+    done
+    awk -v section="[apps.\"$1\"]" -v arch="$2" '
+        FNR == 1 { base = (FILENAME ~ /budget\.toml$/); inside = 0 }
+        {
+            line = $0
+            sub(/#.*/, "", line)
+        }
+        line ~ /^[[:space:]]*\[/ {
+            gsub(/[[:space:]]/, "", line)
+            inside = (line == section)
+            next
+        }
+        inside && line ~ ("^[[:space:]]*" arch "[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*$") {
+            value = line
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            if (base) { budget = value + 0; found = 1 } else { raised += value }
+        }
+        END { if (found) printf "%d\n", budget + raised }
+    ' "${files[@]}"
+}
+
+# Hold package $2 ($3 bytes, named $1 in messages) to its budget. Prints the
+# refusal and fails when it is over; a missing budget is reported, not refused.
+check_budget() {
+    local label=$1 id=$2 bytes=$3 budget
+    budget="$(app_budget "$id" "$TAPP_ARCH")" || die "cannot read $BUDGET_DIR"
+    if [ -z "$budget" ]; then
+        msg "$label: $bytes bytes; no $TAPP_ARCH budget in $BUDGET_DIR/budget.toml"
+        return 0
+    fi
+    if [ "$bytes" -le "$budget" ]; then
+        return 0
+    fi
+    local over="$label: package is $bytes bytes, over its $TAPP_ARCH budget of $budget bytes (+$((bytes - budget))) in $BUDGET_DIR/budget.toml"
+    if [ "$TAPP_BUDGET" = report ]; then
+        msg "over budget (reported, not refused): $over"
+        return 0
+    fi
+    printf '%s\n' "$over"
+    return 1
+}
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"
@@ -161,6 +231,12 @@ if [ "$prebuilt" = 1 ]; then
             continue
         fi
         package_details=$("$PKG_BIN" inspect "$tapp")
+        budget_id=$(printf '%s\n' "$package_details" \
+            | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' | head -1)
+        if [ -n "$budget_id" ] && ! over=$(check_budget "$(basename "$tapp")" "$budget_id" "$tapp_bytes"); then
+            failed+=("$over")
+            continue
+        fi
         package_pubkey=$(printf '%s\n' "$package_details" \
             | sed -n 's/^identity  *= *"ed25519:\([0-9a-fA-F]\{64\}\)".*/\1/p' \
             | head -1)
@@ -246,6 +322,11 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
 
     tapp_bytes="$(stat -c %s "$tapp")"
+    # The app's own budget first: it names what grew long before the ceiling.
+    if ! over=$(check_budget "$app ($id)" "$id" "$tapp_bytes"); then
+        failed+=("$over")
+        continue
+    fi
     if [ "$tapp_bytes" -gt "$MAX_TAPP_BYTES" ]; then
         failed+=("$app ($id): package is $tapp_bytes bytes; limit is $MAX_TAPP_BYTES")
         continue
