@@ -14352,6 +14352,7 @@ dependencies = [
  "tilo-vello",
  "tilo-wallpapers",
  "tilo-winit",
+ "tilo-zone-globe",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -19365,6 +19366,7 @@ dependencies = [
  "tilo-ntfs-mount",
  "tilo-pc-keyboard-geometry",
  "tilo-wallpapers",
+ "tilo-zone-globe",
  "workspace-hack",
 ]
 
@@ -20074,6 +20076,18 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "rustypipe",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-zone-globe"
+version = "0.1.0"
+dependencies = [
+ "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 

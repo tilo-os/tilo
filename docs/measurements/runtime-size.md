@@ -84,7 +84,8 @@ its Cap'n Proto RPC, and the catalogue Store browses:
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the libraries only Settings uses, the model-provider administration
 panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
-settings and the PC keyboard outlines: `libtilo_settings_engine.so` for
+settings, the PC keyboard outlines and the time-zone globe:
+`libtilo_settings_engine.so` for
 Settings; the emoji catalogue with
 its names and keywords in every locale: `libtilo_emoji_engine.so` for Chat and
 the on-screen keyboard). It is

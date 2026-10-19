@@ -6,7 +6,8 @@
 //! offers the bundled wallpapers (`tilo-wallpapers`, whose catalogue is TOML),
 //! edits the accessibility settings (`tilo-accessibility-settings`) and
 //! draws the keyboard with its layout's legends over the PC models' outlines
-//! (`tilo-pc-keyboard-geometry`, 130 KB of JSON). No
+//! (`tilo-pc-keyboard-geometry`, 130 KB of JSON), and chooses the time zone
+//! on a globe (`tilo-zone-globe`, with the world's coastlines). No
 //! other app does, so none of them belongs in the runtime every app maps;
 //! here they are a library of their own in the runtime bundle that only
 //! Settings names `DT_NEEDED`, beside the accounts engine, and the tapp
@@ -33,6 +34,8 @@ pub use tilo_accessibility_settings;
 pub use ntfs_mount;
 #[cfg(feature = "thin")]
 pub use tilo_wallpapers;
+#[cfg(feature = "thin")]
+pub use zone_globe;
 
 /// Run the engine's own code: read the wallpaper catalogue, which must name a
 /// default among its wallpapers, read the keyboard outlines, and ask the NTFS

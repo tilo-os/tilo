@@ -150,6 +150,7 @@ ENGINES = {
                                    "libtilo_settings_engine.so",
     "tilo-pc-keyboard-geometry": "the PC keyboard outlines, which Settings loads from "
                                  "libtilo_settings_engine.so",
+    "tilo-zone-globe": "the time-zone globe, which Settings loads from libtilo_settings_engine.so",
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
     "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
              "libtilo_emoji_engine.so",

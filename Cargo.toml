@@ -305,6 +305,7 @@ members = [
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
     "crates/platform/tilo-wallpapers",
+    "crates/platform/zone-globe",
 
     # Runtime
     "crates/runtime/cli",
