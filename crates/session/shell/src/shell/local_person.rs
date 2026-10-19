@@ -10,7 +10,13 @@ pub(crate) struct NativeLocalPerson {
 
 fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
     let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
-    let certificate = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+    // The certificate the room's selected identity presents for this device:
+    // the one its apps join the room with and the room admitted. The device
+    // owner's system-facing certificate is issued separately for the same
+    // key, so comparing a session's admission against it refused every
+    // native action ("native seat differs from original certified
+    // admission").
+    let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
         .map_err(|error| error.to_string())?;
     if tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key)
         != person
@@ -181,8 +187,14 @@ mod tests {
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        let certificate =
-            tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        // The identity-keyed certificate the workspace's selected identity
+        // presents (and its apps join with), not the device owner's
+        // separately issued system-facing one.
+        let system = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let certificate = tilo_user_identity::persist::read_device_cert(
+            &paths.device_cert_for_user(&system.user_public_key),
+        )
+        .unwrap();
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
@@ -206,7 +218,8 @@ mod tests {
         let caller = tilo_actions::remote::Caller::local_person(&person).in_room(room.to_string());
         let invoke =
             |caller: &tilo_actions::remote::Caller, request| invoke_native(&host, caller, &request);
-        assert!(invoke(&caller, request("apply")).is_ok());
+        let applied = invoke(&caller, request("apply"));
+        assert!(applied.is_ok(), "{applied:?}");
         assert_eq!(invocations.try_recv().unwrap().actor, person);
         let agent = tilo_actions::remote::Caller::local_agent("agent").in_room(room.to_string());
         assert!(invoke(&agent, request("apply")).is_err());

@@ -266,6 +266,18 @@ impl CapnpBrokerState {
             .native_local_person_certificate(&projection)?
             .ok_or("native seat custody unavailable")?;
         if checked.admission.admitted.certificate.as_ref() != Some(&certificate) {
+            let admitted = checked.admission.admitted.certificate.as_ref();
+            tracing::debug!(
+                same_device = admitted.map(|cert| cert.device_public_key) == Some(certificate.device_public_key),
+                same_person = admitted.map(|cert| cert.user_public_key) == Some(certificate.user_public_key),
+                admitted_issued_ns = admitted.map(|cert| cert.issued_at_ns),
+                seat_issued_ns = certificate.issued_at_ns,
+                admitted_expires_ns = ?admitted.and_then(|cert| cert.expires_at_ns),
+                seat_expires_ns = ?certificate.expires_at_ns,
+                admitted_label = admitted.map(|cert| cert.device_label.as_str()),
+                seat_label = %certificate.device_label,
+                "native seat certificate differs from the session's admission"
+            );
             return Err("native seat differs from original certified admission".into());
         }
         checked.admission.native_projection_verified = true;
