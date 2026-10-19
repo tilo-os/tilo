@@ -216,7 +216,31 @@ pub struct PeerPresence {
     participants_epoch: Arc<AtomicU64>,
     /// What the roster was last derived from; `None` before the first refresh.
     roster_seen: Mutex<Option<RosterSeen>>,
+    /// The record each window shows, by tab, as learned from the local app
+    /// pointing in it ([`Self::window_record`]).
+    window_records: WindowRecords,
+    /// The window cursor chat last went to: a message keeps going there
+    /// while the pointer crosses a gap between windows.
+    last_chat_target: Mutex<Option<ChatTarget>>,
     net: Arc<ShellNetwork>,
+}
+
+/// The record a window shows: what its app announced when it pointed there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowRecord {
+    pub room: String,
+    pub app: String,
+    pub record: String,
+}
+
+type WindowRecords = Arc<Mutex<HashMap<u64, WindowRecord>>>;
+
+/// Where this person's cursor chat is: the window it is over, the record
+/// that window shows, and the pointer from the window's top-left corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatTarget {
+    pub record: WindowRecord,
+    pub at: (f64, f64),
 }
 
 /// The change signals the roster was last derived at.
@@ -258,7 +282,10 @@ pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 
 fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room: &str) -> bool {
     match payload {
-        PresencePayload::Following { .. } | PresencePayload::Status { .. } => {
+        PresencePayload::Following { .. }
+        | PresencePayload::Status { .. }
+        | PresencePayload::Availability { .. }
+        | PresencePayload::Wave { .. } => {
             matches!(key, PresenceKey::Workspace { id } if id == room)
         }
         PresencePayload::Arrived | PresencePayload::Left => {
@@ -381,6 +408,8 @@ impl PeerPresence {
         let net_for_subscription = Arc::clone(net);
 
         let sink_cursor = Arc::clone(&cursor);
+        let window_records: WindowRecords = Arc::default();
+        let sink_records = Arc::clone(&window_records);
         let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
             Arc::new(Mutex::new(Vec::new()));
         let sink_typed = Arc::clone(&typed_inbound);
@@ -405,6 +434,8 @@ impl PeerPresence {
                         payload,
                         PresencePayload::Following { .. }
                             | PresencePayload::Status { .. }
+                            | PresencePayload::Availability { .. }
+                            | PresencePayload::Wave { .. }
                             | PresencePayload::Interaction(_)
                             | PresencePayload::Arrived
                             | PresencePayload::Left
@@ -438,6 +469,28 @@ impl PeerPresence {
                 let Some(anchor) = *sink_cursor.lock_recover() else {
                     return;
                 };
+                // Only where its people may see where this person is.
+                if !net_for_subscription
+                    .presence_visibility(&route.cluster_id)
+                    .shows_where()
+                {
+                    return;
+                }
+                // The app pointing is the one under the pointer: the record
+                // its window shows, which is what anything said over that
+                // window is sealed for and placed in.
+                if !route.app_id.is_empty()
+                    && let Ok(mut records) = sink_records.lock()
+                {
+                    records.insert(
+                        anchor.tab,
+                        WindowRecord {
+                            room: route.cluster_id.clone(),
+                            app: route.app_id.clone(),
+                            record: route.record_id.clone(),
+                        },
+                    );
+                }
                 let key = PresenceKey::tile_pointer(route.cluster_id.clone(), anchor.tab);
                 let Ok(key_str) = serde_json::to_string(&key) else {
                     return;
@@ -445,7 +498,7 @@ impl PeerPresence {
                 net_for_subscription.publish_presence(key_str, (anchor.x, anchor.y));
             }),
         );
-        Self::assemble(
+        let mut presence = Self::assemble(
             cursor,
             typed_inbound,
             room_people,
@@ -454,7 +507,9 @@ impl PeerPresence {
             Some(subscription),
             net,
             rooms,
-        )
+        );
+        presence.window_records = window_records;
+        presence
     }
 
     /// [`Self::attach`] for a session with no collaboration broker: it
@@ -528,6 +583,8 @@ impl PeerPresence {
             roster_tree,
             participants_epoch,
             roster_seen: Mutex::new(None),
+            window_records: Arc::default(),
+            last_chat_target: Mutex::new(None),
             net: Arc::clone(net),
         }
     }
@@ -609,7 +666,7 @@ impl PeerPresence {
     /// [`Self::publish_local_cursor`] with the clock supplied, so the
     /// throttle and the keepalive can be exercised without sleeping.
     pub fn publish_local_cursor_at(&self, room: &str, now: Instant) -> bool {
-        if room.is_empty() {
+        if room.is_empty() || !self.net.presence_visibility(room).shows_where() {
             return false;
         }
         let at = *self.cursor.lock_recover();
@@ -631,6 +688,73 @@ impl PeerPresence {
         self.net.publish_presence(key_str, (at.x, at.y));
         last.insert(room.to_string(), (at, now));
         true
+    }
+
+    /// The id the people in a room know this session by: what they wave
+    /// at and follow.
+    pub fn own_presence_id(&self) -> String {
+        format!("peer@{}", self.net.local_peer_id_hash())
+    }
+
+    /// The record window `tab` shows, once its app has pointed in it here.
+    /// A window whose app never says where its person points (a legacy app,
+    /// one that is not collaborative) has none: nobody shares it.
+    pub fn window_record(&self, tab: u64) -> Option<WindowRecord> {
+        self.window_records.lock_recover().get(&tab).cloned()
+    }
+
+    /// Where cursor chat goes from here: the shared window under this
+    /// session's pointer, in `room`, with the pointer's place in it.
+    pub fn chat_target(&self, room: &str) -> Option<ChatTarget> {
+        let anchor = (*self.cursor.lock_recover())?;
+        let record = self.window_record(anchor.tab)?;
+        let target = (record.room == room).then_some(ChatTarget {
+            record,
+            at: (anchor.x, anchor.y),
+        })?;
+        *self.last_chat_target.lock_recover() = Some(target.clone());
+        Some(target)
+    }
+
+    /// Where what is being said goes now: the shared window under the
+    /// pointer, else the one it last went to in `room`.
+    pub fn chat_destination(&self, room: &str) -> Option<ChatTarget> {
+        self.chat_target(room).or_else(|| {
+            self.last_chat_target
+                .lock_recover()
+                .clone()
+                .filter(|target| target.record.room == room)
+        })
+    }
+
+    /// Say `said` (text, sent) beside this person's pointer over `target`,
+    /// or stop with `None`. Returns whether it went out.
+    pub fn say(&self, target: &ChatTarget, said: Option<(&str, bool)>) -> bool {
+        self.net.publish_cursor_chat(
+            (
+                target.record.room.as_str(),
+                target.record.app.as_str(),
+                target.record.record.as_str(),
+            ),
+            target.at,
+            said.map(|(text, sent)| tilo_relay_protocol::live::CursorChat {
+                text: text.to_owned(),
+                sent,
+            }),
+        )
+    }
+
+    /// React with `emoji` from this person's pointer over `target`.
+    pub fn react(&self, target: &ChatTarget, emoji: &str) -> bool {
+        self.net.publish_reaction(
+            (
+                target.record.room.as_str(),
+                target.record.app.as_str(),
+                target.record.record.as_str(),
+            ),
+            target.at,
+            emoji.to_owned(),
+        )
     }
 
     /// Record where this session's pointer is, anchored to the tile it is
@@ -701,11 +825,28 @@ impl PeerPresence {
             }
         }
         let folded = !drained.is_empty();
+        let said = self.net.take_live_chat();
         let net = Arc::clone(&self.net);
-        let mine = self.rooms.lock_recover();
+        // Rooms whose pointers this person sees: theirs, unless they show
+        // nothing there.
+        let mine: Vec<String> = self
+            .rooms
+            .lock_recover()
+            .iter()
+            .filter(|room| net.presence_visibility(room).sees_pointers())
+            .cloned()
+            .collect();
+        let mut chat_changed = false;
+        let mut hidden = Vec::new();
         let cursor_changed = self.anchored.lock().is_ok_and(|mut anchored| {
-            anchored.retain(|_, (room, _, _)| mine.iter().any(|r| r == room));
-            let fresh = fold_inbound(
+            anchored.retain(|user, (room, _, _)| {
+                let kept = mine.iter().any(|r| r == room);
+                if !kept {
+                    hidden.push(user.clone());
+                }
+                kept
+            });
+            let mut fresh = fold_inbound(
                 drained,
                 &mut anchored,
                 presence,
@@ -713,8 +854,23 @@ impl PeerPresence {
                 &|room| mine.iter().any(|r| r == room),
                 now,
             );
+            chat_changed = fold_live_chat(
+                said,
+                &mut anchored,
+                &mut fresh,
+                presence,
+                &|room| mine.iter().any(|r| r == room),
+                now,
+            );
             place_pointers(&anchored, &fresh, presence, tiles, now)
         });
+        // A room left, or one where this person now shows nothing: its
+        // pointers go at once.
+        let mut cursor_changed = cursor_changed;
+        for user in hidden {
+            cursor_changed |= presence.clear_pointer(&user);
+            cursor_changed |= presence.chats.forget(&ui::permissions::UserId(user));
+        }
         drop(mine);
         let typed = self
             .typed_inbound
@@ -730,7 +886,7 @@ impl PeerPresence {
         if folded || cursor_changed || departure_changed || people_changed {
             self.presence_epoch.fetch_add(1, Ordering::Release);
         }
-        cursor_changed || typed_changed || departure_changed || people_changed
+        cursor_changed || typed_changed || departure_changed || people_changed || chat_changed
     }
 
     fn project_people(&self, presence: &mut PresenceCtx) -> bool {
@@ -1113,6 +1269,54 @@ pub fn fold_inbound(
     arrived
 }
 
+/// Fold what live members said beside their pointers and reacted with into
+/// `presence` ([`ui::presence::CursorChats`]), for rooms this session is in.
+/// Someone talking keeps their pointer: a person typing holds still, and a
+/// still pointer is otherwise retired once it goes quiet, so each frame that
+/// carries a message counts as hearing the pointer again (`fresh`), where it
+/// was. Returns whether anything shown changed or is still moving.
+pub fn fold_live_chat(
+    said: Vec<crate::shell::network::LiveChat>,
+    anchored: &mut AnchoredPointers,
+    fresh: &mut Vec<String>,
+    presence: &mut PresenceCtx,
+    member_of: &dyn Fn(&str) -> bool,
+    now: Instant,
+) -> bool {
+    let mut changed = false;
+    for entry in said {
+        if !member_of(&entry.room) {
+            continue;
+        }
+        let user = format!("peer@{}", entry.peer);
+        let id = ui::permissions::UserId(user.clone());
+        changed |= presence.chats.say(
+            &id,
+            entry
+                .chat
+                .as_ref()
+                .map(|chat| (chat.text.as_str(), chat.sent)),
+            now,
+        );
+        if let Some(reaction) = &entry.reaction {
+            changed |= presence
+                .chats
+                .react(&id, reaction.seq, &reaction.emoji, now);
+        }
+        if presence.chats.talking(&id, now)
+            && let Some((room, _, heard)) = anchored.get_mut(&user)
+            && *room == entry.room
+        {
+            *heard = now;
+            if !fresh.contains(&user) {
+                fresh.push(user);
+            }
+        }
+    }
+    changed |= presence.chats.prune(now);
+    changed || presence.chats.animating(now)
+}
+
 /// Put every pointer in `anchored` where its tab's tile is on this device
 /// (`tiles`), filed under its room the way the overlay paints them, and
 /// take off screen any whose tab this device doesn't show. `fresh` peers
@@ -1178,6 +1382,7 @@ pub fn place_pointers(
     changed
         || presence.pointers_fading(now, POINTER_IDLE, POINTER_FADE)
         || presence.pointers_easing(now)
+        || presence.pointer_names_fading(now, POINTER_FADE)
 }
 
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
@@ -3645,6 +3850,282 @@ mod two_sessions {
         );
         drop(guest);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two sessions in one room, each with its broker and network, the
+    /// guest's pointer already on the host's screen: what the next tests
+    /// build on.
+    struct Pair {
+        dir: std::path::PathBuf,
+        room: RoomId,
+        guest_peer: String,
+        host_net: Arc<ShellNetwork>,
+        guest_net: Arc<ShellNetwork>,
+        host: PeerPresence,
+        guest: PeerPresence,
+        guest_cmds: tokio::sync::mpsc::Receiver<NetCmd>,
+    }
+
+    fn pair(tag: &str) -> Pair {
+        let guest_peer = peer_id(41);
+        let host_peer = peer_id(43);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "ada")]);
+        let guest_tree = guest_joining(&mut host_tree, room);
+        let host_handle = host_tree.shared();
+        let guest_handle = guest_tree.shared();
+        let (host_net, _host_cmds) =
+            shell_network_for_test(host_handle.clone(), handle_of(&host_peer));
+        let (guest_net, guest_cmds) =
+            shell_network_for_test(guest_handle.clone(), handle_of(&guest_peer));
+        let host_net = Arc::new(host_net);
+        let guest_net = Arc::new(guest_net);
+        let dir = std::env::temp_dir().join(format!("tilo-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let host = PeerPresence::attach(&broker(&dir, "h.sock"), &host_net, Vec::new());
+        let guest = PeerPresence::attach(&broker(&dir, "g.sock"), &guest_net, Vec::new());
+        host.set_rooms(rooms_of(&host_handle));
+        guest.set_rooms(rooms_of(&guest_handle));
+        Pair {
+            dir,
+            room,
+            guest_peer,
+            host_net,
+            guest_net,
+            host,
+            guest,
+            guest_cmds,
+        }
+    }
+
+    impl Pair {
+        /// The guest's endpoint key, as the live plane stamps its frames.
+        fn guest_key(&self) -> [u8; 32] {
+            *self
+                .guest_peer
+                .parse::<iroh::EndpointId>()
+                .expect("an endpoint id")
+                .as_bytes()
+        }
+
+        fn guest_user(&self) -> ui::permissions::UserId {
+            ui::permissions::UserId(format!("peer@{}", handle_of(&self.guest_peer)))
+        }
+    }
+
+    /// Cursor chat between two sessions: what the guest types beside its
+    /// pointer reaches the host's screen live, beside that pointer, under
+    /// the guest's name; it keeps the guest's resting pointer up while it
+    /// shows; it lingers after Enter and goes; a lone emoji floats up once.
+    #[test]
+    fn cursor_chat_crosses_between_two_sessions_beside_the_pointer() {
+        use crate::shell::live_presence::{Outbound, participant};
+        use tilo_relay_protocol::live::{CursorChat, LiveRecord};
+        let mut pair = pair("cursor-chat");
+        let room = pair.room.to_string();
+        let t0 = Instant::now();
+
+        pair.guest.set_pointer(Some(on_desk(300.0, 200.0)));
+        assert!(pair.guest.publish_local_cursor_at(&room, t0));
+        over_the_wire(published(&mut pair.guest_cmds), &pair.host_net);
+        let mut on_host = PresenceCtx::default();
+        pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
+        let ada = pair.guest_user();
+        let key = PresenceKey::Workspace { id: room.clone() };
+        assert!(
+            on_host.pointer_for(&key, &ada).is_some(),
+            "the guest's pointer is here"
+        );
+
+        // The guest types; each change is a live frame of the room.
+        let window = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "note-1".into(),
+        };
+        let mut live = Outbound::default();
+        let mut say = |text: &str, sent: bool| {
+            live.say(
+                7,
+                (window.clone(), [300.0, 200.0]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                Some(CursorChat {
+                    text: text.into(),
+                    sent,
+                }),
+                t0,
+            )
+            .expect("a frame")
+        };
+        pair.host_net
+            .take_live_frame(pair.room, pair.guest_key(), &say("look at the sec", false));
+        assert!(pair.host.pump_at(&mut on_host, &DESK_TILES, t0));
+        // A moment later, once it has faded in.
+        let typing = on_host
+            .chats
+            .bubble(
+                &ada,
+                t0 + Duration::from_secs(1),
+                ui::tokens::EffectiveMotion::new(Default::default(), false),
+            )
+            .expect("the host shows what the guest is typing");
+        assert_eq!(
+            (typing.text.as_str(), typing.typing),
+            ("look at the sec", true)
+        );
+
+        // Typing holds the pointer still for longer than a quiet pointer
+        // lives: talking keeps it, and its name, on screen.
+        let later = t0 + ui::presence::POINTER_IDLE + Duration::from_secs(1);
+        pair.host_net.take_live_frame(
+            pair.room,
+            pair.guest_key(),
+            &say("look at the second paragraph", true),
+        );
+        pair.host.pump_at(&mut on_host, &DESK_TILES, later);
+        assert!(
+            on_host.pointer_for(&key, &ada).is_some(),
+            "a talking pointer is not retired for resting"
+        );
+        assert!(
+            (on_host.pointer_name_opacity(&key, &ada, later, ui::presence::POINTER_FADE) - 1.0)
+                .abs()
+                < f32::EPSILON,
+            "and its name stays while they talk"
+        );
+        let sent = on_host
+            .chats
+            .bubble(
+                &ada,
+                later,
+                ui::tokens::EffectiveMotion::new(Default::default(), false),
+            )
+            .expect("a sent message stays a moment");
+        assert!(!sent.typing);
+
+        // After its linger it is gone.
+        pair.host.pump_at(
+            &mut on_host,
+            &DESK_TILES,
+            later + ui::presence::CURSOR_CHAT_LINGER,
+        );
+        assert!(
+            on_host
+                .chats
+                .bubble(
+                    &ada,
+                    later + ui::presence::CURSOR_CHAT_LINGER,
+                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                )
+                .is_none()
+        );
+
+        // A lone emoji is a reaction, played once.
+        let reaction = live
+            .react(
+                7,
+                (window, [300.0, 200.0]),
+                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                "\u{1f389}".into(),
+                later,
+            )
+            .expect("a frame");
+        pair.host_net
+            .take_live_frame(pair.room, pair.guest_key(), &reaction);
+        pair.host.pump_at(&mut on_host, &DESK_TILES, later);
+        assert!(
+            on_host
+                .chats
+                .reaction(
+                    &ada,
+                    later,
+                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                )
+                .is_some_and(|float| float.emoji == "\u{1f389}")
+        );
+        pair.host_net
+            .take_live_frame(pair.room, pair.guest_key(), &reaction);
+        assert!(
+            !on_host.chats.react(&ada, 1, "\u{1f389}", later),
+            "a restated reaction does not play again"
+        );
+        let _ = std::fs::remove_dir_all(&pair.dir);
+    }
+
+    /// What people see, between two sessions: "That I'm here" sends no
+    /// pointer, caret or cursor chat (the guest stays in the roster through
+    /// its arrival); "Nothing" sends nothing, and its holder sees nobody's
+    /// pointer either.
+    #[test]
+    fn what_people_see_holds_back_where_you_are_and_nothing_hides_pointers_both_ways() {
+        let mut pair = pair("visibility");
+        let room = pair.room.to_string();
+        let t0 = Instant::now();
+
+        pair.guest_net
+            .set_presence_visibility(&room, ui::PresenceVisibility::ThatImHere);
+        pair.guest.set_pointer(Some(on_desk(300.0, 200.0)));
+        assert!(
+            !pair.guest.publish_local_cursor_at(&room, t0),
+            "\"That I'm here\": the pointer is not said"
+        );
+        assert!(
+            pair.guest_cmds.try_recv().is_err(),
+            "nothing reached the wire"
+        );
+        let caret = collab_types::PeerPresence {
+            key: vec![1],
+            payload: collab_types::PeerPresencePayload::Caret { pos: 3 },
+        };
+        pair.guest_net
+            .publish_app_presence("so.tilo.notes".into(), room.clone(), caret);
+        assert!(pair.guest_cmds.try_recv().is_err(), "nor a caret");
+        let arrived = collab_types::PeerPresence {
+            key: vec![1],
+            payload: collab_types::PeerPresencePayload::Arrived,
+        };
+        pair.guest_net
+            .publish_app_presence("so.tilo.notes".into(), room.clone(), arrived);
+        assert!(
+            pair.guest_cmds.try_recv().is_ok(),
+            "but being here is: the face shows"
+        );
+        assert!(
+            !pair.guest_net.publish_cursor_chat(
+                (&room, "so.tilo.notes", "note-1"),
+                (10.0, 10.0),
+                Some(tilo_relay_protocol::live::CursorChat {
+                    text: "hi".into(),
+                    sent: true
+                })
+            ),
+            "and cursor chat says where you are, so it is not sent either"
+        );
+
+        // "Where I am" again: the pointer goes out and reaches the host.
+        pair.guest_net
+            .set_presence_visibility(&room, ui::PresenceVisibility::WhereIAm);
+        assert!(pair.guest.publish_local_cursor_at(&room, t0));
+        over_the_wire(published(&mut pair.guest_cmds), &pair.host_net);
+        let mut on_host = PresenceCtx::default();
+        pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
+        let key = PresenceKey::Workspace { id: room.clone() };
+        assert!(on_host.pointer_for(&key, &pair.guest_user()).is_some());
+
+        // The host chooses "Nothing": the guest's pointer leaves its screen
+        // at once, and arriving ones are not shown.
+        pair.host_net
+            .set_presence_visibility(&room, ui::PresenceVisibility::Nothing);
+        assert!(pair.host.pump_at(&mut on_host, &DESK_TILES, t0));
+        assert!(
+            on_host.pointer_for(&key, &pair.guest_user()).is_none(),
+            "someone who shows nothing sees no pointers"
+        );
+        pair.guest.set_pointer(Some(on_desk(500.0, 400.0)));
+        let later = t0 + MIN_PUBLISH_GAP;
+        assert!(pair.guest.publish_local_cursor_at(&room, later));
+        over_the_wire(published(&mut pair.guest_cmds), &pair.host_net);
+        pair.host.pump_at(&mut on_host, &DESK_TILES, later);
+        assert!(on_host.pointer_for(&key, &pair.guest_user()).is_none());
+        let _ = std::fs::remove_dir_all(&pair.dir);
     }
 }
 

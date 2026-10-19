@@ -352,14 +352,21 @@ fn estimated_width(text: &str, faces: usize) -> f64 {
     LABEL_PAD_X * 2.0 + chars * 7.0 + faces_width(faces).map_or(0.0, |w| w + INNER_GAP)
 }
 
+/// The faces on a strip: the same as everywhere people are shown, ringed
+/// in their colour, then a drawn count.
+const STRIP_FACES: ui::presence::FaceStack = ui::presence::FaceStack {
+    side: AVATAR,
+    overlap: AVATAR - AVATAR_STEP,
+    max: AVATARS_SHOWN + 1,
+};
+
 /// The width of a face stack for `people` people, `None` for nobody.
 fn faces_width(people: usize) -> Option<f64> {
     if people == 0 {
         return None;
     }
-    let shown = people.min(AVATARS_SHOWN);
-    let slots = shown.saturating_add(usize::from(people > shown));
-    Some(AVATAR + AVATAR_STEP * ui::num::f64_of_usize(slots.saturating_sub(1)))
+    let (shown, more) = STRIP_FACES.split(people);
+    Some(STRIP_FACES.width_of(shown, more))
 }
 
 /// The switcher's state between frames.
@@ -1346,25 +1353,16 @@ fn draw_people(cx: &mut DrawCx<'_>, people: &[Person], x_end: f64, cy: f64) -> f
     let Some(width) = faces_width(people.len()) else {
         return x_end;
     };
-    let shown = people.len().min(AVATARS_SHOWN);
-    let extra = people.len().saturating_sub(shown);
-    let x0 = x_end - width;
+    let (shown, more) = STRIP_FACES.split(people.len());
+    let faces: Vec<ui::presence::Face<'_>> = people
+        .iter()
+        .take(shown)
+        .map(|person| ui::presence::Face::new(&person.label, &person.id, person.color))
+        .collect();
     let ground = ui::widget::floating_surface::card_ground(cx.theme);
     let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);
-    for (k, person) in people.iter().take(shown).enumerate() {
-        let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(k);
-        let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
-        ui::widget::AvatarFace::new(&person.label, &person.id)
-            .presence(person.color)
-            .ringed_on(ground)
-            .paint(&mut paint, rect);
-    }
-    if extra > 0 {
-        let x = x0 + AVATAR_STEP * ui::num::f64_of_usize(shown);
-        let rect = Rect::new(x, cy - AVATAR / 2.0, x + AVATAR, cy + AVATAR / 2.0);
-        ui::widget::AvatarFace::paint_overflow(&mut paint, rect, extra, Some(ground));
-    }
-    x0
+    STRIP_FACES.paint(&mut paint, (x_end, cy), (&faces, more), ground);
+    x_end - width
 }
 
 /// One line of text, elided to `rect`'s width and centred in its height.

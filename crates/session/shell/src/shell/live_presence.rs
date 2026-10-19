@@ -27,8 +27,8 @@ use std::time::{Duration, Instant};
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    AnchorScope, LiveAnchor, LiveFrame, LiveParticipant, LiveRecord, ParticipantKind,
-    PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
+    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LiveReaction, LiveRecord,
+    ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors, selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -107,7 +107,18 @@ fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(Vec<u8>, u64,
 struct Room {
     frame: PresenceFrame,
     sent: Instant,
+    /// When the frame's reaction was sent: it is dropped from the frame
+    /// once every receiver has had it ([`REACTION_HOLD`]).
+    reacted: Option<Instant>,
+    /// Reactions sent in this room: the counter receivers tell a new
+    /// reaction from a restated one by.
+    reactions: u32,
 }
+
+/// How long a reaction rides this device's frames: past the keepalive, so a
+/// receiver that missed the first frame plays it from the repeat, and short
+/// of a reaction's life, so nobody arriving later sees an old one.
+pub const REACTION_HOLD: Duration = Duration::from_millis(1000);
 
 /// This device's latest presence per room, as live frames.
 #[derive(Default)]
@@ -128,19 +139,7 @@ impl Outbound {
         presence: &PeerPresence,
         now: Instant,
     ) -> Option<Vec<u8>> {
-        let room = self.rooms.entry(ws).or_insert_with(|| Room {
-            frame: PresenceFrame {
-                place: None,
-                seq: 0,
-                sent_at_ms: 0,
-                focus: None,
-                pointer: None,
-                selection: None,
-                drag: None,
-                participant: None,
-            },
-            sent: now,
-        });
+        let room = self.room(ws, now);
         let frame = &mut room.frame;
         match &presence.payload {
             PeerPresencePayload::Pointer { x, y } => frame.pointer = Some([*x, *y]),
@@ -159,19 +158,108 @@ impl Outbound {
         }
         frame.focus = Some(focus);
         frame.participant = Some(participant);
+        self.publish(ws, now)
+    }
+
+    fn room(&mut self, ws: u64, now: Instant) -> &mut Room {
+        self.rooms.entry(ws).or_insert_with(|| Room {
+            frame: PresenceFrame::default(),
+            sent: now,
+            reacted: None,
+            reactions: 0,
+        })
+    }
+
+    /// The room's frame with the next sequence number, encoded.
+    fn publish(&mut self, ws: u64, now: Instant) -> Option<Vec<u8>> {
+        let room = self.rooms.get_mut(&ws)?;
         self.seq = self.seq.wrapping_add(1);
-        frame.seq = self.seq;
-        frame.sent_at_ms = tilo_clock::unix_now_ms();
+        room.frame.seq = self.seq;
+        room.frame.sent_at_ms = tilo_clock::unix_now_ms();
         room.sent = now;
-        LiveFrame::Presence(frame.clone()).encode().ok()
+        LiveFrame::Presence(room.frame.clone()).encode().ok()
+    }
+
+    /// Say `chat` beside this device's pointer at `pointer` (in the window
+    /// showing `focus`, from its top-left corner) in the room whose workspace
+    /// is `ws`, or stop saying anything with `None`. Returns the frame to
+    /// publish; `None` for one the live plane refuses (a message past its
+    /// bounds), which leaves what was said before.
+    pub fn say(
+        &mut self,
+        ws: u64,
+        at: (LiveRecord, [f32; 2]),
+        participant: LiveParticipant,
+        chat: Option<CursorChat>,
+        now: Instant,
+    ) -> Option<Vec<u8>> {
+        let (focus, pointer) = at;
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.focus = Some(focus);
+        room.frame.pointer = Some(pointer);
+        room.frame.participant = Some(participant);
+        room.frame.chat = chat;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame
+    }
+
+    /// React with `emoji` from this device's pointer, as [`Self::say`] says
+    /// a message: the frame carries it, with a new counter, for
+    /// [`REACTION_HOLD`].
+    pub fn react(
+        &mut self,
+        ws: u64,
+        at: (LiveRecord, [f32; 2]),
+        participant: LiveParticipant,
+        emoji: String,
+        now: Instant,
+    ) -> Option<Vec<u8>> {
+        let (focus, pointer) = at;
+        let room = self.room(ws, now);
+        let seq = room.reactions.wrapping_add(1);
+        let before = room.frame.clone();
+        room.frame.focus = Some(focus);
+        room.frame.pointer = Some(pointer);
+        room.frame.participant = Some(participant);
+        room.frame.chat = None;
+        room.frame.reaction = Some(LiveReaction { seq, emoji });
+        room.reacted = Some(now);
+        let frame = self.publish(ws, now);
+        if let Some(room) = self.rooms.get_mut(&ws) {
+            if frame.is_some() {
+                room.reactions = seq;
+            } else {
+                room.frame = before;
+                room.reacted = None;
+            }
+        }
+        frame
     }
 
     /// Frames to repeat because they were not sent for [`KEEPALIVE`].
     pub fn keepalives(&mut self, now: Instant) -> Vec<(u64, Vec<u8>)> {
         let mut due = Vec::new();
         for (ws, room) in &mut self.rooms {
-            if now.saturating_duration_since(room.sent) < KEEPALIVE
-                || (room.frame.pointer.is_none() && room.frame.selection.is_none())
+            // A reaction everyone has had leaves the frame with its next
+            // statement, so a late arrival never plays an old one; the
+            // room's counter stays, so the next reaction is still a new one.
+            let reaction_over = room
+                .reacted
+                .is_some_and(|at| now.saturating_duration_since(at) >= REACTION_HOLD);
+            if reaction_over {
+                room.reacted = None;
+                room.frame.reaction = None;
+            }
+            if (now.saturating_duration_since(room.sent) < KEEPALIVE && !reaction_over)
+                || (room.frame.pointer.is_none()
+                    && room.frame.selection.is_none()
+                    && room.frame.chat.is_none())
             {
                 continue;
             }
@@ -199,6 +287,10 @@ pub struct Inbound {
     /// The colour the sender asks to be drawn in: the presence hue nearest
     /// its participant colour.
     pub colour: Option<ui::tokens::PresenceHue>,
+    /// What the sender is saying beside its pointer, `None` for nothing.
+    pub chat: Option<CursorChat>,
+    /// The sender's latest reaction.
+    pub reaction: Option<LiveReaction>,
 }
 
 /// Translate one live frame. Previews and malformed frames mean nothing
@@ -221,6 +313,8 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             let [r, g, b] = participant.color;
             ui::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
         }),
+        chat: presence.chat.clone(),
+        reaction: presence.reaction.clone(),
         ..Inbound::default()
     };
     if let Some([x, y]) = presence.pointer {
@@ -416,5 +510,105 @@ mod tests {
         assert_eq!(inbound(&frame).unwrap().updates.len(), 2);
         assert!(outbound.keepalives(now).is_empty());
         assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+    }
+
+    /// What a person types beside their pointer crosses the live plane with
+    /// the window it is over and where in it, live while typed and then sent;
+    /// a reaction rides the frame with a new counter, and leaves it once
+    /// everyone has had it so nobody arriving later plays an old one.
+    #[test]
+    fn cursor_chat_and_reactions_cross_the_live_plane() {
+        let mut outbound = Outbound::default();
+        let now = Instant::now();
+        let window = LiveRecord {
+            app: "so.tilo.notes".into(),
+            record: "note-1".into(),
+        };
+        let ada = || participant("Ada".into(), ui::tokens::PresenceHue::Teal);
+        let typed = outbound
+            .say(
+                7,
+                (window.clone(), [120.0, 48.0]),
+                ada(),
+                Some(CursorChat {
+                    text: "look at th".into(),
+                    sent: false,
+                }),
+                now,
+            )
+            .unwrap();
+        let read = inbound(&typed).unwrap();
+        assert_eq!(read.app_id, "so.tilo.notes");
+        assert_eq!(read.label.as_deref(), Some("Ada"));
+        assert_eq!(
+            read.chat,
+            Some(CursorChat {
+                text: "look at th".into(),
+                sent: false
+            })
+        );
+        assert!(
+            read.updates.iter().any(|update| matches!(
+                update.payload,
+                PeerPresencePayload::Pointer { x, y } if (x, y) == (120.0, 48.0)
+            )),
+            "the bubble hangs from the pointer it was typed at"
+        );
+
+        let sent = outbound
+            .say(
+                7,
+                (window.clone(), [120.0, 48.0]),
+                ada(),
+                Some(CursorChat {
+                    text: "look at this".into(),
+                    sent: true,
+                }),
+                now,
+            )
+            .unwrap();
+        assert!(inbound(&sent).unwrap().chat.unwrap().sent);
+        // Kept alive while it shows, like a pointer.
+        assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+
+        // Past its bounds the live plane refuses it; what was said stays.
+        let refused = outbound.say(
+            7,
+            (window.clone(), [120.0, 48.0]),
+            ada(),
+            Some(CursorChat {
+                text: "x".repeat(tilo_relay_protocol::live::MAX_CURSOR_CHAT_CHARS + 1),
+                sent: false,
+            }),
+            now,
+        );
+        assert!(refused.is_none());
+
+        let reacted = outbound
+            .react(
+                7,
+                (window.clone(), [120.0, 48.0]),
+                ada(),
+                "\u{1f389}".into(),
+                now,
+            )
+            .unwrap();
+        let read = inbound(&reacted).unwrap();
+        assert_eq!(read.chat, None, "a reaction ends the message");
+        let first = read.reaction.unwrap();
+        assert_eq!(first.emoji, "\u{1f389}");
+        let again = outbound
+            .react(7, (window, [120.0, 48.0]), ada(), "\u{1f44d}".into(), now)
+            .unwrap();
+        assert_eq!(
+            inbound(&again).unwrap().reaction.unwrap().seq,
+            first.seq.wrapping_add(1),
+            "each reaction is a new one"
+        );
+
+        let later = now + REACTION_HOLD;
+        let restated = outbound.keepalives(later);
+        assert_eq!(restated.len(), 1, "the reaction leaves the frame at once");
+        assert_eq!(inbound(&restated[0].1).unwrap().reaction, None);
     }
 }

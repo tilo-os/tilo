@@ -430,6 +430,8 @@ mod tests {
         // The same frames in the clear are refused.
         let presence = LiveFrame::Presence(PresenceFrame {
             place: None,
+            chat: None,
+            reaction: None,
             seq: 4,
             sent_at_ms: 1,
             focus: Some(record()),

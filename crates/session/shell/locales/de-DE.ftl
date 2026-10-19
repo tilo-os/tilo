@@ -768,7 +768,7 @@ a11y-leave-workspace = { $name } verlassen
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }
-follow-detail = Deine Ansicht. Alle hier sehen sie.
+follow-stopped = Folgen beendet
 follow-stop = Beenden
 
 # Filterchips der Suche
@@ -1385,6 +1385,12 @@ search-action-collaborators-open = Mitwirkende anzeigen
 search-action-collaborators-open-subtitle = Mitwirkende, die gerade in diesem Arbeitsbereich sind
 search-action-presence-follow-stop = Nicht mehr folgen
 search-action-presence-follow-stop-subtitle = Diese Ansicht wieder lokal navigieren
+search-action-presence-wave = Winken
+search-action-presence-wave-subtitle = Jemandem hier zuwinken; dein Gesicht zeigt, dass du es warst
+search-action-presence-availability-set = Verfügbarkeit festlegen
+search-action-presence-availability-set-subtitle = Verfügbar, Konzentriert oder Abwesend, neben deinem Gesicht
+search-action-presence-visibility-set = Festlegen, was andere hier sehen
+search-action-presence-visibility-set-subtitle = Wo du bist, dass du da bist, oder nichts
 search-action-room-activity-open = Aktivität im Arbeitsbereich anzeigen
 search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änderungen, Berechtigungen, wer was wann getan hat
 search-action-peer-invite = Mitwirkende einladen …
@@ -2897,6 +2903,9 @@ search-kw-presence-follow = folgen, mitverfolgen, jemandem folgen
 search-kw-presence-follow-stop = nicht mehr folgen, entfolgen, folgen beenden
 search-kw-presence-status-set = status, abwesend, beschäftigt, verfügbar
 search-kw-presence-status-sharing-set = status teilen, status privatsphäre, status verbergen
+search-kw-presence-wave = winken, hallo sagen, grüßen
+search-kw-presence-availability-set = status, verfügbar, konzentriert, abwesend, beschäftigt
+search-kw-presence-visibility-set = privatsphäre, unsichtbar, verbergen, was andere sehen
 search-kw-room-activity-open = aktivität, verlauf, änderungen, zeitleiste, nachholen, chronik, protokoll
 search-kw-peer-invite = einladen, teilen, person hinzufügen, zusammenarbeiten, einladungslink
 search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben, öffentliche arbeitsbereiche, durchsuchen, entdecken, verzeichnis, community
@@ -3105,3 +3114,15 @@ arrival-others = { $count ->
     [one] und 1 weitere Person
    *[other] und { $count } weitere
 }
+
+# Cursor chat: a short message beside your pointer, shown to everyone in that window.
+cursor-chat-placeholder = Sag etwas
+cursor-chat-you = Du
+
+# The line under the top bar when you arrive where people are, or someone waves.
+presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
+presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
+presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
+presence-arrival-change = Ändern
+presence-wave-notice = { $person } winkt
+presence-someone = Jemand
