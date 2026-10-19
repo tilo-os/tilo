@@ -747,8 +747,9 @@ fn an_item_method_reads_and_writes_its_item_alone() {
             .all(|card| card.actions.iter().any(|spec| spec.id == "rename"))
     );
 
-    // Another card that no longer reads (written by a newer version) does
-    // not stop a change of this one: only this one is read.
+    // Another card that no longer reads (written by a newer version) is
+    // quarantined, and does not stop a change of this one: only this one is
+    // read.
     let doc = book.doc_mut();
     let Ok(Some((Value::Object(ObjType::Map), people))) = doc.get(automerge::ROOT, "people") else {
         panic!("people is a map");
@@ -759,7 +760,15 @@ fn an_item_method_reads_and_writes_its_item_alone() {
     doc.put(&other, "v", ScalarValue::Str("from the future".into()))
         .unwrap();
     doc.commit();
-    assert!(book.state().is_err(), "the whole book no longer reads");
+    let held: Vec<Id> = book
+        .state()
+        .unwrap()
+        .people
+        .quarantined()
+        .iter()
+        .map(|held| held.id.clone())
+        .collect();
+    assert_eq!(held, [ids[1].clone()], "only that card is held aside");
     let rename = Book::RENAME
         .with((ids[0].clone(), "Augusta".to_owned()))
         .build(0)
