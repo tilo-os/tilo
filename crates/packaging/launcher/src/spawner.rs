@@ -1341,13 +1341,11 @@ impl Spawner {
             let exchanged =
                 send(&socket, &fields, &[]).and_then(|()| receive(&socket, &mut buffer));
             drop(socket);
-            match exchanged {
-                Ok(Some((length, _))) => buffer.get(..length).unwrap_or_default().to_vec(),
-                Ok(None) | Err(_) => {
-                    self.reap_exited();
-                    return None;
-                }
-            }
+            let Ok(Some((length, _))) = exchanged else {
+                self.reap_exited();
+                return None;
+            };
+            buffer.get(..length).unwrap_or_default().to_vec()
         };
         match decode(&answer).as_slice() {
             [b"memory", cause] => Cause::from_wire(cause),
