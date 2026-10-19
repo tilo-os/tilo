@@ -7,8 +7,8 @@ mod boot_join;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
 pub use directory::{DirectoryListing, Publication};
-pub use relay_rooms::BotAsk;
 pub use hosted_sites::{Arrival, JoinProgress, SiteJoinState};
+pub use relay_rooms::BotAsk;
 pub use site_join::SiteRoom;
 #[cfg(test)]
 mod display_input_tests;
@@ -1582,9 +1582,13 @@ pub struct ShellNetwork {
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
+    /// The last reaction counter said in each room over its presence
+    /// channel (a room with no live plane), so each new one is told apart.
+    room_reactions: Mutex<std::collections::HashMap<String, u32>>,
     /// What the people in each room may see of this person, as the person
-    /// chose ([`Self::set_presence_visibility`]); a room not named is
-    /// "Where I am".
+    /// chose ([`Self::set_presence_visibility`]); a room not named yet is
+    /// "Nothing": until the desktop has said what the person chose there,
+    /// nothing of them leaves, and they see nobody's pointer.
     presence_visibility: Mutex<std::collections::HashMap<String, ui::PresenceVisibility>>,
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
@@ -2206,6 +2210,7 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             live_chat: Mutex::default(),
+            room_reactions: Mutex::default(),
             presence_visibility: Mutex::default(),
             peer_colours: Mutex::default(),
             peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
@@ -3375,15 +3380,29 @@ impl ShellNetwork {
     /// Say `chat` beside this person's pointer, at `pointer` from the
     /// top-left of the window showing `app_id`'s `record_id` in room
     /// `cluster_id`, to everyone in that window on the room's live plane; or
-    /// stop saying anything with `None`. Returns whether it went out: a room
-    /// with no workspace host has no live plane, and a message past the
-    /// plane's bounds is refused.
+    /// stop saying anything with `None`. A room with no workspace host has
+    /// no live plane: there it goes over the room's presence channel, beside
+    /// the pointer its people already see. Returns whether it went out; a
+    /// message past the bounds is refused on either route.
     pub fn publish_cursor_chat(
         &self,
         at: (&str, &str, &str),
         pointer: (f64, f64),
         chat: Option<tilo_relay_protocol::live::CursorChat>,
     ) -> bool {
+        if chat.as_ref().is_some_and(|chat| !chat.is_valid()) {
+            return false;
+        }
+        if !self.has_live_plane(at.0) {
+            let sent = chat.as_ref().is_some_and(|chat| chat.sent);
+            return self.publish_room_presence(
+                at.0,
+                collab_types::PeerPresencePayload::Chat {
+                    text: chat.map(|chat| chat.text),
+                    sent,
+                },
+            );
+        }
         self.publish_live_with(at, pointer, |live, ws, at, participant, now| {
             live.say(ws, at, participant, chat, now)
         })
@@ -3397,8 +3416,67 @@ impl ShellNetwork {
         pointer: (f64, f64),
         emoji: String,
     ) -> bool {
+        if !self.has_live_plane(at.0) {
+            let reaction = {
+                let Ok(mut sent) = self.room_reactions.lock() else {
+                    return false;
+                };
+                let seq = sent.get(at.0).copied().unwrap_or(0).wrapping_add(1);
+                let reaction = tilo_relay_protocol::live::LiveReaction { seq, emoji };
+                if !reaction.is_valid() {
+                    return false;
+                }
+                sent.insert(at.0.to_owned(), seq);
+                reaction
+            };
+            return self.publish_room_presence(
+                at.0,
+                collab_types::PeerPresencePayload::Reaction {
+                    seq: reaction.seq,
+                    emoji: reaction.emoji,
+                },
+            );
+        }
         self.publish_live_with(at, pointer, |live, ws, at, participant, now| {
             live.react(ws, at, participant, emoji, now)
+        })
+    }
+
+    /// Whether `cluster_id`'s room has a live plane: a workspace host this
+    /// session reaches it through.
+    fn has_live_plane(&self, cluster_id: &str) -> bool {
+        RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil())
+            .is_some_and(|room| !self.workspace_hosts(room_topic_id(room)).is_empty())
+    }
+
+    /// Say `payload` of this person, as the desktop, to the people in
+    /// `cluster_id`'s room over its presence channel, held to what they may
+    /// see of this person there. Returns whether it went out.
+    fn publish_room_presence(
+        &self,
+        cluster_id: &str,
+        payload: collab_types::PeerPresencePayload,
+    ) -> bool {
+        let shared = RoomId::parse(cluster_id)
+            .is_some_and(|room| !room.is_nil() && self.person_root_of_room(room).is_none());
+        if !shared
+            || self.is_local_person_room(cluster_id)
+            || !visibility_allows(self.presence_visibility(cluster_id), &payload)
+        {
+            return false;
+        }
+        let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+            id: cluster_id.to_owned(),
+        }) else {
+            return false;
+        };
+        self.publish_message(NeighbourMsg::AppPresenceV2 {
+            peer: self.local_peer_id_hash(),
+            app_id: "tilo-shell".into(),
+            cluster_id: cluster_id.to_owned(),
+            presence: collab_types::PeerPresence { key, payload },
+            colour: Some(crate::shell::state::local_presence_hue().id().to_owned()),
         })
     }
 
@@ -3460,13 +3538,16 @@ impl ShellNetwork {
         }
     }
 
-    /// What the people in `room` see of this person.
+    /// What the people in `room` see of this person. A room the desktop
+    /// has not told about yet (the moments after start, before the person's
+    /// choice is read and handed over) is held to the most private choice,
+    /// never to a default looser than what they may have chosen.
     pub fn presence_visibility(&self, room: &str) -> ui::PresenceVisibility {
         self.presence_visibility
             .lock()
             .ok()
             .and_then(|rooms| rooms.get(room).copied())
-            .unwrap_or(ui::PresenceVisibility::WhereIAm)
+            .unwrap_or(ui::PresenceVisibility::Nothing)
     }
 
     /// What live members said and reacted with since the last call, oldest
@@ -3644,6 +3725,43 @@ impl ShellNetwork {
         // Someone who shows nothing sees nothing of where others are.
         if !self.presence_visibility(&cluster_id).sees_pointers() && tells_where(&presence.payload)
         {
+            return;
+        }
+        // Talking beside a pointer, in a room with no live plane: the same
+        // as a live member saying it, for the presence pump; never an app's.
+        let said = match &presence.payload {
+            collab_types::PeerPresencePayload::Chat { text, sent } => Some(LiveChat {
+                peer,
+                room: cluster_id.clone(),
+                chat: text
+                    .as_ref()
+                    .map(|text| tilo_relay_protocol::live::CursorChat {
+                        text: text.clone(),
+                        sent: *sent,
+                    }),
+                reaction: None,
+            }),
+            collab_types::PeerPresencePayload::Reaction { seq, emoji } => Some(LiveChat {
+                peer,
+                room: cluster_id.clone(),
+                chat: None,
+                reaction: Some(tilo_relay_protocol::live::LiveReaction {
+                    seq: *seq,
+                    emoji: emoji.clone(),
+                }),
+            }),
+            _ => None,
+        };
+        if let Some(said) = said {
+            let within_bounds = said.chat.as_ref().is_none_or(|chat| chat.is_valid())
+                && said
+                    .reaction
+                    .as_ref()
+                    .is_none_or(|reaction| reaction.is_valid());
+            if within_bounds && let Ok(mut chat) = self.live_chat.lock() {
+                chat.push(said);
+            }
+            self.drain_wake.poke();
             return;
         }
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
@@ -8467,6 +8585,15 @@ pub(crate) fn shell_network_for_test(
     let local_peer_id = keypair.public();
     let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
     joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
+    // As the desktop tells it on start for every workspace it is in: what
+    // the person chose there, here "Where I am". A room added later is
+    // unknown, and held to "Nothing", until a test says otherwise.
+    let presence_visibility = tree
+        .read()
+        .rooms()
+        .into_iter()
+        .map(|room| (room.to_string(), ui::PresenceVisibility::WhereIAm))
+        .collect();
     let net = ShellNetwork {
         cmd_tx,
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
@@ -8562,7 +8689,8 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         live_chat: Mutex::default(),
-        presence_visibility: Mutex::default(),
+        room_reactions: Mutex::default(),
+        presence_visibility: Mutex::new(presence_visibility),
         peer_colours: Mutex::default(),
         peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),

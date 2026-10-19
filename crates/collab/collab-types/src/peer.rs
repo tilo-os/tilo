@@ -88,6 +88,20 @@ pub enum PeerPresencePayload {
     Wave {
         target: String,
     },
+    /// What the sender says beside their pointer (cursor chat) in a room
+    /// with no live plane: `text` while the bubble is open (empty with
+    /// nothing typed yet), `None` once it closed; `sent` once they pressed
+    /// Enter. Desktop presence: shells show it, apps never receive it.
+    Chat {
+        text: Option<String>,
+        sent: bool,
+    },
+    /// The sender reacted with `emoji` from their pointer, in a room with no
+    /// live plane; a new `seq` is a new reaction. Desktop presence.
+    Reaction {
+        seq: u32,
+        emoji: String,
+    },
 }
 
 #[cfg(test)]
@@ -119,6 +133,18 @@ mod tests {
             },
             PeerPresencePayload::Wave {
                 target: "peer@7".into(),
+            },
+            PeerPresencePayload::Chat {
+                text: Some("look at the second paragraph".into()),
+                sent: true,
+            },
+            PeerPresencePayload::Chat {
+                text: None,
+                sent: false,
+            },
+            PeerPresencePayload::Reaction {
+                seq: 3,
+                emoji: "\u{1f389}".into(),
             },
         ]
     }

@@ -379,6 +379,13 @@ pub struct CursorChat {
 }
 
 impl CursorChat {
+    /// Whether this message is within the bounds every receiver holds it
+    /// to, whichever route carries it.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+
     fn validate(&self) -> Result<()> {
         if self.text.len() > MAX_CURSOR_CHAT_BYTES
             || self.text.chars().count() > MAX_CURSOR_CHAT_CHARS
@@ -403,6 +410,13 @@ pub struct LiveReaction {
 }
 
 impl LiveReaction {
+    /// Whether this reaction is within the bounds every receiver holds it
+    /// to, whichever route carries it.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.validate().is_ok()
+    }
+
     fn validate(&self) -> Result<()> {
         if self.emoji.is_empty()
             || self.emoji.len() > MAX_REACTION_BYTES

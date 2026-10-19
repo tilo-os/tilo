@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 5
+version = 6
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -677,6 +677,9 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "PeerPresencePayload::Availability.state" = "#0 String"
 "PeerPresencePayload::Caret" = "#1 struct"
 "PeerPresencePayload::Caret.pos" = "#0 u64"
+"PeerPresencePayload::Chat" = "#11 struct"
+"PeerPresencePayload::Chat.sent" = "#1 bool"
+"PeerPresencePayload::Chat.text" = "#0 Option<String>"
 "PeerPresencePayload::Following" = "#6 struct"
 "PeerPresencePayload::Following.target" = "#0 Option<String>"
 "PeerPresencePayload::InteractionJson" = "#7 tuple(String)"
@@ -684,6 +687,9 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "PeerPresencePayload::Pointer" = "#0 struct"
 "PeerPresencePayload::Pointer.x" = "#0 f32"
 "PeerPresencePayload::Pointer.y" = "#1 f32"
+"PeerPresencePayload::Reaction" = "#12 struct"
+"PeerPresencePayload::Reaction.emoji" = "#1 String"
+"PeerPresencePayload::Reaction.seq" = "#0 u32"
 "PeerPresencePayload::Selection" = "#2 struct"
 "PeerPresencePayload::Selection.end" = "#1 u64"
 "PeerPresencePayload::Selection.start" = "#0 u64"

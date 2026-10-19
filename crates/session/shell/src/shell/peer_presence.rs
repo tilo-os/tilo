@@ -174,6 +174,12 @@ pub struct PeerPresence {
     /// cursor queue. They are drained into the same render-only
     /// [`PresenceCtx`] projection in [`Self::pump`].
     typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    /// The peer sessions that said, per room, that they are not here: a
+    /// person who shows nothing there ("Nothing") says so on the room's
+    /// typed route, and is then off this roster even while their machine
+    /// keeps taking part in the room's documents. Anything else they say
+    /// in the room (being available again, a pointer) brings them back.
+    absent: Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     /// Complete owner-backed People contexts. Ordinary app-authored Context
     /// fanout is deliberately not an input: it cannot establish membership.
     room_people: Arc<Mutex<HashMap<String, Vec<ui::collaboration::Collaborator>>>>,
@@ -287,6 +293,11 @@ fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room:
         | PresencePayload::Availability { .. }
         | PresencePayload::Wave { .. } => {
             matches!(key, PresenceKey::Workspace { id } if id == room)
+        }
+        // The room's people told that this person is not here: someone who
+        // chose to show nothing in it.
+        PresencePayload::Left if matches!(key, PresenceKey::Workspace { .. }) => {
+            !room.is_empty() && matches!(key, PresenceKey::Workspace { id } if id == room)
         }
         PresencePayload::Arrived | PresencePayload::Left => {
             !room.is_empty()
@@ -566,6 +577,7 @@ impl PeerPresence {
             anchored: Mutex::new(HashMap::new()),
             inbound: net.inbound_presence_handle(),
             typed_inbound,
+            absent: Mutex::new(HashMap::new()),
             room_people,
             certified_people_inbound,
             _certified_people_subscription: certified_people_subscription,
@@ -881,12 +893,44 @@ impl PeerPresence {
         // Attribution is normalized to the authenticated envelope identity
         // inside the fold; JSON supplied by an app cannot rename its actor.
         let people_changed = self.project_people(presence);
+        let absent_changed = self.note_absences(&typed);
         let typed_changed = fold_typed_presence(typed, presence);
         let departure_changed = self.fold_departures(presence);
-        if folded || cursor_changed || departure_changed || people_changed {
+        if folded || cursor_changed || departure_changed || people_changed || absent_changed {
             self.presence_epoch.fetch_add(1, Ordering::Release);
         }
-        cursor_changed || typed_changed || departure_changed || people_changed || chat_changed
+        cursor_changed
+            || typed_changed
+            || departure_changed
+            || people_changed
+            || chat_changed
+            || absent_changed
+    }
+
+    /// Note who said, in which room, that they are not here (a
+    /// room-keyed `Left` on the typed route), and who said anything else
+    /// there since, which brings them back. Returns whether it changed.
+    fn note_absences(&self, typed: &[(String, PresenceKey, PresencePayload)]) -> bool {
+        let mut absent = self.absent.lock_recover();
+        let mut changed = false;
+        for (user, key, payload) in typed {
+            let PresenceKey::Workspace { id: room } = key else {
+                continue;
+            };
+            let Some(handle) = user
+                .strip_prefix("peer@")
+                .and_then(|handle| handle.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if matches!(payload, PresencePayload::Left) {
+                changed |= absent.entry(room.clone()).or_default().insert(handle);
+            } else if let Some(gone) = absent.get_mut(room) {
+                changed |= gone.remove(&handle);
+            }
+        }
+        absent.retain(|_, gone| !gone.is_empty());
+        changed
     }
 
     fn project_people(&self, presence: &mut PresenceCtx) -> bool {
@@ -1015,7 +1059,8 @@ impl PeerPresence {
             // about who is here, and is told apart without the replica.
             if last.inputs.tree == inputs.tree
                 && last.inputs.participants == inputs.participants
-                && roster_presence_print(presence, &self.anchored, &last.room) == last.presence
+                && roster_presence_print(presence, &self.anchored, &self.absent, &last.room)
+                    == last.presence
             {
                 last.inputs = inputs;
                 return false;
@@ -1026,7 +1071,7 @@ impl PeerPresence {
         };
         *seen = Some(RosterSeen {
             inputs: RosterInputs { tree, ..inputs },
-            presence: roster_presence_print(presence, &self.anchored, &room),
+            presence: roster_presence_print(presence, &self.anchored, &self.absent, &room),
             room,
             at: now,
         });
@@ -1080,7 +1125,21 @@ impl PeerPresence {
                         .filter_map(|(user, _)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
                 );
             }
-            arrived.extend(replica.participants_in(ws.room));
+            // Taking part in the room's documents is being here, unless the
+            // person said they are not: someone who shows nothing there.
+            // Their pointer, if they show one again, brings them back above.
+            let absent = self
+                .absent
+                .lock_recover()
+                .get(&room)
+                .cloned()
+                .unwrap_or_default();
+            arrived.extend(
+                replica
+                    .participants_in(ws.room)
+                    .into_iter()
+                    .filter(|handle| !absent.contains(handle)),
+            );
             let principals = tree.room_peer_principals(ws.room);
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
             for row in &mut rows {
@@ -1145,6 +1204,7 @@ impl PeerPresence {
 fn roster_presence_print(
     presence: &PresenceCtx,
     anchored: &Mutex<AnchoredPointers>,
+    absent: &Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     room: &str,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1178,6 +1238,13 @@ fn roster_presence_print(
             if anchored_in.as_str() == room {
                 add(hash_of((3u8, user)));
             }
+        }
+    }
+    if let Ok(absent) = absent.lock()
+        && let Some(gone) = absent.get(room)
+    {
+        for handle in gone {
+            add(hash_of((4u8, handle)));
         }
     }
     print
@@ -3573,6 +3640,91 @@ mod two_sessions {
         arriving_turns_an_invitation_into_a_participant();
     }
 
+    /// "Nothing" means not appearing: someone who shows nothing in a room
+    /// says so on its typed route, and is off the other people's roster
+    /// there even though their machine keeps taking part in the room's
+    /// documents; being available again brings them back. The word is
+    /// only taken for the room it was said in.
+    #[test]
+    fn someone_who_shows_nothing_is_not_listed_as_here() {
+        let guest_peer = peer_id(63);
+        let host_peer = peer_id(64);
+        let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-absent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
+        {
+            let mut replica = host_net.replica.lock().expect("the replica lock");
+            replica.handle_from(
+                &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
+                &NeighbourMsg::SyncReq {
+                    since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new())
+                        .expect("empty heads serialise"),
+                    room: room.to_string(),
+                    invite_id: None,
+                    nonce: 0,
+                },
+            );
+        }
+        let mut presence = PresenceCtx::default();
+        host.pump(&mut presence, &DESK_TILES);
+        host.refresh_roster(&presence);
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, false)],
+            "taking part in the room's documents is being here"
+        );
+
+        let guest = format!("peer@{}", handle_of(&guest_peer));
+        let key = PresenceKey::Workspace {
+            id: room.to_string(),
+        };
+        assert!(
+            typed_presence_authorized(&key, &PresencePayload::Left, &room.to_string()),
+            "a room's people may be told someone is not here"
+        );
+        assert!(
+            !typed_presence_authorized(&key, &PresencePayload::Left, &RoomId::new().to_string()),
+            "only in the room it names"
+        );
+        host.typed_inbound.lock().expect("the typed queue").push((
+            guest.clone(),
+            key.clone(),
+            PresencePayload::Left,
+        ));
+        assert!(host.pump(&mut presence, &DESK_TILES));
+        host.refresh_roster(&presence);
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, true)],
+            "someone who shows nothing is not listed as here, whatever their machine syncs"
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&host_handle.read()),
+            0,
+            "and the bar shows nobody"
+        );
+
+        host.typed_inbound.lock().expect("the typed queue").push((
+            guest,
+            key,
+            PresencePayload::Availability {
+                state: ui::Availability::Available,
+                call: None,
+            },
+        ));
+        assert!(host.pump(&mut presence, &DESK_TILES));
+        host.refresh_roster(&presence);
+        assert_eq!(
+            roster_of(&host_handle),
+            vec![("bob".to_string(), None, false)],
+            "showing themselves again brings them back"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// How long [`while_the_replica_is_held`] holds the lock for frames
     /// that should not need it: far longer than a hundred frames take.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -4046,6 +4198,120 @@ mod two_sessions {
         assert!(
             !on_host.chats.react(&ada, 1, "\u{1f389}", later),
             "a restated reaction does not play again"
+        );
+        let _ = std::fs::remove_dir_all(&pair.dir);
+    }
+
+    /// Cursor chat in a room with no workspace host, so no live plane: what
+    /// the guest types beside their pointer goes over the room's presence
+    /// channel and shows on the host's screen beside that pointer, as it
+    /// does over a live plane; a lone emoji floats up once.
+    #[test]
+    fn cursor_chat_crosses_a_room_with_no_live_plane_over_its_presence_channel() {
+        use tilo_relay_protocol::live::CursorChat;
+        let mut pair = pair("cursor-chat-p2p");
+        let room = pair.room.to_string();
+        let t0 = Instant::now();
+        pair.guest.set_pointer(Some(on_desk(300.0, 200.0)));
+        assert!(pair.guest.publish_local_cursor_at(&room, t0));
+        over_the_wire(published(&mut pair.guest_cmds), &pair.host_net);
+        let mut on_host = PresenceCtx::default();
+        pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
+        let ada = pair.guest_user();
+        let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
+        let deliver = |pair: &mut Pair| match published(&mut pair.guest_cmds) {
+            NeighbourMsg::AppPresenceV2 {
+                peer,
+                app_id,
+                cluster_id,
+                presence,
+                ..
+            } => pair
+                .host_net
+                .handle_typed_app_presence_message(peer, None, app_id, cluster_id, presence),
+            other => panic!("expected room presence, got {other:?}"),
+        };
+
+        assert!(
+            pair.guest_net.publish_cursor_chat(
+                (&room, "so.tilo.notes", "note-1"),
+                (10.0, 10.0),
+                Some(CursorChat {
+                    text: "look at the sec".into(),
+                    sent: false,
+                }),
+            ),
+            "a room with no live plane still carries what is said"
+        );
+        deliver(&mut pair);
+        assert!(pair.host.pump_at(&mut on_host, &DESK_TILES, t0));
+        let typing = on_host
+            .chats
+            .bubble(&ada, t0 + Duration::from_secs(1), motion)
+            .expect("the host shows what the guest is typing");
+        assert_eq!(
+            (typing.text.as_str(), typing.typing),
+            ("look at the sec", true)
+        );
+
+        assert!(pair.guest_net.publish_reaction(
+            (&room, "so.tilo.notes", "note-1"),
+            (10.0, 10.0),
+            "\u{1f389}".into(),
+        ));
+        deliver(&mut pair);
+        pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
+        assert!(
+            on_host
+                .chats
+                .reaction(&ada, t0, motion)
+                .is_some_and(|float| float.emoji == "\u{1f389}"),
+            "and a lone emoji floats up from the pointer"
+        );
+
+        assert!(
+            !pair.guest_net.publish_cursor_chat(
+                (&room, "so.tilo.notes", "note-1"),
+                (10.0, 10.0),
+                Some(CursorChat {
+                    text: "x"
+                        .repeat(tilo_relay_protocol::live::MAX_CURSOR_CHAT_CHARS.saturating_add(1)),
+                    sent: true,
+                }),
+            ),
+            "a message past the bounds is refused on this route too"
+        );
+        let _ = std::fs::remove_dir_all(&pair.dir);
+    }
+
+    /// The moments after start, before the desktop has handed over what the
+    /// person chose in a room: that room is held to the most private choice,
+    /// so nothing of where they are leaves and nobody's pointer shows, never
+    /// to a default looser than what they may have chosen.
+    #[test]
+    fn a_room_not_told_about_yet_is_held_to_nothing() {
+        let pair = pair("unknown-visibility");
+        let fresh = RoomId::new().to_string();
+        assert_eq!(
+            pair.guest_net.presence_visibility(&fresh),
+            ui::PresenceVisibility::Nothing,
+            "a room the desktop said nothing about yet shows nothing"
+        );
+        pair.guest.set_pointer(Some(on_desk(300.0, 200.0)));
+        assert!(
+            !pair.guest.publish_local_cursor_at(&fresh, Instant::now()),
+            "no pointer is said there"
+        );
+        assert!(
+            !pair.guest_net.presence_visibility(&fresh).sees_pointers(),
+            "and nobody's pointer shows there"
+        );
+        pair.guest_net
+            .set_presence_visibility(&fresh, ui::PresenceVisibility::WhereIAm);
+        assert_eq!(
+            pair.guest_net.presence_visibility(&fresh),
+            ui::PresenceVisibility::WhereIAm,
+            "once told, the person's choice holds"
         );
         let _ = std::fs::remove_dir_all(&pair.dir);
     }
