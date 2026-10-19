@@ -72,7 +72,7 @@ impl ActionAddress {
     /// than looked up against a half-parsed id.
     pub fn parse(s: &str) -> Option<Self> {
         let (resource, action) = s.split_once(KEY_SEP)?;
-        if resource.is_empty() || action.is_empty() {
+        if resource.is_empty() || action.is_empty() || action.contains(KEY_SEP) {
             return None;
         }
         Some(Self::new(resource, action))
@@ -1682,6 +1682,10 @@ mod tests {
         assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         assert_eq!(ActionAddress::parse("notes.note:1"), None);
         assert_eq!(ActionAddress::parse(&format!("{KEY_SEP}star")), None);
+        assert_eq!(
+            ActionAddress::parse(&format!("notes{KEY_SEP}edit{KEY_SEP}title")),
+            None
+        );
         assert_eq!(
             ActionAddress::checked("notes.note:1", "edit"),
             Some(ActionAddress::new("notes.note:1", "edit"))
