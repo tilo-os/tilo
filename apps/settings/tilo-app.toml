@@ -45,7 +45,7 @@ optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "se
 query = true
 invoke = true
 [resources]
-kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
