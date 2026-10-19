@@ -1102,6 +1102,37 @@ impl Rooms {
         Ok((governed.summary().generation, marks))
     }
 
+    /// The apps `room` lets author its content
+    /// ([`tilo_action_policy::roles::app_authorship`]), as its governance
+    /// holds them now.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here.
+    pub async fn app_authors(
+        &self,
+        room: &str,
+    ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
+        let now = SystemTime::now();
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        let policy = governed
+            .peer()
+            .permissions(self.inner.host.cert.device_public_key, now)
+            .map_err(CollaborationError::new)?
+            .policy;
+        let cx = tilo_action_policy::Context::at_time(now);
+        Ok(policy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.subject {
+                tilo_action_policy::Subject::App(app) => Some(app.clone()),
+                _ => None,
+            })
+            .filter(|app| policy.app_authors(app, &cx))
+            .collect())
+    }
+
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
         self.inner
             .rooms
