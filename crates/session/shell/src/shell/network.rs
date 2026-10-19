@@ -7051,6 +7051,21 @@ impl ShellNetwork {
                 msg,
             } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, replayed, msg),
             NetEvent::OwnReplay { msg, .. } => self.dispatch_own_replayed_document(msg),
+            NetEvent::NotAdmitted { ws } => {
+                let room = self.replica.lock().ok().and_then(|replica| {
+                    replica
+                        .tree
+                        .read()
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .map(|workspace| workspace.room)
+                        .find(|room| room_topic_id(*room) == ws)
+                });
+                if let Some(room) = room {
+                    self.readmit_site_room(room);
+                }
+            }
             NetEvent::PersonalFabric {
                 ws,
                 peer,

@@ -428,6 +428,11 @@ pub enum DialError {
     /// it refused this device, or it predates versioned handshakes. After a
     /// few of these in a row, [`probe_version`] tells which.
     NoAnswer(String),
+    /// The host admits nobody of this device's person any more: they were
+    /// removed (a public room prunes guests away for long), and joining
+    /// again, where the room lets them, admits them anew. Dialing again
+    /// changes nothing until then.
+    NotAdmitted,
     /// Anything else, in words for the log; dialing again may succeed.
     Failed(String),
 }
@@ -443,6 +448,7 @@ impl std::fmt::Display for DialError {
             Self::NoAnswer(reason) => {
                 write!(f, "the host closed the stream without answering: {reason}")
             }
+            Self::NotAdmitted => f.write_str("the host admits this device's person no longer"),
             Self::Failed(reason) => f.write_str(reason),
         }
     }
@@ -470,8 +476,14 @@ impl From<DialError> for String {
 
 impl From<tilo_relay_session::ClientError> for DialError {
     fn from(error: tilo_relay_session::ClientError) -> Self {
-        if let tilo_relay_session::ClientError::NoHandshakeAnswer(reason) = error {
-            return Self::NoAnswer(reason);
+        match &error {
+            tilo_relay_session::ClientError::NoHandshakeAnswer(reason) => {
+                return Self::NoAnswer(reason.clone());
+            }
+            tilo_relay_session::ClientError::Https(tilo_relay_client::LinkError::Denied(
+                tilo_relay_protocol::web::SessionRefusal::NotAdmitted,
+            )) => return Self::NotAdmitted,
+            _ => {}
         }
         match error.peer_version() {
             Some(theirs) => Self::PeerVersion { theirs },
@@ -648,5 +660,13 @@ mod dial_error_tests {
             )),
             DialError::Failed(_)
         ));
+        // A person the room removed is told apart, so the device can join
+        // again through the room's door.
+        assert_eq!(
+            DialError::from(ClientError::Https(tilo_relay_client::LinkError::Denied(
+                tilo_relay_protocol::web::SessionRefusal::NotAdmitted
+            ))),
+            DialError::NotAdmitted
+        );
     }
 }
