@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use smithay_client_toolkit::reexports::client;
 use wayland_server::protocol::{
     wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
-    wl_keyboard, wl_seat, wl_surface,
+    wl_keyboard, wl_pointer, wl_seat, wl_surface,
 };
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
@@ -64,6 +64,7 @@ struct Seat {
     keyboards: Vec<wl_keyboard::WlKeyboard>,
     devices: Vec<wl_data_device::WlDataDevice>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
     device: Option<wl_data_device::WlDataDevice>,
     surface: Option<wl_surface::WlSurface>,
 }
@@ -151,6 +152,23 @@ impl Server {
             .expect("bound keyboard")
             .modifiers(serial, 0, 0, 0, 0);
     }
+
+    /// The pointer enters `surface` and leaves it again, as when it moves
+    /// across a window onto desktop chrome. Keyboard focus stays put.
+    fn pointer_crossing(&mut self, index: usize, surface: usize) {
+        let surface = self
+            .surfaces
+            .get(surface)
+            .expect("real client surface")
+            .clone();
+        let pointer = self.seat(index).pointer.clone().expect("bound pointer");
+        self.serial = self.serial.checked_add(1).expect("fixture serial");
+        pointer.enter(self.serial, &surface, 1.0, 1.0);
+        pointer.frame();
+        self.serial = self.serial.checked_add(1).expect("fixture serial");
+        pointer.leave(self.serial, &surface);
+        pointer.frame();
+    }
 }
 
 impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
@@ -164,7 +182,7 @@ impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
     ) {
         let seat = init.init(resource, *index);
         seat.name(format!("fixture-seat-{index}"));
-        seat.capabilities(wl_seat::Capability::Keyboard);
+        seat.capabilities(wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer);
     }
 }
 
@@ -185,7 +203,22 @@ impl Dispatch<wl_seat::WlSeat, usize> for Server {
             keyboard.repeat_info(25, 600);
             state.seat(*index).keyboards.push(keyboard.clone());
             state.seat(*index).keyboard = Some(keyboard);
+        } else if let wl_seat::Request::GetPointer { id } = request {
+            state.seat(*index).pointer = Some(init.init(id, ()));
         }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &wl_pointer::WlPointer,
+        _: wl_pointer::Request,
+        (): &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
     }
 }
 
@@ -640,11 +673,11 @@ impl Harness {
             harness.wait(
                 || {
                     harness.query(|state| {
-                        state
-                            .seats
-                            .iter()
-                            .all(|seat| seat.keyboard.is_some() && seat.device.is_some())
-                            && state.surfaces.len() == 2
+                        state.seats.iter().all(|seat| {
+                            seat.keyboard.is_some()
+                                && seat.pointer.is_some()
+                                && seat.device.is_some()
+                        }) && state.surfaces.len() == 2
                     })
                 },
                 "worker bindings",
@@ -1194,6 +1227,60 @@ fn worker_shutdown_settles_dispatched_copies_with_the_connection_retained() {
             state.hold_flush = false;
         });
     }
+}
+
+#[test]
+fn pointer_crossing_neither_revokes_nor_grants_copy_permission() {
+    let h = Harness::new();
+    h.enter(0, 0);
+    h.fence();
+    assert!(
+        h.backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "caption")
+    );
+    h.operation(|state, _| state.pointer_crossing(0, 0));
+    h.fence();
+    assert!(
+        h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
+        "pointer leave refused a copy from the keyboard-focused client"
+    );
+    assert_eq!(h.query(|state| state.publications.len()), 2);
+
+    h.leave(0);
+    h.operation(|state, _| state.pointer_crossing(0, 0));
+    h.fence();
+    assert!(
+        !h.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]),
+        "pointer focus authorized a copy without keyboard focus"
+    );
+    assert_eq!(h.query(|state| state.publications.len()), 2);
+}
+
+#[test]
+fn input_after_a_copy_does_not_publish_it_again() {
+    let h = Harness::new();
+    h.enter(0, 0);
+    h.fence();
+    assert!(
+        h.backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "caption")
+    );
+    // Another client copies, which cancels this client's source. The
+    // earlier copy must not take the selection back when this client sees
+    // input or focus again.
+    h.operation(|state, _| {
+        state
+            .selection
+            .take()
+            .expect("published source")
+            .cancelled();
+        state.modifiers(0);
+        state.pointer_crossing(0, 0);
+        state.leave(0);
+        state.enter(0, 0);
+    });
+    h.fence();
+    assert_eq!(h.query(|state| state.publications.len()), 1);
 }
 
 #[test]
