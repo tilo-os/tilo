@@ -1179,7 +1179,7 @@ pub fn sample_recent_sources() -> Vec<Source> {
 // ---------------------------------------------------------------------------
 
 /// Format a byte count with SI decimal units, the way drive and image
-/// vendors label capacities (`931.5 GB`). Zero means "unknown" and reads `—`.
+/// vendors label capacities (`931.5 GB`, `1 kB`). Zero means "unknown" and reads `—`.
 pub fn fmt_size(bytes: u64) -> String {
     if bytes == 0 {
         "—".to_string()
@@ -1311,7 +1311,7 @@ mod tests {
         {
             assert_eq!(fmt_size(0), "—");
             assert_eq!(fmt_size(512), "512 B");
-            assert_eq!(fmt_size(1_000_000_000_000), "1.0 TB");
+            assert_eq!(fmt_size(1_000_000_000_000), "1 TB");
             assert!(fmt_size(2_415_919_104).ends_with("GB"));
         }
 
@@ -1600,9 +1600,13 @@ fn bytes_si(n: u64) -> String {
         value /= 1000.0;
         unit = unit.saturating_add(1);
     }
+    let name = UNITS.get(unit).unwrap_or(&"");
     if unit == 0 {
-        format!("{n} {}", UNITS.first().unwrap_or(&""))
+        format!("{n} {name}")
     } else {
-        format!("{value:.1} {}", UNITS.get(unit).unwrap_or(&""))
+        // One decimal, left off when it is zero (`1 kB`, `1.5 MB`), as the
+        // toolkit's size style writes the sizes the app shows beside these.
+        let text = format!("{value:.1}");
+        format!("{} {name}", text.strip_suffix(".0").unwrap_or(&text))
     }
 }
