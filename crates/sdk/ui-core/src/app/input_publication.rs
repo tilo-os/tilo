@@ -9,9 +9,9 @@
 //! inert input (bare motion, a key's release, a modifier) keeps the cached
 //! tree unless the dispatch edited a document (the app's or a bound
 //! component's record), took focus, was handled, or a widget reported a
-//! presentation change. Explicitly
-//! view-only scroll handlers can also keep it when all documents
-//! are committed and unchanged; the next frame still lays out and refreshes
+//! presentation change. A wheel that only panned a scroll container (the
+//! root declared it view-only, or the container reported the pan) keeps it
+//! too when all documents are committed and unchanged; the next frame still lays out and refreshes
 //! accessibility geometry. Every other event drops the tree as before.
 
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -28,6 +28,8 @@ pub(super) struct ResourceInputMark {
     focused: Option<taffy::NodeId>,
     owners: Vec<BoundOwnerMark>,
     view_only_scroll: bool,
+    /// The wheel may still prove view-only by a container's pan.
+    may_pan: bool,
 }
 
 /// The bit for `button` in [`super::runtime::InputRuntime::pointer_buttons`].
@@ -72,13 +74,17 @@ impl super::App {
     pub(super) fn resource_input_mark(&self, event: &WindowEvent) -> ResourceInputMark {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::InputCarry);
-        let view_only_scroll = self.is_view_only_scroll(event);
+        let may_pan = self.may_pan_view_only(event);
+        let view_only_scroll = may_pan && self.root_widget.view_only_scroll(event);
+        // A pan reported by an earlier dispatch is not this event's.
+        crate::widget::take_view_only_pan();
         let mark = ResourceInputMark {
             document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
             focused: self.focused_node,
             view_only_scroll,
-            owners: if self.is_inert_input(event) || view_only_scroll {
+            may_pan,
+            owners: if self.is_inert_input(event) || may_pan {
                 crate::bound_dispatch::bound_owner_marks(self.root_widget.as_ref(), &self.state.doc)
             } else {
                 Vec::new()
@@ -89,6 +95,15 @@ impl super::App {
     }
 
     fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
+        self.may_pan_view_only(event) && self.root_widget.view_only_scroll(event)
+    }
+
+    /// Whether a wheel `event` arrives where it can be view-only: nothing
+    /// held, nothing pending, no modal or floating surface. The root may
+    /// declare it so up front ([`Self::is_view_only_scroll`]); else a scroll
+    /// container reports during dispatch that it only panned
+    /// ([`crate::widget::note_view_only_pan`]).
+    fn may_pan_view_only(&self, event: &WindowEvent) -> bool {
         matches!(event, WindowEvent::MouseWheel { .. })
             && self.input.pointer_buttons == 0
             && self.input.modifiers.state().is_empty()
@@ -96,7 +111,6 @@ impl super::App {
             && !self.layout.structure_dirty
             && self.root_widget.modal_capture().is_none()
             && self.root_widget.floating_surface_presentations().is_empty()
-            && self.root_widget.view_only_scroll(event)
     }
 
     /// Input that activates nothing by itself: hover, a key's release, a
@@ -151,9 +165,11 @@ impl super::App {
     ) -> bool {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::InputCarry);
+        let panned = crate::widget::take_view_only_pan();
+        let declared = before.view_only_scroll && self.is_view_only_scroll(event);
         let view_only = allow_scroll
-            && before.view_only_scroll
-            && self.is_view_only_scroll(event)
+            && before.may_pan
+            && (declared || panned)
             && before.document.1 == 0
             && before.owners.iter().all(BoundOwnerMark::is_committed);
         let unchanged = ((!consumed && self.is_inert_input(event)) || view_only)

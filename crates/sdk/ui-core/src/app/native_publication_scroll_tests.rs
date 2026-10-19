@@ -412,6 +412,10 @@ impl ViewScrollFixture {
     }
 }
 
+/// A wheel only the scroller took is view-only whether the root declares it
+/// up front or the scroller reports its pan: either way neither the document
+/// sync nor the resource projection runs again. Settings declared nothing,
+/// so every notch republished its whole tree.
 #[test]
 fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry() {
     for view_only in [false, true] {
@@ -429,17 +433,10 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
         let directory = fixture.app.actions.last_published_actions.clone();
         for sample in 0..10 {
             let input_ns = fixture.wheel();
-            if view_only {
-                assert!(
-                    !fixture.app.needs_sync,
-                    "view-only wheel must not request document sync"
-                );
-            } else {
-                assert!(
-                    fixture.app.needs_sync,
-                    "unknown handlers keep full synchronization"
-                );
-            }
+            assert!(
+                !fixture.app.needs_sync,
+                "view-only wheel must not request document sync"
+            );
             let frame_ns = fixture.frame();
             eprintln!(
                 "native-view-only-wheel {}",
@@ -461,21 +458,16 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
             fixture.app.actions.last_published_actions, directory,
             "the action surface remains available"
         );
-        if view_only {
-            assert_eq!(
-                fixture.syncs.get(),
-                syncs,
-                "no repeated document synchronization"
-            );
-            assert_eq!(
-                fixture.declarations.get(),
-                declarations,
-                "no repeated resource projection"
-            );
-        } else {
-            assert!(fixture.syncs.get() > syncs);
-            assert!(fixture.declarations.get() > declarations);
-        }
+        assert_eq!(
+            fixture.syncs.get(),
+            syncs,
+            "no repeated document synchronization"
+        );
+        assert_eq!(
+            fixture.declarations.get(),
+            declarations,
+            "no repeated resource projection"
+        );
         fixture.app.refresh_semantic_tree();
         assert!(
             before_geometry.iter().any(|(id, bounds)| fixture
@@ -491,8 +483,8 @@ fn view_only_native_scroll_keeps_publication_and_updates_accessibility_geometry(
 #[test]
 fn view_only_native_scroll_refuses_pending_and_dispatch_edits() {
     use automerge::{ReadDoc, transaction::Transactable};
-    for edit_during_dispatch in [false, true] {
-        let mut fixture = ViewScrollFixture::new(true, edit_during_dispatch);
+    for (edit_during_dispatch, declared) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut fixture = ViewScrollFixture::new(declared, edit_during_dispatch);
         if !edit_during_dispatch {
             fixture
                 .app
@@ -533,8 +525,10 @@ fn view_only_native_scroll_refuses_pending_and_dispatch_edits() {
 #[cfg(unix)]
 #[test]
 fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
-    for edit in [false, true] {
-        let mut fixture = ViewScrollFixture::new_as(true, edit, true);
+    // Declared by the root, or reported by the scroller it pans: a hosted
+    // app (Settings) declares nothing.
+    for (edit, declared) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut fixture = ViewScrollFixture::new_as(declared, edit, true);
         let binding = fixture
             .app
             .root_widget

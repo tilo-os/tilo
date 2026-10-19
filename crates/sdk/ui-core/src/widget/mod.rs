@@ -1125,6 +1125,26 @@ pub(crate) fn resource_presentation_epoch() -> u64 {
     RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
 }
 
+thread_local! {
+    static VIEW_ONLY_PAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tell the host that the wheel event being dispatched was consumed only to
+/// move a scroll container's view: every widget under the pointer refused
+/// it, and the container took it as a pan of its own offset. The host then
+/// keeps the published resource tree and skips the full sync, exactly as
+/// for a root that declares [`Widget::view_only_scroll`], provided the
+/// dispatch changed no document, focus or declared presentation. A scroll
+/// container that does anything else with the wheel must not call this.
+pub fn note_view_only_pan() {
+    VIEW_ONLY_PAN.with(|pan| pan.set(true));
+}
+
+/// Whether [`note_view_only_pan`] ran since the last call, clearing it.
+pub(crate) fn take_view_only_pan() -> bool {
+    VIEW_ONLY_PAN.with(|pan| pan.replace(false))
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,

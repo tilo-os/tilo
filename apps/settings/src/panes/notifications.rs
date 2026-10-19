@@ -181,6 +181,9 @@ pub struct NotificationsArea {
     /// The installed apps, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
+    /// The rows, kept for the policy version and locale they show, until
+    /// the first mute they show runs out.
+    rows: crate::host::RowsMemo<(ui::storage::SettingsRevision, u64, Option<i64>)>,
 }
 
 impl NotificationsArea {
@@ -193,6 +196,7 @@ impl NotificationsArea {
             apps: OnceCell::new(),
             sample: !cx.reaches_devices(),
             read: crate::device_read::DeviceRead::default(),
+            rows: crate::host::RowsMemo::default(),
         }
     }
 
@@ -248,11 +252,27 @@ impl NotificationsArea {
         self.prefs.borrow_mut().refresh();
         let apps = self.apps();
         let prefs = self.prefs.borrow();
-        let prefs = prefs.get();
-        apps.iter()
-            .take(MAX_APP_ROWS)
-            .map(|app| app_row(&self.cx, prefs, app))
-            .collect()
+        let now = unix_now_i64();
+        // A row offers to unmute an app until its mute runs out: the rows
+        // hold until the first such deadline passes.
+        let next_unmute = prefs
+            .get()
+            .per_app
+            .values()
+            .filter_map(|rule| rule.muted_until)
+            .filter(|until| *until > now)
+            .min();
+        let key = (
+            prefs.revision(),
+            ui::i18n::I18nManager::revision(),
+            next_unmute,
+        );
+        self.rows.rows(key, || {
+            apps.iter()
+                .take(MAX_APP_ROWS)
+                .map(|app| app_row(&self.cx, prefs.get(), app))
+                .collect()
+        })
     }
 }
 
@@ -1070,6 +1090,7 @@ mod tests {
             apps: OnceCell::from(sample_apps()),
             sample: true,
             read: crate::device_read::DeviceRead::default(),
+            rows: crate::host::RowsMemo::default(),
         };
         let mut pane = NotificationsPane::new(cx.clone(), &area);
         assert!(pane.shown.apps["so.tilo.chat"].banners.get());

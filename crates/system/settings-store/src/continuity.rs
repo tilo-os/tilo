@@ -130,6 +130,7 @@ policies! {
         "tilo.input.compose_key",
         "tilo.input.caps_lock",
         "tilo.input.keyboard_layouts",
+        "tilo.input.paste_shortcuts",
         "tilo.audio.system_sounds",
         "tilo.audio.balance",
         "tilo.audio.mono_output",

@@ -331,11 +331,26 @@ mod hosted {
         app.settle();
         app.harness().click_at(1460.0, 460.0);
         let mut scroll = Vec::new();
+        let mut phases: std::collections::BTreeMap<&'static str, (u128, usize)> =
+            std::collections::BTreeMap::new();
         for i in 0..60 {
             let t = Instant::now();
-            app.harness().scroll(0.0, if i < 30 { -1.0 } else { 1.0 });
-            app.settle();
+            let ((), samples) = ui::tilo_resource::profiling::observe(|| {
+                app.harness().scroll(0.0, if i < 30 { -1.0 } else { 1.0 });
+                app.settle();
+            });
             scroll.push(t.elapsed().as_micros() as u64);
+            for sample in samples {
+                let entry = phases.entry(sample.phase).or_default();
+                entry.0 += sample.elapsed_ns;
+                entry.1 += sample.calls;
+            }
+        }
+        for (phase, (ns, calls)) in &phases {
+            eprintln!(
+                "perf hosted scroll phase {phase}: {}us per step over {calls} calls",
+                ns / 60 / 1000
+            );
         }
         let _ = summary("hosted settings scroll step", &mut scroll);
         app.harness()
