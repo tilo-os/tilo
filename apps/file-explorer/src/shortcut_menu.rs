@@ -243,7 +243,7 @@ mod tests {
             app_id: SHORTCUTS_APP_ID.into(),
             parent_resource: String::new(),
             resource: CatalogueResource {
-                id: resource.clone(),
+                id: resource,
                 kind: SHORTCUT_RESOURCE_KIND.into(),
                 label: label.into(),
                 presentation: None,
