@@ -418,6 +418,15 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             | Envelope::Unsubscribe { workspace_id } => Some(*workspace_id),
             _ => None,
         };
+        if let Envelope::Unsubscribe { workspace_id } = &env {
+            // A replay handed to the writer still checks its subscription
+            // until its Ready; unsubscribing under it would end the whole
+            // connection. The reply to an earlier subscribe (one the device
+            // sent, or a lagging room's resume) comes first, then this.
+            self.inbound
+                .overtake_while(Box::pin(cx.replays_written()), Some(*workspace_id), cx)
+                .await?;
+        }
         if replaying {
             cx.pending_replays
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
