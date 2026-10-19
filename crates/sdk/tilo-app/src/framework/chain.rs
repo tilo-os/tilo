@@ -880,10 +880,13 @@ fn detached_dispatch<P: Chained>(
     )
 }
 
-/// The chains a window's views opened, by part type: one per type.
+/// The chains a window's views opened, by part type: one per type; and the
+/// child records they opened, by container.
 #[derive(Default)]
 pub(crate) struct Chains {
     held: RefCell<BTreeMap<&'static str, Rc<dyn Any>>>,
+    /// The child records held, by their container's address.
+    children: RefCell<BTreeMap<String, Rc<dyn Any>>>,
     doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
 }
 
@@ -901,6 +904,32 @@ impl Chains {
         self.held
             .borrow_mut()
             .insert(P::KIND, Rc::clone(&state) as Rc<dyn Any>);
+        self.doors
+            .borrow_mut()
+            .push(Rc::clone(&state) as Rc<dyn RecordDoor>);
+        Some(state)
+    }
+
+    /// The children of `C` the parent lists, held in `room` on first use:
+    /// published and answered beside the chains, through the same door.
+    pub(crate) fn open_children<C: super::children::ChildRecord>(
+        &self,
+        room: Option<&RoomRecords>,
+        parent: impl Fn() -> Rc<<C::Parent as Resource>::State> + 'static,
+    ) -> Option<Rc<super::children::ChildrenState<C>>> {
+        let key = ui_core::record::children_resource_id(&C::parent_record(), C::KIND);
+        if let Some(held) = self.children.borrow().get(&key) {
+            return Rc::clone(held)
+                .downcast::<super::children::ChildrenState<C>>()
+                .ok();
+        }
+        let state = Rc::new(super::children::ChildrenState::<C>::open(
+            room?.clone(),
+            Rc::new(parent),
+        )?);
+        self.children
+            .borrow_mut()
+            .insert(key, Rc::clone(&state) as Rc<dyn Any>);
         self.doors
             .borrow_mut()
             .push(Rc::clone(&state) as Rc<dyn RecordDoor>);

@@ -203,6 +203,17 @@ impl ViewStorage {
         self.chains.open::<P>(self.room.as_ref(), base)
     }
 
+    /// The children of `C` the parent lists, held on first use, the parent
+    /// read from `parent`. `None` where the window keeps no records in a
+    /// room (a view of a past version).
+    pub(crate) fn children<C: super::children::ChildRecord>(
+        &self,
+        parent: impl Fn() -> Rc<<C::Parent as tilo_resource::Resource>::State> + 'static,
+    ) -> Option<Rc<super::children::ChildrenState<C>>> {
+        super::controls::opened_in_room::<C>();
+        self.chains.open_children::<C>(self.room.as_ref(), parent)
+    }
+
     /// Answer one published action of a chain the views opened, invoked by
     /// someone the window knows as `me`.
     pub(crate) fn chain_action(

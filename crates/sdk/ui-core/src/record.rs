@@ -241,6 +241,29 @@ impl RecordId {
         (self.part(index).storage_key() == storage_key).then_some(index)
     }
 
+    /// The child record `id` of `self`: a resource kept as a record of its
+    /// own inside its parent (a chat's channel), its id minted once and
+    /// never changed, wherever its parent lists it
+    /// (`tilo_resource::children`). `None` for an id that cannot name a
+    /// record (empty, too long, or with characters other than letters,
+    /// digits, `.`, `_` and `-`).
+    #[must_use]
+    pub fn child(&self, id: &str) -> Option<Self> {
+        let role = format!("child.{id}");
+        (!id.is_empty() && valid_label(&role, MAX_RECORD_RELATION_BYTES))
+            .then(|| Self::derived(&role, self))
+            .filter(|child| valid_record_id(&child.0, 0))
+    }
+
+    /// The parent and id of a [`Self::child`], or `None` for any other
+    /// record.
+    #[must_use]
+    pub fn child_of(&self) -> Option<(Self, String)> {
+        let (role, base) = self.0.strip_prefix("derived:")?.split_once('@')?;
+        let id = role.strip_prefix("child.")?;
+        (!id.is_empty()).then(|| (Self(base.to_owned()), id.to_owned()))
+    }
+
     /// `self` declared on-demand: a room's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
     /// form is `neighbour_wire::on_demand_record`'s.
@@ -2748,6 +2771,13 @@ pub fn chain_resource_id(chain: &RecordId) -> String {
     format!("chain:{}", chain.as_str())
 }
 
+/// The address the child records of `kind` that `parent` lists are
+/// published under, as one container resource beside the app's own.
+#[must_use]
+pub fn children_resource_id(parent: &RecordId, kind: &str) -> String {
+    format!("children:{kind}@{}", parent.as_str())
+}
+
 /// The chain a resource published under `id` is ([`chain_resource_id`]),
 /// or `None` when `id` names no chain.
 #[must_use]
@@ -4402,6 +4432,33 @@ mod tests {
         let archive = RecordId::minted().on_demand();
         assert!(archive.as_str().starts_with("derived:on-demand@uuid:"));
         assert_eq!(RecordId::parse(archive.as_str()), Some(archive));
+    }
+
+    /// A child record is an ordinary record id that names its parent and
+    /// its own id, whatever lists it; an id that cannot name a record is
+    /// refused.
+    #[test]
+    fn a_child_record_names_its_parent_and_its_own_id() {
+        let chat = RecordId::room_default();
+        let channel = chat.child("c_design").unwrap();
+        assert_eq!(
+            channel.as_str(),
+            format!("derived:child.c_design@{}", chat.as_str())
+        );
+        assert_eq!(RecordId::parse(channel.as_str()), Some(channel.clone()));
+        assert_eq!(
+            channel.child_of(),
+            Some((chat.clone(), "c_design".to_owned()))
+        );
+        assert_eq!(chat.child_of(), None);
+        assert_eq!(chat.part(1).child_of(), None);
+        for refused in ["", "has space", "a/b", &"x".repeat(80)] {
+            assert_eq!(chat.child(refused), None, "{refused:?}");
+        }
+        assert_eq!(
+            children_resource_id(&chat, "chat.channel"),
+            format!("children:chat.channel@{}", chat.as_str())
+        );
     }
 
     /// Two devices creating the same record make byte for byte the same

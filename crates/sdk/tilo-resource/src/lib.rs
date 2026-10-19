@@ -104,6 +104,7 @@ pub mod action;
 mod apply_cache;
 pub mod batch;
 pub mod child;
+pub mod children;
 mod chunk_map;
 pub mod collection;
 pub mod content;
@@ -148,6 +149,7 @@ pub use action::{
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
+pub use children::{ChildList, ChildRef, Children, Trashed};
 pub use collection::{Collection, Id, Membership, Quarantined};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};

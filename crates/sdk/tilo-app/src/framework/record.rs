@@ -377,6 +377,28 @@ impl<'a> Records<'a> {
         self
     }
 
+    /// The children of `C` the app's record lists
+    /// ([`Children`](super::Children)): each a record of its own, held and
+    /// published with the window.
+    pub fn children<C: super::ChildRecord>(&mut self) -> &mut Self {
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        let Some(parent) = self
+            .base
+            .clone()
+            .and_then(|base| base.downcast::<Live<C::Parent>>().ok())
+        else {
+            tracing::warn!(
+                kind = C::KIND,
+                "children read the app's own resource as their parent"
+            );
+            return self;
+        };
+        let _ = storage.children::<C>(move || parent.get());
+        self
+    }
+
     /// The person's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {

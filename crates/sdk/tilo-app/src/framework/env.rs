@@ -116,6 +116,17 @@ impl<R: Resource> RecordEnv<R> {
         Some(super::Chain::new(state, dispatch))
     }
 
+    /// The children of `C` this record lists ([`Children`](super::Children)):
+    /// each a record of its own, read as they change, with the one
+    /// lifecycle every container has. `None` in a view of a past version,
+    /// or where `C`'s parent is not this record's resource.
+    pub fn children<C: super::ChildRecord<Parent = R>>(&self) -> Option<super::Children<C>> {
+        let live = self.live.clone();
+        let state = self.storage.children::<C>(move || live.get())?;
+        let me = self.dispatch.me()?.to_owned();
+        Some(super::Children::new(state, me))
+    }
+
     /// Who this view is for: the participant reading and editing through
     /// it, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the
