@@ -1628,7 +1628,14 @@ impl ShellDriver {
                 key.clone(),
                 ui::collaboration::PresencePayload::Availability {
                     state,
-                    call: call.map(str::to_owned),
+                    // As Chioma's device says it: the channel's id and name.
+                    call: call.map(|name: &str| {
+                        ui::CallPresence {
+                            channel: format!("c_{name}"),
+                            name: name.to_owned(),
+                        }
+                        .encode()
+                    }),
                 },
             );
         }

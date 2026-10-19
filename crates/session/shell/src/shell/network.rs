@@ -3324,12 +3324,20 @@ impl ShellNetwork {
         &self,
         app_id: String,
         cluster_id: String,
-        presence: collab_types::PeerPresence,
+        mut presence: collab_types::PeerPresence,
     ) {
+        let visibility = self.presence_visibility(&cluster_id);
         if self.is_local_person_room(&cluster_id)
-            || !visibility_allows(self.presence_visibility(&cluster_id), &presence.payload)
+            || !visibility_allows(visibility, &presence.payload)
         {
             return;
+        }
+        // The call someone is in (its channel's id and name) says where they
+        // are: only the people who may see that hear it.
+        if let collab_types::PeerPresencePayload::Availability { call, .. } = &mut presence.payload
+            && !visibility.shows_where()
+        {
+            *call = None;
         }
         let msg = NeighbourMsg::AppPresenceV2 {
             peer: self.local_peer_id_hash(),

@@ -1,11 +1,14 @@
-//! Voice from the roster: who is in which voice channel, as the room's
-//! calls say (the session's native media service), and "Join" on a
-//! person's row, which asks the app holding that channel to join its call,
-//! as a person's click in that app or an agent's call would. Joining is
-//! being in the call with the microphone on, unless the person last chose to
-//! join muted (the calls' own rule). The channel this device is in is what
-//! its people see as this person's call; leaving clears it.
+//! Voice from the roster: who is in which voice channel, as each person's
+//! own device says in their presence ([`ui::CallPresence`]: the channel's id
+//! and name, sent only to the people who may see where they are), and
+//! "Join" on a person's row, which asks Chat to join that channel's call,
+//! opening Chat into the workspace first when it is closed, as a person's
+//! click in Chat or an agent's call would. Joining is being in the call with
+//! the microphone on, unless the person last chose to join muted (the calls'
+//! own rule). The channel this device is in is what its people see as this
+//! person's call; leaving clears it.
 
+use tilo_action_broker::collab_broker_capnp::PublishedSurface;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
@@ -13,7 +16,6 @@ use tilo_actions::remote::{
 };
 use tilo_desktop::collaborators::{RosterRow, VoiceChannel};
 
-use crate::shell::native_media::RoomCall;
 use crate::shell::remote_actions::BrokerActionHost;
 
 /// The app whose voice channels the roster joins: Chat holds a room's
@@ -24,56 +26,72 @@ const CHAT_RECORD_KIND: &str = "chat.workspace";
 /// Chat's action on a voice channel's call row that joins its call.
 const JOIN_CALL_ACTION: &str = "join-call";
 
-/// The action that joins `call` in workspace `room`: its app's `join-call`
-/// on the channel's call row, delivered to the app (opened into the
-/// workspace first if it is not running). `None` for a channel of an app
-/// whose calls this does not know how to join.
+/// Chat's resource id of voice channel `channel`'s row.
+fn channel_row(channel: &str) -> String {
+    tilo_resource::items::item_resource_id_in(
+        CHAT_RECORD_KIND,
+        "channels",
+        &tilo_resource::Id::from_raw(channel),
+    )
+}
+
+/// The action that joins `call` in workspace `room`: Chat's `join-call` on
+/// the channel's call row, delivered to Chat (opened into the workspace
+/// first if it is not running). `None` for a channel of an app whose calls
+/// this does not know how to join.
 pub(crate) fn join_call_target(room: &str, call: &VoiceChannel) -> Option<RemoteActionTarget> {
     if call.app != CHAT_APP || call.channel.is_empty() {
         return None;
     }
-    let row = tilo_resource::items::item_resource_id_in(
-        CHAT_RECORD_KIND,
-        "channels",
-        &tilo_resource::Id::from_raw(call.channel.as_str()),
-    );
     Some(application_action_target(
         room,
         &call.app,
-        format!("{row}/call"),
+        format!("{}/call", channel_row(&call.channel)),
         JOIN_CALL_ACTION,
     ))
 }
 
-/// Decorate `rows` with the calls they are in: `call` set for everyone in
-/// one, and `join` for those in a call this device is not in. `person_of`
-/// names the person behind a row (a person id, as calls list people);
-/// `own` is the call this device is in.
+/// The name of voice channel `channel` as `app` (Chat) last published its
+/// channel row in workspace `room`: the row's label.
+pub(crate) fn channel_name(
+    surfaces: &[PublishedSurface],
+    (room, app): (&str, &str),
+    channel: &str,
+) -> Option<String> {
+    if app != CHAT_APP {
+        return None;
+    }
+    let row = channel_row(channel);
+    surfaces
+        .iter()
+        .filter(|surface| surface.app_id == app && surface.route.cluster_id == room)
+        .flat_map(|surface| &surface.actions)
+        .find(|action| action.resource == row)
+        .map(|action| action.resource_label.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// Decorate `rows` with the calls their people say they are in: `call` set
+/// to the channel's name (empty when it was not said) for everyone in one,
+/// and `join` for those in a call this device is not in. `call_of` reads a
+/// row's person's published call; `own` is the channel this device is in.
 pub(crate) fn decorate_rows(
     rows: &mut [RosterRow],
-    calls: &[RoomCall],
-    person_of: impl Fn(&RosterRow) -> Option<String>,
-    own: Option<&(String, String, String)>,
+    call_of: impl Fn(&RosterRow) -> Option<ui::CallPresence>,
+    own: Option<&str>,
 ) {
     for row in rows.iter_mut() {
-        let Some(person) = person_of(row) else {
+        let Some(call) = call_of(row) else {
+            row.call = None;
+            row.join = None;
             continue;
         };
-        let Some(call) = calls
-            .iter()
-            .find(|call| call.people.iter().any(|in_call| *in_call == person))
-        else {
-            continue;
-        };
-        row.call = Some(call.channel.clone());
-        let mine = own.is_some_and(|(app, record, channel)| {
-            *app == call.app && *record == call.record && *channel == call.channel
-        });
-        row.join = (!mine && !row.is_agent).then(|| VoiceChannel {
-            app: call.app.clone(),
-            record: call.record.clone(),
+        row.join = (own != Some(call.channel.as_str()) && !row.is_agent).then(|| VoiceChannel {
+            app: CHAT_APP.into(),
+            record: String::new(),
             channel: call.channel.clone(),
         });
+        row.call = Some(call.name);
     }
 }
 
@@ -86,69 +104,50 @@ impl super::ShellOverlayHost {
         self.native_media = Some(media);
     }
 
-    /// The voice channel this device is in, in the active workspace: what
-    /// its people see as this person's call. `None` outside a call.
-    pub(super) fn own_voice_channel(&self) -> Option<String> {
-        let room = self.active_room()?;
-        let media = self.native_media.as_ref()?;
-        media
-            .own_call(&room.to_string())
-            .map(|(_, _, channel)| channel)
+    /// The voice channel this device is in, in the active workspace, as its
+    /// people see it: the channel's id and, from Chat's published channel
+    /// row, its name. `None` outside a call.
+    pub(super) fn own_voice_call(&self) -> Option<ui::CallPresence> {
+        let room = self.active_room()?.to_string();
+        let (app, _, channel) = self.native_media.as_ref()?.own_call(&room)?;
+        let name = self
+            .action_broker()
+            .and_then(|broker| channel_name(&broker.surfaces(), (&room, &app), &channel))
+            .unwrap_or_default();
+        Some(ui::CallPresence { channel, name })
     }
 
-    /// Who is in which voice channel of the active workspace, onto the
-    /// roster's `rows`, with the Join each row offers.
-    pub(super) fn decorate_calls(&self, rows: &mut [RosterRow]) {
-        let (Some(media), Some(room), Some(chrome)) = (
-            self.native_media.as_ref(),
-            self.active_room(),
-            self.chrome.as_ref(),
-        ) else {
-            return;
-        };
-        let workspace = room.to_string();
-        let calls = media.room_calls(&workspace);
-        if calls.is_empty() {
-            return;
-        }
-        let own = media.own_call(&workspace);
-        let principals = chrome.borrow().tree().room_peer_principals(room);
+    /// Who is in which voice channel of the active workspace, as their
+    /// presence says, onto the roster's `rows`, with the Join each offers.
+    pub(super) fn decorate_calls(
+        &self,
+        rows: &mut [RosterRow],
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let own = self
+            .active_room()
+            .zip(self.native_media.as_ref())
+            .and_then(|(room, media)| media.own_call(&room.to_string()))
+            .map(|(_, _, channel)| channel);
         decorate_rows(
             rows,
-            &calls,
-            |row| match row.id.strip_prefix("peer@") {
-                Some(handle) => handle
-                    .parse::<u64>()
-                    .ok()
-                    .and_then(|handle| principals.get(&handle))
-                    .map(|person| person.to_string()),
-                None => Some(row.id.clone()),
+            |row| {
+                let id = crate::shell::desk_widgets::team::presence_id(presence, row)?;
+                ui::CallPresence::decode(presence.call_of(&id)?)
             },
-            own.as_ref(),
+            own.as_deref(),
         );
     }
 
-    /// Join `call` (a row's Join): still one of the room's calls, asked of
-    /// the app that holds it. Says so when it could not.
+    /// Join `call` (a row's Join): asked of Chat, which opens into the
+    /// workspace first when it is closed. Says so when it could not.
     pub(super) fn join_voice(&mut self, call: &VoiceChannel) {
         let (Some(chrome), Some(room)) = (self.chrome.clone(), self.active_room()) else {
             return;
         };
         let workspace = room.to_string();
-        let listed = self.native_media.as_ref().is_some_and(|media| {
-            media.room_calls(&workspace).iter().any(|listed| {
-                listed.app == call.app
-                    && listed.record == call.record
-                    && listed.channel == call.channel
-            })
-        });
-        let refusal = match (
-            listed,
-            join_call_target(&workspace, call),
-            self.action_broker(),
-        ) {
-            (false, _, _) => Some(crate::shell::i18n::t("people-join-call-ended")),
-            (true, Some(target), Some(broker)) => {
+        let refusal = match (join_call_target(&workspace, call), self.action_broker()) {
+            (Some(target), Some(broker)) => {
                 let caller = Caller::local_person(chrome.borrow().local_user_for_room(&room))
                     .in_room(workspace.clone());
                 let request = InvokeRequest {
@@ -166,14 +165,15 @@ impl super::ShellOverlayHost {
                     .invoke_job(&caller, request)
                     .poll_ready()
                 {
-                    PendingPoll::Ready(Ok(_)) => None,
+                    // Waiting: Chat is opening, and takes it once it does.
+                    PendingPoll::Ready(Ok(_)) | PendingPoll::Waiting => None,
                     PendingPoll::Ready(Err(error)) => Some(error.to_string()),
-                    PendingPoll::Waiting | PendingPoll::Abandoned => {
+                    PendingPoll::Abandoned => {
                         Some(crate::shell::i18n::t("people-join-call-not-taken"))
                     }
                 }
             }
-            (true, _, _) => Some(crate::shell::i18n::t("people-join-call-not-taken")),
+            _ => Some(crate::shell::i18n::t("people-join-call-not-taken")),
         };
         if let Some(reason) = refusal {
             chrome.borrow_mut().push_warning_notification(
@@ -208,29 +208,22 @@ mod tests {
         }
     }
 
-    fn voice(people: &[&str]) -> RoomCall {
-        RoomCall {
-            app: CHAT_APP.into(),
-            record: String::new(),
+    fn voice() -> ui::CallPresence {
+        ui::CallPresence {
             channel: "c_voice".into(),
-            people: people.iter().map(|person| (*person).to_owned()).collect(),
+            name: "voice".into(),
         }
     }
 
-    /// Someone in one of the room's calls is shown in it and offers Join;
-    /// someone in the call this device is already in offers no Join; someone
-    /// in no call shows none.
+    /// Someone whose presence says they are in a call is shown in it, by
+    /// the channel's name, and offers Join; someone in the call this device
+    /// is already in offers no Join; someone in no call shows none.
     #[test]
     fn the_roster_shows_who_is_in_a_call_and_offers_to_join_it() {
-        let mut rows = vec![row("ada"), row("ben"), row("peer@7")];
-        let calls = [voice(&["ada-key", "chioma-key"])];
-        let person_of = |row: &RosterRow| match row.id.as_str() {
-            "ada" => Some("ada-key".to_owned()),
-            "ben" => Some("ben-key".to_owned()),
-            _ => Some("chioma-key".to_owned()),
-        };
-        decorate_rows(&mut rows, &calls, person_of, None);
-        assert_eq!(rows[0].call.as_deref(), Some("c_voice"));
+        let mut rows = vec![row("ada"), row("ben")];
+        let call_of = |row: &RosterRow| (row.id == "ada").then(voice);
+        decorate_rows(&mut rows, call_of, None);
+        assert_eq!(rows[0].call.as_deref(), Some("voice"));
         assert_eq!(
             rows[0].join,
             Some(VoiceChannel {
@@ -241,17 +234,15 @@ mod tests {
         );
         assert_eq!(rows[1].call, None, "in no call");
         assert_eq!(rows[1].join, None);
-        assert!(rows[2].join.is_some());
 
-        let own = (CHAT_APP.to_owned(), String::new(), "c_voice".to_owned());
         let mut rows = vec![row("ada")];
-        decorate_rows(&mut rows, &calls, person_of, Some(&own));
-        assert_eq!(
-            rows[0].call.as_deref(),
-            Some("c_voice"),
-            "still shown in it"
-        );
+        decorate_rows(&mut rows, call_of, Some("c_voice"));
+        assert_eq!(rows[0].call.as_deref(), Some("voice"), "still shown in it");
         assert_eq!(rows[0].join, None, "already in that call: nothing to join");
+
+        let mut rows = vec![row("ada")];
+        decorate_rows(&mut rows, |_| None, None);
+        assert_eq!((rows[0].call.clone(), rows[0].join.clone()), (None, None));
     }
 
     /// Join asks Chat for `join-call` on the channel's call row, in this

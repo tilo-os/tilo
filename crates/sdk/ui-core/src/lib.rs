@@ -480,7 +480,7 @@ pub use history_source::{
     participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
-    Availability, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
+    Availability, CallPresence, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
     PresenceVisibility, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a

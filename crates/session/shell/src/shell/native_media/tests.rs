@@ -1042,11 +1042,10 @@ async fn the_app_says_what_it_shows_and_collects_pictures_as_they_arrive() {
     assert!(answer.valid());
 }
 
-/// What the roster reads of calls: the channel this device is in from the
-/// moment it joins until it leaves, and who is in each of the room's calls
-/// as the room last said.
+/// The channel this device is in, from the moment it joins until it
+/// leaves: what this person's presence says as their call.
 #[tokio::test]
-async fn the_roster_reads_the_call_this_device_is_in_and_who_is_in_each() {
+async fn the_call_this_device_is_in_lasts_from_joining_until_leaving() {
     let fixture = Fixture::new();
     let room = fixture.caller.workspace.clone();
     assert_eq!(fixture.service.own_call(&room), None, "in no call yet");
@@ -1057,26 +1056,6 @@ async fn the_roster_reads_the_call_this_device_is_in_and_who_is_in_each() {
         "joined: in that channel"
     );
     assert_eq!(fixture.service.own_call("another-room"), None);
-
-    fixture.service.0.rosters.lock().unwrap().insert(
-        (room.clone(), "so.tilo.chat".into(), String::new()),
-        vec![Roster {
-            channel_id: "voice".into(),
-            people: vec!["ab".repeat(32)],
-            cameras: Vec::new(),
-            screens: Vec::new(),
-        }],
-    );
-    assert_eq!(
-        fixture.service.room_calls(&room),
-        vec![RoomCall {
-            app: "so.tilo.chat".into(),
-            record: String::new(),
-            channel: "voice".into(),
-            people: vec!["ab".repeat(32)],
-        }]
-    );
-    assert!(fixture.service.room_calls("another-room").is_empty());
 
     fixture.command(Command::Leave);
     assert_eq!(fixture.service.own_call(&room), None, "left: in no call");

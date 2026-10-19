@@ -254,8 +254,11 @@ pub struct CollaboratorsOverlay {
     exposure: Rect,
     shown_exposure: Option<String>,
     invite: Rect,
-    /// The trailing slot every row reserves for Wave and Follow.
+    /// The trailing slot every row reserves for Wave and Follow, and Join
+    /// where anyone has a call to join.
     trailing_w: f64,
+    /// What Join adds to [`Self::trailing_w`]: none when nobody has a call.
+    join_extra: f64,
     /// The row whose recent changes are open, and how open (the disclose
     /// motion).
     opened: Option<String>,
@@ -290,8 +293,12 @@ impl std::fmt::Debug for CollaboratorsOverlay {
 /// The line under a person's name saying what they are doing: a call they
 /// are in, else what they wrote or are doing, else how available they are.
 fn doing_line(row: &RosterRow) -> Option<String> {
-    if row.call.is_some() {
-        return Some(t("people-panel-in-call"));
+    if let Some(call) = &row.call {
+        return Some(if call.trim().is_empty() {
+            t("people-panel-in-a-call")
+        } else {
+            t_args("people-panel-in-call", &[("channel", call.clone().into())])
+        });
     }
     if let Some(status) = &row.status {
         return Some(status.text.clone());
@@ -507,7 +514,13 @@ impl CollaboratorsOverlay {
         let widths = ButtonWidths::measure(text, theme);
         // Join (where anyone has a call to join), Wave and Follow sit in the
         // row's trailing slot, inside its disclosure chevron when it has one.
-        self.trailing_w = widths.trailing(model.rows.iter().any(|row| row.join.is_some()), control);
+        let any_join = model.rows.iter().any(|row| row.join.is_some());
+        self.trailing_w = widths.trailing(any_join, control);
+        self.join_extra = if any_join {
+            TRAILING_GAP + widths.join
+        } else {
+            0.0
+        };
         // Follow stands in one column down the list: where any row has a
         // chevron, every row keeps its place free.
         let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
@@ -585,15 +598,24 @@ impl CollaboratorsOverlay {
             (&row.label, any_disclosure),
             widths.follow,
         );
-        let join = if row.join.is_some() {
-            Rect::new(
-                wave.x0 - TRAILING_GAP - widths.join,
-                wave.y0,
-                wave.x0 - TRAILING_GAP,
-                wave.y1,
-            )
+        // Join stands beside Follow, Wave (shown on hover) before it.
+        let control = f64::from(theme.tokens.metrics.bar_control_height);
+        let (join, wave) = if row.join.is_some() {
+            let join = Rect::new(
+                follow.x0 - TRAILING_GAP - widths.join,
+                follow.y0,
+                follow.x0 - TRAILING_GAP,
+                follow.y1,
+            );
+            let wave = Rect::new(
+                join.x0 - TRAILING_GAP - control,
+                join.y0,
+                join.x0 - TRAILING_GAP,
+                join.y1,
+            );
+            (join, wave)
         } else {
-            Rect::ZERO
+            (Rect::ZERO, wave)
         };
         let place = RowPlace {
             index,
@@ -844,7 +866,12 @@ impl CollaboratorsOverlay {
             let mut face = face
                 .leading(RowLeading::Paint(&paint_face))
                 .leading_column(FACE)
-                .trailing_width(self.trailing_w)
+                // Only a row with Join gives its name the less room.
+                .trailing_width(if place.join.area() > 0.0 {
+                    self.trailing_w
+                } else {
+                    self.trailing_w - self.join_extra
+                })
                 .interaction(interaction);
             if !row.recent.is_empty() {
                 let turn = if self.opened.as_deref() == Some(row.id.as_str()) {
@@ -1939,7 +1966,7 @@ mod tests {
     #[test]
     fn a_person_in_a_call_offers_join_on_their_row() {
         let mut ada = row("ada", "Ada");
-        ada.call = Some("c_voice".into());
+        ada.call = Some("voice".into());
         ada.join = Some(VoiceChannel {
             app: "so.tilo.chat".into(),
             record: String::new(),
@@ -1948,12 +1975,18 @@ mod tests {
         let rows = vec![ada, row("ben", "Ben")];
         let mut overlay = CollaboratorsOverlay::default();
         paint(&mut overlay, &rows, None);
-        assert_eq!(doing_line(&rows[0]), Some(t("people-panel-in-call")));
+        assert_eq!(
+            doing_line(&rows[0]),
+            Some(t_args(
+                "people-panel-in-call",
+                &[("channel", "voice".into())]
+            ))
+        );
         let ada_place = overlay.rows[0].clone();
         assert!(ada_place.join.area() > 0.0, "Ada's row offers Join");
         assert!(
-            ada_place.join.x1 <= ada_place.wave.x0,
-            "Join stands before Wave and Follow"
+            ada_place.join.x1 <= ada_place.follow.x0 && ada_place.wave.x1 <= ada_place.join.x0,
+            "Join stands beside Follow, Wave before it"
         );
         assert_eq!(
             overlay.hit_test(ada_place.join.center()),
@@ -2244,6 +2277,14 @@ mod tests {
         });
         assert_eq!(doing_line(&ada).as_deref(), Some("Reviewing the deck"));
         ada.call = Some("voice".into());
-        assert_eq!(doing_line(&ada), Some(t("people-panel-in-call")));
+        assert_eq!(
+            doing_line(&ada),
+            Some(t_args(
+                "people-panel-in-call",
+                &[("channel", "voice".into())]
+            ))
+        );
+        ada.call = Some(String::new());
+        assert_eq!(doing_line(&ada), Some(t("people-panel-in-a-call")));
     }
 }

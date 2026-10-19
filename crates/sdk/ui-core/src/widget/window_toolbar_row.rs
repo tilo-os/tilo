@@ -64,8 +64,7 @@ const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
 const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
 /// Actions move into the overflow menu, last first, while the location
 /// would be narrower than this.
-const COMFORTABLE_LOCATION_PX: f64 =
-    crate::tokens::Metrics::BASE.location_comfortable_width as f64;
+const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
 
 /// One slot of the row.
 #[derive(Clone, Debug, PartialEq, Eq)]

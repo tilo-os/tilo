@@ -328,7 +328,11 @@ fn a_fresh_narrow_window_opens_on_its_list() {
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
-    assert_eq!(g.overview_column.width(), 360.0, "the inbox fills the screen");
+    assert_eq!(
+        g.overview_column.width(),
+        360.0,
+        "the inbox fills the screen"
+    );
     assert!(g.content_column.width() <= 0.0 || g.content_column.x0 >= 360.0);
     // A settings window: a list of pages and a page.
     let shell = NavShell::new()

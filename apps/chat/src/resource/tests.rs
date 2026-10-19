@@ -619,6 +619,19 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
             "{id}: {messages:?}"
         );
     }
+    // The desktop's roster joins a voice channel by this exact id, with
+    // Chat closed as much as open: `chat.workspace/channels/<id>/call`
+    // (shell `overlay_host::voice::join_call_target`). A new id is a broken
+    // Join everywhere.
+    assert_eq!(
+        crate::testing::call_row("c_voice"),
+        "chat.workspace/channels/c_voice/call"
+    );
+    assert_eq!(
+        crate::testing::item("channels", "c_voice"),
+        "chat.workspace/channels/c_voice",
+        "and reads the channel's name from this row's label"
+    );
     let lounge = on(&crate::testing::call_row("c_voice"));
     for id in ["join-call", "leave-call", "mute", "unmute", "call-status"] {
         assert!(lounge.iter().any(|action| action == id), "{id}: {lounge:?}");
