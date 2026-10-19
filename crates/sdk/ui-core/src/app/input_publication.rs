@@ -9,7 +9,8 @@
 //! inert input (bare motion, a key's release, a modifier) keeps the cached
 //! tree unless the dispatch edited a document (the app's or a bound
 //! component's record), took focus, was handled, or a widget reported a
-//! presentation change. A wheel that only panned a scroll container (the
+//! presentation change; so does a wheel nothing took (at the end of a
+//! list). A wheel that only panned a scroll container (the
 //! root declared it view-only, or the container reported the pan) keeps it
 //! too when all documents are committed and unchanged; the next frame still lays out and refreshes
 //! accessibility geometry. Every other event drops the tree as before.
@@ -114,10 +115,11 @@ impl super::App {
     }
 
     /// Input that activates nothing by itself: hover, a key's release, a
-    /// modifier key's press and a modifier change. Unless something consumed
-    /// it, it keeps the published tree when nothing the tree depends on moved.
-    /// A key's release followed every keystroke and dropped the tree its
-    /// press had just republished.
+    /// modifier key's press, a modifier change and a wheel. Unless something
+    /// consumed it, it keeps the published tree when nothing the tree depends
+    /// on moved. A key's release followed every keystroke and dropped the
+    /// tree its press had just republished; a wheel at the end of a list,
+    /// which no scroller takes, dropped it at every notch.
     fn is_inert_input(&self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {
@@ -135,7 +137,7 @@ impl super::App {
                         )
                     )
             }
-            WindowEvent::ModifiersChanged(_) => true,
+            WindowEvent::ModifiersChanged(_) | WindowEvent::MouseWheel { .. } => true,
             _ => self.is_bare_pointer_motion(event),
         }
     }

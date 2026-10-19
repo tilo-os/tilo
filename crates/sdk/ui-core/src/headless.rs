@@ -426,6 +426,10 @@ pub struct FrameHarness {
     profiler: Option<crate::profiling::FrameProfiler>,
     /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
     last_send_skipped_relayout: bool,
+    /// The pointer move replayed ahead of a press or release is being
+    /// dispatched: the frame is the one the press or release runs, as the
+    /// live App dispatches both before its next frame.
+    replaying_pointer: bool,
     /// Opt-in: a wheel event's frame is left to the host's next frame
     /// ([`Self::set_coalesce_wheel_frames`]).
     coalesce_wheel_frames: bool,
@@ -1574,6 +1578,7 @@ impl FrameHarness {
             invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
+            replaying_pointer: false,
             coalesce_wheel_frames: false,
             pointer_buttons: 0,
             wheel_frame_pending: false,
@@ -3375,6 +3380,7 @@ impl FrameHarness {
         let mut view = None;
         settle_widget_composition(recompose_for_viewport, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| crate::time::now());
+            let layout_phase = tilo_resource::profiling::Phase::start("ui.layout");
             let mut rebuilt_this_pass = false;
             if structure || rebuild {
                 rebuilt_this_pass = true;
@@ -3548,6 +3554,7 @@ impl FrameHarness {
                     )?;
                 }
             }
+            drop(layout_phase);
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
@@ -3724,6 +3731,7 @@ impl FrameHarness {
 
         self.validate_app_activation_frame()?;
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
+        let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         // Logical layout, rasterised at the capture's device scale, as the
         // live host draws at its window's scale factor.
         let transform = self.capture_draw_transform();
@@ -3921,6 +3929,7 @@ impl FrameHarness {
         self.replayed_window_draws = self
             .replayed_window_draws
             .saturating_add(u64::try_from(replayed).unwrap_or(u64::MAX));
+        drop(draw_phase);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
@@ -6141,7 +6150,9 @@ impl FrameHarness {
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {
+            self.replaying_pointer = true;
             self.dispatch_with_host_navigation(&moved, host_navigation_allowed);
+            self.replaying_pointer = false;
         }
         self.dispatch_with_host_navigation(event, host_navigation_allowed);
         if crate::pointer_replay::PointerReplay::ends_press(event) {
@@ -6481,7 +6492,7 @@ impl FrameHarness {
             && matches!(event, WindowEvent::MouseWheel { .. });
         if coalesced {
             self.wheel_frame_pending = true;
-        } else if !inert {
+        } else if !inert && !self.replaying_pointer {
             self.run_frame();
         }
         // Frames restore the thread-wide flag they captured, so they must
@@ -6534,7 +6545,8 @@ impl FrameHarness {
 
     /// Input that activates nothing by itself, as the live App reads it
     /// (`App::is_inert_input`): hover with no button held, a key's release,
-    /// a modifier key's press and a modifier change.
+    /// a modifier key's press, a modifier change and a wheel (one nothing
+    /// takes, at the end of a list, moved nothing).
     fn is_inert_input(&self, event: &WindowEvent) -> bool {
         use winit::keyboard::{Key, NamedKey};
         match event {
@@ -6555,7 +6567,8 @@ impl FrameHarness {
             }
             WindowEvent::ModifiersChanged(_)
             | WindowEvent::CursorEntered { .. }
-            | WindowEvent::CursorLeft { .. } => true,
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::MouseWheel { .. } => true,
             WindowEvent::CursorMoved { .. } => self.pointer_buttons == 0,
             _ => false,
         }
