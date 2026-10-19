@@ -9,10 +9,15 @@ struct Write {
     value: String,
     server: bool,
     refuse: bool,
+    commit_before_refusal: bool,
 }
 impl Action for Write {
     fn apply(&self, d: &mut AutoCommit) -> Result<(), ActionError> {
         if self.refuse {
+            if self.commit_before_refusal {
+                d.put(ROOT, "body", self.value.as_str())?;
+                d.commit();
+            }
             return Err(ActionError::Refused("fixture refusal".into()));
         }
         if d.get(ROOT, "body")?
@@ -185,6 +190,55 @@ fn execute_mode(
 }
 
 #[test]
+fn a_refused_bound_action_that_committed_an_edit_is_unsigned_history() {
+    let mut owner = Owner::default();
+    let mut doc = AutoCommit::new();
+    let edits = crate::local_document_action::UnsignedEdits::default();
+    let scope = crate::local_document_action::enter_unsigned_input(edits.clone());
+    let action = Write {
+        value: "survives".into(),
+        server: false,
+        refuse: true,
+        commit_before_refusal: true,
+    };
+    assert!(execute(&mut owner, &mut doc, &action, false).is_err());
+    drop(scope);
+    assert_eq!(
+        doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+        Some("survives"),
+        "the action's committed edit survives its refusal"
+    );
+    assert!(
+        edits.take(),
+        "a surviving unmanaged edit is unsigned history"
+    );
+}
+
+#[test]
+fn a_refused_bound_action_without_a_commit_leaves_history_silent() {
+    let mut owner = Owner::default();
+    let mut doc = AutoCommit::new();
+    let edits = crate::local_document_action::UnsignedEdits::default();
+    let scope = crate::local_document_action::enter_unsigned_input(edits.clone());
+    let action = Write {
+        value: "discarded".into(),
+        server: false,
+        refuse: true,
+        commit_before_refusal: false,
+    };
+    assert!(execute(&mut owner, &mut doc, &action, false).is_err());
+    drop(scope);
+    assert!(
+        doc.get(ROOT, "body").unwrap().is_none(),
+        "the executor rolled back the uncommitted write"
+    );
+    assert!(
+        !edits.take(),
+        "a refusal that left no edit records no unsigned history"
+    );
+}
+
+#[test]
 fn document_effects_distinguish_retained_source_custody_from_local_reply_identity() {
     let source = tilo_actions::InvocationId::new();
     let mut owner = Owner {
@@ -196,6 +250,7 @@ fn document_effects_distinguish_retained_source_custody_from_local_reply_identit
         value: "source-owned".into(),
         server: false,
         refuse: false,
+        commit_before_refusal: false,
     };
     assert_eq!(
         execute_mode(&mut owner, &mut doc, &action, true, true).unwrap(),
@@ -219,6 +274,7 @@ fn document_effects_defer_only_the_actual_locally_applied_background_action() {
         value: "after".into(),
         server: false,
         refuse: false,
+        commit_before_refusal: false,
     };
     assert_eq!(
         execute_mode(&mut owner, &mut doc, &local, false, true).unwrap(),
@@ -237,6 +293,7 @@ fn document_effects_defer_only_the_actual_locally_applied_background_action() {
         value: "host".into(),
         server: true,
         refuse: false,
+        commit_before_refusal: false,
     };
     assert!(matches!(
         execute_mode(&mut owner, &mut doc, &submitted, false, true).unwrap(),
@@ -247,6 +304,7 @@ fn document_effects_defer_only_the_actual_locally_applied_background_action() {
         value: "refused".into(),
         server: false,
         refuse: true,
+        commit_before_refusal: false,
     };
     assert!(execute_mode(&mut owner, &mut doc, &refused, false, true).is_err());
     assert_eq!(owner.effect_receipts.len(), 1);
@@ -266,6 +324,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
             value: "after".into(),
             server: false,
             refuse: false,
+            commit_before_refusal: false,
         };
         execute(&mut owner, &mut doc, &local, false).unwrap();
         assert_eq!(owner.receipts.len(), 1);
@@ -283,6 +342,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
             value: "host".into(),
             server: true,
             refuse: false,
+            commit_before_refusal: false,
         };
         execute(&mut owner, &mut doc, &remote, false).unwrap();
         assert_eq!(owner.receipts.len(), 2);
@@ -291,6 +351,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
             value: "refused".into(),
             server: false,
             refuse: true,
+            commit_before_refusal: false,
         };
         assert!(execute(&mut owner, &mut doc, &failure, false).is_err());
         assert_eq!(owner.receipts.len(), 2);
@@ -308,6 +369,7 @@ fn document_actions_acknowledge_only_locally_applied_exact_owner_frontiers() {
             value: "must not write".into(),
             server: false,
             refuse: false,
+            commit_before_refusal: false,
         };
         let registry = tilo_actions::ActionRegistry::new();
         let resource = tilo_actions::Resource::new("owner", "owner", "Owner");
