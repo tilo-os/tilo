@@ -181,7 +181,7 @@ fn a_tampered_layer_is_refused_and_the_others_still_merge() {
     assert!(reason.contains("usr/bin/shell"), "{reason}");
     assert_eq!(
         merged(&machine),
-        [launcher_manifest.name],
+        [launcher_manifest.name.clone()],
         "the untouched layer merges"
     );
     assert!(fs::symlink_metadata(signed::link(&machine.layout, &shell_manifest.name)).is_err());
