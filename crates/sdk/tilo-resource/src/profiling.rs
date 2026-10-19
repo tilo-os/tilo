@@ -16,6 +16,14 @@ pub use recorder::Phase;
 #[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
 pub struct Phase;
 
+// Closing a scope is dropping it, in every build: a caller may close one
+// early with `drop`.
+#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+impl Drop for Phase {
+    #[inline]
+    fn drop(&mut self) {}
+}
+
 #[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
 impl Phase {
     /// Open the scope `_name`; it closes when the value drops.
@@ -40,6 +48,27 @@ impl Phase {
 #[inline]
 pub fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
     operation()
+}
+
+/// One named scope's total over an observation; a build without
+/// `test-support` records none.
+#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+#[derive(Debug)]
+pub struct Sample {
+    /// Static operation name.
+    pub phase: &'static str,
+    /// Aggregate duration of the scope, nested and nonadditive.
+    pub elapsed_ns: u128,
+    /// Completed scopes on the observed thread.
+    pub calls: usize,
+}
+
+/// Run `operation`; a build without `test-support` records no scope, so
+/// what it observed is empty.
+#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
+#[inline]
+pub fn observe<T>(operation: impl FnOnce() -> T) -> (T, Vec<Sample>) {
+    (operation(), Vec::new())
 }
 
 /// Run `operation` as the scope `phase`.

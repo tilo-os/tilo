@@ -77,6 +77,11 @@ pub struct LaunchArgs {
     pub headless: Option<headless::Spec>,
     /// Lay out the production root and print its Tilo-native certification.
     pub native_audit: bool,
+    /// `--first-frame`: construct the app as a live launch does, lay out and
+    /// draw its first frame as its window would, without a window or a GPU,
+    /// and print where the time went since the process started. One process
+    /// per measured launch, so nothing it reads is warm from an earlier one.
+    pub first_frame: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
     /// `--theme NAME`: the shipped theme a capture renders in
@@ -844,6 +849,7 @@ fn opens_native_window(args: &LaunchArgs) -> bool {
         && args.shots.is_none()
         && args.responsive_matrix.is_none()
         && !args.native_audit
+        && !args.first_frame
 }
 
 #[allow(
@@ -881,7 +887,7 @@ fn run_parsed(
     // first: the renderer preparation below also opens the early window on
     // this thread and waits there for the compositor's first configure,
     // and nothing in the font database waits for either.
-    if opens_native_window(&args) {
+    if opens_native_window(&args) || args.first_frame {
         prepare_font_database_beside();
     }
     // A window's GPU device and vello's pipelines are prepared on their own
@@ -894,6 +900,9 @@ fn run_parsed(
     } else {
         None
     };
+    if args.first_frame {
+        return first_frame(spec, &args);
+    }
     // A live window opens until it is closed; while the workspace has no
     // identity selected it waits for one in its window, and once one is
     // chosen the app opens in that same window (`workspace_identity`).
@@ -955,6 +964,63 @@ fn run_parsed(
             finish_component_audit(&mut driver, spec.app_id)?;
         }
     }
+    Ok(())
+}
+
+/// `--first-frame`: the app constructed as a live launch constructs it, then
+/// its first frame synced, composed, laid out and drawn as its window would
+/// draw it ([`App::surface_frame`]), with no window, GPU or runtime. Prints
+/// the process's startup line (with `TILO_STARTUP_METRICS_PATH` set) and one
+/// `FIRST-FRAME-SCOPE` line per named scope the construction and the frame
+/// ran, so a cold launch can be measured one process at a time.
+#[allow(
+    clippy::print_stdout,
+    reason = "the measurement is this mode's output, as --native-audit prints its audit"
+)]
+#[cfg(feature = "native")]
+fn first_frame(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+    struct Offscreen((u32, u32));
+    impl crate::app::AppSurface for Offscreen {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(self.0.0, self.0.1)
+        }
+        fn request_redraw(&self) {}
+        fn set_cursor(&self, _: winit::window::CursorIcon) {}
+    }
+    let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
+    let (constructed, construction) =
+        tilo_resource::profiling::observe(|| dispatch_definition(spec, args));
+    let DefinitionDispatch::Native(mut app) = constructed? else {
+        return Err(LaunchError::Operation(
+            "--first-frame constructs the live app".into(),
+        ));
+    };
+    tilo_startup_metrics::mark("first-frame-start");
+    let ((), frame) = tilo_resource::profiling::observe(|| {
+        let mut scene = vello::Scene::new();
+        app.surface_frame(&Offscreen(viewport), &mut scene);
+    });
+    tilo_startup_metrics::mark("first-frame-done");
+    if let Some(line) = tilo_startup_metrics::summary_line(spec.app_id) {
+        println!("{line}");
+    }
+    for (name, ns) in tilo_startup_metrics::events() {
+        println!("FIRST-FRAME-MARK name={name} us={}", ns / 1000);
+    }
+    for (stage, scopes) in [("construction", construction), ("frame", frame)] {
+        for scope in scopes {
+            println!(
+                "FIRST-FRAME-SCOPE stage={stage} phase={} us={} calls={}",
+                scope.phase,
+                scope.elapsed_ns / 1000,
+                scope.calls
+            );
+        }
+    }
+    app.close_components();
     Ok(())
 }
 
@@ -1119,14 +1185,16 @@ fn dispatch_definition_with_manager(
     let _selected_local = (args.headless.is_some()
         || args.shots.is_some()
         || args.responsive_matrix.is_some()
-        || args.native_audit)
+        || args.native_audit
+        || args.first_frame)
         .then(selected_local_construction)
         .transpose()?;
     let live_native = spec.component_native_services
         && args.headless.is_none()
         && args.shots.is_none()
         && args.responsive_matrix.is_none()
-        && !args.native_audit;
+        && !args.native_audit
+        && !args.first_frame;
     let scope = live_native.then(crate::wake::WakeScope::new);
     let _wake_entry = scope.as_ref().map(crate::wake::WakeScope::enter);
     let construction = scope
@@ -1548,6 +1616,12 @@ fn parse_args_extended(
                 }
                 parsed.native_audit = true;
             }
+            "--first-frame" if inline.is_none() => {
+                if parsed.first_frame {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.first_frame = true;
+            }
             "--search" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.search, value.to_owned(), flag)?;
@@ -1595,7 +1669,8 @@ fn parse_args_extended(
         .saturating_add(usize::from(parsed.shots_dir.is_some()))
         .saturating_add(usize::from(parsed.responsive_matrix.is_some()))
         .saturating_add(usize::from(parsed.headless.is_some()))
-        .saturating_add(usize::from(parsed.native_audit));
+        .saturating_add(usize::from(parsed.native_audit))
+        .saturating_add(usize::from(parsed.first_frame));
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
@@ -1621,6 +1696,7 @@ fn parse_args_extended(
         && parsed.shots_dir.is_none()
         && parsed.responsive_matrix.is_none()
         && !parsed.native_audit
+        && !parsed.first_frame
     {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));

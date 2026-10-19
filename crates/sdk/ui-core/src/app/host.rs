@@ -38,6 +38,7 @@ fn draw_frame_content(
             __prof_resources,
         );
     }
+    let _phase = tilo_resource::profiling::Phase::start("ui.draw");
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
     let transform = crate::scale::composite_transform(f64::from(scale_factor));
@@ -573,6 +574,7 @@ fn run_layout_pass(
     use crate::widget::layout::{
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
+    let _phase = tilo_resource::profiling::Phase::start("ui.layout");
     let (content_origin, logical) = app.layout.safe_area.content(crate::scale::logical_size(
         (width, height),
         f64::from(scale_factor),

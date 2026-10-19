@@ -1303,14 +1303,15 @@ fn prepare_named(
     private: bool,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    // Captures, audits, headless driving and private windows never touch the
-    // user's profile: they run on a private one removed with the process,
-    // unless a headless drive names its profile with `--data-dir`.
+    // Captures, audits, headless driving, first-frame measurements and
+    // private windows never touch the user's profile: they run on a private
+    // one removed with the process, unless a headless drive or a
+    // measurement names its profile with `--data-dir`.
     let isolated = private
         || args.shots.is_some()
         || args.responsive_matrix.is_some()
         || args.native_audit
-        || (args.headless.is_some() && args.value("--data-dir").is_none());
+        || ((args.headless.is_some() || args.first_frame) && args.value("--data-dir").is_none());
     if isolated {
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")

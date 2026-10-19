@@ -312,6 +312,7 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
+        let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root_widget.settle(

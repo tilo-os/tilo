@@ -227,6 +227,183 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
     Ok(report)
 }
 
+/// What launching the app binary at `exe` costs cold, the way a person's
+/// launch runs: each launch is a process of its own (`exe --first-frame`), so
+/// its font database, shaping caches and every other per-process cache start
+/// empty, and it constructs the app on the live path and draws its first
+/// frame as its window would, without a window or GPU. The profile is a
+/// private directory the first, unmeasured launch makes, so each measured
+/// launch opens an existing record, as a second launch does; the process's
+/// environment points nowhere real (no display, bus or runtime).
+///
+/// Each sample is the time from the process starting to its first frame
+/// drawn; the phases are the startup marks' (`APP-STARTUP`) and the named
+/// scopes' (`FIRST-FRAME-SCOPE`) medians over the launches.
+///
+/// # Panics
+/// When a launch fails or prints no startup line.
+#[must_use]
+pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let root = scratch.path();
+    let launch = || {
+        let output = std::process::Command::new(exe)
+            .arg("--first-frame")
+            .arg("--data-dir")
+            .arg(root.join("profile"))
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", root.join("home"))
+            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_DATA_HOME", root.join("data"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("XDG_CACHE_HOME", root.join("cache"))
+            .env("XDG_RUNTIME_DIR", root.join("run"))
+            .env("TILO_STARTUP_METRICS_PATH", root.join("metrics.json"))
+            .env("LANG", "en_US.UTF-8")
+            .output()
+            .expect("the app binary runs");
+        assert!(
+            output.status.success(),
+            "{label}: --first-frame failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    for dir in ["home", "config", "data", "state", "cache", "run"] {
+        std::fs::create_dir_all(root.join(dir)).expect("a scratch directory");
+    }
+    let _ = launch();
+    let mut cold = ColdStart {
+        label: label.to_owned(),
+        totals: Vec::new(),
+        phases: BTreeMap::new(),
+        marks: BTreeMap::new(),
+    };
+    for _ in 0..launches {
+        let printed = launch();
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("APP-STARTUP "))
+            .unwrap_or_else(|| panic!("{label}: no startup line in {printed}"));
+        for field in line.split_whitespace() {
+            if let Some(total) = field.strip_prefix("total_ms=") {
+                cold.totals.push(total.parse().unwrap_or_default());
+            } else if let Some(phases) = field.strip_prefix("phases=") {
+                for phase in phases.split(',') {
+                    if let Some((name, ms)) = phase.rsplit_once(':') {
+                        cold.phases
+                            .entry(format!("mark {name}"))
+                            .or_default()
+                            .push(ms.parse::<u64>().unwrap_or_default() * 1000);
+                    }
+                }
+            }
+        }
+        for mark in printed
+            .lines()
+            .filter_map(|line| line.strip_prefix("FIRST-FRAME-MARK "))
+        {
+            let mut name = "";
+            let mut us = 0;
+            for field in mark.split_whitespace() {
+                if let Some(value) = field.strip_prefix("name=") {
+                    name = value;
+                } else if let Some(value) = field.strip_prefix("us=") {
+                    us = value.parse().unwrap_or_default();
+                }
+            }
+            cold.marks.entry(name.to_owned()).or_default().push(us);
+        }
+        for scope in printed
+            .lines()
+            .filter_map(|line| line.strip_prefix("FIRST-FRAME-SCOPE "))
+        {
+            let field = |key: &str| {
+                scope
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix(key))
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            let name = format!(
+                "{} {} x{}",
+                field("stage="),
+                field("phase="),
+                field("calls=")
+            );
+            cold.phases
+                .entry(name)
+                .or_default()
+                .push(field("us=").parse().unwrap_or_default());
+        }
+    }
+    cold
+}
+
+/// [`cold_start`]'s launches.
+pub struct ColdStart {
+    label: String,
+    /// Milliseconds from each process starting to its first frame drawn.
+    totals: Vec<u64>,
+    /// Each phase's microseconds, one per launch it ran in.
+    phases: BTreeMap<String, Vec<u64>>,
+    /// Each startup mark's microseconds since the process started, one per
+    /// time it was marked.
+    marks: BTreeMap<String, Vec<u64>>,
+}
+
+impl ColdStart {
+    /// The median launch, in milliseconds.
+    #[must_use]
+    pub fn p50_ms(&self) -> u64 {
+        median(&self.totals)
+    }
+
+    /// Write the launches to stderr: the median and worst launch, then each
+    /// phase's median, largest first.
+    #[allow(
+        clippy::print_stderr,
+        reason = "a measurement reports on stderr, as the perf tests do"
+    )]
+    pub fn print(&self) -> &Self {
+        eprintln!(
+            "perf {} cold start: n={} p50={}ms max={}ms",
+            self.label,
+            self.totals.len(),
+            self.p50_ms(),
+            self.totals.iter().copied().max().unwrap_or_default()
+        );
+        let mut phases: Vec<_> = self
+            .phases
+            .iter()
+            .map(|(name, samples)| (name, median(samples)))
+            .collect();
+        phases.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, us) in phases.into_iter().filter(|(_, us)| *us >= 100) {
+            eprintln!("perf {} cold start phase {name}: {us}us", self.label);
+        }
+        // When each mark came, in the order they came: the timeline of a
+        // launch, its threads interleaved.
+        let mut marks: Vec<_> = self
+            .marks
+            .iter()
+            .map(|(name, samples)| (median(samples), name))
+            .collect();
+        marks.sort();
+        for (us, name) in marks {
+            eprintln!("perf {} cold start at {us}us: {name}", self.label);
+        }
+        self
+    }
+}
+
+fn median(samples: &[u64]) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    sorted.get(sorted.len() / 2).copied().unwrap_or_default()
+}
+
 /// An accessibility node a person can point at: its label and the centre
 /// of its bounds, in logical pixels.
 #[derive(Clone, Debug)]

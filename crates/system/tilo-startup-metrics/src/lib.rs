@@ -706,6 +706,19 @@ pub fn summary_line(app: &str) -> Option<String> {
     Some(format_summary(app, &events))
 }
 
+/// Every mark recorded so far, in order, with its nanoseconds since the
+/// process's origin. Empty while capture is disabled.
+pub fn events() -> Vec<(String, u128)> {
+    let Some(Some(m)) = METRICS.get() else {
+        return Vec::new();
+    };
+    m.events
+        .lock_recover()
+        .iter()
+        .map(|event| (event.name.clone(), event.ns))
+        .collect()
+}
+
 fn format_summary(app: &str, events: &[(String, u128)]) -> String {
     const MS: u128 = 1_000_000;
     let mut previous = 0u128;
