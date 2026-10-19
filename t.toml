@@ -2061,6 +2061,8 @@ memory_gib = "22"
 [[check]]
 name = "vm-macos"
 requires = ["os=macos", "arch=arm64"]
+# t's Mac offers 14 GiB, under the 16 GiB default; a 4-core cargo run peaks near 10 GiB.
+requirement = { cores = 4, memory = "12GiB" }
 run = """
 set -eu
 cargo check --locked -p tilo-vm --all-targets
@@ -2074,6 +2076,8 @@ default = false
 [[check]]
 name = "runtime-macos"
 requires = ["os=macos", "arch=arm64"]
+# t's Mac offers 14 GiB, under the 16 GiB default; a 4-core cargo run peaks near 10 GiB.
+requirement = { cores = 4, memory = "12GiB" }
 run = "cargo check -p tilo-runtime --all-targets --locked"
 cargo_packages = ["tilo-runtime"]
 cost = "minutes"
@@ -2087,6 +2091,8 @@ default = false
 [[check]]
 name = "sdk-macos"
 requires = ["os=macos", "arch=arm64"]
+# t's Mac offers 14 GiB, under the 16 GiB default; a 4-core cargo run peaks near 10 GiB.
+requirement = { cores = 4, memory = "12GiB" }
 run = """
 set -eu
 # The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
@@ -2127,6 +2133,8 @@ default = false
 [[check]]
 name = "apps-macos"
 requires = ["os=macos", "arch=arm64"]
+# t's Mac offers 14 GiB, under the 16 GiB default; a 4-core cargo run peaks near 10 GiB.
+requirement = { cores = 4, memory = "12GiB" }
 run = """
 set -eu
 # The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
@@ -3273,6 +3281,8 @@ default = false
 [[check]]
 name = "runtime-macos-app"
 requires = ["os=macos", "arch=arm64"]
+# t's Mac offers 14 GiB, under the 16 GiB default; a 4-core cargo run peaks near 10 GiB.
+requirement = { cores = 4, memory = "12GiB" }
 run = """
 set -eu
 # The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.
