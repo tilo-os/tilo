@@ -714,3 +714,40 @@ fn a_pair_let_go_stays_apart_until_mapped_again() {
     assert!(!state.tilo_only.contains(&"c_general".to_owned()));
     assert!(!state.discord_only.contains(&"d_general".to_owned()));
 }
+
+/// A guild from before a channel's kind and permission overwrites were
+/// values: each was one JSON string. Opened now, every channel reads as the
+/// bot observed it.
+#[test]
+fn channels_kept_with_json_kinds_migrate_to_values() {
+    use ui::tilo_resource::{Slot, evolution, read_key};
+    let mut bot = connected();
+    let expected = bot.state().unwrap();
+    let doc = bot.doc_mut();
+    let root = ui::automerge::ROOT;
+    for (_, channel) in evolution::map_values(doc, &root, "channels").unwrap() {
+        let kind: ChannelKind = read_key(doc, &channel, "kind").unwrap();
+        let overwrites: Vec<discord_wire::event::OverwriteInfo> =
+            read_key(doc, &channel, "overwrites").unwrap();
+        for (key, text) in [
+            ("kind", serde_json::to_string(&kind).unwrap()),
+            ("overwrites", serde_json::to_string(&overwrites).unwrap()),
+        ] {
+            let slot = Slot::Key(&channel, key);
+            slot.remove(doc).unwrap();
+            slot.put_scalar(doc, ui::automerge::ScalarValue::Str(text.into()))
+                .unwrap();
+        }
+    }
+    Slot::Key(&root, evolution::VERSION_KEY)
+        .remove(doc)
+        .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<Guild>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Guild>(&mut old).unwrap());
+    assert_eq!(evolution::read_checked::<Guild>(&old).unwrap(), expected);
+}
