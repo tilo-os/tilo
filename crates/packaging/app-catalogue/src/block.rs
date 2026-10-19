@@ -27,7 +27,8 @@ pub enum Blocker {
     Person,
     /// A workspace's policy, named as the workspace is.
     Workspace { workspace: String },
-    /// The device's administrator, named as the policy names them.
+    /// The device's administrator, named as the policy names them; empty
+    /// when it names nobody, which a page reads as "your administrator".
     Device { admin: String },
 }
 
@@ -122,17 +123,13 @@ impl BlockList {
     pub fn load_from(person: Option<&Path>, device: Option<&Path>) -> Self {
         let mut list = Self::empty();
         if let Some(file) = person.and_then(|path| read_json::<PersonFile>(path)) {
-            for app in file.blocked {
+            for app in &file.blocked {
                 list.add(app, Blocker::Person);
             }
         }
         if let Some(file) = device.and_then(|path| read_json::<PolicyFile>(path)) {
-            let admin = if file.admin.trim().is_empty() {
-                "your administrator".to_owned()
-            } else {
-                file.admin.trim().to_owned()
-            };
-            for app in file.blocked {
+            let admin = file.admin.trim().to_owned();
+            for app in &file.blocked {
                 list.add(
                     app,
                     Blocker::Device {
@@ -153,7 +150,7 @@ impl BlockList {
     {
         for app in apps {
             self.add(
-                app.into(),
+                &app.into(),
                 Blocker::Workspace {
                     workspace: workspace.to_owned(),
                 },
@@ -162,7 +159,7 @@ impl BlockList {
         self
     }
 
-    fn add(&mut self, app_id: String, by: Blocker) {
+    fn add(&mut self, app_id: &str, by: Blocker) {
         let app_id = app_id.trim().to_owned();
         if app_id.is_empty()
             || self
@@ -201,7 +198,7 @@ impl BlockList {
 
     /// The person blocks `app_id`. Save with [`Self::save_person`].
     pub fn block(&mut self, app_id: &str) {
-        self.add(app_id.to_owned(), Blocker::Person);
+        self.add(app_id, Blocker::Person);
     }
 
     /// `as_blocker` lifts its own block of `app_id`.
