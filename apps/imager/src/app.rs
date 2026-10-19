@@ -2025,6 +2025,7 @@ impl ImagerApp {
         self.dirty = true;
         Ok(())
     }
+    #[cfg(feature = "installation")]
     pub(crate) fn with_windows_preparation(
         mut self,
         preparation: Option<crate::windows_media::WindowsMedia>,

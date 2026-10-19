@@ -50,6 +50,7 @@ pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
 
 /// The page's notice: a problem the person has to act on. What merely
 /// happened is not repeated here; the page already shows it.
+#[cfg(feature = "installation")]
 pub(crate) fn notice(status: &str, is_error: bool) -> Option<Box<dyn Widget>> {
     (is_error && !status.is_empty())
         .then(|| Box::new(Banner::error(status.to_string())) as Box<dyn Widget>)
@@ -101,6 +102,7 @@ impl Frame {
     }
 
     /// Where a wizard is.
+    #[cfg(feature = "installation")]
     #[must_use]
     pub(crate) fn stepper(mut self, steps: &[&str], current: usize) -> Self {
         self.stepper = Some(
@@ -150,6 +152,7 @@ impl Frame {
     /// Centre a short body in its measured scrolling viewport. Long content
     /// keeps its intrinsic extent and starts at the scrolling edge; navigation
     /// stays outside that viewport in either case.
+    #[cfg(feature = "installation")]
     #[must_use]
     pub(crate) fn center_short_body(mut self) -> Self {
         self.center_short_body = true;
