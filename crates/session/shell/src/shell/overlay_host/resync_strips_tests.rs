@@ -1532,9 +1532,15 @@ fn group_actions_target_exactly_their_group_or_surface() {
         tree.seed_doc_from_cache();
         crate::shell::foreign::store().note_adopted(51);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        let mut theme = Theme::dark();
-        theme.tokens.motion.durations.base_ms = 40;
+        let theme = Theme::dark();
         layout_close_fixture(&mut host, &theme);
+        // A window leaves on the named window motion, not on a theme's
+        // duration token: wait past exactly that.
+        let past_close = ui::motion::WindowMotion::OPEN.settle_time(
+            ui::motion::Direction::Exit,
+            ui::tokens::EffectiveMotion::default(),
+            ui::tokens::MotionSource::Pointer,
+        ) + Duration::from_millis(60);
 
         // The close button: the widget starts retiring, the shell asks the
         // client, which has not exited.
@@ -1554,7 +1560,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
 
         // The refusal period outlasts the close duration: nothing animates
         // away, is pruned, or is rebuilt with a spawn animation.
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(past_close);
         chrome.borrow_mut().bump();
         let _ = host.take_structure_dirty();
         let group = host.group_at_for_tests(strip_id, 0).expect("still there");
@@ -1573,7 +1579,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                 .is_some_and(|group| group.is_closing()),
             "the destroy starts the single retirement"
         );
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(past_close);
         let _ = host.take_structure_dirty();
         assert!(host.group_at_for_tests(strip_id, 0).is_none());
     }
