@@ -25,7 +25,7 @@ fn assert_notes_capture<R: ui::tilo_resource::Resource>(
     doc: &mut AutoCommit,
     before: &[automerge::ChangeHash],
     resource: &str,
-    expected: ui::tilo_resource::Invoke<R>,
+    expected: &ui::tilo_resource::Invoke<R>,
 ) -> ui::local_document_action::CapturedAction {
     let captures = queue.drain();
     assert_eq!(captures.len(), 1);
@@ -71,7 +71,7 @@ fn local_capture_notes_create_rename_and_body_are_immediate() {
         &mut doc,
         &before,
         "notes.notebook",
-        Invoke::<Notebook>::apply(&create).unwrap(),
+        &Invoke::<Notebook>::apply(&create).unwrap(),
     );
     assert!(!created.mutation_hashes.is_empty());
     assert_eq!(created.encoded, actions::encode(&create));
@@ -87,7 +87,7 @@ fn local_capture_notes_create_rename_and_body_are_immediate() {
         &mut doc,
         &before,
         "notes.notebook",
-        Invoke::<Notebook>::apply(&rename).unwrap(),
+        &Invoke::<Notebook>::apply(&rename).unwrap(),
     );
     assert!(!renamed.mutation_hashes.is_empty());
     assert_eq!(renamed.encoded, actions::encode(&rename));
@@ -111,7 +111,7 @@ fn local_capture_notes_create_rename_and_body_are_immediate() {
         &mut doc,
         &before,
         &actions::page_resource_id(page),
-        Invoke::<tilo_document::RichText>::apply(&op).unwrap(),
+        &Invoke::<tilo_document::RichText>::apply(&op).unwrap(),
     );
     assert!(!body.mutation_hashes.is_empty());
     assert_eq!(body.original_heads, renamed.mutation_hashes);
@@ -162,7 +162,7 @@ fn local_capture_notes_same_title_and_reads_do_not_invent_mutations() {
         &mut doc,
         &before,
         "notes.notebook",
-        Invoke::<Notebook>::apply(&noop).unwrap(),
+        &Invoke::<Notebook>::apply(&noop).unwrap(),
     );
     assert!(captured.mutation_hashes.is_empty());
 }

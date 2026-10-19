@@ -587,6 +587,10 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     }
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "the same library and anchor must give the very same offset"
+)]
 #[test]
 fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
     let mut newer = LibraryPhoto::from_image(OpenImage::fixture("newer.png", 20, 10));

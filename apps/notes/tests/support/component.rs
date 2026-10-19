@@ -535,11 +535,11 @@ impl BoundNotes {
 pub fn invoke_confirmed(
     driver: &mut ui::headless::FrameHarness,
     instance: u64,
-    resource: String,
+    resource: &str,
     action: &str,
 ) {
     driver
-        .call_on_instance_confirmed(instance, &resource, action, serde_json::json!({}))
+        .call_on_instance_confirmed(instance, resource, action, serde_json::json!({}))
         .unwrap();
 }
 

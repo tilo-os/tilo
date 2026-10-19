@@ -836,7 +836,7 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
                 .unwrap(),
             before
         );
-        invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
+        invoke_confirmed(&mut b, 12, &actions::page_resource_id(f.child), "delete");
         let denied = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
             address: notes::Notebook::RENAME.on(actions::page_resource_id(f.child)),
@@ -1050,7 +1050,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
             queued_before
         );
         assert_eq!(revision(&f, &checkout), queued_revision);
-        invoke_confirmed(&mut b, 12, actions::page_resource_id(page), "delete");
+        invoke_confirmed(&mut b, 12, &actions::page_resource_id(page), "delete");
         let deleted = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))

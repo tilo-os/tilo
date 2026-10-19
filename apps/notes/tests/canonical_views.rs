@@ -595,8 +595,8 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         local.payload = serde_json::to_vec(&value).unwrap();
         let saved = saved_view(&f, &checkout, local);
         let mut b = driver(&f, 12, &checkout);
-        invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
-        invoke_confirmed(&mut b, 12, actions::tag_resource_id(f.tag), "delete-tag");
+        invoke_confirmed(&mut b, 12, &actions::page_resource_id(f.child), "delete");
+        invoke_confirmed(&mut b, 12, &actions::tag_resource_id(f.tag), "delete-tag");
         let before = fingerprint(&f, &checkout);
         let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
         assert_eq!(app.selected_for_test(), Some(f.root));

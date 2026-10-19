@@ -273,7 +273,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     invoke_confirmed(
         &mut b,
         12,
-        notes::actions::page_resource_id(f.child),
+        &notes::actions::page_resource_id(f.child),
         "delete",
     );
     a.relayout();
