@@ -216,7 +216,11 @@ impl Capability {
                 let process = platform_row(tilo_process::Feature::ProcessId);
                 [process[0], process[1], Unsupported(WEB_PROCESSES)]
             }
+            // Gpu, on Linux: the device node in the sandbox; without it the
+            // room's render service draws the app. macOS and the web give
+            // every app its Metal or WebGPU device.
             Self::Clipboard
+            | Self::Gpu
             | Self::FilesOpen
             | Self::OpenUri
             | Self::Settings
@@ -249,10 +253,6 @@ impl Capability {
                 Unsupported(LINUX_ONLY_IO_URING),
                 Unsupported(LINUX_ONLY_IO_URING),
             ],
-            // Linux: the device node in the sandbox; without it the room's
-            // render service draws the app. macOS and the web give every app
-            // its Metal or WebGPU device.
-            Self::Gpu => [Available, Available, Available],
         };
         row.get(target.column()).copied().unwrap_or(Planned)
     }
