@@ -97,6 +97,37 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
     Box::pin(actual_exchange(true, false, None)).await;
 }
 
+/// The receiving host's own collaboration identity on disk, provisioned as
+/// first boot provisions it. The session broker signs admission evidence
+/// with it for every action a certified app invokes (`action_evidence`), so
+/// a host without one refuses each Code effect as "host signing identity
+/// unavailable" and the opened file never shows.
+struct HostSigningIdentity {
+    // Field order is drop order: restore the variables before the home goes.
+    _env: tilo_test_env::ScopedEnv,
+    _home: tilo_test_env::TestHome,
+}
+
+impl HostSigningIdentity {
+    fn provision() -> Self {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let system = home.root().join("system-identity");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", &system)
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity_host::provisioning::ensure_collaboration_identity(
+            &home.config().join("tilo/identity"),
+            &tilo_user_identity::IdentityPaths::under(system),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        Self {
+            _env: env,
+            _home: home,
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one end-to-end enrollment exchange over a real relay; the steps share live \
@@ -109,6 +140,7 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
 async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted_code::Journey>) {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+    let _host_signing = HostSigningIdentity::provision();
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut remote_owner = if cold_code {
         cold_code::governor(directory.path())
