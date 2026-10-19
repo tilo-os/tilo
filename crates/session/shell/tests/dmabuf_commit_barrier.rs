@@ -204,7 +204,11 @@ fn wait_for_first_frame(h: &mut Harness, id: u64) -> u64 {
 /// idle afterwards and draws nothing more. `commit_on_map` commits it in the
 /// same flush as the configure's ack, as a client that draws immediately
 /// does; otherwise the client waits for a second configure first.
-fn restored_window_shows_its_first_frame(commit_on_map: bool) -> bool {
+/// `gpu_after_commit` opens the presenting device only once the frame is
+/// committed, as a laptop's renderer comes up after the first apps drew: the
+/// frame's capture starts without a presenting GPU, and the GPU's probe and
+/// the dmabuf feedback it changes land while that capture is pending.
+fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: bool) -> bool {
     let mut h = Harness::new();
     let Some(dmabuf) =
         h.try_bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>("zwp_linux_dmabuf_v1", 4)
@@ -275,6 +279,16 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool) -> bool {
     surface.attach(Some(&buffer), 0, 0);
     surface.damage_buffer(0, 0, WIDTH, HEIGHT);
     surface.commit();
+    if gpu_after_commit {
+        let mut context = ui::gpu::RenderContext::new();
+        let Some(device) = pollster::block_on(context.device(None)) else {
+            return false;
+        };
+        let Some(handle) = context.devices.get(device) else {
+            return false;
+        };
+        shell::shell::gpu_frames::publish_present_device(&handle.device, &handle.queue);
+    }
     let seq = wait_for_first_frame(&mut h, id);
     assert!(
         shell::compositor::foreign::store().is_mapped(id),
@@ -297,7 +311,7 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool) -> bool {
 #[test]
 #[serial_test::serial(process_env)]
 fn a_restored_window_that_commits_on_map_shows_its_first_frame() {
-    if !restored_window_shows_its_first_frame(true) {
+    if !restored_window_shows_its_first_frame(true, false) {
         eprintln!("skipping: no advertisable render node on this machine");
     }
 }
@@ -305,7 +319,15 @@ fn a_restored_window_that_commits_on_map_shows_its_first_frame() {
 #[test]
 #[serial_test::serial(process_env)]
 fn a_restored_window_that_waits_for_its_tab_size_shows_its_first_frame() {
-    if !restored_window_shows_its_first_frame(false) {
+    if !restored_window_shows_its_first_frame(false, false) {
         eprintln!("skipping: no advertisable render node on this machine");
+    }
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn a_restored_window_keeps_its_first_frame_when_the_presenting_gpu_arrives() {
+    if !restored_window_shows_its_first_frame(true, true) {
+        eprintln!("skipping: no advertisable render node or no GPU adapter on this machine");
     }
 }
