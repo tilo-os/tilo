@@ -1390,7 +1390,7 @@ async fn next_v2_outbound_event(
                     && let Some(action) = schedule.pending_action.take()
                 {
                     schedule.next_lane = 0;
-                    return Poll::Ready(ClientEvent::Action(Some(action)));
+                    return Poll::Ready(ClientEvent::Action(Some(Box::new(action))));
                 }
             }
         }
@@ -1399,9 +1399,12 @@ async fn next_v2_outbound_event(
     .await
 }
 
+/// The writer's next outbound frame. A private frame is boxed: the largest
+/// `EnvelopeV2` is several times any state envelope, and private frames are
+/// the rare lane.
 enum ClientEvent {
     State(Option<Envelope>),
-    Action(Option<EnvelopeV2>),
+    Action(Option<Box<EnvelopeV2>>),
 }
 
 // Poll buffered data before the receiver's cooperative-budget check. A Tokio
@@ -1965,7 +1968,7 @@ mod scheduling_tests {
                         state_tx.try_send(Envelope::Ping).unwrap();
                     }
                     ClientEvent::Action(Some(value)) => {
-                        assert_eq!(value, action());
+                        assert_eq!(*value, action());
                         counts[1] += 1;
                         action_tx.try_send(action()).unwrap();
                     }
@@ -2005,7 +2008,10 @@ mod scheduling_tests {
                     }
                     state_tx.try_send(Envelope::Ping).unwrap();
                 }
-                ClientEvent::Action(Some(EnvelopeV2::EnableActions { room: got })) => {
+                ClientEvent::Action(Some(action)) => {
+                    let EnvelopeV2::EnableActions { room: got } = *action else {
+                        panic!("an unexpected private frame");
+                    };
                     assert!(subscribed, "private enable overtook its state subscription");
                     assert_eq!(got, room);
                     enabled = true;
