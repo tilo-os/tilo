@@ -5,24 +5,34 @@
 //! along two screen edges, so they appear when the position they report
 //! changes (a scroll, a pan, a keyboard step, a switch to another strip or
 //! workspace), stay while it keeps changing or while the pointer is on
-//! them, and fade out a moment after it stops.
+//! them, and go a moment after it stops, as a confirmation goes
+//! ([`ui::motion::Transient::CONFIRMATION`]): there at once, then faded out.
 
 use crate::shell::state::StripId;
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 /// How long the indicators stay fully up after the position last changed.
 pub(crate) const STRIP_INDICATOR_HOLD: Duration = Duration::from_millis(1_200);
 
-/// The fade-out after the hold: long enough to read as a fade, not a blink.
-pub(crate) const STRIP_INDICATOR_FADE: Duration = Duration::from_millis(400);
+/// How they come and go.
+const MOTION: ui::motion::MotionSpec = ui::motion::Transient::CONFIRMATION;
+
+/// The motion the person allows, reduced or not.
+fn effective(reduce_motion: bool) -> ui::tokens::EffectiveMotion {
+    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), reduce_motion)
+}
+
+/// Their fade-out after the hold.
+fn fade(reduce_motion: bool) -> Duration {
+    ui::motion::Transient::exit_time(MOTION, effective(reduce_motion))
+}
 
 /// The hold and the fade together: how long after the last change they are
 /// gone.
-const STRIP_INDICATOR_SHOWN: Duration = Duration::from_millis(1_600);
-const _: () = assert!(
-    STRIP_INDICATOR_SHOWN.as_millis()
-        == STRIP_INDICATOR_HOLD.as_millis() + STRIP_INDICATOR_FADE.as_millis()
-);
+fn shown_for(reduce_motion: bool) -> Duration {
+    STRIP_INDICATOR_HOLD.saturating_add(fade(reduce_motion))
+}
 
 /// What the indicators report. Any change to it is navigation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +56,8 @@ pub(crate) struct StripIndicators {
     /// composited from the layers the pan began with, so the indicators
     /// show from the next frame on.
     show_on_next_frame: bool,
+    /// Reduced motion, as of the last paint.
+    reduce_motion: Cell<bool>,
 }
 
 impl StripIndicators {
@@ -59,10 +71,9 @@ impl StripIndicators {
             self.changed_at = Some(now);
         }
         self.last = Some(position);
-        if self
-            .changed_at
-            .is_some_and(|at| now.saturating_duration_since(at) >= STRIP_INDICATOR_SHOWN)
-        {
+        if self.changed_at.is_some_and(|at| {
+            now.saturating_duration_since(at) >= shown_for(self.reduce_motion.get())
+        }) {
             self.changed_at = None;
         }
     }
@@ -80,36 +91,39 @@ impl StripIndicators {
         self.last = Some(position);
     }
 
-    /// Opacity at `now`. Under reduced motion they cut out instead of fading.
+    /// Opacity at `now`. Under reduced motion they are whole until they go.
     pub(crate) fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
+        self.reduce_motion.set(reduce_motion);
         if self.hovered {
             return 1.0;
         }
-        let Some(at) = self.changed_at else {
+        let Some(window) = self.shown_window(reduce_motion) else {
             return 0.0;
         };
-        let elapsed = now.saturating_duration_since(at);
-        if elapsed < STRIP_INDICATOR_HOLD {
-            return 1.0;
-        }
-        if reduce_motion {
-            return 0.0;
-        }
-        let into_fade = elapsed.saturating_sub(STRIP_INDICATOR_HOLD);
-        if into_fade >= STRIP_INDICATOR_FADE {
-            return 0.0;
-        }
-        let t = 1.0 - into_fade.as_secs_f32() / STRIP_INDICATOR_FADE.as_secs_f32();
-        // Ease-out: the last frames are the ones that thin out.
-        t * t
+        ui::motion::Transient::opacity(MOTION, window, now, effective(reduce_motion))
+    }
+
+    /// When they were shown and when they are gone, while they are up.
+    fn shown_window(&self, reduce_motion: bool) -> Option<(Instant, Instant)> {
+        let at = self.changed_at?;
+        Some((at, at.checked_add(shown_for(reduce_motion))?))
     }
 
     /// Frames are needed only while fading; the opaque hold is static.
     pub(crate) fn needs_animation_frame_at(&self, now: Instant) -> bool {
+        let reduce_motion = self.reduce_motion.get();
         !self.hovered
-            && self.changed_at.is_some_and(|at| {
-                let elapsed = now.saturating_duration_since(at);
-                elapsed >= STRIP_INDICATOR_HOLD && elapsed < STRIP_INDICATOR_SHOWN
+            && self.shown_window(reduce_motion).is_some_and(|window| {
+                now >= window
+                    .0
+                    .checked_add(STRIP_INDICATOR_HOLD)
+                    .unwrap_or(window.0)
+                    && ui::motion::Transient::is_moving(
+                        MOTION,
+                        window,
+                        now,
+                        effective(reduce_motion),
+                    )
             })
     }
 
@@ -160,13 +174,18 @@ mod tests {
         assert!(!s.needs_animation_frame_at(t1), "the hold is static");
         assert_eq!(s.next_wake_deadline_at(t1), Some(t1 + STRIP_INDICATOR_HOLD));
 
-        let mid_fade = t1 + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE / 2;
+        let mid_fade = t1 + STRIP_INDICATOR_HOLD + fade(false) / 2;
         let a = s.alpha_at(mid_fade, false);
         assert!(a > 0.0 && a < 1.0, "fading, got {a}");
         assert!(s.needs_animation_frame_at(mid_fade));
-        assert_eq!(s.alpha_at(mid_fade, true), 0.0, "reduced motion cuts");
+        assert_eq!(
+            s.alpha_at(mid_fade, true),
+            0.0,
+            "under reduced motion they go at the end of the hold"
+        );
+        s.alpha_at(mid_fade, false);
 
-        let end = t1 + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE;
+        let end = t1 + STRIP_INDICATOR_HOLD + fade(false);
         assert_eq!(s.alpha_at(end, false), 0.0);
         assert_eq!(
             s.next_wake_deadline_at(mid_fade),
@@ -209,7 +228,7 @@ mod tests {
         );
 
         // A pan that ends where it began moved nothing and shows nothing.
-        let later = next + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE;
+        let later = next + STRIP_INDICATOR_HOLD + fade(false);
         s.observe(position(1, 900), later);
         s.settle_after_pan(position(1, 900));
         assert_eq!(s.next_wake_deadline_at(later), None);
@@ -244,7 +263,7 @@ mod tests {
             "leaving them restarts the hold"
         );
         assert_eq!(
-            s.alpha_at(later + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE, false),
+            s.alpha_at(later + STRIP_INDICATOR_HOLD + fade(false), false),
             0.0
         );
     }

@@ -13,7 +13,9 @@ rolled instead, anywhere else in the toolkit, the shell and the apps:
   shape as a motion, so it is caught where it matters, by its time ratio);
 * an ad-hoc spring: ``Spring::new(…)`` or a ``SpringParams { … }`` literal;
 * lerp over time: an elapsed time divided by a duration
-  (``elapsed().as_secs_f32() / …``, ``duration_since(…).as_secs_f64() / …``);
+  (``elapsed().as_secs_f32() / …``, ``duration_since(…).as_secs_f64() / …``),
+  or any span divided by a duration constant (``remain.as_secs_f32() /
+  FADE.as_secs_f32()``): a literal duration timing a fade;
 * a wall-clock tween built by hand: ``Animated::new`` / ``Animated::starting_at``.
 
 Only production code counts (tests, benches, examples, ``#[cfg(test)]`` items
@@ -73,6 +75,10 @@ PATTERNS = (
             r"(?:\belapsed\(\)|\b(?:elapsed|age|remaining|left)\b|\b(?:saturating_)?duration_since\([^()]*(?:\([^()]*\))?[^()]*\))"
             r"\s*\.as_secs_f(?:32|64)\(\)\s*/"
         ),
+    ),
+    (
+        "fade timed by a literal duration",
+        re.compile(r"\.as_secs_f(?:32|64)\(\)\s*/\s*[A-Z][A-Z0-9_]*\.as_secs_f(?:32|64)\(\)"),
     ),
     ("hand-built tween", re.compile(r"\bAnimated::(?:new|starting_at)\s*\(")),
     (

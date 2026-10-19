@@ -24,12 +24,17 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 
-/// How long the bubble lingers after a poke (or after the pointer leaves its
-/// zone) before it fades out, absent any new activity.
+/// How long the bubble is up after a poke (or after the pointer leaves its
+/// zone), absent any new activity. It goes as a confirmation does
+/// ([`crate::motion::Transient::CONFIRMATION`]): there at once, faded out by
+/// the end of the linger.
 pub const DEFAULT_LINGER: Duration = Duration::from_millis(1900);
-/// The tail of the linger spent fading to fully transparent, so the bubble
-/// leaves quietly rather than blinking out.
-const FADE: Duration = Duration::from_millis(300);
+
+/// The motion the bubble keeps when no theme is at hand: the default, not
+/// reduced (painting reads the theme's).
+fn default_motion() -> crate::tokens::EffectiveMotion {
+    crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+}
 
 /// Every method takes an explicit `now: Instant`, so a test drives the
 /// whole show → linger → fade → hide cycle without a wall clock.
@@ -94,28 +99,28 @@ impl StatusBubble {
         self.alpha(now) > 0.0
     }
 
-    /// Fully opaque while hovered or fresh, ramping to zero across the
-    /// final `FADE` of the linger.
+    /// Fully opaque while hovered or fresh, fading out over the end of the
+    /// linger as the standard confirmation does.
     pub fn alpha(&self, now: Instant) -> f32 {
+        self.alpha_with(default_motion(), now)
+    }
+
+    fn alpha_with(&self, motion: crate::tokens::EffectiveMotion, now: Instant) -> f32 {
         if self.hovered || self.held {
             return 1.0;
         }
-        let Some(t) = self.shown_at else { return 0.0 };
-        let e = now.saturating_duration_since(t);
-        if e >= self.linger {
-            return 0.0;
-        }
-        let Some(remain) = self.linger.checked_sub(e) else {
-            // `e >= self.linger` already returned above, so this is
-            // unreachable in practice; treat it as fully faded rather than
-            // panic if that invariant ever slips.
+        let Some(shown) = self.shown_at else {
             return 0.0;
         };
-        if remain < FADE {
-            (remain.as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
-        } else {
-            1.0
-        }
+        let Some(expires) = shown.checked_add(self.linger) else {
+            return 1.0;
+        };
+        crate::motion::Transient::opacity(
+            crate::motion::Transient::CONFIRMATION,
+            (shown, expires),
+            now,
+            motion,
+        )
     }
 
     /// Report the status. A change shows the bubble (and restarts its
@@ -222,14 +227,9 @@ impl StatusBubble {
     }
 
     /// [`Self::alpha`] as `theme` shows it: under reduced motion the bubble
-    /// cuts in and out instead of fading.
+    /// is whole until it goes.
     pub fn alpha_in(&self, theme: &Theme, now: Instant) -> f32 {
-        let alpha = self.alpha(now);
-        if theme.reduce_motion && alpha > 0.0 {
-            1.0
-        } else {
-            alpha
-        }
+        self.alpha_with(theme.motion(), now)
     }
 
     /// Hovered/hidden states need no frames.

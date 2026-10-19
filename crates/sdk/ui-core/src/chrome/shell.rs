@@ -1143,15 +1143,34 @@ const RIBBON_FOCUSED_ALPHA: u8 = 224;
 /// so a floored unfocused segment came out *brighter than the focused
 /// one*. Hence three explicit, hand-ordered weights instead of a derived
 /// tier.
-fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
-    let alpha = if focused {
-        RIBBON_FOCUSED_ALPHA
-    } else if hover {
+fn ribbon_fill(theme: &Theme, focused: f64, hover: bool) -> Color {
+    let rest = if hover {
         RIBBON_HOVER_ALPHA
     } else {
         RIBBON_IDLE_ALPHA
     };
-    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+    Colors::hairline_on(
+        theme.tokens.colors.surfaces.base,
+        weighted_alpha(rest, RIBBON_FOCUSED_ALPHA, focused),
+    )
+}
+
+/// The weight between a segment's resting alpha and its focused one, for a
+/// segment `focused` of the way to being the focused one (a sliding focus).
+fn weighted_alpha(rest: u8, focused: u8, weight: f64) -> u8 {
+    let blended = f64::from(rest) + (f64::from(focused) - f64::from(rest)) * weight.clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a blend of two u8 values, rounded, stays inside u8"
+    )]
+    let blended = blended.round() as u8;
+    blended
+}
+
+/// How far segment `i` is the focused one while the focus stands at `focus`.
+fn focus_weight(i: usize, focus: f64) -> f64 {
+    (1.0 - (crate::num::f64_of_usize(i) - focus).abs()).clamp(0.0, 1.0)
 }
 
 /// Length of a run of `count` segments `gap` apart along a ribbon or rail,
@@ -1184,6 +1203,34 @@ fn segments_extent(
     }
 }
 
+/// Segment `i`'s length along a run whose focus stands at `focus`: the
+/// focused length where the focus is, blending into the neighbour's while the
+/// focus slides from one segment to the next. The lengths always add up to
+/// [`segments_extent`] for a focus between the first and last segment, so the
+/// run keeps its extent while the long segment travels.
+fn sliding_segment_length(i: usize, focus: f64, segment: f64, focused_segment: f64) -> f64 {
+    segment + (focused_segment - segment) * focus_weight(i, focus)
+}
+
+/// Where segment `i` starts and how long it is, along a run of `count`
+/// centred on `center` whose focus stands at `focus`.
+fn sliding_segment_span(
+    i: usize,
+    (count, focus): (usize, f64),
+    center: f64,
+    (segment, focused_segment, gap): (f64, f64, f64),
+) -> (f64, f64) {
+    let extent = segments_extent(count, 0, segment, focused_segment, gap);
+    let mut start = center - extent / 2.0;
+    for k in 0..i {
+        start += sliding_segment_length(k, focus, segment, focused_segment) + gap;
+    }
+    (
+        start,
+        sliding_segment_length(i, focus, segment, focused_segment),
+    )
+}
+
 impl StripRibbon {
     pub fn extent(&self) -> f64 {
         segments_extent(
@@ -1196,25 +1243,24 @@ impl StripRibbon {
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
+        self.segment_rect_at(i, crate::num::f64_of_usize(self.focused))
+    }
+
+    /// [`Self::segment_rect`] while the focus slides: `focus` stands
+    /// between two segments (the motion's value), and the long segment
+    /// travels from one to the other.
+    pub fn segment_rect_at(&self, i: usize, focus: f64) -> Option<Rect> {
         if i >= self.count {
             return None;
         }
         let x1 = self.content.x1 - RIBBON_MARGIN;
         let x0 = x1 - RIBBON_SEG_W;
-        let mut y = self.content.center().y - self.extent() / 2.0;
-        for k in 0..i {
-            y += if k == self.focused {
-                RIBBON_SEG_H_FOCUSED
-            } else {
-                RIBBON_SEG_H
-            };
-            y += RIBBON_GAP;
-        }
-        let h = if i == self.focused {
-            RIBBON_SEG_H_FOCUSED
-        } else {
-            RIBBON_SEG_H
-        };
+        let (y, h) = sliding_segment_span(
+            i,
+            (self.count, focus),
+            self.content.center().y,
+            (RIBBON_SEG_H, RIBBON_SEG_H_FOCUSED, RIBBON_GAP),
+        );
         Some(Rect::new(x0, y, x1, y + h))
     }
 
@@ -1243,11 +1289,29 @@ impl StripRibbon {
         hover: Option<usize>,
         alpha: f32,
     ) {
+        self.draw_at(
+            scene,
+            transform,
+            theme,
+            (hover, alpha),
+            crate::num::f64_of_usize(self.focused),
+        );
+    }
+
+    /// [`Self::draw`] with the focus at `focus`, sliding between segments.
+    pub fn draw_at(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        (hover, alpha): (Option<usize>, f32),
+        focus: f64,
+    ) {
         if self.count == 0 || alpha <= 0.0 {
             return;
         }
         for i in 0..self.count {
-            let Some(seg) = self.segment_rect(i) else {
+            let Some(seg) = self.segment_rect_at(i, focus) else {
                 continue;
             };
             let tier = selection_tier(
@@ -1257,7 +1321,7 @@ impl StripRibbon {
             // Square where it meets the screen edge, rounded inward.
             let r = ChromeRole::Selector.radius(theme, seg.width());
             let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, 0.0, 0.0, r));
-            let fill = ribbon_fill(theme, i == self.focused, hover == Some(i));
+            let fill = ribbon_fill(theme, focus_weight(i, focus), hover == Some(i));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1319,17 +1383,18 @@ const RAIL_FOCUSED_ALPHA: u8 = 224;
 
 /// Four hand-ordered weights, same reason as [`ribbon_fill`]: a derived
 /// tier has nothing to lift toward on high-contrast and can invert.
-fn rail_fill(theme: &Theme, focused: bool, hover: bool, present: bool) -> Color {
-    let alpha = if focused {
-        RAIL_FOCUSED_ALPHA
-    } else if hover {
+fn rail_fill(theme: &Theme, focused: f64, hover: bool, present: bool) -> Color {
+    let rest = if hover {
         RAIL_HOVER_ALPHA
     } else if present {
         RAIL_PRESENT_ALPHA
     } else {
         RAIL_ABSENT_ALPHA
     };
-    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
+    Colors::hairline_on(
+        theme.tokens.colors.surfaces.base,
+        weighted_alpha(rest, RAIL_FOCUSED_ALPHA, focused),
+    )
 }
 
 impl StripRail {
@@ -1352,25 +1417,22 @@ impl StripRail {
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
+        self.segment_rect_at(i, crate::num::f64_of_usize(self.focused))
+    }
+
+    /// [`Self::segment_rect`] while the focus slides to another window.
+    pub fn segment_rect_at(&self, i: usize, focus: f64) -> Option<Rect> {
         if i >= self.count {
             return None;
         }
         let y1 = self.content.y1 - RAIL_MARGIN;
         let y0 = y1 - RAIL_SEG_H;
-        let mut x = self.content.center().x - self.extent() / 2.0;
-        for k in 0..i {
-            x += if k == self.focused {
-                RAIL_SEG_W_FOCUSED
-            } else {
-                RAIL_SEG_W
-            };
-            x += RAIL_GAP;
-        }
-        let w = if i == self.focused {
-            RAIL_SEG_W_FOCUSED
-        } else {
-            RAIL_SEG_W
-        };
+        let (x, w) = sliding_segment_span(
+            i,
+            (self.count, focus),
+            self.content.center().x,
+            (RAIL_SEG_W, RAIL_SEG_W_FOCUSED, RAIL_GAP),
+        );
         Some(Rect::new(x, y0, x + w, y1))
     }
 
@@ -1402,18 +1464,36 @@ impl StripRail {
         hover: Option<usize>,
         alpha: f32,
     ) {
+        self.draw_at(
+            scene,
+            transform,
+            theme,
+            (hover, alpha),
+            crate::num::f64_of_usize(self.focused),
+        );
+    }
+
+    /// [`Self::draw`] with the focus at `focus`, sliding between windows.
+    pub fn draw_at(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        (hover, alpha): (Option<usize>, f32),
+        focus: f64,
+    ) {
         if !self.is_meaningful() || alpha <= 0.0 {
             return;
         }
         for i in 0..self.count {
-            let Some(seg) = self.segment_rect(i) else {
+            let Some(seg) = self.segment_rect_at(i, focus) else {
                 continue;
             };
             let present = self.visible.contains(&i);
             // Square where it meets the screen edge, rounded inward.
             let r = ChromeRole::Selector.radius(theme, seg.height());
             let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, r, 0.0, 0.0));
-            let fill = rail_fill(theme, i == self.focused, hover == Some(i), present);
+            let fill = rail_fill(theme, focus_weight(i, focus), hover == Some(i), present);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1507,10 +1587,10 @@ mod rail_tests {
                 ("high-contrast", Theme::high_contrast()),
             ] {
                 let weights = [
-                    ("off-screen", rail_fill(&theme, false, false, false)),
-                    ("on-screen", rail_fill(&theme, false, false, true)),
-                    ("hover", rail_fill(&theme, false, true, true)),
-                    ("focused", rail_fill(&theme, true, false, true)),
+                    ("off-screen", rail_fill(&theme, 0.0, false, false)),
+                    ("on-screen", rail_fill(&theme, 0.0, false, true)),
+                    ("hover", rail_fill(&theme, 0.0, true, true)),
+                    ("focused", rail_fill(&theme, 1.0, false, true)),
                 ];
                 let rgb = |c: Color| {
                     let p = c.to_rgba8();
@@ -1547,6 +1627,43 @@ mod rail_tests {
                 assert_eq!(r.hit(c), Some(i), "segment {i} must claim its own centre");
             }
         }
+    }
+
+    /// The long segment travels when focus moves: halfway, the two
+    /// segments it moves between are as long as each other, the run keeps
+    /// its extent and its centre, and at either end it is the resting run.
+    #[test]
+    fn a_sliding_focus_moves_the_long_segment_and_keeps_the_run_in_place() {
+        let r = rail(4, 1, vec![1]);
+        let run = |focus: f64| -> Vec<Rect> {
+            (0..4)
+                .map(|i| r.segment_rect_at(i, focus).unwrap())
+                .collect()
+        };
+        let resting: Vec<Rect> = (0..4).map(|i| r.segment_rect(i).unwrap()).collect();
+        assert_eq!(run(1.0), resting, "at rest it is the resting run");
+        let half = run(1.5);
+        assert!((half[1].width() - half[2].width()).abs() < 1e-9);
+        assert!(half[1].width() > RAIL_SEG_W && half[1].width() < RAIL_SEG_W_FOCUSED);
+        for focus in [1.0, 1.25, 1.5, 2.0] {
+            let rects = run(focus);
+            let extent = rects[3].x1 - rects[0].x0;
+            assert!((extent - r.extent()).abs() < 1e-9, "extent kept at {focus}");
+            assert!(
+                ((rects[0].x0 + rects[3].x1) / 2.0 - 800.0).abs() < 1e-9,
+                "centre kept at {focus}"
+            );
+        }
+        let ribbon = StripRibbon {
+            content: Rect::new(0.0, 40.0, 1600.0, 900.0),
+            count: 3,
+            focused: 0,
+        };
+        let half = (
+            ribbon.segment_rect_at(0, 0.5).unwrap(),
+            ribbon.segment_rect_at(1, 0.5).unwrap(),
+        );
+        assert!((half.0.height() - half.1.height()).abs() < 1e-9);
     }
 }
 
@@ -1635,9 +1752,9 @@ mod ribbon_tests {
                     ]);
                     (relative_luminance(over) - g).abs()
                 };
-                let idle = contrast(ribbon_fill(&theme, false, false));
-                let hover = contrast(ribbon_fill(&theme, false, true));
-                let focused = contrast(ribbon_fill(&theme, true, false));
+                let idle = contrast(ribbon_fill(&theme, 0.0, false));
+                let hover = contrast(ribbon_fill(&theme, 0.0, true));
+                let focused = contrast(ribbon_fill(&theme, 1.0, false));
                 assert!(
                     idle > 0.0,
                     "{name}: an unfocused segment is invisible, so a second strip \
