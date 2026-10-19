@@ -28,6 +28,11 @@ use crate::error::{Error, Result};
 
 /// Length of Chromium's `OSCrypt` AES-128 key.
 pub const CHROMIUM_KEY_LEN: usize = 16;
+/// Largest Chromium ciphertext this decoder accepts. Cookies are credentials,
+/// not files, and the caller's format bound is the same.
+pub const MAX_CHROMIUM_CIPHERTEXT: usize = 32 * 1024;
+/// Largest rclone `obscure` string this decoder accepts.
+pub const MAX_RCLONE_OBSCURED: usize = 16 * 1024;
 /// Chromium derives its key from this fixed salt and one iteration.
 const CHROMIUM_SALT: &[u8] = b"saltysalt";
 /// Chromium's CBC initialisation vector is sixteen spaces.
@@ -59,21 +64,29 @@ pub fn chromium_oscrypt_key(password: &[u8]) -> Zeroizing<[u8; CHROMIUM_KEY_LEN]
 ///
 /// # Errors
 ///
-/// [`Error::Malformed`] for an empty or misaligned ciphertext or bad padding,
-/// [`Error::InvalidKey`] for a key of the wrong length.
+/// [`Error::Malformed`] for an empty, oversized or misaligned ciphertext or
+/// bad padding, [`Error::InvalidKey`] if the cipher refuses its fixed-length key.
 pub fn chromium_oscrypt_plaintext(
     key: &[u8; CHROMIUM_KEY_LEN],
     ciphertext: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>> {
-    if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
+    if ciphertext.is_empty()
+        || ciphertext.len() > MAX_CHROMIUM_CIPHERTEXT
+        || !ciphertext.len().is_multiple_of(16)
+    {
         return Err(Error::Malformed("chromium ciphertext length"));
     }
     let decryptor = cbc::Decryptor::<aes::Aes128>::new_from_slices(key, &CHROMIUM_IV)
         .map_err(|_| Error::InvalidKey)?;
-    decryptor
-        .decrypt_padded_vec::<Pkcs7>(ciphertext)
-        .map(Zeroizing::new)
-        .map_err(|_| Error::Malformed("chromium padding"))
+    // Decrypt in place in a wiped buffer: a bad final block must not leave the
+    // earlier, correctly decrypted plaintext to the allocator.
+    let mut plaintext = Zeroizing::new(ciphertext.to_vec());
+    let length = decryptor
+        .decrypt_padded::<Pkcs7>(plaintext.as_mut_slice())
+        .map_err(|_| Error::Malformed("chromium padding"))?
+        .len();
+    plaintext.truncate(length);
+    Ok(plaintext)
 }
 
 /// Decode the plaintext of an rclone `obscure` password.
@@ -83,10 +96,13 @@ pub fn chromium_oscrypt_plaintext(
 ///
 /// # Errors
 ///
-/// [`Error::Malformed`] for a wrong base64 alphabet, a ciphertext missing its
-/// IV, an empty password or non-UTF-8 plaintext.
+/// [`Error::Malformed`] for a wrong base64 alphabet, an oversized string, a
+/// ciphertext missing its IV, an empty password or non-UTF-8 plaintext.
 pub fn rclone_obscure(encoded: &str) -> Result<Zeroizing<String>> {
     use base64::Engine as _;
+    if encoded.len() > MAX_RCLONE_OBSCURED {
+        return Err(Error::Malformed("rclone length"));
+    }
     let mut bytes = Zeroizing::new(
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(encoded)

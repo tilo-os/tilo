@@ -284,10 +284,15 @@ impl TransportKey {
         }
         let decryptor = cbc::Decryptor::<Aes128>::new_from_slices(self.0.as_ref(), iv)
             .map_err(|_| Error::Seal)?;
-        decryptor
-            .decrypt_padded_vec::<Pkcs7>(ciphertext)
-            .map(Zeroizing::new)
-            .map_err(|_| Error::Malformed("padding"))
+        // Decrypt in place in a wiped buffer: bad padding must not leave the
+        // earlier, correctly decrypted secret to the allocator.
+        let mut plaintext = Zeroizing::new(ciphertext.to_vec());
+        let length = decryptor
+            .decrypt_padded::<Pkcs7>(plaintext.as_mut_slice())
+            .map_err(|_| Error::Malformed("padding"))?
+            .len();
+        plaintext.truncate(length);
+        Ok(plaintext)
     }
 
     /// The raw key, for known-answer tests.
