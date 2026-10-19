@@ -912,6 +912,14 @@ signature = ""
 
 [entrypoint]
 bin = "bin/example"
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
 "#
         );
         Manifest::from_toml_str(&src).unwrap()
