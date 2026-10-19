@@ -285,9 +285,9 @@ fn history_skips_tabs_that_closed_and_plain_removal_keeps_the_index_rule() {
 }
 
 #[test]
-fn closing_a_window_returns_to_the_window_you_came_from_not_its_right_neighbour() {
-    // [10 | 11]: the person works in 10, opens a window between 10 and 11
-    // (where a new window lands), looks at it, closes it.
+fn a_window_that_goes_away_hands_focus_to_its_left_neighbour_not_where_focus_was_before() {
+    // [10 | 12 | 11]: the person works in 10, opens 12 beside it, looks at
+    // it, and it goes away: back to 10, on its left, not 11 at its index.
     let mut tree = tree();
     tree.set_active_group(StripId(1), 10);
     let strip = &mut tree.workspaces[0].strips[0];
@@ -295,29 +295,27 @@ fn closing_a_window_returns_to_the_window_you_came_from_not_its_right_neighbour(
     tree.set_active_group(StripId(1), 12);
     let removed = tree.close_tab(120).unwrap();
     assert!(removed.group_removed);
-    assert_eq!(
-        tree.active_group_for(StripId(1)),
-        Some(10),
-        "back to the window the person came from, not 11, which now sits at the index"
-    );
-    assert!(
-        tree.group_focus_history[&StripId(1)]
-            .iter()
-            .all(|g| *g != 12),
-        "a closed group is never returned to"
-    );
+    assert_eq!(tree.active_group_for(StripId(1)), Some(10));
 
-    // History skips groups that closed meanwhile: 10 -> 11 -> 12, close 11
-    // while behind, then close 12: back to 10.
+    // [10 | 11 | 12 | 13]: focused 10 long ago, now in 13 at the far end.
+    // When 13 crashes, focus goes to 12 beside it; going back to 10 would
+    // pan the strip to its start.
+    let mut tree = self::tree();
+    let strip = &mut tree.workspaces[0].strips[0];
+    strip.window_groups.push(group(12, &[120]));
+    strip.window_groups.push(group(13, &[130]));
+    tree.set_active_group(StripId(1), 10);
+    tree.set_active_group(StripId(1), 13);
+    tree.close_tab(130).unwrap();
+    assert_eq!(tree.active_group_for(StripId(1)), Some(12));
+
+    // At the strip's start, the neighbour on the right.
     let mut tree = self::tree();
     tree.workspaces[0].strips[0]
         .window_groups
-        .push(group(12, &[120]));
-    tree.set_active_group(StripId(1), 10);
+        .insert(0, group(12, &[120]));
     tree.set_active_group(StripId(1), 11);
     tree.set_active_group(StripId(1), 12);
-    tree.close_tab(110).unwrap();
-    assert_eq!(tree.active_group_for(StripId(1)), Some(12));
     tree.close_tab(120).unwrap();
     assert_eq!(tree.active_group_for(StripId(1)), Some(10));
 

@@ -398,14 +398,15 @@ impl DesktopTree {
         self.remove_tab_choosing(tab_id, false)
     }
 
-    /// [`Self::remove_tab`] for a tab the person closed (its window went
-    /// away): if it was in front, the group goes back to the tab that was in
-    /// front before it, most recent first, and only without such history takes
-    /// the tab now at its index. Likewise, when it was the active group's last
-    /// tab, the strip goes back to the group that was active before it
-    /// ([`DesktopTree::previously_active_group`]), and only without such
-    /// history to the group now at its index. Restructuring that removes and
-    /// re-adds tabs keeps using [`Self::remove_tab`].
+    /// [`Self::remove_tab`] for a tab whose window went away (closed or
+    /// crashed): if it was in front, the group goes back to the tab that was
+    /// in front before it, most recent first, and only without such history
+    /// takes the tab now at its index. When it was the active group's last
+    /// tab, the strip's focus goes to the group on its left, or at the
+    /// strip's start to the one on its right: the neighbour the strip already
+    /// shows, so the strip pans at most by the closed window's width and
+    /// never jumps elsewhere. Restructuring that removes and re-adds tabs
+    /// keeps using [`Self::remove_tab`].
     pub fn close_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
         self.remove_tab_choosing(tab_id, true)
     }
@@ -453,11 +454,17 @@ impl DesktopTree {
                 .get(group_idx)
                 .or_else(|| strip.window_groups.last())
                 .map(|group| group.id);
+            let on_the_left = group_idx
+                .checked_sub(1)
+                .and_then(|left| strip.window_groups.get(left))
+                .map(|group| group.id);
             if self.active_group.get(&strip_id) == Some(&group_id) {
-                let came_from = back_to_previous
-                    .then(|| self.previously_active_group(strip_id, group_id))
-                    .flatten();
-                match came_from.or(at_index) {
+                let next = if back_to_previous {
+                    on_the_left.or(at_index)
+                } else {
+                    at_index
+                };
+                match next {
                     Some(next) => {
                         self.active_group.insert(strip_id, next);
                     }
@@ -465,9 +472,6 @@ impl DesktopTree {
                         self.active_group.remove(&strip_id);
                     }
                 }
-            }
-            if let Some(history) = self.group_focus_history.get_mut(&strip_id) {
-                history.retain(|g| *g != group_id);
             }
         }
         Some(RemovedTab {
