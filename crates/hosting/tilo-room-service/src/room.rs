@@ -219,7 +219,7 @@ impl Room {
         write_private(&key, identity.key_pem.as_bytes())?;
         let mut command = Command::new(&config.relay_binary);
         command
-            .env("TILO_RELAY_LOG", "warn")
+            .env("TILO_RELAY_LOG", crate::persistent::relay_log())
             .arg("room")
             .arg("--state")
             .arg(relay_state(&directory))
