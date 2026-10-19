@@ -17,7 +17,8 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
             root = Path(directory)
             (root / "os/scripts").mkdir(parents=True)
             shutil.copy(ROOT / "os/scripts/build-thin-apps.sh", root / "os/scripts/build-thin-apps.sh")
-            for name in ('tools/ci/rustc-thin-app-wrapper.sh', 'tools/ci/thin-app/sccache'):
+            for name in ('tools/ci/rustc-thin-app-wrapper.sh', 'tools/ci/thin-app/sccache',
+                         'tools/ci/thin-app/rustc-wrapper'):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / name, target)
@@ -47,7 +48,7 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
             if cargo_compiler is not None:
                 env['CARGO_BUILD_RUSTC'] = cargo_compiler
             if cache:
-                backend = root / 'bin/sccache'
+                backend = root / 'bin' / (cache if isinstance(cache, str) else 'sccache')
                 backend.write_text('#!/bin/sh\nexec "$@"\n')
                 backend.chmod(0o755)
                 env['RUSTC_WRAPPER'] = str(backend)
@@ -99,14 +100,23 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
         self.assertIn('env.TILO_THIN_SCCACHE.force=true', seen['args'])
         self.assertIsNone(seen['compiler'])
 
+    def test_any_runner_cache_is_routed_after_workspace_flags(self):
+        # t's own compiler cache is not sccache: it too keyed workspace crates by
+        # the arguments before the size wrapper's flags, and served a crate
+        # compiled with the old flags after the wrapper changed them.
+        seen = self.invocation(cache='rustc-wrapper')
+        self.assertTrue(seen['wrapper'].endswith('/tools/ci/thin-app/rustc-wrapper'))
+        self.assertTrue(seen['cache'].endswith('/bin/rustc-wrapper'))
+        self.assertIn('build.rustc-wrapper=', ' '.join(seen['args']))
+
     def test_cache_sees_the_effective_compiler_arguments(self):
         # Compare the actual command after mutation with what the cache sees.
         # An outer cache can omit wrapper flags even when the final link works.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wrapper = root / 'tools/ci/rustc-thin-app-wrapper.sh'
-            router = root / 'tools/ci/thin-app/sccache'
-            for tool in (wrapper, router):
+            routers = (root / 'tools/ci/thin-app/sccache', root / 'tools/ci/thin-app/rustc-wrapper')
+            for tool in (wrapper, *routers):
                 tool.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / tool.relative_to(root), tool)
             compiler = root / 'compiler'
@@ -126,8 +136,8 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
                 ('third-party name collision', ['--crate-name', 'settings', '--crate-type', 'rlib'], False),
                 ('native C compiler', ['-c', 'source.c', '-o', 'source.o'], False),
             )
-            for name, args, workspace in cases:
-                with self.subTest(compilation=name):
+            for (name, args, workspace), router in ((case, router) for case in cases for router in routers):
+                with self.subTest(compilation=name, router=router.name):
                     baseline = root / 'baseline.json'
                     actual = root / 'actual.json'
                     cache_call = root / 'cache-call.json'

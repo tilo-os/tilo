@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Cargo's outer compiler dispatcher when the job's compiler cache is not
+# sccache (t's own rustc-wrapper, for one). Like ./sccache: workspace crates go
+# through the size wrapper first, which then runs the cache with the flags it
+# added, so the cache keys the compile it actually caches.
+set -euo pipefail
+
+workspace_wrapper="${BASH_SOURCE[0]%/thin-app/rustc-wrapper}/rustc-thin-app-wrapper.sh"
+if [[ ${1:-} == "$workspace_wrapper" ]]; then
+    exec "$@"
+fi
+exec "${TILO_THIN_SCCACHE:?thin-app compiler cache is not configured}" "$@"
