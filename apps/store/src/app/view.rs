@@ -65,7 +65,7 @@ type Element = Box<dyn Widget>;
 pub(super) const PAGE: usize = 48;
 
 /// The width of one screenshot in the gallery, in lines of body text.
-const SCREENSHOT_LINES: f32 = 14.0;
+const SCREENSHOT_LINES: u8 = 14;
 
 impl StoreApp {
     /// Compose the whole tree. Called from `build_layout`; also used by tests
@@ -109,7 +109,11 @@ impl StoreApp {
         for child in children {
             column = column.push(child);
         }
-        let mut scroll = Scrollable::new(ScrollAxis::Vertical).fill_parent_height();
+        // The bar's gutter is kept whether or not the page overflows, so the
+        // centred column does not move between a short page and a long one.
+        let mut scroll = Scrollable::new(ScrollAxis::Vertical)
+            .fill_parent_height()
+            .with_stable_vertical_gutter();
         if keeps_scroll {
             scroll = scroll.with_persisted_offset(self.scroll_offset.clone());
         }
@@ -929,7 +933,11 @@ impl StoreApp {
         if shots.is_empty() {
             return None;
         }
-        let width = (theme.text(TextRole::Body).line_height_px() * SCREENSHOT_LINES).round();
+        let width =
+            (theme.text(TextRole::Body).line_height_px() * f32::from(SCREENSHOT_LINES)).round();
+        // Art-only cards, so the gallery is exactly as tall as a screenshot
+        // at that width; each keeps its label as its accessible name.
+        let height = ui::num::f32_of_f64(f64::from(width) / MediaAspect::Wide.ratio()).round();
         let mut strip = Row::new()
             .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Related);
@@ -947,7 +955,7 @@ impl StoreApp {
                             },
                         )
                         .aspect(MediaAspect::Wide)
-                        .title(ui::i18n!(
+                        .seed(ui::i18n!(
                             "store-screenshot-label",
                             "name" => item.name.clone(),
                             "number" => (index + 1).to_string()
@@ -959,6 +967,7 @@ impl StoreApp {
             ui::i18n!("store-screenshots-title"),
             vec![Box::new(
                 Scrollable::new(ScrollAxis::Horizontal)
+                    .with_height(height)
                     .with_semantic_key(format!("store.gallery.{}", item.id))
                     .with_child(Box::new(strip)),
             )],

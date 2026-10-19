@@ -172,9 +172,14 @@ pub fn row(
     open_page: Option<ActionBinding<()>>,
     images: Option<&ui::ImageStore>,
 ) -> Element {
-    let mut row = ListRow::new(format!("store.row.{}", item.id), &item.name)
-        .media(row_art(item, images), MediaAspect::Square)
-        .meta(meta.unwrap_or_else(|| crate::catalogue::source_label(item)));
+    let mut row = ListRow::new(format!("store.row.{}", item.id), &item.name);
+    // The same mark as the app's card and page: its artwork, else the
+    // desktop's glyph for it on the neutral square, never its initials.
+    row = match row_art(item, images) {
+        MediaSource::Kind(glyph) => row.avatar(&item.name, &item.id).avatar_glyph(glyph),
+        art => row.media(art, MediaAspect::Square),
+    };
+    let mut row = row.meta(meta.unwrap_or_else(|| crate::catalogue::source_label(item)));
     let tagline = item.summary();
     if !tagline.is_empty() {
         row = row.secondary(tagline);
