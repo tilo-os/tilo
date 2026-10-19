@@ -862,7 +862,7 @@ mod tests {
         canvas.displays[1].shared.as_mut().unwrap().online = false;
         let offline_excluded = canvas.accessibility().unwrap();
         let description = offline_excluded.children[1].description.as_ref().unwrap();
-        assert!(description.contains("Offline") && description.contains("Not in layout"));
+        assert!(description.contains("Offline") && description.contains("not in the layout"));
     }
 
     #[test]
