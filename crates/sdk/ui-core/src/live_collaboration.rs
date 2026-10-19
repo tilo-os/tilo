@@ -43,3 +43,192 @@ pub struct LiveStatus {
     pub origin: StatusOrigin,
     pub updated_at: SystemTime,
 }
+
+/// What the people in a workspace see of this person, chosen per workspace.
+///
+/// A public workspace (one listed in its host's directory, open to anyone)
+/// starts at [`Self::ThatImHere`]: strangers see a face, never where it is.
+/// A private one starts at [`Self::WhereIAm`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresenceVisibility {
+    /// Your face, which window you are in, your pointer, your selection and
+    /// what you say beside your pointer.
+    WhereIAm,
+    /// Your face only: not which window, not your pointer.
+    ThatImHere,
+    /// Nothing: you do not appear, and you do not see others' pointers
+    /// either.
+    Nothing,
+}
+
+impl PresenceVisibility {
+    /// What a workspace starts at before the person chooses.
+    #[must_use]
+    pub const fn default_for(public: bool) -> Self {
+        if public {
+            Self::ThatImHere
+        } else {
+            Self::WhereIAm
+        }
+    }
+
+    /// Whether others may see where this person is: which window, their
+    /// pointer, caret and selection, what they say beside the pointer.
+    #[must_use]
+    pub const fn shows_where(self) -> bool {
+        matches!(self, Self::WhereIAm)
+    }
+
+    /// Whether others may see this person at all.
+    #[must_use]
+    pub const fn shows_presence(self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+
+    /// Whether this person sees others' pointers: someone who shows nothing
+    /// sees nothing of where others are, which is fair.
+    #[must_use]
+    pub const fn sees_pointers(self) -> bool {
+        !matches!(self, Self::Nothing)
+    }
+
+    /// The stored word.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::WhereIAm => "where",
+            Self::ThatImHere => "here",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// The choice a stored word names; `None` for one this build does not
+    /// know.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "where" => Some(Self::WhereIAm),
+            "here" => Some(Self::ThatImHere),
+            "nothing" => Some(Self::Nothing),
+            _ => None,
+        }
+    }
+}
+
+/// How available a person says they are, beside their face. Emoji-free
+/// presets; idle and away also come on their own (no input for
+/// [`IDLE_AFTER`], a locked screen).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Availability {
+    /// Here and open to being talked to.
+    #[default]
+    Available,
+    /// Here, heads down.
+    Focusing,
+    /// Not at the computer: chosen, or the screen is locked.
+    Away,
+    /// No input for a while: the face dims.
+    Idle,
+}
+
+/// No input for this long and a person shows as idle.
+pub const IDLE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+impl Availability {
+    /// What others see, from what the person chose and what their machine
+    /// knows: a locked screen is away, and a quiet one is idle unless they
+    /// chose otherwise.
+    #[must_use]
+    pub fn shown(chosen: Self, locked: bool, quiet_for: Duration) -> Self {
+        if locked {
+            Self::Away
+        } else if chosen == Self::Available && quiet_for >= IDLE_AFTER {
+            Self::Idle
+        } else {
+            chosen
+        }
+    }
+
+    /// Whether the person's face dims.
+    #[must_use]
+    pub const fn dims(self) -> bool {
+        matches!(self, Self::Away | Self::Idle)
+    }
+
+    /// The stored and wire word.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Focusing => "focusing",
+            Self::Away => "away",
+            Self::Idle => "idle",
+        }
+    }
+
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "available" => Some(Self::Available),
+            "focusing" => Some(Self::Focusing),
+            "away" => Some(Self::Away),
+            "idle" => Some(Self::Idle),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod presence_choice_tests {
+    use super::*;
+
+    /// A public workspace shows strangers a face and nothing of where it is;
+    /// a private one shows where; Nothing shows nothing and sees no pointers.
+    #[test]
+    fn what_people_see_defaults_by_workspace_and_round_trips() {
+        assert_eq!(
+            PresenceVisibility::default_for(true),
+            PresenceVisibility::ThatImHere
+        );
+        assert_eq!(
+            PresenceVisibility::default_for(false),
+            PresenceVisibility::WhereIAm
+        );
+        assert!(!PresenceVisibility::ThatImHere.shows_where());
+        assert!(PresenceVisibility::ThatImHere.shows_presence());
+        assert!(!PresenceVisibility::Nothing.shows_presence());
+        assert!(!PresenceVisibility::Nothing.sees_pointers());
+        for choice in [
+            PresenceVisibility::WhereIAm,
+            PresenceVisibility::ThatImHere,
+            PresenceVisibility::Nothing,
+        ] {
+            assert_eq!(PresenceVisibility::from_id(choice.id()), Some(choice));
+        }
+    }
+
+    /// Locked is away; five quiet minutes is idle unless another status
+    /// was chosen.
+    #[test]
+    fn idle_and_away_come_on_their_own() {
+        let quiet = IDLE_AFTER;
+        assert_eq!(
+            Availability::shown(Availability::Available, false, quiet),
+            Availability::Idle
+        );
+        assert_eq!(
+            Availability::shown(Availability::Available, false, Duration::from_secs(10)),
+            Availability::Available
+        );
+        assert_eq!(
+            Availability::shown(Availability::Focusing, false, quiet),
+            Availability::Focusing
+        );
+        assert_eq!(
+            Availability::shown(Availability::Focusing, true, Duration::ZERO),
+            Availability::Away
+        );
+        assert!(Availability::Idle.dims() && Availability::Away.dims());
+        assert!(!Availability::Focusing.dims());
+    }
+}

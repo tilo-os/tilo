@@ -263,6 +263,18 @@ const PRESENCE_SHARING_PARAMS: &[ActionParam] = &[ActionParam::required(
     "off, manual, or automatic.",
 )];
 
+const PRESENCE_AVAILABILITY_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "availability",
+    ParamType::Text,
+    "available, focusing, or away.",
+)];
+
+const PRESENCE_VISIBILITY_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "visibility",
+    ParamType::Text,
+    "What the people in this workspace see of you: where (your window and pointer), here (only that you are here), or nothing.",
+)];
+
 const DEVICE_REVOKE_PARAMS: &[ActionParam] = crate::shell::identity_admin::REVOKE_PARAMS;
 
 fn workspace_create_contract() -> tilo_actions::ActionContract {
@@ -1974,6 +1986,89 @@ impl Action {
                 };
                 st.push_presence_request(
                     crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.wave",
+            label: "search-action-presence-wave",
+            subtitle: "search-action-presence-wave-subtitle",
+            params: PRESENCE_FOLLOW_PARAMS,
+            apply: |st, args| {
+                let id = args.text("collaborator").unwrap_or_default().trim();
+                let here = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && !row.invited);
+                if !here {
+                    return Err(ActionError::Refused(format!(
+                        "`{id}` is not here in this workspace"
+                    )));
+                }
+                st.push_presence_request(crate::shell::chrome_state::PresenceRequest::Wave(
+                    id.to_string(),
+                ));
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.availability.set",
+            label: "search-action-presence-availability-set",
+            subtitle: "search-action-presence-availability-set-subtitle",
+            params: PRESENCE_AVAILABILITY_PARAMS,
+            apply: |st, args| {
+                let chosen = match args
+                    .text("availability")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "available" => ui::Availability::Available,
+                    "focusing" => ui::Availability::Focusing,
+                    "away" => ui::Availability::Away,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "availability must be available, focusing, or away".into(),
+                        ));
+                    }
+                };
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetAvailability(chosen),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.visibility.set",
+            label: "search-action-presence-visibility-set",
+            subtitle: "search-action-presence-visibility-set-subtitle",
+            params: PRESENCE_VISIBILITY_PARAMS,
+            apply: |st, args| {
+                let choice = match args
+                    .text("visibility")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "where" => ui::PresenceVisibility::WhereIAm,
+                    "here" => ui::PresenceVisibility::ThatImHere,
+                    "nothing" => ui::PresenceVisibility::Nothing,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "visibility must be where, here, or nothing".into(),
+                        ));
+                    }
+                };
+                let Some(room) = st.tree().desktop.active_workspace().map(|w| w.room) else {
+                    return Err(ActionError::Refused("no workspace is open".into()));
+                };
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetVisibility(room, choice),
                 );
                 Ok(())
             },

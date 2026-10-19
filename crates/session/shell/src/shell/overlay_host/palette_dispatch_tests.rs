@@ -293,8 +293,10 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
 
 #[test]
 #[serial_test::serial(process_env)]
-fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() {
-    fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
+fn status_and_presence_publish_live_manual_status() {
+    /// Your status is yours to say on your avatar's menu: what you write
+    /// there replaces a suggested one and goes to the people here.
+    fn status_written_on_the_avatar_menu_replaces_a_suggestion_and_is_published() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", settings.path());
@@ -304,160 +306,25 @@ fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() 
         host.set_status_presence_bridge(std::rc::Rc::new(move |_room, status| {
             capture.borrow_mut().push(status.map(|status| status.text));
         }));
-        host.status_editing = true;
-        let state = AutoCommit::new();
-        let mut handled = false;
-        let modifiers = winit::event::Modifiers::default();
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Character("Preparing Q2 review".into()),
-            modifiers,
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert!(handled);
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Enter),
-            modifiers,
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert!(
-            host.pump_presence_requests(),
-            "the next production update applies the queued semantic status request"
-        );
-        assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
-        assert_eq!(
-            published.borrow().as_slice(),
-            &[Some("Preparing Q2 review".into())]
-        );
-    }
-
-    fn inline_status_editor_uses_full_selection_and_navigation_contract() {
-        let (mut host, _) = host_with_chrome();
-        host.status_editing = true;
-        host.status_draft = "alpha beta".into();
-        host.status_selection = ui::text_selection::Selection::collapsed(host.status_draft.len());
-        let state = AutoCommit::new();
-        let mut handled = false;
-        let ctrl_shift = winit::event::Modifiers::from(
-            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
-        );
-
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::ArrowLeft),
-            ctrl_shift,
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert!(handled);
-        assert_eq!(
-            host.status_selection.range(),
-            6..10,
-            "Ctrl+Shift+Left selects the previous Unicode word"
-        );
-
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Character("x".into()),
-            winit::event::Modifiers::default(),
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(host.status_draft, "alpha x");
-        assert_eq!(
-            host.status_selection,
-            ui::text_selection::Selection::collapsed(7)
-        );
-
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Character("a".into()),
-            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(host.status_selection.range(), 0..7);
-
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Backspace),
-            winit::event::Modifiers::default(),
-            false,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert!(host.status_draft.is_empty());
-        assert_eq!(
-            host.status_selection,
-            ui::text_selection::Selection::collapsed(0)
-        );
-    }
-
-    fn inline_status_editor_repeats_navigation_and_deletion_but_not_text_insertion() {
-        let (mut host, _) = host_with_chrome();
-        host.status_editing = true;
-        host.status_draft = "abcd".into();
-        host.status_selection = ui::text_selection::Selection::collapsed(4);
-        let state = AutoCommit::new();
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Backspace),
-            modifiers,
-            true,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(host.status_draft, "abc");
-
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Character("z".into()),
-            modifiers,
-            true,
-            &state,
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(
-            host.status_draft, "abc",
-            "a synthetic repeat press cannot duplicate printable text"
-        );
-    }
-
-    fn editing_an_inferred_status_starts_a_fresh_manual_sentence() {
-        let (mut host, _) = host_with_chrome();
         host.local_status = Some("Summarizing recent file changes".into());
         host.local_status_origin = ui::StatusOrigin::Inferred {
             generator: "local-model".into(),
         };
-        let mut handled = false;
-        host.apply_collaborators_hit(CollaboratorsHit::EditStatus, &mut handled);
+        host.apply_profile_choice(&tilo_desktop::profile_card::ProfileChoice::Status(
+            "Preparing Q2 review".into(),
+        ));
+        assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
+        assert_eq!(host.local_status_origin, ui::StatusOrigin::Manual);
+        assert_eq!(
+            published.borrow().as_slice(),
+            &[Some("Preparing Q2 review".into())]
+        );
 
-        assert!(handled);
-        assert!(host.status_editing);
-        assert!(host.status_draft.is_empty());
-
-        host.status_editing = false;
-        host.local_status = Some("Closing the Q3 forecast".into());
-        host.local_status_origin = ui::StatusOrigin::Manual;
-        handled = false;
-        host.apply_collaborators_hit(CollaboratorsHit::EditStatus, &mut handled);
-        assert_eq!(host.status_draft, "Closing the Q3 forecast");
+        host.apply_profile_choice(&tilo_desktop::profile_card::ProfileChoice::Status(
+            String::new(),
+        ));
+        assert_eq!(host.local_status, None, "an empty line clears it");
+        assert_eq!(published.borrow().last(), Some(&None));
     }
 
     fn semantic_status_requests_use_the_live_presence_publisher_and_privacy_state() {
@@ -522,10 +389,7 @@ fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() 
         assert_eq!(events[1], (first[0].0, first[0].1, false));
     }
 
-    inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps();
-    inline_status_editor_uses_full_selection_and_navigation_contract();
-    inline_status_editor_repeats_navigation_and_deletion_but_not_text_insertion();
-    editing_an_inferred_status_starts_a_fresh_manual_sentence();
+    status_written_on_the_avatar_menu_replaces_a_suggestion_and_is_published();
     semantic_status_requests_use_the_live_presence_publisher_and_privacy_state();
     focused_app_presence_is_edge_triggered_and_clears_when_focus_disappears();
 }

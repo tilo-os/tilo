@@ -31,7 +31,8 @@ use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
 };
 use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RosterRow, RosterStatus,
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange, RosterRow,
+    RosterStatus,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -247,8 +248,20 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
         invited: false,
         activity: person.place.clone(),
         status: person.status.as_ref().map(status),
-        recent: person.recent.as_ref().map(status),
+        // A page has no History entries to open: what they did recently
+        // is one line, opening the workspace's History.
+        recent: person
+            .recent
+            .iter()
+            .map(|line| RecentChange {
+                text: line.text.clone(),
+                when: String::new(),
+                entry: None,
+            })
+            .collect(),
         followable: false,
+        availability: ui::Availability::Available,
+        call: None,
     }
 }
 
@@ -479,17 +492,11 @@ impl BrowserShell {
         {
             self.expanded = None;
         }
-        let here = self.chrome.here.borrow();
-        let own_label = here
-            .own_shown()
-            .unwrap_or_else(tilo_desktop::here::guest_label);
-        let own_rgb = here
-            .own_rgb()
-            .unwrap_or_else(|| ui::presence::user_color(&own_label));
-        let own_status = here.own_status();
-        let watching = usize::try_from(here.watching()).unwrap_or(usize::MAX);
-        let sharing = here.sharing();
-        drop(here);
+        let watching = usize::try_from(self.chrome.here.borrow().watching()).unwrap_or(usize::MAX);
+        let workspace = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|w| w.name.clone()))
+            .unwrap_or_default();
         self.people.draw(
             scene,
             transform,
@@ -497,23 +504,13 @@ impl BrowserShell {
             theme,
             &CollaboratorsModel {
                 host: self.rect,
+                workspace: &workspace,
                 rows: &rows,
-                own_label: &own_label,
-                own_color: theme.tokens.colors.presence.of_rgb(own_rgb),
-                own_rename: self.handle.offers_host_action(RENAME_ACTION),
                 unavailable: None,
+                exposure: None,
                 may_invite: self.offers.invite,
                 followed_id: None,
                 following_pairs: &[],
-                own_status: None,
-                own_activity: own_status.as_ref().map(|line| line.text.as_str()),
-                own_activity_generated: own_status.as_ref().is_some_and(|line| line.automatic),
-                own_status_automatic: false,
-                status_sharing: sharing,
-                status_editing: false,
-                status_editable: false,
-                status_selection: ui::text_selection::Selection::default(),
-                screen_exposure: None,
                 expanded_id: self.expanded.as_deref(),
                 watching,
             },
@@ -528,25 +525,17 @@ impl BrowserShell {
                 self.people_open = false;
                 self.invite();
             }
-            CollaboratorsHit::RoomActivity => {
+            CollaboratorsHit::OpenChange(..) | CollaboratorsHit::OpenChanges(_) => {
                 self.people_open = false;
                 self.activity();
-            }
-            CollaboratorsHit::Rename => {
-                self.people_open = false;
-                self.requests
-                    .borrow_mut()
-                    .push(HostRequest::Action(RENAME_ACTION.to_owned()));
-            }
-            CollaboratorsHit::ChangeSharing => self.people.toggle_sharing_choices(),
-            CollaboratorsHit::SetStatusSharing(mode) => {
-                self.chrome.here.borrow_mut().set_sharing(mode);
             }
             CollaboratorsHit::ToggleDetails(index) => {
                 let id = self.people.details_target(index).map(str::to_owned);
                 self.expanded = if self.expanded == id { None } else { id };
             }
-            _ => {}
+            CollaboratorsHit::ToggleFollow(_)
+            | CollaboratorsHit::Wave(_)
+            | CollaboratorsHit::Absorb => {}
         }
     }
 
@@ -832,6 +821,12 @@ impl BrowserShell {
             can_rename: self.handle.offers_host_action(RENAME_ACTION),
             actions,
             linked: self.chrome.shared.linked.accounts(),
+            // What the page shares of what the person is doing is theirs to
+            // choose here, beside their name.
+            sharing: Some(self.chrome.here.borrow().sharing()),
+            // Status, colour and what people see are the desktop's to keep;
+            // a page shows the person as their host names them.
+            ..ProfileModel::default()
         }
     }
 
@@ -841,6 +836,14 @@ impl BrowserShell {
             ProfileChoice::Action(id) => HostRequest::Action(id),
             ProfileChoice::Link(app) => return self.link_account(&app, true),
             ProfileChoice::Unlink(app) => return self.link_account(&app, false),
+            ProfileChoice::Sharing(mode) => {
+                self.chrome.here.borrow_mut().set_sharing(mode);
+                return;
+            }
+            ProfileChoice::Availability(_)
+            | ProfileChoice::Status(_)
+            | ProfileChoice::Colour(_)
+            | ProfileChoice::Visibility(_) => return,
         };
         self.requests.borrow_mut().push(request);
     }

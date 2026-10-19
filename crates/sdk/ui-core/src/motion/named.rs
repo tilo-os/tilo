@@ -900,6 +900,68 @@ impl Follow {
     }
 }
 
+/// A reaction floating up from the pointer it was sent from: it rises,
+/// slowing as it goes, and fades over the second half of its life. Its life
+/// is fixed rather than a token pace, because the reaction is the content of
+/// that moment and has to be readable before it goes. Under reduced motion it
+/// does not rise; it only fades. Never loops, never bounces.
+pub struct Float;
+
+impl Float {
+    /// How long a reaction is shown.
+    pub const LIFE: crate::time::Duration = crate::time::Duration::from_millis(1200);
+    /// How far it rises over its life, in logical pixels.
+    pub const RISE_PX: f64 = 48.0;
+
+    /// How far above where it started it is drawn, and how opaque, at `age`;
+    /// `None` once it is gone.
+    #[must_use]
+    pub fn at(age: crate::time::Duration, motion: EffectiveMotion) -> Option<(f64, f32)> {
+        if age >= Self::LIFE {
+            return None;
+        }
+        let t = (age.as_secs_f64() / Self::LIFE.as_secs_f64()).clamp(0.0, 1.0);
+        let rise = if motion.reduced() {
+            0.0
+        } else {
+            Self::RISE_PX * (1.0 - (1.0 - t) * (1.0 - t))
+        };
+        let opacity = if t < 0.5 { 1.0 } else { (1.0 - t) * 2.0 };
+        Some((rise, unit_opacity(opacity)))
+    }
+}
+
+/// A state that is live for as long as it lasts: the soft ring on the face
+/// of someone in a call. It breathes slowly between a quiet and a full
+/// level, the only motion that loops, so it is reserved for something that
+/// is happening right now. Where motion may not loop it holds at full.
+pub struct Breathe;
+
+impl Breathe {
+    /// One breath, in and out.
+    pub const PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1800);
+
+    /// How strong it is `since` it began, `0.35..=1`.
+    #[must_use]
+    pub fn level(since: crate::time::Duration, motion: EffectiveMotion) -> f32 {
+        if !motion.loops() {
+            return 1.0;
+        }
+        let phase = (since.as_secs_f64() / Self::PERIOD.as_secs_f64()).fract();
+        let wave = 0.5 - 0.5 * (phase * std::f64::consts::TAU).cos();
+        unit_opacity(0.35 + 0.65 * wave)
+    }
+
+    /// When to paint it next: a breath is drawn at a gentle frame rate, not
+    /// the display's, as it changes slowly.
+    #[must_use]
+    pub fn next_frame(now: Instant, motion: EffectiveMotion) -> Option<Instant> {
+        motion
+            .loops()
+            .then(|| now + crate::time::Duration::from_millis(66))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 10. Press and hover feedback
 // ---------------------------------------------------------------------------

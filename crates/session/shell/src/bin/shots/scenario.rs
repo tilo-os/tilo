@@ -230,6 +230,39 @@ pub enum Action {
     /// Fill the active room with enough live participants to exercise the
     /// production People pager without weakening each row's action/intent UI.
     SeedCrowdedWorkspace,
+    /// Three people and an agent in the active workspace, through the same
+    /// presence the live shell folds: pointers over windows, one idle, one
+    /// in a call.
+    SeedPresenceRoom,
+    /// Nobody else in the active workspace: only you.
+    OnlyYou,
+    /// A collaborator (by roster id) says `text` beside their pointer;
+    /// `sent` once they pressed Enter.
+    RemoteCursorChat {
+        who: &'static str,
+        text: &'static str,
+        sent: bool,
+    },
+    /// A collaborator reacts with an emoji from their pointer.
+    RemoteReaction {
+        who: &'static str,
+        emoji: &'static str,
+    },
+    /// Open this person's cursor chat with `text` typed.
+    OpenCursorChat(&'static str),
+    /// Follow the collaborator with this roster id, or stop with `None`.
+    FollowPeer(Option<&'static str>),
+    /// Open someone's row in the roster.
+    ExpandRosterRow(&'static str),
+    /// The person's own input ended following.
+    StopFollowingByInput,
+    /// The collaborator with this roster id waved at this person.
+    WaveFrom(&'static str),
+    /// Arrive in the workspace on screen: the arrival line, telling what
+    /// its people see when `public`.
+    Arrive {
+        public: bool,
+    },
     /// Publish authenticated semantic work owned by one external app so the
     /// compositor-level collaboration fallback can be inspected in pixels.
     SeedForeignAppWork {
@@ -891,6 +924,18 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::SeedInferredStatus(text) => driver.seed_inferred_status_for_shots(text),
         Action::SeedCrowdedWorkspace => driver.seed_crowded_workspace_for_shots(),
+        Action::SeedPresenceRoom => driver.seed_presence_room_for_shots(),
+        Action::OnlyYou => driver.only_you_for_shots(),
+        Action::RemoteCursorChat { who, text, sent } => {
+            driver.remote_cursor_chat_for_shots(who, text, *sent);
+        }
+        Action::RemoteReaction { who, emoji } => driver.remote_reaction_for_shots(who, emoji),
+        Action::OpenCursorChat(text) => driver.host_mut().open_cursor_chat_for_shots(text),
+        Action::FollowPeer(id) => driver.host_mut().follow_for_shots(*id),
+        Action::ExpandRosterRow(id) => driver.host_mut().expand_collaborator_for_shots(id),
+        Action::StopFollowingByInput => driver.host_mut().stop_following_by_input_for_shots(),
+        Action::WaveFrom(id) => driver.host_mut().wave_from_for_shots(id),
+        Action::Arrive { public } => driver.host_mut().arrive_for_shots(*public),
         Action::SeedForeignAppWork {
             app_id,
             action,
@@ -3695,6 +3740,69 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::ShowCollaboratorInFiles,
                 Action::Wait(2),
                 Action::Snapshot("07-ada-in-files"),
+            ],
+        },
+        Scenario {
+            name: "presence_together",
+            description: "Being together in a workspace: only you, three people and an agent at every scale, the roster with a row open, arriving in a public workspace, a wave, cursor chat, following and stopping, and the avatar menu with what people see.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(18),
+                Action::OnlyYou,
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("01-only-you"),
+                Action::ClickNamed("topbar_avatar_stack"),
+                Action::Wait(4),
+                Action::Snapshot("02-roster-only-you"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::SeedPresenceRoom,
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("03-three-people-and-an-agent"),
+                Action::ClickNamed("topbar_avatar_stack"),
+                Action::Wait(4),
+                Action::Snapshot("04-roster"),
+                Action::ExpandRosterRow("ada"),
+                Action::Wait(24),
+                Action::Snapshot("04b-roster-row-open"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(2),
+                Action::Arrive { public: true },
+                Action::Wait(3),
+                Action::Snapshot("05-arriving-in-a-public-workspace"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::WaveFrom("ada"),
+                Action::Wait(3),
+                Action::Snapshot("06-a-wave-arriving"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::RemoteCursorChat {
+                    who: "ada",
+                    text: "Look at the second paragraph, it reads twice",
+                    sent: true,
+                },
+                Action::RemoteReaction {
+                    who: "ben",
+                    emoji: "\u{1f389}",
+                },
+                Action::PointerPath(vec![Point::new(820.0, 300.0)]),
+                Action::OpenCursorChat("On it, merging th"),
+                Action::Wait(2),
+                Action::Snapshot("07-cursor-chat"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::FollowPeer(Some("ada")),
+                Action::Wait(6),
+                Action::Snapshot("08-following"),
+                Action::StopFollowingByInput,
+                Action::Wait(1),
+                Action::Snapshot("09-stopped-following"),
+                Action::WaitWall(1_200),
+                Action::ClickNamed("topbar_profile"),
+                Action::Wait(4),
+                Action::Snapshot("10-avatar-menu"),
             ],
         },
         Scenario {

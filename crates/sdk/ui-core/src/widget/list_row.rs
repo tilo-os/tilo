@@ -332,6 +332,9 @@ pub struct ListRowFace<'a> {
     leading_column: Option<f64>,
     status: Option<RowStatus<'a>>,
     disclosure: bool,
+    /// How far the chevron has turned towards pointing down, 0 to 1: a row
+    /// that opens in place rather than onto a page.
+    disclosure_turn: f64,
     checked: Option<bool>,
     emphasized: bool,
     selected: bool,
@@ -370,6 +373,7 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             status: None,
             disclosure: false,
+            disclosure_turn: 0.0,
             checked: None,
             emphasized: false,
             selected: false,
@@ -530,6 +534,16 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn disclosure(mut self) -> Self {
         self.disclosure = true;
+        self
+    }
+
+    /// A trailing chevron for a row that opens in place, turned `turn` of
+    /// the way (0 closed, 1 open) from pointing at the row's end to
+    /// pointing down — [`crate::motion::Disclose`]'s `turn`.
+    #[must_use]
+    pub fn disclosure_turned(mut self, turn: f64) -> Self {
+        self.disclosure = true;
+        self.disclosure_turn = turn.clamp(0.0, 1.0);
         self
     }
 
@@ -1023,7 +1037,12 @@ impl<'a> ListRowFace<'a> {
 
         // Trailing columns, from the far edge in.
         if let Some(r) = geo.disclosure {
-            Icon::ChevronRight.draw(ctx.scene, ctx.transform, r, theme.text_tertiary);
+            let centre = r.center();
+            let turned = ctx.transform
+                * Affine::translate(centre.to_vec2())
+                * Affine::rotate(self.disclosure_turn * std::f64::consts::FRAC_PI_2)
+                * Affine::translate(-centre.to_vec2());
+            Icon::ChevronRight.draw(ctx.scene, turned, r, theme.text_tertiary);
         }
         if let (Some(r), Some(true)) = (geo.check, self.checked) {
             Icon::Check.draw(ctx.scene, ctx.transform, r, theme.text_primary);

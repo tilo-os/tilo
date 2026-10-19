@@ -476,6 +476,16 @@ impl PaintedTargets {
         }
     }
 
+    /// Close this frame's registration: a press whose target was not
+    /// painted again is over, even if that target comes back later.
+    pub fn end_frame(&mut self) {
+        if let Some(pressed) = &self.pressed
+            && !self.targets.iter().any(|target| target.id == *pressed)
+        {
+            self.cancel_pointer_press();
+        }
+    }
+
     /// Cancel the gesture while retaining ownership of its eventual release.
     pub fn cancel_pointer_press(&mut self) {
         self.cancelled_release_pending |= self.pressed.take().is_some();

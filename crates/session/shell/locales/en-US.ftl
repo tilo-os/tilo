@@ -765,7 +765,7 @@ a11y-leave-workspace = Leave { $name }
 
 # Following someone's view
 follow-label = Following { $person }
-follow-detail = Your view. Everyone here can see it.
+follow-stopped = Stopped following
 follow-stop = Stop
 
 # Search filter chips
@@ -1401,6 +1401,12 @@ search-action-collaborators-open = Show collaborators
 search-action-collaborators-open-subtitle = Collaborators currently in this workspace
 search-action-presence-follow-stop = Stop following
 search-action-presence-follow-stop-subtitle = Return this view to local navigation
+search-action-presence-wave = Wave
+search-action-presence-wave-subtitle = Wave at someone here; their face says it was you
+search-action-presence-availability-set = Set your availability
+search-action-presence-availability-set-subtitle = Available, Focusing or Away, beside your face
+search-action-presence-visibility-set = Choose what people here see
+search-action-presence-visibility-set-subtitle = Where you are, that you're here, or nothing
 search-action-room-activity-open = Show workspace activity
 search-action-room-activity-open-subtitle = History of this workspace: changes, permissions, who did what and when
 search-action-peer-invite = Invite a collaborator…
@@ -2940,6 +2946,9 @@ search-kw-presence-follow = follow, spectate, watch someone, follow person
 search-kw-presence-follow-stop = unfollow, stop following
 search-kw-presence-status-set = status, away, busy, availability
 search-kw-presence-status-sharing-set = status privacy, share status, hide status
+search-kw-presence-wave = wave, say hi, hello
+search-kw-presence-availability-set = status, available, focusing, away, busy, do not disturb
+search-kw-presence-visibility-set = privacy, invisible, hide, what people see, show where I am
 search-kw-room-activity-open = activity, history, what changed, changes, timeline, catch up, log, recent
 search-kw-peer-invite = invite, share, add person, collaborate, join link, send invite
 search-kw-peer-connect = join, join workspace, accept invite, connect, enter code, public workspaces, browse workspaces, discover, directory, community
@@ -3148,3 +3157,15 @@ arrival-others = { $count ->
     [one] and 1 other
    *[other] and { $count } others
 }
+
+# Cursor chat: a short message beside your pointer, shown to everyone in that window.
+cursor-chat-placeholder = Say something
+cursor-chat-you = You
+
+# The line under the top bar when you arrive where people are, or someone waves.
+presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
+presence-arrival-intro-here = People here see your name and your colour, never where you are
+presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
+presence-arrival-change = Change
+presence-wave-notice = { $person } waves
+presence-someone = Someone

@@ -15,7 +15,11 @@ mod agent_markers;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod cursor_chat;
+pub(crate) use cursor_chat::ChatOut;
+mod arrival;
 mod person_markers;
+mod presence_self;
 mod qs_motion;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
@@ -225,6 +229,10 @@ mod qs_device_state_tests;
 )]
 #[path = "qs_wifi_radio_tests.rs"]
 mod qs_wifi_radio_tests;
+
+/// How long the follow bar says "Stopped following" after the person's own
+/// input ended it.
+const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Draw a relationship line with a visible head at the followed person. This
 /// intentionally encodes direction in geometry, so a room observer does not
@@ -970,13 +978,6 @@ pub struct ShellOverlayHost {
     published_active_tab: Option<(crate::shell::state::RoomId, crate::shell::state::TabId)>,
     local_status: Option<String>,
     local_status_origin: ui::StatusOrigin,
-    status_draft: String,
-    /// Caret/selection for the inline presence status editor.  Keeping this
-    /// beside the draft lets the field use the same complete text-editing
-    /// contract as workspace names and Wi-Fi passwords instead of its former
-    /// append/pop-only special case.
-    status_selection: ui::text_selection::Selection,
-    status_editing: bool,
     status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
@@ -1101,6 +1102,9 @@ pub struct ShellOverlayHost {
     follow_visual: Option<RosterRow>,
     /// Persistent follow-mode banner painted while following.
     follow_chip_rect: Rect,
+    /// When following stopped because the person did something of their
+    /// own: the bar says "Stopped following" for [`FOLLOW_STOPPED_FOR`].
+    follow_stopped: Option<Instant>,
     /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
     /// the banner is informative, not a surprising destructive target.
     follow_stop_rect: Rect,
@@ -1110,6 +1114,17 @@ pub struct ShellOverlayHost {
     agent_markers: agent_markers::AgentMarkers,
     person_markers: tilo_desktop::person_cursor::PersonCursors,
     person_quick_composer: crate::shell::person_quick_composer::PersonQuickComposer,
+    /// This person's cursor chat: `/` over a shared window.
+    cursor_chat: cursor_chat::CursorChatComposer,
+    /// You, as the people in each workspace see you.
+    self_presence: presence_self::SelfPresence,
+    /// The line under the top bar: arriving where people are, a wave.
+    presence_notices: arrival::PresenceNotices,
+    /// A press landed on that line: its release is the line's too.
+    presence_notice_press: bool,
+    /// A capture shows the workspace on screen as public.
+    #[cfg(feature = "hosted-test-control")]
+    public_for_shots: bool,
     person_quick_composer_node: Option<NodeId>,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
@@ -1621,6 +1636,12 @@ fn take_pending_activity_reveal(
 struct CollaborationPreferences {
     sharing: ui::StatusSharing,
     manual_status: Option<String>,
+    /// How available the person says they are.
+    availability: ui::Availability,
+    /// What the people in each workspace see, where the person chose.
+    visibility: std::collections::BTreeMap<crate::shell::state::RoomId, ui::PresenceVisibility>,
+    /// Public workspaces whose people the person was told about.
+    introduced: std::collections::BTreeSet<crate::shell::state::RoomId>,
 }
 
 /// Human-readable projection of the compositor's screen-share authority for
@@ -1729,9 +1750,46 @@ impl CollaborationPreferences {
             .and_then(serde_json::Value::as_str)
             .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|text| !text.is_empty() && text.chars().count() <= ui::MAX_STATUS_CHARS);
+        let availability = values
+            .get("availability")
+            .and_then(serde_json::Value::as_str)
+            .and_then(ui::Availability::from_id)
+            .filter(|chosen| *chosen != ui::Availability::Idle)
+            .unwrap_or_default();
+        // A room or choice this build does not read is left out: that
+        // workspace takes its default, never something looser.
+        let visibility = values
+            .get("presence_visibility")
+            .and_then(serde_json::Value::as_object)
+            .map(|rooms| {
+                rooms
+                    .iter()
+                    .filter_map(|(room, choice)| {
+                        Some((
+                            crate::shell::state::RoomId::parse(room)?,
+                            ui::PresenceVisibility::from_id(choice.as_str()?)?,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let introduced = values
+            .get("presence_introduced")
+            .and_then(serde_json::Value::as_array)
+            .map(|rooms| {
+                rooms
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(crate::shell::state::RoomId::parse)
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             sharing,
             manual_status,
+            availability,
+            visibility,
+            introduced,
         }
     }
 
@@ -1755,6 +1813,25 @@ impl CollaborationPreferences {
             self.manual_status
                 .clone()
                 .map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
+        values.insert("availability".into(), self.availability.id().into());
+        values.insert(
+            "presence_introduced".into(),
+            serde_json::Value::Array(
+                self.introduced
+                    .iter()
+                    .map(|room| room.to_string().into())
+                    .collect(),
+            ),
+        );
+        values.insert(
+            "presence_visibility".into(),
+            serde_json::Value::Object(
+                self.visibility
+                    .iter()
+                    .map(|(room, choice)| (room.to_string(), choice.id().into()))
+                    .collect(),
+            ),
         );
         values
     }
@@ -2730,9 +2807,6 @@ impl ShellOverlayHost {
             published_active_tab: None,
             local_status: collaboration_preferences.manual_status,
             local_status_origin: ui::StatusOrigin::Manual,
-            status_draft: String::new(),
-            status_selection: ui::text_selection::Selection::default(),
-            status_editing: false,
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
@@ -2795,11 +2869,25 @@ impl ShellOverlayHost {
             follow_visual: None,
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
+            follow_stopped: None,
             follow_cursor_targets: Vec::new(),
             agent_markers: agent_markers::AgentMarkers::default(),
             person_markers: tilo_desktop::person_cursor::PersonCursors::default(),
             person_quick_composer:
                 crate::shell::person_quick_composer::PersonQuickComposer::default(),
+            cursor_chat: cursor_chat::CursorChatComposer::default(),
+            self_presence: presence_self::SelfPresence {
+                chosen: collaboration_preferences.availability,
+                visibility: collaboration_preferences.visibility.clone(),
+                ..presence_self::SelfPresence::default()
+            },
+            presence_notices: arrival::PresenceNotices {
+                introduced: collaboration_preferences.introduced.clone(),
+                ..arrival::PresenceNotices::default()
+            },
+            presence_notice_press: false,
+            #[cfg(feature = "hosted-test-control")]
+            public_for_shots: false,
             person_quick_composer_node: None,
             agent_actions: HashMap::new(),
             agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
@@ -3166,6 +3254,11 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
+        // The line under the top bar goes with any press; one on it is
+        // its own (its "Change" opens the avatar menu).
+        let on_notice = self.presence_notices.rect.contains(p) || self.arrival_line.change_at(p);
+        self.press_presence_notice(p);
+        self.presence_notice_press = on_notice;
         if !self.notification_stack.rect().contains(p) {
             self.release_banner_keyboard();
         }
@@ -3308,6 +3401,15 @@ impl ShellOverlayHost {
     /// were the window under one given the pointer, a click on the banner
     /// would land in the app and the banner could be neither opened nor
     /// dismissed.
+    /// The pointer is on the line under the top bar: its press is the
+    /// line's, not the window's beneath.
+    pub(crate) fn presence_notice_captures_pointer(&self) -> bool {
+        self.presence_notice_press
+            || self.last_cursor.is_some_and(|p| {
+                self.presence_notices.rect.contains(p) || self.arrival_line.change_at(p)
+            })
+    }
+
     pub(crate) fn notification_banner_captures_pointer(&self) -> bool {
         let Some(chrome) = self.chrome.as_ref() else {
             return false;
@@ -4551,6 +4653,7 @@ impl ShellOverlayHost {
         };
         if let Some((name, people)) = shown {
             self.arrival_line.show(&name, people, now);
+            self.introduce_joined(arrival.room);
         }
         true
     }
@@ -9012,6 +9115,9 @@ impl ShellOverlayHost {
         self.followed_tab = None;
         self.followed_session = None;
         if self.followed_peer.is_some() {
+            self.follow_stopped = None;
+            // The follow bar takes the top centre.
+            self.dismiss_presence_notice();
             self.follow_visual = self.followed_roster_row();
             self.follow_transition.show(
                 true,
@@ -9103,10 +9209,35 @@ impl ShellOverlayHost {
             }
         );
         if pressed && self.followed_peer.is_some() {
-            self.set_followed_peer(None);
+            let escape = matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                        ..
+                    },
+                    ..
+                }
+            );
+            // Escape is asking to stop; any other key is the person taking
+            // back their own view, and the bar says so for a moment.
+            if escape {
+                self.set_followed_peer(None);
+            } else {
+                self.stop_following_for_local_input();
+            }
             return true;
         }
         false
+    }
+
+    /// The person did something of their own in the followed view: stop
+    /// following, and say so on the bar for a moment.
+    fn stop_following_for_local_input(&mut self) {
+        if self.followed_peer.is_some() {
+            self.follow_stopped = Some(Instant::now());
+        }
+        self.set_followed_peer(None);
     }
 
     fn followed_roster_row(&self) -> Option<RosterRow> {
@@ -9369,17 +9500,11 @@ impl ShellOverlayHost {
         self.peer_sync_overlay.set_snapshot_for_tests(snapshot);
     }
 
-    /// The collaborator dropdown's Invite / Join buttons, as painted last
-    /// frame (not recomputed) — `Rect::ZERO` when closed or not permitted,
-    /// so a test click on a missing button fails instead of hitting the origin.
-    pub fn collaborators_action_rects_for_tests(&self) -> (Rect, Rect) {
-        self.collaborators_overlay.action_rects()
-    }
-
-    /// The "Room activity" row at the foot of the same dropdown, on the
-    /// same terms.
-    pub fn collaborators_activity_rect_for_tests(&self) -> Rect {
-        self.collaborators_overlay.activity_rect()
+    /// The roster's Invite button, as painted last frame (not recomputed) —
+    /// `Rect::ZERO` when closed or not permitted, so a test click on a
+    /// missing button fails instead of hitting the origin.
+    pub fn collaborators_invite_rect_for_tests(&self) -> Rect {
+        self.collaborators_overlay.invite_rect()
     }
 
     /// Revoke-button rects painted by `Self::draw_ws_settings` while
@@ -15620,48 +15745,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.status_editing {
-            let edit = if repeat
-                && matches!(logical_key, Key::Character(_) | Key::Named(NamedKey::Space))
-            {
-                // DRM synthesises repeat events for native widgets, but text
-                // insertion is edge-triggered: holding a printable key must
-                // not race through an unbounded status string. Navigation and
-                // deletion intentionally keep their conventional repeat.
-                tilo_desktop::text_entry::Edit::ConsumedQuiet
-            } else {
-                tilo_desktop::text_entry::apply(
-                    logical_key,
-                    tilo_desktop::text_entry::Mods::from_state(mstate),
-                    &mut self.status_draft,
-                    &mut self.status_selection,
-                )
-            };
-            match edit {
-                tilo_desktop::text_entry::Edit::Cancel => {
-                    self.end_status_edit();
-                }
-                tilo_desktop::text_entry::Edit::Submit => {
-                    let text = self
-                        .status_draft
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let status = (!text.is_empty()).then_some(text);
-                    self.end_status_edit();
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().push_presence_request(
-                            crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
-                        );
-                    }
-                }
-                tilo_desktop::text_entry::Edit::Changed => self.cap_status_draft(),
-                tilo_desktop::text_entry::Edit::Ignored
-                | tilo_desktop::text_entry::Edit::ConsumedQuiet => {}
-            }
-            *handled = true;
-            return true;
-        }
         // The usual host event path handles this ahead of modal routing.
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
@@ -17208,15 +17291,6 @@ impl ShellOverlayHost {
     }
 
     /// Keep a typed status within [`ui::MAX_STATUS_CHARS`].
-    fn cap_status_draft(&mut self) {
-        let Some((byte_cap, _)) = self.status_draft.char_indices().nth(ui::MAX_STATUS_CHARS) else {
-            return;
-        };
-        self.status_draft.truncate(byte_cap);
-        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
-        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
-    }
-
     /// An input method's text for whichever chrome field holds the keyboard
     /// (the workspace name, the status), typed at its caret as keys are.
     /// `false` when no such field is open.
@@ -17240,12 +17314,6 @@ impl ShellOverlayHost {
         }
         if !self.palette_visible && self.strip_switcher.commit_text(text) {
             self.bump_chrome();
-            return true;
-        }
-        if self.status_editing {
-            if commit(text, &mut self.status_draft, &mut self.status_selection) == Edit::Changed {
-                self.cap_status_draft();
-            }
             return true;
         }
         false
@@ -17399,7 +17467,7 @@ impl ShellOverlayHost {
             && !self.cursor_over_open_overlay(p)
             && !self.follow_chip_rect.contains(p)
         {
-            self.set_followed_peer(None);
+            self.stop_following_for_local_input();
         }
         if self.followed_peer.is_none()
             && !self.cursor_over_open_overlay(p)
@@ -17557,25 +17625,6 @@ impl ShellOverlayHost {
         if !open && !self.collaborators_overlay.wants_pointer_capture() {
             return false;
         }
-        if self.status_editing && matches!(event, WindowEvent::KeyboardInput { .. }) {
-            return false;
-        }
-        if self.status_editing
-            && let Some(selection) =
-                self.collaborators_overlay
-                    .status_pointer_selection(event, ctx, self.last_cursor)
-        {
-            self.status_selection = ui::text_selection::Selection {
-                anchor: ui::text_selection::grapheme_boundary_at_or_before(
-                    &self.status_draft,
-                    selection.anchor,
-                ),
-                cursor: ui::text_selection::grapheme_boundary_at_or_before(
-                    &self.status_draft,
-                    selection.cursor,
-                ),
-            };
-        }
         let hit = self
             .collaborators_overlay
             .handle_event(event, ctx, open, self.last_cursor);
@@ -17588,27 +17637,6 @@ impl ShellOverlayHost {
             chrome.borrow_mut().bump();
         }
         *ctx.handled
-    }
-
-    fn begin_status_edit(&mut self) {
-        if self.status_editing {
-            return;
-        }
-        self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual) {
-            self.local_status.clone().unwrap_or_default()
-        } else {
-            String::new()
-        };
-        self.status_selection = ui::text_selection::Selection::collapsed(self.status_draft.len());
-        self.status_editing = true;
-    }
-
-    /// A status draft belongs to the visible People editor. Ending it never
-    /// publishes or changes the participant's existing status.
-    fn end_status_edit(&mut self) {
-        self.status_editing = false;
-        self.status_draft.clear();
-        self.status_selection = ui::text_selection::Selection::default();
     }
 
     /// Follow the painted row's person, or stop when they are the one
@@ -17657,75 +17685,65 @@ impl ShellOverlayHost {
     }
 
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
-        if matches!(
-            hit,
-            CollaboratorsHit::Dismiss
-                | CollaboratorsHit::Invite
-                | CollaboratorsHit::Join
-                | CollaboratorsHit::RoomActivity
-        ) {
-            self.end_status_edit();
-        }
+        *handled = true;
         match hit {
             CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
             CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
-            _ => {}
-        }
-        if matches!(
-            hit,
-            CollaboratorsHit::ToggleDetails(_) | CollaboratorsHit::ToggleFollow(_)
-        ) {
-            *handled = true;
-            return;
-        }
-        match hit {
-            CollaboratorsHit::EditStatus => {
-                self.begin_status_edit();
-                *handled = true;
-                return;
+            CollaboratorsHit::Wave(index) => {
+                if let Some(target) = self
+                    .collaborators_overlay
+                    .wave_target(index)
+                    .map(str::to_owned)
+                {
+                    self.wave_at(&target);
+                }
             }
-            CollaboratorsHit::SetStatusSharing(mode) => {
-                self.set_status_sharing(mode);
-                *handled = true;
-                return;
+            CollaboratorsHit::OpenChanges(index) => {
+                let author = self
+                    .collaborators_overlay
+                    .changes_author(index)
+                    .map(str::to_owned);
+                if let (Some(author), Some(chrome)) = (author, self.chrome.clone()) {
+                    chrome
+                        .borrow_mut()
+                        .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                            author: Some(author),
+                            ..Default::default()
+                        }));
+                }
             }
-            CollaboratorsHit::ChangeSharing => {
-                self.collaborators_overlay.toggle_sharing_choices();
-                *handled = true;
-                return;
+            CollaboratorsHit::OpenChange(index, change) => {
+                let target = self
+                    .collaborators_overlay
+                    .change_target(index, change)
+                    .map(|(author, entry)| (author.to_owned(), entry));
+                if let (Some((author, entry)), Some(chrome)) = (target, self.chrome.clone()) {
+                    chrome
+                        .borrow_mut()
+                        .open_room_activity(Some(crate::shell::chrome_state::ActivityFocus {
+                            author: Some(author),
+                            entry_id: entry,
+                            ..Default::default()
+                        }));
+                }
             }
-            _ => {}
-        }
-        if let Some(chrome) = self.chrome.clone() {
-            let mut state = chrome.borrow_mut();
-            match hit {
-                CollaboratorsHit::Invite => {
+            CollaboratorsHit::Invite => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
                     state.push_peer_sync_request(PeerSyncAction::PromptInvite);
                     state.overlays.collaborators = false;
                     state.bump();
                 }
-                CollaboratorsHit::Join => {
-                    state.push_peer_sync_request(PeerSyncAction::PromptConnect);
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-                CollaboratorsHit::RoomActivity => {
-                    state.open_room_activity(None);
-                }
-                CollaboratorsHit::Dismiss => {
-                    state.overlays.collaborators = false;
-                    state.bump();
-                }
-                CollaboratorsHit::ToggleFollow(_)
-                | CollaboratorsHit::ToggleDetails(_)
-                | CollaboratorsHit::EditStatus
-                | CollaboratorsHit::ChangeSharing
-                | CollaboratorsHit::Rename
-                | CollaboratorsHit::SetStatusSharing(_)
-                | CollaboratorsHit::Absorb => {}
             }
+            CollaboratorsHit::Dismiss => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+            }
+            CollaboratorsHit::Absorb => {}
         }
-        *handled = true;
     }
 
     fn handle_collaborators_keyboard(
@@ -17770,6 +17788,20 @@ impl ShellOverlayHost {
         bridge(room, status);
     }
 
+    /// Say in your own words what you are doing (or clear it), to whoever
+    /// your status sharing allows.
+    fn set_manual_status(&mut self, status: Option<String>) {
+        self.local_status = status.filter(|text| !text.trim().is_empty());
+        self.local_status_origin = ui::StatusOrigin::Manual;
+        self.status_narrative_request = None;
+        if self.status_sharing == ui::StatusSharing::Off {
+            self.publish_local_status(None);
+        } else {
+            self.publish_local_status(self.local_status.clone());
+        }
+        self.persist_collaboration_preferences();
+    }
+
     fn set_status_sharing(&mut self, mode: ui::StatusSharing) {
         self.status_sharing = mode;
         if mode != ui::StatusSharing::Automatic
@@ -17808,18 +17840,19 @@ impl ShellOverlayHost {
                     self.set_followed_peer(None);
                 }
                 crate::shell::chrome_state::PresenceRequest::SetManualStatus(status) => {
-                    self.local_status = status;
-                    self.local_status_origin = ui::StatusOrigin::Manual;
-                    self.status_narrative_request = None;
-                    if self.status_sharing == ui::StatusSharing::Off {
-                        self.publish_local_status(None);
-                    } else {
-                        self.publish_local_status(self.local_status.clone());
-                    }
-                    self.persist_collaboration_preferences();
+                    self.set_manual_status(status);
                 }
                 crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode) => {
                     self.set_status_sharing(mode);
+                }
+                crate::shell::chrome_state::PresenceRequest::SetAvailability(chosen) => {
+                    self.set_chosen_availability(chosen);
+                }
+                crate::shell::chrome_state::PresenceRequest::SetVisibility(room, choice) => {
+                    self.set_presence_visibility(room, choice);
+                }
+                crate::shell::chrome_state::PresenceRequest::Wave(target) => {
+                    self.wave_at(&target);
                 }
             }
         }
@@ -17833,6 +17866,9 @@ impl ShellOverlayHost {
         let preferences = CollaborationPreferences {
             sharing: self.status_sharing,
             manual_status,
+            availability: self.self_presence.chosen,
+            visibility: self.self_presence.visibility.clone(),
+            introduced: self.presence_notices.introduced.clone(),
         };
         if let Err(error) =
             settings_store::update_section(CollaborationPreferences::SECTION, preferences.values())
@@ -21382,6 +21418,8 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         let presence_dirty = self.pump_presence_requests();
+        let presence_dirty = self.sync_self_presence() | presence_dirty;
+        let presence_dirty = self.refresh_presence_notices() | presence_dirty;
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
@@ -21973,10 +22011,22 @@ impl Widget for ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
-        let people_open = self.overlay_flags().collaborators;
-        if !people_open {
-            self.end_status_edit();
+        // A press on the line under the top bar was taken when it landed
+        // ([`Self::note_pointer_press`]); nothing beneath gets it.
+        if self.presence_notice_press && matches!(event, WindowEvent::MouseInput { .. }) {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                }
+            ) {
+                self.presence_notice_press = false;
+            }
+            *ctx.handled = true;
+            return;
         }
+        let people_open = self.overlay_flags().collaborators;
         if self
             .collaborators_overlay
             .consume_sequence_edge(event, people_open)
@@ -22353,6 +22403,26 @@ impl Widget for ShellOverlayHost {
             *ctx.handled = true;
             return;
         }
+        // Any key takes the arrival or wave line away.
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        ) {
+            self.dismiss_presence_notice();
+        }
+        // Cursor chat takes every key while it is open, and the `/` the
+        // keyboard route kept from the window opens it. Talking is not input
+        // to the followed window, so it does not end following.
+        if self.route_cursor_chat_event(event, ctx.modifiers.state()) {
+            *ctx.handled = true;
+            return;
+        }
         // The first local key is the handoff edge out of Follow mode. Consume
         // that same event after releasing the peer so a shell chord (for
         // example Super+W) cannot also mutate the local desktop.
@@ -22465,7 +22535,7 @@ impl Widget for ShellOverlayHost {
             // Release before forwarding so this input changes the local view
             // immediately rather than being overwritten by the next peer
             // view-presence frame.
-            self.set_followed_peer(None);
+            self.stop_following_for_local_input();
         }
         self.dispatch_pointer_and_content_event(
             event,
@@ -23247,6 +23317,12 @@ impl Widget for ShellOverlayHost {
                     .filter_map(agent_actions::AgentActions::deadline),
             )
             .chain(self.agent_quick_composer.next_wake_deadline())
+            .chain(self.cursor_chat_deadline())
+            .chain(
+                self.presence_notices
+                    .expires()
+                    .filter(|at| *at > Instant::now()),
+            )
             .chain(self.person_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.deadline())
             .chain(self.bar_tooltip.reveal_at())
@@ -23464,6 +23540,8 @@ impl ShellOverlayHost {
         let layers_in_flight = self.layers.is_animating(now);
         let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_moving(now);
+        let cursor_chat_in_flight =
+            self.cursor_chat_animating(now) || self.presence_notice_moving(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
@@ -23503,6 +23581,7 @@ impl ShellOverlayHost {
             || layers_in_flight
             || room_activity_in_flight
             || follow_in_flight
+            || cursor_chat_in_flight
             || room_replay_in_flight
             || capture_in_flight
             // The projection component includes both its transition and the
@@ -24014,6 +24093,9 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
     ) {
         use ui::scene_parts::{PartKey, part_drawn};
+        part_drawn(scene, PartKey::new("shell.presence-notice", ()), |scene| {
+            self.draw_presence_notice(scene, transform, text_renderer, theme)
+        });
         part_drawn(scene, PartKey::new("shell.follow-chip", ()), |scene| {
             self.draw_follow_chip(scene, transform, text_renderer, theme);
             // Everything is inside a layer clipped to the chip, which slides
@@ -24779,124 +24861,95 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if flags.collaborators {
-            // The name this person goes by, numbered like anyone else's when
-            // someone here shares it; never "You", never their key.
-            let own_name = ui::local_identity::load()
-                .map(|identity| identity.display_name)
-                .filter(|name| !name.trim().is_empty());
-            let (mut rows, own_shown, unavailable, screen_exposure) =
-                self.chrome.as_ref().map_or_else(
-                    || (Vec::new(), None, None, None),
-                    |chrome| {
-                        let state = chrome.borrow();
-                        let local_user = state.active_local_user();
-                        let (rows, own_shown) =
-                            tilo_desktop::collaborators::collaborator_roster_rows_named(
-                                &state.tree().desktop,
-                                &local_user,
-                                own_name.as_deref(),
-                            );
-                        (
-                            rows,
-                            own_shown,
-                            state.collab_unavailable.clone(),
-                            collaborators_screen_exposure(&state),
-                        )
-                    },
-                );
-            let now = std::time::SystemTime::now();
-            let interactions = presence.visible_interactions(std::time::Instant::now());
-            for row in &mut rows {
-                if let Some(status) =
-                    crate::shell::desk_widgets::team::status_line(presence, row, now)
-                {
-                    row.status = Some(status);
-                }
-                if let Some(interaction) = interactions.iter().find(|interaction| {
-                    interaction.actor.id == row.id
-                        || presence
-                            .names
-                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&row.label))
-                }) {
-                    row.activity = Some(format!(
-                        "{} · {}",
-                        interaction.action.label, interaction.resource.label
-                    ));
-                }
-            }
-            let may_invite = self.may_invite_here();
-            let following_pairs = self.roster_following_pairs(presence, &rows);
-            let own_id = self
-                .chrome
-                .as_ref()
-                .map(|chrome| chrome.borrow().local_user_id.clone())
-                .filter(|id| !id.trim().is_empty())
-                .unwrap_or_else(crate::shell::state::local_user_id);
-            let own_label = own_shown
-                .or(own_name)
-                .unwrap_or_else(|| ui::history_source::participant_display_label(&own_id));
-            let own_activity = interactions
-                .iter()
-                .find(|interaction| {
-                    interaction.actor.id == own_id
-                        || presence
-                            .names
-                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&own_label))
-                })
-                .map(|interaction| {
-                    format!(
-                        "{} · {}",
-                        interaction.action.label, interaction.resource.label
-                    )
-                });
-            let (red, green, blue) =
-                ui::presence::identity_rgb(crate::shell::state::local_presence_hue());
-            self.collaborators_overlay.draw(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &CollaboratorsModel {
-                    host: self.overlay_area(),
-                    rows: &rows,
-                    own_label: &own_label,
-                    // Native names come from the account, renamed in Settings.
-                    own_rename: false,
-                    own_color: theme.tokens.colors.presence.of_rgb((red, green, blue)),
-                    unavailable: unavailable.as_deref(),
-                    followed_id: self.followed_peer.as_deref(),
-                    following_pairs: &following_pairs,
-                    may_invite,
-                    own_status: if self.status_editing {
-                        Some(self.status_draft.as_str())
-                    } else {
-                        self.local_status.as_deref()
-                    },
-                    own_activity: own_activity.as_deref(),
-                    // Read off the person's own semantic actions.
-                    own_activity_generated: false,
-                    own_status_automatic: matches!(
-                        self.local_status_origin,
-                        ui::StatusOrigin::Inferred { .. }
-                    ),
-                    status_sharing: self.status_sharing,
-                    status_editing: self.status_editing,
-                    status_selection: self.status_selection,
-                    screen_exposure: screen_exposure.as_deref(),
-                    expanded_id: self.expanded_collaborator.as_deref(),
-                    // Native presence has no spectator role yet.
-                    watching: 0,
-                    status_editable: true,
-                },
-                self.last_cursor,
-            );
-        } else {
-            self.end_status_edit();
+        if !flags.collaborators {
             self.collaborators_overlay.clear();
+            return;
         }
+        // The name this person goes by, numbered like anyone else's when
+        // someone here shares it; never "You", never their key.
+        let own_name = ui::local_identity::load()
+            .map(|identity| identity.display_name)
+            .filter(|name| !name.trim().is_empty());
+        let (mut rows, workspace, unavailable, exposure) = self.chrome.as_ref().map_or_else(
+            || (Vec::new(), String::new(), None, None),
+            |chrome| {
+                let state = chrome.borrow();
+                let local_user = state.active_local_user();
+                let (rows, _) = tilo_desktop::collaborators::collaborator_roster_rows_named(
+                    &state.tree().desktop,
+                    &local_user,
+                    own_name.as_deref(),
+                );
+                let workspace = state
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.name.clone())
+                    .unwrap_or_default();
+                (
+                    rows,
+                    workspace,
+                    state.collab_unavailable.clone(),
+                    collaborators_screen_exposure(&state),
+                )
+            },
+        );
+        let now = std::time::SystemTime::now();
+        let interactions = presence.visible_interactions(std::time::Instant::now());
+        let history = self.room_activity.entries();
+        for row in &mut rows {
+            if let Some(status) = crate::shell::desk_widgets::team::status_line(presence, row, now)
+            {
+                row.status = Some(status);
+            }
+            if let Some(id) = crate::shell::desk_widgets::team::presence_id(presence, row) {
+                row.availability = presence.availability_of(&id);
+                row.call = presence.call_of(&id).map(str::to_owned);
+            }
+            // Where they are: the document or app in front of them.
+            if let Some(interaction) = interactions.iter().find(|interaction| {
+                interaction.actor.id == row.id
+                    || presence
+                        .names
+                        .get(&ui::permissions::UserId(interaction.actor.id.clone()))
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&row.label))
+            }) {
+                row.activity = Some(interaction.resource.label.clone());
+            }
+            row.recent = history
+                .iter()
+                .rev()
+                .filter(|entry| entry.author.name.eq_ignore_ascii_case(&row.label))
+                .take(tilo_desktop::collaborators::RECENT_CHANGES_SHOWN)
+                .map(|entry| tilo_desktop::collaborators::RecentChange {
+                    text: entry.summary.clone(),
+                    when: ui::widget::history::format_relative_time(entry.timestamp, now),
+                    entry: Some(*entry.id.as_bytes()),
+                })
+                .collect();
+        }
+        let may_invite = self.may_invite_here();
+        let following_pairs = self.roster_following_pairs(presence, &rows);
+        self.collaborators_overlay.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &CollaboratorsModel {
+                host: self.overlay_area(),
+                workspace: &workspace,
+                rows: &rows,
+                unavailable: unavailable.as_deref(),
+                exposure: exposure.as_deref(),
+                may_invite,
+                followed_id: self.followed_peer.as_deref(),
+                following_pairs: &following_pairs,
+                expanded_id: self.expanded_collaborator.as_deref(),
+                // Native presence has no spectator role yet.
+                watching: 0,
+            },
+            self.last_cursor,
+        );
     }
 
     fn draw_room_activity_sheet(
@@ -27578,13 +27631,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Persistent local follow-mode banner. It says both what is happening
-    /// and how control returns to the local user; an explicit Stop button
-    /// avoids making an unlabeled slab destructive.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "single immediate-mode renderer keeps the animated banner geometry and hit targets aligned"
-    )]
+    /// While following someone: a 2 px frame in their colour around the
+    /// work area, and a small bar at the top centre with their face,
+    /// "Following Ada" and Stop (Escape stops too). When the person's own
+    /// input ends it, the bar says "Stopped following" for a moment.
     fn draw_follow_chip(
         &mut self,
         scene: &mut Scene,
@@ -27593,7 +27643,13 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let now = ui::time::now();
-        if !self.follow_transition.is_visible(now) {
+        let stopped = self
+            .follow_stopped
+            .filter(|at| now.saturating_duration_since(*at) < FOLLOW_STOPPED_FOR);
+        if stopped.is_none() {
+            self.follow_stopped = None;
+        }
+        if !self.follow_transition.is_visible(now) && stopped.is_none() {
             self.follow_chip_rect = Rect::ZERO;
             self.follow_stop_rect = Rect::ZERO;
             self.follow_visual = None;
@@ -27607,142 +27663,125 @@ impl ShellOverlayHost {
             return;
         };
         self.follow_visual = Some(row.clone());
-        let label = t_args("follow-label", &[("person", row.label.as_str().into())]);
-        // The viewport/control is local; the lightweight relationship cue is
-        // intentionally visible to this room, so people understand why the
-        // attachment glyph is orbiting their avatar.
-        let detail = t("follow-detail");
-        let detail = detail.as_str();
-        // Over the display in use, not over the seam between two.
+        let following = self.followed_peer.is_some();
+        let label = if following {
+            t_args("follow-label", &[("person", row.label.as_str().into())])
+        } else {
+            t("follow-stopped")
+        };
         let area = self.overlay_area();
-        let width = 344.0_f64.min((area.width() - 24.0).max(220.0));
+        let spacing = &theme.tokens.spacing;
+        let bar_top = area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme));
+        let openness = if following {
+            ui::motion::unit_opacity(self.follow_transition.progress(now))
+        } else {
+            stopped.map_or(0.0, |at| {
+                ui::motion::Transient::opacity(
+                    ui::motion::Transient::CONFIRMATION,
+                    (at, at + FOLLOW_STOPPED_FOR),
+                    now,
+                    self.motion.get(),
+                )
+            })
+        };
+        // The frame says whose view this is, all the way round.
+        if following {
+            let work = Rect::new(area.x0, bar_top, area.x1, area.y1).inset(-1.0);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                row.color.multiply_alpha(openness),
+                None,
+                &RoundedRect::from_rect(work, f64::from(theme.tokens.radii.tile)),
+            );
+        }
+        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
+        let (label_w, label_h) = text_renderer.measure_style(&label, None, &label_style);
+        let stop_label = t("follow-stop");
+        let (stop_w, _) =
+            text_renderer.measure_style(&stop_label, None, &theme.text(TextRole::Body));
+        let stop_w = f64::from(stop_w);
+        let pad = f64::from(spacing.s3);
+        let face = 24.0;
+        let height = 40.0;
+        let stop_width = if following {
+            stop_w + 2.0 * f64::from(spacing.s3)
+        } else {
+            0.0
+        };
+        let width = pad
+            + face
+            + f64::from(spacing.s2)
+            + f64::from(label_w)
+            + if following {
+                f64::from(spacing.s3) + stop_width
+            } else {
+                0.0
+            }
+            + pad;
         let center_x = area.center().x;
-        let y0 = area.y0 + 54.0;
+        let y0 = bar_top + f64::from(spacing.s3);
         self.follow_chip_rect = Rect::new(
             center_x - width / 2.0,
             y0,
             center_x + width / 2.0,
-            y0 + 48.0,
+            y0 + height,
         );
-        let detach_rect = Rect::new(
-            self.follow_chip_rect.x1 - 64.0,
-            self.follow_chip_rect.y0 + 10.0,
-            self.follow_chip_rect.x1 - 10.0,
-            self.follow_chip_rect.y1 - 10.0,
+        let chip = self.follow_chip_rect;
+        let stop = Rect::new(
+            chip.x1 - pad - stop_width,
+            chip.center().y - 14.0,
+            chip.x1 - pad,
+            chip.center().y + 14.0,
         );
-        self.follow_stop_rect = if self.followed_peer.is_some() {
-            detach_rect
-        } else {
-            Rect::ZERO
-        };
-        // The banner appears from the top edge it hangs under.
+        self.follow_stop_rect = if following { stop } else { Rect::ZERO };
+        // The bar comes down from the top bar it hangs under.
         let pose = ui::motion::Appear::pose(
-            self.follow_transition.progress(now),
-            Point::new(self.follow_chip_rect.center().x, self.follow_chip_rect.y0),
+            f64::from(openness),
+            Point::new(chip.center().x, chip.y0),
             self.motion.get(),
         );
-        let transform = pose.applied_to(transform);
-        let openness = pose.opacity;
+        let placed = pose.applied_to(transform);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            openness,
-            transform,
-            &self.follow_chip_rect,
+            pose.opacity.min(openness),
+            placed,
+            &ui::widget::floating_surface::painted_bounds(chip, theme),
         );
-        let radius =
-            ui::chrome::shell::ChromeRole::Selector.radius(theme, self.follow_chip_rect.height());
-        let shape = RoundedRect::from_rect(self.follow_chip_rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            row.color.multiply_alpha(0.16),
-            None,
-            &shape,
+        ui::widget::floating_surface::paint_card(scene, placed, chip, theme);
+        let mut ctx = ui::paint::PaintCtx::new(scene, placed, text_renderer, theme);
+        let mut their_face = ui::presence::Face::new(&row.label, &row.id, row.color);
+        their_face.is_agent = row.is_agent;
+        ui::presence::FaceStack {
+            side: face - 6.0,
+            ..ui::presence::FaceStack::BAR
+        }
+        .paint(
+            &mut ctx,
+            (chip.x0 + pad + face, chip.center().y),
+            (&[their_face], 0),
+            ui::widget::floating_surface::card_ground(theme),
         );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            transform,
-            row.color,
-            None,
-            &shape,
-        );
-        let avatar_rect = Rect::new(
-            self.follow_chip_rect.x0 + 10.0,
-            self.follow_chip_rect.y0 + 10.0,
-            self.follow_chip_rect.x0 + 38.0,
-            self.follow_chip_rect.y1 - 10.0,
-        );
-        ui::widget::AvatarFace::new(&row.initial.to_string(), "")
-            .presence(row.color)
-            .paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                avatar_rect,
-            );
-        let label_x = self.follow_chip_rect.x0 + 48.0;
-        let label_budget = (detach_rect.x0 - label_x - 8.0).max(0.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "the follow banner is a few hundred logical pixels wide"
-        )]
-        let label = text_renderer.elide_to_width_style(
+        ctx.text(
             &label,
-            label_budget as f32,
-            &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
-        );
-        text_renderer.draw_style(
-            scene,
-            &label,
+            &label_style,
             theme.tokens.colors.text_primary,
-            transform.pre_translate((label_x, y0 + 8.0).into()),
+            Point::new(
+                chip.x0 + pad + face + f64::from(spacing.s2),
+                chip.center().y - f64::from(label_h) / 2.0,
+            ),
             None,
-            &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_style(
-            scene,
-            detail,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((self.follow_chip_rect.x0 + 48.0, y0 + 27.0).into()),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-        if self.followed_peer.is_some() {
+        if following {
             Button::paint(
                 scene,
-                transform,
+                placed,
                 text_renderer,
                 theme,
-                &ButtonFace::new(detach_rect, &t("follow-stop"))
-                    .hovered(self.last_cursor.is_some_and(|p| detach_rect.contains(p))),
-            );
-            // The cross is the primary detach affordance; the word keeps the
-            // control discoverable to assistive and first-use flows.
-            let center = Point::new(detach_rect.x0 + 13.0, detach_rect.center().y);
-            let cross = 3.5;
-            let stroke = Stroke::new(1.5);
-            scene.stroke(
-                &stroke,
-                transform,
-                theme.tokens.colors.text_primary,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(center.x - cross, center.y - cross),
-                    Point::new(center.x + cross, center.y + cross),
-                ),
-            );
-            scene.stroke(
-                &stroke,
-                transform,
-                theme.tokens.colors.text_primary,
-                None,
-                &vello::kurbo::Line::new(
-                    Point::new(center.x - cross, center.y + cross),
-                    Point::new(center.x + cross, center.y - cross),
-                ),
+                &ButtonFace::new(stop, &stop_label)
+                    .role(ui::widget::ButtonRole::Plain)
+                    .hovered(self.last_cursor.is_some_and(|p| stop.contains(p))),
             );
         }
         scene.pop_layer();
@@ -27785,6 +27824,7 @@ impl ShellOverlayHost {
                 presence,
                 theme.reduce_motion,
             ));
+            painted.extend(self.draw_cursor_chat(scene, transform, text_renderer, theme));
             painted
         });
     }
@@ -27860,27 +27900,18 @@ impl ShellOverlayHost {
                 point.y + 15.0,
             );
             self.follow_cursor_targets.push((id.clone(), rect));
+            // Only the person followed is ringed: a ring on every pointer
+            // is noise over the work. Every pointer is still a target.
+            let active = self.followed_peer.as_deref() == Some(id.as_str());
+            if !active {
+                continue;
+            }
             // The ring (radius 13, stroke 2.5) and its satellite stay within
             // the target; two more pixels hold their antialiased edges.
             painted.push(transform.transform_rect_bbox(rect.inflate(2.0, 2.0)));
-            let active = self.followed_peer.as_deref() == Some(id.as_str());
-            let radius = if active { 13.0 } else { 11.0 };
+            let radius = 13.0;
             let ring = vello::kurbo::Circle::new(point, radius);
-            scene.stroke(
-                &Stroke::new(if active { 2.5 } else { 1.25 }),
-                transform,
-                color.multiply_alpha(if active { 1.0 } else { 0.7 }),
-                None,
-                &ring,
-            );
-            // A small satellite makes the interaction readable as an
-            // attachment/follow gesture without making the cursor look like
-            // a button or covering their work.
-            let satellite = vello::kurbo::Circle::new(
-                Point::new(point.x + radius * 0.72, point.y - radius * 0.72),
-                if active { 3.5 } else { 2.5 },
-            );
-            scene.fill(Fill::NonZero, transform, color, None, &satellite);
+            scene.stroke(&Stroke::new(2.5), transform, color, None, &ring);
         }
         painted
     }
@@ -28019,6 +28050,7 @@ impl ShellOverlayHost {
         } else {
             ui::presence::POINTER_FADE
         };
+        let motion = self.motion.get();
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return Vec::new();
         };
@@ -28069,12 +28101,23 @@ impl ShellOverlayHost {
                         .pointer_position_at(&key, user, now)
                         .unwrap_or(*pos)
                 };
+                let is_agent = presence.is_agent(user);
                 ui::presence::PeerCursor {
                     pos: (f64::from(pos.0), f64::from(pos.1)),
-                    // Falls back to the id when the roster has no name.
-                    label: presence.display_name(user),
+                    // Falls back to the id when the roster has no name. An
+                    // agent's pill carries the agent mark, so its name
+                    // stands alone.
+                    label: if is_agent {
+                        presence
+                            .names
+                            .get(user)
+                            .cloned()
+                            .unwrap_or_else(|| presence.display_name(user))
+                    } else {
+                        presence.display_name(user)
+                    },
                     color: Color::from_rgb8(r, g, b),
-                    is_agent: presence.is_agent(user),
+                    is_agent,
                     opacity: presence.pointer_opacity(
                         &key,
                         user,
@@ -28082,6 +28125,9 @@ impl ShellOverlayHost {
                         ui::presence::POINTER_IDLE,
                         fade,
                     ),
+                    name_opacity: presence.pointer_name_opacity(&key, user, now, fade),
+                    chat: presence.chats.bubble(user, now, motion),
+                    reaction: presence.chats.reaction(user, now, motion),
                 }
             })
             .collect()
@@ -29544,7 +29590,6 @@ impl ShellOverlayHost {
                 .as_ref()
                 .is_some_and(|chrome| chrome.borrow().editing_workspace_name.is_some());
         renaming
-            || self.status_editing
             || self.workspace_settings_overlay.member_sheet_is_open()
             || (self.overlay_flags().shortcut_help && self.shortcut_rebind.is_some())
     }

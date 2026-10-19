@@ -601,6 +601,12 @@ pub enum PresenceRequest {
     StopFollowing,
     SetManualStatus(Option<String>),
     SetStatusSharing(ui::StatusSharing),
+    /// How available this person says they are.
+    SetAvailability(ui::Availability),
+    /// What the people in the workspace of `room` see of this person.
+    SetVisibility(crate::shell::state::RoomId, ui::PresenceVisibility),
+    /// Wave at the collaborator with this roster id.
+    Wave(String),
 }
 
 impl Default for QuickSettingsState {
@@ -1378,6 +1384,12 @@ impl ChromeState {
         else {
             return;
         };
+        self.ask_publication(room);
+    }
+
+    /// Ask the host of `room` whether its workspace is public, unless that
+    /// is being asked already.
+    pub fn ask_publication(&mut self, room: crate::shell::state::RoomId) {
         if matches!(self.publications.get(&room), Some(PublicationState::Asking)) {
             return;
         }

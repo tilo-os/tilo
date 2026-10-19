@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use ui::TextRole;
-use ui::num::{f32_of_f64, f64_of_usize};
+use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -24,10 +24,14 @@ use crate::shell::i18n::t_args;
 const SHOWN_FOR: Duration = Duration::from_millis(2500);
 /// Faces shown before the rest are counted.
 const FACES_SHOWN: usize = 5;
-/// One face.
+/// The faces' line.
 const FACE: f64 = 24.0;
-/// How far each face overlaps the one before.
-const FACE_STEP: f64 = 16.0;
+/// How the faces stand: as the top bar's, five at most.
+const FACES: ui::presence::FaceStack = ui::presence::FaceStack {
+    side: 20.0,
+    overlap: 6.0,
+    max: FACES_SHOWN,
+};
 /// The space under the top bar.
 const BELOW_BAR: f64 = 8.0;
 
@@ -45,6 +49,9 @@ pub struct Present {
 struct Shown {
     workspace: String,
     people: Vec<Present>,
+    /// What the people here see of the person, told the first time in a
+    /// public workspace, with "Change" beside it.
+    intro: Option<String>,
 }
 
 /// The arrival line.
@@ -53,6 +60,9 @@ pub struct ArrivalLine {
     appearing: ui::motion::Appearing,
     shown: Option<Shown>,
     until: Option<Instant>,
+    /// Where it was drawn, and its "Change" link, for the pointer.
+    rect: Rect,
+    change: Rect,
 }
 
 impl ArrivalLine {
@@ -62,9 +72,34 @@ impl ArrivalLine {
         self.shown = Some(Shown {
             workspace: workspace.to_owned(),
             people,
+            intro: None,
         });
         self.until = now.checked_add(SHOWN_FOR);
         self.appearing.show(true);
+    }
+
+    /// Also tell the person, under the line, what the people here see of
+    /// them, with "Change" to choose otherwise.
+    pub fn tell(&mut self, intro: String) {
+        if let Some(shown) = self.shown.as_mut() {
+            shown.intro = Some(intro);
+        }
+    }
+
+    /// Whether `at` is on the line's "Change", while it is up.
+    #[must_use]
+    pub fn change_at(&self, at: Point) -> bool {
+        self.is_open() && self.change.contains(at)
+    }
+
+    /// Where the line is drawn, while it is up.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        if self.is_open() {
+            self.rect
+        } else {
+            Rect::ZERO
+        }
     }
 
     /// Take it away; it leaves on its motion.
@@ -156,7 +191,7 @@ impl ArrivalLine {
         let faces_w = if faces == 0 {
             0.0
         } else {
-            FACE + FACE_STEP * f64_of_usize(faces - 1)
+            FACES.width_of(faces, 0)
         };
         let others = others(&shown);
         let name_w = f64::from(text.measure_style(&shown.workspace, None, &title).0);
@@ -167,8 +202,24 @@ impl ArrivalLine {
         let content = name_w
             + if faces_w > 0.0 { gap + faces_w } else { 0.0 }
             + if others_w > 0.0 { gap + others_w } else { 0.0 };
+        let change_label = crate::shell::i18n::t("presence-arrival-change");
+        let intro_size = shown.intro.as_deref().map(|intro| {
+            let (w, h) =
+                text.measure_style(intro, Some(INTRO_WRAP), &theme.text(TextRole::Caption));
+            let (cw, _) = text.measure_style(
+                &change_label,
+                None,
+                &theme.text(TextRole::Label).with_weight(TextWeight::Medium),
+            );
+            (
+                f64::from(w),
+                f64::from(h).max(CONTROL),
+                f64::from(cw) + 2.0 * f64::from(tokens.spacing.s4),
+            )
+        });
+        let content = content.max(intro_size.map_or(0.0, |(w, _, cw)| w + gap + cw));
         let w = (content + 2.0 * pad).min(max_w);
-        let h = FACE + 2.0 * pad;
+        let h = FACE + 2.0 * pad + intro_size.map_or(0.0, |(_, h, _)| gap + h);
         let top = host_rect.y0 + f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + BELOW_BAR;
         let rect = Rect::new(
             host_rect.center().x - w / 2.0,
@@ -183,8 +234,9 @@ impl ArrivalLine {
             return;
         };
         let _ = ui::chrome::shell::paint_panel(scene, drawn, rect, theme, 1.0);
+        self.rect = rect;
         let colors = &tokens.colors;
-        let cy = rect.center().y;
+        let cy = rect.y0 + pad + FACE / 2.0;
         let mut x = rect.x0 + pad;
         let line = |style: &ui::text_render::TextStyle| f64::from(style.line_height_px());
         let name_room = (rect.x1 - pad - x - faces_w - others_w).max(0.0);
@@ -200,14 +252,21 @@ impl ArrivalLine {
         x += f64::from(text.measure_style(&name, None, &title).0) + gap;
         let ground = ui::chrome::shell::panel_ground(theme);
         let mut paint = PaintCtx::new(scene, drawn, text, theme);
-        for (k, person) in shown.people.iter().take(FACES_SHOWN).enumerate() {
-            let fx = x + FACE_STEP * f64_of_usize(k);
-            ui::widget::AvatarFace::new(&person.name, &person.id)
-                .ringed_on(ground)
-                .paint(
-                    &mut paint,
-                    Rect::new(fx, cy - FACE / 2.0, fx + FACE, cy + FACE / 2.0),
-                );
+        // The same faces as the top bar's: a colour ring, one initial.
+        let faces: Vec<ui::presence::Face<'_>> = shown
+            .people
+            .iter()
+            .take(FACES_SHOWN)
+            .map(|person| {
+                ui::presence::Face::new(
+                    &person.name,
+                    &person.id,
+                    colors.presence.of_rgb(ui::presence::user_color(&person.id)),
+                )
+            })
+            .collect();
+        if !faces.is_empty() {
+            FACES.paint(&mut paint, (x + faces_w, cy), (&faces, 0), ground);
         }
         if faces_w > 0.0 {
             x += faces_w + gap;
@@ -227,9 +286,43 @@ impl ArrivalLine {
                 &caption,
             );
         }
+        self.change = Rect::ZERO;
+        if let (Some(intro), Some((_, row_h, cw))) = (shown.intro.as_deref(), intro_size) {
+            let top = rect.y0 + pad + FACE + gap;
+            let caption = theme.text(TextRole::Caption);
+            let (_, ih) = paint.text.measure_style(intro, Some(INTRO_WRAP), &caption);
+            paint.text.draw_style(
+                paint.scene,
+                intro,
+                colors.text_dim,
+                drawn.pre_translate((rect.x0 + pad, top + (row_h - f64::from(ih)) / 2.0).into()),
+                Some(INTRO_WRAP),
+                &caption,
+            );
+            let change = Rect::new(
+                rect.x1 - pad - cw,
+                top + (row_h - CONTROL) / 2.0,
+                rect.x1 - pad,
+                top + (row_h + CONTROL) / 2.0,
+            );
+            ui::widget::Button::paint(
+                paint.scene,
+                drawn,
+                paint.text,
+                theme,
+                &ui::widget::ButtonFace::new(change, &change_label)
+                    .role(ui::widget::ButtonRole::Plain),
+            );
+            self.change = change;
+        }
         pose.end(scene);
     }
 }
+
+/// Widest the sentence about what people see runs before it wraps.
+const INTRO_WRAP: f32 = 300.0;
+/// A control's height: the "Change" link's.
+const CONTROL: f64 = 28.0;
 
 /// "and 12 others" for the people past the faces shown, if any.
 fn others(shown: &Shown) -> Option<String> {
