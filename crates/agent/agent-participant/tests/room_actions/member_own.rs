@@ -82,7 +82,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         on_guild(
             &room.room,
             "connect",
-            serde_json::json!({"guild_id": "1", "name": "Tilo", "workspace": "w1"}),
+            serde_json::json!({"guild_id": "1", "name": "Tilo"}),
         ),
     )
     .await;
@@ -149,7 +149,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
         on_guild(
             &room.room,
             "connect",
-            serde_json::json!({"guild_id": "2", "name": "Other", "workspace": "w2"}),
+            serde_json::json!({"guild_id": "2", "name": "Other"}),
         ),
     )
     .await;
