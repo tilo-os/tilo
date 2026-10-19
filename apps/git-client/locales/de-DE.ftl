@@ -146,6 +146,9 @@ git-tracking-diverged = { $current ->
 git-open-title = Repository öffnen
 git-open-hint = Gib den Pfad eines Git-Repositorys auf diesem Computer ein.
 git-open = Öffnen
+git-choose = Auswählen…
+git-choose-name = Repository-Ordner auswählen
+git-choose-title = Repository auswählen
 git-open-name = Repository öffnen
 git-repository-path = Repository-Pfad
 

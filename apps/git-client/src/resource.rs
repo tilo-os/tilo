@@ -632,6 +632,30 @@ mod tests {
         assert_eq!(state.shared.commits.len(), 1);
     }
 
+    /// A repository opens by action, as typing its path or choosing its
+    /// folder does: an agent (or a screenshot plan) names the path.
+    #[test]
+    fn a_repository_opens_by_action_and_a_missing_one_says_so() {
+        use crate::actions::GitClientEffect;
+
+        let (_dir, path) = scratch_repository("opened-by-action");
+        let mut app = TestApp::<GitClientShell>::new().unwrap();
+        app.settle();
+        assert!(
+            app.effect(&GitClientEffect::OpenRepository {
+                path: "/no/such/repository".into(),
+            })
+            .is_err(),
+            "no repository there"
+        );
+        app.effect(&GitClientEffect::OpenRepository {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().shared.name, "opened-by-action");
+    }
+
     /// The client's effects are published on the repository and on the
     /// items they act on, and every one reaches the repository on disk:
     /// staging a changed file through its row, committing, creating and
