@@ -461,6 +461,38 @@ impl HostedTileInputs {
         )
     }
 
+    /// Mount Files for tab `tab` of `room`, starting where the shell says,
+    /// as a window of Files shows it. `None` for a host that mounts no apps
+    /// in-process or names no place to start.
+    pub fn mount_files(
+        &self,
+        room: &str,
+        tab: TabId,
+    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+        let apps = self.in_process.as_ref()?;
+        let startup = self.files_for_tab(tab).or_else(|| self.files.clone())?;
+        let services = self.file_services().cloned();
+        Some(apps.borrow_mut().mount(
+            file_explorer::definition(),
+            room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |context| {
+                context.lend(startup);
+                if let Some(services) = services {
+                    context.lend(services);
+                }
+            },
+        ))
+    }
+
+    /// Where Files starts when the shell names no place for a tab: a
+    /// fixture's own directory.
+    #[must_use]
+    pub fn files_directory(&self) -> Option<&std::path::Path> {
+        self.files.as_ref().map(|files| files.initial_dir.as_path())
+    }
+
     /// Merge `edits` others made into the notebook tab `tab` of `room`
     /// shows ([`Self::mount_note`]), as their replicas send them: what its
     /// History then lists by who made each. How many merged.

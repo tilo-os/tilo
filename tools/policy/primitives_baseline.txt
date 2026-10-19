@@ -127,7 +127,7 @@ glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
 glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/shell/src/shell/in_process/messaging/sms_first.rs
-glyph-join 9 crates/session/shell/src/shell/overlay_host/mod.rs
+glyph-join 8 crates/session/shell/src/shell/overlay_host/mod.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/peer_sync_overlay.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
