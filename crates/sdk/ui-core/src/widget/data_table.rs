@@ -182,7 +182,7 @@ impl CellAlign {
     }
 }
 
-pub struct ColumnDef<Row> {
+pub struct ColumnDef<Row: ?Sized> {
     pub key: String,
     pub header: String,
     pub width: ColumnWidth,
@@ -227,7 +227,74 @@ pub struct ColumnDef<Row> {
     pub(crate) resize_handle_px: f32,
 }
 
-impl<Row> ColumnDef<Row> {
+impl<Row: 'static> ColumnDef<Row> {
+    /// This column reading rows of any type, as [`DataTableCore`] holds
+    /// them: each callback takes the row back to the `Row` it was written
+    /// for. A table only ever hands a column the rows it was given, so the
+    /// fallbacks (an empty cell, nothing painted) never show.
+    fn erase(self) -> ColumnDef<AnyRow> {
+        fn typed<Row: 'static>(row: &AnyRow) -> Option<&Row> {
+            row.downcast_ref::<Row>()
+        }
+        ColumnDef {
+            key: self.key,
+            header: self.header,
+            width: self.width,
+            min_width: self.min_width,
+            sortable: self.sortable,
+            text_render: self.text_render.map(|render| -> CellTextRender<AnyRow> {
+                Box::new(move |row, scene, transform, text, rect, theme, state| {
+                    if let Some(row) = typed::<Row>(row) {
+                        render(row, scene, transform, text, rect, theme, state);
+                    }
+                })
+            }),
+            render_cell: {
+                let render = self.render_cell;
+                Box::new(move |row, scene, transform, theme, text, rect| {
+                    if let Some(row) = typed::<Row>(row) {
+                        render(row, scene, transform, theme, text, rect);
+                    }
+                })
+            },
+            widget: self.widget.map(|mut build| -> CellWidgetBuilder<AnyRow> {
+                Box::new(move |row, index| match typed::<Row>(row) {
+                    Some(row) => build(row, index),
+                    None => Box::new(crate::widget::Spacer::new()),
+                })
+            }),
+            reveal_on_hover: self.reveal_on_hover,
+            accessible_value: self
+                .accessible_value
+                .map(|value| -> CellAccessibleValue<AnyRow> {
+                    Arc::new(move |row| typed::<Row>(row).map(|row| value(row)).unwrap_or_default())
+                }),
+            text: self.text.map(|text| -> CellText<AnyRow> {
+                Arc::new(move |row| typed::<Row>(row).and_then(|row| text(row)))
+            }),
+            kind: self.kind,
+            absent: self.absent,
+            max_lines: self.max_lines,
+            priority: self.priority,
+            badge: self.badge.map(|badge| -> CellBadge<AnyRow> {
+                Arc::new(move |row| typed::<Row>(row).map(|row| badge(row)).unwrap_or_default())
+            }),
+            checked: self.checked.map(|checked| -> CellChecked<AnyRow> {
+                Arc::new(move |row| typed::<Row>(row).is_some_and(|row| checked(row)))
+            }),
+            align: self.align,
+            compare: self.compare.map(|compare| -> ColumnCompare<AnyRow> {
+                Arc::new(move |a, b| match (typed::<Row>(a), typed::<Row>(b)) {
+                    (Some(a), Some(b)) => compare(a, b),
+                    _ => Ordering::Equal,
+                })
+            }),
+            resize_handle_px: self.resize_handle_px,
+        }
+    }
+}
+
+impl<Row: ?Sized> ColumnDef<Row> {
     pub fn new(key: impl Into<String>, header: impl Into<String>, width: ColumnWidth) -> Self {
         Self {
             key: key.into(),
@@ -480,11 +547,28 @@ pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 /// State of one logical row in a potentially paged or asynchronous table.
 /// Loading and error rows keep their geometry and stable key, so completing a
 /// fetch does not disturb the scroll anchor or selection.
-#[derive(Clone, Copy, Debug)]
-pub enum TableRowState<'a, Row> {
+pub enum TableRowState<'a, Row: ?Sized> {
     Ready(&'a Row),
     Loading,
     Error(&'a str),
+}
+
+impl<Row: ?Sized> Clone for TableRowState<'_, Row> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Row: ?Sized> Copy for TableRowState<'_, Row> {}
+
+impl<Row: ?Sized> std::fmt::Debug for TableRowState<'_, Row> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready(_) => f.write_str("Ready"),
+            Self::Loading => f.write_str("Loading"),
+            Self::Error(error) => f.debug_tuple("Error").field(error).finish(),
+        }
+    }
 }
 
 /// One model notification batch consumed after the backing data has changed.
@@ -516,7 +600,7 @@ pub enum TableModelChange {
 /// tables. Implementations need not keep all rows resident: `DataTable`
 /// queries only the visible range plus overscan.
 pub trait TableModel {
-    type Row;
+    type Row: ?Sized;
 
     /// Logical row count. This may be much larger than the resident cache.
     fn len(&self) -> usize;
@@ -591,7 +675,7 @@ fn compare_text(a: Option<&str>, b: Option<&str>, numeric: bool) -> Ordering {
 }
 
 /// So row changes can re-apply the current ordering.
-struct SortState<Row> {
+struct SortState<Row: ?Sized> {
     key: String,
     ascending: bool,
     cmp: SortCmp<Row>,
@@ -629,7 +713,7 @@ type RowContext = Box<dyn FnMut(usize, Point, Rect)>;
 /// A table whose rows are a flattened tree (a process tree, a folder
 /// listing): each row's depth, whether it has children and whether they
 /// show; the host owns the flattening and folds rows in `on_toggle`.
-struct TreeRows<Row> {
+struct TreeRows<Row: ?Sized> {
     depth: Box<dyn Fn(&Row) -> usize>,
     has_children: Box<dyn Fn(&Row) -> bool>,
     expanded: Box<dyn Fn(&Row) -> bool>,
@@ -647,18 +731,18 @@ struct AddRow {
     clippy::struct_excessive_bools,
     reason = "focus, selection, scrolling, and invalidation are independent table states"
 )]
-pub struct DataTable<Row> {
+pub struct DataTableCore {
     test_id: String,
     accessible_name: Option<String>,
-    columns: Vec<ColumnDef<Row>>,
-    rows: Vec<Row>,
+    columns: Vec<ColumnDef<AnyRow>>,
+    rows: Vec<Box<AnyRow>>,
     /// Present for sparse/paged tables. Vec-backed tables keep this `None`
     /// and retain their local sorting API.
-    model: Option<Box<dyn TableModel<Row = Row>>>,
+    model: Option<Box<dyn TableModel<Row = AnyRow>>>,
     /// Indices into `rows` in display order — sort operates on this so the
     /// original insertion order stays untouched.
     view: Vec<usize>,
-    sort: Option<SortState<Row>>,
+    sort: Option<SortState<AnyRow>>,
     model_sort: Option<(String, bool)>,
     rect: Rect,
     col_rects: Vec<Rect>,
@@ -679,7 +763,7 @@ pub struct DataTable<Row> {
     /// capturing at notification time would be one revision too late.
     last_anchor: Option<SparseAnchor<RowIdentity>>,
     row_keys: Vec<RowIdentity>,
-    row_key: Option<RowKey<Row>>,
+    row_key: Option<RowKey<AnyRow>>,
     mounted_cells: Vec<MountedCell>,
     structure_dirty: bool,
     layout_dirty: bool,
@@ -756,7 +840,7 @@ pub struct DataTable<Row> {
     fill_height: bool,
     /// Columns hidden for room, by priority.
     hidden: Vec<bool>,
-    tree: Option<TreeRows<Row>>,
+    tree: Option<TreeRows<AnyRow>>,
     /// A sort shown on a header without the table reordering its rows.
     sort_indicator: Option<(String, bool)>,
     /// Where the order a person chose is kept across rebuilds.
@@ -774,11 +858,317 @@ pub struct DataTable<Row> {
     host_scrolled: bool,
 }
 
-impl<Row> DataTable<Row> {
+/// A row whose type the table no longer names: what [`DataTableCore`] holds
+/// and its columns read. [`DataTable`] converts at its edges.
+pub type AnyRow = dyn std::any::Any;
+
+/// A table of `Row`s: the [`DataTableCore`] that does the work (everything a
+/// table does, compiled once into the toolkit for rows of any type) and the
+/// row type its callers read and write.
+///
+/// The table's behaviour used to be generic over `Row`, so every app compiled
+/// it again for each row type it showed (40 to 100 KB of text per app); now
+/// only the conversions here are, and every method that does not name a row
+/// is the core's, reached through `Deref`.
+pub struct DataTable<Row> {
+    core: DataTableCore,
+    row: std::marker::PhantomData<fn() -> Row>,
+}
+
+impl<Row> std::ops::Deref for DataTable<Row> {
+    type Target = DataTableCore;
+
+    fn deref(&self) -> &DataTableCore {
+        &self.core
+    }
+}
+
+impl<Row> std::ops::DerefMut for DataTable<Row> {
+    fn deref_mut(&mut self) -> &mut DataTableCore {
+        &mut self.core
+    }
+}
+
+impl<Row: 'static> DataTable<Row> {
+    /// Minimum column width in pixels: dragging below this clamps.
+    pub const MIN_COL_WIDTH: f32 = DataTableCore::MIN_COL_WIDTH;
+
+    fn of(core: DataTableCore) -> Self {
+        Self {
+            core,
+            row: std::marker::PhantomData,
+        }
+    }
+
+    /// The row a type-erased row is; every row the core hands back is one
+    /// this table was given.
+    fn typed(row: &AnyRow) -> Option<&Row> {
+        row.downcast_ref::<Row>()
+    }
+
+    pub fn new(columns: Vec<ColumnDef<Row>>) -> Self {
+        Self::of(DataTableCore::new(
+            columns.into_iter().map(ColumnDef::erase).collect(),
+        ))
+    }
+
+    /// Construct a sparse table backed by an arbitrary model. Geometry and
+    /// selection remain proportional to visible/measured rows rather than
+    /// `model.len()`.
+    pub fn from_model<M>(columns: Vec<ColumnDef<Row>>, model: M) -> Self
+    where
+        M: TableModel<Row = Row> + 'static,
+    {
+        Self::of(DataTableCore::from_model(
+            columns.into_iter().map(ColumnDef::erase).collect(),
+            Box::new(ErasedModel(model)),
+        ))
+    }
+
+    /// [`DataTableCore::tree`], reading this table's rows.
+    #[must_use]
+    pub fn tree(
+        self,
+        depth: impl Fn(&Row) -> usize + 'static,
+        has_children: impl Fn(&Row) -> bool + 'static,
+        expanded: impl Fn(&Row) -> bool + 'static,
+        on_toggle: impl FnMut(usize, bool) + 'static,
+    ) -> Self {
+        Self::of(self.core.tree(
+            move |row| Self::typed(row).map_or(0, &depth),
+            move |row| Self::typed(row).is_some_and(&has_children),
+            move |row| Self::typed(row).is_some_and(&expanded),
+            on_toggle,
+        ))
+    }
+
+    /// [`DataTableCore::with_row_key`], reading this table's rows.
+    #[must_use]
+    pub fn with_row_key<F>(self, key: F) -> Self
+    where
+        F: Fn(&Row) -> u64 + Send + Sync + 'static,
+    {
+        Self::of(
+            self.core
+                .with_row_key(move |row| Self::typed(row).map_or(0, &key)),
+        )
+    }
+
+    /// Replace the rows, keeping the sort and the selection's rows.
+    pub fn set_rows(&mut self, rows: Vec<Row>) {
+        self.core.set_rows(
+            rows.into_iter()
+                .map(|row| Box::new(row) as Box<AnyRow>)
+                .collect(),
+        );
+    }
+
+    /// Rows in current sort order.
+    pub fn view_rows(&self) -> Vec<&Row> {
+        self.core
+            .view_rows()
+            .into_iter()
+            .filter_map(Self::typed)
+            .collect()
+    }
+
+    /// [`DataTableCore::sort_by_with`], comparing this table's rows.
+    pub fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
+    where
+        F: Fn(&Row, &Row) -> Ordering + Send + Sync + 'static,
+    {
+        self.core.sort_by_with(
+            move |a, b| match (Self::typed(a), Self::typed(b)) {
+                (Some(a), Some(b)) => cmp(a, b),
+                _ => Ordering::Equal,
+            },
+            key,
+            ascending,
+        );
+    }
+
+    /// [`DataTableCore::without_header`].
+    #[must_use]
+    pub fn without_header(self) -> Self {
+        Self::of(self.core.without_header())
+    }
+
+    /// [`DataTableCore::with_row_height`].
+    #[must_use]
+    pub fn with_row_height(self, row_height_px: f32) -> Self {
+        Self::of(self.core.with_row_height(row_height_px))
+    }
+
+    /// [`DataTableCore::host_scrolled`].
+    #[must_use]
+    pub fn host_scrolled(self) -> Self {
+        Self::of(self.core.host_scrolled())
+    }
+
+    /// [`DataTableCore::compact`].
+    #[must_use]
+    pub fn compact(self) -> Self {
+        Self::of(self.core.compact())
+    }
+
+    /// [`DataTableCore::drag_scroll`].
+    #[must_use]
+    pub fn drag_scroll(self) -> Self {
+        Self::of(self.core.drag_scroll())
+    }
+
+    /// [`DataTableCore::on_row_context_menu`].
+    #[must_use]
+    pub fn on_row_context_menu(self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
+        Self::of(self.core.on_row_context_menu(f))
+    }
+
+    /// [`DataTableCore::on_row_drag_begin`].
+    #[must_use]
+    pub fn on_row_drag_begin(self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
+        Self::of(self.core.on_row_drag_begin(f))
+    }
+
+    /// [`DataTableCore::fill_height`].
+    #[must_use]
+    pub fn fill_height(self) -> Self {
+        Self::of(self.core.fill_height())
+    }
+
+    /// [`DataTableCore::with_sort_state`].
+    #[must_use]
+    pub fn with_sort_state(self, state: &crate::LocalState<Option<TableSort>>) -> Self {
+        Self::of(self.core.with_sort_state(state))
+    }
+
+    /// [`DataTableCore::with_add_row`].
+    #[must_use]
+    pub fn with_add_row(self, label: impl Into<String>, on_add: impl FnMut() + 'static) -> Self {
+        Self::of(self.core.with_add_row(label, on_add))
+    }
+
+    /// [`DataTableCore::on_check`].
+    #[must_use]
+    pub fn on_check(self, f: impl FnMut(usize, bool) + 'static) -> Self {
+        Self::of(self.core.on_check(f))
+    }
+
+    /// [`DataTableCore::ruled`].
+    #[must_use]
+    pub fn ruled(self) -> Self {
+        Self::of(self.core.ruled())
+    }
+
+    /// [`DataTableCore::with_id`].
+    #[must_use]
+    pub fn with_id(self, id: impl Into<String>) -> Self {
+        Self::of(self.core.with_id(id))
+    }
+
+    /// [`DataTableCore::with_accessible_name`].
+    #[must_use]
+    pub fn with_accessible_name(self, name: impl Into<String>) -> Self {
+        Self::of(self.core.with_accessible_name(name))
+    }
+
+    /// [`DataTableCore::selectable`].
+    #[must_use]
+    pub fn selectable(self, v: bool) -> Self {
+        Self::of(self.core.selectable(v))
+    }
+
+    /// [`DataTableCore::with_model_selection`].
+    #[must_use]
+    pub fn with_model_selection(self, selection: crate::selection::KeySelection<u64>) -> Self {
+        Self::of(self.core.with_model_selection(selection))
+    }
+
+    /// [`DataTableCore::with_selection`].
+    #[must_use]
+    pub fn with_selection(self, sel: crate::selection::SelectionModel) -> Self {
+        Self::of(self.core.with_selection(sel))
+    }
+
+    /// [`DataTableCore::with_viewport`].
+    #[must_use]
+    pub fn with_viewport(self, height_px: f32, row_height_px: f32) -> Self {
+        Self::of(self.core.with_viewport(height_px, row_height_px))
+    }
+
+    /// [`DataTableCore::on_row_click`].
+    #[must_use]
+    pub fn on_row_click<F: FnMut(usize, bool, bool) + 'static>(self, f: F) -> Self {
+        Self::of(self.core.on_row_click(f))
+    }
+
+    /// [`DataTableCore::on_activate`].
+    #[must_use]
+    pub fn on_activate<F: FnMut(usize) + 'static>(self, f: F) -> Self {
+        Self::of(self.core.on_activate(f))
+    }
+
+    /// [`DataTableCore::on_header_click`].
+    #[must_use]
+    pub fn on_header_click<F: FnMut(usize) + 'static>(self, f: F) -> Self {
+        Self::of(self.core.on_header_click(f))
+    }
+}
+
+/// A [`TableModel`] of `Row`s as the core reads models: of rows of any type.
+struct ErasedModel<M>(M);
+
+impl<M: TableModel + 'static> TableModel for ErasedModel<M>
+where
+    M::Row: Sized + 'static,
+{
+    type Row = AnyRow;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn key_at(&self, index: usize) -> Option<u64> {
+        self.0.key_at(index)
+    }
+
+    fn index_of(&self, key: u64) -> Option<usize> {
+        self.0.index_of(key)
+    }
+
+    fn row_state(&self, index: usize) -> TableRowState<'_, AnyRow> {
+        match self.0.row_state(index) {
+            TableRowState::Ready(row) => TableRowState::Ready(row),
+            TableRowState::Loading => TableRowState::Loading,
+            TableRowState::Error(error) => TableRowState::Error(error),
+        }
+    }
+
+    fn request_range(&mut self, range: Range<usize>) {
+        self.0.request_range(range);
+    }
+
+    fn poll_changed(&mut self) -> bool {
+        self.0.poll_changed()
+    }
+
+    fn poll_changes(&mut self) -> Vec<TableModelChange> {
+        self.0.poll_changes()
+    }
+
+    fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
+        self.0.sort_by(column_key, ascending)
+    }
+
+    fn needs_poll(&self) -> bool {
+        self.0.needs_poll()
+    }
+}
+
+impl DataTableCore {
     /// Minimum column width in pixels — dragging below this clamps.
     pub const MIN_COL_WIDTH: f32 = 40.0;
 
-    pub fn new(columns: Vec<ColumnDef<Row>>) -> Self {
+    pub(crate) fn new(columns: Vec<ColumnDef<AnyRow>>) -> Self {
         let col_widths_px = columns
             .iter()
             .filter_map(|c| match c.width {
@@ -1017,11 +1407,11 @@ impl<Row> DataTable<Row> {
     /// Pressing the chevron, or Right and Left on the selected row, calls
     /// `on_toggle(row, expand)`; the host refolds its rows.
     #[must_use]
-    pub fn tree(
+    pub(crate) fn tree(
         mut self,
-        depth: impl Fn(&Row) -> usize + 'static,
-        has_children: impl Fn(&Row) -> bool + 'static,
-        expanded: impl Fn(&Row) -> bool + 'static,
+        depth: impl Fn(&AnyRow) -> usize + 'static,
+        has_children: impl Fn(&AnyRow) -> bool + 'static,
+        expanded: impl Fn(&AnyRow) -> bool + 'static,
         on_toggle: impl FnMut(usize, bool) + 'static,
     ) -> Self {
         self.tree = Some(TreeRows {
@@ -1043,10 +1433,7 @@ impl<Row> DataTable<Row> {
     /// from the headers in `state`, so it survives the view being built
     /// again. Rows and their callbacks keep the host's indices.
     #[must_use]
-    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self
-    where
-        Row: 'static,
-    {
+    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self {
         if let Some(sort) = state.with(Clone::clone) {
             self.sort_by_column(&sort.key, sort.ascending);
         }
@@ -1056,10 +1443,7 @@ impl<Row> DataTable<Row> {
 
     /// Sort by the column keyed `key` with its own comparator; `false` when
     /// there is no such sortable column.
-    fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool
-    where
-        Row: 'static,
-    {
+    fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool {
         let Some(compare) = self
             .columns
             .iter()
@@ -1095,7 +1479,8 @@ impl<Row> DataTable<Row> {
     }
 
     /// The rows, for editing in place; follow with [`Self::apply_changes`].
-    pub fn rows_mut(&mut self) -> &mut Vec<Row> {
+    #[cfg(test)]
+    pub(crate) fn rows_mut(&mut self) -> &mut Vec<Box<AnyRow>> {
         &mut self.rows
     }
 
@@ -1169,12 +1554,12 @@ impl<Row> DataTable<Row> {
     /// Construct a sparse table backed by an arbitrary model. Geometry and
     /// selection remain proportional to visible/measured rows rather than
     /// `model.len()`.
-    pub fn from_model<M>(columns: Vec<ColumnDef<Row>>, model: M) -> Self
-    where
-        M: TableModel<Row = Row> + 'static,
-    {
+    pub(crate) fn from_model(
+        columns: Vec<ColumnDef<AnyRow>>,
+        model: Box<dyn TableModel<Row = AnyRow>>,
+    ) -> Self {
         let mut table = Self::new(columns);
-        table.model = Some(Box::new(model));
+        table.model = Some(model);
         table.reconcile_viewport(None);
         table
     }
@@ -1271,9 +1656,9 @@ impl<Row> DataTable<Row> {
     /// are disambiguated by occurrence order; unique keys provide the
     /// strongest continuity.
     #[must_use]
-    pub fn with_row_key<F>(mut self, key: F) -> Self
+    pub(crate) fn with_row_key<F>(mut self, key: F) -> Self
     where
-        F: Fn(&Row) -> u64 + Send + Sync + 'static,
+        F: Fn(&AnyRow) -> u64 + Send + Sync + 'static,
     {
         self.row_key = Some(Box::new(key));
         self.rebuild_row_keys();
@@ -1298,7 +1683,7 @@ impl<Row> DataTable<Row> {
         }
     }
 
-    pub fn set_rows(&mut self, rows: Vec<Row>) {
+    pub(crate) fn set_rows(&mut self, rows: Vec<Box<AnyRow>>) {
         let anchor = self.capture_view_anchor();
         self.model = None;
         self.model_sort = None;
@@ -1342,7 +1727,7 @@ impl<Row> DataTable<Row> {
                 let value = self
                     .row_key
                     .as_ref()
-                    .map_or_else(|| u64::try_from(index).unwrap_or(u64::MAX), |key| key(row));
+                    .map_or_else(|| u64::try_from(index).unwrap_or(u64::MAX), |key| key(&**row));
                 let occurrence = occurrences.entry(value).or_default();
                 let identity = RowIdentity {
                     value,
@@ -1450,12 +1835,14 @@ impl<Row> DataTable<Row> {
             .map_or(self.view.len(), TableModel::len)
     }
 
-    fn row_state_at(&self, display_index: usize) -> Option<TableRowState<'_, Row>> {
+    fn row_state_at(&self, display_index: usize) -> Option<TableRowState<'_, AnyRow>> {
         if let Some(model) = self.model.as_deref() {
             return (display_index < model.len()).then(|| model.row_state(display_index));
         }
         let source_index = *self.view.get(display_index)?;
-        self.rows.get(source_index).map(TableRowState::Ready)
+        self.rows
+            .get(source_index)
+            .map(|row| TableRowState::Ready(&**row))
     }
 
     fn model_key_at(&self, display_index: usize) -> Option<u64> {
@@ -1541,12 +1928,12 @@ impl<Row> DataTable<Row> {
         })
     }
 
-    pub fn columns(&self) -> &[ColumnDef<Row>] {
+    pub fn columns(&self) -> &[ColumnDef<AnyRow>] {
         &self.columns
     }
 
     /// Rows in current sort order.
-    pub fn view_rows(&self) -> Vec<&Row> {
+    pub(crate) fn view_rows(&self) -> Vec<&AnyRow> {
         if self.model.is_some() {
             return self
                 .viewport
@@ -1557,7 +1944,10 @@ impl<Row> DataTable<Row> {
                 })
                 .collect();
         }
-        self.view.iter().filter_map(|&i| self.rows.get(i)).collect()
+        self.view
+            .iter()
+            .filter_map(|&i| self.rows.get(i).map(|row| &**row))
+            .collect()
     }
 
     /// Reconcile an externally changed model. The first visible stable key,
@@ -1619,9 +2009,9 @@ impl<Row> DataTable<Row> {
     /// Stores the comparator + key + direction so `set_rows` re-applies the
     /// same ordering automatically. Model-backed tables delegate sorting to
     /// [`TableModel::sort_by`] instead.
-    pub fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
+    pub(crate) fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
     where
-        F: Fn(&Row, &Row) -> Ordering + Send + Sync + 'static,
+        F: Fn(&AnyRow, &AnyRow) -> Ordering + Send + Sync + 'static,
     {
         if self.model.is_some() {
             return;
@@ -1684,7 +2074,7 @@ impl<Row> DataTable<Row> {
                 let (Some(ra), Some(rb)) = (rows.get(a), rows.get(b)) else {
                     return Ordering::Equal;
                 };
-                let o = cmp(ra, rb);
+                let o = cmp(&**ra, &**rb);
                 if ascending { o } else { o.reverse() }
             });
             // Cell controls follow their rows to where they now stand.
@@ -1936,7 +2326,7 @@ impl<Row> DataTable<Row> {
             } else {
                 self.view
                     .get(row_index)
-                    .and_then(|source| self.rows.get(*source))
+                    .and_then(|source| self.rows.get(*source).map(|row| &**row))
             };
             let Some(row) = row else { continue };
             let Some(builder) = self
@@ -2234,10 +2624,7 @@ impl<Row> DataTable<Row> {
     /// Sort by column `index`, or flip the order when it already sorts by
     /// it; the column's own comparator orders the rows (see
     /// [`ColumnDef::sorted_by`]). `None` if the column does not sort.
-    pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)>
-    where
-        Row: 'static,
-    {
+    pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)> {
         let col = self.columns.get(index)?;
         if !col.sortable {
             return None;
@@ -2639,9 +3026,7 @@ impl<Row> DataTable<Row> {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
-    ) where
-        Row: 'static,
-    {
+    ) {
         self.momentum.stop();
         let Some(pt) = self.last_cursor else { return };
         // 0. Built-in scrollbar wins over the body beneath it.
@@ -3001,7 +3386,7 @@ fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
 
 /// Paint one text cell placed by the column's alignment, elided to the cell,
 /// centred on the row; an absent value is the column's label in tertiary ink.
-fn paint_cell_text<Row>(
+fn paint_cell_text<Row: ?Sized>(
     scene: &mut Scene,
     transform: Affine,
     text: &mut TextRenderer,
@@ -3097,7 +3482,7 @@ pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
     crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
 }
 
-fn accessible_sort_description<Row>(
+fn accessible_sort_description<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     sort: Option<(&str, bool)>,
 ) -> Option<String> {
@@ -3111,7 +3496,7 @@ fn accessible_sort_description<Row>(
     })
 }
 
-impl<Row: 'static> Widget for DataTable<Row> {
+impl Widget for DataTableCore {
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -4020,11 +4405,158 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 }
 
+/// The table's widget is its core's: a `DataTable<Row>` names its rows'
+/// type, and nothing else.
+impl<Row: 'static> Widget for DataTable<Row> {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        Widget::set_interaction_environment(&mut self.core, environment);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        Widget::update(&mut self.core, state, path)
+    }
+
+    fn composition_follows_allocation(&self) -> bool {
+        Widget::composition_follows_allocation(&self.core)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        Widget::build_layout(&mut self.core, taffy, theme, node_map)
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Widget::adjust_layout_style(&mut self.core, taffy, node, text)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        Widget::apply_layout(&mut self.core, taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        Widget::draw(
+            &mut self.core,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.core, event, ctx);
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        Widget::wants_pointer_capture(&self.core)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        Widget::needs_animation_frame(&self.core)
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        Widget::children(&self.core)
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        Widget::for_each_child(&self.core, visitor);
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        Widget::children_mut(&mut self.core)
+    }
+
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        Widget::accessibility_child_path(&self.core, child_index)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        Widget::take_structure_dirty(&mut self.core)
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        Widget::is_layout_dirty(&self.core)
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        Widget::layout_needs_measure(&self.core)
+    }
+
+    fn name(&self) -> &'static str {
+        "DataTable"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Widget::test_id(&self.core)
+    }
+
+    fn get_rect(&self) -> Rect {
+        Widget::get_rect(&self.core)
+    }
+
+    fn is_focusable(&self) -> bool {
+        Widget::is_focusable(&self.core)
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        Widget::set_focus(&mut self.core, focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        Widget::is_focused(&self.core)
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Widget::accessibility(&self.core)
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        Widget::perform_action(&mut self.core, action, key_path, state, path)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        Widget::perform_semantic_action(&mut self.core, target, action, state, path)
+    }
+}
+
 /// The width a column is laid out at when the band is tight: a resized or
 /// fixed width as given, a measured `Auto` width, and the minimum for a
 /// flexible column. `None` for a flexible column (and an `Auto` one not yet
 /// measured), which takes a share of what is left.
-fn column_floor<Row>(
+fn column_floor<Row: ?Sized>(
     column: &ColumnDef<Row>,
     overrides: &HashMap<String, f32>,
     auto: &HashMap<String, f32>,
@@ -4040,19 +4572,19 @@ fn column_floor<Row>(
             (width, Some(width))
         }
         ColumnWidth::Auto => auto.get(&column.key).copied().map_or(
-            (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
+            (DataTableCore::MIN_COL_WIDTH.max(minimum), None),
             |px| {
                 let width = px.max(minimum);
                 (width, Some(width))
             },
         ),
-        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH.max(minimum), None),
+        ColumnWidth::Flex(_) => (DataTableCore::MIN_COL_WIDTH.max(minimum), None),
     }
 }
 
 /// Which columns to hide so the rest fit `width`: those with the highest
 /// [`ColumnDef::priority`] first, never one at priority `0`.
-fn hidden_for_room<Row>(
+fn hidden_for_room<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     width: f64,
     overrides: &HashMap<String, f32>,
@@ -4087,7 +4619,7 @@ fn hidden_for_room<Row>(
 }
 
 /// Allocate weighted space without shrinking a readable flexible minimum.
-fn flexible_column_widths<Row>(
+fn flexible_column_widths<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     floors: &[(f32, Option<f32>)],
     hidden: &[bool],
@@ -4135,7 +4667,7 @@ fn flexible_column_widths<Row>(
 /// with none, the `Auto` columns sharing it). When the floors do not fit the
 /// columns keep them and the table scrolls sideways. Returns the rects
 /// (zero-width for hidden columns) and the columns' total width.
-fn compute_column_rects<Row>(
+fn compute_column_rects<Row: ?Sized>(
     columns: &[ColumnDef<Row>],
     host: Rect,
     overrides: &HashMap<String, f32>,
@@ -6341,7 +6873,8 @@ mod tests {
                 "thumb starts at track top"
             );
 
-            t.set_scroll_y(t.max_scroll_y());
+            let bottom = t.max_scroll_y();
+            t.set_scroll_y(bottom);
             let bottom = t.scrollbar_thumb().expect("thumb at bottom");
             assert!(bottom.y0 > top.y0, "thumb moves down as scroll_y grows");
             assert!(
@@ -6514,9 +7047,8 @@ mod tests {
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
             let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-            table
-                .drag_scroll
-                .begin(50.0, f64::from(table.scroll_y()), started);
+            let scroll = f64::from(table.scroll_y());
+            table.drag_scroll.begin(50.0, scroll, started);
             assert!(table.drag_scroll.update(10.0, moved).is_some());
             let mut focus = None;
             table.on_left_release(
@@ -7158,7 +7690,7 @@ mod content_edge_tests {
         let _ = settle(&mut table, 400.0, 300.0);
         let first = builds.get();
         assert_eq!(first, 3);
-        table.rows_mut().push(item("new"));
+        table.rows_mut().push(Box::new(item("new")));
         table.apply_changes(&[TableModelChange::RowsInserted { index: 3, count: 1 }]);
         let _ = settle(&mut table, 400.0, 300.0);
         assert_eq!(builds.get(), first + 1, "only the new row builds");
