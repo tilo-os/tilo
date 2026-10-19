@@ -228,7 +228,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
-unicode-bidi = { version = "0.3" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
@@ -471,7 +470,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
-unicode-bidi = { version = "0.3" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }

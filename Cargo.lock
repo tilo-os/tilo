@@ -23611,7 +23611,6 @@ dependencies = [
  "ttf-parser",
  "unic-langid",
  "unic-langid-impl",
- "unicode-bidi",
  "unicode-properties",
  "url",
  "usvg",
