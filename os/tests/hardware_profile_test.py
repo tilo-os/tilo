@@ -289,9 +289,9 @@ class HardwareProfileTest(unittest.TestCase):
             self.assertFalse((self.root / "usr/lib/tilo/hardware_profile.py").exists())
             definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
             self.assertEqual(hardware_profile.validate_definition(definition)["id"], "lenovo-83ed")
-            # The 83ED firmware reports a TPM no Linux driver serves; without
-            # this the generator holds sysinit.target for the 45 s device
-            # timeout in the initrd and again after switch-root.
+            # The 83ED firmware reports a TPM; if its mssecapp ever refuses the
+            # driver, the generator would hold sysinit.target for the 45 s
+            # device timeout in the initrd and again after switch-root.
             kargs = self.root / prepare.KARGS_PATH
             self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, kargs,
@@ -604,6 +604,38 @@ class FirmwareTrimContractTest(unittest.TestCase):
         # The qcom-firmware the Lenovo board needs is installed, never excluded.
         containerfile = (self.ROOT / "Containerfile.board").read_text(encoding="utf-8")
         self.assertIn("qcom-firmware", containerfile)
+
+
+class LenovoTpmTest(unittest.TestCase):
+    """The Yoga Slim 7x's TPM (Pluton behind qcom.tz.mssecapp) has a driver
+    in the kernel the image ships, built in."""
+
+    KERNEL = SCRIPT.parents[1] / "kernel"
+
+    def patch_text(self, name):
+        (patch_file,) = self.KERNEL.glob(f"patches/*-{name}.patch")
+        return patch_file.read_text(encoding="utf-8")
+
+    def test_driver_is_built_in(self):
+        fragment = (self.KERNEL / "config-fragments/aarch64.config").read_text(encoding="utf-8")
+        self.assertIn("\nCONFIG_TCG_QCOM_MSSEC=y\n", fragment)
+
+    def test_qseecom_sets_up_mssecapp_without_risking_uefisecapp(self):
+        patch_text = self.patch_text("firmware-qcom-set-up-mssecapp-and-report-the-TPM-type")
+        self.assertIn('+\t{ "qcom.tz.mssecapp", "mssecapp" },', patch_text)
+        # A failing app must not fail the probe that also serves EFI variables.
+        self.assertIn("-\t\t\treturn ret;", patch_text)
+
+    def test_driver_matches_the_windows_protocol(self):
+        patch_text = self.patch_text("tpm-add-a-driver-for-the-TPM-behind-Qualcomm-mssecapp")
+        self.assertIn('+\t{ .name = "qcom_qseecom.mssecapp" },', patch_text)
+        # cmdReady and goIdle never reach TrustZone: mssecapp would execute
+        # whatever is in the command buffer.
+        self.assertNotIn(".cmd_ready", patch_text)
+        self.assertNotIn(".go_idle", patch_text)
+        # The window comes from mssecapp, not from a hard-coded address.
+        self.assertIn("+#define MSSEC_CMD_GET_WINDOW\t0x4004", patch_text)
+        self.assertNotIn("0x81f10000", patch_text.lower())
 
 
 class OrangePiWifiFirmwareTest(unittest.TestCase):

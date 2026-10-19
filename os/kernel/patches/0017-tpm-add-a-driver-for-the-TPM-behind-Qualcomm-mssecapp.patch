@@ -1,0 +1,489 @@
+From: Tilo <tilo@tilo.so>
+Subject: tpm: add a driver for the TPM behind Qualcomm mssecapp
+
+Snapdragon X laptops that ship Microsoft Pluton as their TPM have no TPM
+under Linux. Windows reaches it through ACPI TPM2 start method 14, served
+by Qualcomm's QcTrEE and the qcom.tz.mssecapp Secure Application:
+
+- mssecapp command 0x4007 reports its interface version and 0x4004 the
+  physical address and size of a firmware-owned TCG CRB window: the
+  control area followed by the command and response buffers.
+- QcTrEE answers cmdReady and goIdle itself, by clearing the request bit
+  in the control area, without calling into TrustZone.
+- A CRB start is followed by command 0x4003, which runs the command in
+  the window to completion before it returns.
+
+Add tpm_qcom_mssec, a client of the mssecapp QSEECOM device that does the
+same. It binds only when TrustZone reports a TPM type other than a
+discrete or Qualcomm firmware TPM (those belong to qcom.tz.tpm), maps
+only the window mssecapp names, and only when it is not system RAM, and
+uses the buffers only when they lie inside it.
+
+Snapdragon X suspends to idle, so no firmware sends TPM2_Startup on
+resume; mark the chip firmware power managed so it is not sent
+TPM2_Shutdown(STATE) either.
+
+The protocol was taken from QcTrEE.sys and tpm.sys and matches the
+independent analysis of the Surface Pro 11 Fedora project.
+
+diff --git a/drivers/char/tpm/Kconfig b/drivers/char/tpm/Kconfig
+index 8a8f692b6..3c93e1271 100644
+--- a/drivers/char/tpm/Kconfig
++++ b/drivers/char/tpm/Kconfig
+@@ -220,6 +220,17 @@ config TCG_CRB
+ 	  from within Linux.  To compile this driver as a module, choose
+ 	  M here; the module will be called tpm_crb.
+ 
++config TCG_QCOM_MSSEC
++	tristate "TPM behind the Qualcomm mssecapp Secure Application"
++	depends on QCOM_QSEECOM
++	help
++	  Snapdragon X laptops that use Microsoft Pluton as their TPM reach it
++	  through a CRB window that the qcom.tz.mssecapp application in the
++	  Qualcomm Secure Execution Environment services. Say Yes here to make
++	  that TPM available, for example on the Lenovo Yoga Slim 7x.
++	  To compile this driver as a module, choose M here; the module will
++	  be called tpm_qcom_mssec.
++
+ config TCG_ARM_CRB_FFA
+ 	tristate "TPM CRB over Arm FF-A Transport"
+ 	depends on ARM_FFA_TRANSPORT && TCG_CRB
+diff --git a/drivers/char/tpm/Makefile b/drivers/char/tpm/Makefile
+index 5b5cdc0d3..62ac2b95b 100644
+--- a/drivers/char/tpm/Makefile
++++ b/drivers/char/tpm/Makefile
+@@ -43,6 +43,7 @@ obj-$(CONFIG_TCG_TIS_ST33ZP24) += st33zp24/
+ obj-$(CONFIG_TCG_XEN) += xen-tpmfront.o
+ obj-$(CONFIG_TCG_CRB) += tpm_crb.o
+ obj-$(CONFIG_TCG_ARM_CRB_FFA) += tpm_crb_ffa.o
++obj-$(CONFIG_TCG_QCOM_MSSEC) += tpm_qcom_mssec.o
+ obj-$(CONFIG_TCG_VTPM_PROXY) += tpm_vtpm_proxy.o
+ obj-$(CONFIG_TCG_FTPM_TEE) += tpm_ftpm_tee.o
+ obj-$(CONFIG_TCG_SVSM) += tpm_svsm.o
+diff --git a/drivers/char/tpm/tpm_qcom_mssec.c b/drivers/char/tpm/tpm_qcom_mssec.c
+new file mode 100644
+index 000000000..2c2151f37
+--- /dev/null
++++ b/drivers/char/tpm/tpm_qcom_mssec.c
+@@ -0,0 +1,421 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * TPM 2.0 behind the Qualcomm "mssecapp" Secure Application.
++ *
++ * Snapdragon X laptops that ship Microsoft Pluton as their TPM expose it as a
++ * TCG CRB window owned by firmware: the control area, followed by the command
++ * and response buffers. The qcom.tz.mssecapp app in the Secure Execution
++ * Environment reports where the window is and executes the command in it on
++ * request. This mirrors what Windows does for ACPI TPM2 start method 14:
++ *
++ *   0x4007  version: status at +0, version at +8
++ *   0x4004  window: size at +4, physical address at +8, status at +0x10
++ *   0x4003  execute the command in the window: status at +4
++ *
++ * Each request is a single little-endian command word. Windows answers
++ * cmdReady and goIdle itself without calling into TrustZone, so this driver
++ * does too, and only a CRB start reaches mssecapp.
++ */
++
++#include <linux/auxiliary_bus.h>
++#include <linux/io.h>
++#include <linux/ioport.h>
++#include <linux/module.h>
++#include <linux/sizes.h>
++
++#include <linux/firmware/qcom/qcom_qseecom.h>
++#include <linux/firmware/qcom/qcom_scm.h>
++#include <linux/firmware/qcom/qcom_tzmem.h>
++
++#include "tpm.h"
++
++#define MSSEC_CMD_EXECUTE	0x4003
++#define MSSEC_CMD_GET_WINDOW	0x4004
++#define MSSEC_CMD_GET_VERSION	0x4007
++
++#define MSSEC_VERSION		0x00010000
++#define MSSEC_WINDOW_MAX	0x3000
++
++/* TPM types reported by TrustZone whose TPM qcom.tz.tpm serves instead. */
++#define QCOM_TPM_TYPE_DTPM	0x6454504d	/* "dTPM" */
++#define QCOM_TPM_TYPE_FTPM	0x6654504d	/* "fTPM" */
++
++struct mssec_req {
++	__le32 cmd;
++} __packed;
++
++struct mssec_version_rsp {
++	__le32 status;
++	__le32 reserved;
++	__le32 version;
++} __packed;
++
++struct mssec_window_rsp {
++	__le32 reserved;
++	__le32 size;
++	__le64 pa;
++	__le32 status;
++	__le32 reserved2;
++} __packed;
++
++struct mssec_execute_rsp {
++	__le32 cmd;
++	__le32 status;
++} __packed;
++
++/* TCG PC Client Platform TPM Profile, CRB control area. */
++struct mssec_crb_regs {
++	u32 ctrl_req;
++	u32 ctrl_sts;
++	u32 ctrl_cancel;
++	u32 ctrl_start;
++	u32 ctrl_int_enable;
++	u32 ctrl_int_sts;
++	u32 ctrl_cmd_size;
++	u32 ctrl_cmd_pa_low;
++	u32 ctrl_cmd_pa_high;
++	u32 ctrl_rsp_size;
++	u32 ctrl_rsp_pa_low;
++	u32 ctrl_rsp_pa_high;
++} __packed;
++
++#define CRB_CTRL_STS_ERROR	BIT(0)
++#define CRB_CANCEL_INVOKE	BIT(0)
++#define CRB_START_INVOKE	BIT(0)
++#define CRB_DRV_STS_COMPLETE	BIT(0)
++
++struct tpm_mssec {
++	struct device *dev;
++	struct qseecom_client *client;
++	struct mssec_req *req;		/* TZ memory */
++	void *rsp;			/* TZ memory, large enough for any response */
++	struct mssec_crb_regs __iomem *regs;
++	u8 __iomem *cmd;
++	u8 __iomem *rsp_buf;
++	u32 cmd_size;
++	u32 rsp_size;
++};
++
++#define MSSEC_RSP_SIZE		sizeof(struct mssec_window_rsp)
++
++static int mssec_call(struct tpm_mssec *priv, u32 cmd, size_t rsp_size)
++{
++	int rc;
++
++	priv->req->cmd = cpu_to_le32(cmd);
++	memset(priv->rsp, 0, MSSEC_RSP_SIZE);
++
++	rc = qcom_qseecom_app_send(priv->client, priv->req, sizeof(*priv->req),
++				   priv->rsp, rsp_size);
++	if (rc)
++		dev_err(priv->dev, "mssecapp command 0x%x failed: %d\n", cmd, rc);
++
++	return rc;
++}
++
++static int tpm_mssec_execute(struct tpm_mssec *priv)
++{
++	struct mssec_execute_rsp *rsp = priv->rsp;
++	u32 status;
++	int rc;
++
++	rc = mssec_call(priv, MSSEC_CMD_EXECUTE, sizeof(*rsp));
++	if (rc)
++		return rc;
++
++	status = le32_to_cpu(rsp->status);
++	if (status) {
++		dev_err(priv->dev, "mssecapp could not execute the command: 0x%x\n",
++			status);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static u8 tpm_mssec_status(struct tpm_chip *chip)
++{
++	struct tpm_mssec *priv = dev_get_drvdata(&chip->dev);
++
++	if (ioread32(&priv->regs->ctrl_start) & CRB_START_INVOKE)
++		return 0;
++
++	return CRB_DRV_STS_COMPLETE;
++}
++
++static int tpm_mssec_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
++			  size_t len)
++{
++	struct tpm_mssec *priv = dev_get_drvdata(&chip->dev);
++	int rc;
++
++	if (len > priv->cmd_size) {
++		dev_err(&chip->dev, "command of %zu bytes exceeds the %u byte buffer\n",
++			len, priv->cmd_size);
++		return -E2BIG;
++	}
++
++	iowrite32(0, &priv->regs->ctrl_cancel);
++
++	memcpy_toio(priv->cmd, buf, len);
++
++	/* The command must be in place before the start request. */
++	wmb();
++
++	iowrite32(CRB_START_INVOKE, &priv->regs->ctrl_start);
++
++	rc = tpm_mssec_execute(priv);
++	if (rc)
++		return rc;
++
++	/* mssecapp runs the command to completion before it returns. */
++	if (ioread32(&priv->regs->ctrl_start) & CRB_START_INVOKE) {
++		dev_err(&chip->dev, "mssecapp returned before the command completed\n");
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int tpm_mssec_recv(struct tpm_chip *chip, u8 *buf, size_t count)
++{
++	struct tpm_mssec *priv = dev_get_drvdata(&chip->dev);
++	unsigned int expected;
++
++	if (count < TPM_HEADER_SIZE)
++		return -EIO;
++
++	if (ioread32(&priv->regs->ctrl_sts) & CRB_CTRL_STS_ERROR)
++		return -EIO;
++
++	/* Read the header as a whole quad word to learn the response size. */
++	memcpy_fromio(buf, priv->rsp_buf, 8);
++
++	expected = be32_to_cpup((__be32 *)&buf[2]);
++	if (expected > count || expected > priv->rsp_size ||
++	    expected < TPM_HEADER_SIZE)
++		return -EIO;
++
++	memcpy_fromio(&buf[8], &priv->rsp_buf[8], expected - 8);
++
++	return expected;
++}
++
++static void tpm_mssec_cancel(struct tpm_chip *chip)
++{
++	struct tpm_mssec *priv = dev_get_drvdata(&chip->dev);
++
++	iowrite32(CRB_CANCEL_INVOKE, &priv->regs->ctrl_cancel);
++}
++
++static bool tpm_mssec_req_canceled(struct tpm_chip *chip, u8 status)
++{
++	struct tpm_mssec *priv = dev_get_drvdata(&chip->dev);
++
++	return ioread32(&priv->regs->ctrl_cancel) & CRB_CANCEL_INVOKE;
++}
++
++static const struct tpm_class_ops tpm_mssec_ops = {
++	.flags = TPM_OPS_AUTO_STARTUP,
++	.status = tpm_mssec_status,
++	.recv = tpm_mssec_recv,
++	.send = tpm_mssec_send,
++	.cancel = tpm_mssec_cancel,
++	.req_canceled = tpm_mssec_req_canceled,
++	.req_complete_mask = CRB_DRV_STS_COMPLETE,
++	.req_complete_val = CRB_DRV_STS_COMPLETE,
++};
++
++/* Only firmware-reserved memory inside the window is ours to map. */
++static bool mssec_in_window(u64 window, u32 window_size, u64 pa, u32 size)
++{
++	return pa >= window + sizeof(struct mssec_crb_regs) &&
++	       size >= TPM_HEADER_SIZE && size <= window_size &&
++	       pa - window <= window_size - size;
++}
++
++static int tpm_mssec_map(struct tpm_mssec *priv)
++{
++	struct mssec_window_rsp *rsp = priv->rsp;
++	struct mssec_crb_regs __iomem *regs;
++	u32 status, size;
++	u64 pa, cmd_pa, rsp_pa;
++	int rc;
++
++	rc = mssec_call(priv, MSSEC_CMD_GET_WINDOW, sizeof(*rsp));
++	if (rc)
++		return rc;
++
++	status = le32_to_cpu(rsp->status);
++	size = le32_to_cpu(rsp->size);
++	pa = le64_to_cpu(rsp->pa);
++	if (status || !pa || size < sizeof(*regs) || size > MSSEC_WINDOW_MAX) {
++		dev_err(priv->dev, "mssecapp reports no usable CRB window (status 0x%x, %#llx+%#x)\n",
++			status, pa, size);
++		return -ENODEV;
++	}
++
++	if (region_intersects(pa, size, IORESOURCE_SYSTEM_RAM,
++			      IORES_DESC_NONE) != REGION_DISJOINT) {
++		dev_err(priv->dev, "CRB window %#llx+%#x overlaps system RAM\n", pa, size);
++		return -ENODEV;
++	}
++
++	regs = devm_ioremap(priv->dev, pa, size);
++	if (!regs)
++		return -ENOMEM;
++	priv->regs = regs;
++
++	priv->cmd_size = ioread32(&regs->ctrl_cmd_size);
++	cmd_pa = ((u64)ioread32(&regs->ctrl_cmd_pa_high) << 32) |
++		 ioread32(&regs->ctrl_cmd_pa_low);
++	priv->rsp_size = ioread32(&regs->ctrl_rsp_size);
++	rsp_pa = ((u64)ioread32(&regs->ctrl_rsp_pa_high) << 32) |
++		 ioread32(&regs->ctrl_rsp_pa_low);
++
++	if (!mssec_in_window(pa, size, cmd_pa, priv->cmd_size) ||
++	    !mssec_in_window(pa, size, rsp_pa, priv->rsp_size)) {
++		dev_err(priv->dev, "CRB buffers %#llx+%#x and %#llx+%#x are not in the window %#llx+%#x\n",
++			cmd_pa, priv->cmd_size, rsp_pa, priv->rsp_size, pa, size);
++		return -ENODEV;
++	}
++
++	priv->cmd = (u8 __iomem *)regs + (cmd_pa - pa);
++	priv->rsp_buf = (u8 __iomem *)regs + (rsp_pa - pa);
++
++	return 0;
++}
++
++static int tpm_mssec_check_version(struct tpm_mssec *priv)
++{
++	struct mssec_version_rsp *rsp = priv->rsp;
++	u32 status, version;
++	int rc;
++
++	rc = mssec_call(priv, MSSEC_CMD_GET_VERSION, sizeof(*rsp));
++	if (rc)
++		return rc;
++
++	status = le32_to_cpu(rsp->status);
++	if (status) {
++		dev_err(priv->dev, "mssecapp version query failed: 0x%x\n", status);
++		return -ENODEV;
++	}
++
++	/* Windows only logs a different version and carries on. */
++	version = le32_to_cpu(rsp->version);
++	if (version != MSSEC_VERSION)
++		dev_info(priv->dev, "mssecapp interface version %u.%u\n",
++			 version >> 16, version & 0xffff);
++
++	return 0;
++}
++
++static void tpm_mssec_free_tzmem(void *ptr)
++{
++	qcom_tzmem_free(ptr);
++}
++
++static int tpm_mssec_probe(struct auxiliary_device *aux_dev,
++			   const struct auxiliary_device_id *id)
++{
++	struct device *dev = &aux_dev->dev;
++	struct qcom_tzmem_pool_config pool_config = {
++		.initial_size = SZ_4K,
++		.policy = QCOM_TZMEM_POLICY_STATIC,
++	};
++	struct qcom_tzmem_pool *pool;
++	struct tpm_mssec *priv;
++	struct tpm_chip *chip;
++	u32 type;
++	int rc;
++
++	/*
++	 * TrustZone names the TPM that backs the platform. A discrete or
++	 * Qualcomm firmware TPM is served by qcom.tz.tpm, not by mssecapp.
++	 */
++	rc = qcom_scm_query_tpm_type(&type);
++	if (rc)
++		return dev_err_probe(dev, rc, "cannot query the TPM type\n");
++	if (type == QCOM_TPM_TYPE_DTPM || type == QCOM_TPM_TYPE_FTPM)
++		return -ENODEV;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->dev = dev;
++	priv->client = container_of(aux_dev, struct qseecom_client, aux_dev);
++
++	pool = devm_qcom_tzmem_pool_new(dev, &pool_config);
++	if (IS_ERR(pool))
++		return PTR_ERR(pool);
++
++	priv->req = qcom_tzmem_alloc(pool, sizeof(*priv->req), GFP_KERNEL);
++	if (!priv->req)
++		return -ENOMEM;
++	rc = devm_add_action_or_reset(dev, tpm_mssec_free_tzmem, priv->req);
++	if (rc)
++		return rc;
++
++	priv->rsp = qcom_tzmem_alloc(pool, MSSEC_RSP_SIZE, GFP_KERNEL);
++	if (!priv->rsp)
++		return -ENOMEM;
++	rc = devm_add_action_or_reset(dev, tpm_mssec_free_tzmem, priv->rsp);
++	if (rc)
++		return rc;
++
++	rc = tpm_mssec_check_version(priv);
++	if (rc)
++		return rc;
++
++	rc = tpm_mssec_map(priv);
++	if (rc)
++		return rc;
++
++	dev_info(dev, "TPM type 0x%08x, CRB command buffer %u bytes, response buffer %u bytes\n",
++		 type, priv->cmd_size, priv->rsp_size);
++
++	chip = tpmm_chip_alloc(dev, &tpm_mssec_ops);
++	if (IS_ERR(chip))
++		return PTR_ERR(chip);
++
++	dev_set_drvdata(&chip->dev, priv);
++	/*
++	 * Snapdragon X suspends to idle: no firmware runs on resume to send
++	 * TPM2_Startup, so the TPM must not be sent TPM2_Shutdown either
++	 * unless firmware takes part in the suspend.
++	 */
++	chip->flags |= TPM_CHIP_FLAG_TPM2 | TPM_CHIP_FLAG_FIRMWARE_POWER_MANAGED;
++
++	return tpm_chip_register(chip);
++}
++
++static void tpm_mssec_remove(struct auxiliary_device *aux_dev)
++{
++	struct tpm_chip *chip = auxiliary_get_drvdata(aux_dev);
++
++	tpm_chip_unregister(chip);
++}
++
++static SIMPLE_DEV_PM_OPS(tpm_mssec_pm, tpm_pm_suspend, tpm_pm_resume);
++
++static const struct auxiliary_device_id tpm_mssec_id_table[] = {
++	{ .name = "qcom_qseecom.mssecapp" },
++	{}
++};
++MODULE_DEVICE_TABLE(auxiliary, tpm_mssec_id_table);
++
++static struct auxiliary_driver tpm_mssec_driver = {
++	.probe = tpm_mssec_probe,
++	.remove = tpm_mssec_remove,
++	.id_table = tpm_mssec_id_table,
++	.driver = {
++		.name = "tpm_qcom_mssec",
++		.pm = &tpm_mssec_pm,
++	},
++};
++module_auxiliary_driver(tpm_mssec_driver);
++
++MODULE_DESCRIPTION("TPM 2.0 behind the Qualcomm mssecapp Secure Application");
++MODULE_LICENSE("GPL");

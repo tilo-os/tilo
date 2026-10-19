@@ -1,0 +1,123 @@
+From: Tilo <tilo@tilo.so>
+Subject: firmware: qcom: set up mssecapp and report the platform's TPM type
+
+Snapdragon X laptops whose TPM is Microsoft Pluton reach it through the
+qcom.tz.mssecapp Secure Application, which firmware loads before the OS
+starts. Create a client device for it, as for uefisecapp, so a TPM driver
+can bind to it.
+
+The apps are independent of each other, but qcom_qseecom_probe() stopped
+at the first app that could not be set up and failed the whole probe,
+which also removed the clients set up before it. A second app must not be
+able to take access to EFI variables down with it, so log the failure and
+carry on with the other apps.
+
+Add qcom_scm_query_tpm_type(), the SIP call (service 0x20, command 1)
+Windows' QcTrEE uses to learn which TPM backs the platform, so a driver
+can tell a Pluton TPM behind mssecapp from a discrete or firmware TPM
+served by qcom.tz.tpm. It follows Xilin Wu's version of the call, and
+also reads the type from the second result word when the first is 1, as
+QcTrEE does.
+
+diff --git a/drivers/firmware/qcom/qcom_qseecom.c b/drivers/firmware/qcom/qcom_qseecom.c
+index 320ec2a77..c28331d86 100644
+--- a/drivers/firmware/qcom/qcom_qseecom.c
++++ b/drivers/firmware/qcom/qcom_qseecom.c
+@@ -85,6 +85,7 @@ static int qseecom_client_register(struct platform_device *qseecom_dev,
+  */
+ static const struct qseecom_app_desc qcom_qseecom_apps[] = {
+ 	{ "qcom.tz.uefisecapp", "uefisecapp" },
++	{ "qcom.tz.mssecapp", "mssecapp" },
+ };
+ 
+ static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
+@@ -92,11 +93,16 @@ static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
+ 	int ret;
+ 	int i;
+ 
+-	/* Set up client devices for each base application */
++	/*
++	 * Set up client devices for each base application. The apps are
++	 * independent: one that cannot be set up must not take the others
++	 * (and with them, for example, access to EFI variables) down with it.
++	 */
+ 	for (i = 0; i < ARRAY_SIZE(qcom_qseecom_apps); i++) {
+ 		ret = qseecom_client_register(qseecom_dev, &qcom_qseecom_apps[i]);
+ 		if (ret)
+-			return ret;
++			dev_err(&qseecom_dev->dev, "cannot set up client for %s: %d\n",
++				qcom_qseecom_apps[i].app_name, ret);
+ 	}
+ 
+ 	return 0;
+diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
+index 26bf87247..f9daf4f37 100644
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -2066,6 +2066,39 @@ static int qcom_scm_find_dload_address(struct device *dev, u64 *addr)
+ 	return 0;
+ }
+ 
++/**
++ * qcom_scm_query_tpm_type() - Ask TrustZone which TPM backs this platform.
++ * @type: The TPM type, a FourCC such as "fTPM" or "dTPM" (big-endian ASCII).
++ *
++ * Firmware that reports a "valid" flag of 1 in the first result word puts the
++ * type in the second one; older firmware returns the type in the first word.
++ * Windows' QcTrEE reads the former, which is what Snapdragon X firmware does.
++ *
++ * Return: Zero on success, nonzero on failure.
++ */
++int qcom_scm_query_tpm_type(u32 *type)
++{
++	struct qcom_scm_desc desc = {
++		.owner = ARM_SMCCC_OWNER_SIP,
++		.svc = QCOM_SCM_SVC_TPM_INFO,
++		.cmd = QCOM_SCM_TPM_INFO_QUERY_TYPE,
++		.arginfo = QCOM_SCM_ARGS(0),
++	};
++	struct qcom_scm_res res = {};
++	int ret;
++
++	if (!__scm)
++		return -EPROBE_DEFER;
++
++	ret = qcom_scm_call(__scm->dev, &desc, &res);
++	if (ret)
++		return ret;
++
++	*type = res.result[0] == 1 ? res.result[1] : res.result[0];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(qcom_scm_query_tpm_type);
++
+ #ifdef CONFIG_QCOM_QSEECOM
+ 
+ /* Lock for QSEECOM SCM call executions */
+diff --git a/drivers/firmware/qcom/qcom_scm.h b/drivers/firmware/qcom/qcom_scm.h
+index cf90a565f..f93d6ceb2 100644
+--- a/drivers/firmware/qcom/qcom_scm.h
++++ b/drivers/firmware/qcom/qcom_scm.h
+@@ -150,6 +150,9 @@ int qcom_scm_shm_bridge_enable(struct device *scm_dev);
+ #define QCOM_SCM_SMMU_CONFIG_ERRATA1		0x03
+ #define QCOM_SCM_SMMU_CONFIG_ERRATA1_CLIENT_ALL	0x02
+ 
++#define QCOM_SCM_SVC_TPM_INFO			0x20
++#define QCOM_SCM_TPM_INFO_QUERY_TYPE		0x01
++
+ #define QCOM_SCM_SVC_WAITQ			0x24
+ #define QCOM_SCM_WAITQ_RESUME			0x02
+ #define QCOM_SCM_WAITQ_GET_WQ_CTX		0x03
+diff --git a/include/linux/firmware/qcom/qcom_scm.h b/include/linux/firmware/qcom/qcom_scm.h
+index 5747bd191..d1fdbb648 100644
+--- a/include/linux/firmware/qcom/qcom_scm.h
++++ b/include/linux/firmware/qcom/qcom_scm.h
+@@ -167,6 +167,8 @@ int qcom_scm_shm_bridge_create(u64 pfn_and_ns_perm_flags,
+ 			       u64 ns_vmids, u64 *handle);
+ int qcom_scm_shm_bridge_delete(u64 handle);
+ 
++int qcom_scm_query_tpm_type(u32 *type);
++
+ #ifdef CONFIG_QCOM_QSEECOM
+ 
+ int qcom_scm_qseecom_app_get_id(const char *app_name, u32 *app_id);
