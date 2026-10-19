@@ -108,6 +108,7 @@ fields = [
   { path = "keyboard_preview_level", type = "usize", readonly = true },
   { path = "keyboard_inspected_key", type = "String", readonly = true },
   { path = "tablets", type = "std::collections::BTreeMap<String, settings_store::hardware ::\nTabletConfig>", readonly = true },
+  { path = "paste_shortcuts", type = "std::collections::BTreeMap<String, String>", readonly = true },
 ]
 
 [[resources.verbs]]
@@ -146,6 +147,34 @@ fields = [
   { path = "low_battery_percent", type = "u32" },
   { path = "critical_battery_percent", type = "u32" },
   { path = "critical_action", type = "PowerActionPref" },
+]
+
+[[resources]]
+kind = "settings.desk_widgets"
+label = "Desk widgets"
+version = 1
+person = true
+fields = [
+  { path = "music", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
+  { path = "music.enabled", type = "bool" },
+  { path = "music.show", type = "ShowMode" },
+  { path = "music.edge", type = "DockEdge" },
+  { path = "music.always_on_strips", type = "Vec<u64>" },
+  { path = "team", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
+  { path = "team.enabled", type = "bool" },
+  { path = "team.show", type = "ShowMode" },
+  { path = "team.edge", type = "DockEdge" },
+  { path = "team.always_on_strips", type = "Vec<u64>" },
+  { path = "calendar", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
+  { path = "calendar.enabled", type = "bool" },
+  { path = "calendar.show", type = "ShowMode" },
+  { path = "calendar.edge", type = "DockEdge" },
+  { path = "calendar.always_on_strips", type = "Vec<u64>" },
+  { path = "system_monitor", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
+  { path = "system_monitor.enabled", type = "bool" },
+  { path = "system_monitor.show", type = "ShowMode" },
+  { path = "system_monitor.edge", type = "DockEdge" },
+  { path = "system_monitor.always_on_strips", type = "Vec<u64>" },
 ]
 
 [[resources]]
@@ -281,6 +310,7 @@ version = 1
 person = true
 fields = [
   { path = "vim_mode", type = "bool" },
+  { path = "hide_top_bar", type = "bool" },
 ]
 
 [[resources]]

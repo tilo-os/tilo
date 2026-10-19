@@ -3,9 +3,9 @@
 [[resources]]
 kind = "word-processor.document"
 label = "Document"
-version = 1
+version = 2
 fields = [
-  { path = "body", type = "RichText", ops = "sha256:228bfc4bf4f5e079" },
+  { path = "body", type = "RichText", ops = "sha256:32d3007b3b137974" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
   { path = "comments.*.anchor", type = "TextAnchor" },
   { path = "comments.*.author", type = "String", readonly = true },
@@ -15,7 +15,7 @@ fields = [
   { path = "comments.*.replies.*.author", type = "String", readonly = true },
   { path = "comments.*.replies.*.date", type = "String", readonly = true },
   { path = "comments.*.replies.*.text", type = "String", label = true },
-  { path = "comments.*.replies.*.body", type = "Json<Vec<ClipBlock>>", readonly = true },
+  { path = "comments.*.replies.*.body", type = "Vec<ClipBlock>", readonly = true },
 ]
 
 [[resources.verbs]]

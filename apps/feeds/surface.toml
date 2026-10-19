@@ -3,7 +3,7 @@
 [[resources]]
 kind = "feeds.library"
 label = "Feeds"
-version = 1
+version = 2
 fields = [
   { path = "folders", type = "Collection<Folder>", stored = "collection" },
   { path = "folders.*.name", type = "String", label = true },
@@ -22,7 +22,7 @@ fields = [
   { path = "articles.*.url", type = "String", readonly = true },
   { path = "articles.*.published", type = "i64", readonly = true },
   { path = "articles.*.summary", type = "String", readonly = true },
-  { path = "articles.*.blocks", type = "Json<Vec<ContentBlock>>", readonly = true },
+  { path = "articles.*.blocks", type = "Vec<ContentBlock>", readonly = true },
   { path = "articles.*.read", type = "bool" },
   { path = "articles.*.starred", type = "bool" },
   { path = "articles.*.tags", type = "Set<String>" },

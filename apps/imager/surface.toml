@@ -31,6 +31,7 @@ fields = [
   { path = "recent.*.source.identity.file", type = "u64" },
   { path = "recent.*.source.expected_sha256", type = "Option<String>" },
   { path = "profile", type = "InstallProfile", stored = "record" },
+  { path = "profile.purpose", type = "String" },
   { path = "profile.hostname", type = "String" },
   { path = "profile.user", type = "UserAccount", stored = "record" },
   { path = "profile.user.full_name", type = "String" },
@@ -42,6 +43,10 @@ fields = [
   { path = "profile.wifi_ssid", type = "String" },
   { path = "profile.device_label", type = "String" },
   { path = "profile.enroll_local_identity", type = "bool" },
+  { path = "profile.prepared_setup", type = "Option<PreparedSetupExpectation>", stored = "record" },
+  { path = "profile.prepared_setup.schema", type = "u32" },
+  { path = "profile.prepared_setup.sealed_bytes", type = "u64" },
+  { path = "profile.prepared_setup.ciphertext_sha256", type = "String" },
 ]
 
 [[resources.verbs]]

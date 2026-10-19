@@ -3,7 +3,7 @@
 [[resources]]
 kind = "pdf.document"
 label = "PDF"
-version = 1
+version = 2
 fields = [
   { path = "source", type = "Bytes", readonly = true },
   { path = "source_name", type = "String", readonly = true },
@@ -28,13 +28,13 @@ fields = [
   { path = "comments.*.page_id", type = "String" },
   { path = "comments.*.author", type = "String", readonly = true },
   { path = "comments.*.text", type = "String", label = true },
-  { path = "comments.*.rich", type = "Json<Vec<tilo_document::ClipBlock>>" },
+  { path = "comments.*.rich", type = "Vec<tilo_document::ClipBlock>" },
   { path = "comments.*.created", type = "i64", readonly = true },
   { path = "comments.*.resolved", type = "bool" },
   { path = "comments.*.replies", type = "Collection<StoredReply>", stored = "collection" },
   { path = "comments.*.replies.*.author", type = "String", readonly = true },
   { path = "comments.*.replies.*.text", type = "String", label = true },
-  { path = "comments.*.replies.*.rich", type = "Json<Vec<tilo_document::ClipBlock>>" },
+  { path = "comments.*.replies.*.rich", type = "Vec<tilo_document::ClipBlock>" },
   { path = "signatures", type = "Keyed<StoredSignature>", stored = "keyed" },
   { path = "signatures.*.id", type = "String", readonly = true },
   { path = "signatures.*.page_id", type = "String" },
@@ -199,11 +199,11 @@ params = [
 [[resources]]
 kind = "pdf.signature-profile"
 label = "Signature"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "signer", type = "String" },
-  { path = "strokes", type = "Json<Vec<Vec<(f64, f64)>>>" },
+  { path = "strokes", type = "Vec<Stroke>" },
 ]
 
 [[resources.verbs]]
