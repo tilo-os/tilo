@@ -528,6 +528,12 @@ impl ResourceRoot {
             .collect()
     }
 
+    /// Settle the window's save status for a capture
+    /// ([`SaveIndicator::settle_for_capture`](super::saves::SaveIndicator::settle_for_capture)).
+    pub(crate) fn settle_saves_for_capture(&mut self) {
+        self.save.settle_for_capture(ui_core::time::now());
+    }
+
     /// Follow `permissions`: the resource is editable while they grant
     /// `write`.
     pub(crate) fn following(

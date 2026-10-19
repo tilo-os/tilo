@@ -186,6 +186,22 @@ impl SaveIndicator {
         }
     }
 
+    /// Present the save state as it stands at `now`, forgetting how long it
+    /// took to get there. Staging a capture spends wall time no person
+    /// waited through (decodes, page renders, a loaded machine), and a save
+    /// that waited past [`SAVE_STALL`](ui_core::SAVE_STALL) in it would put
+    /// "Retrying…", or the "Saved" that confirms a noticed wait, into the
+    /// frame — or not, depending on how fast the machine was. A save that
+    /// landed says nothing, as one that landed at once; a failure still
+    /// shows; a save still in flight starts its wait now.
+    pub(crate) fn settle_for_capture(&mut self, now: Instant) {
+        self.surface = SaveStatusSurface::new();
+        self.retry_record = false;
+        self.drawn = None;
+        self.dirty = true;
+        self.follow(now);
+    }
+
     /// Submit again whichever save is unsettled: the record's, the app's,
     /// or both.
     fn ask_retry(&mut self) {
@@ -398,6 +414,33 @@ mod tests {
             indicator.bubble_text(),
             "Saved",
             "the waited-on save ends with Saved"
+        );
+    }
+
+    /// A capture's staging can outlast the stall on a slow machine; the
+    /// frame it takes shows the record's state, never a stall or the
+    /// "Saved" that confirms one, so two captures of one scenario agree.
+    #[test]
+    fn a_capture_shows_the_save_state_not_how_long_staging_took() {
+        init();
+        let t0 = ui_core::time::now();
+        let mut indicator = SaveIndicator::new(Saves::default());
+        indicator.record(&RecordSaveStatus::Saving, t0);
+        indicator.follow(at(t0, SAVE_STALL.as_secs()));
+        indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
+        assert_eq!(indicator.bubble_text(), "Saved");
+        indicator.settle_for_capture(at(t0, 12));
+        assert_eq!(indicator.bubble_text(), "", "a landed save says nothing");
+        assert!(!indicator.is_visible(at(t0, 12)));
+        assert!(!indicator.take_record_retry(), "the stall's retry is gone");
+
+        let mut failed = SaveIndicator::new(Saves::default());
+        failed.record(&RecordSaveStatus::Failed("The disk is full".into()), t0);
+        failed.settle_for_capture(at(t0, 30));
+        assert_eq!(
+            failed.failure(),
+            Some("The disk is full"),
+            "a failure still shows"
         );
     }
 
