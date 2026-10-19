@@ -297,7 +297,6 @@ dependencies = [
  "agent-provider-config",
  "anyhow",
  "blake3",
- "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "runtime-collab",
