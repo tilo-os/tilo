@@ -4028,7 +4028,9 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         app.disconnect();
-        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
+        // Phone width: the library list is a screen of its own, so the
+        // compact bar spans the window.
+        draw_at(&mut app, &mut doc, 420.0, 800.0);
         let bar = app.nowplaying_rect();
         // Start on the bar's empty title area (left of the transport buttons).
         let start = Point::new(bar.x0 + bar.width() * 0.35, bar.center().y);
@@ -4243,7 +4245,8 @@ fn queue_view_and_volume_controls_are_responsive() {
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
-        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact
+        // Phone width: the compact bar spans the window.
+        draw_at(&mut app, &mut doc, 420.0, 800.0);
         assert!(
             app.scrubber_rect.y0 > app.nowplaying_rect().center().y,
             "the progress bar runs along the bottom of the bar, under the song"
@@ -4263,7 +4266,8 @@ fn queue_view_and_volume_controls_are_responsive() {
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
-        draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
+        // Phone width: the compact bar spans the window.
+        draw_at(&mut app, &mut doc, 420.0, 800.0);
         let sr = app.scrubber_rect;
         assert!(
             sr.height() >= 16.0,
