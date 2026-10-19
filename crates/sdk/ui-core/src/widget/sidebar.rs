@@ -87,8 +87,13 @@ pub struct SidebarDrawer {
     push: bool,
     /// An icon rail stands beside the text list inside the drawer.
     with_rail: bool,
-    /// `metrics.rail_width` of the theme last handed to [`Self::scale_for`].
+    /// `metrics.rail_width` of the theme last handed to [`Self::scale_for`],
+    /// or the width its destinations' words need ([`Self::rail_labels`]).
     rail_column: f64,
+    /// The rail's destination labels, when it shows captions: the rail then
+    /// grows with the text to fit the longest word, as every shared rail does
+    /// ([`crate::chrome::rail_width_fitting`]).
+    rail_labels: Vec<String>,
     /// A snap asked for before the first [`Self::resolve`], kept until the
     /// layout is known.
     pending_snap: Option<bool>,
@@ -144,6 +149,7 @@ impl SidebarDrawer {
             push: false,
             with_rail: false,
             rail_column: f64::from(Metrics::BASE.rail_width),
+            rail_labels: Vec::new(),
             pending_snap: None,
             resolved_once: false,
             header_bottom: None,
@@ -242,6 +248,13 @@ impl SidebarDrawer {
         self.with_rail = true;
         self
     }
+    /// The rail's destination captions: the rail grows with the text, up to
+    /// its cap, so its longest word shows whole rather than as a fragment
+    /// ([`crate::chrome::rail_width_fitting`]). Takes effect at the next
+    /// [`Self::scale_for`].
+    pub fn rail_labels(&mut self, labels: impl IntoIterator<Item = impl Into<String>>) {
+        self.rail_labels = labels.into_iter().map(Into::into).collect();
+    }
 
     // --- dynamic setters (per-frame reconfig) -------------------------------
     //
@@ -264,7 +277,17 @@ impl SidebarDrawer {
         self.responsive_scale = theme.responsive_scale();
         self.ui_scale = f64::from(theme.ui_scale);
         self.float_inset = f64::from(theme.tokens.spacing.s2);
-        self.rail_column = f64::from(theme.tokens.metrics.rail_width);
+        self.rail_column = if self.rail_labels.is_empty() {
+            f64::from(theme.tokens.metrics.rail_width)
+        } else {
+            crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+                crate::chrome::rail_width_fitting(
+                    theme,
+                    text,
+                    self.rail_labels.iter().map(String::as_str),
+                )
+            })
+        };
         let growth = f64::from(theme.text_growth());
         self.resize_min_width = f64::from(theme.tokens.metrics.sidebar_min_width) * growth;
         self.resize_max_width = f64::from(theme.tokens.metrics.sidebar_max_width) * growth;
@@ -1635,6 +1658,25 @@ mod tests {
         d.resolve(wide());
         let rail = d.rail_rect();
         assert!((rail.width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5);
+        // From the coordinator (2026-10-19): the drawer's rail follows the
+        // shared rail rule. At double text it grows to keep "Channels" whole,
+        // up to its cap; at stock text it keeps its width.
+        let big = Theme::high_contrast().with_text_scale(2.0);
+        let mut grown = SidebarDrawer::new().with_rail();
+        grown.rail_labels(["Chat", "Channels"]);
+        grown.scale_for(&big);
+        let width = grown.rail_column_width();
+        assert!(width > f64::from(big.tokens.metrics.rail_width), "{width}");
+        assert!(
+            width <= f64::from(big.tokens.metrics.rail_max_width),
+            "{width}"
+        );
+        let mut stock = SidebarDrawer::new().with_rail();
+        stock.rail_labels(["Channels"]);
+        stock.scale_for(&theme);
+        assert!(
+            (stock.rail_column_width() - f64::from(theme.tokens.metrics.rail_width)).abs() < 0.5
+        );
         assert_eq!(rail.x0, d.sidebar_rect().x0);
         assert_eq!(d.list_rect().x0, rail.x1);
         assert!(
