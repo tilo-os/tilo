@@ -816,6 +816,49 @@ pub struct EmbeddedCatalog {
     catalogs: &'static [(&'static str, &'static str)],
     fresh_locale: FreshLocale,
     pinned_locale: Option<&'static str>,
+    pack: Option<LanguagePack>,
+}
+
+/// Where a catalogue's other languages come from: the language packs.
+///
+/// An app's package carries only its source catalogue, the fallback every
+/// message resolves to. Each other language is a shared language pack,
+/// installed for the languages the person uses and the same bytes for
+/// everyone: `<root>/<locale>/<id>.ftl` for every catalogue that has that
+/// language, one directory per locale. The roots are [`LANGUAGE_PACK_ROOTS`],
+/// which the sandbox lets every app read, and, for a build run from its
+/// source tree (a developer's, a test's, a screenshot's), the crate's own
+/// `locales/` directory.
+#[derive(Debug, Clone, Copy)]
+pub struct LanguagePack {
+    /// The catalogue's name in a pack: its crate's package name.
+    pub id: &'static str,
+    /// Every locale the catalogue is translated into, its source among them.
+    pub locales: &'static [&'static str],
+    /// The crate's `locales/` directory where it was built, read when it
+    /// exists (`<dir>/<locale>.ftl`).
+    pub source_dir: &'static str,
+}
+
+/// Where installed language packs are, in the order they are read: the ones
+/// the person's languages fetched, then the ones the OS image carries.
+pub const LANGUAGE_PACK_ROOTS: &[&str] =
+    &["/var/lib/tilo/language-packs", "/usr/share/tilo/language-packs"];
+
+impl LanguagePack {
+    /// The Fluent source of `locale`'s catalogue, from the first root that
+    /// has it.
+    #[must_use]
+    pub fn read(&self, locale: &str) -> Option<String> {
+        let file = format!("{}.ftl", self.id);
+        LANGUAGE_PACK_ROOTS
+            .iter()
+            .map(|root| std::path::Path::new(root).join(locale).join(&file))
+            .chain(std::iter::once(
+                std::path::Path::new(self.source_dir).join(format!("{locale}.ftl")),
+            ))
+            .find_map(|path| std::fs::read_to_string(path).ok())
+    }
 }
 
 thread_local! {
@@ -840,7 +883,40 @@ impl EmbeddedCatalog {
             catalogs,
             fresh_locale: FreshLocale::Source,
             pinned_locale: None,
+            pack: None,
         }
+    }
+
+    /// Read the catalogue's other languages from the language packs
+    /// ([`LanguagePack`]) when it loads.
+    #[must_use]
+    pub const fn with_language_pack(mut self, pack: LanguagePack) -> Self {
+        self.pack = Some(pack);
+        self
+    }
+
+    /// Every language's Fluent source, by tag: the embedded ones and those
+    /// the installed language packs hold. For content that must be read in
+    /// every language at once, such as the words search matches whatever
+    /// language the desktop speaks.
+    #[must_use]
+    pub fn every_source(&self) -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
+        let mut sources: Vec<(&'static str, std::borrow::Cow<'static, str>)> = self
+            .catalogs
+            .iter()
+            .map(|(locale, source)| (*locale, std::borrow::Cow::Borrowed(*source)))
+            .collect();
+        if let Some(pack) = &self.pack {
+            for locale in pack.locales {
+                if sources.iter().any(|(held, _)| held == locale) {
+                    continue;
+                }
+                if let Some(source) = pack.read(locale) {
+                    sources.push((*locale, std::borrow::Cow::Owned(source)));
+                }
+            }
+        }
+        sources
     }
 
     /// The Fluent source of the source locale's catalogue.
@@ -852,9 +928,8 @@ impl EmbeddedCatalog {
             .map(|(_, source)| *source)
     }
 
-    /// Every locale's Fluent source, by tag: for content that must be read in
-    /// every language at once, such as the words search matches whatever
-    /// language the desktop speaks.
+    /// The embedded Fluent sources, by tag; [`Self::every_source`] adds the
+    /// languages of the installed language packs.
     #[must_use]
     pub const fn sources(&self) -> &'static [(&'static str, &'static str)] {
         self.catalogs
@@ -894,12 +969,13 @@ impl EmbeddedCatalog {
         if loaded {
             return;
         }
+        let sources = self.every_source();
         if manager.is_some() {
-            for (locale, source) in self.catalogs {
-                I18nManager::add_resource(locale, (*source).to_owned());
+            for (locale, source) in &sources {
+                I18nManager::add_resource(locale, source.clone().into_owned());
             }
         } else {
-            self.install_fresh();
+            self.install_fresh(&sources);
         }
         if let Some(locale) = self.pinned_locale {
             I18nManager::set_locale(locale);
@@ -913,20 +989,24 @@ impl EmbeddedCatalog {
         }
     }
 
-    fn install_fresh(&self) {
+    fn install_fresh(&self, sources: &[(&'static str, std::borrow::Cow<'static, str>)]) {
+        let catalogs: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|(locale, source)| (*locale, source.as_ref()))
+            .collect();
         let installed = match self.fresh_locale {
             FreshLocale::Source => {
-                I18nManager::install(self.source_locale, self.source_locale, self.catalogs)
+                I18nManager::install(self.source_locale, self.source_locale, &catalogs)
             }
-            FreshLocale::System => I18nManager::install_system(self.source_locale, self.catalogs),
+            FreshLocale::System => I18nManager::install_system(self.source_locale, &catalogs),
         };
         if installed.is_err() {
             // A catalogue with a syntax error still loads every message that
             // parsed: `add_resource` degrades per resource instead of
             // rejecting the whole set.
             I18nManager::init(self.source_locale);
-            for (locale, source) in self.catalogs {
-                I18nManager::add_resource(locale, (*source).to_owned());
+            for (locale, source) in sources {
+                I18nManager::add_resource(locale, source.clone().into_owned());
             }
         }
     }
@@ -964,9 +1044,11 @@ impl EmbeddedCatalog {
     }
 }
 
-/// Define the calling crate's [`EmbeddedCatalog`]: `locales/<locale>.ftl` in
-/// the crate, `en-US` as the source, the user's locale when no host chose one,
-/// and source copy pinned in the crate's own tests.
+/// Define the calling crate's [`EmbeddedCatalog`]: `locales/en-US.ftl` in the
+/// crate embedded as the source, the crate's other `locales/<locale>.ftl`
+/// read from the language packs ([`LanguagePack`], named by the crate's
+/// package name), the user's locale when no host chose one, and source copy
+/// pinned in the crate's own tests.
 ///
 /// `embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"])`
 /// defines just the static; `embedded_catalog!(pub fn, ["en-US"])`
@@ -976,13 +1058,20 @@ impl EmbeddedCatalog {
 macro_rules! embedded_catalog {
     ($vis:vis static $name:ident, [$($locale:literal),+ $(,)?]) => {
         $vis static $name: $crate::i18n::EmbeddedCatalog = {
+            // Only the source catalogue is embedded; the other languages
+            // come from the language packs.
             let catalog = $crate::i18n::EmbeddedCatalog::new(
                 "en-US",
-                &[$((
-                    $locale,
-                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/", $locale, ".ftl")),
-                )),+],
+                &[(
+                    "en-US",
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/en-US.ftl")),
+                )],
             )
+            .with_language_pack($crate::i18n::LanguagePack {
+                id: env!("CARGO_PKG_NAME"),
+                locales: &[$($locale),+],
+                source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+            })
             .with_system_locale();
             #[cfg(test)]
             let catalog = catalog.with_pinned_locale("en-US");
@@ -1023,6 +1112,38 @@ macro_rules! i18n {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A catalogue embeds only its source; its other languages come from the
+    /// language packs, here the crate's own `locales/` directory.
+    #[test]
+    fn a_catalogue_reads_its_other_languages_from_the_language_packs() {
+        static PACKED: EmbeddedCatalog = EmbeddedCatalog::new(
+            "en-US",
+            &[("en-US", "packed-greeting = Hello\n")],
+        )
+        .with_language_pack(LanguagePack {
+            id: "tilo-ui-pack-test",
+            locales: &["en-US", "de-DE"],
+            source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+        });
+        let sources = PACKED.every_source();
+        assert_eq!(sources.first().map(|(locale, _)| *locale), Some("en-US"));
+        let german = sources
+            .iter()
+            .find(|(locale, _)| *locale == "de-DE")
+            .expect("the German catalogue is read from the crate's locales");
+        assert_eq!(
+            german.1,
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/de-DE.ftl"))
+                .unwrap()
+        );
+        let missing = LanguagePack {
+            id: "tilo-ui-pack-test",
+            locales: &["xx-XX"],
+            source_dir: "/nonexistent",
+        };
+        assert_eq!(missing.read("xx-XX"), None);
+    }
 
     /// Lookup uses thread-local state; worker threads are reused across tests.
     struct RestoreLookupState {

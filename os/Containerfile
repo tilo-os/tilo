@@ -398,6 +398,7 @@ COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
+COPY tools/apps/language_packs.py /build/tools/apps/language_packs.py
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
@@ -1134,7 +1135,10 @@ RUN --mount=type=secret,id=app_publisher_identity \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
-    /build/os/scripts/pack-apps.sh
+    /build/os/scripts/pack-apps.sh \
+    # The packages carry English only; every other language is a language
+    # pack, which the image installs under /usr/share/tilo/language-packs.
+    && python3 /build/tools/apps/language_packs.py build /build /out/language-packs
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
 ARG ENV_RUNTIME_REF
@@ -1222,6 +1226,7 @@ RUN --network=none \
     --mount=type=bind,from=builder,source=/out/runtime-version,target=/tilo-runtime-version,ro \
     --mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,target=/tilo-runtime-publisher.hex,ro \
     --mount=type=bind,from=builder,source=/out/browser-runtime-publisher.hex,target=/tilo-browser-runtime-publisher.hex,ro \
+    --mount=type=bind,from=builder,source=/out/language-packs,target=/tilo-language-packs,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
@@ -1230,6 +1235,7 @@ RUN --network=none \
     && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
     && cp /tilo-runtime-publisher.hex /image/usr/share/tilo/runtime-bundle-publisher.hex \
     && cp /tilo-browser-runtime-publisher.hex /image/usr/share/tilo/browser-runtime-publisher.hex \
+    && cp -a /tilo-language-packs /image/usr/share/tilo/language-packs \
     && fonts="/image/usr/lib/tilo-runtime/$(cat /tilo-runtime-version)/lib/fonts" \
     && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" \

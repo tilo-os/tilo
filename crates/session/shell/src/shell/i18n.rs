@@ -52,10 +52,10 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
 pub fn words_in_every_locale(key: &str) -> Vec<String> {
     use std::collections::HashMap;
     use std::sync::OnceLock;
-    static WORDS: OnceLock<HashMap<&'static str, Vec<String>>> = OnceLock::new();
+    static WORDS: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     let words = WORDS.get_or_init(|| {
-        let mut words: HashMap<&'static str, Vec<String>> = HashMap::new();
-        for (_, catalogue) in CATALOG.sources() {
+        let mut words: HashMap<String, Vec<String>> = HashMap::new();
+        for (_, catalogue) in CATALOG.every_source() {
             for line in catalogue.lines() {
                 let Some((message, value)) = line.split_once(" = ") else {
                     continue;
@@ -63,7 +63,7 @@ pub fn words_in_every_locale(key: &str) -> Vec<String> {
                 if !message.starts_with(KEYWORD_PREFIX) || line.starts_with(char::is_whitespace) {
                     continue;
                 }
-                words.entry(message).or_default().extend(
+                words.entry(message.to_owned()).or_default().extend(
                     value
                         .split(',')
                         .map(|word| word.trim().to_lowercase())

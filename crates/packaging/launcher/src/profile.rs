@@ -49,6 +49,12 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     // Compose tables for dead keys, so the two travel together.
     "/usr/share/X11/xkb",
     "/usr/share/X11/locale",
+    // Language packs: every app's and the toolkit's catalogues in each
+    // language other than English, which the packages leave out
+    // (`ui::i18n::LANGUAGE_PACK_ROOTS`). The same bytes for everyone; without
+    // them an app speaks only English.
+    "/var/lib/tilo/language-packs",
+    "/usr/share/tilo/language-packs",
     // GPU loader manifests + driver data (vendor-neutral); which device is
     // narrowed separately by `push_gpu_selection`.
     "/usr/share/vulkan",
