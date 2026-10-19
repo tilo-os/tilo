@@ -87,11 +87,11 @@ fn button_side(row: Rect) -> f64 {
     (row.height() - 2.0 * GAP).clamp(0.0, 32.0)
 }
 
-const GAP: f64 = 4.0;
+const GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 /// A named action button's width.
-const SELECT_W: f64 = 84.0;
+const SELECT_W: f64 = ui::tokens::Metrics::BASE.row_action_width as f64;
 /// A small placement arrow.
-const ARROW: f64 = 22.0;
+const ARROW: f64 = ui::tokens::Metrics::BASE.row_arrow as f64;
 
 /// A row's named action button, at its trailing end.
 #[must_use]

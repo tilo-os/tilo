@@ -42,10 +42,10 @@ use crate::shell::search::providers::actions::{STRIP_NAME_MAX_CHARS, valid_strip
 use crate::shell::state::StripId;
 
 /// Width of the panel of workspaces beside the picture.
-pub(super) const COLUMN_WIDTH_PX: f64 = 480.0;
+pub(super) const COLUMN_WIDTH_PX: f64 = ui::tokens::Metrics::BASE.overview_panel_width as f64;
 /// The narrowest picture worth putting beside the panel; a narrower display
 /// holds the picture inside the panel instead.
-const MIN_PICTURE_WIDTH_PX: f64 = 480.0;
+const MIN_PICTURE_WIDTH_PX: f64 = ui::tokens::Metrics::BASE.overview_picture_min_width as f64;
 /// A window is pictured at most at this share of its size on the display:
 /// a workspace of one window still reads as a picture, not as the window.
 const MAX_SCALE: f64 = 0.5;

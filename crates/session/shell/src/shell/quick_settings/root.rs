@@ -341,13 +341,13 @@ impl QuickSettingsRoot {
     /// (`s1`).
     const LIFT: f64 = ui::tokens::Spacing::BASE.s1 as f64;
     /// A two-line row or tile (design rows: 52).
-    const TWO_LINE: f64 = 52.0;
+    const TWO_LINE: f64 = ui::tokens::Metrics::BASE.row_double as f64;
     /// A single-line row (design rows: 36).
-    const ONE_LINE: f64 = 36.0;
+    const ONE_LINE: f64 = ui::tokens::Metrics::BASE.row_single as f64;
     /// A tile's chevron area: the pointer floor wide.
     const EXPAND_WIDTH: f64 = TARGET;
 
-    const PAD: f64 = 16.0;
+    const PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
     const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
     fn edit_help_copy() -> String {
         t("qs-edit-help")
