@@ -1341,11 +1341,7 @@ impl VideoPlayer {
                 fs.x0 - pad,
                 mid_y + icon * 0.5,
             );
-            let tint = if self.open_menu == Some(OpenMenu::Gear) {
-                colors.text_primary
-            } else {
-                colors.text_primary
-            };
+            let tint = colors.text_primary;
             Icon::Settings2.draw(scene, transform, rect, tint);
             rect
         };

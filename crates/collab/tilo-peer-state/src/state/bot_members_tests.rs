@@ -889,3 +889,60 @@ fn an_editor_cannot_ask_for_a_bot_by_default() {
     );
     assert!(governor.governance().bot_requests().is_empty());
 }
+
+#[test]
+fn the_rooms_bots_are_its_installed_bots_and_the_requests_none_answers_yet() {
+    let (_, _, _, _, now) = crate::admission_tests::seeded();
+    let (mut governor, authority, owner_device, cert) = installed(now);
+    governor
+        .workspace_mut()
+        .apply_workspace_membership_command(
+            &owner_device,
+            &Command::RequestBot(standup("1.2.0")),
+            &authority,
+            now,
+        )
+        .unwrap();
+    let doc = governor.core.room_doc.as_ref().expect("room governance");
+    let bots = crate::room::room_bots_of(doc);
+    assert_eq!(bots.len(), 2, "{bots:?}");
+    let bridge = bots
+        .iter()
+        .find(|bot| bot.name == "Discord Bridge")
+        .expect("the installed bot is listed by its name");
+    assert_eq!(bridge.installation.as_deref(), Some(BOT));
+    assert_eq!(
+        bridge.device.as_deref(),
+        Some(hex::encode(cert.device_public_key).as_str())
+    );
+    assert!(bridge.is(&hex::encode(cert.device_public_key)));
+    assert!(
+        !bridge.requested,
+        "the owner installed it; no request stands for it"
+    );
+    let asked = bots
+        .iter()
+        .find(|bot| bot.entry.as_deref() == Some("so.tilo.bots.standup"))
+        .expect("a request no bot answers yet is listed");
+    assert!(asked.requested);
+    assert_eq!(asked.version.as_deref(), Some("1.2.0"));
+    assert!(asked.installation.is_none() && asked.device.is_none());
+
+    // Uninstalled, the bot leaves the list; its row stays in the room's
+    // history only.
+    governor
+        .workspace_mut()
+        .apply_workspace_membership_command(
+            &owner_device,
+            &Command::UninstallBot { installation: id() },
+            &authority,
+            now,
+        )
+        .unwrap();
+    let doc = governor.core.room_doc.as_ref().expect("room governance");
+    let bots = crate::room::room_bots_of(doc);
+    assert_eq!(
+        bots.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(),
+        ["so.tilo.bots.standup"]
+    );
+}

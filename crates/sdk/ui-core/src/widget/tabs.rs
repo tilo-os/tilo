@@ -1559,6 +1559,25 @@ impl TabBar {
         scene.pop_layer();
     }
 
+    /// Who a pill's faces show: on the tab in front, everyone in this
+    /// window (any of its tabs), as the window's own faces; on a tab
+    /// behind, the people in that tab, so it shows faces only while
+    /// someone is in it.
+    fn pill_people(&self, tab: u64, presence: &PresenceCtx) -> Vec<crate::permissions::UserId> {
+        if tab != self.active_id() {
+            return presence.peers_on(&tab_presence_key(tab)).to_vec();
+        }
+        let mut people: Vec<crate::permissions::UserId> = Vec::new();
+        for id in std::iter::once(tab).chain(self.tabs.iter().map(|t| t.id)) {
+            for user in presence.peers_on(&tab_presence_key(id)) {
+                if !people.contains(user) {
+                    people.push(user.clone());
+                }
+            }
+        }
+        people
+    }
+
     /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
     /// plus a "+N" disc, fewer when the title would drop under
     /// its full width or [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
@@ -1570,7 +1589,7 @@ impl TabBar {
         if self.icon_only(tab.id) {
             return PillFaces::default();
         }
-        let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+        let peers = self.pill_people(tab.id, presence).len();
         let (x0, x1) = self.title_zone_without_faces(i, r);
         let keep = self.shaped_title_width(i).min(MIN_TITLE_PX);
         PillFaces::fit(peers, x1 - x0, keep, self.face_metrics)
@@ -1585,7 +1604,7 @@ impl TabBar {
             .iter()
             .filter(|tab| !self.icon_only(tab.id))
             .filter_map(|tab| {
-                let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+                let peers = self.pill_people(tab.id, presence).len();
                 let faces = peers.min(PILL_MAX_FACES);
                 let wanted = PillFaces {
                     faces,
@@ -1640,9 +1659,20 @@ impl TabBar {
                 metrics.face,
             )
         };
-        let peers = presence.peers_on(&tab_presence_key(pill.tab.id));
+        let peers = self.pill_people(pill.tab.id, presence);
         for (slot, user) in peers.iter().take(faces.faces).enumerate() {
             let rect = face_rect(slot);
+            // Idle or away: the face dims, as everywhere a face is shown.
+            let dimmed = presence.availability_of(user).dims();
+            if dimmed {
+                ctx.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    0.45,
+                    ctx.transform,
+                    &rect.inflate(3.0, 3.0),
+                );
+            }
             let (red, green, blue) = presence.color_for(user);
             let colour = vello::peniko::Color::from_rgb8(red, green, blue);
             if presence.is_agent(user) {
@@ -1680,6 +1710,9 @@ impl TabBar {
                     .presence(colour)
                     .ringed_on(ring)
                     .paint(ctx, rect);
+            }
+            if dimmed {
+                ctx.scene.pop_layer();
             }
         }
         crate::widget::AvatarFace::paint_overflow(
@@ -6495,13 +6528,18 @@ mod tests {
         // Case `peers_on_a_tab_show_faces_that_give_way_to_the_title`.
         {
             fn faces_at(width: f64) -> (Vec<PillFaces>, f64) {
+                faces_with_front(width, 2)
+            }
+            // The tab in front shows everyone in the window; a tab behind
+            // shows faces only while someone is in it.
+            fn faces_with_front(width: f64, front: u64) -> (Vec<PillFaces>, f64) {
                 let mut b = TabBar::new(
                     "g1",
                     vec![
                         TabDescriptor::new(1, "Alpha"),
                         TabDescriptor::new(2, "Quarterly planning"),
                     ],
-                    1,
+                    front,
                 );
                 b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
                 b.tab_rects = vec![
@@ -6559,6 +6597,46 @@ mod tests {
             );
             let (narrow, _) = faces_at(70.0);
             assert_eq!(narrow[1], PillFaces::default(), "too narrow: mist only");
+            let (behind, _) = faces_with_front(200.0, 1);
+            assert_ne!(
+                behind[1],
+                PillFaces::default(),
+                "the tab behind shows who is in it"
+            );
+            let bar = TabBar::new(
+                "g1",
+                vec![
+                    TabDescriptor::new(1, "Alpha"),
+                    TabDescriptor::new(2, "Beta"),
+                ],
+                1,
+            );
+            let mut presence = PresenceCtx::default();
+            presence.register_peer_at(
+                "ada".to_string(),
+                PresenceKey::Tab {
+                    id: "2".to_string(),
+                },
+            );
+            assert_eq!(
+                bar.pill_people(1, &presence).len(),
+                1,
+                "the tab in front shows who is in the window, though they are in the tab behind"
+            );
+            assert!(
+                bar.pill_people(2, &presence).len() == 1
+                    && TabBar::new(
+                        "g2",
+                        vec![
+                            TabDescriptor::new(3, "Gamma"),
+                            TabDescriptor::new(4, "Delta")
+                        ],
+                        4
+                    )
+                    .pill_people(3, &presence)
+                    .is_empty(),
+                "a tab behind shows faces only while someone is in it"
+            );
 
             // A short title: the pill grows by its faces' width, so after
             // the relayout the faces show next to the whole title.

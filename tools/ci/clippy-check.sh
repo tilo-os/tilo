@@ -23,6 +23,10 @@ cd "$root" || exit 2
 # Verify the gateway server only when that package itself is selected.
 feature_flags=$(python3 tools/ci/package_features.py "$@") || exit 2
 read -r -a features <<<"$feature_flags"
+# A selected package tested with features its default build lacks is also
+# checked as it ships, tests included (package_features.py).
+default_builds=$(python3 tools/ci/package_features.py --default-builds "$@") || exit 2
+read -r -a default_builds <<<"$default_builds"
 set -- "$@" "${features[@]}"
 
 # Let sccache cache Clippy's workspace crates. Cargo runs them as
@@ -101,20 +105,30 @@ raise SystemExit(1)
 PY
 }
 
-if run_clippy "$@"; then
-    exit 0
-fi
-if has_compiler_diagnostics; then
-    echo "Clippy rejected this change:" >&2
+gate() {
+    if run_clippy "$@"; then
+        return 0
+    fi
+    if has_compiler_diagnostics; then
+        echo "Clippy rejected this change:" >&2
+        print_diagnostics
+        return 1
+    fi
+    echo "Clippy exited without a compiler diagnostic; retrying once without compiler-cache hits." >&2
+    tail -80 "$stderr_log" >&2
+    if SCCACHE_RECACHE=1 run_clippy "$@"; then
+        return 0
+    fi
+    echo "Clippy failed after the cache-bypassing retry." >&2
     print_diagnostics
-    exit 1
-fi
-echo "Clippy exited without a compiler diagnostic; retrying once without compiler-cache hits." >&2
-tail -80 "$stderr_log" >&2
-if SCCACHE_RECACHE=1 run_clippy "$@"; then
-    exit 0
-fi
-echo "Clippy failed after the cache-bypassing retry." >&2
-print_diagnostics
-tail -160 "$stderr_log" >&2
-exit 1
+    tail -160 "$stderr_log" >&2
+    return 1
+}
+
+status=0
+gate "$@" || status=1
+for package in "${default_builds[@]}"; do
+    echo "Clippy over $package's default build:" >&2
+    gate -p "$package" || status=1
+done
+exit "$status"

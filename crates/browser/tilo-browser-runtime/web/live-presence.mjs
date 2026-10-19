@@ -8,9 +8,10 @@
  *    selection:{anchor:hex, head:hex}|null,
  *    drag:{object:{record:{app,record}|null,id:hex}, phase:'start'|'move'|'end'|'cancel',
  *          position:[x,y], size:[w,h]|null}|null,
- *    place:string|null}
+ *    place:string|null, chat:{text, sent}|null, reaction:{seq, emoji}|null}
  * `place` is where within its focus the publisher is (on a desktop, the
- * strip it shows).
+ * strip it shows). `chat` is what the publisher is saying beside its pointer
+ * (cursor chat); `reaction` its latest reaction, new when its `seq` is.
  */
 
 /** Relay ceiling is 120 presence frames/s per publisher (display rate up to 120 Hz). */
@@ -46,11 +47,11 @@ export const ENDED_DRAG_TIMEOUT_MS = 5000;
 /** A publisher with no frame for this long is reported stale. */
 export const STALE_AFTER_MS = 10000;
 
-const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place'];
+const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant', 'place', 'chat', 'reaction'];
 const PARTICIPANT_KINDS = new Set(['person', 'agent']);
 const PHASES = new Set(['start', 'move', 'end', 'cancel']);
 
-const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null});
+const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null, place: null, chat: null, reaction: null});
 
 function finitePair(value, name) {
   if (value === null) return null;
@@ -66,6 +67,8 @@ function normalizeField(key, value) {
     case 'focus': return {app: String(value.app), record: String(value.record)};
     case 'selection': return {anchor: String(value.anchor), head: String(value.head)};
     case 'place': return String(value) || null;
+    case 'chat': return {text: String(value.text), sent: Boolean(value.sent)};
+    case 'reaction': return {seq: Number(value.seq) >>> 0, emoji: String(value.emoji)};
     case 'participant': {
       if (!PARTICIPANT_KINDS.has(value.kind)) throw new TypeError('participant kind must be person or agent');
       if (!/^#[0-9a-f]{6}$/.test(value.color)) throw new TypeError('participant colour must be #rrggbb');
@@ -270,6 +273,10 @@ export function createRemotePresence({maxSamples = 8} = {}) {
   let jitter = 0;
   const ended = new Map();
   const stats = {accepted: 0, stale: 0, duplicate: 0};
+  // When the shown message was sent (receiver clock), and the reaction
+  // playing with when it arrived: both are timed here, not by the sender.
+  let chatSentAt = null;
+  let reaction = null;
 
   function accept(frame, receivedAtMs) {
     if (!Number.isSafeInteger(frame?.seq)) { stats.stale++; return false; }
@@ -296,7 +303,14 @@ export function createRemotePresence({maxSamples = 8} = {}) {
       drag: frame.drag ?? null,
       participant: frame.participant ?? null,
       place: frame.place ?? null,
+      chat: frame.chat ?? null,
     };
+    const chat = sample.chat;
+    if (!chat?.sent) chatSentAt = null;
+    else if (!newest?.chat?.sent || newest.chat.text !== chat.text) chatSentAt = receivedAtMs;
+    if (frame.reaction && frame.reaction.seq !== reaction?.seq) {
+      reaction = {seq: frame.reaction.seq, emoji: frame.reaction.emoji, at: receivedAtMs};
+    }
     // Coordinates belong to the focused surface. Never interpolate a point
     // from the previous app/record under the newest frame's focus.
     if (!same(newest?.focus ?? null, sample.focus)) samples.length = 0;
@@ -389,6 +403,12 @@ export function createRemotePresence({maxSamples = 8} = {}) {
       participant: newest.participant,
       /** Where within its focus the publisher is, or `null`. */
       place: newest.place,
+      /** What the publisher says beside its pointer, `{text, sent}` or `null`. */
+      chat: newest.chat,
+      /** When `chat` was sent, on this clock; `null` while it is being typed. */
+      chatSentAt,
+      /** The latest reaction, `{seq, emoji, at}` with `at` on this clock. */
+      reaction,
       pointer,
       drag,
       endedDrags,

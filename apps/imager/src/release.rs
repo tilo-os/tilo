@@ -203,7 +203,7 @@ impl InternalRelease {
         &self.metadata.manifest_sha256
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "installation"))]
     pub(crate) fn transport_fixture(bytes: &[u8], url: &str) -> Self {
         Self {
             metadata: InternalMetadata {

@@ -59,6 +59,18 @@ if tests imager; then
     chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
 fi
 
+# A package tested with features its default build lacks (package_features.py)
+# also builds its tests as it ships, alone so no other package's features
+# unify into it: the default leaves code and tests out, and those rot unseen.
+if (( nextest )); then
+    selected=()
+    for name in $tested; do selected+=(-p "$name"); done
+    read -r -a default_builds <<<"$(python3 "$root/tools/ci/package_features.py" --default-builds "${selected[@]}")"
+    for name in "${default_builds[@]}"; do
+        cargo test --locked --no-run -p "$name"
+    done
+fi
+
 # The app-cli and app-host trust tests execute the installer, which no package
 # depends on.
 if tests app-cli app-host; then

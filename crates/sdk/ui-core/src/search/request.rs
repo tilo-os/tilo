@@ -39,6 +39,7 @@ pub(crate) const SEARCH_ACTION: &str = "open";
 const QUERY_PARAM: &str = "query";
 const SCOPE_PARAM: &str = "scope";
 const SCOPE_LABEL_PARAM: &str = "scope_label";
+const OFFER_PARAM: &str = "offer";
 
 pub use tilo_resource::{ScopeDecl, scope_contains};
 
@@ -60,6 +61,22 @@ pub struct SearchRequest {
     pub scope: SearchRequestScope,
     /// Text the search field starts with, selected so typing replaces it.
     pub query: Option<String>,
+    /// One of the system's own actions the app prepares for the person:
+    /// search opens on it with these arguments, and nothing runs until the
+    /// person confirms it there. A host that offers no such action opens a
+    /// plain search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offer: Option<SearchOffer>,
+}
+
+/// A system action an app prepares for the person ([`SearchRequest::offer`]):
+/// the action's id and the text arguments the app fills in. The host decides
+/// which of its actions an app may prepare, and asks the person for every
+/// other argument, the confirmation among them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchOffer {
+    pub action: String,
+    pub arguments: std::collections::BTreeMap<String, String>,
 }
 
 impl SearchRequest {
@@ -75,6 +92,26 @@ impl SearchRequest {
         Self {
             scope: SearchRequestScope::Resource(scope),
             query: None,
+            offer: None,
+        }
+    }
+
+    /// Open search on the system's action `action`, with `arguments` filled
+    /// in for the person to confirm (see [`SearchRequest::offer`]).
+    #[must_use]
+    pub fn offering<K: Into<String>, V: Into<String>>(
+        action: impl Into<String>,
+        arguments: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        Self {
+            offer: Some(SearchOffer {
+                action: action.into(),
+                arguments: arguments
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value.into()))
+                    .collect(),
+            }),
+            ..Self::default()
         }
     }
 
@@ -106,6 +143,13 @@ impl SearchRequest {
             arguments.insert(SCOPE_PARAM.into(), scope.anchor.clone().into());
             arguments.insert(SCOPE_LABEL_PARAM.into(), scope.label.clone().into());
         }
+        if let Some(offer) = self
+            .offer
+            .as_ref()
+            .and_then(|offer| serde_json::to_string(offer).ok())
+        {
+            arguments.insert(OFFER_PARAM.into(), offer.into());
+        }
         arguments
     }
 
@@ -125,6 +169,14 @@ impl SearchRequest {
             text(SCOPE_PARAM),
             text(SCOPE_LABEL_PARAM),
         )
+        .with_offer(text(OFFER_PARAM).as_deref())
+    }
+
+    /// The offer the `offer` argument carries, as its JSON text; a malformed
+    /// one reads as none.
+    fn with_offer(mut self, offer: Option<&str>) -> Self {
+        self.offer = offer.and_then(|offer| serde_json::from_str(offer).ok());
+        self
     }
 
     fn from_args(args: &ActionArgs) -> Self {
@@ -138,6 +190,7 @@ impl SearchRequest {
             text(SCOPE_PARAM),
             text(SCOPE_LABEL_PARAM),
         )
+        .with_offer(text(OFFER_PARAM).as_deref())
     }
 
     fn from_parts(query: Option<String>, anchor: Option<String>, label: Option<String>) -> Self {
@@ -145,7 +198,11 @@ impl SearchRequest {
             let label = label.unwrap_or_else(|| anchor.clone());
             SearchRequestScope::Resource(ScopeDecl { anchor, label })
         });
-        Self { scope, query }
+        Self {
+            scope,
+            query,
+            offer: None,
+        }
     }
 
     /// Decode the `open` operation's payload. An empty or unit payload is a
@@ -205,6 +262,11 @@ pub(crate) fn search_resource() -> Resource {
                 SCOPE_LABEL_PARAM,
                 ParamType::Text,
                 "Name of that part, shown on the scope pill",
+            ),
+            ActionParam::optional(
+                OFFER_PARAM,
+                ParamType::Text,
+                "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}",
             ),
         ],
         |args| SearchRequest::from_args(args).encode(),
@@ -296,6 +358,32 @@ impl SearchOpener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_offered_action_round_trips_and_a_malformed_offer_is_none() {
+        let request = SearchRequest::offering(
+            "bot.add",
+            [("entry", "so.tilo.bots.standup"), ("version", "1.2.0")],
+        );
+        assert_eq!(SearchRequest::from_arguments(&request.arguments()), request);
+        assert_eq!(
+            SearchRequest::decode(&request.encode().payload).unwrap(),
+            request
+        );
+        let invocation = open_search_binding(&request).invoke(()).unwrap();
+        let carried = SearchRequest::from_invocation(&invocation).unwrap();
+        let offer = carried.offer.expect("the offer travels with the request");
+        assert_eq!(offer.action, "bot.add");
+        assert_eq!(offer.arguments["entry"], "so.tilo.bots.standup");
+        assert_eq!(offer.arguments["version"], "1.2.0");
+
+        let mut arguments = SearchRequest::this_app().arguments();
+        arguments.insert(OFFER_PARAM.into(), "{not json".into());
+        assert_eq!(
+            SearchRequest::from_arguments(&arguments),
+            SearchRequest::this_app()
+        );
+    }
 
     #[test]
     fn a_request_round_trips_through_arguments_payload_and_binding() {

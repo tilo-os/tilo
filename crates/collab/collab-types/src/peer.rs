@@ -77,6 +77,17 @@ pub enum PeerPresencePayload {
         text: String,
         automatic: bool,
     },
+    /// How available the sender is (`available`, `focusing`, `away`,
+    /// `idle`) and the voice channel they are in. Desktop presence: shells
+    /// show it, apps never receive it.
+    Availability {
+        state: String,
+        call: Option<String>,
+    },
+    /// The sender waves at `target`, a roster id. Desktop presence.
+    Wave {
+        target: String,
+    },
 }
 
 #[cfg(test)]
@@ -101,6 +112,13 @@ mod tests {
             PeerPresencePayload::Status {
                 text: "Reviewing Q2 assumptions".into(),
                 automatic: true,
+            },
+            PeerPresencePayload::Availability {
+                state: "idle".into(),
+                call: Some("voice".into()),
+            },
+            PeerPresencePayload::Wave {
+                target: "peer@7".into(),
             },
         ]
     }
