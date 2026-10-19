@@ -713,6 +713,11 @@ pub struct ShellOverlayHost {
     /// resource/action change must repaint an already-open palette even when
     /// the person has not changed its text.
     last_search_revision: String,
+    /// The row the last refresh selected by itself (its best result), while
+    /// the person hasn't moved the selection since; `None` once they have.
+    /// A slower provider's rows then re-select the new best result, and
+    /// only a choice the person made is kept across them.
+    auto_selected_row: Option<String>,
     /// Kinds the chip strip has toggled on. Empty means unfiltered.
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
     /// The palette's filter band: chips, scope switch, their pointer
@@ -2708,6 +2713,7 @@ impl ShellOverlayHost {
             pending_launchpad_actions: Vec::new(),
             last_search_query: String::new(),
             last_search_revision: String::new(),
+            auto_selected_row: None,
             active_kind_filter: Vec::new(),
             search_filters: SearchFilters::default(),
             search_filter_inputs: None,
@@ -9951,8 +9957,12 @@ impl ShellOverlayHost {
         );
 
         // Provider revisions may insert/re-rank rows without a query edit.
-        // Keep the chosen resource, never its old callback or row index.
-        let previous_selection = if preserve_selection {
+        // Keep the resource the person chose, never its old callback or row
+        // index. A selection the person never moved is the old best result:
+        // it follows the best result, so a slower provider (Flathub) that
+        // ranks above it after typing takes the selection.
+        let person_moved = self.palette.selected_id() != self.auto_selected_row.as_deref();
+        let previous_selection = if preserve_selection && person_moved {
             self.selected_search_identity()
         } else {
             None
@@ -10002,7 +10012,7 @@ impl ShellOverlayHost {
             })
             .map(|index| format!("result:{index}"));
         self.palette.set_entries(entries);
-        if let Some(id) = selected_id
+        let kept = if let Some(id) = selected_id
             && let Some(cursor) = self
                 .palette
                 .visible_entries()
@@ -10010,7 +10020,15 @@ impl ShellOverlayHost {
                 .position(|entry| entry.id == id)
         {
             self.palette.set_cursor(cursor);
-        }
+            true
+        } else {
+            false
+        };
+        self.auto_selected_row = if kept {
+            None
+        } else {
+            self.palette.selected_id().map(str::to_owned)
+        };
         self.search_results = results;
         self.sync_filter_band();
         // New entry count needs a new palette node height on the next

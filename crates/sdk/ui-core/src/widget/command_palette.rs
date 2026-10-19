@@ -1111,7 +1111,24 @@ impl CommandPalette {
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
             VisualRow::Header { .. } => HEADER_HEIGHT * self.layout_scale(),
-            VisualRow::Entry(_) => self.row_height(),
+            VisualRow::Entry(entry_i) => self.entry_row_height(*entry_i),
+        }
+    }
+
+    /// A result row is as tall as its content: 36 for a title alone, 52
+    /// for a title over a secondary line (the design system's rows). A
+    /// title-only row padded to two lines leaves a hole under it, and the
+    /// gaps between groups then read as uneven.
+    fn entry_row_height(&self, entry_i: usize) -> f64 {
+        let two_line = self
+            .visible
+            .get(entry_i)
+            .and_then(|&idx| self.entries.get(idx))
+            .is_some_and(|e| e.description.is_some());
+        if two_line {
+            TWO_LINE_ROW_HEIGHT * self.layout_scale()
+        } else {
+            ROW_HEIGHT * self.layout_scale()
         }
     }
 
@@ -1137,8 +1154,8 @@ impl CommandPalette {
         }
     }
 
-    /// One height for the whole list, not per row — mixed row heights read
-    /// as ragged even when each row is individually well-proportioned.
+    /// The list's nominal row: what capacity, the default cap and a wheel
+    /// notch count in. Each painted row is sized by `entry_row_height`.
     fn row_height(&self) -> f64 {
         let any_subtitle = self
             .visible
@@ -1540,7 +1557,7 @@ impl CommandPalette {
         for r in window {
             y0 += self.visual_row_height(r);
         }
-        let y1 = y0 + self.row_height();
+        let y1 = y0 + self.entry_row_height(i);
         Some(Rect::new(
             self.rect.x0 + PADDING,
             y0,
@@ -2044,7 +2061,6 @@ impl CommandPalette {
         // secondary ink; the count beside one is a tabular caption.
         let header_style = theme.text(TextRole::Subheading);
         let count_style = theme.text(TextRole::Caption).numeric();
-        let rh = self.row_height();
         let x0 = self.rect.x0 + PADDING;
         let x1 = self.rect.x1 - PADDING;
         let (start, end) = self.painted_window();
@@ -2080,6 +2096,7 @@ impl CommandPalette {
                     y += HEADER_HEIGHT * self.layout_scale();
                 }
                 VisualRow::Entry(entry_i) => {
+                    let rh = self.entry_row_height(*entry_i);
                     let row_rect = Rect::new(x0, y, x1, y + rh);
                     if let Some(entry) = self
                         .visible
@@ -3522,7 +3539,50 @@ mod tests {
             );
         }
 
+        fn each_row_is_as_tall_as_its_content() {
+            let mut p = CommandPalette::new();
+            p.set_bypass_fuzzy(true);
+            p.set_entries(vec![
+                CommandEntry::new("git", "Git")
+                    .description("Browses Git history")
+                    .group("Applications"),
+                CommandEntry::new("bazaar", "Bazaar").group("Host Apps"),
+                CommandEntry::new("chromium", "Ungoogled Chromium").group("Host Apps"),
+                CommandEntry::new("web", "Search the web")
+                    .description("Web")
+                    .group("Web"),
+            ]);
+            let (w, h) = p.desired_size();
+            p.set_rect(Rect::new(0.0, 0.0, w, h));
+            let heights: Vec<f64> = (0..4)
+                .map(|i| p.row_rect(i).expect("every row is painted").height())
+                .collect();
+            assert_eq!(
+                heights,
+                vec![
+                    TWO_LINE_ROW_HEIGHT,
+                    ROW_HEIGHT,
+                    ROW_HEIGHT,
+                    TWO_LINE_ROW_HEIGHT
+                ],
+                "a title alone is a single-line row, a title over a secondary line a two-line row"
+            );
+            let bazaar = p.row_rect(1).unwrap();
+            let chromium = p.row_rect(2).unwrap();
+            assert!(
+                (chromium.y0 - bazaar.y1).abs() < 0.01,
+                "rows of one group touch: {bazaar:?} {chromium:?}"
+            );
+            assert_eq!(p.row_at(chromium.center()), Some(2));
+            let last = p.row_rect(3).unwrap();
+            assert!(
+                (p.rect.y1 - PADDING - last.y1).abs() < 0.01,
+                "the card fits the mixed rows exactly"
+            );
+        }
+
         large_text_palette_reserves_painted_rows_and_scales_fonts_once();
+        each_row_is_as_tall_as_its_content();
         palette_card_is_a_panel();
         input_row_layout_gives_the_query_the_full_trailing_width();
         row_at_finds_visible_row_inside_the_post_layout_rect();

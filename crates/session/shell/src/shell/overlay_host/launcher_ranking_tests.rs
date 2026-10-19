@@ -57,6 +57,17 @@ struct RankingHarness {
 }
 
 fn ranking_fixture() -> RankingHarness {
+    let mut f = untouched_ranking_fixture();
+    assert!(pump(
+        &mut f.h,
+        &key_pressed(Key::Named(NamedKey::ArrowDown))
+    ));
+    assert_eq!(selected_label(&f.h), "Ranking fixture beta");
+    f
+}
+
+/// The palette after typing, with the selection where the search put it.
+fn untouched_ranking_fixture() -> RankingHarness {
     let mut h = build_harness_sized(1280.0, 800.0);
     let revision = Rc::new(Cell::new(0));
     let invoked = Rc::new(RefCell::new(Vec::new()));
@@ -72,8 +83,6 @@ fn ranking_fixture() -> RankingHarness {
         .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
     settle(&mut h, 1280.0, 800.0);
     assert_eq!(selected_label(&h), "Ranking fixture alpha");
-    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown))));
-    assert_eq!(selected_label(&h), "Ranking fixture beta");
     RankingHarness {
         h,
         revision,
@@ -114,6 +123,23 @@ fn provider_revision_keeps_keyboard_choice_and_invokes_the_fresh_callback() {
         "identity survives, but the callback must come from the current index"
     );
     assert!(!f.h.host.palette_visible());
+}
+
+#[test]
+fn a_slower_providers_better_result_takes_a_selection_nobody_moved() {
+    let mut f = untouched_ranking_fixture();
+    // A slower provider answers after typing with a better match.
+    f.revision.set(1);
+    f.h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut f.h, 1280.0, 800.0);
+    assert_eq!(
+        selected_label(&f.h),
+        "Ranking fixture gamma",
+        "Enter runs the best result, not the one that was best before it arrived"
+    );
+    assert!(pump(&mut f.h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert_eq!(&*f.invoked.borrow(), &["gamma:1"]);
 }
 
 #[test]
