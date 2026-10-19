@@ -701,20 +701,35 @@ impl InvocationJournal {
         let lock = advisory_lock::FileLock::try_exclusive(lock)
             .map_err(|_| "invocation journal already has a writer")?;
         let mut observed_store = None;
-        let loaded = if created {
-            Loaded::empty(uuid::Uuid::new_v4())
+        // The first snapshot is written (by rename) only after the directory
+        // and its lock exist, so a store whose first open was cut short holds
+        // no snapshot at all: it was never initialized, and initializing it
+        // now loses nothing. Every initialized store keeps one, replaced
+        // atomically, so any other failure to open it is refused.
+        let opened = if created {
+            None
         } else {
             // Opened for appends too: a clean store keeps exactly this file.
-            let mut file = OpenOptions::new()
+            match OpenOptions::new()
                 .read(true)
                 .append(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(root.join("records.json"))
-                .map_err(|_| "invocation journal snapshot missing or unreadable")?;
-            private_file(&file)?;
-            let loaded = Loaded::read(&mut file)?;
-            observed_store = Some(file);
-            loaded
+            {
+                Ok(file) => Some(file),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => return Err("invocation journal snapshot missing or unreadable".into()),
+            }
+        };
+        let created = opened.is_none();
+        let loaded = match opened {
+            None => Loaded::empty(uuid::Uuid::new_v4()),
+            Some(mut file) => {
+                private_file(&file)?;
+                let loaded = Loaded::read(&mut file)?;
+                observed_store = Some(file);
+                loaded
+            }
         };
         let mut journal = Self {
             root: root.to_owned(),
@@ -1206,6 +1221,40 @@ mod tests {
 
     const LEGACY_SNAPSHOT: &str = r#"{"version":1,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"legacy"}},"uncertain":false,"cancellation_requested":false}]}"#;
     const ENROLLED_SNAPSHOT: &str = r#"{"version":2,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
+
+    /// A first open cut short after the directory and its lock exist, but
+    /// before the first snapshot is written (the process was killed), left a
+    /// store that was never initialized. Opening it again initializes it;
+    /// refusing it left the desktop without collaboration on every start.
+    #[test]
+    fn a_store_whose_first_open_was_cut_short_is_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("journal");
+        drop(InvocationJournal::open(&root).unwrap());
+        std::fs::remove_file(root.join("records.json")).unwrap();
+        let mut journal = InvocationJournal::open(&root).expect("an uninitialized store opens");
+        assert!(journal.snapshot.records.is_empty());
+        let mut local = key();
+        local.host = journal.host();
+        local.owner = InvocationOwner::Local {
+            actor: "person".into(),
+        };
+        journal.admit(local, serde_json::json!({}), 1).unwrap();
+        drop(journal);
+        assert!(
+            root.join("records.json").exists(),
+            "the store keeps its snapshot"
+        );
+        assert_eq!(
+            InvocationJournal::open(&root)
+                .unwrap()
+                .snapshot
+                .records
+                .len(),
+            1,
+            "and reads it back"
+        );
+    }
 
     #[test]
     fn enrolled_journal_literal_versions_retain_owner_and_writer_floor() {
