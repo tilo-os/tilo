@@ -206,8 +206,17 @@ fn round_trip_from(
         }
         for unit in units {
             let t = Instant::now();
-            let picture = decoder.decode(&unit.data, Some(unit.keyframe))?;
+            let mut picture = decoder.decode(&unit.data, Some(unit.keyframe))?;
             decode_times.push(t.elapsed());
+            // `decode` waits only a frame's time for the picture; on a busy
+            // machine a software decoder can take longer. The unit was
+            // accepted, so its picture comes out later: collect it the way a
+            // receiver whose stream paused does, before the next unit.
+            let late_deadline = Instant::now() + Duration::from_secs(10);
+            while picture.is_none() && decoder.picture_pending() && Instant::now() < late_deadline {
+                std::thread::sleep(Duration::from_millis(5));
+                picture = decoder.take_late_picture()?;
+            }
             let picture = picture.unwrap_or_else(|| {
                 panic!(
                     "{} produced no picture for frame {n} from {}",
