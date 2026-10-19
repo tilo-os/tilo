@@ -331,6 +331,44 @@ fn the_team_widget_waits_clear_of_the_strip_switcher() {
     );
 }
 
+/// A lone strip's ribbon mark rests hidden: one mark of one said nothing and
+/// read as a stray sliver at the screen's edge. Two strips rest visible, so
+/// the switcher can be found; a reach for the mark shows it either way.
+#[test]
+fn a_lone_strips_ribbon_rests_hidden_and_shows_when_reached_for() {
+    let (mut host, chrome, _) = desk();
+    let t0 = Instant::now();
+    let resting = |host: &mut ShellOverlayHost| {
+        host.refresh_strip_switcher_model();
+        let _ = host.strip_indicator_alpha_at(t0, true);
+        host.strip_ribbon_alpha(ms(t0, 60_000), true)
+    };
+    let strips = |chrome: &Chrome| {
+        chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map_or(0, |workspace| workspace.strips.len())
+    };
+    assert!(strips(&chrome) > 1, "the demo desk has several strips");
+    assert!(
+        resting(&mut host) >= super::super::strip_switcher::RIBBON_REST_ALPHA,
+        "several strips: the ribbon rests visible"
+    );
+    if let Some(workspace) = chrome.borrow().tree_mut().desktop.active_workspace_mut() {
+        workspace.strips.truncate(1);
+    }
+    chrome.borrow_mut().bump();
+    assert_eq!(strips(&chrome), 1);
+    assert_eq!(resting(&mut host), 0.0, "a lone strip's mark rests hidden");
+    let zone = host.strip_switcher_zone();
+    assert!(zone.area() > 0.0, "the switcher is still offered by its mark");
+    host.strip_ribbon_hover = Some(0);
+    let reached = host.strip_indicator_alpha_at(ms(t0, 60_000), true);
+    assert!(reached > 0.0, "reaching for the mark shows it: {reached}");
+}
+
 #[test]
 fn passing_an_edge_is_not_a_glance_but_reaching_for_it_is() {
     let (mut host, _chrome, _) = desk();
