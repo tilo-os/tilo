@@ -284,6 +284,15 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "take_text_shape_stats",
             "drains the text renderer's shaping counters",
         ),
+        (
+            "send",
+            "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing",
+        ),
+        ("scroll", "a wheel through `send`, which judges it"),
+        (
+            "idle",
+            "invalidates when its control tick or save offer moved the document",
+        ),
         ("take_profile_samples", "drains the profiler"),
         ("clear_profile_samples", "drains the profiler"),
     ];

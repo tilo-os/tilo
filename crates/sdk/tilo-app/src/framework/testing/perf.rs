@@ -145,8 +145,9 @@ pub fn open<A: ResourceApp>(scenario: Option<&str>) -> Result<HeadlessApp<A>, La
     Ok(app)
 }
 
-/// Run `step` `steps` times, each followed by the frames the host runs
-/// after it, and measure each one with the scopes and frame passes it ran.
+/// Run `step` `steps` times, each followed by what the live window does
+/// once input stops ([`HeadlessApp::idle`]), and measure each one with the
+/// scopes and frame passes it ran.
 /// `warm` steps run first, unmeasured, so caches hold what a second visit
 /// finds.
 pub fn measure<A: ResourceApp>(
@@ -157,7 +158,7 @@ pub fn measure<A: ResourceApp>(
 ) -> Report {
     for index in 0..warm {
         step(app, index);
-        app.settle();
+        app.idle();
     }
     let mut report = Report {
         label: label.to_owned(),
@@ -170,7 +171,7 @@ pub fn measure<A: ResourceApp>(
         let start = ui_core::time::now();
         let ((), scopes) = tilo_resource::profiling::observe(|| {
             step(app, warm + index);
-            app.settle();
+            app.idle();
         });
         report
             .samples
@@ -242,6 +243,63 @@ pub fn scroll<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), steps: u
     })
 }
 
+/// The frames a touchpad fling at `at` glides on: two fingers move the
+/// content and lift while moving, then each measured step is one frame the
+/// host runs because the glide asks for it
+/// ([`ui_core::widget::Widget::needs_animation_frame`]), as the live
+/// window runs them at the display's rate. Flings until `frames` glide
+/// frames are measured or `flings` gestures stopped gliding.
+pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: usize) -> Report {
+    use ui_core::winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+    let wheel = |phase: TouchPhase, dy: f64| WindowEvent::MouseWheel {
+        device_id: ui_core::winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(ui_core::winit::dpi::PhysicalPosition::new(0.0, dy)),
+        phase,
+    };
+    app.harness()
+        .send(&ui_core::synthetic_input::cursor_moved(at.0, at.1));
+    app.settle();
+    let mut report = Report {
+        label: "glide frame".to_owned(),
+        samples: Vec::with_capacity(frames),
+        phases: BTreeMap::new(),
+        frames: Vec::new(),
+    };
+    app.harness().begin_profiling();
+    let mut down = true;
+    for _ in 0..8 {
+        let dy = if down { -30.0 } else { 30.0 };
+        down = !down;
+        app.harness().send(&wheel(TouchPhase::Started, 0.0));
+        for _ in 0..6 {
+            app.harness().send(&wheel(TouchPhase::Moved, dy));
+        }
+        app.harness().send(&wheel(TouchPhase::Ended, 0.0));
+        while report.samples.len() < frames {
+            let start = ui_core::time::now();
+            let (ran, scopes) = tilo_resource::profiling::observe(|| app.frame());
+            if !ran {
+                break;
+            }
+            report
+                .samples
+                .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
+            for scope in scopes {
+                let entry = report.phases.entry(scope.phase).or_default();
+                entry.0 = entry.0.saturating_add(scope.elapsed_ns);
+                entry.1 = entry.1.saturating_add(scope.calls);
+            }
+            // The glide advances on the toolkit's clock: a frame's worth.
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        if report.samples.len() >= frames {
+            break;
+        }
+    }
+    report.frames = app.harness().take_profile_samples();
+    report
+}
+
 /// Keystrokes into the field at `field`: one click focuses it, then each
 /// step types one character of `text`, cycling.
 ///
@@ -303,6 +361,8 @@ pub fn idle_clicks<A: ResourceApp>(
 pub struct Profile {
     /// Wheel notches over the largest list or table, else mid-window.
     pub scroll: Report,
+    /// The frames a touchpad fling glides on, at the same place.
+    pub glide: Report,
     /// Keystrokes into the first text field.
     pub keystroke: Option<Report>,
     /// Clicks through the sidebar rows or tabs.
@@ -329,6 +389,9 @@ pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, Launch
     let mut scroll = scroll(&mut app, scroll_at, 40);
     scroll.label = format!("{id} scroll step");
     scroll.print();
+    let mut glide = glide(&mut app, scroll_at, 60);
+    glide.label = format!("{id} glide frame");
+    glide.print();
 
     let mut app = fresh()?;
     let views = {
@@ -367,6 +430,7 @@ pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, Launch
     });
     Ok(Profile {
         scroll,
+        glide,
         keystroke,
         view_switch,
         item_click,
