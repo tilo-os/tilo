@@ -103,7 +103,11 @@ pub struct BridgePlan {
     /// Chat `set-channel-category`: a joined channel moves to its Discord
     /// channel's category.
     pub file_channels: Vec<Value>,
-    /// Chat `delete-category`: a category of Tilo's own the moves left empty.
+    /// Chat `delete-channel`: a channel of the room's the server had no
+    /// match for and nothing was written in.
+    pub drop_channels: Vec<Value>,
+    /// Chat `delete-category`: a category of Tilo's own the moves or dropped
+    /// channels left empty.
     pub drop_categories: Vec<Value>,
     /// `finish-import`, with the Tilo channels left Tilo's own.
     pub finish: Vec<Value>,
@@ -324,6 +328,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
         && plan.import_channels.is_empty()
         && plan.adopt.is_empty()
         && plan.file_channels.is_empty()
+        && plan.drop_channels.is_empty()
         && plan.drop_categories.is_empty()
         && plan.finish.is_empty());
     plan
@@ -394,6 +399,12 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
         }));
     plan.adopt.extend(values(import.adopt));
     plan.file_channels.extend(values(import.file));
+    plan.drop_channels.extend(
+        import
+            .drop_channels
+            .into_iter()
+            .map(|channel| json!({ "channel": channel })),
+    );
     plan.drop_categories.extend(
         import
             .drop_categories

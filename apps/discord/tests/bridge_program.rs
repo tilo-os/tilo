@@ -509,6 +509,15 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
+            "drop_channels",
+            vec![chat(
+                "drop-channel",
+                "delete-channel",
+                &[("channel", item("channel"))],
+                false,
+            )],
+        ),
+        each(
             "drop_categories",
             vec![chat(
                 "drop-category",

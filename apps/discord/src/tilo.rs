@@ -73,6 +73,8 @@ pub struct Person {
 pub struct RoomChat {
     pub categories: Vec<Category>,
     pub channels: Vec<Channel>,
+    /// The channels holding any message.
+    pub busy: Vec<String>,
 }
 
 fn entries(value: &Value, field: &str) -> Vec<(String, Value)> {
@@ -142,9 +144,20 @@ impl RoomChat {
                 archived: flag(&v, "archived"),
             })
             .collect();
+        let busy = chat
+            .get("busy")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             categories,
             channels,
+            busy,
         }
     }
 

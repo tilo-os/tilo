@@ -207,8 +207,12 @@ it did not make, and never changes a permission it does not own.
   (`set-channel-category`), and a category of Tilo's own those moves leave
   empty is deleted, so the room is laid out as the server is. What
   has no match is created in Tilo. When every Discord channel
-  is mapped, the Tilo categories and channels that matched nothing are
-  listed in `tilo_only` and `ownership` becomes `Adopted`. The first time
+  is mapped, the Tilo channels that matched nothing and hold no message
+  (the `#chat` every room opens with) are deleted, with any category of
+  Tilo's own they leave empty, so the room has exactly the server's
+  channels; the Tilo categories and channels that matched nothing and
+  remain are listed in `tilo_only`, and `ownership` becomes `Adopted`.
+  Chat's `read-room` names the channels holding a message (`busy`). The first time
   the worker meets the server it reads the newest 50 messages of each text
   channel and reports them after the layout, as if just posted, so the
   adopted room starts with that history; each is posted at the time it was

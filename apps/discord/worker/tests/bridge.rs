@@ -448,6 +448,19 @@ impl Bridge {
             }
         })
         .await;
+        if setup.existing {
+            // Someone wrote in #help before the bridge came.
+            let help = room
+                .chat()
+                .await
+                .channels
+                .iter()
+                .find(|(_, c)| c.name == "help")
+                .map(|(id, _)| id.as_str().to_owned())
+                .expect("the room's #help");
+            room.part_as(&ada, chat::demo::post(&help, "where do I start?", None))
+                .await;
+        }
 
         // The guild record, connected to the fake server and the room's Chat.
         room.rooms
@@ -948,31 +961,22 @@ async fn an_existing_server_is_adopted_as_it_is() {
     assert_eq!(strip(after.0), strip(before.0), "the layout is as it was");
     assert_eq!(after.1, before.1, "the roles are as they were");
 
-    // Chat has Discord's layout joined with its own, nothing doubled; its
-    // own #help and #show-and-tell stay in Tilo.
+    // Chat has Discord's layout joined with its own, nothing doubled. Its
+    // own #help, written in, stays in Tilo; #show-and-tell and the room's
+    // own "Voice" with its Lounge voice channel, none of which the server
+    // has and nobody wrote in, go.
     let chat = bridge.room.chat().await;
     let mut names: Vec<&str> = chat.channels.values().map(|c| c.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(
         names,
-        [
-            "Lounge",
-            "general",
-            "goal",
-            "help",
-            "progress",
-            "roadmap",
-            "show-and-tell",
-            "voice"
-        ]
+        ["general", "goal", "help", "progress", "roadmap", "voice"]
     );
     let mut categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     categories.sort_unstable();
-    assert_eq!(categories, ["Channels", "Voice", "chat"]);
-    // #help, #show-and-tell, and the room's own "Voice" with its
-    // Lounge voice channel, none of which the server has.
+    assert_eq!(categories, ["Channels", "chat"]);
     let guild = bridge.room.guild().await;
-    assert_eq!(guild.tilo_only.len(), 4, "{:?}", guild.tilo_only);
+    assert_eq!(guild.tilo_only.len(), 1, "{:?}", guild.tilo_only);
 
     // And messages cross.
     bridge.ada_says("hello there").await;
