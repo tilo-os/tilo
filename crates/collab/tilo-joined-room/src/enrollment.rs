@@ -344,7 +344,7 @@ impl NativeWorkspaceOwner {
                 .insert(entry.clone())
                 .map_err(|e| e.to_string())?;
         }
-        let mut peer = StatePeer::new(
+        let mut peer = StatePeer::joined(
             &bootstrap.room,
             bootstrap.authority.clone(),
             bootstrap.certified_roster.clone(),

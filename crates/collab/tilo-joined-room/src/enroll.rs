@@ -134,7 +134,8 @@ pub async fn prepare_and_complete(
         {
             JoinTransportResponse::Inspection(value)
                 if value.invite_id == join.invite_id() && value.grant == *join.grant() => {}
-            _ => return Err("pinned host inspection changed invitation scope or refused".into()),
+            JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
+            _ => return Err("pinned host inspection changed invitation scope".into()),
         }
         current(&identity, identity_topic, &device)?;
         let mut request_id = [0; 32];
@@ -155,7 +156,8 @@ pub async fn prepare_and_complete(
             .map_err(|e| e.to_string())?
         {
             JoinTransportResponse::Challenge(value) => value.challenge,
-            _ => return Err("pinned native host refused enrollment challenge".into()),
+            JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
+            _ => return Err("pinned native host answered no enrollment challenge".into()),
         };
         current(&identity, identity_topic, &device)?;
         let prepared = SystemTime::now();
@@ -204,6 +206,20 @@ pub async fn prepare_and_complete(
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
         // Generic transport/protocol errors are not proof that remote admission did not happen.
+        JoinTransportResponse::Error { message, .. } => Err(format!(
+            "{}; exact signed proof retained",
+            refused(&message)
+        )),
         _ => Err("native Complete was not acknowledged; exact signed proof retained".into()),
     }
+}
+
+/// The host's refusal, in its own words: what the person is shown.
+fn refused(message: &str) -> String {
+    let message: String = message
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(240)
+        .collect();
+    format!("the workspace's host refused: {message}")
 }

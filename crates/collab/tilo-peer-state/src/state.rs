@@ -441,10 +441,57 @@ impl StatePeer {
         revocations: RevocationList,
         now: SystemTime,
     ) -> Result<Self, String> {
+        let now = now_ns(now);
+        let roster = roster
+            .into_iter()
+            .map(|certificate| VerifiedCertificate::new(certificate, now))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::with_roster(room, authority, roster, revocations, now)
+    }
+
+    /// A replica of a room another device governs, from what its join
+    /// answered: the governing `authority`, which must be valid at `now`, and
+    /// the room's `roster` as its governance admitted it. A roster
+    /// certificate is the room's evidence, checked by its signature alone:
+    /// a guest certified for an hour stays in the roster after its hour, as
+    /// on the host, and its expiry is checked whenever it is used. Building
+    /// the replica at `now` refused the whole room over one expired guest,
+    /// so no device could join a room anyone had watched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `room` is not a UUID, `authority` fails
+    /// verification at `now`, a roster certificate's signature fails, or a
+    /// certificate is revoked.
+    pub fn joined(
+        room: &str,
+        authority: DeviceCert,
+        roster: Vec<DeviceCert>,
+        revocations: RevocationList,
+        now: SystemTime,
+    ) -> Result<Self, String> {
+        let roster = roster
+            .into_iter()
+            .map(|certificate| VerifiedCertificate::historical_typed(certificate).map_err(err))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::with_roster(room, authority, roster, revocations, now_ns(now))
+    }
+
+    fn with_roster(
+        room: &str,
+        authority: DeviceCert,
+        roster: Vec<VerifiedCertificate>,
+        revocations: RevocationList,
+        now: u64,
+    ) -> Result<Self, String> {
         let room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
         let mut certificates = BTreeMap::new();
-        for certificate in roster.into_iter().chain([authority.clone()]) {
-            let certificate = VerifiedCertificate::new(certificate, now_ns(now))?;
+        for certificate in roster
+            .into_iter()
+            .map(Ok)
+            .chain([VerifiedCertificate::new(authority.clone(), now)])
+        {
+            let certificate = certificate?;
             if revocations.is_revoked(&certificate.device_public_key) {
                 return Err("device revoked".into());
             }
@@ -3726,6 +3773,9 @@ mod administrators_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
+#[cfg(test)]
+#[path = "state/joined_tests.rs"]
+mod joined_tests;
 #[cfg(test)]
 #[path = "state/sealed_compaction_tests.rs"]
 mod sealed_compaction_tests;
