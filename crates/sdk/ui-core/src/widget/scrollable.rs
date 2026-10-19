@@ -1404,9 +1404,15 @@ impl Widget for Scrollable {
         }
     }
 
+    /// A glide in progress advances here, once per frame, and moves only
+    /// this view: like a wheel that only pans
+    /// ([`crate::widget::note_view_only_pan`]) it is no change of the model,
+    /// so it does not report one. The frame it asks for
+    /// ([`Widget::needs_animation_frame`]) lays the content out where the
+    /// glide took it; reporting it synced the app and republished its
+    /// resources on every frame of every fling.
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        let ticking = self.momentum_speed() > 0.0;
-        if ticking {
+        if self.momentum_speed() > 0.0 {
             self.advance_momentum(crate::time::now());
         }
         // Click-and-hold auto-repeat: the host wakes on the repeat's
@@ -1416,9 +1422,8 @@ impl Widget for Scrollable {
             self.advance_hold(crate::time::now());
             (self.offset_x, self.offset_y) != before
         };
-        let ticking = ticking || held;
         let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
-        ticking || child
+        held || child
     }
 
     fn build_layout(

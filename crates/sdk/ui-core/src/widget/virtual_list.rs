@@ -1528,11 +1528,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.notify_model_changes(&model_changes);
         }
         let mut changed = legacy_wakeup || received_changes;
+        // A glide moves only the viewport, which the frame it asks for lays
+        // out; rows it brings near mount through that layout's rebuild. It
+        // is no change of the model, so it does not report one (as
+        // `Scrollable::update`).
         if self.momentum.is_active() {
             let delta = self.momentum.advance(now);
-            let moved = self.scroll_by(delta);
-            changed |= moved;
-            if !moved {
+            if !self.scroll_by(delta) {
                 self.momentum.stop();
             }
         }
@@ -1921,6 +1923,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     WheelStep::Fling => true,
                     WheelStep::Ignored => false,
                 };
+                // It moved only this list's view: nothing the app publishes.
+                if *ctx.handled {
+                    crate::widget::note_view_only_pan();
+                }
             }
             // A key a focused row left alone moves through the list, and
             // the list takes the focus from the row.
