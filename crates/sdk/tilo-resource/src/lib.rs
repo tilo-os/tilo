@@ -134,6 +134,7 @@ pub mod resource;
 pub mod schema;
 pub mod shape;
 pub mod share;
+pub mod sort;
 pub mod storage;
 pub mod surface;
 pub mod table;

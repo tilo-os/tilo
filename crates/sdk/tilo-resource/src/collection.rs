@@ -527,7 +527,7 @@ impl<T> Collection<T> {
     }
 
     pub fn sort_by(&mut self, mut compare: impl FnMut(&T, &T) -> std::cmp::Ordering) {
-        self.items.sort_by(|a, b| compare(&*a.item, &*b.item));
+        crate::sort::sort_by(&mut self.items, |a, b| compare(&*a.item, &*b.item));
         for entry in &mut self.items {
             entry.key = None;
         }
