@@ -3953,6 +3953,11 @@
         "name": "scope_label",
         "ty": "text",
         "description": "Name of that part, shown on the scope pill"
+      },
+      {
+        "name": "offer",
+        "ty": "text",
+        "description": "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}"
       }
     ]
   },
