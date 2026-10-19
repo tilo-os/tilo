@@ -2372,13 +2372,19 @@ impl RootSearch for ResourceRoot {
     }
 
     /// Every entry a hit can open, as the session's persistent index keeps
-    /// it: short metadata only, never a prose body.
+    /// it: short metadata only, never a prose body. A surface that keeps its
+    /// entries out of the index ([`ResourceSurface::kept_in_search_index`])
+    /// contributes none.
+    ///
+    /// [`ResourceSurface::kept_in_search_index`]: super::surface::ResourceSurface::kept_in_search_index
     fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
-        let (state, _) = self.search_state();
-        self.entries_of(&state)
-            .iter()
-            .filter_map(index_entry)
-            .collect()
+        let mut entries = self.typed.search(&*self.typed.state());
+        self.surfaces(&mut |surface| {
+            if surface.kept_in_search_index() {
+                entries.extend(surface.search_entries());
+            }
+        });
+        entries.iter().filter_map(index_entry).collect()
     }
 
     /// A picked hit opens the app at its anchor: the views registered with

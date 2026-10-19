@@ -1175,6 +1175,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// What the system's persistent search index keeps of this window now:
+    /// the entries the app publishes to it, found after it closes too.
+    pub fn search_index_entries(&mut self) -> Vec<ui_core::search::index_publication::IndexEntry> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                super::root::RootSearch::search_index_entries(root)
+            })
+            .unwrap_or_default()
+    }
+
     /// The last action refused here ([`super::Dispatcher::refused`]): by
     /// the door, or by the room after this window applied it.
     pub fn refused(&mut self) -> Option<super::Refused> {

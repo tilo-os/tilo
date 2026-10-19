@@ -336,6 +336,18 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     fn secrets_unlocked(&self) -> Option<bool> {
         None
     }
+
+    /// Whether the system's search index keeps this surface's
+    /// [`search_entries`](Self::search_entries) after the app closes, so
+    /// they are found whether or not it runs. A surface whose entries are
+    /// the machine's state of the moment (the processes running) or a
+    /// catalogue the system searches by itself (the Store's apps, which
+    /// desktop search reads from the shared catalogue) says `false`: its
+    /// entries are found only while the app runs, and a closed app leaves
+    /// none behind to open into something that is gone.
+    fn kept_in_search_index(&self) -> bool {
+        true
+    }
 }
 
 /// Run `forward`, a pass of a surface over the document, keeping every change
@@ -391,6 +403,7 @@ pub(crate) trait SurfacePublication {
     fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool;
     fn search_entries(&self) -> Vec<SearchEntry>;
     fn secrets_unlocked(&self) -> Option<bool>;
+    fn kept_in_search_index(&self) -> bool;
     fn supports_device_shell(&self) -> bool;
     fn device_shell_operation(
         &mut self,
@@ -1088,6 +1101,9 @@ impl SurfacePublication for HostedSurface {
     fn secrets_unlocked(&self) -> Option<bool> {
         self.host.secrets_unlocked()
     }
+    fn kept_in_search_index(&self) -> bool {
+        self.host.kept_in_search_index()
+    }
     fn supports_device_shell(&self) -> bool {
         self.host.supports_device_shell()
     }
@@ -1178,6 +1194,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn secrets_unlocked(&self) -> Option<bool> {
         self.surface.secrets_unlocked()
+    }
+
+    fn kept_in_search_index(&self) -> bool {
+        self.surface.kept_in_search_index()
     }
 
     fn search_queries(&self) -> SearchQueries {
