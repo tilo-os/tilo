@@ -118,3 +118,6 @@ mod perf_budget;
 
 #[path = "a11y_bus.rs"]
 mod a11y_bus;
+
+#[path = "perf_interaction.rs"]
+mod perf_interaction;

@@ -13,3 +13,6 @@ mod parity;
 mod scroll;
 #[path = "shots_smoke.rs"]
 mod shots_smoke;
+
+#[path = "perf_interaction.rs"]
+mod perf_interaction;
