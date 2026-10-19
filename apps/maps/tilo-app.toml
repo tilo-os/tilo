@@ -65,6 +65,8 @@ hosts = [
 file-chooser = "via-host"
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 collab = "optional@2"
 tilo-fs = "optional@2"
 shell-ui = "optional@10"

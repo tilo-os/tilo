@@ -249,6 +249,58 @@ pub fn create_primary_identity(
     create_named_primary_identity(identity_dir, display_name.trim(), avatar_color, storage)
 }
 
+/// Create another identity of the person's, named `display_name` and
+/// coloured `avatar_color`, beside the ones this login holds: the first one
+/// becomes the primary record, every later one a record of its own, named
+/// by its fingerprint as an imported backup is. Answers the new record's
+/// path and its public key's hex, which is the registry's id for it.
+///
+/// # Errors
+///
+/// Refuses an empty, oversized or control-containing name, and every
+/// minting, import and custody failure.
+pub fn create_identity(
+    identity_dir: &Path,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    storage: IdentityStorage,
+) -> io::Result<(PathBuf, String)> {
+    let display_name = display_name.trim();
+    if display_name.is_empty()
+        || display_name.len() > 1024
+        || display_name.chars().any(char::is_control)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "An identity needs a bounded display name without control characters.",
+        ));
+    }
+    let mut rng = UnwrapErr(SysRng);
+    let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
+    let mut record = IdentityRecord::from_threshold_identity(
+        &identity,
+        display_name,
+        avatar_color,
+        std::time::SystemTime::now(),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let encoded = record.to_json_bytes();
+    record.threshold_identity.secret_bytes.zeroize();
+    let bytes = Zeroizing::new(
+        encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
+    );
+    // Runtime ids are capped at 64 characters and must start with a letter.
+    let id = if identity_dir.join(PRIMARY_IDENTITY_FILE).exists() {
+        format!("identity-{}", pubkey_hex.get(..55).unwrap_or(&pubkey_hex))
+    } else {
+        "primary".to_owned()
+    };
+    let path = import_identity_as(identity_dir, &id, &bytes, storage)?;
+    Ok((path, pubkey_hex))
+}
+
 fn create_named_primary_identity(
     identity_dir: &Path,
     display_name: &str,
@@ -1465,19 +1517,21 @@ fn import_primary_identity(
     bytes: &[u8],
     storage: IdentityStorage,
 ) -> io::Result<PathBuf> {
+    import_identity_as(identity_dir, "primary", bytes, storage)
+}
+
+fn import_identity_as(
+    identity_dir: &Path,
+    id: &str,
+    bytes: &[u8],
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
     match storage {
         IdentityStorage::Files => {
             let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
-            runtime_identity::import_identity_with_provider(
-                identity_dir,
-                "primary",
-                bytes,
-                &provider,
-            )
+            runtime_identity::import_identity_with_provider(identity_dir, id, bytes, &provider)
         }
-        IdentityStorage::Platform => {
-            runtime_identity::import_identity(identity_dir, "primary", bytes)
-        }
+        IdentityStorage::Platform => runtime_identity::import_identity(identity_dir, id, bytes),
     }
 }
 
@@ -1515,6 +1569,30 @@ mod tests {
     use super::*;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
+
+    #[test]
+    fn a_created_identity_is_named_coloured_and_kept_beside_the_others() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("identity");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(create_identity(&dir, "  ", [1, 2, 3], FILES).is_err());
+
+        let (first, first_key) = create_identity(&dir, "Ada", [10, 20, 30], FILES).unwrap();
+        assert_eq!(
+            first.file_name().and_then(|name| name.to_str()),
+            Some(PRIMARY_IDENTITY_FILE),
+            "the first one is the primary record"
+        );
+        let (second, second_key) = create_identity(&dir, " Grace ", [40, 50, 60], FILES).unwrap();
+        assert_ne!(first, second, "a second identity is a record of its own");
+        assert_ne!(first_key, second_key);
+        let metadata = runtime_identity::load_metadata_from_path(&second).unwrap();
+        assert_eq!(metadata.display_name, "Grace");
+        assert_eq!(metadata.avatar_color, [40, 50, 60]);
+        assert_eq!(hex::encode(metadata.group_public_key), second_key);
+    }
 
     #[test]
     fn installer_device_label_is_signed_once_and_existing_custody_is_unchanged() {

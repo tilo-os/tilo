@@ -37,8 +37,12 @@ use crate::{FilePicker, answered};
 pub const SERVICE: &str = "chooser";
 /// Where the launcher tells the app its connection's descriptor number.
 pub const FD_ENV: &str = "TILO_SVC_CHOOSER_FD";
-/// Version of the launcher's first frame and of [`Request`]/[`Reply`].
-pub const PROTOCOL: u16 = 1;
+/// The app ↔ shell chooser interface's one version: the launcher's first
+/// frame and every [`Request`] and [`Reply`]. An app names it in its
+/// manifest (`chooser = "optional@N"`) and runs only where the image serves
+/// exactly this version (`interface.toml` beside this crate holds the
+/// schema; docs/architecture/compatibility.md).
+pub const PROTOCOL: u16 = 2;
 /// Longest frame either side accepts.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 

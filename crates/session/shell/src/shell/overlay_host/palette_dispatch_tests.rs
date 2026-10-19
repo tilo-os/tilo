@@ -2441,11 +2441,16 @@ fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static 
 // -----------------------------------------------------------------
 
 // USER REQUIREMENT (2026-10-19): "The button invokes the shell's identity
-// chooser action".
+// chooser action" and "The identity chooser must never ask for a typed
+// fingerprint."
 #[test]
-fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity() {
+#[serial_test::serial]
+fn choosing_an_identity_opens_the_picker_never_a_fingerprint_field() {
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
 
+    let config = tempfile::tempdir().unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
     let (mut host, chrome) = host_with_chrome();
     {
         let state = chrome.borrow();
@@ -2456,27 +2461,42 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
             .expect("active workspace");
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
     }
+    // An app's "Choose identity": the picker, on the form, since this
+    // device holds no identity yet.
     assert!(host.open_identity_chooser());
-    assert!(host.palette_visible, "the palette is on screen");
-    assert_eq!(
-        chrome.borrow().search_scope,
-        crate::shell::chrome_state::SearchScope::All
-    );
-    let query = host.palette.query().to_string();
-    assert_eq!(query, t("search-action-identity-select"));
-    let document = AutoCommit::new();
-    let state = chrome.borrow();
-    let found = crate::shell::search::providers::ActionsProvider::new().query(SearchContext {
-        query_scope: None,
-        include_programmatic: false,
-        needle: &query,
-        wanted: &[ResourceKind::Action],
-        chrome: &state,
-        doc: &document,
-        doc_root: &automerge::ROOT,
-    });
+    assert!(host.identity_picker.is_open());
+    assert!(host.identity_picker.is_creating());
+    host.identity_picker.close();
+
+    // The palette's "Use identity in this workspace" opens the same picker.
+    let mut document = AutoCommit::new();
+    let action = {
+        let state = chrome.borrow();
+        crate::shell::search::providers::ActionsProvider::new()
+            .query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "use identity",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &document,
+                doc_root: &automerge::ROOT,
+            })
+            .into_iter()
+            .find(|result| result.id == "identity.select")
+            .expect("identity action")
+    };
     assert!(
-        found.iter().any(|result| result.id == "identity.select"),
-        "what it opens on is the identity chooser action"
+        action.params[0].choices.is_empty(),
+        "its id takes only identities this device holds: none yet"
     );
+    host.palette_visible = true;
+    host.begin_param_flow(
+        action,
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+    );
+    assert!(host.param_flow.is_none(), "no step asks for an id");
+    assert!(host.identity_picker.is_open());
+    assert!(!host.palette_visible, "the picker replaces the palette");
 }

@@ -3149,3 +3149,24 @@ people-join-call-failed = Dem Anruf konnte nicht beigetreten werden
 people-join-call-not-taken = Tritt ihm in Chat bei
 presence-wave-notice = { $person } winkt
 presence-someone = Jemand
+identity-picker-title-fallback = Dieser Arbeitsbereich
+identity-picker-dialog = Wähle, wer du in { $workspace } bist
+identity-picker-used-in-one = Verwendet in { $first }
+identity-picker-used-in-more = { $count ->
+    [one] Verwendet in { $first } und 1 weiteren Arbeitsbereich
+   *[other] Verwendet in { $first } und { $count } weiteren Arbeitsbereichen
+}
+identity-picker-used-here = Verwendet in diesem Arbeitsbereich
+identity-picker-used-nowhere = Noch in keinem anderen Arbeitsbereich verwendet
+identity-picker-choose-named = { $name } hier verwenden
+identity-picker-details = Details
+identity-picker-fingerprint = Fingerabdruck { $fingerprint }
+identity-picker-create = Identität erstellen
+identity-picker-empty-hint = Erstelle die Identität, als die du hier arbeitest.
+identity-picker-name = Name
+identity-picker-name-placeholder = Dein Name
+identity-picker-colour = Farbe
+identity-picker-create-confirm = Erstellen und verwenden
+identity-picker-back = Zurück
+identity-picker-name-needed = Gib der Identität einen Namen.
+identity-picker-failed = { $error }

@@ -1,0 +1,94 @@
+# Written by `python3 tools/policy/check_interfaces.py write` from the code;
+# review a change here like an API change (docs/architecture/compatibility.md).
+# Everything above [schema] is authored; [schema] and `version` are written.
+
+# App ↔ shell: what an app and the session shell say on the chooser
+# connection the launcher hands every app launched into a workspace (the
+# shell's own file chooser, opening files and links, and the identity
+# chooser), after the launcher's handshake naming the app and its room.
+name = "chooser"
+version = 2
+version_const = "crates/platform/tilo-dialogs/src/shell.rs:PROTOCOL"
+encoding = "json"
+served_to_apps = true
+sources = [
+    "crates/platform/tilo-dialogs/src/shell.rs",
+]
+roots = ["Request", "Reply"]
+
+[opaque]
+
+[schema]
+"FilePortalGrant" = "struct"
+"FilePortalGrant.name" = "String"
+"FilePortalGrant.request" = "u64"
+"FilePortalGrant.size" = "u64"
+"FilePortalGrant.token" = "String"
+"Filter" = "struct"
+"Filter.globs" = "Vec<String> optional"
+"Filter.mimetypes" = "Vec<String> optional"
+"Filter.name" = "String"
+"PickMode" = "enum external"
+"PickMode::directory" = "unit"
+"PickMode::open" = "unit"
+"PickMode::save" = "unit"
+"PickMode::writable_directory" = "unit"
+"Reply" = "enum internal tag=type"
+"Reply::cancelled" = "struct"
+"Reply::cancelled.id" = "u64"
+"Reply::contents_chunk" = "struct"
+"Reply::contents_chunk.bytes" = "Vec<u8>"
+"Reply::contents_chunk.eof" = "bool"
+"Reply::contents_chunk.id" = "u64"
+"Reply::contents_granted" = "struct"
+"Reply::contents_granted.grants" = "Vec<FilePortalGrant>"
+"Reply::contents_granted.id" = "u64"
+"Reply::contents_released" = "struct"
+"Reply::contents_released.id" = "u64"
+"Reply::failed" = "struct"
+"Reply::failed.id" = "u64"
+"Reply::failed.reason" = "String"
+"Reply::identity_selected" = "struct"
+"Reply::identity_selected.id" = "u64"
+"Reply::nobody" = "struct"
+"Reply::nobody.id" = "u64"
+"Reply::opened" = "struct"
+"Reply::opened.id" = "u64"
+"Reply::picked" = "struct"
+"Reply::picked.id" = "u64"
+"Reply::picked.paths" = "Vec<PathBuf>"
+"Reply::unclaimed" = "struct"
+"Reply::unclaimed.id" = "u64"
+"Request" = "enum internal tag=type"
+"Request::await_identity" = "struct"
+"Request::await_identity.id" = "u64"
+"Request::choose_identity" = "struct"
+"Request::choose_identity.id" = "u64"
+"Request::open" = "struct"
+"Request::open.id" = "u64"
+"Request::open.path" = "PathBuf"
+"Request::open_uri" = "struct"
+"Request::open_uri.id" = "u64"
+"Request::open_uri.uri" = "String"
+"Request::pick" = "struct"
+"Request::pick.accept_label" = "String optional"
+"Request::pick.filters" = "Vec<Filter> optional"
+"Request::pick.id" = "u64"
+"Request::pick.mode" = "PickMode"
+"Request::pick.multiple" = "bool optional"
+"Request::pick.suggested_name" = "Option<String> optional"
+"Request::pick.title" = "String"
+"Request::pick_contents" = "struct"
+"Request::pick_contents.accept_label" = "String"
+"Request::pick_contents.filters" = "Vec<Filter>"
+"Request::pick_contents.id" = "u64"
+"Request::pick_contents.multiple" = "bool"
+"Request::pick_contents.title" = "String"
+"Request::read_contents" = "struct"
+"Request::read_contents.grant" = "FilePortalGrant"
+"Request::read_contents.id" = "u64"
+"Request::read_contents.max_bytes" = "u32"
+"Request::read_contents.offset" = "u64"
+"Request::release_contents" = "struct"
+"Request::release_contents.grant" = "FilePortalGrant"
+"Request::release_contents.id" = "u64"

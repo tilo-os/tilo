@@ -943,6 +943,8 @@ pub struct ShellOverlayHost {
     peer_sync_overlay: PeerSyncOverlay,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
     directory_sheet: crate::shell::directory_sheet::DirectorySheet,
+    /// "Choose who you are here": the identity picker, as a floating panel.
+    identity_picker: crate::shell::identity_picker::IdentityPicker,
     /// The workspace a join just installed, and who is in it, for a moment
     /// under the top bar.
     arrival_line: crate::shell::arrival_line::ArrivalLine,
@@ -2770,6 +2772,7 @@ impl ShellOverlayHost {
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
+            identity_picker: crate::shell::identity_picker::IdentityPicker::default(),
             arrival_line: crate::shell::arrival_line::ArrivalLine::default(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
@@ -9563,23 +9566,70 @@ impl ShellOverlayHost {
     }
 
     /// Open the identity chooser, as an app whose workspace has no identity
-    /// selected asks (the chooser service's `ChooseIdentity`): the palette
-    /// over everything, on choosing the identity this workspace uses
-    /// (`identity.select`). The person picks the identity and confirms it
-    /// there; nothing is chosen for them. Whether the palette shows it.
+    /// selected asks (the chooser service's `ChooseIdentity`) and as the
+    /// palette's "Use identity in this workspace" does: the identity picker
+    /// over the active workspace, listing the person's identities, or on
+    /// the form that creates one when there are none. Whether it opened.
     pub(crate) fn open_identity_chooser(&mut self) -> bool {
-        use crate::shell::chrome_state::SearchScope;
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
-            self.open_palette_with_scope(SearchScope::All);
+        let (workspace, identities) = identity_picker_entries(&chrome.borrow());
+        if self.palette_visible {
+            self.palette_visible = false;
+            self.palette.close();
         }
-        self.palette.set_query(&t("search-action-identity-select"));
-        self.last_search_query = "\0identity-chooser\0".into();
-        self.palette_visible = true;
-        self.palette_layout_dirty = true;
+        self.identity_picker.open(&workspace, identities);
         true
+    }
+
+    /// Carry out what the identity picker asked: choosing runs the step
+    /// `identity.select` runs; creating mints the identity and chooses it.
+    fn run_identity_picker_request(
+        &mut self,
+        request: crate::shell::identity_picker::PickerRequest,
+    ) {
+        use crate::shell::identity_picker::PickerRequest;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let outcome = {
+            let mut state = chrome.borrow_mut();
+            match request {
+                PickerRequest::Choose(id) => {
+                    crate::shell::search::providers::actions::select_identity(&mut state, &id)
+                }
+                PickerRequest::Create { name, colour } => {
+                    crate::shell::search::providers::actions::create_and_select_identity(
+                        &mut state, &name, colour,
+                    )
+                    .map(drop)
+                }
+            }
+        };
+        match outcome {
+            Ok(()) => self.identity_picker.close(),
+            Err(error) => {
+                tracing::info!(%error, "the identity picker's request was refused");
+                self.identity_picker.failed(&error.to_string());
+            }
+        }
+    }
+
+    /// Route one event to the identity picker while it is open; whether it
+    /// took it. Every key belongs to it, as to any form.
+    fn handle_identity_picker_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let outcome = self
+            .identity_picker
+            .handle_event(event, modifiers, self.last_cursor);
+        if let Some(request) = outcome.request {
+            self.run_identity_picker_request(request);
+        }
+        outcome.consumed
     }
 
     /// Open the palette in `scope`, or close it if the same scope fires
@@ -11027,6 +11077,14 @@ impl ShellOverlayHost {
         doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) {
+        // Choosing an identity is the identity picker, never a field that
+        // asks for a fingerprint.
+        if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+            && result.id == crate::shell::search::providers::actions::IDENTITY_SELECT_ID
+        {
+            self.open_identity_chooser();
+            return;
+        }
         let query = self.palette.query().to_string();
         let mut values = serde_json::Map::new();
         let mut prefill = None;
@@ -14589,6 +14647,13 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return true;
         }
+        // And the identity picker, whose form takes a name.
+        if self.identity_picker.is_open()
+            && self.handle_identity_picker_event(event, *ctx.modifiers)
+        {
+            *ctx.handled = true;
+            return true;
+        }
 
         if self.route_layer_band(Band::Modal, event, ctx) {
             return true;
@@ -17162,7 +17227,7 @@ impl ShellOverlayHost {
     /// `false` when no such field is open.
     fn commit_into_chrome_field(&mut self, text: &str) -> bool {
         use tilo_desktop::text_entry::{Edit, commit};
-        if self.directory_sheet.commit_text(text) {
+        if self.directory_sheet.commit_text(text) || self.identity_picker.commit_text(text) {
             return true;
         }
         if !self.palette_visible
@@ -23068,6 +23133,7 @@ impl Widget for ShellOverlayHost {
             targets.extend(self.desk_test_rects());
             targets.extend(self.strip_switcher_test_rects());
             targets.extend(self.directory_sheet.test_rects());
+            targets.extend(self.identity_picker.test_rects());
         }
         targets
     }
@@ -23512,6 +23578,7 @@ impl ShellOverlayHost {
             || self.window_previews.changed()
             || self.peer_sync_overlay.needs_animation_frame()
             || self.directory_sheet.needs_animation_frame()
+            || self.identity_picker.needs_animation_frame()
             || self.arrival_line.needs_animation_frame()
     }
 }
@@ -25284,6 +25351,7 @@ impl ShellOverlayHost {
             || self.file_picker_overlay.widget().is_some()
             || self.peer_sync_overlay.visible()
             || self.directory_sheet.visible()
+            || self.identity_picker.visible()
             || self.portal_dialogs.view().is_some()
     }
 
@@ -26060,6 +26128,11 @@ impl ShellOverlayHost {
         // that opened it.
         overlay_part(scene, "shell.directory", desktop, |scene| {
             self.draw_directory_sheet(scene, transform, text_renderer, theme);
+            None
+        });
+        overlay_part(scene, "shell.identity-picker", desktop, |scene| {
+            self.identity_picker
+                .draw(self.rect, scene, transform, text_renderer, theme);
             None
         });
 
@@ -29603,4 +29676,57 @@ impl QsPanelMetrics {
             margin: ui::widget::floating_surface::viewport_margin(theme),
         }
     }
+}
+
+/// The workspace in front and the person's identities, as the identity
+/// picker lists them: each with its colour, where else it is used (by the
+/// names of this desktop's workspaces) and whether this one uses it.
+fn identity_picker_entries(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> (String, Vec<crate::shell::identity_picker::PickerIdentity>) {
+    let tree = state.tree();
+    let Some(active) = tree.desktop.active_workspace() else {
+        return (String::new(), Vec::new());
+    };
+    let room = active.room.to_string();
+    let workspace = active.name.clone();
+    let names: std::collections::HashMap<String, String> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.room.to_string(), workspace.name.clone()))
+        .collect();
+    drop(tree);
+    let registry = match crate::identity_registry::IdentityRegistryStore::from_env()
+        .and_then(|store| store.load_reconciled())
+    {
+        Ok(registry) => registry,
+        Err(error) => {
+            tracing::warn!(%error, "the identity picker cannot read this device's identities");
+            return (workspace, Vec::new());
+        }
+    };
+    let identities = registry
+        .identities
+        .values()
+        .map(|profile| {
+            let colour = runtime_identity::load_metadata_from_path(&profile.record_path)
+                .map_or([128, 128, 128], |metadata| metadata.avatar_color);
+            let mut used_in: Vec<String> = registry
+                .workspace_identities
+                .iter()
+                .filter(|(other, id)| **id == profile.id && **other != room)
+                .filter_map(|(other, _)| names.get(other).cloned())
+                .collect();
+            used_in.sort();
+            crate::shell::identity_picker::PickerIdentity {
+                id: profile.id.clone(),
+                name: profile.display_name.clone(),
+                colour,
+                used_in,
+                here: registry.workspace_identities.get(&room) == Some(&profile.id),
+            }
+        })
+        .collect();
+    (workspace, identities)
 }

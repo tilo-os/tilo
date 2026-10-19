@@ -41,6 +41,8 @@ mode = "off"
 secrets = "via-host"
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 tilo-fs = "optional@2"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui = "optional@10"

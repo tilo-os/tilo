@@ -257,7 +257,7 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "id",
         ParamType::Text,
-        "The identity's 64-character public-key fingerprint.",
+        "One of the identities connected to this device, as this action's listing names them.",
     ),
     ActionParam::required(
         "confirm",
@@ -827,6 +827,110 @@ fn delegate_room_to_identity(
     tree.govern_in_workspace(workspace_id, actor, changes)
         .ok()
         .map(drop)
+}
+
+/// The parameters `action` is listed with. `identity.select` names the
+/// identities connected to this device as the only values its `id` takes,
+/// so a caller (an agent, the palette) passes one from this listing and
+/// never types a fingerprint.
+fn listed_params(action: &Action) -> Vec<ActionParam> {
+    let mut params = action.params.to_vec();
+    if action.id == IDENTITY_SELECT_ID
+        && let Some(id) = params.iter_mut().find(|param| param.name == "id")
+    {
+        id.choices = crate::identity_registry::IdentityRegistryStore::from_env()
+            .and_then(|store| store.load_reconciled_prompt())
+            .map(|registry| {
+                registry
+                    .identities
+                    .keys()
+                    .cloned()
+                    .map(Into::into)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    params
+}
+
+/// The identity chooser's action: use one of this device's identities in
+/// the active workspace.
+pub(crate) const IDENTITY_SELECT_ID: &str = "identity.select";
+
+/// Use the identity `identity_id`, connected to this device, in the active
+/// workspace: what `identity.select` does, and what the identity picker
+/// does when the person chooses a row (their click is the confirmation).
+///
+/// # Errors
+///
+/// Refuses an identity this device does not hold, a caller who may not
+/// change the active workspace's identity, and every registry failure.
+pub(crate) fn select_identity(st: &mut ChromeState, identity_id: &str) -> Result<(), ActionError> {
+    let (workspace_id, room, actor) = active_admin_workspace(st)?;
+    let store = crate::identity_registry::IdentityRegistryStore::from_env()
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    let registry = store
+        .load_reconciled()
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    let profile = registry.identities.get(identity_id).ok_or_else(|| {
+        ActionError::Refused("that identity is not connected to this device".into())
+    })?;
+    if !st.tree().requires_native_owner(room) {
+        let mut tree = st.tree_mut();
+        if delegate_room_to_identity(&mut tree, workspace_id, &actor, &profile.principal_id())
+            .is_none()
+        {
+            return Err(ActionError::Refused(
+                "could not delegate workspace administration to that identity".into(),
+            ));
+        }
+    }
+    store
+        .bind_workspace(&room.to_string(), identity_id)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
+    st.tree().export_fs_capabilities();
+    st.bump();
+    Ok(())
+}
+
+/// Create a new identity of the person's, named `name` in `colour`, trust
+/// this device with it and use it in the active workspace: the identity
+/// picker's "Create an identity". Answers the new identity's id.
+///
+/// # Errors
+///
+/// Refuses a caller who may not change the active workspace's identity, an
+/// unusable name, and every minting, certificate and registry failure.
+pub(crate) fn create_and_select_identity(
+    st: &mut ChromeState,
+    name: &str,
+    colour: [u8; 3],
+) -> Result<String, ActionError> {
+    // Refused before anything is minted.
+    active_admin_workspace(st)?;
+    let refused = |error: std::io::Error| ActionError::Refused(error.to_string());
+    let store = crate::identity_registry::IdentityRegistryStore::from_env().map_err(refused)?;
+    std::fs::create_dir_all(store.identity_dir()).map_err(refused)?;
+    let (_, id) = tilo_identity_host::provisioning::create_identity(
+        store.identity_dir(),
+        name,
+        colour,
+        tilo_identity_host::provisioning::IdentityStorage::for_session(),
+    )
+    .map_err(refused)?;
+    let registry = store.load_reconciled().map_err(refused)?;
+    let profile = registry.identities.get(&id).ok_or_else(|| {
+        ActionError::Refused("the new identity is not in this device's registry".into())
+    })?;
+    let identity_paths = crate::firstboot::collaboration_identity_paths();
+    crate::firstboot::ensure_device_certificate_for_record(&profile.record_path, &identity_paths)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
+        .register_current_device(&profile.id)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    select_identity(st, &id)?;
+    Ok(id)
 }
 
 fn active_admin_workspace(
@@ -1650,38 +1754,7 @@ impl Action {
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
                 require_explicit_confirmation(args, "select this identity")?;
-                let identity_id = args.text("id").unwrap_or_default().trim();
-                let (workspace_id, room, actor) = active_admin_workspace(st)?;
-                let store = crate::identity_registry::IdentityRegistryStore::from_env()
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let registry = store
-                    .load_reconciled()
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let profile = registry.identities.get(identity_id).ok_or_else(|| {
-                    ActionError::Refused("that identity is not connected to this device".into())
-                })?;
-                if !st.tree().requires_native_owner(room) {
-                    let mut tree = st.tree_mut();
-                    if delegate_room_to_identity(
-                        &mut tree,
-                        workspace_id,
-                        &actor,
-                        &profile.principal_id(),
-                    )
-                    .is_none()
-                    {
-                        return Err(ActionError::Refused(
-                            "could not delegate workspace administration to that identity".into(),
-                        ));
-                    }
-                }
-                store
-                    .bind_workspace(&room.to_string(), identity_id)
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
-                st.tree().export_fs_capabilities();
-                st.bump();
-                Ok(())
+                select_identity(st, args.text("id").unwrap_or_default().trim())
             },
         },
         chrome(
@@ -4462,7 +4535,7 @@ impl ActionsProvider {
                 subtitle: Some(subtitle),
                 badge: state_badge(action.id, ctx.chrome),
                 score,
-                params: action.params.to_vec(),
+                params: listed_params(action),
                 contract: Some(shell_action_contract(action.id)),
                 on_open,
                 on_invoke: match action.id {

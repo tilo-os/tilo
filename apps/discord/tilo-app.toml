@@ -62,6 +62,8 @@ hosts = [
 [sandbox.portals]
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 collab = "optional@2"
 
 [entrypoint]

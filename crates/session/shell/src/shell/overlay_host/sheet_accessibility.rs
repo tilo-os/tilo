@@ -84,6 +84,7 @@ impl ShellOverlayHost {
             || self.file_picker_owns_keyboard()
             || self.peer_sync_overlay.visible()
             || self.directory_sheet.is_open()
+            || self.identity_picker.is_open()
             || self.wifi_password_prompt_up()
     }
 
@@ -118,6 +119,7 @@ impl ShellOverlayHost {
         let mut sheets = Vec::new();
         let mut waiting = None;
         sheets.extend(self.directory_sheet.accessibility());
+        sheets.extend(self.identity_picker.accessibility());
         sheets.extend(self.peer_sync_overlay.accessibility());
         if self.file_picker_place().dialog_rect().is_some()
             && let Some(mut picker) = self
@@ -299,6 +301,18 @@ impl ShellOverlayHost {
             };
             if let Some(request) = outcome.request {
                 self.run_directory_request(request);
+            }
+            return Some(outcome.consumed);
+        }
+        if crate::shell::identity_picker::is_accessibility_target(target) {
+            let Some(outcome) = self
+                .identity_picker
+                .perform_accessibility_action(target, action)
+            else {
+                return Some(false);
+            };
+            if let Some(request) = outcome.request {
+                self.run_identity_picker_request(request);
             }
             return Some(outcome.consumed);
         }

@@ -12,8 +12,8 @@
 //! under it, and which of the two is behind.
 //!
 //! Most services belong to the runtime interface ([`RUNTIME_INTERFACE`]):
-//! the image lists them, and their version is the runtime's. `shell-ui` and
-//! `system` are interfaces of their own.
+//! the image lists them, and their version is the runtime's. `shell-ui`,
+//! `chooser` and `system` are interfaces of their own.
 //!
 //! A registry version carries its build's requirements in
 //! [`RegistryTarget::interfaces`](crate::RegistryTarget::interfaces) in the

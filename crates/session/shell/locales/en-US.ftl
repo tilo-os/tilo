@@ -3192,3 +3192,24 @@ people-join-call-failed = Couldn’t join the call
 people-join-call-not-taken = Join it from Chat
 presence-wave-notice = { $person } waves
 presence-someone = Someone
+identity-picker-title-fallback = This workspace
+identity-picker-dialog = Choose who you are in { $workspace }
+identity-picker-used-in-one = Used in { $first }
+identity-picker-used-in-more = { $count ->
+    [one] Used in { $first } and 1 other workspace
+   *[other] Used in { $first } and { $count } other workspaces
+}
+identity-picker-used-here = Used in this workspace
+identity-picker-used-nowhere = Not used in another workspace yet
+identity-picker-choose-named = Use { $name } here
+identity-picker-details = Details
+identity-picker-fingerprint = Fingerprint { $fingerprint }
+identity-picker-create = Create an identity
+identity-picker-empty-hint = Create the identity you work as here.
+identity-picker-name = Name
+identity-picker-name-placeholder = Your name
+identity-picker-colour = Colour
+identity-picker-create-confirm = Create and use
+identity-picker-back = Back
+identity-picker-name-needed = Give the identity a name.
+identity-picker-failed = { $error }

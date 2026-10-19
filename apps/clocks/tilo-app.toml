@@ -35,6 +35,10 @@ mode = "off"
 [sandbox.portals]
 notifications = "via-host"
 
+[sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
+
 [entrypoint]
 bin = "bin/clocks"
 type = "gui"

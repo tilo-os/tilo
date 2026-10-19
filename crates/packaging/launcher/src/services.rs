@@ -69,7 +69,9 @@ pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// served alongside any desktop portal. Not declared by manifests: every app
 /// launched into a room is handed a connection naming itself and the room.
 pub const CHOOSER_SERVICE: &str = "chooser";
-const CHOOSER_PROTOCOL: u16 = 1;
+/// The chooser interface's version (`tilo_dialogs::shell::PROTOCOL`), which
+/// the shell checks on the launcher's first frame.
+const CHOOSER_PROTOCOL: u16 = 2;
 pub const COMPAT_SERVICE: &str = "compat";
 /// The system interface: the image-owned grant through which the device's
 /// control panel reaches the system services it drives
@@ -885,7 +887,9 @@ fn resolve_service_binds_inner(
     let mut out = Vec::with_capacity(services.len());
 
     for (name, req) in services {
-        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE {
+        // Connected by the launcher itself, whatever the manifest says; a
+        // manifest names them for the version it speaks.
+        if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE || name == CHOOSER_SERVICE {
             continue;
         }
         let path = socket_for(name);
@@ -1084,6 +1088,7 @@ mod image_interface_tests {
             COLLAB_SERVICE,
             IDENTITY_SERVICE,
             SHELL_UI_SERVICE,
+            CHOOSER_SERVICE,
             COMPAT_SERVICE,
             SYSTEM_SERVICE,
             MODEL_GATEWAY_SERVICE,

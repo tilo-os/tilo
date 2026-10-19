@@ -75,6 +75,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 # The system interface: the contract with the system services Settings
 # drives (network, displays, power, accounts, updates…), served through the
 # image's system authority grant. A build is offered to, installed on and run

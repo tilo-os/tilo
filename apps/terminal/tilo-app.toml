@@ -69,6 +69,8 @@ mode = "off"
 open-uri = "via-host"
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 # Required application runtime; the launcher passes its connected descriptor as
 # `TILO_SVC_USH_FD`.
 ush    = "required@2"

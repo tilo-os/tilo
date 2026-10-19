@@ -56,6 +56,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
+# The shell's choosers (files, links, the identity chooser): every app is handed it.
+chooser = "optional@2"
 # Required, not optional: with no broker there is no document to join
 # and the agent has nothing to do.
 collab = "required@2"

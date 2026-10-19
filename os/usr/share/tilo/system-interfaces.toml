@@ -23,6 +23,11 @@ system = 1
 # App ↔ shell: the shell-ui connection (crates/sdk/ui-core/interface.toml).
 shell-ui = 10
 
+# App ↔ shell: the chooser connection every app launched into a workspace is
+# handed: files, links and the identity chooser
+# (crates/platform/tilo-dialogs/interface.toml).
+chooser = 2
+
 # App ↔ runtime: every service under [runtime] below
 # (crates/runtime/runtime-portal/interface.toml).
 runtime = 2
