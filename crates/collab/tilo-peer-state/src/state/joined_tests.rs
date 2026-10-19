@@ -50,14 +50,8 @@ fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still
         .is_err(),
         "a replica the device builds itself admits only current certificates"
     );
-    let peer = StatePeer::joined(
-        ROOM,
-        authority.clone(),
-        roster.clone(),
-        RevocationList::new(),
-        now,
-    )
-    .expect("the room's roster is its evidence, an expired guest included");
+    let peer = StatePeer::joined(ROOM, authority, roster, RevocationList::new(), now)
+        .expect("the room's roster is its evidence, an expired guest included");
     assert!(
         peer.certificate(&guest.device_public_key, now).is_err(),
         "the expired guest's expiry is still checked when it is used"
@@ -97,7 +91,7 @@ fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate(
         StatePeer::joined(
             ROOM,
             authority.clone(),
-            vec![authority.clone(), forged],
+            vec![authority, forged],
             RevocationList::new(),
             now,
         )
