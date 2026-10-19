@@ -20,6 +20,10 @@ pub(super) struct LocalInputCapture {
     // Edits made under input no authenticated publication observed. Only a
     // recorded edit sets it; scrolling, selecting or hovering never does.
     unsigned_edits: crate::local_document_action::UnsignedEdits,
+    // Edits made under input that a publication saw but no published
+    // action route could carry. Only a recorded edit sets it: a wheel that
+    // pans, a hover or a selection is no unconfirmed action.
+    unrouted_edits: crate::local_document_action::UnsignedEdits,
     pub(super) failure: Option<String>,
 }
 
@@ -254,7 +258,12 @@ impl App {
             }
         }
         if routes.is_empty() && pin.is_some() {
-            self.local_input_capture_failed("local input has no published action route");
+            // Nothing can carry this input's actions; whether that matters
+            // is learnt when it records an edit, as the input drains.
+            drop(background);
+            return crate::local_document_action::enter_unsigned_input(
+                self.local_input_capture.unrouted_edits.clone(),
+            );
         }
         // Retain inert snapshot copies, not registered leases. Ordinary online
         // reconciliation can still release all in-flight directory pins.
@@ -277,6 +286,9 @@ impl App {
     pub(super) fn drain_local_input_capture(&mut self) {
         if self.local_input_capture.unsigned_edits.take() {
             self.note_local_input_unsigned();
+        }
+        if self.local_input_capture.unrouted_edits.take() {
+            self.local_input_capture_failed("local input has no published action route");
         }
         let mut failures = Vec::new();
         let mut recovery_routes: Vec<_> = self
