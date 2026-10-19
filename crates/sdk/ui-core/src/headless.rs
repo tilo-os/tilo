@@ -2296,6 +2296,14 @@ impl FrameHarness {
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
+        // The sync runs in the component's wake scope, as the live window's
+        // runs in the App's: work it starts on another thread (an area
+        // Settings reads off the UI thread) wakes the frame that takes in
+        // its result instead of no one.
+        let _wake = self
+            .component_wake
+            .as_ref()
+            .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root.settle(
