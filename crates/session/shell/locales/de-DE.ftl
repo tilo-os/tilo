@@ -3141,7 +3141,6 @@ presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, ni
 presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
 presence-arrival-change = Ändern
 people-join-call-failed = Dem Anruf konnte nicht beigetreten werden
-people-join-call-ended = Der Anruf ist zu Ende
 people-join-call-not-taken = Tritt ihm in Chat bei
 presence-wave-notice = { $person } winkt
 presence-someone = Jemand

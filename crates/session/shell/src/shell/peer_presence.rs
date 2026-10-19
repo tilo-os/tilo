@@ -4284,6 +4284,44 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&pair.dir);
     }
 
+    /// The voice channel someone is in (its id and name) says where they
+    /// are: "That I'm here" sends how available they are but not their
+    /// call; "Where I am" sends both.
+    #[test]
+    fn a_call_reaches_only_those_who_may_see_where_you_are() {
+        let mut pair = pair("call-visibility");
+        let room = pair.room.to_string();
+        let key = PresenceKey::Workspace { id: room.clone() };
+        let call = ui::CallPresence {
+            channel: "c_voice".into(),
+            name: "voice".into(),
+        }
+        .encode();
+        let available = PresencePayload::Availability {
+            state: ui::Availability::Available,
+            call: Some(call.clone()),
+        };
+        let said = |pair: &mut Pair| match published(&mut pair.guest_cmds) {
+            NeighbourMsg::AppPresenceV2 { presence, .. } => match presence.payload {
+                collab_types::PeerPresencePayload::Availability { call, .. } => call,
+                other => panic!("expected availability, got {other:?}"),
+            },
+            other => panic!("expected room presence, got {other:?}"),
+        };
+        for (visibility, heard) in [
+            (ui::PresenceVisibility::ThatImHere, None),
+            (ui::PresenceVisibility::WhereIAm, Some(call.clone())),
+        ] {
+            pair.guest_net.set_presence_visibility(&room, visibility);
+            let frame = crate::shell::collab_presence::to_peer(&key, &available)
+                .expect("availability encodes");
+            pair.guest_net
+                .publish_app_presence("tilo-shell".into(), room.clone(), frame);
+            assert_eq!(said(&mut pair), heard, "{visibility:?}");
+        }
+        let _ = std::fs::remove_dir_all(&pair.dir);
+    }
+
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
     /// so nothing of where they are leaves and nobody's pointer shows, never

@@ -60,8 +60,7 @@ pub use clock::{frames_until, frames_wanted, testing, want_frames_until};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
     Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,
-    WindowMotion,
-    Zoom, held_by_aim, stage, unit_opacity,
+    WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use pose::Pose;
 pub use presence::Presence;

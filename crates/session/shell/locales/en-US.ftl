@@ -3184,7 +3184,6 @@ presence-arrival-intro-here = People here see your name and your colour, never w
 presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
 presence-arrival-change = Change
 people-join-call-failed = Couldn’t join the call
-people-join-call-ended = The call has ended
 people-join-call-not-taken = Join it from Chat
 presence-wave-notice = { $person } waves
 presence-someone = Someone

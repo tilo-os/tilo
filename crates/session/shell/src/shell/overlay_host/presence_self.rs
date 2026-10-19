@@ -303,7 +303,7 @@ impl super::ShellOverlayHost {
         }
         // The voice channel this device is in is this person's call, as its
         // people see it; leaving the call clears it.
-        self.self_presence.call = self.own_voice_channel();
+        self.self_presence.call = self.own_voice_call().map(|call| call.encode());
         sent | self.tell_absence() | self.publish_availability()
     }
 

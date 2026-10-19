@@ -24803,7 +24803,7 @@ impl ShellOverlayHost {
         }
         // Who is in which voice channel, as the room's calls say, and the
         // Join each row offers.
-        self.decorate_calls(&mut rows);
+        self.decorate_calls(&mut rows, presence);
         let may_invite = self.may_invite_here();
         let following_pairs = self.roster_following_pairs(presence, &rows);
         self.collaborators_overlay.draw(
