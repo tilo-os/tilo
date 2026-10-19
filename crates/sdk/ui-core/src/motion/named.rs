@@ -590,6 +590,26 @@ impl Zoom {
         shortcut: Shortcut::Lands,
     };
 
+    /// The workspace overview: every window flying from its place on its
+    /// strip into the overview's picture of the workspace, and back. Where
+    /// the windows went is the whole point of the motion, so a shortcut
+    /// (Super+Tab) keeps it as spatial context, at `fast`: the overview is
+    /// on screen from the first frame and settles a few frames later.
+    pub const OVERVIEW: MotionSpec = MotionSpec {
+        enter: Pace::Slow,
+        exit: Pace::Base,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Context,
+    };
+
+    /// A corner radius between `from` (0) and `to` (1) at `progress`, for
+    /// a shape whose rect is [`Self::rect_at`].
+    #[must_use]
+    pub fn radius_at(from: f64, to: f64, progress: f64) -> f64 {
+        let p = progress.clamp(0.0, 1.0);
+        from + (to - from) * p
+    }
+
     /// The transform that draws content laid out in `rest` into `drawn`.
     #[must_use]
     pub fn fit(rest: Rect, drawn: Rect) -> Affine {

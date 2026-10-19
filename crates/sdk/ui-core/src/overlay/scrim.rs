@@ -23,6 +23,38 @@ pub fn modal(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, th
     );
 }
 
+/// The ground of a whole-view surface that pictures the windows it covers
+/// (the workspace overview): the desktop, blurred and tinted as the
+/// floating material is, over everything drawn before it, then the modal
+/// dim. Unlike [`modal`] it hides what it covers once `openness` reaches 1,
+/// because the surface shows those windows itself and they must not be
+/// seen twice; on the way there they fade out under it. Opaque base where
+/// the theme does not blur (reduced transparency, forced colours) or no
+/// desktop is published. Call after everything it covers is drawn.
+pub fn whole_view(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
+    let openness = openness.clamp(0.0, 1.0);
+    if openness <= 0.0 {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        openness,
+        transform,
+        &rect,
+    );
+    crate::backdrop::desktop::fill(
+        scene,
+        (transform, Affine::IDENTITY),
+        &rect,
+        crate::floating_surface::Material::Floating,
+        theme,
+        theme.tokens.colors.surfaces.base,
+    );
+    scene.pop_layer();
+    modal(scene, transform, rect, openness, theme);
+}
+
 /// Dim only the background around a modal's foreground. Floating material
 /// records the scene behind it for blur, so dimming underneath the panel
 /// would also darken the material a foreground control stands on.
