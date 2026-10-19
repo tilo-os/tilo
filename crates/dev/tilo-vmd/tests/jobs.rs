@@ -40,19 +40,42 @@ fn setup() -> (tempfile::TempDir, String) {
             .unwrap();
     }
     let src = root.path().join("state/src/wt-1");
-    std::fs::create_dir_all(src.join("os/scripts")).unwrap();
-    std::fs::create_dir_all(src.join("os/usr/libexec")).unwrap();
+    std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("Cargo.toml"), "[workspace]\n").unwrap();
+    // The manifest, its installer, the checked-in inputs the shell
+    // component copies from beside the manifest (`@manifest/...`), and the
+    // font catalog a source shell swap stages its verified fonts from.
     for file in [
         "os/components.toml",
         "os/scripts/install-components.py",
         "os/usr/libexec/tilo-session",
+        "os/usr/share/tilo/system-interfaces.toml",
+        "tools/font-catalog.py",
     ] {
-        std::fs::copy(repo().join(file), src.join(file)).unwrap();
+        let to = src.join(file);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(repo().join(file), to).unwrap();
     }
+    copy_tree(
+        &repo().join("crates/sdk/ui-core/assets/fonts"),
+        &src.join("crates/sdk/ui-core/assets/fonts"),
+    );
     // No sccache from the developer's PATH: the stand-in cargo ignores it.
     let path = format!("{}:/usr/bin:/bin", bin.display());
     (root, path)
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 fn job(target: BuildTarget) -> BuildJob {

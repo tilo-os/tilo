@@ -1028,7 +1028,9 @@ package = "tilo-vmd"
 inputs = [
   "os/components.toml", "os/scripts/install-components.py",
   "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
-  "os/usr/libexec/tilo-seat-session",
+  "os/usr/libexec/tilo-seat-session", "os/usr/libexec/tilo-session",
+  "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
+  "crates/sdk/ui-core/assets/fonts/**",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
