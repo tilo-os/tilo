@@ -106,18 +106,24 @@ impl StoreDirectory {
     }
 }
 
-/// `item` as a search hit opening its details.
+/// `item` as a search hit opening its page: its glyph, its name and, as
+/// the second line, its tag line (else its source), never a joined string.
 fn app_entry(item: &StoreItem) -> SearchEntry {
+    let subtitle = if item.summary().is_empty() {
+        crate::catalogue::source_label(item)
+    } else {
+        item.summary().to_owned()
+    };
+    let group = if crate::catalogue::is_bot(item) {
+        ui::i18n!("store-view-bots")
+    } else {
+        ui::i18n!("store-search-apps")
+    };
     SearchEntry::new(item.name.clone(), searchable_text(item))
         .anchored(resource_id(item))
-        .grouped("Apps")
-        .subtitled(format!(
-            "Version {2} from {0}. Trust: {1}.",
-            item.source.short_label(),
-            item.trust.label(),
-            item.latest_version()
-        ))
-        .with_icon("layout-grid")
+        .grouped(group)
+        .subtitled(subtitle)
+        .with_icon(crate::widgets::app::tilo_glyph(item).name())
 }
 
 fn resource_id(item: &StoreItem) -> String {
@@ -181,6 +187,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("dev.example.app{index}"),
             name: format!("Example App {index}"),
             description: "A durable Store test row".into(),
@@ -212,6 +219,8 @@ mod tests {
     /// The full catalogue pages, hits open details, and stale addresses are refused.
     #[test]
     fn catalogue_paging_and_stale_addresses_are_refused() {
+        // The group name is the Store's own copy.
+        crate::resource::STORE_CATALOG.ensure();
         // Case `full_catalogue_is_cursor_paged_and_hits_open_details`.
         {
             let items = (0..2_048).map(item).collect::<Vec<_>>();

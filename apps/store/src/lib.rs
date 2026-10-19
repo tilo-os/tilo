@@ -53,6 +53,7 @@ extern crate fluent;
 pub mod actions;
 pub mod app;
 pub mod bindings;
+pub mod catalogue;
 pub mod config;
 pub mod fixture;
 pub mod flathub_client;

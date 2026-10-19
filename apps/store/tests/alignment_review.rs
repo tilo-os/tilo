@@ -90,30 +90,32 @@ fn staged(scenario: &str) -> StoreApp {
 #[test]
 fn catalogue_toolbar_and_sections_share_one_column() {
     let theme = ui::Theme::dark();
-    let app = lay_out(store::fixture::seeded_app(), (1200.0, 800.0));
-    let summary = first_named(&*app, "6 apps from 2 sources");
-    let search = by_test_id(&*app, "search-open");
-    let refresh = by_test_id(&*app, "store.refresh");
+    let mut store = store::fixture::seeded_app();
+    store.set_items(store::fixture::fixture_catalog());
+    let app = lay_out(store, (1200.0, 800.0));
+    let views = by_test_id(&*app, "store.views");
+    let remotes = by_test_id(&*app, "store.remotes");
+    let trust = by_test_id(&*app, "store.safety");
     // The actions stand in the window's header row, beside History.
     close(
-        search.center().y,
-        refresh.center().y,
+        remotes.center().y,
+        trust.center().y,
         "the actions share a centre line",
     );
     assert!(
-        refresh.y1 <= summary.y0,
+        trust.y1 <= views.y0,
         "the actions sit in the header row above the catalogue"
     );
 
-    // Every section starts on the summary's leading edge.
+    // Every section starts on the views' leading edge.
     let sections = by_widget_name(&*app, "Section");
-    assert!(!sections.is_empty(), "the catalogue shows its groups");
+    assert!(!sections.is_empty(), "Discover shows its shelves");
     let trailing = sections[0].x1;
     for section in &sections {
         close(
             section.x0,
-            summary.x0,
-            "sections start on the summary's leading edge",
+            views.x0,
+            "sections start on the views' leading edge",
         );
         close(section.x1, trailing, "sections end on one trailing edge");
     }
@@ -138,7 +140,7 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
         }
     });
     assert!(
-        names.iter().any(|name| name == "Apps"),
+        names.iter().any(|name| name == "Discover"),
         "the header row names the page: {names:?}"
     );
     assert_eq!(
@@ -150,12 +152,7 @@ fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
         !names.iter().any(|name| name.contains("apps available")),
         "no persistent status pill: {names:?}"
     );
-    for id in [
-        "search-open",
-        "store.remotes",
-        "store.safety",
-        "store.refresh",
-    ] {
+    for id in ["store.package.import", "store.remotes", "store.safety"] {
         let rect = by_test_id(&*app, id);
         assert!(
             rect.x0 >= 0.0 && rect.x1 <= 520.0,
@@ -170,7 +167,7 @@ fn secondary_pages_share_one_header_composition() {
     let remotes = lay_out(staged("remotes"), (1200.0, 800.0));
     let safety = lay_out(staged("moderation"), (1200.0, 800.0));
 
-    let remotes_title = first_named(&*remotes, "Flatpak remotes");
+    let remotes_title = first_named(&*remotes, "Flatpak repositories");
     let safety_title = first_named(&*safety, "Trust and moderation");
     close(
         remotes_title.height(),
@@ -186,7 +183,7 @@ fn secondary_pages_share_one_header_composition() {
         &*remotes,
         "Browse software from your configured repositories. Repositories supplied by this device stay available; repositories you add belong to your account.",
     );
-    let form_title = first_named(&*remotes, "Add a remote");
+    let form_title = first_named(&*remotes, "Add a repository");
     assert!(
         explanation.y0 >= remotes_title.y1,
         "repository scope explanation follows the shared header"
@@ -201,7 +198,7 @@ fn secondary_pages_share_one_header_composition() {
     );
 }
 
-/// The details page stacks its identity at the token gap and aligns its facts with the hero.
+/// An app's page stacks its identity at the token gap and lists its facts once.
 #[test]
 fn details_page_aligns_identity_and_facts() {
     let theme = ui::Theme::dark();
@@ -209,16 +206,16 @@ fn details_page_aligns_identity_and_facts() {
     for width in [480.0, 1200.0] {
         let app = lay_out(staged("detail"), (width, 900.0));
         let title = last_named(&*app, "Notes");
-        let source = first_named(&*app, "Tilo app, version 0.1.0");
+        let developer = by_test_id(&*app, "store.detail.developer");
         close(
-            source.y0 - title.y1,
+            developer.y0 - title.y1,
             tight,
-            "name to its source line is one tight step",
+            "name to its developer is one tight step",
         );
-        let details = first_named(&*app, "Details");
-        let trust = first_named(&*app, "Trust");
+        let facts = first_named(&*app, "Facts");
+        let permissions = first_named(&*app, "What it can do");
         assert!(
-            details.y1 < trust.y0,
+            facts.y1 < permissions.y0,
             "sections stack in reading order without overlap"
         );
         assert_eq!(
@@ -247,21 +244,22 @@ fn publisher_presentation_precedes_package_facts() {
                 ui::headless::viewport((width, 1600.0)),
                 theme.clone(),
             );
-            let pitch = first_named(&*app, "Ideas worth keeping, together.");
-            let previews = first_named(&*app, "Previews");
-            let description = by_test_id(&*app, "store.detail.description");
-            let facts = first_named(&*app, "Details");
-            let first_preview = by_test_id(&*app, "store.preview.so.tilo.notes.0");
+            let pitch = by_test_id(&*app, "store.detail.tagline");
+            let previews = first_named(&*app, "Screenshots");
+            let description = by_test_id(&*app, "store.detail.description.0");
+            let facts = first_named(&*app, "Facts");
+            let first_preview = by_test_id(&*app, "store.screenshot.so.tilo.notes.0");
+            assert!(first_preview.x0 >= 0.0 && first_preview.x1 <= width);
             for index in 0..3 {
-                let preview = by_test_id(&*app, &format!("store.preview.so.tilo.notes.{index}"));
-                assert!(preview.x0 >= 0.0 && preview.x1 <= width);
-                if width == 1200.0 {
-                    close(
-                        preview.y0,
-                        first_preview.y0,
-                        "all wide previews share a row",
-                    );
-                }
+                let preview = by_test_id(&*app, &format!("store.screenshot.so.tilo.notes.{index}"));
+                // One horizontal gallery: every screenshot on one row, the
+                // ones past the edge a scroll away.
+                close(
+                    preview.y0,
+                    first_preview.y0,
+                    "the screenshots share one row",
+                );
+                assert!(preview.x0 >= first_preview.x0);
             }
             assert!(pitch.y1 < previews.y0, "the pitch precedes artwork");
             assert!(previews.y1 < description.y0, "artwork precedes long copy");
@@ -281,7 +279,7 @@ fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
     for width in [800.0, 1200.0] {
         // As tall as the pages, so neither scrolls and reserves a bar's gutter.
         let catalogue = lay_out(store::fixture::seeded_app(), (width, 1400.0));
-        let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
+        let edge = by_test_id(&*catalogue, "store.views").x0;
         for scenario in ["detail", "remotes", "moderation"] {
             let page = lay_out(staged(scenario), (width, 1400.0));
             let first = if scenario == "detail" {

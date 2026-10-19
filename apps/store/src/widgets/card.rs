@@ -199,6 +199,7 @@ mod tests {
         let item = StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: "org.example.Editor".into(),
             name: "Editor".into(),
             description: "Write without distractions.".into(),
@@ -250,6 +251,7 @@ mod tests {
         let item = StoreItem {
             bot: None,
             awaiting_developer: true,
+            listing: crate::model::Listing::default(),
             id: "so.example.mail".into(),
             name: "Mail".into(),
             description: "Mail.".into(),

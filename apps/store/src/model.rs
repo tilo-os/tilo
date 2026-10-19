@@ -238,6 +238,30 @@ pub struct BotListing {
     pub artifact: registry_types::BotArtifact,
 }
 
+/// What the catalogue says about an app beyond its name and versions: who
+/// makes it, under which licence, when it last changed, whether its source
+/// features it, and what its signed manifest lets it do.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    /// Who makes the app, as its source names them; empty when it does not.
+    #[serde(default)]
+    pub developer: String,
+    /// SPDX licence expression; empty when the source does not say.
+    #[serde(default)]
+    pub license: String,
+    /// When the app last changed in its source, Unix seconds; 0 when unknown.
+    #[serde(default)]
+    pub updated_at_unix: u64,
+    /// Its place in its source's featured list, best first; `None` when the
+    /// source does not feature it.
+    #[serde(default)]
+    pub featured_rank: Option<u32>,
+    /// The capabilities its signed manifest declares, once it is on this
+    /// device (`network.http`, `files.open`, ...).
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
 /// One version the source knows about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreItemVersion {
@@ -316,6 +340,9 @@ pub struct StoreItem {
     /// (docs/architecture/compatibility.md).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub awaiting_developer: bool,
+    /// Developer, licence, freshness and capabilities, when the source says.
+    #[serde(default)]
+    pub listing: Listing,
 }
 
 impl StoreItem {
@@ -394,11 +421,21 @@ impl StoreItem {
         }
     }
 
-    /// The optional **pin** ("mark installed") toggle a Tilo card
-    /// offers once the app is cached. `None` for apps that aren't
-    /// cached yet or for Flatpak apps (whose install *is* the pin).
+    /// The optional **pin** ("Keep on this device") a Tilo app offers beside
+    /// Open: on an app not downloaded yet it downloads and keeps it without
+    /// opening it; on a cached one it keeps it or allows its cleanup. `None`
+    /// for Flatpak apps, whose install *is* the pin, and for bots and
+    /// runtime components.
     pub fn pin_action(&self) -> Option<ActionKind> {
+        if self.bot.is_some() || registry_types::is_runtime_package_id(&self.id) {
+            return None;
+        }
         match (&self.source, &self.installed) {
+            (StoreSource::Tilo { .. }, InstalledState::Not)
+                if !self.versions.is_empty() && !self.awaiting_developer =>
+            {
+                Some(ActionKind::MarkInstalled)
+            }
             (
                 StoreSource::Tilo { .. },
                 InstalledState::Installed {
@@ -624,6 +661,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("Some {name} app"),
@@ -656,6 +694,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("org.example.{name}"),
             name: name.into(),
             description: format!("{name} on Flathub"),
@@ -696,10 +735,11 @@ mod tests {
     fn item_actions_follow_source_and_install_state() {
         // Case `action_kind_reflects_source_and_install_state`.
         {
-            // Tilo not-installed → Open (fetch-on-demand + run).
+            // Tilo not-installed → Open (fetch-on-demand + run), with Keep
+            // on this device beside it as the opt-in.
             let not_installed = tilo_item("Notes", InstalledState::Not, "0.1.0");
             assert_eq!(not_installed.action_kind(true), ActionKind::Open);
-            assert!(not_installed.pin_action().is_none());
+            assert_eq!(not_installed.pin_action(), Some(ActionKind::MarkInstalled));
 
             // Tilo installed + up-to-date → still Open (relaunch), and it
             // now offers the pin toggle + a secondary Remove.
@@ -778,7 +818,10 @@ mod tests {
             let not_installed = tilo_item("Notes", InstalledState::Not, "1");
             assert!(not_installed.allows_action(ActionKind::Open, true));
             assert!(!not_installed.allows_action(ActionKind::Remove, true));
-            assert!(!not_installed.allows_action(ActionKind::MarkInstalled, true));
+            assert!(
+                not_installed.allows_action(ActionKind::MarkInstalled, true),
+                "keeping an app not downloaded yet downloads it to keep"
+            );
 
             let cached = tilo_item("Notes", qinstalled("1", "1", false), "1");
             assert!(cached.allows_action(ActionKind::Open, true));

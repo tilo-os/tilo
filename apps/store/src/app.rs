@@ -1,29 +1,24 @@
 //! `StoreApp` — the root widget.
 //!
-//! The Store has four pages, each one column on the window ground, composed
-//! in [`view`] from the toolkit's content widgets:
+//! The Store's screens are composed in [`view`] from the toolkit's content
+//! widgets, one column on the window ground each:
 //!
 //! ```text
-//! header row      Apps               [search] [remotes] [trust] [refresh] [History]
-//! catalogue         6 apps from 2 sources
-//!                   Updates (1)        ┌ card ┐
-//!                   On this device (2) ┌ card ┐ ┌ card ┐
-//!                   Discover (3)       ┌ card ┐ ┌ card ┐ ┌ card ┐
-//! details           (the window's Back returns here)
-//!                   [icon] Name, its badges, its actions and description,
-//!                   then Details (one property list) and Trust
-//! flatpak remotes   the add form and the configured remotes
-//! trust             report drafts and how decisions are made
+//! header row      <place>      [filter field]   [review package] [remotes] [trust] [History]
+//! catalogue       [Discover | Updates | On this device | Bots]
+//!                 Discover: Updates, Featured, Recently updated, Categories
+//! an app's page   (the window's Back returns to the catalogue)
+//! flatpak remotes the add form and the configured remotes
+//! trust           report drafts and how decisions are made
 //! ```
 //!
-//! People find apps through the platform search (the magnifier, Ctrl+K): the
-//! Store only provides it, with source, category and status as facets (see
-//! [`crate::search_provider`]). The catalogue itself has no search field.
-//! An operation's progress and failures read in a banner in the page; its
-//!
-//! The surface is read-mostly: in a live window the catalogue comes from
-//! the Store's worker ([`crate::worker`]), in a screenshot from its fixture,
-//! and every change — a package job, a filter, a report edit — goes through
+//! The window's filter field searches the catalogue on this device as the
+//! person types ([`crate::catalogue::search`]); Enter in it hands the query to
+//! the platform search. A live window paints the catalogue the last window
+//! kept ([`crate::catalogue::cache`]) in its first frame; the worker
+//! ([`crate::worker`]) refreshes it in the background and the screens keep
+//! what they show in place as it lands. Every change (a package job, a view,
+//! a block, a report edit) goes through the Store's published actions.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -40,10 +35,10 @@ use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
+use crate::catalogue::{AppDetails, BlockList, Home, SearchResults, Unblocked as _};
+use crate::model::{ActionKind, StoreItem, StoreSource};
 use crate::reports::{Reports as Store, reports as verbs};
 use crate::resource::{ReportProjection, StoreEffect};
-use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
 mod runtime;
 mod view;
@@ -59,7 +54,54 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
-const PAGE_SIZE: usize = 48;
+/// Which part of the catalogue shows when no app page, remotes or trust page
+/// is open. Browsing is this window's own: it never moves a collaborator's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum View {
+    /// Discover: updates, featured, recently updated, categories.
+    #[default]
+    Home,
+    /// Every app in one category.
+    Category(String),
+    /// The installed apps a newer version is offered for.
+    Updates,
+    /// The apps on this device.
+    Installed,
+    /// The bots.
+    Bots,
+    /// The apps of one configured Flatpak repository, by its resource id.
+    Repository(String),
+}
+
+impl View {
+    /// The name the `show-view` action takes and agents read.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Home => "home",
+            Self::Category(category) => category,
+            Self::Updates => "updates",
+            Self::Installed => "installed",
+            Self::Bots => "bots",
+            Self::Repository(remote) => remote,
+        }
+    }
+
+    /// The view `show-view` names, if any.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name.trim().to_ascii_lowercase().as_str() {
+            "home" | "discover" | "all" => Self::Home,
+            "updates" => Self::Updates,
+            "installed" | "on device" | "on this device" => Self::Installed,
+            "bots" => Self::Bots,
+            _ => return None,
+        })
+    }
+}
+
+/// The views `show-view` switches between, in the switcher's order.
+pub const VIEWS: [&str; 4] = ["home", "updates", "installed", "bots"];
 /// Bound remote configuration before it is rendered, serialized, or
 /// forwarded to the Flatpak worker. These limits are deliberately generous
 /// relative to remote names and HTTPS URLs, but keep a caller from handing
@@ -408,17 +450,35 @@ pub struct StoreApp {
     /// entries. The worker rebuilds it only after a changed snapshot, and a
     /// search hit's address resolves against it.
     directory: crate::search::StoreDirectory,
-    /// The items' names and descriptions, indexed while they stay the same.
-    item_index: ui::search::ListIndex,
-    /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
-    /// locally: browsing one catalogue must not navigate collaborators.
-    active_filter: SourceFilter,
-    /// Active category or `None` for "all categories".
-    active_category: Option<String>,
-    /// Current search query, applied to the merged catalogue. Search is
-    /// intentionally window-local; resources remain globally searchable via
-    /// `directory` without making a colleague's catalogue jump around.
+    /// Where each item is in `items`, by id.
+    positions: HashMap<String, usize>,
+    /// The local search index over `items`, built off the UI thread when the
+    /// catalogue changes so a keystroke only searches.
+    search_index: std::sync::Arc<ui::search::ListIndex>,
+    /// The part of the catalogue that shows. Kept locally: browsing one
+    /// catalogue must not navigate collaborators.
+    view: View,
+    /// What Discover lists, kept in place while refreshes land; computed
+    /// afresh when the person goes back to it.
+    home: Option<Home>,
+    /// How many cards or rows a long list shows; Show more adds a page.
+    shown: usize,
+    /// Current search query: the window's filter field. Search is
+    /// window-local; resources stay globally searchable via `directory`.
     query: String,
+    /// What the query found in the catalogue on this device.
+    results: SearchResults,
+    /// Flathub's apps for `remote_query` that the kept catalogue lacks,
+    /// shown after the local results.
+    remote_results: Vec<StoreItem>,
+    remote_query: String,
+    /// The fetch thread for app pages' details and Flathub searches.
+    fetcher: Option<crate::catalogue::fetcher::Fetcher>,
+    /// App pages' details, kept or fetched, by app id.
+    details: HashMap<String, AppDetails>,
+    /// Who blocked which app: the person's own list and the device's and
+    /// workspace's policies, the list desktop search hides apps by too.
+    blocks: BlockList,
     /// An unsubmitted remote form is device-local. Only the canonical Add
     /// remote effect crosses into machine-scoped package configuration.
     remote_name_state: ui::LocalState<String>,
@@ -468,8 +528,6 @@ pub struct StoreApp {
     back_requested: Rc<Cell<bool>>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
-    pending_search: Option<String>,
-    search_opener: ui::search::SearchOpener,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
     remotes_open: bool,
@@ -479,7 +537,6 @@ pub struct StoreApp {
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
-    catalog_page: usize,
     /// The transient status bubble: an operation's result, shown once when
     /// it changes.
     status_bubble: ui::StatusBubble,
@@ -510,10 +567,18 @@ impl StoreApp {
             next_launch_request: Some(1),
             items: Vec::new(),
             directory: crate::search::StoreDirectory::default(),
-            item_index: ui::search::ListIndex::default(),
-            active_filter: SourceFilter::All,
-            active_category: None,
+            positions: HashMap::new(),
+            search_index: std::sync::Arc::new(ui::search::ListIndex::default()),
+            view: View::Home,
+            home: None,
+            shown: view::PAGE,
             query: String::new(),
+            results: SearchResults::default(),
+            remote_results: Vec::new(),
+            remote_query: String::new(),
+            fetcher: None,
+            details: HashMap::new(),
+            blocks: BlockList::empty(),
             remote_name_state: ui::LocalState::new(String::new()),
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
@@ -534,15 +599,12 @@ impl StoreApp {
             can_go_back: Rc::new(Cell::new(false)),
             back_requested: Rc::new(Cell::new(false)),
             pending_jobs: 0,
-            pending_search: None,
-            search_opener: ui::search::SearchOpener::new(),
             pending_detail: None,
             remotes: Vec::new(),
             remotes_open: false,
             safety_open: false,
             reports: Vec::new(),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
-            catalog_page: 0,
             status_bubble: ui::StatusBubble::new(),
             last_cursor: Point::ZERO,
             images: None,
@@ -567,7 +629,18 @@ impl StoreApp {
     /// Every app of the complete catalogue as a search entry, the ones the
     /// current filter hides too.
     pub(crate) fn catalogue_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.directory.entries()
+        // A blocked app is in no search, the platform's included.
+        self.directory
+            .entries()
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .anchor
+                    .as_deref()
+                    .and_then(|anchor| anchor.strip_prefix("app:"))
+                    .is_none_or(|app| !self.blocks.is_blocked(app))
+            })
+            .collect()
     }
 
     /// Start the worker of a live window: the catalogue loads, and package
@@ -578,8 +651,22 @@ impl StoreApp {
         }
         // Host capabilities arrive with the worker snapshot, never a sandbox subprocess.
         self.images = Some(crate::images::image_store());
-        // The first presented frame is the catalogue chrome ("Loading
-        // apps…"), not a cleared swapchain: the worker is already in flight.
+        // The first frame shows the catalogue the last window kept: real
+        // apps, at once, without the blocked ones. The worker's refresh
+        // updates them in place.
+        self.blocks = BlockList::load();
+        if self.items.is_empty()
+            && let Some(cached) = crate::catalogue::cache::load()
+        {
+            self.set_items(cached.items);
+        }
+        match crate::catalogue::fetcher::Fetcher::spawn(
+            wake.clone(),
+            crate::catalogue::desktop_locale(),
+        ) {
+            Ok(fetcher) => self.fetcher = Some(fetcher),
+            Err(error) => tracing::warn!(%error, "app details cannot be fetched"),
+        }
         self.set_worker_busy(true);
         self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
     }
@@ -620,6 +707,69 @@ impl StoreApp {
         &self.reports
     }
 
+    /// Apply the block list as the worker or a block read it: who blocked
+    /// which app.
+    pub(crate) fn set_blocks(&mut self, blocks: BlockList) {
+        if self.blocks == blocks {
+            return;
+        }
+        self.blocks = blocks;
+        if let Some(home) = &mut self.home {
+            home.reconcile(&self.items, &self.blocks);
+        }
+        self.refresh_results();
+        self.structure_dirty = true;
+    }
+
+    /// Change the person's own block list: `block` or lift their block of
+    /// `app`, written where desktop search reads it too.
+    ///
+    /// # Errors
+    /// Returns why the block could not change: someone else blocked the app,
+    /// it was not blocked, or the list could not be written.
+    fn change_person_block(&mut self, app: &str, block: bool) -> Result<(), String> {
+        if !crate::reports::valid_app_id(app) {
+            return Err("invalid app identity".into());
+        }
+        let path = app_catalogue::block::person_list_path()
+            .ok_or_else(|| ui::i18n!("store-block-unavailable"))?;
+        let mut list = BlockList::load();
+        if block {
+            if list
+                .blockers(app)
+                .contains(&&app_catalogue::Blocker::Person)
+            {
+                return Ok(());
+            }
+            list.block(app);
+        } else {
+            list.unblock(app, &app_catalogue::Blocker::Person)
+                .map_err(|error| match error {
+                    app_catalogue::UnblockError::NotTheBlocker(_) => {
+                        ui::i18n!("store-unblock-not-yours")
+                    }
+                    app_catalogue::UnblockError::NotBlocked => {
+                        ui::i18n!("store-unblock-not-blocked")
+                    }
+                })?;
+        }
+        list.save_person(&path).map_err(|error| {
+            tracing::warn!(%error, "could not write the block list");
+            ui::i18n!("store-block-unavailable")
+        })?;
+        self.set_blocks(list);
+        Ok(())
+    }
+
+    /// The catalogue item `id`, if it is listed.
+    pub(crate) fn item(&self, id: &str) -> Option<&StoreItem> {
+        self.positions
+            .get(id)
+            .and_then(|position| self.items.get(*position))
+            .filter(|item| item.id == id)
+            .or_else(|| self.items.iter().find(|item| item.id == id))
+    }
+
     /// Show the document's reports.
     pub(crate) fn present_reports(&mut self, reports: &[ReportProjection]) {
         // A note edit changes the report but not what is laid out around
@@ -647,6 +797,16 @@ impl StoreApp {
         match scenario {
             Some("search") => self.set_query("te".into()),
             Some("search-notes") => self.set_query("Notes".into()),
+            Some("updates") => self.show_view(View::Updates),
+            Some("installed") => self.show_view(View::Installed),
+            Some("bots") => self.show_view(View::Bots),
+            Some("category") => self.show_view(View::Category("Graphics".into())),
+            Some("detail-blocked") => {
+                self.set_blocks(
+                    BlockList::empty().with_workspace_policy("School", ["org.gnome.Chess"]),
+                );
+                self.focus_detail("org.gnome.Chess");
+            }
             Some("detail" | "detail-narrow" | "detail-technical") => {
                 self.focus_detail("so.tilo.notes");
                 self.technical_details_open = scenario == Some("detail-technical");
@@ -655,7 +815,6 @@ impl StoreApp {
             Some("detail-flatpak") => self.focus_detail("org.inkscape.Inkscape"),
             Some("flatpak-detail") => self.focus_detail("org.gnome.Chess"),
             Some("flatpak-installed") => self.focus_detail("org.videolan.VLC"),
-            Some("paging") => self.catalog_page = 1,
             Some("account-setup" | "account-remotes") => {
                 self.set_remotes(vec![crate::flathub_client::Remote {
                     name: "flathub".into(),
@@ -686,7 +845,7 @@ impl StoreApp {
                 // real operation rather than claiming an install for an
                 // open-only row.
                 self.active_operation = Some(("so.tilo.terminal".into(), ActionKind::Open));
-                self.set_status_line("Starting Terminal, launching the installed app…");
+                self.set_status_line(view::progress_label(ActionKind::Open, "Terminal"));
                 self.set_worker_busy(true);
             }
             Some("error") => {
@@ -718,17 +877,59 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    /// The page's title in the window header; the catalogue leaves it to the window's own name.
-    fn page_title(&self) -> &'static str {
+    /// The page's title in the window bar: where the person is.
+    fn page_title(&self) -> String {
         if self.safety_open {
-            "Trust and moderation"
+            ui::i18n!("store-trust-title")
         } else if self.remotes_open {
-            "Flatpak remotes"
-        } else if self.focused_detail.is_some() {
-            "App details"
+            ui::i18n!("store-remotes-title")
+        } else if let Some(id) = &self.focused_detail {
+            self.item(id)
+                .or_else(|| self.remote_results.iter().find(|item| &item.id == id))
+                .map_or_else(|| ui::i18n!("store-view-home"), |item| item.name.clone())
+        } else if !self.query.trim().is_empty() {
+            ui::i18n!("store-search-title")
         } else {
-            "Apps"
+            match &self.view {
+                View::Home => ui::i18n!("store-view-home"),
+                View::Category(category) => crate::catalogue::category_label(category),
+                View::Updates => ui::i18n!("store-updates-title"),
+                View::Installed => ui::i18n!("store-view-installed"),
+                View::Bots => ui::i18n!("store-view-bots"),
+                View::Repository(remote) => self
+                    .remotes
+                    .iter()
+                    .find(|source| source.resource_id() == *remote)
+                    .map_or_else(
+                        || ui::i18n!("store-remotes-title"),
+                        |source| source.title.clone(),
+                    ),
+            }
         }
+    }
+
+    /// The apps of the configured repository `remote` (its resource id).
+    pub(crate) fn repository_ids(&self, remote: &str) -> Vec<String> {
+        let Some(source) = self
+            .remotes
+            .iter()
+            .find(|source| source.resource_id() == remote)
+        else {
+            return Vec::new();
+        };
+        let mut found: Vec<&StoreItem> = self
+            .blocks
+            .unblocked(&self.items)
+            .filter(|item| match &item.source {
+                StoreSource::FlatpakRemote {
+                    name, user_managed, ..
+                } => *name == source.name && *user_managed == source.user_managed,
+                StoreSource::Flathub => source.name == "flathub",
+                StoreSource::Tilo { .. } => false,
+            })
+            .collect();
+        found.sort_by_key(|item| item.name.to_lowercase());
+        found.into_iter().map(|item| item.id.clone()).collect()
     }
 
     /// Return to the catalogue from whichever page is open.
@@ -743,17 +944,55 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
+    /// Show `view` of the catalogue, from its top. Going to Discover lays it
+    /// out afresh; a refresh while it shows keeps it in place.
+    pub fn show_view(&mut self, view: View) {
+        self.show_catalogue();
+        if view == View::Home || self.view != view {
+            self.home = None;
+        }
+        self.view = view;
+        self.shown = view::PAGE;
+        self.scroll_offset.set((0.0, 0.0));
+        self.structure_dirty = true;
+    }
+
     fn show_failure(&mut self, message: &str) {
         self.set_status_line(message);
         self.set_operation_error(Some(message.into()));
     }
 
+    /// Open the page of the app `id`: its kept details show at once, and a
+    /// Flathub app's are fetched in the background when they are missing or
+    /// old.
     pub fn focus_detail(&mut self, id: &str) {
         self.focused_detail = Some(id.to_string());
         self.technical_details_open = false;
         self.remotes_open = false;
         self.safety_open = false;
         self.structure_dirty = true;
+        let flathub = self
+            .item(id)
+            .or_else(|| self.remote_results.iter().find(|item| item.id == id))
+            .is_some_and(|item| !matches!(item.source, StoreSource::Tilo { .. }));
+        // A capture or a test shows its fixture as it is: only a live window
+        // reads kept details and fetches fresh ones.
+        if !flathub || self.worker.is_none() {
+            return;
+        }
+        let locale = crate::catalogue::desktop_locale();
+        if !self.details.contains_key(id)
+            && let Some(kept) = crate::catalogue::details::load(id, &locale)
+        {
+            self.details.insert(id.to_owned(), kept);
+        }
+        let fresh = self
+            .details
+            .get(id)
+            .is_some_and(|details| details.is_fresh(crate::catalogue::now_unix()));
+        if !fresh && let Some(fetcher) = &self.fetcher {
+            fetcher.details(id);
+        }
     }
 
     fn show_remotes(&mut self) {
@@ -786,8 +1025,8 @@ impl StoreApp {
         }
     }
 
-    /// Merge an enriched `AppStream` record into the current list and keep the
-    /// detail view focused on it.
+    /// Merge an enriched record into the current list and keep the app's page
+    /// focused on it.
     pub fn set_detail(&mut self, detail: StoreItem) {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
             *item = detail.clone();
@@ -795,6 +1034,7 @@ impl StoreApp {
             self.items.push(detail.clone());
         }
         self.focused_detail = Some(detail.id);
+        self.catalogue_changed();
         self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
@@ -822,6 +1062,7 @@ impl StoreApp {
             *item = detail.clone();
         } else {
             self.items.push(detail.clone());
+            self.catalogue_changed();
         }
         if open_reference {
             self.focused_detail = Some(detail.id);
@@ -831,20 +1072,64 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    /// Replace the item feed. Idempotent — the widget re-derives its
-    /// category chip row from `items` on the next `build_layout`.
+    /// Replace the catalogue. Idempotent; the screens re-derive what they
+    /// list on the next layout.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
+        self.catalogue_changed();
         self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
 
     /// Apply a worker snapshot without rebuilding the retained search
-    /// directory on the UI thread. [`Self::set_items`] remains the
-    /// synchronous, self-contained constructor/test path.
+    /// directory on the UI thread, and without moving what is on screen:
+    /// apps keep their place and new ones join at the end.
     fn set_items_from_worker(&mut self, items: Vec<StoreItem>) {
-        self.items = items;
+        if items == self.items {
+            return;
+        }
+        self.items = crate::catalogue::in_previous_order(&self.items, items);
+        self.catalogue_changed();
         self.structure_dirty = true;
+    }
+
+    /// The catalogue changed: re-index it, keep Discover in place, and run
+    /// the current search again.
+    fn catalogue_changed(&mut self) {
+        self.positions = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(position, item)| (item.id.clone(), position))
+            .collect();
+        self.warm_search_index();
+        if let Some(home) = &mut self.home {
+            home.reconcile(&self.items, &self.blocks);
+        }
+        self.refresh_results();
+    }
+
+    /// Build the search index for the new catalogue off the UI thread, so
+    /// the next keystroke only searches. A capture or a test indexes on
+    /// first use instead.
+    fn warm_search_index(&self) {
+        if self.worker.is_none() {
+            return;
+        }
+        let index = std::sync::Arc::clone(&self.search_index);
+        let items = self.items.clone();
+        let spawned = std::thread::Builder::new()
+            .name("store-search-index".into())
+            .spawn(move || crate::catalogue::warm(&index, &items));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "the search index builds on the first keystroke");
+        }
+    }
+
+    /// Search again for the current query, from the local index.
+    fn refresh_results(&mut self) {
+        self.results =
+            crate::catalogue::search(&self.search_index, &self.query, &self.items, &self.blocks);
     }
 
     pub fn items(&self) -> &[StoreItem] {
@@ -861,54 +1146,73 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    pub fn active_filter(&self) -> SourceFilter {
-        self.active_filter
-    }
-
-    pub fn set_active_filter(&mut self, f: SourceFilter) {
-        if self.active_filter != f {
-            self.active_filter = f;
-            self.catalog_page = 0;
-            self.scroll_offset.set((0.0, 0.0));
-            self.structure_dirty = true;
-        }
-    }
-
-    fn set_active_filter_from_local(&mut self, value: &str) {
-        if let Some(filter) = SourceFilter::ALL
-            .iter()
-            .copied()
-            .find(|filter| filter.label() == value)
-        {
-            self.set_active_filter(filter);
-        }
-    }
-
-    pub fn active_category(&self) -> Option<&str> {
-        self.active_category.as_deref()
-    }
-
-    pub fn set_active_category(&mut self, c: Option<String>) {
-        if self.active_category != c {
-            self.active_category = c;
-            self.catalog_page = 0;
-            self.scroll_offset.set((0.0, 0.0));
-            self.structure_dirty = true;
-        }
+    /// The part of the catalogue that shows.
+    pub fn view(&self) -> &View {
+        &self.view
     }
 
     pub fn query(&self) -> &str {
         &self.query
     }
 
+    /// Search the catalogue for `q` as typed: the results come from the
+    /// local index at once. When the kept catalogue has nothing for it,
+    /// Flathub is asked in the background and its apps join after them.
     pub fn set_query(&mut self, q: String) {
-        if self.query != q {
-            self.query = q;
-            self.catalog_page = 0;
-            self.scroll_offset.set((0.0, 0.0));
-            self.pending_search = Some(self.query.clone());
-            self.structure_dirty = true;
+        if self.query == q {
+            return;
         }
+        self.query = q;
+        self.shown = view::PAGE;
+        self.scroll_offset.set((0.0, 0.0));
+        self.refresh_results();
+        let query = self.query.trim().to_owned();
+        if query.chars().count() < 3 {
+            self.remote_results.clear();
+            self.remote_query.clear();
+        } else if query != self.remote_query && self.results.apps.len() < 3 {
+            if let Some(fetcher) = &self.fetcher {
+                fetcher.search(&query);
+            }
+        }
+        if !self.query.trim().is_empty() {
+            // A search shows over the catalogue, not over an app's page.
+            self.focused_detail = None;
+            self.remotes_open = false;
+            self.safety_open = false;
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Put `query` in the window's filter field, as if typed there.
+    fn set_filter_field(&mut self, query: &str) {
+        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut())
+            && field.value() != query
+        {
+            field.set_query(query);
+        }
+    }
+
+    /// The filter field's query reached `self.query`; whether it changed.
+    fn follow_filter_field(&mut self) -> bool {
+        let Some(value) = self
+            .root
+            .as_ref()
+            .and_then(|root| root.filter())
+            .map(|field| field.value().to_owned())
+        else {
+            return false;
+        };
+        if value == self.query {
+            return false;
+        }
+        self.set_query(value);
+        let count = (!self.query.trim().is_empty())
+            .then(|| ui::widget::FilterCount::new(self.results.len(), self.items.len()));
+        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut()) {
+            field.set_count(count);
+        }
+        true
     }
 
     pub fn set_status_line(&mut self, s: impl Into<String>) {
@@ -936,56 +1240,63 @@ impl StoreApp {
         &self.status_line
     }
 
-    /// The visible-after-filters item list. Kept public because
-    /// tests + the detail-sheet reducer both need it.
+    /// What the current page lists, in its order: the search's apps and bots
+    /// while there is a query, else the view's apps.
     pub fn visible_items(&self) -> Vec<&StoreItem> {
-        let cat = self.active_category.as_deref();
-        let hits: Vec<&StoreItem> = self
-            .items
-            .iter()
-            .filter(|i| self.active_filter.accepts(i))
-            .filter(|i| match cat {
-                Some(c) => i.categories.iter().any(|k| k == c),
-                None => true,
-            })
-            .collect();
-        let ranks = crate::model::relevance(&self.item_index, &self.query, &hits);
-        let mut hits: Vec<(&StoreItem, i32)> = hits
-            .into_iter()
-            .zip(ranks)
-            .filter_map(|(item, rank)| Some((item, rank?)))
-            .collect();
-        // Ranking: when idle, marked-installed (pinned) apps sort
-        // first, then merely-cached, then everything else —
-        // alphabetised within each band so the list is stable across
-        // refreshes. When a query is active the best fuzzy match wins
-        // regardless of install state.
-        if self.query.trim().is_empty() {
-            hits.sort_by_key(|(i, _)| {
-                (
-                    std::cmp::Reverse(i.install_rank()),
-                    i.name.to_ascii_lowercase(),
-                )
-            });
+        let ids: Vec<String> = if self.query.trim().is_empty() {
+            match &self.view {
+                View::Home => {
+                    let home = self
+                        .home
+                        .clone()
+                        .unwrap_or_else(|| Home::compute(&self.items, &self.blocks));
+                    let mut seen = std::collections::HashSet::new();
+                    home.updates
+                        .into_iter()
+                        .chain(home.featured)
+                        .chain(home.recent)
+                        .filter(|id| seen.insert(id.clone()))
+                        .collect()
+                }
+                View::Category(category) => {
+                    crate::catalogue::in_category(&self.items, &self.blocks, category)
+                }
+                View::Updates => self.update_ids(),
+                View::Installed => self
+                    .blocks
+                    .unblocked(&self.items)
+                    .filter(|item| {
+                        crate::catalogue::is_listed_app(item) && item.installed.is_installed()
+                    })
+                    .map(|item| item.id.clone())
+                    .collect(),
+                View::Bots => crate::catalogue::bots(&self.items, &self.blocks),
+                View::Repository(remote) => self.repository_ids(remote),
+            }
         } else {
-            hits.sort_by_key(|(_, rank)| std::cmp::Reverse(*rank));
-        }
-        hits.into_iter().map(|(item, _)| item).collect()
+            self.results
+                .apps
+                .iter()
+                .chain(&self.results.bots)
+                .cloned()
+                .collect()
+        };
+        ids.iter().filter_map(|id| self.item(id)).collect()
     }
 
-    /// Category chips: `All` first, then every distinct category
-    /// derived from the item feed.
-    fn category_labels(&self) -> Vec<String> {
-        let mut all = vec!["All".to_string()];
-        all.extend(distinct_categories(&self.items));
-        all
+    /// Every category with apps in it.
+    fn categories(&self) -> Vec<String> {
+        crate::catalogue::Home::compute(&self.items, &self.blocks)
+            .categories
+            .into_iter()
+            .map(|(category, _)| category)
+            .collect()
     }
 
-    /// Whether the catalogue is narrowed by a query, a source or a category.
+    /// Whether the catalogue shows anything but Discover: a search or
+    /// another view.
     pub(crate) fn filters_active(&self) -> bool {
-        !self.query.trim().is_empty()
-            || self.active_filter != SourceFilter::All
-            || self.active_category.is_some()
+        !self.query.trim().is_empty() || self.view != View::Home
     }
 
     fn draw_status_bubble(
@@ -1046,6 +1357,9 @@ impl Widget for StoreApp {
             .root
             .as_mut()
             .is_some_and(|root| root.update(state, path));
+        if self.follow_filter_field() {
+            return true;
+        }
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -1085,10 +1399,15 @@ impl Widget for StoreApp {
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
+            let mut filter = ui::widget::SearchField::filter()
+                .with_id("store.search")
+                .with_placeholder(&ui::i18n!("store-search-placeholder"));
+            filter.set_query(&self.query);
             Box::new(
                 ui::widget::NavShell::new()
                     .content_kind(ui::widget::ContentKind::Grid)
                     .with_id("store.shell")
+                    .with_filter(filter)
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
@@ -1124,7 +1443,7 @@ impl Widget for StoreApp {
             let title = if self.runtime_visible() {
                 ui::i18n!("store-runtime-title")
             } else {
-                self.page_title().to_owned()
+                self.page_title()
             };
             root.set_content_header(&title, actions);
             root.set_content(self.compose(theme));
@@ -1201,6 +1520,9 @@ impl Widget for StoreApp {
         {
             root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
+        // Each keystroke in the filter field searches the catalogue on this
+        // device; the page shows the results on the next layout.
+        self.follow_filter_field();
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -1314,6 +1636,7 @@ impl StoreApp {
     /// Take what the worker finished: the catalogue, a detail page, the
     /// remotes, the status line.
     fn drain_worker(&mut self) {
+        self.drain_fetcher();
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
@@ -1323,6 +1646,35 @@ impl StoreApp {
             self.apply_worker_snapshot(snap);
         }
         self.set_worker_busy(busy);
+    }
+
+    /// Take what the fetch thread answered: an app page's details, or
+    /// Flathub's apps for a search.
+    fn drain_fetcher(&mut self) {
+        let Some(fetcher) = self.fetcher.as_ref() else {
+            return;
+        };
+        let answers: Vec<_> = std::iter::from_fn(|| fetcher.try_recv()).collect();
+        for answer in answers {
+            match answer {
+                crate::catalogue::fetcher::Fetched::Details(details) => {
+                    let shown = self.focused_detail.as_deref() == Some(details.id.as_str());
+                    self.details.insert(details.id.clone(), *details);
+                    self.structure_dirty |= shown;
+                }
+                crate::catalogue::fetcher::Fetched::DetailsFailed { id, error } => {
+                    // The page keeps the details it has; nothing to repeat.
+                    tracing::warn!(app = %id, %error, "could not fetch app details");
+                }
+                crate::catalogue::fetcher::Fetched::Search { query, items } => {
+                    if query == self.query.trim() {
+                        self.remote_query = query;
+                        self.remote_results = items;
+                        self.structure_dirty = true;
+                    }
+                }
+            }
+        }
     }
 
     fn apply_worker_snapshot(&mut self, snap: crate::worker::Snapshot) {
@@ -1337,11 +1689,10 @@ impl StoreApp {
                 self.focused_detail.as_deref() == Some(id.as_str())
             }
         });
-        let applies_items = match snap.query.as_deref() {
-            Some(_) => current_query,
-            None => snap.detail.is_none(),
-        };
-        if applies_items {
+        // Search answers from the catalogue on this device: a snapshot that
+        // answers a query (a repository browse) never replaces the catalogue
+        // the screens list, and a detail snapshot only enriches its app.
+        if snap.query.is_none() && snap.detail.is_none() {
             self.set_items_from_worker(snap.items);
         }
         if let Some(detail) = snap.detail {
@@ -1351,24 +1702,32 @@ impl StoreApp {
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
         self.set_unanswered_repositories(snap.unanswered_repositories);
+        self.set_blocks(snap.blocks);
+        if let Some(app) = snap.updating
+            && let Some((_, action)) = self.active_operation.as_ref()
+        {
+            // Update all moves through the apps one at a time; the row of
+            // the one being updated shows its progress.
+            let action = self
+                .item(&app)
+                .map_or(*action, |item| item.action_kind(self.flatpak_available));
+            self.active_operation = Some((app, action));
+            self.structure_dirty = true;
+        }
         if current_detail && current_query {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
         }
     }
 
-    /// Ask the worker for the search results and details the window now
-    /// shows. Without a worker (a capture, a past version) nothing is
-    /// fetched.
+    /// Ask the worker for the details the window now shows. Search answers
+    /// from the local catalogue index and asks nothing. Without a worker (a
+    /// capture, a past version) nothing is fetched.
     fn request_from_worker(&mut self) {
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
-        let search = self.pending_search.take();
         let detail = self.pending_detail.take();
-        if let Some(query) = search {
-            worker.request(Request::Search(query));
-        }
         if let Some(id) = detail {
             worker.request(Request::Detail(id));
         }
@@ -1413,17 +1772,50 @@ impl StoreApp {
                         if let Some(notice) = self.local_only_notice(item) {
                             fields.insert("notice".into(), serde_json::json!(notice));
                         }
+                        fields.insert(
+                            "blocked_by".into(),
+                            serde_json::to_value(self.blocks.blockers(id))
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                        let facts = self.page_facts(item);
+                        fields.insert(
+                            "developer".into(),
+                            serde_json::json!(resource_detail_excerpt(&self.developer(item))),
+                        );
+                        fields.insert(
+                            "license".into(),
+                            serde_json::json!(resource_detail_excerpt(&facts.license)),
+                        );
+                        fields.insert(
+                            "download_bytes".into(),
+                            serde_json::json!(facts.download_bytes),
+                        );
+                        fields.insert(
+                            "screenshots".into(),
+                            serde_json::json!(facts.screenshots.len()),
+                        );
+                        fields.insert(
+                            "permissions".into(),
+                            facts.permissions.as_ref().map_or(
+                                serde_json::Value::Null,
+                                |permissions| {
+                                    serde_json::json!(
+                                        permissions
+                                            .iter()
+                                            .map(crate::catalogue::Permission::label)
+                                            .collect::<Vec<_>>()
+                                    )
+                                },
+                            ),
+                        );
                         Ok(detail)
                     })
             })
             .transpose()?;
         let visible = self.visible_items();
-        let pages = visible.len().div_ceil(PAGE_SIZE).max(1);
-        let page = self.catalog_page.min(pages.saturating_sub(1));
         let items = visible
             .iter()
-            .skip(page.saturating_mul(PAGE_SIZE))
-            .take(PAGE_SIZE)
+            .take(self.shown)
             .map(|item| inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref()))
             .collect::<Vec<_>>();
         let remotes = self
@@ -1443,9 +1835,11 @@ impl StoreApp {
             })
             .collect::<Vec<_>>();
         Ok(serde_json::json!({
-            "query": self.query, "source": self.active_filter.label(),
-            "category": self.active_category, "page": page, "pages": pages,
+            "query": self.query, "view": self.view.name(),
+            "category": match &self.view { View::Category(category) => Some(category.as_str()), _ => None },
+            "shown": self.shown.min(visible.len()),
             "total": self.items.len(), "matching": visible.len(), "items": items,
+            "blocked": self.focused_detail.as_deref().map(|id| self.blocks.is_blocked(id)),
             "detail": detail, "selected_app": self.focused_detail,
             "technical_details_open": self.technical_details_open, "flatpak_available": self.flatpak_available,
             "flatpak_checking": self.flatpak_checking,
@@ -1554,7 +1948,7 @@ impl StoreApp {
             }
             self.active_operation = Some((item.id.clone(), action));
             self.operation_error = None;
-            self.status_line = format!("{} {}…", action.progress_label(), item.name);
+            self.status_line = view::progress_label(action, &item.name);
             self.structure_dirty = true;
             return Ok(Job::admitted(
                 Request::Act(Box::new(item), action),
@@ -1598,7 +1992,14 @@ impl StoreApp {
                 recovery.visible = true;
                 self.structure_dirty = true;
             }
-            StoreEffect::BackRuntime | StoreEffect::ShowCatalogue => self.show_catalogue(),
+            StoreEffect::BackRuntime => self.show_catalogue(),
+            StoreEffect::ShowCatalogue => {
+                if self.focused_detail.is_some() || self.remotes_open || self.safety_open {
+                    self.show_catalogue();
+                } else {
+                    self.show_view(View::Home);
+                }
+            }
             StoreEffect::InspectRuntime => {
                 return Err(ui::i18n!("store-runtime-inspect-route"));
             }
@@ -1611,10 +2012,22 @@ impl StoreApp {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
                 }
-                self.search_opener
-                    .open(ui::search::SearchRequest::this_app().with_query(query.clone()));
+                // The same search as typing it into the window's filter field.
+                self.set_filter_field(&query);
                 self.set_query(query);
             }
+            StoreEffect::ShowView { view } => {
+                let view = View::named(&view).ok_or_else(|| "unknown Store view".to_string())?;
+                self.set_filter_field("");
+                self.set_query(String::new());
+                self.show_view(view);
+            }
+            StoreEffect::ShowMore => {
+                self.shown = self.shown.saturating_add(view::PAGE);
+                self.structure_dirty = true;
+            }
+            StoreEffect::BlockApp { app } => self.change_person_block(&app, true)?,
+            StoreEffect::UnblockApp { app } => self.change_person_block(&app, false)?,
             StoreEffect::BrowseRemote { remote } => {
                 let source = self
                     .remotes
@@ -1631,47 +2044,35 @@ impl StoreApp {
                 self.focused_detail = None;
                 self.remotes_open = false;
                 self.safety_open = false;
+                self.set_filter_field("");
                 self.set_query(String::new());
-                // This job supplies the repository result itself. An empty
-                // global search queued here would replace it immediately.
-                self.pending_search = None;
                 self.pending_detail = None;
-                self.catalog_page = 0;
-                self.scroll_offset.set((0.0, 0.0));
-                self.set_active_filter(SourceFilter::All);
-                self.set_active_category(None);
-                self.structure_dirty = true;
+                self.show_view(View::Repository(remote.clone()));
                 return Ok(Job::admitted(Request::BrowseRemote(remote), Finish::Status));
             }
-            StoreEffect::SetSource { source } => {
-                self.set_active_filter_from_local(&source);
-                if self.active_filter.label() != source {
-                    return Err("unknown Store source filter".into());
-                }
-            }
             StoreEffect::SetCategory { category } => {
-                let category = (category != "All").then_some(category);
-                if category.as_ref().is_some_and(|value| {
-                    value.chars().count() > 128
-                        || !self.category_labels().iter().any(|known| known == value)
-                }) {
-                    return Err("unknown Store category".into());
+                if category == "All" || category.is_empty() {
+                    self.show_view(View::Home);
+                } else {
+                    if category.chars().count() > 128
+                        || !self.categories().iter().any(|known| *known == category)
+                    {
+                        return Err("unknown Store category".into());
+                    }
+                    self.set_filter_field("");
+                    self.set_query(String::new());
+                    self.show_view(View::Category(category));
                 }
-                self.set_active_category(category);
             }
             StoreEffect::ClearFilters => {
+                self.set_filter_field("");
                 self.set_query(String::new());
-                self.set_active_filter(SourceFilter::All);
-                self.set_active_category(None);
+                self.structure_dirty = true;
             }
             StoreEffect::ShowDetails { app } => {
                 if !crate::reports::valid_app_id(&app) {
                     return Err("invalid app identity".into());
                 }
-                self.status_line = self.items.iter().find(|item| item.id == app).map_or_else(
-                    || "Opening app details…".to_owned(),
-                    |item| format!("Loading details for {}…", item.name),
-                );
                 self.focus_detail(&app);
                 self.pending_detail = Some(app);
             }
@@ -1758,17 +2159,6 @@ impl StoreApp {
             }
             StoreEffect::SetTechnicalDetails { expanded } => {
                 self.technical_details_open = expanded;
-                self.structure_dirty = true;
-            }
-            StoreEffect::PreviousPage => {
-                self.catalog_page = self.catalog_page.saturating_sub(1);
-                self.scroll_offset.set((0.0, 0.0));
-                self.structure_dirty = true;
-            }
-            StoreEffect::NextPage => {
-                let pages = self.visible_items().len().div_ceil(PAGE_SIZE).max(1);
-                self.catalog_page = (self.catalog_page + 1).min(pages.saturating_sub(1));
-                self.scroll_offset.set((0.0, 0.0));
                 self.structure_dirty = true;
             }
             StoreEffect::ShowRemotes => {
@@ -1882,8 +2272,16 @@ impl StoreApp {
         let item = self
             .items
             .iter()
+            .chain(&self.remote_results)
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
+        // A blocked app is opened, installed or updated from nowhere; it can
+        // still be removed.
+        if self.blocks.is_blocked(app)
+            && !matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove)
+        {
+            return Err(ui::i18n!("store-blocked-refused"));
+        }
         if action.requires_flatpak_host() && !self.flatpak_available {
             return Err(flatpak_unavailable_reason(self.flatpak_error.as_deref()).into());
         }
@@ -2341,7 +2739,7 @@ impl StoreApp {
     /// grouped by publisher, the Flatpak remotes, the moderation effects on
     /// each report and the running package job.
     pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
-        let mut snapshot_items = self.items.iter().collect::<Vec<_>>();
+        let mut snapshot_items = self.blocks.unblocked(&self.items).collect::<Vec<_>>();
         snapshot_items.sort_by(|left, right| left.id.cmp(&right.id));
         let mut publishers: std::collections::BTreeMap<String, (String, Vec<LiveRow>)> =
             std::collections::BTreeMap::new();
@@ -2586,10 +2984,14 @@ impl StoreApp {
         };
         let first = first.id.clone();
         let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
-        self.status_line = format!(
-            "Updating {} app{}…",
-            items.len(),
-            if items.len() == 1 { "" } else { "s" }
+        self.status_line = ui::i18n::I18nManager::format(
+            "store-update-all-starting",
+            &[(
+                "count",
+                ui::i18n::ArgValue::Number(f64::from(
+                    u32::try_from(items.len()).unwrap_or(u32::MAX),
+                )),
+            )],
         );
         self.active_operation = Some((first, action));
         self.operation_error = None;
@@ -2597,8 +2999,8 @@ impl StoreApp {
         Ok(Job::admitted(Request::UpdateAll(items), Finish::Package))
     }
     pub fn updatable(&self) -> Vec<(&StoreItem, ActionKind)> {
-        self.items
-            .iter()
+        self.blocks
+            .unblocked(&self.items)
             .filter(|item| item.installed.update_available())
             .filter_map(|item| {
                 let action = item.action_kind(self.flatpak_available);
@@ -2655,15 +3057,18 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
 }
 
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
-    if action == ActionKind::RuntimeInstall {
-        ui::i18n!("store-runtime-install")
-    } else if action == ActionKind::NeedsFlatpakHost && error.is_some() {
-        ui::i18n!("store-flatpak-unavailable")
-    } else if action == ActionKind::AddBot {
-        ui::i18n!("store-bot-add-to-room")
-    } else {
-        action.label().to_owned()
-    }
+    ui::i18n!(match action {
+        ActionKind::Open | ActionKind::FlatpakOpen => "store-action-open",
+        ActionKind::FlatpakInstall => "store-action-install",
+        ActionKind::RuntimeInstall => "store-runtime-install",
+        ActionKind::Update | ActionKind::FlatpakUpdate => "store-action-update",
+        ActionKind::Remove | ActionKind::FlatpakRemove => "store-action-remove",
+        ActionKind::MarkInstalled => "store-action-keep",
+        ActionKind::Unmark => "store-action-release",
+        ActionKind::NeedsFlatpakHost if error.is_some() => "store-flatpak-unavailable",
+        ActionKind::NeedsFlatpakHost => "store-action-flatpak-setup",
+        ActionKind::AddBot => "store-bot-add-to-room",
+    })
 }
 
 fn inspect_item(
@@ -2748,6 +3153,8 @@ mod tests {
                 flatpak_error: None,
                 operation_error: Some("Earlier detail request failed".into()),
                 unanswered_repositories: Vec::new(),
+                blocks: BlockList::empty(),
+                updating: None,
             });
             assert_eq!(
                 app.focused_detail, selected,
@@ -2800,6 +3207,8 @@ mod tests {
             flatpak_error: None,
             operation_error: error,
             unanswered_repositories: Vec::new(),
+            blocks: BlockList::empty(),
+            updating: None,
         };
         app.apply_worker_snapshot(snapshot(
             crate::worker::DetailUpdate::Requested {
@@ -2857,6 +3266,8 @@ mod tests {
             flatpak_error: None,
             operation_error: error.map(str::to_owned),
             unanswered_repositories: Vec::new(),
+            blocks: BlockList::empty(),
+            updating: None,
         };
         app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
         assert_eq!(
@@ -2876,8 +3287,16 @@ mod tests {
             .clone();
         app.apply_worker_snapshot(snapshot("chess", vec![current], None));
         assert_eq!(app.status_line, "Received search results");
-        assert_eq!(app.items.len(), 1);
-        assert_eq!(app.items[0].id, "id.chess");
+        assert_eq!(
+            app.items.len(),
+            retained_count,
+            "a query's answer never replaces the catalogue search runs over"
+        );
+        assert_eq!(app.query(), "chess");
+        assert!(
+            app.results.apps.iter().any(|id| id == "id.chess"),
+            "the local search found the app"
+        );
     }
 
     fn inspected_store() -> (
@@ -2925,6 +3344,8 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                blocks: BlockList::empty(),
+                updating: None,
             });
         })
         .unwrap();
@@ -2940,7 +3361,7 @@ mod tests {
                 .harness()
                 .controls()
                 .into_iter()
-                .find(|control| control.name.as_deref() == Some("Clear filters"))
+                .find(|control| control.name.as_deref() == Some("Clear search"))
                 .expect("the empty result publishes its recovery control");
             assert!(!reset.disabled);
             let audit = app.harness().native_app_audit();
@@ -2960,7 +3381,8 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot["query"], "");
         app.with_surface(|store: &mut StoreApp| {
-            assert_eq!(store.pending_search.as_deref(), Some(""));
+            assert_eq!(store.query(), "");
+            assert!(store.results.is_empty());
         })
         .unwrap();
     }
@@ -3032,6 +3454,8 @@ mod tests {
                 flatpak_error: None,
                 operation_error: None,
                 unanswered_repositories: Vec::new(),
+                blocks: BlockList::empty(),
+                updating: None,
             });
             store.set_worker_busy(true);
         })
@@ -3045,7 +3469,7 @@ mod tests {
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
-        assert!(visible.contains("Catalogues offline"));
+        assert!(visible.contains("Repositories offline"));
         assert!(visible.contains("Repository unavailable"));
         assert!(!visible.contains("No apps found"));
         app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
@@ -3138,7 +3562,8 @@ mod tests {
             app.harness()
                 .controls()
                 .iter()
-                .any(|control| control.name.as_deref() == Some("Add remote") && !control.disabled),
+                .any(|control| control.name.as_deref() == Some("Add repository")
+                    && !control.disabled),
             "the normal owner can still use the scaled form"
         );
         let targets = app.harness().targets();
@@ -3280,19 +3705,20 @@ mod tests {
     fn ordinary_owner_store_controls_and_optional_offscreen_review() {
         let output = std::env::var_os("TILO_STORE_REVIEW_DIR").map(std::path::PathBuf::from);
         for (scenario, action) in [
-            ("wide", "Refresh catalogues"),
-            ("account-setup", "Refresh catalogues"),
+            ("wide", "Flatpak repositories"),
+            ("account-setup", "Trust and moderation"),
             ("account-remotes", "Browse apps"),
             ("remotes", "Browse apps"),
             ("remotes-disabled", "Enable source"),
             ("search-notes", "Notes"),
-            ("paging", "Previous"),
+            ("updates", "Update all"),
             ("detail", "Show technical details"),
             ("detail-technical", "Hide technical details"),
+            ("detail-blocked", "Show technical details"),
             ("flatpak-detail", "Install"),
             ("flatpak-installed", "Open"),
-            ("error", "Refresh catalogues"),
-            ("offline", "Refresh catalogues"),
+            ("error", "Refresh apps"),
+            ("offline", "Refresh apps"),
         ] {
             let (_environment, _directory, mut app) = inspected_store();
             app.with_surface(|store: &mut StoreApp| {
@@ -3320,7 +3746,7 @@ mod tests {
                     let additional = match scenario {
                         "account-remotes" => &["Refresh remotes"][..],
                         "remotes" => &["Disable source"][..],
-                        "wide" => &["Search"][..],
+                        "wide" => &["Review package"][..],
                         "detail" => &["Open"][..],
                         _ => &[][..],
                     };
@@ -3478,7 +3904,7 @@ mod tests {
             app.effect(&StoreEffect::SetTechnicalDetails { expanded: false })
                 .unwrap();
             let collapsed = app.harness().inspection_json().unwrap();
-            assert!(collapsed.contains("Latest version"));
+            assert!(collapsed.contains("Version"));
             assert!(collapsed.contains("On this device"));
             assert!(!collapsed.contains("App ID"));
             let control = app
@@ -3690,7 +4116,7 @@ mod tests {
             .unwrap();
         assert_eq!(detail["detail"]["id"], "so.tilo.notes");
         assert_eq!(detail["selected_app"], first["selected_app"]);
-        assert_eq!(detail["page"], first["page"]);
+        assert_eq!(detail["view"], first["view"]);
         assert_eq!(detail["query"], first["query"]);
         assert_eq!(app.versions().len(), versions);
         assert!(
@@ -3705,8 +4131,8 @@ mod tests {
             })
             .is_err()
         );
-        app.effect(&StoreEffect::SetSource {
-            source: "Flatpak".into(),
+        app.effect(&StoreEffect::ShowView {
+            view: "installed".into(),
         })
         .unwrap();
         let filtered = app
@@ -3714,14 +4140,11 @@ mod tests {
             .unwrap()
             .value
             .unwrap();
-        assert_eq!(filtered["source"], "Flatpak");
-        assert!(
-            filtered["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|item| item["source"] == "Flatpak")
-        );
+        assert_eq!(filtered["view"], "installed");
+        let installed = filtered["items"].as_array().unwrap();
+        assert!(!installed.is_empty());
+        assert!(installed.iter().all(|item| item["installed"] == true));
+        assert_eq!(app.versions().len(), versions, "browsing edits no document");
     }
 
     #[test]
@@ -3748,22 +4171,29 @@ mod tests {
             .value
             .unwrap();
         assert_eq!(first["total"], 200);
-        assert_eq!(first["matching"], 200);
-        assert_eq!(first["pages"], 5);
-        assert_eq!(first["items"].as_array().unwrap().len(), 48);
-        assert!(serde_json::to_vec(&first).unwrap().len() < 64 * 1024);
-        app.effect(&StoreEffect::NextPage).unwrap();
-        let next = app
+        app.effect(&StoreEffect::SetCategory {
+            category: "Productivity".into(),
+        })
+        .unwrap();
+        let category = app
             .effect(&StoreEffect::InspectCatalogue { app: None })
             .unwrap()
             .value
             .unwrap();
-        assert_eq!(next["page"], 1);
-        assert_ne!(next["items"][0]["id"], first["items"][0]["id"]);
+        assert_eq!(category["matching"], 200);
+        assert_eq!(category["items"].as_array().unwrap().len(), view::PAGE);
+        assert!(serde_json::to_vec(&category).unwrap().len() < 64 * 1024);
+        app.effect(&StoreEffect::ShowMore).unwrap();
+        let more = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(more["items"].as_array().unwrap().len(), view::PAGE * 2);
+        assert_eq!(more["items"][0]["id"], category["items"][0]["id"]);
     }
 
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
-    use crate::widgets::{CardAction, CardDetails};
     use automerge::{AutoCommit, ReadDoc};
     use ui::tilo_resource::Resource as _;
     use ui::widget::CardGrid;
@@ -3777,6 +4207,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),
@@ -4131,7 +4562,7 @@ mod tests {
                 .any(|action| action.id == "remove-remote")
         );
         app.set_query("old search".into());
-        app.catalog_page = 4;
+        app.shown = view::PAGE * 3;
         let job = admitted_job(
             &mut app,
             StoreEffect::BrowseRemote {
@@ -4143,10 +4574,15 @@ mod tests {
         );
         assert!(!app.remotes_open);
         assert_eq!(app.query(), "");
-        assert_eq!(app.catalog_page, 0);
-        assert!(
-            app.pending_search.is_none(),
-            "a global empty search must not overwrite repository browsing"
+        assert_eq!(
+            app.shown,
+            view::PAGE,
+            "browsing starts at the top of the list"
+        );
+        assert_eq!(
+            app.view(),
+            &View::Repository("remote:system:tools".into()),
+            "browsing a repository shows its apps"
         );
 
         let remote_item = crate::sources::remote_catalogue_items(
@@ -4239,10 +4675,10 @@ mod tests {
                 .unwrap()
                 .installed = state;
         }
-        app.set_active_filter(SourceFilter::Updates);
+        app.show_view(View::Updates);
         assert_eq!(app.visible_items().len(), 2);
         assert_eq!(
-            accessible_name_count(&*app.build_list(&Theme::default()), "Update all"),
+            accessible_name_count(&*app.build_updates(&Theme::default()), "Update all"),
             1
         );
 
@@ -4264,7 +4700,7 @@ mod tests {
 
         let mut current = seeded_app();
         assert_eq!(
-            accessible_name_count(&*current.build_list(&Theme::default()), "Update all"),
+            accessible_name_count(&*current.build_updates(&Theme::default()), "Update all"),
             0
         );
         assert!(
@@ -4313,33 +4749,29 @@ mod tests {
         }
     }
 
-    /// Source, installed and category filters, search ranking and the category list.
+    /// Discover, On this device and a category list what they promise;
+    /// search ranks on this device; the categories are the catalogue's.
     #[test]
-    fn catalogue_filters_and_search_rank_visible_items() {
-        // Case `visible_items_show_everything_when_filter_is_all`.
+    fn catalogue_views_and_search_rank_visible_items() {
+        // Case `discover_features_tilo_apps_not_yet_on_this_device`.
         {
             let app = seeded_app();
-            assert_eq!(app.visible_items().len(), 3);
-        }
-
-        // Case `filter_tilo_hides_flatpak`.
-        {
-            let mut app = seeded_app();
-            app.set_active_filter(SourceFilter::Tilo);
             let names: Vec<&str> = app
                 .visible_items()
                 .iter()
                 .map(|i| i.name.as_str())
                 .collect();
-            assert!(names.contains(&"Notes"));
-            assert!(names.contains(&"Terminal"));
-            assert!(!names.contains(&"Chess"));
+            assert_eq!(
+                names,
+                vec!["Notes"],
+                "Discover lists real content only: nothing is featured without a rank, update or date"
+            );
         }
 
-        // Case `filter_installed_shows_only_installed`.
+        // Case `on_this_device_shows_only_installed_apps`.
         {
             let mut app = seeded_app();
-            app.set_active_filter(SourceFilter::Installed);
+            app.show_view(View::Installed);
             let names: Vec<&str> = app
                 .visible_items()
                 .iter()
@@ -4348,10 +4780,13 @@ mod tests {
             assert_eq!(names, vec!["Terminal"]);
         }
 
-        // Case `category_filter_gates_the_list`.
+        // Case `a_category_lists_its_apps`.
         {
             let mut app = seeded_app();
-            app.set_active_category(Some("Games".into()));
+            app.admit(StoreEffect::SetCategory {
+                category: "Games".into(),
+            })
+            .unwrap();
             let names: Vec<&str> = app
                 .visible_items()
                 .iter()
@@ -4374,19 +4809,16 @@ mod tests {
         // Case `search_ranks_name_prefix_hits_first`.
         {
             let mut app = seeded_app();
-            // Both "Notes" (name contains "te" mid-string) and
-            // "Terminal" (name starts with "Te") match "te".
             app.set_query("te".into());
             let visible = app.visible_items();
             assert!(visible.len() >= 2);
             assert_eq!(visible[0].name, "Terminal", "prefix hit ranks first");
         }
 
-        // Case `categories_include_all_plus_distinct`.
+        // Case `categories_are_the_catalogues`.
         {
             let app = seeded_app();
-            let cats = app.category_labels();
-            assert_eq!(cats[0], "All");
+            let cats = app.categories();
             assert!(cats.iter().any(|c| c == "Productivity"));
             assert!(cats.iter().any(|c| c == "Games"));
             assert!(cats.iter().any(|c| c == "System"));
@@ -4588,44 +5020,30 @@ mod tests {
             let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
             assert_eq!(
                 view::device_properties(&tilo),
-                vec![
-                    ("On this device", "Available on demand".to_string()),
-                    (
-                        "Storage",
-                        "Fetched when opened, not kept on this device".to_string()
-                    ),
-                ]
+                vec![(
+                    "On this device".to_string(),
+                    "Downloads when you open it".to_string()
+                )]
             );
             assert_eq!(
                 view::device_properties(&flatpak),
-                vec![("On this device", "Not installed".to_string())]
+                vec![("On this device".to_string(), "Not installed".to_string())]
             );
             assert_eq!(tilo.action_kind(true).label(), "Open");
             assert_eq!(flatpak.action_kind(true).label(), "Install");
         }
 
-        // Case `availability_groups_give_way_to_one_ranked_list_while_searching`.
+        // Case `the_title_says_where_the_person_is`.
         {
             let mut app = seeded_app();
-            assert!(app.group_catalogue_by_availability());
+            assert_eq!(app.page_title(), "Discover");
             app.set_query("notes".into());
-            assert!(
-                !app.group_catalogue_by_availability(),
-                "search results remain a single relevance-ranked sequence"
-            );
-        }
-
-        // Case `catalogue_source_summary_is_honest_about_loaded_sources`.
-        {
-            let app = seeded_app();
-            assert_eq!(app.catalogue_source_summary(3), "3 apps from 2 sources");
-
-            let empty = StoreApp::new();
-            assert_eq!(empty.catalogue_source_summary(0), "No apps loaded yet");
-
-            let mut filtered = seeded_app();
-            filtered.set_active_filter(SourceFilter::Tilo);
-            assert_eq!(filtered.catalogue_source_summary(2), "Showing 2 of 3 apps");
+            assert_eq!(app.page_title(), "Search");
+            app.set_query(String::new());
+            app.show_view(View::Updates);
+            assert_eq!(app.page_title(), "Updates");
+            app.focus_detail("id.chess");
+            assert_eq!(app.page_title(), "Chess");
         }
     }
 
@@ -4661,12 +5079,10 @@ mod tests {
             check(list.root_widget());
         }
 
-        // Case `catalogue_states_its_summary_once_and_never_titles_the_window`.
+        // Case `catalogue_never_titles_the_window`.
         {
             let app = seeded_app();
             let tree = app.compose(&Theme::dark());
-            let summary = app.catalogue_source_summary(app.visible_items().len());
-            assert_eq!(accessible_name_count(tree.as_ref(), &summary), 1);
             assert_eq!(
                 accessible_name_count(tree.as_ref(), "App Store"),
                 0,
@@ -4682,39 +5098,39 @@ mod tests {
             assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps"), 1);
         }
 
-        // Case `full_narrow_catalogue_keeps_discover_section_below_ready_cards`.
+        // Case `full_narrow_discover_keeps_its_shelves_apart`.
         {
             let mut app = seeded_app();
             app.set_items(crate::fixture::fixture_catalog());
             let frame = frame_composition(app.compose(&Theme::dark()), 480.0);
             let tree = frame.root_widget();
 
-            let discover =
-                accessible_rect(tree, "Discover").expect("discover heading in full catalogue");
+            let recent = accessible_rect(tree, "Recently updated")
+                .expect("the recently updated heading in a full catalogue");
             let mut grids = Vec::new();
             card_grid_extents(tree, &mut grids);
-            assert_eq!(grids.len(), 3, "updates, on this device and discover grids");
+            assert_eq!(grids.len(), 2, "featured and recently updated grids");
             assert!(
-                grids[1].1 <= discover.y0,
-                "device descendants end at {}, over discover heading {:?}; allocated grid {:?}",
-                grids[1].1,
-                discover,
-                grids[1].0
+                grids[0].1 <= recent.y0,
+                "featured cards end at {}, over the next heading {:?}; allocated grid {:?}",
+                grids[0].1,
+                recent,
+                grids[0].0
             );
             assert!(
-                discover.y1 <= grids[2].0.y0,
-                "discover heading {:?} must precede discover grid {:?}",
-                discover,
-                grids[2].0
+                recent.y1 <= grids[1].0.y0,
+                "the heading {:?} must precede its grid {:?}",
+                recent,
+                grids[1].0
             );
         }
     }
 
-    /// A catalogue longer than one page offers Previous and Next only where they lead somewhere.
+    /// A category longer than a page offers Show more only while there is more.
     #[test]
-    fn a_long_catalogue_pages_with_previous_and_next() {
+    fn a_long_category_shows_more_on_request() {
         let mut app = StoreApp::new();
-        let items = (0..(PAGE_SIZE * 2 + 5))
+        let items = (0..(view::PAGE * 2 + 5))
             .map(|index| {
                 let mut entry = item(
                     "Utility",
@@ -4728,16 +5144,16 @@ mod tests {
             })
             .collect();
         app.set_items(items);
+        app.show_view(View::Category("Utilities".into()));
         let has = |app: &StoreApp, id: &str| {
             let frame = frame_composition(app.compose(&Theme::dark()), 800.0);
             has_test_id(frame.root_widget(), id)
         };
-        assert!(has(&app, "store.page.next"));
-        assert!(!has(&app, "store.page.previous"));
-        app.catalog_page = 1;
-        assert!(has(&app, "store.page.next") && has(&app, "store.page.previous"));
-        app.catalog_page = 2;
-        assert!(!has(&app, "store.page.next") && has(&app, "store.page.previous"));
+        assert!(has(&app, "store.more"));
+        app.admit(StoreEffect::ShowMore).unwrap();
+        assert!(has(&app, "store.more"));
+        app.admit(StoreEffect::ShowMore).unwrap();
+        assert!(!has(&app, "store.more"), "everything is listed");
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
@@ -4879,27 +5295,19 @@ mod tests {
                 let item = &app.items[1];
                 let action = item.action_kind(true);
                 for busy in [false, true] {
-                    let card = crate::widgets::store_card(
+                    let mut primary = app.primary(item);
+                    primary.key = "primary".into();
+                    primary.progress = busy.then(|| view::progress_label(action, &item.name));
+                    let card = crate::widgets::app::card(
                         item,
-                        CardAction {
-                            kind: action,
-                            label: None,
-                            key: "primary",
-                            binding: bindings::package(item, action),
-                            in_progress: busy,
-                        },
-                        CardDetails {
-                            key: "select",
-                            binding: bindings::show_details(item),
-                        },
+                        primary,
+                        bindings::show_details(item),
                         None,
                     );
+                    let select = format!("store.card.{}", item.id);
                     let mut grid = CardGrid::new(vec![card]);
                     let (tree, node) = layout_card_grid(&mut grid, width);
-                    let center = control_mut(&mut grid, "select")
-                        .unwrap()
-                        .get_rect()
-                        .center();
+                    let center = control_mut(&mut grid, &select).unwrap().get_rect().center();
                     let mut doc = AutoCommit::new();
                     let mut focus = None;
                     let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
@@ -4991,8 +5399,14 @@ mod tests {
                 }
             }
             let mut app = seeded_app();
-            app.items[0].description = "A useful app with a longer description. ".repeat(7);
-            let list = frame_composition(app.build_list(&Theme::dark()), 1200.0);
+            let mut items = app.items().to_vec();
+            items[0].tagline = "A useful app with a longer tag line. ".repeat(2);
+            for item in &mut items {
+                item.categories = vec!["Productivity".into()];
+            }
+            app.set_items(items);
+            let list =
+                frame_composition(app.build_category(&Theme::dark(), "Productivity"), 1200.0);
             let mut found = 0;
             check(list.root_widget(), &mut found);
             assert_eq!(found, 3);
@@ -5006,7 +5420,7 @@ mod tests {
         {
             fn banner(widget: &dyn Widget) -> Option<AccessNode> {
                 if let Some(node) = widget.accessibility()
-                    && node.name.as_deref() == Some("Working in background")
+                    && node.name.as_deref() == Some("Working")
                 {
                     return Some(node);
                 }
@@ -5015,6 +5429,9 @@ mod tests {
             let mut app = seeded_app();
             assert!(app.operation_notice().is_none());
 
+            // A remote or registry job in flight; a package operation shows
+            // its progress in place of its button instead.
+            app.pending_jobs = 1;
             app.set_status_line("Installing Notes…");
             app.set_worker_busy(true);
             let busy_notice = app
@@ -5026,6 +5443,7 @@ mod tests {
             assert_eq!(busy.description.as_deref(), Some("Installing Notes…"));
 
             app.set_worker_busy(false);
+            app.pending_jobs = 0;
             app.set_operation_error(Some("signature mismatch".into()));
             let mut notice = app
                 .operation_notice()
@@ -5166,12 +5584,20 @@ mod tests {
                     .any(|item| item.installed.update_available()),
                 "the current catalogue exposes the verified update candidate"
             );
-            app.set_active_filter(SourceFilter::Flatpak);
+            app.show_view(View::Category("Games".into()));
             assert!(
                 app.visible_items()
                     .iter()
                     .all(|item| !item.installed.update_available()),
-                "the update shelf must be derived from the active visible catalogue"
+                "a category lists its own apps, not the updates"
+            );
+            app.show_view(View::Updates);
+            assert_eq!(
+                app.visible_items()
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["id.files"]
             );
         }
 
@@ -5198,7 +5624,7 @@ mod tests {
                 app.active_operation,
                 Some(("id.notes".into(), ActionKind::Open))
             );
-            assert_eq!(app.status_line(), "Starting Notes…");
+            assert_eq!(app.status_line(), "Opening Notes…");
             assert!(
                 app.admit(open).is_err(),
                 "the card action cannot double-submit while the worker owns it"
@@ -5207,6 +5633,66 @@ mod tests {
             app.set_worker_busy(false);
             assert!(app.active_operation.is_none());
         }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "apps can of course be blocked in the app store"
+    /// A blocked app is in no list and no search and cannot be installed; its
+    /// page says who blocked it; only the person who blocked it lifts it,
+    /// and the list is the one desktop search reads.
+    #[test]
+    fn a_blocked_app_is_listed_nowhere_and_only_its_blocker_unblocks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_PERSON_DIR", dir.path());
+        let mut app = seeded_app();
+        app.set_query("Chess".into());
+        assert_eq!(app.results.apps, ["id.chess"]);
+        assert!(matches!(
+            app.admit(StoreEffect::BlockApp {
+                app: "id.chess".into()
+            }),
+            Ok(Admitted::Done)
+        ));
+        assert!(
+            app.results.apps.is_empty(),
+            "a blocked app is found nowhere"
+        );
+        app.set_query(String::new());
+        app.show_view(View::Category("Games".into()));
+        assert!(app.visible_items().is_empty());
+        assert!(
+            app.catalogue_search_entries()
+                .iter()
+                .all(|entry| entry.anchor.as_deref() != Some("app:id.chess")),
+            "nor in the platform search the Store feeds"
+        );
+        assert!(
+            app.admit(StoreEffect::FlatpakInstall {
+                app: "id.chess".into()
+            })
+            .is_err()
+        );
+        let inspected = app.inspect_catalogue(Some("id.chess")).unwrap();
+        assert_eq!(inspected["detail"]["blocked_by"][0]["kind"], "person");
+        assert!(
+            app_catalogue::BlockList::load().is_blocked("id.chess"),
+            "the person's list is the one desktop search reads"
+        );
+        app.admit(StoreEffect::UnblockApp {
+            app: "id.chess".into(),
+        })
+        .unwrap();
+        assert!(!app.blocks.is_blocked("id.chess"));
+        assert!(!app_catalogue::BlockList::load().is_blocked("id.chess"));
+        app.set_blocks(BlockList::empty().with_workspace_policy("School", ["id.chess"]));
+        assert!(
+            app.admit(StoreEffect::UnblockApp {
+                app: "id.chess".into()
+            })
+            .is_err(),
+            "a workspace's block is not the person's to lift"
+        );
+        assert!(app.blocks.is_blocked("id.chess"));
     }
 
     /// Browsing effects move only this window: the document never changes,
@@ -5223,7 +5709,7 @@ mod tests {
             // refresh worker streams one — never a fabricated one.
             let app = StoreApp::new();
             assert!(app.items().is_empty());
-            assert_eq!(app.active_filter(), SourceFilter::All);
+            assert_eq!(app.view(), &View::Home);
             assert!(app.query().is_empty());
         }
 
@@ -5234,7 +5720,6 @@ mod tests {
             app.set_query("Term".into());
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.query(), "Term");
-            assert_eq!(app.pending_search.as_deref(), Some("Term"));
             let names: Vec<&str> = app
                 .visible_items()
                 .iter()
@@ -5249,14 +5734,11 @@ mod tests {
             let mut second = seeded_app();
             let mut doc = AutoCommit::new();
             let heads = doc.get_heads();
-            first.set_active_filter(SourceFilter::Tilo);
-            first.set_active_category(Some("Games".into()));
+            first.show_view(View::Category("Games".into()));
             first.sync(&doc, &automerge::ROOT);
             second.sync(&doc, &automerge::ROOT);
-            assert_eq!(first.active_filter(), SourceFilter::Tilo);
-            assert_eq!(first.active_category(), Some("Games"));
-            assert_eq!(second.active_filter(), SourceFilter::All);
-            assert_eq!(second.active_category(), None);
+            assert_eq!(first.view(), &View::Category("Games".into()));
+            assert_eq!(second.view(), &View::Home);
             assert_eq!(doc.get_heads(), heads, "browsing writes nothing");
         }
 
@@ -5265,20 +5747,20 @@ mod tests {
             let mut app = seeded_app();
             app.scroll_offset.set((0.0, 240.0));
             assert!(matches!(
-                app.admit(StoreEffect::SetSource {
-                    source: "Tilo".into()
+                app.admit(StoreEffect::ShowView {
+                    view: "installed".into()
                 }),
                 Ok(Admitted::Done)
             ));
-            assert_eq!(app.active_filter(), SourceFilter::Tilo);
+            assert_eq!(app.view(), &View::Installed);
             assert!(
                 app.visible_items()
                     .iter()
-                    .all(|item| matches!(item.source, StoreSource::Tilo { .. }))
+                    .all(|item| item.installed.is_installed())
             );
             assert!(
-                app.admit(StoreEffect::SetSource {
-                    source: "Elsewhere".into()
+                app.admit(StoreEffect::ShowView {
+                    view: "Elsewhere".into()
                 })
                 .is_err()
             );
@@ -5287,7 +5769,7 @@ mod tests {
                 category: "Games".into(),
             })
             .unwrap();
-            assert_eq!(app.active_category(), Some("Games"));
+            assert_eq!(app.view(), &View::Category("Games".into()));
             assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
             assert!(
                 app.admit(StoreEffect::SetCategory {
@@ -5299,7 +5781,8 @@ mod tests {
                 query: "Chess".into(),
             })
             .unwrap();
-            assert_eq!(app.pending_search.as_deref(), Some("Chess"));
+            assert_eq!(app.query(), "Chess");
+            assert_eq!(app.results.apps, ["id.chess"]);
             assert!(
                 app.admit(StoreEffect::SetSearch {
                     query: "x".repeat(513)
