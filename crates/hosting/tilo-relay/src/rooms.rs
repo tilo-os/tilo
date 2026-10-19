@@ -1115,8 +1115,9 @@ impl Rooms {
     ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
         let now = SystemTime::now();
         let state = self.room(room).await?;
-        let governed = state.lock().await;
-        let policy = governed
+        let policy = state
+            .lock()
+            .await
             .peer()
             .permissions(self.inner.host.cert.device_public_key, now)
             .map_err(CollaborationError::new)?

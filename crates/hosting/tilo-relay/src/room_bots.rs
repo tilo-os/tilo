@@ -318,6 +318,24 @@ fn chat_door<'a>(
     ReplicaDoor::new(replica, |chat: &chat::Chat| &chat.moderation, govern, now)
 }
 
+/// The record `doc` holds, read as this build's `R` once it is brought up to
+/// `R`'s storage version by the app's own migration
+/// ([`tilo_resource::evolution::migrate`]). A room an older relay or older
+/// devices wrote is read, never refused: a newer relay starts on an older
+/// relay's state. The migration deletes nothing and rewrites no id, and it
+/// is the same change every device migrating the record makes.
+///
+/// # Errors
+/// The migration failed, or the migrated record does not read as `R`.
+pub fn opened<R>(doc: &mut automerge::AutoCommit) -> Result<R::State, String>
+where
+    R: tilo_resource::Resource,
+{
+    tilo_resource::evolution::migrate::<R>(doc)
+        .map_err(|error| format!("bring the record up to version {}: {error}", R::VERSION))?;
+    R::read(doc).map_err(|error| error.to_string())
+}
+
 /// The record of `app` a room keeps and seeds: the primary of an app that
 /// keeps one per room (chat), else the room's default record, which every
 /// member's first window of the app opens.

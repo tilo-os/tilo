@@ -635,6 +635,9 @@ mod door_tests {
             .await
     }
 
+    /// What a test does to a door's grant before it is redeemed.
+    type Forgery = Box<dyn FnOnce(&mut PreAdmission) + Send>;
+
     #[tokio::test]
     async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
@@ -654,7 +657,7 @@ mod door_tests {
             .await
             .unwrap();
         let host_device = owner.device_public_key;
-        let forgeries: [(&str, Box<dyn FnOnce(&mut PreAdmission) + Send>); 3] = [
+        let forgeries: [(&str, Forgery); 3] = [
             (
                 "a zero signature",
                 Box::new(|grant: &mut PreAdmission| grant.signature = [0; 64]),
@@ -800,9 +803,10 @@ mod door_tests {
     async fn writes_in_chat(rooms: &Rooms, room: &str, device: &DeviceCert) -> bool {
         const CHAT: &str = "so.tilo.chat";
         let state = rooms.room(room).await.unwrap();
-        let governed = state.lock().await;
         let now = std::time::SystemTime::now();
-        let member = governed
+        let member = state
+            .lock()
+            .await
             .peer()
             .permissions(device.device_public_key, now)
             .unwrap();
