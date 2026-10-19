@@ -134,8 +134,9 @@ release = ["sha-{commit}"]               # tags a signed release pushes; {versio
 #                                        # <first tag>-<arch> (consumers that verify each one)
 
 [product.context]                        # optional: a step that prepares the build context
-run = "bash tools/ci/publish/web-entry-context.sh {dir}/context"
-inputs = ["crates/browser/**", "apps/**"]
+run = "bash tools/ci/publish/web-entry-context.sh {dir}/context /target/publish/web-desktop/bundle"
+inputs = ["crates/browser/tilo-browser-runtime/container/**"]
+needs = ["web-desktop-bundle"]           # checks whose outputs the context takes
 outputs = ["{dir}/context/**"]
 
 [product.build]
