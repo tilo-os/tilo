@@ -203,7 +203,7 @@ impl Checkbox {
         // `border_standard` vanished on a raised dark card.
         let marked = face.checked || face.indeterminate;
         let box_color = if marked {
-            theme.tokens.colors.intent.inverted
+            crate::tokens::colors::active_fill(&theme.tokens.colors)
         } else if face.interact.hovered {
             theme
                 .tokens
@@ -248,7 +248,7 @@ impl Checkbox {
                 transform,
                 theme.tokens.colors.ink_on_any(
                     &[box_color],
-                    theme.tokens.colors.intent.on_inverted,
+                    crate::tokens::colors::ACTIVE_KNOB,
                     crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 ),
                 None,
@@ -415,7 +415,7 @@ impl Widget for Checkbox {
             &CheckboxFace::new(visual, self.control.is_checked)
                 .indeterminate(self.indeterminate)
                 .hovered(self.control.is_hovered)
-                .focused(self.control.is_focused)
+                .focused(self.control.focus_visible())
                 .disabled(!self.control.effectively_enabled()),
         );
         if let Some(label) = self.label.as_ref() {
