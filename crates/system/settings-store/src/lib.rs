@@ -100,6 +100,7 @@ pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;
 pub mod hardware;
+pub mod identity;
 pub mod index;
 mod key;
 pub mod keyboard_shortcuts;

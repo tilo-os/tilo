@@ -453,9 +453,7 @@ impl ShellOverlayHost {
                 return;
             }
             ProfileChoice::Colour(id) => {
-                let mut values = serde_json::Map::new();
-                values.insert("colour".into(), id.clone().into());
-                if let Err(error) = settings_store::update_section("identity", values) {
+                if let Err(error) = settings_store::identity::COLOUR.set(Some(id.clone())) {
                     tracing::warn!(%error, "could not keep the chosen colour");
                 }
                 crate::shell::state::read_local_presence_hue();
