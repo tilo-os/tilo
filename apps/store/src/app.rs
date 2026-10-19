@@ -3483,7 +3483,7 @@ mod tests {
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
-        assert!(visible.contains("Repositories offline"));
+        assert!(visible.contains("Can't reach the app catalogue"));
         assert!(visible.contains("Repository unavailable"));
         assert!(!visible.contains("No apps found"));
         app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
