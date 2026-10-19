@@ -366,10 +366,9 @@ static SHARED: Mutex<Option<SharedState>> = Mutex::new(None);
 static SHARED_REVISION: AtomicU64 = AtomicU64::new(0);
 static SHARED_CHECKING: AtomicBool = AtomicBool::new(false);
 
-/// Flathub's apps and the block list, as last read. Returns immediately;
-/// a check that is due runs on a worker ([`refresh_shared`]).
+/// Flathub's apps and the block list, as last read. Returns immediately
+/// and reads no file; [`refresh_shared`] keeps it current.
 pub fn shared_catalogue() -> SharedCatalogue {
-    refresh_shared();
     SHARED
         .lock_recover()
         .as_ref()

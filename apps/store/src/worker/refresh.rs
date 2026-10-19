@@ -516,6 +516,12 @@ impl Refresh {
 
     fn rebuild(&self, state: &mut State) {
         state.base_items = merge(self.native_items(), self.flatpak_items(state));
+        // Blocked apps are listed nowhere; an installed one stays, so it can
+        // still be managed and removed.
+        state.blocks = app_catalogue::BlockList::load();
+        state
+            .base_items
+            .retain(|item| item.installed.is_installed() || !state.blocks.is_blocked(&item.id));
         // Pending or failed alike: what these list is not current yet.
         state.unanswered_repositories = self
             .registries
