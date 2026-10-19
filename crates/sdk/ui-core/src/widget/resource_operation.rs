@@ -331,7 +331,19 @@ pub fn start_in_children<W: Widget + ?Sized>(
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     op.check()?;
-    for child in widget.children_mut() {
+    start_in(widget.children_mut(), op, doc, path)
+}
+
+/// [`start_in_children`] once the children are in hand: not generic, so it
+/// is compiled once rather than for every widget type that keeps the default
+/// [`Widget::start_operation`].
+fn start_in(
+    children: Vec<&mut (dyn Widget + '_)>,
+    op: &ResourceOperation<'_>,
+    doc: &mut crate::widget::Edits<'_>,
+    path: &ObjId,
+) -> Result<Option<ResourceOperationStart>, String> {
+    for child in children {
         // A nested canonical owner is an independent destination. A required
         // operation reaches it only through that owner's checked dispatch frame.
         if op.is_scoped() && child.has_separate_document_owner() {
