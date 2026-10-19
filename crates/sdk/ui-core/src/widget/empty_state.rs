@@ -452,6 +452,7 @@ fn paint_empty_state(
     // (`crate::room_sync`).
     let waiting = crate::room_sync::waiting();
     let mut waiting_spinner = None;
+    let mut waiting_step = None;
     let replaced;
     let (content, spinner) = match &waiting {
         Some(waiting) => {
@@ -475,7 +476,7 @@ fn paint_empty_state(
                 } else {
                     0
                 };
-                crate::room_sync::spinner_painted(step, turning);
+                waiting_step = Some((step, turning));
                 waiting_spinner = Some(crate::widget::Spinner::started_at(since));
             }
             (&replaced, waiting_spinner.as_mut())
@@ -496,6 +497,9 @@ fn paint_empty_state(
     } = placed;
 
     if let Some(slot) = hero {
+        if let Some((step, turning)) = waiting_step {
+            crate::room_sync::spinner_painted(step, turning, transform.transform_rect_bbox(slot));
+        }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);
             spinner.draw(
@@ -2179,7 +2183,10 @@ mod tests {
         });
         assert!(wide.msg_h > one_line.msg_h, "the message wraps");
         let narrow = style.measure(&mut text, 320.0, &content);
-        assert!(narrow.inner_width < wide.inner_width, "a narrow window still narrows it");
+        assert!(
+            narrow.inner_width < wide.inner_width,
+            "a narrow window still narrows it"
+        );
     }
 
     #[test]
@@ -2420,20 +2427,22 @@ mod tests {
         };
 
         crate::room_sync::set(told(RoomSyncState::Connecting));
-        let _ = crate::room_sync::take_spinner_stepped();
+        let _ = crate::room_sync::take_spinner_damage();
         assert!(
             paint(&mut scene).is_none(),
             "before the first sync the app's own empty state, and its action, wait"
         );
         assert!(
-            crate::room_sync::take_spinner_stepped(),
-            "the connecting state turns a spinner"
+            crate::room_sync::take_spinner_damage().is_some_and(|slot| {
+                rect.contains(slot.center()) && slot.area() < rect.area() / 4.0
+            }),
+            "the connecting state turns a spinner and damages its slot alone"
         );
 
         crate::room_sync::set(told(RoomSyncState::HostNeedsUpdate));
         assert!(paint(&mut scene).is_none());
         assert!(
-            !crate::room_sync::take_spinner_stepped(),
+            crate::room_sync::take_spinner_damage().is_none(),
             "a host that has to update is no wait to spin through"
         );
 

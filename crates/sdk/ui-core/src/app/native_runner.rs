@@ -3082,8 +3082,9 @@ impl AppHandler {
         let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         drop(draw_phase);
         // An empty state waiting for its room's first sync turns a spinner
-        // no widget's damage covers (`crate::room_sync`): a new pose repaints.
-        full_redraw_required |= crate::room_sync::take_spinner_stepped();
+        // no widget's damage covers (`crate::room_sync`): a new pose damages
+        // its slot, in scene pixels.
+        let spinner_damage = crate::room_sync::take_spinner_damage();
         let (transform, window_rect, t_draw_us) =
             (drawn.transform, drawn.window_rect, drawn.draw_us);
         // The tooltip's material blurs what is under it, which repaints this
@@ -3180,6 +3181,11 @@ impl AppHandler {
             let mut offers = crate::scroll_copy::accepting(|| {
                 collect_submitted_widget_damage(root, &mut damage_regions);
             });
+            // Widget damage is logical, like the spinner's slot once the
+            // scale is taken out of it; both are scaled back together.
+            damage_regions.extend(
+                spinner_damage.map(|slot| slot.scale_from_origin(1.0 / f64::from(scale_factor))),
+            );
             // Moved geometry repaints the window unless every move is a
             // scroll's content moving with it; rows a long list mounted or
             // let go of in it are damage beside the copy.
