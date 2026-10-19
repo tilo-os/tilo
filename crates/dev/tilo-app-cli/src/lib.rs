@@ -3348,7 +3348,7 @@ impl Default for {type_name}Config {{
 /// App-defined columns retain text, custom paint, or real child-widget cells.
 /// The concrete return type preserves sorting, resizing, activation, targeted
 /// model notifications, measurement, scrolling, and selection methods.
-pub fn {module_name}<Row, M>(
+pub fn {module_name}<Row: 'static, M>(
     id: &str,
     columns: Vec<ColumnDef<Row>>,
     model: M,
