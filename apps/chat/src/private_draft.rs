@@ -20,7 +20,7 @@ impl ChatApp {
         }
         let ui::private_draft::Target::Person { public_key } = &draft.target;
         self.open_person_conversation(public_key)?;
-        let conversation = self.person_conversation_key(public_key);
+        let conversation = Self::person_conversation_key(public_key);
         // A desktop-hosted conversation already owns its retained editor.
         // Adopt there, not into a hidden second parent editor sharing its store.
         if let Some(surface) = self.agent_surfaces.get_mut(&self.active_channel)

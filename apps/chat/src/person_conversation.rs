@@ -24,7 +24,7 @@ impl ChatApp {
         self.person_error = None;
     }
 
-    pub(crate) fn person_conversation_key(&self, public_key: &str) -> ConversationKey {
+    pub(crate) fn person_conversation_key(public_key: &str) -> ConversationKey {
         ConversationKey::Person {
             workspace: crate::app::ROOM_SCOPE.to_owned(),
             public_key: public_key.to_owned(),
@@ -57,7 +57,7 @@ impl ChatApp {
         let Some(peer) = self.direct_person.as_deref() else {
             return;
         };
-        let key = self.person_conversation_key(peer);
+        let key = Self::person_conversation_key(peer);
         self.composer_main.set_conversation_draft(&key);
         self.draft_main = self.composer_main.private_plain().unwrap_or_default();
         self.composer_main
@@ -77,7 +77,7 @@ impl ChatApp {
         self.direct_agent = None;
         self.direct_person = Some(public_key.to_owned());
         self.person_subscription = ui::person_chat::subscription_token(public_key);
-        self.active_channel = self.person_conversation_key(public_key).draft_key();
+        self.active_channel = Self::person_conversation_key(public_key).draft_key();
         self.person_messages = conversation.messages;
         self.person_error = None;
         self.thread_open = None;
@@ -176,7 +176,7 @@ impl ChatApp {
         if text.trim().is_empty() {
             return false;
         }
-        let key = self.person_conversation_key(&public_key);
+        let key = Self::person_conversation_key(&public_key);
         let revision = self.composer_main.conversation_revision(&key);
         match self.send_person_message(&public_key, &text) {
             Ok(_) => {

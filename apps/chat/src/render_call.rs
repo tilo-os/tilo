@@ -35,6 +35,10 @@ use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
 
 /// One person to render in the call, derived from the shared CRDT voice
 /// membership (not hardcoded). The host (this peer) is listed first.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one participant (talking, muted, audio only, sharing), each read on its own"
+)]
 struct Participant {
     user: String,
     /// The call hears them now: their face rings.

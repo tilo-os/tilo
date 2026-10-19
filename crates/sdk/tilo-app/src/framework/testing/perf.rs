@@ -319,7 +319,7 @@ pub fn keystrokes<A: ResourceApp>(
     app.harness().click_at(field.0, field.1);
     app.settle();
     measure(app, "keystroke", (2, steps), |app, index| {
-        let ch = chars.get(index % chars.len()).copied().unwrap_or(' ');
+        let ch = chars.get(index.checked_rem(chars.len()).unwrap_or(0)).copied().unwrap_or(' ');
         app.harness().type_text(&ch.to_string());
     })
 }

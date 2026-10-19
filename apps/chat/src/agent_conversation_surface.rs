@@ -54,7 +54,7 @@ impl AgentConversationSurface {
                         .agent_draft_route()
                         .unwrap_or_else(|| agent.to_owned()),
                 },
-                |public_key| parent.person_conversation_key(public_key),
+                |public_key| crate::app::ChatApp::person_conversation_key(public_key),
             ),
             view: Box::new(view),
             placement,
