@@ -251,7 +251,10 @@ impl Environment {
     /// # Errors
     /// Returns the document's write error.
     pub fn write_record(&self, doc: &mut tilo_resource::Doc) -> Result<(), ModelError> {
-        tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)
+        tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)?;
+        // A fresh record is at today's storage version; without the stamp it
+        // would read as the first one and wait for a migration it never needs.
+        tilo_resource::evolution::write_version(doc, <Self as tilo_resource::Resource>::VERSION)
     }
 
     /// A new environment on the runtime `release`, whose image for `arch` is
