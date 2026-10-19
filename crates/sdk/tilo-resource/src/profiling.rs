@@ -16,14 +16,6 @@ pub use recorder::Phase;
 #[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
 pub struct Phase;
 
-// Closing a scope is dropping it, in every build: a caller may close one
-// early with `drop`.
-#[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
-impl Drop for Phase {
-    #[inline]
-    fn drop(&mut self) {}
-}
-
 #[cfg(not(all(feature = "test-support", not(target_arch = "wasm32"))))]
 impl Phase {
     /// Open the scope `_name`; it closes when the value drops.
