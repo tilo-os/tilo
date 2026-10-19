@@ -739,6 +739,10 @@ impl Widget for WebView {
                 crate::webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *ctx.handled = true;
+                // The page scrolls in its engine: nothing the app publishes
+                // moved. What the page reports back reaches the app as its
+                // own events.
+                crate::widget::note_view_only_pan();
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..

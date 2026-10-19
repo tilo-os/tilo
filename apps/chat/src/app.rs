@@ -655,8 +655,9 @@ pub struct ChatApp {
     /// out, so it must not author read receipts under the host identity —
     /// read state belongs to the person's own device.
     pub(crate) presented: bool,
-    /// The first layout just happened; request one more model frame so the
-    /// channel already in view is marked read without waiting for input.
+    /// The first layout just happened, or the timeline just arrived at its
+    /// newest edge: request one more model frame so the channel in view is
+    /// marked read without waiting for input.
     pub(crate) read_on_present: bool,
     /// Last measured timeline height. Keeps a reader's visual anchor stable if
     /// new messages arrive while they are reading older messages.

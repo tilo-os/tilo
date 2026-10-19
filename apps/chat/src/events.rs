@@ -230,6 +230,10 @@ impl ChatApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_wheel(delta, scale);
+                // The wheel moved a view (the timeline, the sidebar, the
+                // emoji grid) and nothing the app publishes: the timeline's
+                // read receipt follows when it arrives at its newest edge.
+                ui::widget::note_view_only_pan();
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -5270,6 +5274,53 @@ mod tests {
             app.on_hit(Hit::JumpToLatest, &mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(app.scroll, 0.0);
             assert!(app.timeline_at_end);
+        }
+
+        // Phase: wheeling_back_to_the_latest_message_asks_for_its_read_receipt_once.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.on_hit(Hit::CloseThread, &mut ui::widget::Edits::lend(&mut doc));
+            for n in 0..24 {
+                crate::testing::apply_part_at(
+                    &mut doc,
+                    "u_aria",
+                    (crate::demo::NOW + i64::from(n)) * 1000,
+                    crate::testing::post(
+                        &app.active_channel,
+                        &format!(
+                            "History line {n}, long enough to wrap in a narrow column of text."
+                        ),
+                        None,
+                    ),
+                )
+                .unwrap();
+            }
+            app.reload(&doc);
+            render_frame(&mut app, 390.0, 620.0);
+            feed(&mut app, &mut doc, &wheel(12.0));
+            render_frame(&mut app, 390.0, 620.0);
+            assert!(!app.timeline_at_end, "the wheel went back through history");
+            app.read_on_present = false;
+            feed(&mut app, &mut doc, &wheel(-12.0));
+            assert!(
+                !app.read_on_present,
+                "a notch only pans: it asks nothing of the sync itself"
+            );
+            render_frame(&mut app, 390.0, 620.0);
+            assert!(
+                app.timeline_at_end,
+                "wheeling back reaches the newest message"
+            );
+            assert!(
+                app.read_on_present,
+                "arriving at the newest message asks the sync for its read receipt"
+            );
+            app.read_on_present = false;
+            render_frame(&mut app, 390.0, 620.0);
+            assert!(
+                !app.read_on_present,
+                "staying at the newest message asks nothing again"
+            );
         }
 
         // Phase: ctrl_end_returns_to_the_live_edge_without_stealing_plain_end.
