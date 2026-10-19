@@ -1409,7 +1409,8 @@ fn draw_line(
 }
 
 /// The ribbon's weight while nothing moves and the labels are closed: quiet,
-/// but there, so the switcher can be found.
+/// but there, so the switcher can be found, once there is more than one
+/// strip to switch between.
 pub(crate) const RIBBON_REST_ALPHA: f32 = 0.35;
 
 /// The faces beside the marks keep this much while the marks rest: who is
@@ -1488,8 +1489,16 @@ impl super::ShellOverlayHost {
         if self.strip_switcher.is_open() {
             return 1.0;
         }
-        self.strip_indicators_alpha(now, reduce_motion)
-            .max(RIBBON_REST_ALPHA)
+        // One strip is no news: a lone mark at mid-height said nothing and
+        // read as a stray sliver at the screen's edge. It shows while the
+        // pointer reaches for it (and while moving), as a second strip does
+        // at rest.
+        let rest = if self.strip_ribbon().count > 1 {
+            RIBBON_REST_ALPHA
+        } else {
+            0.0
+        };
+        self.strip_indicators_alpha(now, reduce_motion).max(rest)
     }
 
     /// Let the pointer timers settle at paint time too: a frame is what the
