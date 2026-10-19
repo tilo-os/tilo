@@ -274,6 +274,7 @@ pub mod secret_paint;
 pub mod selection;
 pub mod shared_selection;
 pub mod shell_tabs;
+pub mod window_toolbar;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;

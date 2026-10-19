@@ -30,6 +30,17 @@ use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
+/// One tab of a window seeded for the window-bar shots.
+#[derive(Debug, Clone, Copy)]
+pub struct BarTab {
+    pub app_id: &'static str,
+    /// What the app's client sets as its toplevel title.
+    pub title: &'static str,
+    pub surface_id: u64,
+    /// The slots its app declares for the window's bar, if any.
+    pub slots: Option<fn() -> ui::window_toolbar::WindowToolbar>,
+}
+
 /// One step in a scenario.
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -392,6 +403,15 @@ pub enum Action {
     /// worker builds ([`shell::shell::drives::consent_request`]) on the same
     /// portal dialog queue the compositor pumps.
     SeedDriveConsent(&'static str),
+    /// One window, alone in the active strip, whose tabs show the given
+    /// apps with the titles their clients set and the slots their apps
+    /// declared for the window's bar ([`ui::window_toolbar`]); `active` is
+    /// the tab it shows and `width` its share of the display, in permille.
+    SeedWindowBar {
+        tabs: &'static [BarTab],
+        active: usize,
+        width: u32,
+    },
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -577,6 +597,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_status_and_file_picker(driver, action);
     apply_seed_wifi_and_select_group(driver, action);
     apply_window_and_workspace_actions(driver, action);
+    apply_seed_window_bar(driver, action);
     apply_desk(driver, action);
     apply_motion_frames(driver, action, sink);
 }
@@ -974,6 +995,133 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
             shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
         }
     }
+}
+
+/// `Action::SeedWindowBar` — split out of [`apply`] to keep that dispatcher
+/// short. The windows are adopted the way a client's toplevel is, titled
+/// the way its client titles them, gathered into one group as dragging
+/// their bars together would, and stood in for with a plain frame.
+fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
+    use shell::shell::state::TileContent;
+    let Action::SeedWindowBar {
+        tabs,
+        active,
+        width,
+    } = action
+    else {
+        return;
+    };
+    let surface_of = |tile: &TileContent| match tile {
+        TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+        _ => None,
+    };
+    for tab in tabs.iter() {
+        // Opened as any window is: placed, adopted, stood in for.
+        apply_open_window(
+            driver,
+            &Action::OpenWindow {
+                app_id: tab.app_id,
+                surface_id: tab.surface_id,
+            },
+        );
+        driver.with_chrome(|st: &mut ChromeState| {
+            {
+                let mut tree = st.tree_mut();
+                shell::compositor::tab_binding::rename_tab_for_title(
+                    &mut tree,
+                    tab.surface_id,
+                    tab.title,
+                );
+            }
+            st.bump();
+        });
+    }
+    let wanted: Vec<u64> = tabs.iter().map(|tab| tab.surface_id).collect();
+    driver.with_chrome(|st: &mut ChromeState| {
+        {
+            let mut tree = st.tree_mut();
+            let mut target = None;
+            if let Some(workspace) = tree.desktop.active_workspace_mut() {
+                for strip in &mut workspace.strips {
+                    let mut gathered = Vec::new();
+                    let mut home = None;
+                    for (index, group) in strip.window_groups.iter_mut().enumerate() {
+                        let mut kept = Vec::new();
+                        for tab in group.tabs.drain(..) {
+                            if surface_of(&tab.tile).is_some_and(|id| wanted.contains(&id)) {
+                                home.get_or_insert(index);
+                                gathered.push(tab);
+                            } else {
+                                kept.push(tab);
+                            }
+                        }
+                        group.tabs = kept;
+                    }
+                    let Some(home) = home else {
+                        continue;
+                    };
+                    gathered.sort_by_key(|tab| {
+                        surface_of(&tab.tile)
+                            .and_then(|id| wanted.iter().position(|w| *w == id))
+                            .unwrap_or(usize::MAX)
+                    });
+                    // The first window's group holds them all, alone in the
+                    // strip, so the shot shows this one window.
+                    let only = strip.window_groups.swap_remove(home);
+                    strip.window_groups = vec![only];
+                    if let Some(group) = strip.window_groups.first_mut() {
+                        group.active_tab = gathered
+                            .get(*active)
+                            .or(gathered.first())
+                            .map_or(group.active_tab, |tab| tab.id);
+                        group.tabs = gathered;
+                        target = Some((strip.id, group.id));
+                    }
+                }
+            }
+            if let Some((strip, group)) = target {
+                tree.desktop.set_active_group(strip, group);
+            }
+        }
+        st.bump();
+    });
+    driver.relayout();
+    apply_make_space_sample_and_widths(driver, &Action::SetWindowWidths(*width), &mut NullSink);
+    driver.relayout();
+    let ids: Vec<(u64, Option<fn() -> ui::window_toolbar::WindowToolbar>)> = {
+        let chrome = driver.chrome();
+        let tree = chrome.tree();
+        tabs.iter()
+            .filter_map(|bar_tab| {
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| surface_of(&tab.tile) == Some(bar_tab.surface_id))
+                    .map(|tab| (tab.id, bar_tab.slots))
+            })
+            .collect()
+    };
+    for (tab, slots) in ids {
+        driver
+            .host_mut()
+            .declare_tab_toolbar_for_tests(tab, slots.map(|slots| slots()));
+    }
+    driver.relayout();
+    // The stand-in frames are drawn at the size the windows have now that
+    // their bars show the apps' slots.
+    for tab in tabs.iter() {
+        if let Some((w, h)) = shell::compositor::foreign::store().viewport(tab.surface_id)
+            && w > 0
+            && h > 0
+        {
+            let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+            shell::compositor::foreign::store().publish_rgba(tab.surface_id, &vec![0xF4; px], w, h);
+        }
+    }
+    driver.relayout();
 }
 
 /// `Action::AddHostedTab` — split out of [`apply`] to keep that dispatcher short.
@@ -2030,6 +2178,10 @@ fn motion_sidebar_scenario() -> Scenario {
 )]
 fn build_scenarios() -> Vec<Scenario> {
     vec![
+        window_bar_browser_scenario(),
+        window_bar_tabbed_scenario(),
+        window_bar_files_scenario(),
+        window_bar_writer_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
         motion_sidebar_scenario(),
@@ -4544,6 +4696,182 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
     ]
+}
+
+/// The browser's slots, on duckduckgo.com: back (it came from a search),
+/// the site as its editable location, reload, bookmark and the library.
+fn browser_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar};
+    let action = |id: &str, icon: &str, name: &str| ToolbarAction {
+        id: id.into(),
+        icon: icon.into(),
+        name: name.into(),
+        enabled: true,
+        on: false,
+    };
+    WindowToolbar {
+        navigation: Some(ToolbarNavigation {
+            back: true,
+            forward: false,
+        }),
+        location: Some(ToolbarLocation {
+            label: "duckduckgo.com".into(),
+            value: "https://duckduckgo.com/?q=tilo+desktop".into(),
+            placeholder: "Search or enter address".into(),
+            icon: Some("lock".into()),
+            editable: true,
+            name: "Address and search".into(),
+            go_name: "Go".into(),
+        }),
+        actions: vec![
+            action("reload", "refresh", "Reload"),
+            action("bookmark", "star", "Bookmark this page"),
+            action("library", "history", "History and bookmarks"),
+        ],
+    }
+}
+
+/// Files in ~/Downloads: back and forward, the folder as its location.
+fn files_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
+    WindowToolbar {
+        navigation: Some(ToolbarNavigation {
+            back: true,
+            forward: true,
+        }),
+        location: Some(ToolbarLocation {
+            label: "Downloads".into(),
+            value: "~/Downloads".into(),
+            icon: Some("folder".into()),
+            name: "Folder".into(),
+            ..ToolbarLocation::default()
+        }),
+        actions: Vec::new(),
+    }
+}
+
+const BAR_BROWSER: BarTab = BarTab {
+    app_id: "so.tilo.browser",
+    title: "DuckDuckGo",
+    surface_id: 9101,
+    slots: Some(browser_slots),
+};
+const BAR_FILES: BarTab = BarTab {
+    app_id: "so.tilo.file-explorer",
+    title: "Downloads",
+    surface_id: 9102,
+    slots: Some(files_slots),
+};
+/// A foreign app: no slots, its client's title is its location.
+const BAR_WRITER: BarTab = BarTab {
+    app_id: "libreoffice-writer",
+    title: "Q3 report.odt - LibreOffice Writer",
+    surface_id: 9103,
+    slots: None,
+};
+
+fn window_bar_browser_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-browser",
+        description: "The browser's toolbar as slots in its window's bar, untabbed: \
+             back and forward, the site as its location, reload, bookmark and \
+             the library, then the window's controls; the location edited, \
+             with its go button; maximized.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_BROWSER],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-untabbed"),
+            Action::ClickNamed("window_location"),
+            Action::Wait(4),
+            Action::Snapshot("02-location-edited"),
+            Action::Type("example.org"),
+            Action::Wait(4),
+            Action::Snapshot("03-typed"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(4),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("m".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Relayout,
+            Action::Snapshot("04-maximized"),
+        ],
+    }
+}
+
+fn window_bar_tabbed_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-tabbed",
+        description: "Three tabs in one window: the tab row with the window's \
+             controls, then the active tab's slots in a row of their own, \
+             cross-fading as another tab is shown; a tab with no slots shows \
+             no second row.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_BROWSER, BAR_FILES, BAR_WRITER],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-browser-active"),
+            Action::ClickNamed("window_tab:1"),
+            Action::Snapshot("02-to-files-000"),
+            Action::SnapshotSequence {
+                prefix: "02-to-files",
+                frames: 4,
+                gap_frames: 2,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("03-files-active"),
+            Action::ClickNamed("window_tab:2"),
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("04-writer-active"),
+        ],
+    }
+}
+
+fn window_bar_files_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-files",
+        description: "Files in Downloads, untabbed: back and forward and the \
+             folder as its location in the window's bar.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_FILES],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-untabbed"),
+        ],
+    }
+}
+
+fn window_bar_writer_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-writer",
+        description: "LibreOffice Writer, a foreign app with no slots: its \
+             title without the app's name is its location.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_WRITER],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-untabbed"),
+        ],
+    }
 }
 
 pub fn scenarios() -> &'static [Scenario] {

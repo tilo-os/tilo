@@ -2407,6 +2407,21 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_ask_agent(&app_id, selection, area);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
+                    toolbar,
+                    instance,
+                } => {
+                    // The app id is the launcher's: an app only ever puts
+                    // slots in the bar of a tab that shows it.
+                    changed |= frame_builder
+                        .host_mut()
+                        .declare_app_toolbar(connection, &app_id, instance, toolbar);
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::EditLocation { instance } => {
+                    changed |= frame_builder
+                        .host_mut()
+                        .edit_app_location(&app_id, instance);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
                     // offer its own windows' pages.
@@ -2450,6 +2465,7 @@ fn pump_floating_surface_service(
                 frame_builder
                     .host_mut()
                     .forget_selection_capable(connection);
+                frame_builder.host_mut().forget_app_toolbars(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -2486,6 +2502,13 @@ fn pump_floating_surface_service(
         service.send(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
+        );
+    }
+    // What the person did with apps' slots in their windows' bars.
+    for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
+        service.send(
+            connection,
+            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event },
         );
     }
     // Apps whose pages someone started or stopped watching.

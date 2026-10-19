@@ -4378,6 +4378,43 @@ fn submit_accessory_and_span_highlighting() {
         assert!(ti.take_dirty().is_none(), "toggling is not a text edit");
     }
 
+    // Case `a_go_accessory_shows_while_editing_and_commits_the_field`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local()
+            .with_initial_value("example.org")
+            .with_trailing_accessory(
+                crate::icons::Icon::ArrowRight,
+                "Go",
+                AccessoryAction::Submit,
+            )
+            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert!(node.children.is_empty(), "no go button at rest");
+
+        ti.set_focus(true);
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1, "the go button shows while editing");
+        assert_eq!(node.children[0].name.as_deref(), Some("Go"));
+        assert_eq!(node.children[0].role, crate::a11y::Role::Button);
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &cursor_moved(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &mouse_press(), mods(false, false)));
+        assert_eq!(seen.borrow().as_slice(), ["example.org"]);
+        assert!(ti.take_submit(), "the polled signal fires too");
+        assert_eq!(ti.value(), "example.org", "going is not an edit");
+    }
+
     // Case `a_span_highlighter_colours_the_single_line`.
     {
         let mut ti = TextInput::local()

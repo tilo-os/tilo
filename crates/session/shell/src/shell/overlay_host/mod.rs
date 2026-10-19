@@ -65,6 +65,7 @@ mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
 mod top_bar_reveal;
+mod window_toolbars;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -1100,6 +1101,8 @@ pub struct ShellOverlayHost {
     bar_popovers: bar_popovers::BarPopovers,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// The slots Tilo apps declared for their windows' bars.
+    window_toolbars: window_toolbars::WindowToolbars,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2758,6 +2761,7 @@ impl ShellOverlayHost {
             agent_quick_composer_node: None,
             bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
+            window_toolbars: window_toolbars::WindowToolbars::default(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -21069,6 +21073,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_tab_reorder();
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
+        self.sync_window_toolbars();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
         let opened_for_new_tab = self.harvest_pending_new_tab();
@@ -22055,6 +22060,11 @@ impl Widget for ShellOverlayHost {
         // example Super+W) cannot also mutate the local desktop.
         if self.release_follow_for_local_key(event) {
             *ctx.handled = true;
+            return;
+        }
+        // A window's location edited in its bar has the keyboard, ahead of
+        // the chords for the same reason as the password below.
+        if self.route_window_location_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         // Ahead of every chord: a password can contain any character, and

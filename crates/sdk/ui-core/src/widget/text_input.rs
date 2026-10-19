@@ -595,6 +595,11 @@ pub enum AccessoryAction {
         pressed: bool,
         on_toggle: Box<dyn FnMut(bool)>,
     },
+    /// Commit the field, as Enter does in a field that submits: the go
+    /// button of an address or location field. Shown only while the field
+    /// is being edited; a press fires the field's submit
+    /// ([`TextInput::take_submit`], [`TextInput::on_submit`]).
+    Submit,
 }
 
 /// The action target of a field's trailing accessory, for agents and
@@ -3867,6 +3872,7 @@ impl TextInput {
         let accessory = self.accessory.as_ref()?;
         if self.multiline
             || (matches!(accessory.action, AccessoryAction::Clear) && self.text.is_empty())
+            || (matches!(accessory.action, AccessoryAction::Submit) && !self.is_focused)
         {
             return None;
         }
@@ -3958,6 +3964,7 @@ impl TextInput {
                 self.core.set_selection(0, self.text.len());
                 self.delete_selection();
             }
+            AccessoryAction::Submit => self.fire_submit(),
         }
         true
     }

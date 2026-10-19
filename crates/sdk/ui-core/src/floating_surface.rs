@@ -182,7 +182,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 7;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 8;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -380,6 +380,19 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
+    /// The slots this app shows in its window's bar
+    /// ([`crate::window_toolbar`]), or none: sent whenever they change.
+    /// `instance` is the record instance the shell launched this process
+    /// for, which names the tab, as for [`Self::OpenTabBeside`].
+    Toolbar {
+        toolbar: Option<crate::window_toolbar::WindowToolbar>,
+        instance: Option<u64>,
+    },
+    /// Turn this app's editable location in its window's bar into a field,
+    /// as a click on it does (the app's Ctrl+L).
+    EditLocation {
+        instance: Option<u64>,
+    },
     /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`]
     /// (sent once). An app that never says so is never asked, so an older
     /// one does not receive a message it cannot read.
@@ -465,6 +478,11 @@ pub enum FloatingSurfaceHostMessage {
     /// selection. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
     ShareSelection,
+    /// The person used this app's slots in its window's bar
+    /// ([`FloatingSurfaceClientMessage::Toolbar`]).
+    ToolbarEvent {
+        event: crate::window_toolbar::ToolbarEvent,
+    },
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
     /// never gain overlay authority.
