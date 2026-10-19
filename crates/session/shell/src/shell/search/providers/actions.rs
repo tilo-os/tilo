@@ -412,9 +412,17 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Who may walk in is the room's business on its host; a report
         // reaches the people who run a workspace.
-        WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID => {
+        WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID | BOT_ADD_ID => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
+        }
+        // Its host stops the bot and uninstalls it; adding it again is a
+        // new request.
+        BOT_REMOVE_ID => {
+            contract.kind = ActionKind::Outside;
+            contract.risk = RiskLevel::Destructive;
+            contract.confirmation = ConfirmationPolicy::Confirm;
+            contract.retry = RetryPolicy::AtMostOnce;
         }
         // Ends the agent's access at once; undone only by admitting it again.
         "agent.remove" => {
@@ -915,6 +923,66 @@ pub(crate) const WORKSPACE_PUBLISH_ID: &str = "workspace.publish";
 pub(crate) const WORKSPACE_UNPUBLISH_ID: &str = "workspace.unpublish";
 /// Reporting the public workspace shown to the people who run it.
 pub(crate) const WORKSPACE_REPORT_ID: &str = "workspace.report";
+/// Asking the active workspace's host to run a bot from the directory.
+pub(crate) const BOT_ADD_ID: &str = "bot.add";
+/// Taking the active workspace's request for a bot back: its host stops
+/// and uninstalls it.
+pub(crate) const BOT_REMOVE_ID: &str = "bot.remove";
+
+const BOT_ADD_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "entry",
+        ParamType::Text,
+        "The bot's entry in the registry's directory, such as so.tilo.bots.standup.",
+    ),
+    ActionParam::required(
+        "version",
+        ParamType::Text,
+        "The listed version the workspace's host runs.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Add this bot to the workspace: its host runs it, with what it may reach.",
+    ),
+];
+
+const BOT_REMOVE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "entry",
+        ParamType::Text,
+        "The bot's entry in the registry's directory.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Remove this bot: its host stops it.",
+    ),
+];
+
+/// The label of the system action `id` when an app may prepare it for the
+/// person ([`ui::search::SearchOffer`]): only adding a bot, which the person
+/// still confirms in the palette.
+pub(crate) fn app_offerable_label(id: &str) -> Option<String> {
+    (id == BOT_ADD_ID).then(|| t("search-action-bot-add"))
+}
+
+/// The bot `args` ask the active workspace for (or take back), as `ask`
+/// builds it from the entry and version.
+fn bot_ask(
+    args: &ActionArgs,
+    ask: fn(String, Option<String>) -> crate::shell::network::BotAsk,
+) -> Result<crate::shell::network::BotAsk, ActionError> {
+    let entry = args.text("entry").unwrap_or_default().trim().to_owned();
+    let version = args
+        .text("version")
+        .map(|version| version.trim().to_owned());
+    let ask = ask(entry, version);
+    ask.command().validate().map_err(|_| {
+        ActionError::Refused("a bot is named by its directory entry and version".into())
+    })?;
+    Ok(ask)
+}
 
 const WORKSPACE_PUBLISH_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -2201,6 +2269,43 @@ impl Action {
             params: &[],
             apply: |st, _| {
                 st.publish_active_workspace(None);
+                st.bump();
+                Ok(())
+            },
+        },
+        // Bots of the active workspace: asked of its host, which runs
+        // what the room's governance lets this person ask for.
+        Action {
+            id: BOT_ADD_ID,
+            label: "search-action-bot-add",
+            subtitle: "search-action-bot-add-subtitle",
+            params: BOT_ADD_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "add this bot")?;
+                let ask = bot_ask(args, |entry, version| crate::shell::network::BotAsk::Add {
+                    entry,
+                    version: version.unwrap_or_default(),
+                })?;
+                if !st.ask_active_workspace_for_bot(ask) {
+                    return Err(ActionError::Refused("no active workspace".into()));
+                }
+                st.bump();
+                Ok(())
+            },
+        },
+        Action {
+            id: BOT_REMOVE_ID,
+            label: "search-action-bot-remove",
+            subtitle: "search-action-bot-remove-subtitle",
+            params: BOT_REMOVE_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "remove this bot")?;
+                let ask = bot_ask(args, |entry, _| crate::shell::network::BotAsk::Remove {
+                    entry,
+                })?;
+                if !st.ask_active_workspace_for_bot(ask) {
+                    return Err(ActionError::Refused("no active workspace".into()));
+                }
                 st.bump();
                 Ok(())
             },
@@ -5560,6 +5665,70 @@ mod tests {
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
     use std::sync::Arc;
+
+    #[test]
+    fn adding_a_bot_asks_the_active_workspace_once_the_person_confirms() {
+        use crate::shell::network::BotAsk;
+        use crate::shell::overlay_host::PeerSyncAction;
+        let chrome = chrome_with_room();
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room;
+        let standup = serde_json::json!({
+            "entry": "so.tilo.bots.standup",
+            "version": "1.2.0",
+        });
+        assert!(
+            invoke_shell_action(&chrome, BOT_ADD_ID, &standup).is_err(),
+            "nothing is asked of the workspace before the person confirms"
+        );
+        assert!(chrome.borrow_mut().take_peer_sync_requests().is_empty());
+        let mut confirmed = standup.clone();
+        confirmed["confirm"] = true.into();
+        invoke_shell_action(&chrome, BOT_ADD_ID, &confirmed).unwrap();
+        assert_eq!(
+            chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::AskForBot {
+                room,
+                ask: BotAsk::Add {
+                    entry: "so.tilo.bots.standup".into(),
+                    version: "1.2.0".into(),
+                },
+            }]
+        );
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                BOT_ADD_ID,
+                &serde_json::json!({"entry": "../standup", "version": "1.2.0", "confirm": true}),
+            )
+            .is_err(),
+            "a bot is a directory entry, never a path"
+        );
+        invoke_shell_action(
+            &chrome,
+            BOT_REMOVE_ID,
+            &serde_json::json!({"entry": "so.tilo.bots.standup", "confirm": true}),
+        )
+        .unwrap();
+        assert_eq!(
+            chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::AskForBot {
+                room,
+                ask: BotAsk::Remove {
+                    entry: "so.tilo.bots.standup".into(),
+                },
+            }]
+        );
+        // An app may prepare adding a bot for the person, and nothing else.
+        assert!(app_offerable_label(BOT_ADD_ID).is_some());
+        assert!(app_offerable_label(BOT_REMOVE_ID).is_none());
+        assert!(app_offerable_label(WORKSPACE_PUBLISH_ID).is_none());
+    }
 
     #[test]
     fn display_outputs_inspection_reads_the_published_displays_and_the_waiting_change() {

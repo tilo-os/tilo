@@ -7,6 +7,7 @@ mod boot_join;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
 pub use directory::{DirectoryListing, Publication};
+pub use relay_rooms::BotAsk;
 pub use hosted_sites::{Arrival, JoinProgress, SiteJoinState};
 pub use site_join::SiteRoom;
 #[cfg(test)]

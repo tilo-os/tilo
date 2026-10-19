@@ -1719,7 +1719,8 @@ fn invite_tokens_travel_through_the_clipboard_exactly() {
             | PeerSyncRequest::JoinListed(_)
             | PeerSyncRequest::ReportWorkspace { .. }
             | PeerSyncRequest::Publication(_)
-            | PeerSyncRequest::Publish { .. } => Err("not here".to_string()),
+            | PeerSyncRequest::Publish { .. }
+            | PeerSyncRequest::AskForBot { .. } => Err("not here".to_string()),
             PeerSyncRequest::ListPendingInvitations => {
                 Ok(PeerSyncResponse::PendingInvitations(Vec::new()))
             }
