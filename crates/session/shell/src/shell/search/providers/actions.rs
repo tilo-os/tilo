@@ -4198,7 +4198,7 @@ impl ActionsProvider {
                 (on_open, None)
             };
             Some(SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: shell_action_kind(action.id),
@@ -4334,7 +4334,7 @@ impl ActionsProvider {
             let score = 0;
             let request = descriptor.request;
             out.push(SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
@@ -4384,7 +4384,7 @@ impl ActionsProvider {
                 };
                 let request = id.clone();
                 out.push(SearchResult {
-            facts: Vec::new(),
+                    facts: Vec::new(),
                     shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: kind,
@@ -4461,7 +4461,7 @@ impl ActionsProvider {
                 id,
             );
             out.push(SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::View,
@@ -4545,7 +4545,7 @@ impl ActionsProvider {
                 ) as Rc<crate::shell::search::BeginInvokeFn>
             });
             out.push(SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -4713,7 +4713,7 @@ impl ActionsProvider {
                     let action_id = action.id.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
-            facts: Vec::new(),
+                        facts: Vec::new(),
                         shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
@@ -4766,7 +4766,7 @@ impl ActionsProvider {
                     let spec = action.clone();
                     let params = action.params().to_vec();
                     out.push(SearchResult {
-            facts: Vec::new(),
+                        facts: Vec::new(),
                         shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Document,
@@ -4873,7 +4873,7 @@ impl ActionsProvider {
                     let preferences = Rc::clone(preferences);
                     let provider_id = provider_id.clone();
                     out.push(SearchResult {
-            facts: Vec::new(),
+                        facts: Vec::new(),
                         shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,

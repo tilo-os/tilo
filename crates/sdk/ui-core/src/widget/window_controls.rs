@@ -77,7 +77,9 @@ impl WindowControls {
     pub fn content_limit(&self, row: Rect) -> f64 {
         self.iter()
             .map(|(_, r)| r.x0)
-            .fold(None, |min: Option<f64>, x| Some(min.map_or(x, |m| m.min(x))))
+            .fold(None, |min: Option<f64>, x| {
+                Some(min.map_or(x, |m| m.min(x)))
+            })
             .map_or(row.x1, |x0| x0 - LEAD_GAP)
     }
 

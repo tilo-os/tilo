@@ -1136,7 +1136,7 @@ mod tests {
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             let ran = std::rc::Rc::clone(&self.ran);
             vec![SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Document,
@@ -1180,7 +1180,7 @@ mod tests {
 
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             vec![SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -1361,7 +1361,7 @@ mod tests {
             let polls = std::rc::Rc::clone(&self.polls);
             let refuse = self.refuse;
             vec![SearchResult {
-            facts: Vec::new(),
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,

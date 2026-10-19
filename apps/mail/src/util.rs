@@ -66,10 +66,7 @@ mod tests {
                 format_relative(minutes_of(2026, 6, 29, 9, 30), now),
                 "Yesterday"
             );
-            assert_eq!(
-                format_relative(minutes_of(2026, 6, 28, 9, 30), now),
-                "Sun"
-            );
+            assert_eq!(format_relative(minutes_of(2026, 6, 28, 9, 30), now), "Sun");
             assert_eq!(
                 format_relative(minutes_of(2026, 6, 20, 9, 30), now),
                 "Jun 20"

@@ -518,7 +518,9 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
                 .and_then(|uri| uri.split_once(";base64,").map(|(_, data)| data))
                 .or_else(|| {
                     line.param_value("ENCODING")
-                        .is_some_and(|encoding| matches!(encoding.to_ascii_lowercase().as_str(), "b" | "base64"))
+                        .is_some_and(|encoding| {
+                            matches!(encoding.to_ascii_lowercase().as_str(), "b" | "base64")
+                        })
                         .then_some(value)
                 });
             if let Some(bytes) = embedded.and_then(ui::held_images::picture_bytes) {

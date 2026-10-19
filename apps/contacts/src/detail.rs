@@ -83,7 +83,8 @@ fn header(contact: &Contact, shared: &Shared) -> Element {
     {
         let bridge = shared.borrow();
         if let Some(images) = &bridge.images {
-            avatar = avatar.with_image_url(images.clone(), bridge.pictures.hold_text(&contact.photo));
+            avatar =
+                avatar.with_image_url(images.clone(), bridge.pictures.hold_text(&contact.photo));
         }
     }
 

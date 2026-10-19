@@ -3007,9 +3007,9 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable as _;
     use crate::doc::EditorDoc;
     use crate::model::Language;
+    use automerge::transaction::Transactable as _;
 
     fn bound_editor(seed: &str) -> (EditorView, AutoCommit) {
         let mut doc = AutoCommit::new();
