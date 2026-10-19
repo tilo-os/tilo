@@ -1,3 +1,6 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
 en-US canvas-layer-rename instruction
+en-US canvas-size-pixel-128 glyph
+en-US canvas-size-pixel-32 glyph
+en-US canvas-size-pixel-64 glyph

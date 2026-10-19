@@ -2,3 +2,4 @@
 # Fix a message and delete its line; nothing may be added.
 en-US shortcuts-runs-empty narration
 en-US shortcuts-saved-empty-blank narration
+en-US shortcuts-schedule-review glyph

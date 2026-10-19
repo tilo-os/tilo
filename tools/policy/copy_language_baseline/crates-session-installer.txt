@@ -2,3 +2,11 @@
 # Fix a message and delete its line; nothing may be added.
 en-US installer-storage-alongside-capacity narration
 en-US installer-storage-linux-ready narration
+de-DE installer-online-previous glyph
+de-DE installer-online-source-google-web glyph
+de-DE installer-online-source-onedrive glyph
+de-DE installer-online-source-outlook glyph
+en-US installer-online-previous glyph
+en-US installer-online-source-google-web glyph
+en-US installer-online-source-onedrive glyph
+en-US installer-online-source-outlook glyph

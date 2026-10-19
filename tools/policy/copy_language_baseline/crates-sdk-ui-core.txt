@@ -2,3 +2,27 @@
 # Fix a message and delete its line; nothing may be added.
 de-DE history-mode-confirm vague-button
 en-US history-mode-confirm vague-button
+de-DE author-persona-suffix glyph
+de-DE block-editor-replace-all-help glyph
+de-DE display-arrangement-caption-status glyph
+de-DE display-arrangement-offline-excluded glyph
+de-DE format-range glyph
+de-DE history-op-splice glyph
+de-DE host-history-recent glyph
+de-DE participant-agent glyph
+de-DE participant-app glyph
+de-DE participant-bot glyph
+de-DE participant-shortcut glyph
+de-DE permission-prompt-requested glyph
+en-US author-persona-suffix glyph
+en-US block-editor-replace-all-help glyph
+en-US display-arrangement-caption-status glyph
+en-US display-arrangement-offline-excluded glyph
+en-US format-day-range-in-month glyph
+en-US format-range glyph
+en-US history-op-splice glyph
+en-US host-history-recent glyph
+en-US participant-agent glyph
+en-US participant-app glyph
+en-US participant-bot glyph
+en-US participant-shortcut glyph

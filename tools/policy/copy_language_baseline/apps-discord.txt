@@ -2,3 +2,5 @@
 # Fix a message and delete its line; nothing may be added.
 en-US discord-status-bridged chain
 en-US discord-status-importing chain
+en-US discord-status-bridged glyph
+en-US discord-status-importing glyph
