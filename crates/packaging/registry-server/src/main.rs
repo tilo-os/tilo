@@ -212,7 +212,9 @@ enum Cmd {
         valid_for_seconds: u64,
     },
     /// Build and owner-sign the next immutable public snapshot. Run this in
-    /// the offline signing environment; `serve` never reads this key.
+    /// the offline signing environment; `serve` never reads this key. It is
+    /// also how a registry moves to this build's package format: a current
+    /// snapshot at another format is chained by sequence and hash only.
     SignSnapshot {
         /// File containing exactly a 32-byte Ed25519 secret seed as 64 hex
         /// characters. On Unix it must not be accessible by group/others.
@@ -1382,11 +1384,20 @@ fn cmd_sign_snapshot(
     refuse_active_promotion(storage)?;
     let previous = writer.current()?;
     if let Some(snapshot) = &previous {
-        registry_types::verify_snapshot(
-            snapshot,
-            &identity.owner_pubkey_hex,
-            snapshot.issued_at_unix,
-        )?;
+        // The owner's signature is how a registry moves to a new package
+        // format. A predecessor at another format cannot be verified by this
+        // build, which reads only its own format, so it is chained by its
+        // sequence and hash alone: nothing else of it is used, since the
+        // catalogue signed here is the stored entries, verified in full
+        // below. The channel signers keep refusing such a predecessor,
+        // because they carry its entries forward.
+        if snapshot.protocol == PACKAGE_FORMAT_VERSION {
+            registry_types::verify_snapshot(
+                snapshot,
+                &identity.owner_pubkey_hex,
+                snapshot.issued_at_unix,
+            )?;
+        }
         // Backfill history for registries created before immutable snapshots
         // were introduced. Saving identical bytes is idempotent.
         writer.archive_current(snapshot)?;
@@ -2644,5 +2655,77 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let served: SignedRegistrySnapshot = response.json().await.unwrap();
         assert_eq!(served, third);
+    }
+
+    #[test]
+    fn owner_signature_moves_a_registry_from_another_package_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        storage
+            .save_identity(&ServerIdentity {
+                owner_pubkey_hex: owner_hex.clone(),
+                name: "test".into(),
+                description: "test".into(),
+                base_url: "http://127.0.0.1".into(),
+            })
+            .unwrap();
+        cmd_add_publisher(
+            &storage,
+            &hex::encode(publisher.verifying_key().to_bytes()),
+            true,
+            String::new(),
+            NamespaceGrant {
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+                first_party: true,
+            },
+        )
+        .unwrap();
+        let entry = publisher_entry(&publisher);
+        storage.save_entry(&entry).unwrap();
+
+        // The published snapshot was signed by a build at an earlier format,
+        // which this build cannot verify.
+        let mut earlier =
+            build_signed_snapshot(&storage, None, vec![entry.clone()], &owner, 3_600).unwrap();
+        earlier.protocol = PACKAGE_FORMAT_VERSION - 1;
+        let writer = storage.lock_snapshot().unwrap();
+        writer.publish(&earlier).unwrap();
+        drop(writer);
+        assert_eq!(
+            registry_types::verify_snapshot(&earlier, &owner_hex, earlier.issued_at_unix),
+            Err(registry_types::SnapshotError::Protocol)
+        );
+
+        let key_file = dir.path().join("owner.seed");
+        std::fs::write(&key_file, hex::encode(owner.to_bytes())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        cmd_sign_snapshot(&storage, &key_file, 3_600).unwrap();
+
+        let current = storage.load_snapshot().unwrap().unwrap();
+        assert_eq!(current.protocol, PACKAGE_FORMAT_VERSION);
+        assert_eq!(current.sequence, earlier.sequence + 1);
+        assert_eq!(
+            current.previous_snapshot_hash_hex,
+            registry_types::snapshot_hash(&earlier).unwrap()
+        );
+        assert_eq!(current.entries, vec![entry]);
+        registry_types::verify_snapshot(&current, &owner_hex, current.issued_at_unix).unwrap();
+
+        // At this build's format the predecessor must verify, as before.
+        let mut forged =
+            build_signed_snapshot(&storage, Some(&current), Vec::new(), &owner, 3_600).unwrap();
+        forged.owner_signature_hex = "00".repeat(64);
+        let writer = storage.lock_snapshot().unwrap();
+        writer.publish(&forged).unwrap();
+        drop(writer);
+        assert!(cmd_sign_snapshot(&storage, &key_file, 3_600).is_err());
+        assert_eq!(storage.load_snapshot().unwrap().unwrap(), forged);
     }
 }
