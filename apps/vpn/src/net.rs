@@ -101,17 +101,38 @@ pub fn is_valid_iface(iface: &str) -> bool {
 // ----------------------------------------------------------------------
 
 /// Read the real cumulative byte counters for `iface` from
-/// `/sys/class/net/<iface>/statistics/{rx,tx}_bytes`. `None` if the interface
-/// is absent or the values don't parse. Works for any kernel interface — the
-/// loopback `lo` is a handy always-present target for tests.
+/// `/sys/class/net/<iface>/statistics/{rx,tx}_bytes`, or from the kernel's
+/// `/proc/net/dev` table where no sysfs is mounted (a sandbox that mounts
+/// only `/proc`). `None` if the interface is absent or the values don't
+/// parse. Works for any kernel interface — the loopback `lo` is a handy
+/// always-present target for tests.
 pub fn read_sys_bytes(iface: &str) -> Option<Transfer> {
     if !is_valid_iface(iface) {
         return None;
     }
     let base = format!("/sys/class/net/{iface}/statistics");
-    let rx = parse_stat(&std::fs::read_to_string(format!("{base}/rx_bytes")).ok()?)?;
-    let tx = parse_stat(&std::fs::read_to_string(format!("{base}/tx_bytes")).ok()?)?;
-    Some(Transfer { rx, tx })
+    let from_sysfs = || {
+        let rx = parse_stat(&std::fs::read_to_string(format!("{base}/rx_bytes")).ok()?)?;
+        let tx = parse_stat(&std::fs::read_to_string(format!("{base}/tx_bytes")).ok()?)?;
+        Some(Transfer { rx, tx })
+    };
+    from_sysfs()
+        .or_else(|| parse_proc_net_dev(&std::fs::read_to_string("/proc/net/dev").ok()?, iface))
+}
+
+/// The byte counters of `iface` in the text of `/proc/net/dev`: a row
+/// `name: rx_bytes rx_packets … (8 receive columns) tx_bytes …`.
+pub fn parse_proc_net_dev(text: &str, iface: &str) -> Option<Transfer> {
+    text.lines().find_map(|line| {
+        let (name, counters) = line.split_once(':')?;
+        if name.trim() != iface {
+            return None;
+        }
+        let mut columns = counters.split_whitespace();
+        let rx = columns.next()?.parse().ok()?;
+        let tx = columns.nth(7)?.parse().ok()?;
+        Some(Transfer { rx, tx })
+    })
 }
 
 /// Read the real `WireGuard` peer transfer totals via `wg show <iface> transfer`.
@@ -210,6 +231,31 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
     //
     // These hit the real kernel's sysfs. They need no root and no exec-gate
     // because they are read-only.
+
+    #[test]
+    fn proc_net_dev_rows_give_the_interface_byte_counters() {
+        let text = "Inter-|   Receive                                                |  Transmit\n \
+             face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    \
+             lo:  123456     789    0    0    0     0          0         0   654321     987    0    0    0     0       0          0\n  \
+             wg0: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n";
+        assert_eq!(
+            parse_proc_net_dev(text, "lo"),
+            Some(Transfer {
+                rx: 123_456,
+                tx: 654_321
+            })
+        );
+        assert_eq!(
+            parse_proc_net_dev(text, "wg0"),
+            Some(Transfer { rx: 1, tx: 9 })
+        );
+        assert_eq!(parse_proc_net_dev(text, "wg"), None);
+        assert_eq!(
+            parse_proc_net_dev("    lo: 1 2 3\n", "lo"),
+            None,
+            "a short row"
+        );
+    }
 
     #[test]
     fn real_loopback_sys_bytes_are_readable_and_monotonic() {
