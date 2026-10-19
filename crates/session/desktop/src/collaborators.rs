@@ -67,7 +67,11 @@ pub struct RosterRow {
     pub label: String,
     pub initial: char,
     pub color: Color,
+    /// Software, not a person: an agent or a bot.
     pub is_agent: bool,
+    /// One of the room's bots (then also [`Self::is_agent`]): tagged Bot,
+    /// never Agent.
+    pub is_bot: bool,
     pub role: Option<String>,
     pub invited: bool,
     /// Where they are: the app or document in front of them.
@@ -433,7 +437,12 @@ impl CollaboratorsOverlay {
         let bleed = ui::chrome::row_bleed(theme);
         let mut y = self.body.y0;
         self.exposure = if exposure_h > 0.0 {
-            let rect = Rect::new(self.body.x0 - bleed, y, self.body.x1 + bleed, y + exposure_h);
+            let rect = Rect::new(
+                self.body.x0 - bleed,
+                y,
+                self.body.x1 + bleed,
+                y + exposure_h,
+            );
             y += exposure_h;
             rect
         } else {
@@ -657,6 +666,7 @@ impl CollaboratorsOverlay {
             );
         }
         let agent_tag = t("people-panel-agent-tag");
+        let bot_tag = t("people-panel-bot-tag");
         let follow_label = t("people-panel-follow");
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
@@ -698,7 +708,16 @@ impl CollaboratorsOverlay {
                     ui::widget::SurfaceLevel::Floating.color(ctx.theme),
                 );
             };
-            let tags = [(agent_tag.as_str(), ChipStyle::Neutral)];
+            // Software is tagged after its name: Bot for the room's bots,
+            // Agent for agents.
+            let tags = [(
+                if row.is_bot {
+                    bot_tag.as_str()
+                } else {
+                    agent_tag.as_str()
+                },
+                ChipStyle::Neutral,
+            )];
             let mut face = ListRowFace::new(&row.label);
             if !lines.0.is_empty() {
                 face = face.subtitle(&lines.0);
@@ -780,15 +799,15 @@ impl CollaboratorsOverlay {
                         line = line.meta(&change.when);
                     }
                     line.interaction(ui::widget::Interaction {
-                            hovered: cursor.is_some_and(|p| rect.contains(p)),
-                            pressed: false,
-                            focused: self.keyboard_focus == Some(hit),
-                            disabled: false,
-                        })
-                        .paint(
-                            &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
-                            *rect,
-                        );
+                        hovered: cursor.is_some_and(|p| rect.contains(p)),
+                        pressed: false,
+                        focused: self.keyboard_focus == Some(hit),
+                        disabled: false,
+                    })
+                    .paint(
+                        &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
+                        *rect,
+                    );
                 }
                 if place.changes.area() > 0.0 {
                     ui::widget::Button::paint(
@@ -1520,7 +1539,8 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
                     .agent_role_at(&participant.id, now)
                     .or_else(|| workspace.agent_role_at(&participant.name, now))
             });
-            let is_agent = agent_role.is_some() || has_agent_marker(participant);
+            let is_bot = workspace.is_some_and(|workspace| is_room_bot(workspace, participant));
+            let is_agent = is_bot || agent_role.is_some() || has_agent_marker(participant);
             let (red, green, blue) = colors
                 .get(&participant.id)
                 .copied()
@@ -1532,6 +1552,7 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
                 label: participant.name.clone(),
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
+                is_bot,
                 role: agent_role
                     .map(crate::workspace_settings::role_label)
                     .or_else(|| {
@@ -1576,9 +1597,16 @@ fn has_agent_marker(participant: &Collaborator) -> bool {
     participant.role_id.as_deref() == Some(AGENT_ROLE_MARKER)
 }
 
+/// Whether `participant` is one of `workspace`'s bots, as the room's
+/// governance names them.
+fn is_room_bot(workspace: &tilo_desktop_model::Workspace, participant: &Collaborator) -> bool {
+    workspace.bots.iter().any(|bot| bot.is(&participant.id))
+}
+
 /// Whether `participant` is an agent: admitted to `workspace` as one (by id
-/// or display name), or marked with [`AGENT_ROLE_MARKER`]. Every presence
-/// surface asks this, so an agent never shows as a person on one of them.
+/// or display name), one of its bots, or marked with [`AGENT_ROLE_MARKER`].
+/// Every presence surface asks this, so software never shows as a person on
+/// one of them.
 #[must_use]
 pub fn collaborator_is_agent(
     workspace: Option<&tilo_desktop_model::Workspace>,
@@ -1587,7 +1615,8 @@ pub fn collaborator_is_agent(
 ) -> bool {
     has_agent_marker(participant)
         || workspace.is_some_and(|workspace| {
-            workspace.agent_role_at(&participant.id, now).is_some()
+            is_room_bot(workspace, participant)
+                || workspace.agent_role_at(&participant.id, now).is_some()
                 || workspace.agent_role_at(&participant.name, now).is_some()
         })
 }
@@ -1665,6 +1694,7 @@ mod tests {
             initial: label.chars().next().unwrap_or('?'),
             color: Color::from_rgb8(0x25, 0x63, 0xeb),
             is_agent: false,
+            is_bot: false,
             role: None,
             invited: false,
             activity: Some(format!("Viewing {label}'s notes")),
@@ -1699,6 +1729,46 @@ mod tests {
             },
             None,
         );
+    }
+
+    #[test]
+    fn a_rooms_bot_is_tagged_as_a_bot_never_as_a_person() {
+        use tilo_desktop_model::{RoomBot, Workspace, WorkspaceId};
+
+        let device = "ab".repeat(32);
+        let mut workspace = Workspace::new(WorkspaceId(72), "Lounge");
+        workspace.bots.push(RoomBot {
+            name: "Standup".into(),
+            installation: Some("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into()),
+            device: Some(device.clone()),
+            entry: Some("so.tilo.bots.standup".into()),
+            version: Some("1.2.0".into()),
+            added_by: "owner".into(),
+            requested: true,
+            paused: false,
+        });
+        workspace
+            .collaborators
+            .push(Collaborator::new(device.clone(), "Standup"));
+        workspace
+            .collaborators
+            .push(Collaborator::new("ada", "Ada"));
+        let desktop = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+
+        let rows = collaborator_roster_rows(&desktop, "local");
+        let bot = rows.iter().find(|row| row.id == device).unwrap();
+        assert!(bot.is_bot && bot.is_agent, "a bot is software, tagged Bot");
+        let ada = rows.iter().find(|row| row.id == "ada").unwrap();
+        assert!(!ada.is_bot && !ada.is_agent);
+        assert!(collaborator_is_agent(
+            desktop.active_workspace(),
+            &Collaborator::new(device, "Standup"),
+            0
+        ));
     }
 
     #[test]
@@ -1881,7 +1951,11 @@ mod tests {
             overlay.hit_test(changes.center()),
             CollaboratorsHit::OpenChanges(0)
         );
-        assert_eq!(overlay.rows[0].change_rows.len(), 2, "each change is listed");
+        assert_eq!(
+            overlay.rows[0].change_rows.len(),
+            2,
+            "each change is listed"
+        );
         let second = overlay.rows[0].change_rows[1];
         assert_eq!(
             overlay.hit_test(second.center()),

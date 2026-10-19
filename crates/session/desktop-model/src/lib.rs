@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod apps;
+pub mod bots;
 pub mod capability;
 pub mod collaborator;
 pub mod commands;
@@ -37,6 +38,7 @@ pub mod width;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
+pub use bots::RoomBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use collaborator::Collaborator;
 pub use ids::{

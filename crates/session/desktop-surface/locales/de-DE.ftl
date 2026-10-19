@@ -792,6 +792,15 @@ workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirk
 workspace-settings-add-agent = Agent hinzufügen
 workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
 workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
+workspace-settings-bots-header = Bots
+workspace-settings-add-bot = Bot hinzufügen
+workspace-settings-bots-empty = In diesem Arbeitsbereich laufen keine Bots
+workspace-settings-bot-tag = Bot
+workspace-settings-bot-starting = Startet
+workspace-settings-bot-paused = Angehalten
+workspace-settings-bot-running = Läuft
+workspace-settings-bot-version = Version { $version }
+workspace-settings-remove-bot = Entfernen
 workspace-settings-agents-header = Agenten
 workspace-settings-service-member = { $access ->
     [admin] Verwaltet
@@ -973,6 +982,7 @@ launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt al
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-agent-tag = Agent
+people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
 people-panel-here-count = { $count ->
     [one] 1 hier

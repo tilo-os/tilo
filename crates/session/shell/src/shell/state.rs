@@ -1043,6 +1043,7 @@ impl WorkspaceTree {
             self.stewarded_rooms.remove(&room);
         }
         let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
+        let bots = tilo_peer_state::room::room_bots_of(document);
         let sandbox = projection::room_sandbox_of(document);
         let presets = projection::workspace_presets_of(document);
         let tasks = projection::workspace_tasks_of(document);
@@ -1062,6 +1063,7 @@ impl WorkspaceTree {
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.policy = policy;
             ws.presets = presets;
+            ws.bots = bots;
             ws.sandbox = sandbox;
             ws.sandbox.extend(local);
             ws.tasks = tasks;
@@ -2572,6 +2574,7 @@ impl WorkspaceTree {
         }
 
         let (name, mut policy) = tilo_peer_state::room::extract_governed_fields(&candidate);
+        let bots = tilo_peer_state::room::room_bots_of(&candidate);
         let mut sandbox = projection::room_sandbox_of(&candidate);
         let presets = projection::workspace_presets_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
@@ -2646,6 +2649,10 @@ impl WorkspaceTree {
         }
         if ws.presets != presets {
             ws.presets = presets;
+            fields_changed = true;
+        }
+        if ws.bots != bots {
+            ws.bots = bots;
             fields_changed = true;
         }
         tasks.sort_by(|left, right| left.id.cmp(&right.id));

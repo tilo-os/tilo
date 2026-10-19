@@ -90,6 +90,12 @@ pub struct Workspace {
     /// beside the shortcuts, one map key per schedule.
     #[serde(default)]
     pub schedule_claims: Vec<tilo_automation::ScheduleClaim>,
+    /// The room's bots, projected from its governance on every change: the
+    /// installed ones and those a member asked the room's host to run. Never
+    /// read back from a stored workspace; the room's governance is their
+    /// one source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bots: Vec<crate::bots::RoomBot>,
     /// Surfaces from this workspace being streamed to peers. Keys are
     /// wayland `wl_surface` ids; values are the target Iroh peers
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
@@ -160,6 +166,7 @@ impl From<StoredWorkspace> for Workspace {
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
             schedule_claims: stored.schedule_claims,
+            bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
         }
     }
@@ -1086,6 +1093,7 @@ impl Workspace {
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }
@@ -1116,6 +1124,7 @@ impl Workspace {
             effect_receipts: _,
             shortcuts: _,
             schedule_claims: _,
+            bots,
             shared_surfaces,
         } = self;
         Self {
@@ -1135,6 +1144,7 @@ impl Workspace {
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
         }
     }
@@ -1196,6 +1206,7 @@ impl Default for Workspace {
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
+            bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
         }
     }

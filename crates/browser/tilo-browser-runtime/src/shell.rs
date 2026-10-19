@@ -244,6 +244,7 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
             .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c)),
         color: theme.tokens.colors.presence.of_rgb(person.rgb),
         is_agent: person.agent,
+        is_bot: false,
         role: None,
         invited: false,
         activity: person.place.clone(),
