@@ -822,7 +822,6 @@ impl InvocationBuilder {
 pub const NESTED_RESOURCE_FACET: &str = "part";
 
 /// One action a resource exports to the palette.
-#[derive(Clone)]
 pub struct ActionSpec {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
@@ -866,6 +865,31 @@ pub struct ActionSpec {
     /// applies as, for a nested resource's action. See
     /// [`ActionSpec::applied_as`].
     applied_as: Option<(String, String)>,
+}
+
+impl Clone for ActionSpec {
+    /// Out of line: a derived clone is inlined, so every app that cloned a spec compiled one of its
+    /// own.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            label: self.label.clone(),
+            description: self.description.clone(),
+            locus: self.locus,
+            kind: self.kind,
+            operation_type: self.operation_type.clone(),
+            contract: self.contract.clone(),
+            input: self.input.clone(),
+            params: self.params.clone(),
+            build: self.build.clone(),
+            risk_of: self.risk_of.clone(),
+            need_of: self.need_of.clone(),
+            continuation_resolver: self.continuation_resolver.clone(),
+            carrier: self.carrier,
+            applied_as: self.applied_as.clone(),
+        }
+    }
 }
 
 /// Classifies the risk of one invocation from its bound arguments.

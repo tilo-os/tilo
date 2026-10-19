@@ -2203,6 +2203,13 @@ pub(crate) struct Effects<R: Resource> {
     jobs: Rc<RefCell<OwnedJobs<R, ()>>>,
 }
 
+/// An empty [`Inner`], shared. Not generic over the resource, so its
+/// construction is compiled once rather than in every app's `Effects`.
+#[inline(never)]
+fn new_inner() -> Rc<RefCell<Inner>> {
+    Rc::default()
+}
+
 impl<R: Resource> Clone for Effects<R> {
     fn clone(&self) -> Self {
         Self {
@@ -2225,7 +2232,7 @@ impl<R: Resource> Effects<R> {
         Self {
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(Some(env.clone()))))),
             env: Some(env),
-            inner: Rc::default(),
+            inner: new_inner(),
         }
     }
 
@@ -2234,7 +2241,7 @@ impl<R: Resource> Effects<R> {
     pub(crate) fn inert() -> Self {
         Self {
             env: None,
-            inner: Rc::default(),
+            inner: new_inner(),
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(None)))),
         }
     }

@@ -143,7 +143,6 @@ pub struct Dispatcher<R: Resource> {
 /// What a dispatcher keeps that does not name the resource's action type:
 /// who edits, the door's queue, permissions, refusals and the undo-step
 /// bookkeeping.
-#[derive(Clone)]
 pub(crate) struct DispatchCore {
     app_id: &'static str,
     resource_id: Rc<str>,
@@ -204,6 +203,40 @@ pub(crate) struct DispatchCore {
     /// The step the open undo step's changes record, decided before each
     /// change commits, so a coalesced step stays one step after a restart.
     gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
+}
+
+impl Clone for DispatchCore {
+    /// Out of line: a derived clone is inlined into every dispatcher's clone, which each app
+    /// compiles for its resource.
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            app_id: self.app_id,
+            resource_id: self.resource_id.clone(),
+            kind: self.kind,
+            label: self.label,
+            applied_as: self.applied_as,
+            resource_label: self.resource_label.clone(),
+            me: self.me.clone(),
+            custody: self.custody.clone(),
+            queue: self.queue.clone(),
+            read_only: self.read_only.clone(),
+            permissions: self.permissions.clone(),
+            permission_states: self.permission_states.clone(),
+            refused: self.refused.clone(),
+            landed: self.landed.clone(),
+            waits: self.waits.clone(),
+            unreadable: self.unreadable.clone(),
+            host: self.host.clone(),
+            serial: self.serial.clone(),
+            continuing: self.continuing.clone(),
+            applied: self.applied.clone(),
+            opened: self.opened.clone(),
+            past: self.past,
+            continuable: self.continuable.clone(),
+            gesture: self.gesture.clone(),
+        }
+    }
 }
 
 /// What applying one action needs.
