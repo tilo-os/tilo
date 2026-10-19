@@ -1337,13 +1337,7 @@ pub trait Widget {
         &mut self,
         request: &mut crate::bound_dispatch::ComponentRequest<'_>,
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        for child in self.children_mut() {
-            if request.target.is_some() && request.found {
-                break;
-            }
-            child.visit_components(request)?;
-        }
-        Ok(())
+        defaults::visit_components(self.children_mut(), request)
     }
 
     /// SDK model service visits retained owners independently of visible children.
@@ -1376,10 +1370,7 @@ pub trait Widget {
         &mut self,
         request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
-        for child in self.children_mut() {
-            request.visit(child)?;
-        }
-        Ok(())
+        defaults::visit_resource_owners_mut(self.children_mut(), request)
     }
 
     /// Answer a request for a capability this widget takes part in (see
@@ -1398,16 +1389,12 @@ pub trait Widget {
         if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.mount_native_view(host);
         }
-        for child in self.children_mut() {
-            child.mount_native_views(host);
-        }
+        defaults::mount_native_views(self.children_mut(), host);
     }
 
     /// Tear native children down while their parent window still exists.
     fn unmount_native_views(&mut self) {
-        for child in self.children_mut() {
-            child.unmount_native_views();
-        }
+        defaults::unmount_native_views(self.children_mut());
         if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.unmount_native_view();
         }
@@ -1418,17 +1405,13 @@ pub trait Widget {
         if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.native_view_frame_start();
         }
-        for child in self.children_mut() {
-            child.native_view_frame_start();
-        }
+        defaults::native_view_frame_start(self.children_mut());
     }
 
     /// Receive host-selected platform conventions. The default propagates to
     /// retained children, keeping target-OS branches out of app code.
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
-        for child in self.children_mut() {
-            child.set_platform_conventions(conventions);
-        }
+        defaults::set_platform_conventions(self.children_mut(), conventions);
     }
 
     /// Receive the host's current input capabilities. The default propagates
@@ -1437,18 +1420,14 @@ pub trait Widget {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
-        for child in self.children_mut() {
-            child.set_interaction_environment(environment);
-        }
+        defaults::set_interaction_environment(self.children_mut(), environment);
     }
 
     /// Pull model state into this widget before layout. The default syncs the
     /// children [`Widget::children_mut`] returns; a widget overrides it only to
     /// read state of its own, or to sync children it does not expose there.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
+        defaults::sync(self.children_mut(), state, path);
     }
 
     /// Notice, between frames, state that lives outside the document (a
@@ -1458,11 +1437,7 @@ pub trait Widget {
     /// container never freezes its descendants at build-time state; a widget
     /// overrides it to check state of its own and then forward.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.update(state, path);
-        }
-        changed
+        defaults::update(self.children_mut(), state, path)
     }
 
     /// Apply, after the sync pass, what the widget took up there and must
@@ -1471,9 +1446,7 @@ pub trait Widget {
     /// dispatcher); the host syncs again when the document changed. The
     /// default settles the children [`Widget::children_mut`] returns.
     fn settle(&mut self, edits: &mut Edits<'_>, path: &ObjId) {
-        for child in self.children_mut() {
-            child.settle(edits, path);
-        }
+        defaults::settle(self.children_mut(), edits, path);
     }
 
     fn build_layout(
@@ -1553,9 +1526,7 @@ pub trait Widget {
     /// inherit a compatibility adapter over [`Self::children`]; toolkit
     /// containers override this to walk their retained storage directly.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in self.children() {
-            visitor(child);
-        }
+        defaults::for_each_child(self.children(), visitor);
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![]
@@ -1576,20 +1547,11 @@ pub trait Widget {
     }
 
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self
-            .local_resource_operation_handlers()
-            .iter()
-            .map(|handler| (*handler).to_string())
-            .collect::<HashSet<_>>();
-        // The actual widget's registered readers also declare their selectors.
-        // Descriptor availability and qualified owner admission remain separate.
-        handlers.extend(
-            self.semantic_readers()
-                .iter()
-                .map(|reader| reader.operation_type().to_string()),
-        );
-        self.for_each_child(&mut |child| handlers.extend(child.resource_operation_handlers()));
-        handlers
+        defaults::resource_operation_handlers(
+            self.local_resource_operation_handlers(),
+            self.semantic_readers(),
+            &|visit| self.for_each_child(visit),
+        )
     }
     fn name(&self) -> &str;
     /// Stable id for the e2e test harness; `None` falls back to a path-based
@@ -1621,10 +1583,7 @@ pub trait Widget {
     /// viewport. Containers override this to scroll; ordinary widgets simply
     /// recurse toward the target and report whether it was found.
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
-        self.children_mut().into_iter().any(|child| {
-            std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child), target)
-                || child.reveal_descendant(target)
-        })
+        defaults::reveal_descendant(self.children_mut(), target)
     }
 
     /// Named hit rects for widgets that paint several affordances into one
@@ -1651,18 +1610,14 @@ pub trait Widget {
     /// resource action. Parameter collection and permission checks remain host
     /// policy; widgets only name an address already present in `resources()`.
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_action_palette_request)
+        defaults::take_action_palette_request(self.children_mut())
     }
 
     /// One-shot request to open the host's search palette, the same one the
     /// platform search shortcut opens. An app's own search button latches it
     /// so search stays one shared host surface rather than an app overlay.
     fn take_search_request(&mut self) -> bool {
-        self.children_mut()
-            .into_iter()
-            .any(Widget::take_search_request)
+        defaults::take_search_request(self.children_mut())
     }
 
     /// `point` is logical coords, same space as [`Widget::get_rect`];
@@ -1757,9 +1712,7 @@ pub trait Widget {
     /// owner. Retained flags and layout restoration are not user gestures.
     /// Containers can observe this to reveal the owning viewport.
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
-        for child in self.children_mut() {
-            child.focus_requested(target, tree);
-        }
+        defaults::focus_requested(self.children_mut(), target, tree);
     }
 
     fn is_focused(&self) -> bool {
@@ -1937,29 +1890,9 @@ pub trait Widget {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        // `AccessNode::with_keyed_action_routes` publishes a custom-painted
-        // control through the same semantic target that search and agents
-        // consume. Decode that target here, at the Widget boundary, so the
-        // app author implements `perform_action` once and gets every input
-        // route promised by the adapter. Explicit semantic targets keep using
-        // their widget-specific implementations because they do not carry
-        // this reserved prefix.
-        let Some((_, encoded_path)) = target
-            .strip_prefix("tilo.key-action:")
-            .and_then(|target| target.rsplit_once(':'))
-        else {
+        let Some(key_path) = defaults::key_action_path(target) else {
             return false;
         };
-        let Ok(key_path) = encoded_path
-            .split('/')
-            .map(str::parse::<u64>)
-            .collect::<Result<Vec<_>, _>>()
-        else {
-            return false;
-        };
-        if key_path.is_empty() {
-            return false;
-        }
         self.perform_action(action, &key_path, state, path)
     }
 
@@ -1973,26 +1906,16 @@ pub trait Widget {
     /// This field needs a host that consumes deferred receipts. Ordinary native
     /// Wayland windows must not advertise it until they have that delivery path.
     fn ime_requires_deferred_ack(&self) -> bool {
-        let caret = self.ime_cursor_rect();
-        let mut required = false;
-        self.for_each_child(&mut |child| {
-            if child.ime_cursor_rect() == caret && child.ime_content().is_some() {
-                required |= child.ime_requires_deferred_ack();
-            }
-        });
-        required
+        defaults::ime_requires_deferred_ack(self.ime_cursor_rect(), &|visit| {
+            self.for_each_child(visit);
+        })
     }
 
     /// Begin one bounded deferred session after explicit host consent, preserving
     /// the existing original-field fingerprint. This grants no microphone access.
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
-        for child in self.children_mut() {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
-                return child.start_deferred_text();
-            }
-        }
-        None
+        defaults::start_deferred_text(self.children_mut(), caret)
     }
 
     /// A private asynchronous final. None leaves ordinary synchronous IME dispatch
@@ -2000,12 +1923,7 @@ pub trait Widget {
     /// before the host releases its private recovery transcript.
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
         let caret = self.ime_cursor_rect()?;
-        for child in self.children_mut() {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
-                return child.commit_deferred_text(text);
-            }
-        }
-        None
+        defaults::commit_deferred_text(self.children_mut(), caret, text)
     }
 
     /// The focused widget wants platform text input (Wayland
@@ -2030,19 +1948,7 @@ pub trait Widget {
         let Some(caret) = self.ime_cursor_rect() else {
             return false;
         };
-        let mut matching = 0_usize;
-        let mut multiline = false;
-        self.for_each_child(&mut |child| {
-            if child.ime_cursor_rect() == Some(caret)
-                && child.ime_content().is_some_and(|content| {
-                    !content.is_secret() && content.purpose != crate::ime::InputPurpose::Terminal
-                })
-            {
-                matching = matching.saturating_add(1);
-                multiline = child.ime_multiline();
-            }
-        });
-        matching == 1 && multiline
+        defaults::ime_multiline(caret, &|visit| self.for_each_child(visit))
     }
 
     /// Opaque local invalidation of deferred input, including selection edits
@@ -2052,38 +1958,9 @@ pub trait Widget {
     /// read-only controls. Text controls can override it to avoid cloning text.
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         let caret = self.ime_cursor_rect()?;
-        let mut index = 0_usize;
-        let mut selected = None;
-        let mut ambiguous = false;
-        self.for_each_child(&mut |child| {
-            if child.ime_cursor_rect() == Some(caret) && child.ime_content().is_some() {
-                if selected.is_some() {
-                    ambiguous = true;
-                }
-                selected =
-                    Some(child.ime_edit_fingerprint(key).map(|stamp| {
-                        crate::ime::scoped_fingerprint(&index.to_le_bytes(), stamp, key)
-                    }));
-            }
-            index = index.saturating_add(1);
-        });
-        if ambiguous {
-            return None;
-        }
-        if let Some(selected) = selected {
-            return selected;
-        }
-        let node = self.accessibility()?;
-        if node.state.protected || node.state.read_only {
-            return None;
-        }
-        let selection = node.text_selection?;
-        Some(crate::ime::edit_fingerprint(
-            &node.value?,
-            selection.anchor,
-            selection.focus,
-            key,
-        ))
+        defaults::ime_edit_fingerprint(caret, key, &|visit| self.for_each_child(visit), &|| {
+            self.accessibility()
+        })
     }
 
     /// Default `true`; the exception is a widget standing in for a process
@@ -2130,22 +2007,13 @@ pub trait Widget {
         state: &AppModel,
         path: &ModelPath,
     ) -> bool {
-        for child in self.children_mut() {
-            if child.on_nav_gesture(dir, state, path) {
-                return true;
-            }
-        }
-        false
+        defaults::on_nav_gesture(self.children_mut(), dir, state, path)
     }
 
     /// Which directions [`Self::on_nav_gesture`] would consume now. A widget
     /// that owns history overrides this beside `on_nav_gesture`.
     fn nav_availability(&self) -> crate::gesture::NavAvailability {
-        self.children()
-            .into_iter()
-            .fold(crate::gesture::NavAvailability::default(), |seen, child| {
-                seen.or(child.nav_availability())
-            })
+        defaults::nav_availability(self.children())
     }
 
     /// One-shot (reading MUST clear it) signal to move focus to this
@@ -2161,9 +2029,7 @@ pub trait Widget {
     /// host applies it before the next frame. Default forwards the first
     /// request found among the children.
     fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
-        self.children_mut()
-            .into_iter()
-            .find_map(|child| child.take_accessibility_request())
+        defaults::take_accessibility_request(self.children_mut())
     }
 
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
@@ -2173,24 +2039,14 @@ pub trait Widget {
     /// that has one. A [`Router`](router::Router) reports its own stack and
     /// does not look inside the current screen.
     fn dev_route(&self) -> Option<router::RouteSnapshot> {
-        for child in self.children() {
-            if let Some(route) = child.dev_route() {
-                return Some(route);
-            }
-        }
-        None
+        defaults::dev_route(self.children())
     }
 
     /// Put `route` back. Returns whether a router in this subtree accepted it.
     ///
     /// An unknown route name is refused and the existing screen stays up.
     fn restore_dev_route(&mut self, route: &router::RouteSnapshot) -> bool {
-        for child in self.children_mut() {
-            if child.restore_dev_route(route) {
-                return true;
-            }
-        }
-        false
+        defaults::restore_dev_route(self.children_mut(), route)
     }
 
     /// Theme/high-contrast/reduced-motion/scale, polled under
@@ -2221,9 +2077,7 @@ pub trait Widget {
     /// this, settle any in-flight decorative transitions when `reduced` is
     /// true, and then forward to retained child widgets if they have any.
     fn set_motion_reduced(&mut self, reduced: bool) {
-        for child in self.children_mut() {
-            child.set_motion_reduced(reduced);
-        }
+        defaults::set_motion_reduced(self.children_mut(), reduced);
     }
 
     // --- Collab / DnD contract extensions ---
@@ -2293,9 +2147,7 @@ pub trait Widget {
     /// that component and it has consumed the request. Returning `false`
     /// preserves the standard collaboration-safe document undo behavior.
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.children_mut()
-            .into_iter()
-            .any(|child| child.handle_local_undo_request(request))
+        defaults::handle_local_undo_request(self.children_mut(), request)
     }
 
     /// Apply an action another app in this room published, if this app owns
@@ -2370,14 +2222,13 @@ pub trait Widget {
         {
             return Some(update);
         }
-        for child in self.children_mut() {
-            if let Some(update) =
-                child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-            {
-                return Some(update);
-            }
-        }
-        None
+        defaults::poll_resource_operation(
+            self.children_mut(),
+            invocation,
+            cancellation_requested,
+            doc,
+            path,
+        )
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -2394,13 +2245,7 @@ pub trait Widget {
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
-        let mut needed = false;
-        self.for_each_child(&mut |child| {
-            if !needed {
-                needed = child.needs_animation_frame();
-            }
-        });
-        needed
+        defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     /// Earliest wall-clock deadline at which this subtree needs a sync/redraw
@@ -2408,13 +2253,7 @@ pub trait Widget {
     /// the event loop asleep until the requested instant and is appropriate
     /// for filesystem/status polling rather than animation.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let mut earliest = None;
-        self.for_each_child(&mut |child| {
-            if let Some(deadline) = child.next_wake_deadline() {
-                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
-            }
-        });
-        earliest
+        defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
     }
 
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.
@@ -2423,13 +2262,7 @@ pub trait Widget {
     /// behind the modal is clickable. Containers MUST forward (the default
     /// does, via first `Some` among children).
     fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
-        let mut capture = None;
-        self.for_each_child(&mut |child| {
-            if capture.is_none() {
-                capture = child.modal_capture();
-            }
-        });
-        capture
+        defaults::modal_capture(&|visit| self.for_each_child(visit))
     }
 
     /// True if this subtree's structural composition (children
@@ -2440,11 +2273,7 @@ pub trait Widget {
     /// `false`. A container that changes its own child list sets its own flag
     /// and ORs it with this traversal.
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
-        for child in self.children_mut() {
-            dirty |= child.take_structure_dirty();
-        }
-        dirty
+        defaults::take_structure_dirty(self.children_mut())
     }
 
     /// [`Self::take_structure_dirty`], saying whether the frame's damage can
@@ -2462,18 +2291,14 @@ pub trait Widget {
     /// Work already requested by this view whose completion will replace a
     /// placeholder. Unlike animations, this can be awaited by still captures.
     fn has_pending_visual_work(&self) -> bool {
-        let mut pending = false;
-        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
-        pending
+        defaults::has_pending_visual_work(&|visit| self.for_each_child(visit))
     }
 
     /// Temporary feedback currently presented, such as a save acknowledgement.
     /// Captures may intentionally include it; scene-invariance checks can wait
     /// for it to disappear separately from unfinished placeholder work.
     fn has_transient_feedback(&self) -> bool {
-        self.children()
-            .into_iter()
-            .any(Widget::has_transient_feedback)
+        defaults::has_transient_feedback(self.children())
     }
 
     /// Default `true` (dirty every frame). Opt into incremental redraw by
@@ -2481,15 +2306,7 @@ pub trait Widget {
     /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
     /// descendant is.
     fn needs_redraw(&self) -> bool {
-        let mut has_children = false;
-        let mut dirty = false;
-        self.for_each_child(&mut |child| {
-            has_children = true;
-            if !dirty {
-                dirty = child.needs_redraw();
-            }
-        });
-        !has_children || dirty
+        defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     /// Logical-pixel bounds whose visual output differs from the last frame.
@@ -2519,9 +2336,7 @@ pub trait Widget {
     /// Called after this widget's scene lands in the composed frame, to
     /// clear a `dirty` flag. Default forwards to children.
     fn mark_drawn(&mut self) {
-        for c in self.children_mut() {
-            c.mark_drawn();
-        }
+        defaults::mark_drawn(self.children_mut());
     }
 
     /// Release retained encoded-scene storage in this subtree without
@@ -2530,24 +2345,14 @@ pub trait Widget {
     /// keeping byte-for-byte descendant encodings only duplicates memory.
     /// A later outer rebuild causes descendants to record/cache normally.
     fn release_scene_cache(&mut self) {
-        for child in self.children_mut() {
-            child.release_scene_cache();
-        }
+        defaults::release_scene_cache(self.children_mut());
     }
 
     /// Default `true`; widgets with a fixed intrinsic size should override
     /// to `false` unless a size-affecting mutation landed. Containers MUST
     /// forward: layout-dirty iff any descendant is.
     fn is_layout_dirty(&self) -> bool {
-        let mut has_children = false;
-        let mut dirty = false;
-        self.for_each_child(&mut |child| {
-            has_children = true;
-            if !dirty {
-                dirty = child.is_layout_dirty();
-            }
-        });
-        !has_children || dirty
+        defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
     }
 
     /// Whether this widget composes its children from the size it was last
@@ -2569,19 +2374,8 @@ pub trait Widget {
     /// in `apply_layout` without changing any taffy size, so re-solving on
     /// every scroll frame is pure waste.
     fn layout_needs_measure(&self) -> bool {
-        let mut has_children = false;
-        let mut dirty = false;
-        self.for_each_child(&mut |child| {
-            has_children = true;
-            if !dirty {
-                dirty = child.layout_needs_measure();
-            }
-        });
-        if has_children {
-            dirty
-        } else {
-            self.is_layout_dirty()
-        }
+        defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
+            .unwrap_or_else(|| self.is_layout_dirty())
     }
 
     /// Everything this widget paints, children included; [`draw_child`]
@@ -2604,9 +2398,14 @@ pub trait Widget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        for child in self.children_mut() {
-            child.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        defaults::draw_overlay(
+            self.children_mut(),
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
     }
 }
 
@@ -3068,6 +2867,7 @@ mod composed;
 pub use composed::Composed;
 pub mod controls;
 pub mod decorator;
+mod defaults;
 pub mod document_effects;
 pub use crate::pen::PenSample;
 pub use decorator::Decorator;
