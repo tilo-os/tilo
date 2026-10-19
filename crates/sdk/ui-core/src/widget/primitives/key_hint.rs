@@ -61,6 +61,10 @@ impl<'a> KeyHintsFace<'a> {
 
     fn hint_width(hint: &KeyHint, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let caps = InputHint::measure_keycap_labels(&hint.keys, text, theme);
+        if hint.label.is_empty() {
+            // Keys alone (a shortcut's chord): no gap for a missing label.
+            return caps;
+        }
         let label = f64::from(text.measure_style(&hint.label, None, &label_style(theme)).0);
         caps + f64::from(theme.tokens.spacing.rhythm.related) + label
     }
@@ -111,6 +115,9 @@ impl<'a> KeyHintsFace<'a> {
                 ctx.text,
                 theme,
             );
+            if hint.label.is_empty() {
+                continue;
+            }
             x += f64::from(rhythm.related);
             ctx.text.draw_style(
                 ctx.scene,
@@ -132,6 +139,113 @@ impl<'a> KeyHintsFace<'a> {
             .iter()
             .map(|h| format!("{}: {}", h.keys.join(" + "), h.label))
             .collect()
+    }
+}
+
+/// A retained strip of key hints: a chord's drawn keycaps on a row's
+/// trailing edge (a shortcut that cannot be changed), or several chords
+/// side by side, a `sibling` gap apart. Never a joined string.
+pub struct KeyHints {
+    hints: Vec<KeyHint>,
+    rect: Rect,
+    /// Not yet laid out in the theme last seen, or not yet drawn.
+    dirty: bool,
+    theme: Option<Theme>,
+}
+
+impl KeyHints {
+    #[must_use]
+    pub fn new(hints: Vec<KeyHint>) -> Self {
+        Self {
+            hints,
+            rect: Rect::ZERO,
+            dirty: true,
+            theme: None,
+        }
+    }
+}
+
+impl crate::widget::Widget for KeyHints {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> taffy::NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        if self.theme.as_ref() != Some(theme) {
+            self.theme = Some(theme.clone());
+            self.dirty = true;
+        }
+        let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            KeyHintsFace::new(&self.hints).width(text, theme)
+        });
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),
+                height: taffy::Dimension::length(crate::num::f32_of_f64(KeyHintsFace::height(
+                    theme,
+                ))),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    // Its keys never change: it is measured again only in a new theme.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        // A little room past the measured width so rounding never drops
+        // the last hint.
+        let rect = self.rect.inflate(1.0, 0.0);
+        KeyHintsFace::new(&self.hints).paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "KeyHints"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let spoken: Vec<String> = self
+            .hints
+            .iter()
+            .map(|hint| {
+                if hint.label.is_empty() {
+                    hint.keys.join(" + ")
+                } else {
+                    format!("{}: {}", hint.keys.join(" + "), hint.label)
+                }
+            })
+            .collect();
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+                .with_name(spoken.join(", "))
+                .with_bounds(self.rect),
+        )
     }
 }
 

@@ -160,6 +160,7 @@ pub struct SectionHeader {
     title: String,
     level: Level,
     count: Option<usize>,
+    trailing: Option<Element>,
     action: Option<Button>,
 }
 
@@ -171,6 +172,7 @@ impl SectionHeader {
             title: title.into(),
             level: Level::Section,
             count: None,
+            trailing: None,
             action: None,
         }
     }
@@ -199,6 +201,15 @@ impl SectionHeader {
         self
     }
 
+    /// One element on the trailing edge that speaks for the whole group:
+    /// the switch that turns it on or off, or its status as a badge. It
+    /// stands before the [`Self::action`] when there is one.
+    #[must_use]
+    pub fn trailing(mut self, element: Element) -> Self {
+        self.trailing = Some(element);
+        self
+    }
+
     /// A non-interactive identity element immediately before the title.
     /// It participates in layout, drawing and the accessibility tree.
     #[must_use]
@@ -222,6 +233,10 @@ impl SectionHeader {
                 metrics: None,
             }));
         }
+        let has_trailing = self.trailing.is_some();
+        if let Some(trailing) = self.trailing {
+            children.push(trailing);
+        }
         let has_action = self.action.is_some();
         if let Some(action) = self.action {
             children.push(Box::new(
@@ -242,6 +257,7 @@ impl SectionHeader {
             has_leading,
             title: self.title,
             level: self.level,
+            has_trailing,
             has_action,
             has_chevron,
             disclosure,
@@ -549,6 +565,8 @@ struct HeaderRow {
     has_leading: bool,
     title: String,
     level: Level,
+    /// A trailing element ([`SectionHeader::trailing`]) before the action.
+    has_trailing: bool,
     has_action: bool,
     has_chevron: bool,
     disclosure: Option<Disclosure>,
@@ -681,6 +699,20 @@ impl Widget for HeaderRow {
             style.min_size.width = length(0.0_f32);
             let _ = taffy.set_style(title, style);
         }
+        if self.has_trailing
+            && let Some(index) = self
+                .parts
+                .nodes
+                .len()
+                .checked_sub(1 + usize::from(self.has_action) + usize::from(self.has_chevron))
+            && let Some(&trailing) = self.parts.nodes.get(index)
+            && let Ok(style) = taffy.style(trailing)
+        {
+            let mut style = style.clone();
+            style.margin.left = auto();
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(trailing, style);
+        }
         let trailing_index = if self.has_action {
             self.parts
                 .nodes
@@ -696,12 +728,12 @@ impl Widget for HeaderRow {
             && let Ok(style) = taffy.style(trailing)
         {
             let mut style = style.clone();
-            style.margin.left = auto();
-            if self.has_action && !self.has_chevron {
-                // The label, not the button, ends on the trailing edge: the
-                // button's inset (its hover lift) bleeds past it.
-                style.margin.right = length(-crate::num::f32_of_f64(m.action_pad));
+            if !self.has_trailing {
+                style.margin.left = auto();
             }
+            // A labelled plain button is laid out as its label (its lift
+            // reaches past it by its own padding), so it ends on the trailing
+            // edge as it is.
             let _ = taffy.set_style(trailing, style);
         }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -1057,6 +1089,14 @@ impl Widget for Section {
         self.parts.rect
     }
 
+    // A section paints nothing of its own: what changed is what its rows
+    // changed, so a hover or a meter in one row does not repaint the group.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        for child in &self.parts.children {
+            child.collect_damage(regions);
+        }
+    }
+
     fn name(&self) -> &'static str {
         "Section"
     }
@@ -1219,12 +1259,17 @@ impl Section {
             .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
     }
 
-    /// Which items are list rows.
+    /// Which items are list rows: list rows and disclosure rows, which sit
+    /// edge to edge as one list.
     fn row_flags(&mut self) -> Vec<bool> {
         self.parts
             .children
             .iter_mut()
-            .map(|child| Self::row_mut(child).is_some())
+            .map(|child| {
+                child.as_any_mut().is_some_and(|any| {
+                    any.is::<crate::widget::ListRow>() || any.is::<crate::widget::DisclosureRow>()
+                })
+            })
             .collect()
     }
 
@@ -1269,23 +1314,38 @@ impl Section {
     /// A list row gets a separator when a list row follows it, hidden when
     /// either is selected; a selected row's lift joins a selected neighbour.
     fn sync_row_separators(&mut self) {
+        // Each item's selection when it is a row of the list (a disclosure
+        // row is never selected), `None` when it is not a row.
         let selected: Vec<Option<bool>> = self
             .parts
             .children
             .iter_mut()
-            .map(|child| Self::row_mut(child).map(|row| row.is_selected()))
+            .map(|child| {
+                child.as_any_mut().and_then(|any| {
+                    if let Some(row) = any.downcast_mut::<crate::widget::ListRow>() {
+                        Some(row.is_selected())
+                    } else {
+                        any.is::<crate::widget::DisclosureRow>().then_some(false)
+                    }
+                })
+            })
             .collect();
         for (index, child) in self.parts.children.iter_mut().enumerate() {
             let next = selected.get(index + 1).copied().flatten();
             let previous = index
                 .checked_sub(1)
                 .and_then(|i| selected.get(i).copied().flatten());
-            if let Some(row) = Self::row_mut(child) {
+            let Some(any) = child.as_any_mut() else {
+                continue;
+            };
+            if let Some(row) = any.downcast_mut::<crate::widget::ListRow>() {
                 row.set_separator(next.is_some(), next.unwrap_or(false));
                 row.set_join(RowJoin::new(
                     previous.unwrap_or(false),
                     next.unwrap_or(false),
                 ));
+            } else if let Some(row) = any.downcast_mut::<crate::widget::DisclosureRow>() {
+                row.set_separator(next.is_some() && next != Some(true));
             }
         }
     }
