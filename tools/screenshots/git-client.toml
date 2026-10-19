@@ -1,9 +1,29 @@
-# Git client: its views through the repository's actions (no repository is
-# open in a fresh profile).
+# Git client: a small project in the person's home, opened through the
+# repository's actions, in each of its views.
+
+[[repository]]
+path = "src/garden-planner"
+branches = ["spring-layout", "watering-schedule"]
+changes = { "README.md" = "# Garden planner\n\nPlan beds, sowing dates and watering for a community garden.\n\nRun `cargo run` to open the planner.\n", "notes/todo.md" = "- Add frost dates for Leipzig\n" }
+
+[[repository.commit]]
+message = "Start the garden planner"
+files = { "README.md" = "# Garden planner\n\nPlan beds and sowing dates.\n", "Cargo.toml" = "[package]\nname = \"garden-planner\"\nversion = \"0.1.0\"\nedition = \"2024\"\n" }
+
+[[repository.commit]]
+message = "Add raised beds and their sizes"
+files = { "src/beds.rs" = "pub struct Bed {\n    pub name: String,\n    pub width_cm: u32,\n    pub length_cm: u32,\n}\n" }
+
+[[repository.commit]]
+message = "Sow dates per crop"
+files = { "src/sowing.rs" = "pub fn first_sowing(crop: &str) -> Option<&'static str> {\n    match crop {\n        \"peas\" => Some(\"March\"),\n        \"beans\" => Some(\"May\"),\n        _ => None,\n    }\n}\n" }
 
 [[situation]]
 name = "changes"
-title = "Changes"
+title = "Changes waiting to be committed"
+
+[[situation.steps]]
+invoke = { resource = "git_client.repo", action = "open-repository", args = { path = "${HOME}/src/garden-planner" } }
 
 [[situation.steps]]
 invoke = { resource = "git_client.repo", action = "show-changes" }
@@ -13,6 +33,9 @@ name = "history"
 title = "History"
 
 [[situation.steps]]
+invoke = { resource = "git_client.repo", action = "open-repository", args = { path = "${HOME}/src/garden-planner" } }
+
+[[situation.steps]]
 invoke = { resource = "git_client.repo", action = "show-history" }
 
 [[situation]]
@@ -20,4 +43,11 @@ name = "branches"
 title = "Branches"
 
 [[situation.steps]]
+invoke = { resource = "git_client.repo", action = "open-repository", args = { path = "${HOME}/src/garden-planner" } }
+
+[[situation.steps]]
 invoke = { resource = "git_client.repo", action = "show-branches" }
+
+[[situation]]
+name = "open"
+title = "Opening a repository"

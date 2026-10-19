@@ -1,5 +1,29 @@
 # Disk usage: folders analyzed through the app's actions, in the run's own
-# scratch home.
+# scratch home, which holds a few folders of ordinary files.
+
+[[file]]
+path = "Documents/Taxes 2025/receipts.csv"
+text = "date,shop,amount\n2025-01-04,Hardware store,23.40\n2025-02-11,Bookshop,18.00\n2025-03-02,Garden centre,64.90\n2025-04-19,Pharmacy,9.75\n2025-05-23,Bike repair,42.00\n"
+
+[[file]]
+path = "Documents/Letters/landlord.txt"
+text = "Dear Mr Becker,\n\nthe heating in the flat has been fixed. Thank you for arranging it so quickly.\n\nKind regards,\nLena Hoffmann\n"
+
+[[file]]
+path = "Projects/garden-planner/README.md"
+text = "# Garden planner\n\nPlan beds, sowing dates and watering for a community garden.\n"
+
+[[file]]
+path = "Projects/garden-planner/notes.md"
+text = "- Frost dates for Leipzig\n- Raised beds: 4 x 120 cm\n- Rain barrels: 2 x 300 l\n"
+
+[[file]]
+path = "Music/Playlists/sunday-morning.m3u"
+text = "#EXTM3U\nSlow coffee.flac\nWindow light.flac\nOld radio.flac\n"
+
+[[file]]
+path = "Pictures/Lisbon/itinerary.txt"
+text = "Friday: arrive 18:40, Alfama.\nSaturday: LX Factory, Miradouro da Senhora do Monte.\nSunday: Belém, pastéis de nata.\n"
 
 [[situation]]
 name = "start"
@@ -10,4 +34,4 @@ name = "home"
 title = "The home folder analyzed"
 
 [[situation.steps]]
-invoke = { resource = "disk-usage", action = "home" }
+invoke = { resource = "disk-usage", action = "analyze", args = { path = "${HOME}" } }
