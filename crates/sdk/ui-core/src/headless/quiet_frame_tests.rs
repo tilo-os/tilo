@@ -193,9 +193,21 @@ fn each_entry_point_brings_sync_and_publication_back() {
             .contains("Renamed"),
         "the frame shows the renamed probe"
     );
-    entered(&mut frame, &seen, "a click", |frame| {
-        frame.click_at(20.0, 20.0)
-    });
+    // A click is judged event by event, as the live App judges input: the
+    // move onto the probe changes nothing a frame reads and its frame stays
+    // quiet, while the press and release, which nothing took, sync and
+    // publish.
+    let (syncs, published) = (seen.syncs.get(), seen.published.get());
+    frame.click_at(20.0, 20.0);
+    assert!(
+        seen.syncs.get() > syncs && seen.published.get() > published,
+        "a click's own frames synced and published"
+    );
+    assert_eq!(
+        polled(&mut frame, &seen),
+        Quiet::Yes,
+        "the frame after that, after a click"
+    );
     let target = frame.a11y_node_named("Renamed").expect("the probe's node");
     let actions = seen.actions.get();
     entered(&mut frame, &seen, "an accessibility action", |frame| {
@@ -305,6 +317,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing",
         ),
         ("scroll", "a wheel through `send`, which judges it"),
+        (
+            "click_at",
+            "a move, a press and a release through `send`, which judges each",
+        ),
         (
             "idle",
             "invalidates when its control tick or save offer moved the document",
