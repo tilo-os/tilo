@@ -2306,7 +2306,8 @@ mod tests {
         fs::write(&binary, "baseline").unwrap();
         let mut original = Provenance::local("shell");
         original.source_commit = Some("ab".repeat(20));
-        original.target = Some("x86_64-unknown-linux-gnu".into());
+        // The host's own target: the daemon checks a layer against the machine it runs on.
+        original.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
         original.cargo_lock_hash = Some("cd".repeat(32));
         let store = LayerStore::new(root.path());
         let (baseline, _) = store
