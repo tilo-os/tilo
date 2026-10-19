@@ -113,6 +113,11 @@ files = [
   # The PAM entry point and compositor share the session-recovery contract.
   # A fresh slot login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
+  # The interface versions this image serves. The shell serves shell-ui and
+  # judges apps against this file, so the file it reads must come from the
+  # same source: a shell swapped onto an older image otherwise reads a
+  # declaration in another format and judges nothing.
+  { from = "@manifest/usr/share/tilo/system-interfaces.toml", to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" },
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
