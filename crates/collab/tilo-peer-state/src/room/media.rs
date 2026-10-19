@@ -355,6 +355,21 @@ pub fn validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
 }
 
 impl ChatCallBindingV1 {
+    /// Whether this binds channel `channel` of Chat record `record` of app
+    /// `app`: what identifies a call's channel. Its object and the
+    /// workspace it once named are recorded with it, not compared (see
+    /// [`resolve_chat_binding`]).
+    #[must_use]
+    pub fn names_channel(&self, app: &str, record: &str, channel: &str) -> bool {
+        self.app_id == app && self.record_id == record && self.channel_id == channel
+    }
+
+    /// Whether `self` and `other` bind the same channel.
+    #[must_use]
+    pub fn same_channel(&self, other: &Self) -> bool {
+        other.names_channel(&self.app_id, &self.record_id, &self.channel_id)
+    }
+
     /// Structural validation of a Chat call binding.
     ///
     /// # Errors
