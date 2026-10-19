@@ -397,7 +397,8 @@ mod portable_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use crate::setup::account_transfer::{self, SourceRoots};

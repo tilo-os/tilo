@@ -4,6 +4,17 @@
 
 use crate::time::Duration;
 
+/// A dragged group that moves less than this per second is settled.
+pub const MOVE_SETTLED_PX_PER_S: f64 = 4.0;
+/// How fast a pointer at the edge of a strip pans it.
+pub const DRAG_EDGE_PAN_PX_PER_S: f64 = 1600.0;
+/// The slowest release that still flings.
+pub const FLING_MIN_VELOCITY: f64 = 60.0;
+/// How far a group sprite follows a drag before it stops.
+pub const GROUP_SPRITE_REACH: f64 = 160.0;
+/// The rate a revealed top edge pushes the window down.
+pub const PUSH_SPEED: f64 = 1.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpringParams {
     pub stiffness: f32,

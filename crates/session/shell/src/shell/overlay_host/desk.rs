@@ -26,13 +26,12 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use ui::ColorCompat as _;
 use ui::TextRole;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -56,30 +55,30 @@ pub(crate) const SUPER_SCRIM: f32 = 0.35;
 /// The music widget's glance pill.
 const MUSIC_GLANCE: Size = Size::new(240.0, 40.0);
 /// Space between the Super surface's field and the time card under it.
-const SUPER_HEADER_GAP: f64 = 16.0;
+const SUPER_HEADER_GAP: f64 = ui::tokens::Spacing::BASE.s4 as f64;
 /// Width of every open card.
-const CARD_WIDTH: f64 = 320.0;
+const CARD_WIDTH: f64 = ui::tokens::Metrics::BASE.panel_width_utility as f64;
 /// The band above an open card holding its pin.
-const PIN_BAND: f64 = 32.0;
-const PIN: f64 = 26.0;
+const PIN_BAND: f64 = ui::tokens::Spacing::BASE.s8 as f64;
+const PIN: f64 = ui::tokens::Layout::BASE.pin as f64;
 /// Team avatars in the glance form.
-const AVATAR: f64 = 28.0;
-const AVATAR_STEP: f64 = 22.0;
+const AVATAR: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+const AVATAR_STEP: f64 = ui::tokens::Layout::BASE.avatar_step as f64;
 const GLANCE_AVATARS: usize = 5;
-const TEAM_HEADER: f64 = 36.0;
-const TEAM_ROW: f64 = 62.0;
-const TEAM_MORE: f64 = 24.0;
+const TEAM_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
+const TEAM_ROW: f64 = ui::tokens::Layout::BASE.team_row as f64;
+const TEAM_MORE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 /// The calendar's glance form: the weekday over the day of the month.
 const CALENDAR_GLANCE: Size = Size::new(52.0, 56.0);
-const CALENDAR_HEADER: f64 = 40.0;
-const CALENDAR_WEEKDAYS: f64 = 24.0;
-const CALENDAR_ROW: f64 = 32.0;
+const CALENDAR_HEADER: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
+const CALENDAR_WEEKDAYS: f64 = ui::tokens::Spacing::BASE.s6 as f64;
+const CALENDAR_ROW: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 /// The system monitor's glance pill.
 const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
-const MONITOR_HEADER: f64 = 36.0;
-const MONITOR_ROW: f64 = 40.0;
+const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
+const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
 /// A press that moves this far becomes a drag to another edge.
-const DRAG_SLOP: f64 = 6.0;
+const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1205,8 +1204,7 @@ fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: 
 
 fn paint_pill_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     let radius = ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
-    let mut shadow = theme.tokens.elevation.floating;
-    shadow.color = shadow.color.with_alpha_factor(0.6);
+    let shadow = theme.tokens.elevation.floating.with_alpha_scaled(0.6);
     ui::surface::shadow(scene, transform, rect, radius, &shadow);
     ui::surface::card(
         scene,
@@ -1215,12 +1213,13 @@ fn paint_pill_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: 
         radius,
         theme.tokens.colors.surfaces.overlay,
     );
-    scene.stroke(
-        &Stroke::new(1.0),
+    ui::paint::stroke_round(
+        scene,
         transform,
+        rect,
+        radius,
         ui::chrome::panel_border(theme),
-        None,
-        &RoundedRect::from_rect(rect, radius),
+        1.0,
     );
 }
 
@@ -1467,8 +1466,7 @@ fn paint_calendar_glance(
 ) {
     use chrono::Datelike as _;
     let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    let mut shadow = theme.tokens.elevation.floating;
-    shadow.color = shadow.color.with_alpha_factor(0.6);
+    let shadow = theme.tokens.elevation.floating.with_alpha_scaled(0.6);
     ui::surface::shadow(scene, transform, rect, radius, &shadow);
     ui::surface::card(
         scene,
@@ -1477,12 +1475,13 @@ fn paint_calendar_glance(
         radius,
         theme.tokens.colors.surfaces.overlay,
     );
-    scene.stroke(
-        &Stroke::new(1.0),
+    ui::paint::stroke_round(
+        scene,
         transform,
+        rect,
+        radius,
         ui::chrome::panel_border(theme),
-        None,
-        &RoundedRect::from_rect(rect, radius),
+        1.0,
     );
     let colors = &theme.tokens.colors;
     let weekday = ui::format::weekday_short(month.today.weekday());
@@ -1716,7 +1715,7 @@ fn paint_monitor_card(
             transform,
             track,
             2.0,
-            colors.text_dim.with_alpha_factor(0.25),
+            ui::paint::with_alpha_scaled(colors.text_dim, 0.25),
         );
         let fill = Rect::new(
             track.x0,
@@ -1741,12 +1740,13 @@ fn paint_pin(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, pi
     };
     let radius = rect.height() / 2.0;
     ui::surface::card(scene, transform, rect, radius, ground);
-    scene.stroke(
-        &Stroke::new(1.0),
+    ui::paint::stroke_round(
+        scene,
         transform,
+        rect,
+        radius,
         ui::chrome::panel_border(theme),
-        None,
-        &RoundedRect::from_rect(rect, radius),
+        1.0,
     );
     let ink = if pinned {
         colors.surfaces.overlay

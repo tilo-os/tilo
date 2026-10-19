@@ -74,7 +74,7 @@ use vello::kurbo::{Point, Rect};
 
 /// Height of the band at the window's top that summons the bar, in logical
 /// px. Thinner than the inset any header row keeps above its controls.
-pub const REVEAL_BAND_PX: f64 = 6.0;
+pub const REVEAL_BAND_PX: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How long the pointer rests in the band before the bar shows. A little
 /// longer than a hover-open dwell: what lies under the band is the app's.
@@ -82,7 +82,7 @@ pub const DWELL: Duration = Duration::from_millis(150);
 
 /// How far below the band a pushing pointer started, at most
 /// [`PUSH_WINDOW`] ago.
-pub const PUSH_TRAVEL_PX: f64 = 48.0;
+pub const PUSH_TRAVEL_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
 
 /// How recent the start of a push must be.
 pub const PUSH_WINDOW: Duration = Duration::from_millis(160);
@@ -104,10 +104,10 @@ pub const TRANSIT_SPEED: f64 = 0.6;
 pub const BRAKE_RATIO: f64 = 0.6;
 
 /// Peak speed a climb must reach to count as a push for the edge.
-pub const PUSH_SPEED: f64 = 1.0;
+pub const PUSH_SPEED: f64 = crate::tokens::motion::PUSH_SPEED;
 
 /// How far a touch that starts in the band drags down to show the bar.
-pub const TOUCH_SWIPE_PX: f64 = 24.0;
+pub const TOUCH_SWIPE_PX: f64 = crate::tokens::Spacing::BASE.s6 as f64;
 
 /// Where the bar is, as laid out now.
 #[derive(Clone, Copy, Debug)]

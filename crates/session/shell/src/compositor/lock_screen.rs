@@ -934,8 +934,8 @@ pub fn draw_lock_scene_at_time(
 /// Where the alert about the whole machine sits on one display: top-centre,
 /// a banner's width at most, inset from the edges. `height` is the card's.
 pub fn lock_alert_rect(output: Rect, height: f64) -> Rect {
-    const INSET: f64 = 24.0;
-    const WIDTH: f64 = 360.0;
+    const INSET: f64 = ui::tokens::Spacing::BASE.s6 as f64;
+    const WIDTH: f64 = ui::tokens::Metrics::BASE.panel_width_list as f64;
     let width = (output.width() - INSET * 2.0).clamp(0.0, WIDTH);
     let x0 = output.center().x - width / 2.0;
     let y0 = output.y0 + INSET;

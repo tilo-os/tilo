@@ -1500,10 +1500,7 @@ impl Session {
                 .map_or_else(
                     || {
                         let last = app.rsplit('.').next().unwrap_or(app).replace('-', " ");
-                        let mut chars = last.chars();
-                        chars.next().map_or_else(String::new, |first| {
-                            first.to_uppercase().chain(chars).collect()
-                        })
+                        ui::format::capitalize_first(&last)
                     },
                     |offer| offer.descriptor.resource_label.clone(),
                 )

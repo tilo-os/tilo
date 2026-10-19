@@ -40,28 +40,28 @@ use crate::shell::state::{StripId, WorkspaceId};
 use tilo_desktop_model::DesktopTree;
 
 /// The card's width, ribbon band included.
-pub(crate) const CARD_W: f64 = 272.0;
+pub(crate) const CARD_W: f64 = ui::tokens::Layout::BASE.strip_card_width as f64;
 /// A row that is not level with a ribbon segment: the minimum pointer target.
-const ROW_H: f64 = 32.0;
+const ROW_H: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 /// The workspace's name above the strips.
-const HEADER_H: f64 = 28.0;
+const HEADER_H: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
 /// "Workspaces" above the workspace rows.
-const SECTION_H: f64 = 26.0;
+const SECTION_H: f64 = ui::tokens::Layout::BASE.section_height as f64;
 /// The hairline between the strips and the workspaces, with its air.
-const DIVIDER_H: f64 = 9.0;
+const DIVIDER_H: f64 = ui::tokens::Layout::BASE.divider_height as f64;
 /// Inner padding of the card.
-const PAD: f64 = 6.0;
+const PAD: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 /// The card keeps this far from the content's top and bottom.
-const MARGIN: f64 = 8.0;
+const MARGIN: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 /// A pointer this far outside the card still counts as on it, so a hand that
 /// overshoots a row's edge by a few pixels does not close it.
-const GRACE: f64 = 8.0;
-const AVATAR: f64 = 18.0;
-const AVATAR_STEP: f64 = 13.0;
+const GRACE: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+const AVATAR: f64 = ui::tokens::Layout::BASE.avatar as f64;
+const AVATAR_STEP: f64 = ui::tokens::Layout::BASE.compact_avatar_step as f64;
 /// More people than this on a strip collapse into "+N".
 const AVATARS_SHOWN: usize = 3;
 /// The rename control at a strip row's end.
-const RENAME_W: f64 = 28.0;
+const RENAME_W: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
 
 /// Someone other than this person, on a strip.
 #[derive(Clone, Debug, PartialEq)]
@@ -863,15 +863,15 @@ impl StripSwitcher {
             self.draw_row(cx, row, rect);
         }
         let x_end = self.layout.content_x1();
-        cx.scene.stroke(
-            &Stroke::new(1.0),
+        ui::paint::stroke_line(
+            cx.scene,
             cx.transform,
-            ui::chrome::chrome_hairline(cx.theme),
-            None,
-            &vello::kurbo::Line::new(
+            vello::kurbo::Line::new(
                 (card.x0 + 12.0, self.layout.divider_y),
                 (x_end, self.layout.divider_y),
             ),
+            ui::chrome::chrome_hairline(cx.theme),
+            1.0,
         );
         if let Some(target) = self.naming.as_ref().map(|n| n.target)
             && let Some(field) = self.field_rect(target)
@@ -936,12 +936,12 @@ impl StripSwitcher {
                 wash.inflate(1.0, 1.0),
                 ui::chrome::ChromeRole::Control.radius(cx.theme, wash.height()),
             );
-            cx.scene.stroke(
-                &Stroke::new(2.0),
+            ui::paint::stroke_shape(
+                cx.scene,
                 cx.transform,
-                cx.theme.tokens.colors.border_focus,
-                None,
                 &ring,
+                cx.theme.tokens.colors.border_focus,
+                2.0,
             );
         }
     }
@@ -1289,19 +1289,18 @@ fn paint_card_ground(scene: &mut Scene, transform: Affine, theme: &Theme, rect: 
         &theme.tokens.elevation.floating,
     );
     let shape = RoundedRect::from_rect(rect, RoundedRectRadii::new(radius, 0.0, 0.0, radius));
-    scene.fill(
-        Fill::NonZero,
+    ui::paint::fill_shape(
+        scene,
         transform,
+        &shape,
         ui::widget::floating_surface::card_ground(theme),
-        None,
-        &shape,
     );
-    scene.stroke(
-        &Stroke::new(1.0),
+    ui::paint::stroke_shape(
+        scene,
         transform,
-        ui::chrome::panel_border(theme),
-        None,
         &shape,
+        ui::chrome::panel_border(theme),
+        1.0,
     );
 }
 

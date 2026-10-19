@@ -171,13 +171,39 @@ pub fn stroke_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Colo
 
 /// Fill `rect` with corners rounded to `radius`.
 pub fn fill_round(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
+    fill_shape(
+        scene,
         transform,
-        color,
-        None,
         &RoundedRect::from_rect(rect, radius),
+        color,
     );
+}
+
+/// Fill a rounded shape whose corners may differ.
+pub fn fill_shape(scene: &mut Scene, transform: Affine, shape: &RoundedRect, color: Color) {
+    scene.fill(Fill::NonZero, transform, color, None, shape);
+}
+
+/// Stroke a rounded shape whose corners may differ.
+pub fn stroke_shape(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    color: Color,
+    width: f64,
+) {
+    scene.stroke(&Stroke::new(width), transform, color, None, shape);
+}
+
+/// Stroke a line with a line `width` wide.
+pub fn stroke_line(
+    scene: &mut Scene,
+    transform: Affine,
+    line: vello::kurbo::Line,
+    color: Color,
+    width: f64,
+) {
+    scene.stroke(&Stroke::new(width), transform, color, None, &line);
 }
 
 /// Stroke the outline of `rect`, corners rounded to `radius`, with a line
@@ -215,9 +241,27 @@ pub fn with_alpha(c: Color, alpha: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), alpha)
 }
 
+/// `c` with its alpha multiplied by `factor` (0.0 transparent, 1.0 unchanged),
+/// keeping its RGB. Unlike [`with_alpha`], this scales the alpha the theme
+/// already gave the colour instead of replacing it with an absolute value.
+#[must_use]
+pub fn with_alpha_scaled(c: Color, factor: f32) -> Color {
+    c.multiply_alpha(factor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaling_alpha_preserves_rgb_and_scales_the_theme_alpha() {
+        let color = Color::new([0.4, 0.5, 0.6, 0.25]);
+        assert_eq!(with_alpha_scaled(color, 0.0).split().1, 0.0);
+        assert_eq!(with_alpha_scaled(color, 0.5).split().1, 0.125);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().r, 102);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().g, 128);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().b, 153);
+    }
 
     #[test]
     fn nested_contexts_compose_transforms_and_leave_the_parent_alone() {
