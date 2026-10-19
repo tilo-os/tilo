@@ -715,16 +715,14 @@ impl Worker {
                     );
                 }
             });
-            match self.window.create_client_buffer(source, released) {
-                Some(buffer) => list.push(buffer),
-                None => {
-                    tracing::error!(
-                        ?kind,
-                        "the compositor takes none of the render service's buffers"
-                    );
-                    return;
-                }
-            }
+            let Some(buffer) = self.window.create_client_buffer(source, released) else {
+                tracing::error!(
+                    ?kind,
+                    "the compositor takes none of the render service's buffers"
+                );
+                return;
+            };
+            list.push(buffer);
         }
         self.retired = self.buffers.replace(Buffers { generation, list });
     }
