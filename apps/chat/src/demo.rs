@@ -581,7 +581,7 @@ impl Default for Room {
         let base: std::rc::Rc<std::cell::RefCell<std::rc::Rc<Chat>>> = std::rc::Rc::default();
         let read = std::rc::Rc::clone(&base);
         Self {
-            chat: AutoCommit::new(),
+            chat: ui::tilo_resource::Doc::new(),
             parts: ui::framework::Chain::detached(
                 <crate::ChatShell as ui::framework::ResourceApp>::ID,
                 crate::model::ME,

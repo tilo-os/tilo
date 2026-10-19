@@ -1831,7 +1831,7 @@ impl ChatApp {
         {
             // The draft is the person's own record (or this device's), not
             // the room's document: no room edit carries it.
-            let mut own = automerge::AutoCommit::new();
+            let mut own = ui::tilo_resource::Doc::new();
             self.composer_main.ensure_draft(&own);
             self.composer_main
                 .insert_text(&mut ui::widget::Edits::lend(&mut own), &text);
