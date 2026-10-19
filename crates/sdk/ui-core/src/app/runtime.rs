@@ -366,8 +366,6 @@ pub(super) struct ContinuationRuntime {
     /// What this route last published to the session's persistent search
     /// index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
-    /// When the search index was last published: changes coalesce.
-    pub(super) last_search_index_publish: Option<crate::time::Instant>,
 }
 
 impl ContinuationRuntime {
@@ -382,7 +380,6 @@ impl ContinuationRuntime {
             private_instance: None,
             retired: false,
             search_index: crate::search::index_publication::Publisher::default(),
-            last_search_index_publish: None,
         }
     }
 }
