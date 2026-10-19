@@ -499,6 +499,7 @@ pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::Se
         entries.push(
             ui::tilo_resource::SearchEntry::new(&entry.title, &entry.url)
                 .invoking(crate::effects::BrowserEffect::OPEN.on(flat_id(&entry.url)))
+                .inside(crate::actions::BOOKMARKS_SCOPE)
                 .anchored(flat_id(&entry.url)),
         );
     }
@@ -511,6 +512,7 @@ pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::Se
             entries.push(
                 ui::tilo_resource::SearchEntry::new(&node.title, url)
                     .invoking(crate::effects::BrowserEffect::OPEN.on(id.as_str()))
+                    .inside(crate::actions::BOOKMARKS_SCOPE)
                     .anchored(id),
             );
         }
