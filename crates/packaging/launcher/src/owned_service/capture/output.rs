@@ -181,10 +181,10 @@ mod tests {
     }
     #[test]
     fn authenticated_output_proof_binds_real_descriptors_and_operation() {
-        assert_eq!(
-            rustix::process::geteuid().as_raw(),
-            0,
-            "root broker proof qualification requires the native root test lane"
+        tilo_test_env::require_capability!(
+            Chown,
+            tilo_test_env::switch_identity(65534),
+            "the broker proof binds descriptors a root broker hands over"
         );
         let operation = uuid::Uuid::new_v4();
         assert!(receive(operation, operation, false).is_ok());

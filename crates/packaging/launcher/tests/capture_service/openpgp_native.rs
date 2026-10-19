@@ -235,6 +235,11 @@ fn runtime(root: &Path) -> (PathBuf, String) {
 #[test]
 fn signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key() {
     const CHILD: &str = "TILO_OPENPGP_CAPSULE_CHILD";
+    tilo_test_env::require_capability!(
+        Chown,
+        tilo_test_env::switch_identity(65534),
+        "the OpenPGP capsule runs as root in a mount namespace of its own"
+    );
     if std::env::var_os(CHILD).is_none() {
         let result = Command::new("/usr/bin/unshare").args(["--mount", "--propagation", "private"]).arg(std::env::current_exe().unwrap()).args(["--exact", "capture_service::openpgp_native::signed_original_openpgp_capsule_accepts_approved_commit_and_refuses_wrong_key", "--nocapture"]).env(CHILD, "1").status().unwrap();
         assert!(

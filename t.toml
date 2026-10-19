@@ -1535,6 +1535,7 @@ binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
 binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
 binary_target env-tools it env-tools-it
 binary_target installer accounts_native installer-accounts-native
+binary_lib launcher launcher launcher-lib
 """
 outputs = [
   "/target/vm/tilo-sandbox-job",
@@ -1545,11 +1546,12 @@ outputs = [
   "/target/vm/env-tools-it",
   "/target/vm/installer-accounts-native",
   "/target/debug/tilo-firstboot-home-seeds",
+  "/target/vm/launcher-lib",
   "/target/debug/install-test-home-seeds",
   "/target/debug/install-test-firstboot-files",
   "/target/debug/staging-handoff-native-extractor",
 ]
-cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools", "installer"]
+cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools", "installer", "launcher"]
 inputs = ["os/tests/**", "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-installer-profile-extract", "os/usr/libexec/tilo-firstboot-user"]
 on = ["stable", "dispatch"]
 default = false
@@ -1615,6 +1617,13 @@ run_tests 5 /target/vm/env-tools-it \
   build::requests_dnf_rejects_fail_before_building \
   build::set_runtime_rebuilds_every_tool_or_none \
   --nocapture --test-threads=1
+# The launcher's descriptor and protected-tree fixtures give files to root and
+# other users, which only real root can.
+run_tests 3 /target/vm/launcher-lib \
+  owned_service::capture::output::tests::authenticated_output_proof_binds_real_descriptors_and_operation \
+  owned_service::retained_io::selected_permit_tests::actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file \
+  owned_service::retained_worker::tests::held_entry_walk_refuses_symlink_and_writable_parent \
+  --exact --nocapture --test-threads=1
 """
 inputs = []
 on = ["stable", "dispatch"]

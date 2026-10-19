@@ -359,9 +359,13 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
 #[test]
 fn signed_original_source_reader_drops_source_groups_only_after_namespace_confinement() {
     const CHILD: &str = "TILO_ORIGINAL_READER_QUALIFICATION_CHILD";
+    tilo_test_env::require_capability!(
+        Chown,
+        tilo_test_env::switch_identity(65534),
+        "the original reader drops root's groups inside a mount namespace of its own"
+    );
     if std::env::var_os(CHILD).is_none() {
-        // Own only this disposable child mount namespace. Absence of native
-        // root/mount/confinement support FAILS; it never skips qualification.
+        // Own only this disposable child mount namespace.
         let result = std::process::Command::new("/usr/bin/unshare")
             .args(["--mount", "--propagation", "private"])
             .arg(std::env::current_exe().unwrap())
