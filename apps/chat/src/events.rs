@@ -165,6 +165,11 @@ impl ChatApp {
         if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
             return;
         }
+        if self.nav_viewport.contains(self.last_mouse) {
+            // Clamped against the tree's height when painted.
+            self.nav_scroll = (self.nav_scroll - dy).max(0.0);
+            return;
+        }
         self.scroll += dy;
         // A positive offset moves away from the live edge. Do this at event
         // time rather than waiting for paint: `sync` may run between the
@@ -5396,7 +5401,7 @@ mod tests {
         (app, doc)
     }
 
-    /// The joins sent to the native voice service (status polls aside).
+    /// The joins sent to the native voice service (its watch aside).
     fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
         use ui::widget::Collaborative as _;
         app.take_collab_requests()
@@ -5508,7 +5513,7 @@ mod tests {
             let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
             assert_eq!(
                 sent, 1,
-                "one status poll per interval, not one request per frame"
+                "one watch, left alone a while once refused, not one request per frame"
             );
         }
         // Phase: joined_call_is_left_once.
@@ -5969,5 +5974,103 @@ mod tests {
         }
         assert_eq!(doc_a.save(), before_a);
         assert_eq!(doc_b.save(), before_b);
+    }
+
+    #[test]
+    fn the_channel_list_scrolls_under_the_header_and_stops_above_the_call_footer() {
+        let (mut app, _doc) = app_with_doc();
+        app.call.join("c_huddle");
+        // A short window: the room's channels overflow the list.
+        render_frame(&mut app, 1280.0, 480.0);
+        let viewport = app.nav_viewport;
+        assert!(viewport.height() > 0.0, "the list has room to show");
+        assert!(
+            app.nav_content_h > viewport.height(),
+            "the fixture overflows the list"
+        );
+        let tree = |hit: &Hit| {
+            matches!(
+                hit,
+                Hit::Channel(_)
+                    | Hit::VoiceChannel(_)
+                    | Hit::CategoryToggle(_)
+                    | Hit::AddChannel { .. }
+            )
+        };
+        for (rect, hit) in app.hits.iter().filter(|(_, hit)| tree(hit)) {
+            assert!(
+                viewport.contains_rect(*rect),
+                "{hit:?} at {rect:?} lies outside the list's {viewport:?}"
+            );
+        }
+        let footer_mute = app
+            .hits
+            .iter()
+            .find(|(rect, hit)| matches!(hit, Hit::CallMute) && rect.x1 <= viewport.x1)
+            .map(|(rect, _)| *rect)
+            .expect("the call footer's microphone");
+        assert!(
+            footer_mute.y0 >= viewport.y1,
+            "the footer sits below the list, never under it"
+        );
+
+        // The wheel over the list scrolls the list, not the conversation.
+        app.last_mouse = viewport.center();
+        let conversation = app.scroll;
+        app.handle_wheel(&MouseScrollDelta::LineDelta(0.0, -2.0), 1.0);
+        assert_eq!(app.scroll, conversation);
+        render_frame(&mut app, 1280.0, 480.0);
+        assert!(app.nav_scroll > 0.0, "the list scrolled");
+        app.handle_wheel(&MouseScrollDelta::LineDelta(0.0, -1000.0), 1.0);
+        render_frame(&mut app, 1280.0, 480.0);
+        assert!(
+            app.nav_scroll <= app.nav_content_h - app.nav_viewport.height() + 0.5,
+            "it stops at the end of the list"
+        );
+        for (rect, hit) in app.hits.iter().filter(|(_, hit)| tree(hit)) {
+            assert!(
+                app.nav_viewport.contains_rect(*rect),
+                "{hit:?} after scrolling"
+            );
+        }
+    }
+
+    #[test]
+    fn in_a_call_the_header_names_the_call_and_offers_leave() {
+        let (mut app, _doc) = app_with_doc();
+        render_frame(&mut app, 1280.0, 800.0);
+        let header = app.rect.y0 + app.chrome.header_h;
+        let in_header = |app: &ChatApp, wanted: fn(&Hit) -> bool| {
+            app.hits
+                .iter()
+                .find(|(rect, hit)| wanted(hit) && rect.y1 <= header)
+                .map(|(rect, _)| *rect)
+        };
+        assert!(
+            in_header(&app, |hit| matches!(hit, Hit::StartCall)).is_none(),
+            "out of a call the header has no call"
+        );
+        app.call.join("c_huddle");
+        render_frame(&mut app, 1280.0, 800.0);
+        let call = in_header(&app, |hit| matches!(hit, Hit::StartCall)).expect("the call");
+        let leave = in_header(&app, |hit| matches!(hit, Hit::CallLeave)).expect("leave");
+        assert!(leave.x0 >= call.x1, "leave sits after the call it ends");
+    }
+
+    #[test]
+    fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
+        let (mut app, _doc) = app_with_doc();
+        service_streams(&mut app, "c_huddle", 2);
+        let talker = format!("{:064x}", 1);
+        app.native_voice.snapshot.speaking = vec![talker.clone()];
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        let now = ui::time::now();
+        assert_eq!(app.speaking.level(&talker, now), 1.0, "heard: ringed");
+        assert_eq!(app.speaking.level(&format!("{:064x}", 2), now), 0.0);
+        app.native_voice.snapshot.speaking.clear();
+        app.refresh_native_streams();
+        render_frame(&mut app, 1280.0, 800.0);
+        assert!(app.speaking.animating, "a pause eases the ring out");
     }
 }

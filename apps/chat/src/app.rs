@@ -671,6 +671,11 @@ pub struct ChatApp {
     /// The picker's query; empty shows the selected group.
     pub(crate) emoji_search: SearchField,
     pub(crate) emoji_group: usize,
+    /// How far the channel tree is scrolled from its top, the rect it
+    /// scrolls in, and its whole height as last painted.
+    pub(crate) nav_scroll: f64,
+    pub(crate) nav_viewport: Rect,
+    pub(crate) nav_content_h: f64,
     /// How far the picker grid is scrolled, and the rect it scrolls in.
     pub(crate) emoji_scroll: f64,
     pub(crate) emoji_grid: Rect,
@@ -728,6 +733,8 @@ pub struct ChatApp {
     pub(crate) call_overlay_metrics_key: Option<(u32, u32, u64)>,
     pub(crate) realtime: crate::continuity::ChatRealtimeContinuity,
     pub(crate) call_chrome_motion: CallChromeMotion,
+    /// The speaking ring on each face in the call.
+    pub(crate) speaking: crate::call::SpeakingRings,
     /// How many rows the floating call window's participant chips take,
     /// measured by the paint pass.
     pub(crate) huddle_chip_rows: usize,
@@ -1059,6 +1066,9 @@ impl ChatApp {
             emoji_anchor: Point::ZERO,
             emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
             emoji_group: 0,
+            nav_scroll: 0.0,
+            nav_viewport: Rect::ZERO,
+            nav_content_h: 0.0,
             emoji_scroll: 0.0,
             emoji_grid: Rect::ZERO,
             emoji_recents: emoji::Recents::default(),
@@ -1091,6 +1101,7 @@ impl ChatApp {
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
             call_chrome_motion: CallChromeMotion::default(),
+            speaking: crate::call::SpeakingRings::default(),
             huddle_chip_rows: 0,
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
@@ -1634,7 +1645,7 @@ impl ChatApp {
                 }];
                 self.refresh_native_streams();
             }
-            "lounge" | "lounge-call" => {
+            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" => {
                 // A shared room with people in its voice channels: this
                 // person in the Design Huddle with their microphone on, three
                 // others beside them and two in the standup, as the room's
@@ -1642,7 +1653,7 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call.join("c_huddle");
                 self.call.muted = false;
-                self.call.expanded = scenario == "lounge-call";
+                self.call.expanded = scenario != "lounge";
                 self.right_flap.snap(false);
                 self.stage_connected_call();
                 let me = self.me.id.clone();
@@ -1652,7 +1663,7 @@ impl ChatApp {
                     "u_milo".to_owned(),
                     "u_sora".to_owned(),
                 ];
-                if scenario == "lounge-call" {
+                if scenario != "lounge" {
                     huddle.push("u_devon".to_owned());
                 }
                 self.native_voice.snapshot.rosters = vec![
@@ -1669,6 +1680,25 @@ impl ChatApp {
                         },
                     },
                 ];
+                // Aria is talking: her face rings wherever it shows.
+                self.native_voice.snapshot.speaking = vec!["u_aria".to_owned()];
+                self.refresh_native_streams();
+                // Cameras on, and Sora sharing her screen: demo pictures in
+                // the tiles a decoded picture takes over.
+                if scenario != "lounge" && scenario != "lounge-call" {
+                    for (index, person) in ["u_aria", "u_milo", "u_devon"].into_iter().enumerate() {
+                        if let Some(picture) =
+                            crate::images::demo_picture(&format!("camera-{index}"))
+                        {
+                            self.remote_frames.insert(person.to_owned(), picture);
+                        }
+                    }
+                }
+                if scenario == "lounge-share"
+                    && let Some(screen) = crate::images::demo_picture("screen")
+                {
+                    self.remote_screens.insert("u_sora".to_owned(), screen);
+                }
                 self.refresh_native_streams();
             }
             "starter" => {
@@ -4806,6 +4836,7 @@ impl Widget for ChatApp {
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
         self.reconcile_huddle_motion(tr, theme);
+        self.reconcile_speaking(theme);
         self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
@@ -5241,6 +5272,7 @@ impl Widget for ChatApp {
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating
+            || self.speaking.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
             || self.agent_surfaces.values().any(|surface| {
@@ -5543,6 +5575,8 @@ impl ChatApp {
         }
 
         // The navigation drawer: the room's channel list.
+        // Painting it says again where its list scrolls.
+        self.nav_viewport = Rect::ZERO;
         // A thread pushed over a narrow window is the whole page.
         if self.thread_is_page() {
             return;

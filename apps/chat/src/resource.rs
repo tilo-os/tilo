@@ -126,6 +126,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "collaboration",
     "lounge",
     "lounge-call",
+    "lounge-video",
+    "lounge-share",
     "live-context",
     "context",
     "msgmenu",
