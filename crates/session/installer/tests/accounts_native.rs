@@ -1,5 +1,7 @@
 //! Production account handoff in a private mount namespace and disposable chroot.
-//! Requires passwordless sudo, mount namespaces and a disk-backed TMPDIR. Missing
+//! Requires root (or passwordless sudo), mount namespaces and a disk-backed
+//! TMPDIR, which the ordinary test sandbox never gives, so it is ignored there
+//! and the `sandbox-host-ids` check runs it as root in a micro-VM. Missing
 //! isolation fails the test; this is not a VM installation or boot test.
 #[cfg(test)]
 mod tests {
@@ -150,7 +152,11 @@ mod tests {
             let mut child = command
                 .spawn()
                 .expect("execute production helper in chroot");
-            child.stdin.take().unwrap().write_all(frame).unwrap();
+            // A helper that refuses before reading closes its input: its
+            // status and stderr below say why, not the broken pipe.
+            if let Err(error) = child.stdin.take().unwrap().write_all(frame) {
+                assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+            }
             let output = child.wait_with_output().unwrap();
             assert_eq!(
                 output.status.success(),
@@ -233,6 +239,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs root and mount namespaces: run by the sandbox-host-ids check in a micro-VM"]
     fn production_stage_adopt_accounts() {
         if std::env::var(CHILD).as_deref() == Ok("verify") {
             assert_eq!(rustix::process::getuid().as_raw(), 1000);
@@ -248,23 +255,22 @@ mod tests {
         }
         if std::env::var_os(CHILD).is_none() {
             let scratch = std::env::var_os("TMPDIR").expect("disk-backed TMPDIR is required");
-            let mut command = Command::new("sudo");
+            // Already root (the micro-VM), unshare directly; otherwise
+            // through passwordless sudo.
+            let root = rustix::process::geteuid().is_root();
+            let mut command = Command::new(if root { "unshare" } else { "sudo" });
+            if !root {
+                command.args(["-n", "unshare"]);
+            }
             command
-                .args([
-                    "-n",
-                    "unshare",
-                    "--mount",
-                    "--fork",
-                    "--propagation",
-                    "private",
-                    "env",
-                ])
+                .args(["--mount", "--fork", "--propagation", "private", "env"])
                 .arg(format!("{CHILD}=1"))
                 .arg(format!("TMPDIR={}", PathBuf::from(scratch).display()))
                 .arg(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "tests::production_stage_adopt_accounts",
+                    "--ignored",
                     "--nocapture",
                 ]);
             checked(&mut command);
@@ -402,6 +408,7 @@ mod tests {
                     "/verify",
                     "--exact",
                     "tests::production_stage_adopt_accounts",
+                    "--ignored",
                 ])
                 .env_clear()
                 .env(CHILD, "verify"),

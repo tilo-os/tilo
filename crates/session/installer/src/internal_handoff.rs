@@ -180,10 +180,9 @@ pub(crate) mod tests {
         }
         // Phase `profile_outside_the_media_contract_is_rejected_but_bad_values_are_repairs`.
         {
-            let mut value = document();
-            value["profile"]["password"] = "hunter2".into();
-            let handoff = Handoff::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-            assert!(media_profile(&handoff).is_err());
+            // A secret never rides in the handoff: the record itself is
+            // refused before any profile is read from it.
+            assert!(rejects(|v| v["profile"]["password"] = "hunter2".into()).contains("password"));
 
             let mut value = document();
             value["profile"]["hostname"] = "bad host".into();

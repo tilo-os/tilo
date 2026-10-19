@@ -7255,6 +7255,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge-fork",
  "tilo-dav",
+ "tilo-install-helpers",
  "tilo-lock",
  "tilo-oauth",
  "tilo-power-mgmt",

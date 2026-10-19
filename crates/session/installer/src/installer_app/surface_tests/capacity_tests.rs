@@ -180,20 +180,6 @@ fn switching_regions_discards_capacity_and_rejects_a_queued_old_size_action() {
 
 #[test]
 fn backend_validates_the_exact_sized_allocation_without_disk_writes() {
-    let helper = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../os/usr/libexec/tilo-guided-partition"
-    ));
-    let script = helper
-        .split("<<'PY_GUIDED_GEOMETRY'")
-        .nth(1)
-        .unwrap()
-        .split_once('\n')
-        .unwrap()
-        .1
-        .split("\nPY_GUIDED_GEOMETRY")
-        .next()
-        .unwrap();
     let mut app = capacity_app();
     assert!(set_size(&mut app, 48));
     let plan = app.guided_alongside_plan().unwrap();
@@ -216,15 +202,11 @@ fn backend_validates_the_exact_sized_allocation_without_disk_writes() {
             p.part_uuid, p.start_bytes, p.size_bytes
         ));
     }
+    // `tilo-guided-partition` hands the reviewed allocation to
+    // `tilo-staging-handoff guided-geometry`, which runs these rules.
     let accepts = |args: &[String]| {
-        std::process::Command::new("python3")
-            .arg("-c")
-            .arg(script)
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success()
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        tilo_install_helpers::staging_handoff::backend_commands::guided_geometry(&words).is_ok()
     };
     assert!(
         accepts(&args),
