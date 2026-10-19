@@ -102,6 +102,15 @@ mod dropped_content_startup_tests {
             .unwrap();
         assert_eq!(group.tabs[0].id, tab);
         drop(tree);
+        // The drop opened the tab, so its document exists: the window shows
+        // the file, never "record does not exist".
+        assert!(
+            state
+                .records()
+                .try_open_record(&crate::shell::tab_documents::scratch_tab_record(tab))
+                .is_ok(),
+            "a dropped file's tab has its document"
+        );
         drop(state);
     }
 
@@ -2743,6 +2752,10 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
+        // The drop opens the tab, so it is the action that makes its
+        // document: binding never creates one, and without this the new
+        // window showed "record does not exist" instead of the file.
+        self.create_new_tab_record(tab_id);
         if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,

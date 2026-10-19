@@ -1208,7 +1208,9 @@ impl ShellDriver {
         }
     }
 
-    fn open_tab_records(&self, tabs: &[u64]) {
+    /// Make the documents of tabs a scenario opened itself, as the action
+    /// that opens an app does: binding never creates one.
+    pub(crate) fn open_tab_records(&self, tabs: &[u64]) {
         let records = self.chrome().records().clone();
         for tab in tabs {
             if let Err(error) =
@@ -1247,9 +1249,11 @@ impl ShellDriver {
                 return;
             };
             let mut tabs = Vec::new();
+            // Apps this process mounts, as the session does: an app it
+            // does not host would stand as a placeholder card.
             for (name, kind, label) in [
-                ("Research", AppKind::Other("Browser".into()), "Browser"),
-                ("Design", AppKind::Other("Canvas".into()), "Canvas"),
+                ("Research", AppKind::Browser, "Browser"),
+                ("Design", AppKind::Other("Word".into()), "Document"),
             ] {
                 let mut ids = ProcessIds;
                 let tab = Tab {
@@ -1280,6 +1284,12 @@ impl ShellDriver {
                     _ => person.active_tab,
                 };
             }
+            drop(tree);
+            drop(st);
+            // These windows were opened here, not by the open-app action,
+            // so their documents are made here: without them the windows
+            // showed "record does not exist".
+            self.open_tab_records(&tabs);
         }
         self.with_chrome(|_| {});
     }
