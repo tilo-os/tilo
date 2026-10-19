@@ -26,7 +26,7 @@ class DevImageContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for name in ("os/Containerfile", "os/Containerfile.dev", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
+        for name in ("os/Containerfile", "os/Containerfile.dev", "os/image/compile.sh", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
                      "os/scripts/install-components.py", "os/etc/containers/policy.json",
                      "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
                      "os/dev/derive-rpm-package-set.py"):
@@ -135,11 +135,11 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("fix: remove it", errors[0])
         with self.subTest(phase='production build of a dev only bin fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
             self.assertIn("bin 'tilo-vmd'", "\n".join(self.findings(root)))
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ",
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ",
                       "--bin tilo-projector --features dev-overrides ")
             self.assertIn("dev feature 'dev-overrides'", "\n".join(self.findings(root)))
         with self.subTest(phase='production policy must reject dev repository'):

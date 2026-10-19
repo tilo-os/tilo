@@ -47,12 +47,15 @@ class Violation:
 
 
 def production_containerfiles(os_dir: Path = OS_DIR) -> list[Path]:
-    """Return every production Containerfile in a stable order."""
-    return sorted(
+    """Return every production Containerfile, and the compile the OS image packs
+    (os/image/compile.sh), in a stable order."""
+    recipes = [
         path
         for path in os_dir.glob("Containerfile*")
         if path.is_file() and path.name not in DEV_IMAGE_FILES
-    )
+    ]
+    compile_script = os_dir / "image" / "compile.sh"
+    return sorted(recipes + ([compile_script] if compile_script.is_file() else []))
 
 
 def violations_in(path: Path, root: Path = ROOT) -> list[Violation]:

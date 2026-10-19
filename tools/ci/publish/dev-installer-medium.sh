@@ -3,8 +3,9 @@
 #
 #   dev-installer-medium.sh ARCH IMAGE_DIR OUT
 #
-# IMAGE_DIR is what `os-image.sh build ARCH` left: image.oci.tar, digest and revision. This
-# check consumes that exact archive, never a registry tag, and writes OUT/disk.qcow2 with its
+# IMAGE_DIR is what os-image-ARCH left: the image composed from its layer actions as an OCI
+# layout (oci/) and its digest. This check consumes that exact image, never a registry tag, and
+# writes OUT/disk.qcow2 with its
 # SHA-256, the media-provenance sidecar the canonical disk step records, and source.json naming
 # the image commit and OCI digest the medium was made from.
 #
@@ -32,16 +33,12 @@ case $arch in
 esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch medium builds natively, not on $(uname -m)"
 
-revision=$(tr -d '[:space:]' < "$in/revision") || die "$in/revision is not readable"
-[[ $revision =~ ^[0-9a-f]{40}$ ]] || die "$in/revision does not name a commit: $revision"
-if [[ -n ${T_COMMIT:-} ]]; then
-  [[ $T_COMMIT == "$revision" ]] \
-    || die "the OS image is of $revision, this check of $T_COMMIT"
-fi
+# The image is composed from layer actions keyed by what they read, so it names no commit
+# itself; the medium is of this check's commit, whose run composed it.
+revision=$(git rev-parse --verify HEAD) || die 'the medium names its commit: git = true'
 expected_digest=$(tr -d '[:space:]' < "$in/digest") || die "$in/digest is not readable"
 [[ $expected_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $expected_digest"
-actual_digest=$(archive_digest "$in/image.oci.tar") || die "$in/image.oci.tar is not an OCI archive"
-[[ $actual_digest == "$expected_digest" ]] || die "$in/image.oci.tar is not the build its digest names"
+[[ -f $in/oci/index.json ]] || die "$in holds no OS image layout (oci/)"
 
 rootfs=${4:-${T_INPUT_ROOTFS:-${TILO_INSTALLER_ROOTFS:-ext4}}}
 case $rootfs in
@@ -57,12 +54,11 @@ dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2f
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 
-id=$(podman pull -q "oci-archive:$in/image.oci.tar") || die "could not load $in/image.oci.tar"
+id=$(podman pull -q "oci:$in/oci") || die "could not load $in/oci"
+actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
+[[ $actual_digest == "$expected_digest" ]] || die "$in/oci is not the image its digest names"
 [[ $(podman image inspect --format '{{.Architecture}}' "$id") == "$oci_arch" ]] \
-  || die "$in/image.oci.tar is not an $arch image"
-label_revision=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' "$id" 2>/dev/null || true)
-[[ $label_revision == "$revision" ]] \
-  || die "$in/image.oci.tar is labelled ${label_revision:-without a revision}, not $revision"
+  || die "$in/oci is not an $arch image"
 
 # Refuse a base that cannot become this medium before spending the disk build on it.
 podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -ec '
@@ -71,7 +67,7 @@ podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -ec '
   test -x /usr/libexec/tilo-uki-cmdline
   set -- /boot/EFI/Linux/*.efi
   test "$#" -eq 1 && test -f "$1"
-' >/dev/null || die "$in/image.oci.tar has no graphical installer or no single sealed UKI"
+' >/dev/null || die "$in/oci has no graphical installer or no single sealed UKI"
 
 source_epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id" 2>/dev/null || true)
 if ! [[ $source_epoch =~ ^[1-9][0-9]*$ ]] && git cat-file -e "$revision^{commit}" 2>/dev/null; then

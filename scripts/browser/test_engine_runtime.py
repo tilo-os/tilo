@@ -47,7 +47,7 @@ class EngineRuntimeNameTests(unittest.TestCase):
                 self.assertEqual(output.read_text(), f"TILO_WITH_BROWSER={expected}\n")
 
     def test_the_final_image_verifies_the_baseline_engine_not_just_when_present(self):
-        rootfs = (ROOT / "os/Containerfile").read_text().split("FROM rootfs-base AS rootfs\n", 1)[1]
+        rootfs = (ROOT / "os/Containerfile").read_text().split("FROM binaries AS rootfs\n", 1)[1]
         self.assertIn("ARG TILO_WITH_BROWSER\n", rootfs)
         guard = rootfs.split('if [ "${TILO_WITH_BROWSER}" != 0 ]; then', 1)[1].split("fi; }", 1)[0]
         self.assertIn('test -x "$engine/tilo-chromium-host"', guard)

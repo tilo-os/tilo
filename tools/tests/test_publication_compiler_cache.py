@@ -230,18 +230,19 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
 
 class ContainerfileTests(unittest.TestCase):
     def test_off_refuses_cache_settings_and_runs_no_wrapper(self):
-        for path in ("os/Containerfile", "os/kernel/Containerfile"):
-            with self.subTest(path):
-                text = (ROOT / path).read_text()
-                self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
-                self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
-                self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
-                # Refuses the runner's cache URL and token.
-                self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
-        image = (ROOT / "os/Containerfile").read_text()
-        off = image.split('if [ "$TILO_COMPILER_CACHE" = off ]; then', 1)[1].split("elif", 1)[0]
-        self.assertIn("export RUSTC_WRAPPER=;", off)
-
+        text = (ROOT / "os/kernel/Containerfile").read_text()
+        self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
+        self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
+        self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
+        # Refuses the runner's cache URL and token.
+        self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
+        # The OS image compiles outside any image build, in os/image/compile.sh.
+        compile_sh = (ROOT / "os/image/compile.sh").read_text()
+        off = compile_sh.split("if [[ $TILO_COMPILER_CACHE == off ]]; then", 1)[1].split("elif", 1)[0]
+        self.assertRegex(off, r'\$\{ACTIONS_CACHE_URL:-\}\$\{ACTIONS_RUNTIME_TOKEN:-\}')
+        self.assertIn("RUSTC_WRAPPER:-", off)
+        self.assertIn("exit 1", off)
+        self.assertIn("export RUSTC_WRAPPER=\n", off)
 
 if __name__ == "__main__":
     unittest.main()

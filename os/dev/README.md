@@ -8,7 +8,7 @@ in a distrobox), but configurable for any host via env vars.
 ```
 os/dev/
   _common.sh       shared config + helpers (override via env)
-  build-image.sh   podman build (in-image compile) -> disk-image.sh -> qcow2
+  build-image.sh   os/image/compile.sh in the OS builder -> podman build -> disk-image.sh -> qcow2
   disk-image.sh    container image -> bootable qcow2 (systemd-repart + bootc install)
   vm.sh            boot / login / screenshot / logs / stop
 ```

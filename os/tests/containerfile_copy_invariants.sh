@@ -276,7 +276,11 @@ containerfile="$repo/os/Containerfile"
 # with tilo-relay.service, which a home peer enables on this image too.
 # bootc's update timer and service each get a drop-in that lets them run on
 # the composefs backend, which leaves no /run/ostree-booted: two payload rows.
-expected_contract=f2f89e36e1057773efcc7543f20c4f6c3c183c84a6ffe50a2c5baae630277ce2
+# The image is built as layer actions (os/image/layers.toml), so its contract is
+# every stage of their pieces: the side builds' outputs (bootc, doubletake, joycond,
+# xwayland-satellite) arrive through the image-tool-stages image at the same
+# destinations, and the seal's UKI row (/boot/EFI/Linux/) is part of it.
+expected_contract=56ab83656db8f14682aece73c1da74add19a9742921045eb7ee9806ef6d6b231
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -301,9 +305,9 @@ duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   exit 1
 }
 
-instructions="$(containerfile_instructions "$containerfile" | awk '
+instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(containerfile_image_stages "$containerfile") " '
   $1 == "FROM" { stage=$NF; next }
-  (stage == "rootfs" || stage == "rootfs-base") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
+  stage != "" && index(stages, " " stage " ") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
@@ -329,6 +333,8 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
 # The offline predefined Flathub descriptor adds one reviewed COPY (156).
+# The image is built as layer actions (os/image/layers.toml): the count is every
+# stage of their pieces, the seal's included, 151 of them.
 [ "$instructions" -le 156 ] || {
   echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1

@@ -18,6 +18,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".forgejo/workflows/build-image.yml"
 CONTAINERFILE = REPO / "os/Containerfile"
+# The compile, outside any image build, which takes the mode as the image does.
+COMPILE = REPO / "os/image/compile.sh"
 BUILD_IMAGE = REPO / "os/dev/build-image.sh"
 COMMON = REPO / "os/dev/_common.sh"
 
@@ -49,8 +51,10 @@ class RustLtoModeTests(unittest.TestCase):
         text = CONTAINERFILE.read_text()
         self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin"])
         self.assertIn('LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"', text)
-        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', text)
-        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", text)
+        compile_sh = COMPILE.read_text()
+        self.assertIn(': "${TILO_RUST_LTO:=thin}"', compile_sh)
+        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', compile_sh)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", compile_sh)
 
     def mode(self, **env: str) -> str:
         """The mode build-image.sh resolves, from its own resolution block."""

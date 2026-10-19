@@ -98,8 +98,9 @@ tilo-vm vm create dev --image target/tilo-vm/disk.qcow2 && tilo-vm vm start
   stay, only new layers cross.
 - On the build machine the build is incremental like a local one: the base is
   rebuilt only when its inputs changed (outside a git checkout its files are
-  fingerprinted directly), podman's layer cache and the builder stage's cargo
-  cache keep everything else, and a failed step reruns on its own.
+  fingerprinted directly), podman's layer cache and the compile's build
+  directory and sccache under os/output (os/image/compile.sh runs outside the
+  image build) keep everything else, and a failed step reruns on its own.
 - The nested podman keeps its image store in whatever directory the build
   container binds at `/var/lib/containers`; a persistent directory there is the
   whole cache.
