@@ -974,6 +974,9 @@ impl App {
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        // The surface a handled input left for this frame, now that its sync
+        // ran and the frame built the tree, as a window of its own pays it.
+        self.publish_owed_action_surface();
         // Collaborators' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
