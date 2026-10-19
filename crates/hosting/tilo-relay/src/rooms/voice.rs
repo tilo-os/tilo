@@ -132,6 +132,29 @@ impl State {
         Some(participation)
     }
 
+    /// End every participation of `device`, as its join of `call` does;
+    /// the other calls it left, whose participants hear the change.
+    fn end_device(&mut self, device: [u8; 32], call: &[u8; 32]) -> Vec<[u8; 32]> {
+        let earlier: Vec<[u8; 32]> = self
+            .participations
+            .iter()
+            .filter(|(_, existing)| existing.device == device)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut left = Vec::new();
+        for id in earlier {
+            if let Some(existing) = self.remove(&id) {
+                self.changed.insert(existing.room.clone());
+                if existing.call != *call {
+                    left.push(existing.call);
+                }
+            }
+        }
+        left.sort_unstable();
+        left.dedup();
+        left
+    }
+
     fn renew_token(&mut self, id: [u8; 32]) {
         let Some(participation) = self.participations.get_mut(&id) else {
             return;
@@ -816,6 +839,7 @@ impl Rooms {
             .state()
             .changed
             .insert(room.room().to_owned());
+        drop(room);
         self.tell_call_lists();
         Ok(CallState {
             call,
@@ -873,23 +897,7 @@ impl Rooms {
         } else {
             // A device is in one call at a time: its earlier participation,
             // in this call or another, ends with this join.
-            let earlier: Vec<[u8; 32]> = state
-                .participations
-                .iter()
-                .filter(|(_, existing)| existing.device == peer.device_public_key)
-                .map(|(id, _)| *id)
-                .collect();
-            let mut left = Vec::new();
-            for id in earlier {
-                if let Some(existing) = state.remove(&id) {
-                    state.changed.insert(existing.room.clone());
-                    if existing.call != call {
-                        left.push(existing.call);
-                    }
-                }
-            }
-            left.sort_unstable();
-            left.dedup();
+            let left = state.end_device(peer.device_public_key, &call);
             calls.announce(&state, &left);
             let id = loop {
                 let id: [u8; 32] = rand::random();
@@ -974,7 +982,9 @@ impl Rooms {
             user: peer.user_public_key,
             outbound,
         });
-        Ok(call_list(&state, &policy))
+        let list = call_list(&state, &policy);
+        drop(state);
+        Ok(list)
     }
 
     /// Tell the watchers of every room whose call list changed the new
