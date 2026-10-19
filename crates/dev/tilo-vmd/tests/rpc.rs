@@ -920,13 +920,14 @@ fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::
         .unwrap()
 }
 
-/// An upgraded laptop kept running layers built for its previous image (an
-/// old shell against a new launcher and tilo-vmd). Booting another image
-/// puts every slot back on it before anything is merged: the slot runs
-/// generation 0, the old generations cannot be rolled back to, status says
-/// what was dropped, and rebooting the same image changes nothing.
+/// Layers are the person's deployed work. Booting another image keeps the
+/// slot on its generation with its layer in place, and status names the
+/// slot as running a layer built on the previous image; the person rolls it
+/// back to the image deliberately and can roll forward again. A state root
+/// that never recorded an image (2026-10-19: the first boot of a tilo-vmd
+/// that records them dropped every slot's layers) is no change at all.
 #[test]
-fn booting_another_image_puts_slots_back_on_it_over_stdio() {
+fn booting_another_image_keeps_slots_and_layers_over_stdio() {
     let root = tempfile::tempdir().unwrap();
     let shell = {
         let mut daemon = Daemon::spawn(root.path());
@@ -941,9 +942,6 @@ fn booting_another_image_puts_slots_back_on_it_over_stdio() {
                 identity: false,
             })
             .unwrap();
-        // The image the slot is made on, as the boot records it.
-        let first = boot_step(root.path(), "reconcile-image", "composefs:old");
-        assert!(first.status.success(), "{first:?}");
         let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));
         let applied = client
             .call(Swap {
@@ -957,9 +955,12 @@ fn booting_another_image_puts_slots_back_on_it_over_stdio() {
         shell
     };
 
-    // The same image again: the swap stays.
-    let same = boot_step(root.path(), "reconcile-image", "composefs:old");
-    assert!(same.status.success(), "{same:?}");
+    // No image was ever recorded: the boot records this one, and the swap
+    // stays.
+    for step in ["reconcile-image", "restore"] {
+        let first = boot_step(root.path(), step, "composefs:old");
+        assert!(first.status.success(), "{first:?}");
+    }
     {
         let mut daemon = Daemon::spawn(root.path());
         let client = &mut daemon.client;
@@ -976,7 +977,7 @@ fn booting_another_image_puts_slots_back_on_it_over_stdio() {
     assert!(upgraded.status.success(), "{upgraded:?}");
     let said = String::from_utf8_lossy(&upgraded.stderr);
     assert!(
-        said.contains("slot agent-a left generation 1 (shell) and runs the image as installed"),
+        said.contains("slot agent-a stays on generation 1 (shell)"),
         "{said}"
     );
     let restored = boot_step(root.path(), "restore", "composefs:new");
@@ -990,24 +991,33 @@ fn booting_another_image_puts_slots_back_on_it_over_stdio() {
     let change = status.image_change.expect("the change is reported");
     assert_eq!(change.from.as_deref(), Some("composefs:old"));
     assert_eq!(change.to, "composefs:new");
-    assert_eq!(change.dropped.len(), 1);
-    assert_eq!(change.dropped[0].slot, "agent-a");
-    assert_eq!(change.dropped[0].components, vec!["shell".to_owned()]);
+    assert_eq!(change.kept.len(), 1);
+    assert_eq!(change.kept[0].slot, "agent-a");
+    assert_eq!(change.kept[0].components, vec!["shell".to_owned()]);
+    assert!(change.dropped.is_empty());
     let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
-    assert_eq!(slot.generation, 0);
-    assert!(slot.components.is_empty(), "{:?}", slot.components);
-    let error = rpc_error(client.call(Rollback {
-        slot: "agent-a".into(),
-        to: Some(1),
-    }));
-    assert!(error.message.contains('1'), "{error:?}");
-    // Imported moments ago, so the boot keeps the layer for a later one;
-    // nothing references it any more.
+    assert_eq!(slot.generation, 1, "the slot keeps its generation");
     assert!(
         client
             .call(LayerList {})
             .unwrap()
             .iter()
-            .any(|layer| layer.hash == shell)
+            .any(|layer| layer.hash == shell),
+        "the layer is kept"
     );
+    // Back to the image deliberately, and forward again.
+    let back = client
+        .call(Rollback {
+            slot: "agent-a".into(),
+            to: Some(0),
+        })
+        .unwrap();
+    assert_eq!(back.generation, 0);
+    let forward = client
+        .call(Rollback {
+            slot: "agent-a".into(),
+            to: Some(1),
+        })
+        .unwrap();
+    assert_eq!(forward.generation, 1);
 }

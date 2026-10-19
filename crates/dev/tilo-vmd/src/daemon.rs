@@ -191,6 +191,31 @@ fn prepare_slot_session(
     apply.reload()
 }
 
+/// Link and merge the VM-wide sysext set, the `vm` slot's layers and the
+/// owner's login's (the `device` slot), as their current generations name
+/// them. `systemd-sysext.service` merges at boot whatever links
+/// `/var/lib/extensions` holds; when those are not exactly this set (a
+/// transition cut short, a link lost or left behind) they are put right and
+/// `/usr` is refreshed, so the device slot always comes up on its current
+/// generation. A set that is already linked is left merged as it is.
+///
+/// # Errors
+/// A layer the generations name that is missing, and I/O failures; the
+/// links stay as they were.
+pub fn merge_system_layers(
+    slots: &SlotStore,
+    layers: &LayerStore,
+    apply: &mut dyn Apply,
+) -> Result<(), DaemonError> {
+    let vm = slots.load(VM_SLOT)?;
+    let own = layer_paths(layers, &slots.generation(VM_SLOT, vm.current)?)?;
+    let paths = system_layers(slots, layers, &vm, own)?;
+    if apply.link_sysext(&paths)? {
+        apply.sysext_refresh()?;
+    }
+    Ok(())
+}
+
 /// Bring every slot back after the VM boots: re-create headful slots' vkms
 /// seats, then start each slot's session on its current generation. Run
 /// once at boot by `tilo-vm-restore.service`; a slot that cannot come back
@@ -552,44 +577,45 @@ impl Daemon {
         self.slots.load_with(name, device)
     }
 
-    /// Put the slots back on `booted` when their generations were made on
-    /// another image; see [`crate::image`]. `merge` says whether
-    /// `systemd-sysext` has merged the layers yet.
+    /// Record `booted` as the image the slots run on; see [`crate::image`].
+    /// Never changes a slot or deletes a layer.
     ///
     /// # Errors
     /// A held VM lock, and I/O failures.
-    pub fn reconcile_image(
-        &mut self,
-        booted: &str,
-        merge: image::Merge,
-    ) -> Result<Option<ImageChange>, DaemonError> {
+    pub fn reconcile_image(&mut self, booted: &str) -> Result<Option<ImageChange>, DaemonError> {
         image::ensure_root(&self.root)?;
         let _vm = self.locks.vm_exclusive()?;
-        image::reconcile(&self.root, &self.slots, self.apply.as_mut(), booted, merge)
+        image::reconcile(&self.root, &self.slots, booted)
     }
 
-    /// Bring every slot back after the VM boots; see [`restore_slots`].
-    /// First, slots made on another image than `booted` go back to it (when
-    /// the early-boot reconcile has not done so already) and the layers an
-    /// image change left behind are deleted.
+    /// Bring every slot back after the VM boots. First the booted image is
+    /// recorded (when the early-boot unit has not done so already), then
+    /// the VM-wide layers are merged as the slots' current generations name
+    /// them ([`merge_system_layers`]), then every slot session starts
+    /// ([`restore_slots`]).
     pub fn restore(&mut self, booted: Option<&str>) -> Vec<Issue> {
         let mut issues = Vec::new();
-        if let Some(booted) = booted {
-            let reconciled = self
-                .reconcile_image(booted, image::Merge::Done)
-                .and_then(|_| {
-                    let _vm = self.locks.vm_exclusive()?;
-                    image::collect_dropped_layers(&self.root, &self.slots, &self.layers, GC_MIN_AGE)
-                });
-            if let Err(error) = reconciled {
-                issues.push(Issue {
-                    slot: VM_SLOT.into(),
-                    problem: format!(
-                        "the slots could not be put back on the booted image {booted}: {error}"
-                    ),
-                    hint: "tilo-vm doctor; the next boot tries again".into(),
-                });
-            }
+        if let Some(booted) = booted
+            && let Err(error) = self.reconcile_image(booted)
+        {
+            issues.push(Issue {
+                slot: VM_SLOT.into(),
+                problem: format!("the booted image {booted} could not be recorded: {error}"),
+                hint: "tilo-vm doctor; the next boot tries again".into(),
+            });
+        }
+        let merged = self
+            .locks
+            .vm_exclusive()
+            .and_then(|_vm| merge_system_layers(&self.slots, &self.layers, self.apply.as_mut()));
+        if let Err(error) = merged {
+            issues.push(Issue {
+                slot: DEVICE_SLOT.into(),
+                problem: format!(
+                    "the vm and device slots' layers could not be merged at boot: {error}"
+                ),
+                hint: "tilo-vm doctor; then tilo-vm rollback --slot device to a generation whose layers are all present".into(),
+            });
         }
         issues.extend(restore_slots(
             &self.slots,
@@ -2751,6 +2777,74 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].slot, "proof");
         assert!(!missing.calls.iter().any(|call| call.starts_with("start ")));
+    }
+
+    /// The device slot comes up on its current generation at every boot:
+    /// the restore links the `vm` and `device` slots' layers and refreshes
+    /// `/usr` when the links `systemd-sysext` merged at boot were not that
+    /// set, and leaves a set that already was merged alone.
+    #[test]
+    fn the_device_slot_re_merges_its_layers_at_boot() {
+        let root = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(root.path());
+        let layers = LayerStore::new(root.path());
+        let mut apply = RecordingApply::with_login("owner");
+        let mut expected = Vec::new();
+        for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2)] {
+            let mut record = if slot == VM_SLOT {
+                slots.load(slot).unwrap()
+            } else {
+                slots.load_with(slot, apply.device.clone()).unwrap()
+            };
+            slots.save(&record).unwrap();
+            let hash = format!("{n:02x}").repeat(32);
+            let path = layers.path(&hash);
+            fs::create_dir_all(path.join("usr")).unwrap();
+            expected.push(path);
+            let (_, generation) = slots
+                .prepare_swap(
+                    &record,
+                    "component",
+                    &hash,
+                    ComponentInfo::new(Scope::Session, Vec::new()),
+                )
+                .unwrap()
+                .unwrap();
+            slots.set_current(&mut record, generation.number).unwrap();
+        }
+
+        // The boot merged no links: they are put back and /usr refreshed.
+        merge_system_layers(&slots, &layers, &mut apply).unwrap();
+        assert_eq!(apply.sysext, expected);
+        assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
+
+        // Already merged: nothing is refreshed.
+        apply.calls.clear();
+        merge_system_layers(&slots, &layers, &mut apply).unwrap();
+        assert_eq!(apply.calls, ["link_sysext 2"]);
+
+        // The daemon's boot restore does the same.
+        let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut watched = RecordingApply::with_login("owner");
+        watched.mirror = Some(mirror.clone());
+        let mut daemon = Daemon::new(root.path(), Box::new(watched), None, BaseInfo::default());
+        assert!(daemon.restore(Some("composefs:one")).is_empty());
+        let calls = mirror.lock().unwrap().clone();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("link_sysext") || c.as_str() == "sysext_refresh")
+                .collect::<Vec<_>>(),
+            ["link_sysext 2", "sysext_refresh"],
+            "a fresh boot's links are relinked and merged"
+        );
+
+        // A layer the device's generation names is gone: reported, links
+        // left as they were.
+        fs::remove_dir_all(&expected[1]).unwrap();
+        apply.calls.clear();
+        assert!(merge_system_layers(&slots, &layers, &mut apply).is_err());
+        assert!(apply.calls.is_empty(), "{:?}", apply.calls);
     }
 
     #[test]

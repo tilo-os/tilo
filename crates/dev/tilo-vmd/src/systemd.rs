@@ -679,8 +679,9 @@ impl Apply for SystemdApply {
 
     // Provisional: systemd-sysext accepting symlinks to directories in
     // /var/lib/extensions (named after the image, i.e. the content hash).
-    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<(), DaemonError> {
+    fn link_sysext(&mut self, layers: &[PathBuf]) -> Result<bool, DaemonError> {
         let dir = Path::new(SYSEXT_DIR);
+        let mut changed = false;
         fs::create_dir_all(dir).map_err(DaemonError::io("create /var/lib/extensions"))?;
         // Drop our stale links, never anything another tool put there.
         for entry in fs::read_dir(dir)
@@ -694,6 +695,7 @@ impl Apply for SystemdApply {
             {
                 fs::remove_file(&link)
                     .map_err(DaemonError::io(format!("unlink {}", link.display())))?;
+                changed = true;
             }
         }
         for layer in layers {
@@ -705,9 +707,10 @@ impl Apply for SystemdApply {
                 let _ = fs::remove_file(&link);
                 symlink(layer, &link)
                     .map_err(DaemonError::io(format!("link {}", link.display())))?;
+                changed = true;
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     fn sysext_refresh(&mut self) -> Result<(), DaemonError> {

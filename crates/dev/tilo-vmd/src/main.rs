@@ -37,8 +37,9 @@ enum Command {
         #[command(flatten)]
         state: State,
     },
-    /// Bring every slot back after boot: re-create headful seats and start
-    /// each slot's session (run once by tilo-vm-restore.service).
+    /// Bring every slot back after boot: record the booted image, merge the
+    /// vm and device slots' layers, re-create headful seats and start each
+    /// slot's session (run once by tilo-vm-restore.service).
     Restore {
         #[command(flatten)]
         state: State,
@@ -46,9 +47,9 @@ enum Command {
         #[arg(long, hide = true)]
         booted: Option<String>,
     },
-    /// Put every slot back on the booted OS image when its layers were made
-    /// for another one, before systemd-sysext merges them (run at boot by
-    /// tilo-vm-reconcile-image.service).
+    /// Record the booted OS image and report the slots that keep layers
+    /// built on the image before (run at boot by
+    /// tilo-vm-reconcile-image.service). Never changes a slot.
     ReconcileImage {
         #[command(flatten)]
         state: State,
@@ -236,28 +237,23 @@ fn awake_hold(lease: &std::path::Path) -> ExitCode {
 fn reconcile_image(state: &State, booted: Option<String>) -> ExitCode {
     let Some(booted) = booted else {
         eprintln!(
-            "tilo-vmd: no composefs= or ostree= on the kernel command line; slots stay as they are"
+            "tilo-vmd: no composefs= or ostree= on the kernel command line; nothing to record"
         );
         return ExitCode::SUCCESS;
     };
-    match state
-        .daemon()
-        .reconcile_image(&booted, tilo_vmd::image::Merge::Pending)
-    {
+    match state.daemon().reconcile_image(&booted) {
         Ok(Some(change)) => {
             for line in change.describe() {
                 eprintln!("tilo-vmd: {line}");
             }
-            if change.dropped.is_empty() {
-                eprintln!("tilo-vmd: slots follow {booted}");
+            if change.kept.is_empty() {
+                eprintln!("tilo-vmd: the image changed to {booted}; no slot runs layers");
             }
             ExitCode::SUCCESS
         }
         Ok(None) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!(
-                "tilo-vmd: could not put the slots back on the booted image {booted}: {error}"
-            );
+            eprintln!("tilo-vmd: could not record the booted image {booted}: {error}");
             ExitCode::FAILURE
         }
     }

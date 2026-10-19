@@ -3466,7 +3466,7 @@ impl App {
             }
             return Ok(Outcome::new(
                 format!(
-                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  at that boot every slot goes back to the new image: layers built for this one are dropped\n  {}",
+                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  slots keep their layers across it; tilo-vm status then names those built on this image\n  {}",
                     next.describe(),
                     vm.name,
                     self.receipt.summary()
@@ -3479,9 +3479,9 @@ impl App {
         self.warnings.extend(self.receipt.slow());
         let change = self.image_change_of_this_boot(vm, endpoint);
         let slots = match &change {
-            Some(change) if !change.dropped.is_empty() => change.describe().join("\n  "),
-            Some(_) => "no slot ran layers: every slot runs the new image as installed".into(),
-            None => "slots: tilo-vmd did not report how it reconciled them with the new image (tilo-vm status)".into(),
+            Some(change) if !change.kept.is_empty() => change.describe().join("\n  "),
+            Some(_) => "no slot runs layers: every slot runs the new image as installed".into(),
+            None => "slots: tilo-vmd did not report which slots keep layers built on the previous image (tilo-vm status)".into(),
         };
         Ok(Outcome::new(
             format!(
@@ -3503,9 +3503,9 @@ impl App {
         .next(&["tilo-vm status", "tilo-vm vm rollback-image"]))
     }
 
-    /// What tilo-vmd's early-boot reconcile did with the slots on the image
-    /// this boot runs, when it says so: its last image change, if that change
-    /// is to the booted image (the kernel command line names it).
+    /// Which slots keep layers built on the previous image, as tilo-vmd
+    /// recorded at this boot: its last image change, if that change is to
+    /// the booted image (the kernel command line names it).
     fn image_change_of_this_boot(
         &mut self,
         vm: &Resolved,
@@ -3515,16 +3515,17 @@ impl App {
         let booted = tilo_vm_protocol::booted_image(&cmdline.stdout)?;
         let status = self.connect(vm).ok()?.call(Status { slot: None }).ok()?;
         if status.slots_image.as_deref() != Some(booted.as_str()) {
-            // A daemon that does not reconcile, or one that has not yet.
+            // A daemon that does not record images, or one that has not yet.
             return None;
         }
         match status.image_change {
             Some(change) if change.to == booted => Some(change),
-            // The reconcile for this image dropped nothing: no slot ran layers.
+            // No change recorded for this image: no slot runs layers.
             _ => Some(tilo_vm_protocol::ImageChange {
                 from: None,
                 to: booted,
                 at: String::new(),
+                kept: Vec::new(),
                 dropped: Vec::new(),
                 freed_bytes: 0,
             }),
