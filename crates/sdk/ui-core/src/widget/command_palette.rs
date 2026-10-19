@@ -1161,9 +1161,10 @@ impl CommandPalette {
             .visible
             .iter()
             .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
-        match self.mode {
-            PaletteMode::Search if !any_subtitle => ROW_HEIGHT * self.layout_scale(),
-            _ => TWO_LINE_ROW_HEIGHT * self.layout_scale(),
+        if any_subtitle {
+            TWO_LINE_ROW_HEIGHT * self.layout_scale()
+        } else {
+            ROW_HEIGHT * self.layout_scale()
         }
     }
 
