@@ -56,6 +56,106 @@ pub trait RichTextSource {
     }
 }
 
+/// A [`RichTextSource`] behind a reference: what
+/// [`RichTextSurface`](crate::RichTextSurface)'s code calls, so that code is
+/// compiled once, in this crate, rather than in every app for each source it
+/// edits.
+pub trait ErasedSource {
+    /// [`RichTextSource::read_only`].
+    fn erased_read_only(&self) -> bool;
+    /// [`RichTextSource::sync`].
+    fn erased_sync(&mut self, doc: &Doc);
+    /// [`RichTextSource::revision`].
+    fn erased_revision(&self) -> Option<u64>;
+    /// [`RichTextSource::read_from`].
+    fn erased_read_from(&mut self, doc: &Doc) -> bool;
+    /// [`RichTextSource::with_state`], `read` called once when there is a
+    /// state.
+    fn erased_with_state(&self, read: &mut dyn FnMut(&RichTextState));
+    /// [`RichTextSource::apply`].
+    ///
+    /// # Errors
+    /// Returns the refusal; nothing is written.
+    fn erased_apply(
+        &mut self,
+        edits: &mut Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError>;
+    /// [`RichTextSource::presence_keys`].
+    fn erased_presence_keys(&self) -> Option<PresenceKeyFn>;
+}
+
+impl<S: RichTextSource> ErasedSource for S {
+    fn erased_read_only(&self) -> bool {
+        self.read_only()
+    }
+
+    fn erased_sync(&mut self, doc: &Doc) {
+        self.sync(doc);
+    }
+
+    fn erased_revision(&self) -> Option<u64> {
+        self.revision()
+    }
+
+    fn erased_read_from(&mut self, doc: &Doc) -> bool {
+        self.read_from(doc)
+    }
+
+    fn erased_with_state(&self, read: &mut dyn FnMut(&RichTextState)) {
+        self.with_state(read);
+    }
+
+    fn erased_apply(
+        &mut self,
+        edits: &mut Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
+        self.apply(edits, edit)
+    }
+
+    fn erased_presence_keys(&self) -> Option<PresenceKeyFn> {
+        self.presence_keys()
+    }
+}
+
+impl RichTextSource for dyn ErasedSource {
+    fn read_only(&self) -> bool {
+        self.erased_read_only()
+    }
+
+    fn sync(&mut self, doc: &Doc) {
+        self.erased_sync(doc);
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.erased_revision()
+    }
+
+    fn read_from(&mut self, doc: &Doc) -> bool {
+        self.erased_read_from(doc)
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
+        let mut read = Some(read);
+        let mut read_out = None;
+        self.erased_with_state(&mut |state| {
+            if let Some(read) = read.take() {
+                read_out = Some(read(state));
+            }
+        });
+        read_out
+    }
+
+    fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
+        self.erased_apply(edits, edit)
+    }
+
+    fn presence_keys(&self) -> Option<PresenceKeyFn> {
+        self.erased_presence_keys()
+    }
+}
+
 /// A [`RichText`] resource of a framework app: attached by the framework,
 /// edited through its dispatcher.
 #[derive(Default)]

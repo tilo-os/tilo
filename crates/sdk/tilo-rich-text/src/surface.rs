@@ -17,7 +17,7 @@ use ui::winit::event::WindowEvent;
 
 use crate::convert::content_of;
 use crate::edit::{self, Host};
-use crate::source::{Hosted, RichTextField, RichTextSource};
+use crate::source::{ErasedSource, Hosted, RichTextField, RichTextSource};
 
 /// The key that sends what an embedded field holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,9 +51,8 @@ pub enum FieldOutcome {
 /// collaborators' carets are keyed to paragraphs rather than positions on
 /// screen. In a framework app, History mode shows past versions in the same
 /// editor, read-only.
-pub struct RichTextSurface<S = Hosted> {
+pub struct RichTextSurface<S: ?Sized = Hosted> {
     editor: BlockEditor,
-    source: S,
     /// Set for a field embedded in a form or a thread: the key that sends
     /// what was written, with Escape cancelling.
     submit: Option<SubmitKey>,
@@ -68,6 +67,10 @@ pub struct RichTextSurface<S = Hosted> {
     cursor: Option<ChangeCursor>,
     revision: Option<u64>,
     keyed: bool,
+    /// Last, so that every surface is also a surface over
+    /// `dyn ErasedSource`, whose code is compiled once here rather than in
+    /// each app for its source.
+    source: S,
 }
 
 #[cfg(test)]
@@ -114,7 +117,7 @@ impl RichTextSurface<RichTextField> {
     }
 }
 
-impl<S: RichTextSource> RichTextSurface<S> {
+impl<S: RichTextSource + 'static> RichTextSurface<S> {
     /// An editor over rich text from `source`.
     pub fn over(source: S) -> Self {
         Self {
@@ -151,31 +154,6 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self
     }
 
-    /// Show what the source holds now, without a document: for a source that
-    /// keeps its own ([`Draft`](crate::Draft)) after it was reset.
-    pub fn present_now(&mut self) {
-        if self.source.revision() != self.revision {
-            self.present_state(None);
-        }
-    }
-
-    /// Put `text` at the caret as the person typing would (an emoji picked
-    /// from a menu), through the source's edits.
-    pub fn insert_text(&mut self, edits: &mut Edits<'_>, text: &str) {
-        if self.editor.insert_text(text) {
-            self.commit(edits);
-        }
-    }
-
-    /// Put a mention of the participant `id`, shown as `label`, at the caret
-    /// (replacing a selection, such as the typed query the person picked it
-    /// from), through the source's edits.
-    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
-        if self.editor.insert_mention(id, label) {
-            self.commit(edits);
-        }
-    }
-
     /// Whether the person sent or cancelled since the last call.
     pub fn take_outcome(&mut self) -> Option<FieldOutcome> {
         self.outcome.take()
@@ -191,6 +169,116 @@ impl<S: RichTextSource> RichTextSurface<S> {
     #[must_use]
     pub fn blocks(&self) -> &[BlockContent] {
         &self.presented
+    }
+
+    /// The hint an empty document shows.
+    #[must_use]
+    pub fn with_placeholder(mut self, hint: &str) -> Self {
+        self.editor.set_empty_hint(hint);
+        self
+    }
+
+    /// Whether the editor's block `id` is a paragraph of the document, not
+    /// the empty line an empty document shows.
+    #[must_use]
+    pub fn shows_stored(&self, id: &str) -> bool {
+        self.presented.iter().any(|block| block.id == id)
+    }
+
+    /// The editor, for what the surface does not configure itself.
+    pub fn editor(&self) -> &BlockEditor {
+        &self.editor
+    }
+
+    /// The editor, mutably. What the caller changes through it is compared
+    /// with the document whole on the next commit.
+    pub fn editor_mut(&mut self) -> &mut BlockEditor {
+        self.editor.note_edit_anywhere();
+        &mut self.editor
+    }
+
+    /// Where the text comes from.
+    pub fn source(&self) -> &S {
+        &self.source
+    }
+
+    /// Where the text comes from, mutably (its permissions).
+    pub fn source_mut(&mut self) -> &mut S {
+        &mut self.source
+    }
+
+    /// Show what the source holds now, without a document: for a source that
+    /// keeps its own ([`Draft`](crate::Draft)) after it was reset.
+    pub fn present_now(&mut self) {
+        self.erased().present_now_dyn();
+    }
+
+    /// Put `text` at the caret as the person typing would (an emoji picked
+    /// from a menu), through the source's edits.
+    pub fn insert_text(&mut self, edits: &mut Edits<'_>, text: &str) {
+        self.erased().insert_text_dyn(edits, text);
+    }
+
+    /// Put a mention of the participant `id`, shown as `label`, at the caret
+    /// (replacing a selection, such as the typed query the person picked it
+    /// from), through the source's edits.
+    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
+        self.erased().insert_mention_dyn(edits, id, label);
+    }
+
+    /// Show the document as `doc` holds it now, without writing to it: for a
+    /// view shown before its first sync (a page just opened, a past version).
+    /// `false` when the source cannot read without writing, or holds no
+    /// rich text there.
+    pub fn present_from(&mut self, doc: &Doc) -> bool {
+        self.erased().present_from_dyn(doc)
+    }
+
+    /// Author a validated image replacement for the host to wrap together with
+    /// asset storage. No text or history changes until that one action applies.
+    ///
+    /// # Errors
+    /// Refuses read-only, composing, missing or changed selection targets.
+    pub fn image_paste_action(
+        &mut self,
+        doc: &AutoCommit,
+        target: &ui::widget::block_editor::ImagePasteTarget,
+        text: String,
+    ) -> Result<RichTextAction, ActionError> {
+        self.erased().image_paste_action_dyn(doc, target, text)
+    }
+
+    /// This surface over its source behind a reference: what its code,
+    /// compiled once, works on.
+    fn erased(&mut self) -> &mut RichTextSurface<dyn ErasedSource> {
+        self
+    }
+
+    fn erased_ref(&self) -> &RichTextSurface<dyn ErasedSource> {
+        self
+    }
+}
+
+impl RichTextSurface<dyn ErasedSource> {
+    /// [`RichTextSurface::present_now`], compiled once.
+    fn present_now_dyn(&mut self) {
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+    }
+
+    /// [`RichTextSurface::insert_text`], compiled once.
+    fn insert_text_dyn(&mut self, edits: &mut Edits<'_>, text: &str) {
+        if self.editor.insert_text(text) {
+            self.commit(edits);
+        }
+    }
+
+    /// [`RichTextSurface::insert_mention`], compiled once.
+    fn insert_mention_dyn(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
+        if self.editor.insert_mention(id, label) {
+            self.commit(edits);
+        }
     }
 
     /// The outcome `event` asks for, in an embedded field.
@@ -232,18 +320,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
         }
     }
 
-    /// The hint an empty document shows.
-    #[must_use]
-    pub fn with_placeholder(mut self, hint: &str) -> Self {
-        self.editor.set_empty_hint(hint);
-        self
-    }
-
-    /// Show the document as `doc` holds it now, without writing to it: for a
-    /// view shown before its first sync (a page just opened, a past version).
-    /// `false` when the source cannot read without writing, or holds no
-    /// rich text there.
-    pub fn present_from(&mut self, doc: &Doc) -> bool {
+    /// [`RichTextSurface::present_from`], compiled once.
+    fn present_from_dyn(&mut self, doc: &Doc) -> bool {
         if !self.source.read_from(doc) {
             return false;
         }
@@ -251,31 +329,8 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
-    /// Whether the editor's block `id` is a paragraph of the document, not
-    /// the empty line an empty document shows.
-    #[must_use]
-    pub fn shows_stored(&self, id: &str) -> bool {
-        self.presented.iter().any(|block| block.id == id)
-    }
-
-    /// The editor, for what the surface does not configure itself.
-    pub fn editor(&self) -> &BlockEditor {
-        &self.editor
-    }
-
-    /// The editor, mutably. What the caller changes through it is compared
-    /// with the document whole on the next commit.
-    pub fn editor_mut(&mut self) -> &mut BlockEditor {
-        self.editor.note_edit_anywhere();
-        &mut self.editor
-    }
-
-    /// Author a validated image replacement for the host to wrap together with
-    /// asset storage. No text or history changes until that one action applies.
-    ///
-    /// # Errors
-    /// Refuses read-only, composing, missing or changed selection targets.
-    pub fn image_paste_action(
+    /// [`RichTextSurface::image_paste_action`], compiled once.
+    fn image_paste_action_dyn(
         &mut self,
         doc: &AutoCommit,
         target: &ui::widget::block_editor::ImagePasteTarget,
@@ -421,16 +476,6 @@ impl<S: RichTextSource> RichTextSurface<S> {
         if self.editor.take_find_replace_request() {
             self.replace_find_match(edits);
         }
-    }
-
-    /// Where the text comes from.
-    pub fn source(&self) -> &S {
-        &self.source
-    }
-
-    /// Where the text comes from, mutably (its permissions).
-    pub fn source_mut(&mut self) -> &mut S {
-        &mut self.source
     }
 
     /// The blocks the person changed since the last presentation: the
@@ -785,6 +830,180 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let local = (presented_end == edited_end).then_some(start..edited_end);
         self.present_state(local.as_ref());
     }
+
+    /// An edit made outside an input event (a programmatic change of the
+    /// editor, a find-and-replace asked for) is written here.
+    fn settle_dyn(&mut self, edits: &mut Edits<'_>, path: &ui::automerge::ObjId) {
+        // What the last keystroke left to do (formatting the markdown it
+        // closed, correcting the word it ended) is written now, after the
+        // keystroke itself: an undo step of its own.
+        self.editor.settle_typing();
+        self.commit(edits);
+        self.drain_find_replace(edits);
+        self.editor.settle(edits, path);
+    }
+
+    fn sync_dyn(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
+        self.source.sync(state);
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        self.editor.sync(state, path);
+    }
+
+    fn handle_event_dyn(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
+            self.outcome = Some(outcome);
+            *ctx.handled = true;
+            return;
+        }
+        if self.is_duplicate_key(event, *ctx.modifiers) {
+            self.duplicate_blocks(&mut ctx.edits(), None);
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(up) = self.move_key(event, *ctx.modifiers) {
+            self.move_selected_blocks(&mut ctx.edits(), up);
+            *ctx.handled = true;
+            return;
+        }
+        // Input that arrives before the frame settled the last keystroke
+        // writes what that keystroke left to do first.
+        if self.editor.settle_typing() {
+            self.commit(&mut ctx.edits());
+        }
+        self.editor.handle_event(event, ctx);
+        let mut edits = ctx.edits();
+        self.commit(&mut edits);
+        self.drain_find_replace(&mut edits);
+    }
+
+    /// The editor's tree, each block's row with its Duplicate button, which
+    /// the editor keeps with the row while the button is the same.
+    fn accessibility_shared_dyn(&self) -> Option<ui::a11y::SharedAccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let disabled = self.source.read_only() || self.is_composing();
+        let duplicate_label = ui::i18n!("widget-block-duplicate");
+        let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(duplicate_label.clone())
+                .with_action_target(format!("notes.block-duplicate:{id}"))
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
+                .with_bounds(bounds)
+        };
+        let mut tree =
+            self.editor
+                .accessibility_shared_with(Some(&ui::widget::block_editor::RowControl {
+                    key: u64::from(disabled),
+                    build: &duplicate,
+                }))?;
+        let selection_disabled = disabled || self.editor.selected_block_range().is_none();
+        let mut duplicate = AccessNode::new(Role::Button)
+            .with_name(ui::i18n!("widget-block-duplicate-selection"))
+            .with_action_target("notes.editor:duplicate")
+            .with_state(
+                AccessState::new()
+                    .focusable(!selection_disabled)
+                    .disabled(selection_disabled),
+            );
+        duplicate.bounds = tree.node.bounds;
+        tree.children.push(std::sync::Arc::new(duplicate));
+        for up in [true, false] {
+            let disabled = disabled || self.editor.selected_block_move(up).is_none();
+            let mut movement = AccessNode::new(Role::Button)
+                .with_name(if up {
+                    ui::i18n!("widget-block-move-selection-up")
+                } else {
+                    ui::i18n!("widget-block-move-selection-down")
+                })
+                .with_action_target(if up {
+                    "notes.editor:move-up"
+                } else {
+                    "notes.editor:move-down"
+                })
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            movement.bounds = tree.node.bounds;
+            tree.children.push(std::sync::Arc::new(movement));
+        }
+        Some(tree)
+    }
+
+    fn perform_semantic_action_dyn(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if target == "notes.find:replace-all" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_all_find_matches(state);
+        }
+        if target == "notes.find:replace" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.replace_find_match(state);
+        }
+        if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.move_selected_blocks(state, target.ends_with(":move-up"));
+        }
+        if target == "notes.editor:duplicate" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, None);
+        }
+        if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, Some(id));
+        }
+        // What the action edited is written by the settle pass that follows.
+        self.editor
+            .perform_semantic_action(target, action, state, path)
+    }
+
+    /// An assistive technology focuses the field or sets its text, as a
+    /// person typing would: the new text is written through the source's
+    /// edits, a paragraph per line.
+    fn perform_action_dyn(
+        &mut self,
+        action: &ui::a11y::Action,
+        _key_path: &[u64],
+        state: &mut Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
+        match action {
+            ui::a11y::Action::Focus => {
+                Widget::set_focus(&mut self.editor, true);
+                true
+            }
+            ui::a11y::Action::SetValue(text) => {
+                if self.source.read_only() || self.source.revision().is_none() {
+                    return false;
+                }
+                self.set_text(state, text);
+                true
+            }
+            // What the action edited is written by the settle pass that
+            // follows.
+            _ => self.editor.perform_action(action, &[], state, path),
+        }
+    }
 }
 
 /// What the editor was last shown, reused for paragraphs that did not
@@ -853,9 +1072,9 @@ fn rename(editor: &mut BlockEditor, renames: &[(String, String)]) {
 
 /// A source as the edit host: edits applied through it, results read back.
 /// The source, applying to the document a pass lends as `Edits<'e>`.
-struct Through<'a, 'e, S>(&'a mut S, std::marker::PhantomData<fn(&'e ())>);
+struct Through<'a, 'e, S: ?Sized>(&'a mut S, std::marker::PhantomData<fn(&'e ())>);
 
-impl<'e, S: RichTextSource> Host for Through<'_, 'e, S> {
+impl<'e, S: RichTextSource + ?Sized> Host for Through<'_, 'e, S> {
     type Doc = Edits<'e>;
 
     fn apply(&mut self, edits: &mut Edits<'e>, action: &RichTextAction) -> Result<(), ActionError> {
@@ -915,49 +1134,15 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     /// An edit made outside an input event (a programmatic change of the
     /// editor, a find-and-replace asked for) is written here.
     fn settle(&mut self, edits: &mut Edits<'_>, path: &ui::automerge::ObjId) {
-        // What the last keystroke left to do (formatting the markdown it
-        // closed, correcting the word it ended) is written now, after the
-        // keystroke itself: an undo step of its own.
-        self.editor.settle_typing();
-        self.commit(edits);
-        self.drain_find_replace(edits);
-        self.editor.settle(edits, path);
+        self.erased().settle_dyn(edits, path);
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document_ref(state, path);
-        self.source.sync(state);
-        if self.source.revision() != self.revision {
-            self.present_state(None);
-        }
-        self.editor.sync(state, path);
+        self.erased().sync_dyn(state, path);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
-            self.outcome = Some(outcome);
-            *ctx.handled = true;
-            return;
-        }
-        if self.is_duplicate_key(event, *ctx.modifiers) {
-            self.duplicate_blocks(&mut ctx.edits(), None);
-            *ctx.handled = true;
-            return;
-        }
-        if let Some(up) = self.move_key(event, *ctx.modifiers) {
-            self.move_selected_blocks(&mut ctx.edits(), up);
-            *ctx.handled = true;
-            return;
-        }
-        // Input that arrives before the frame settled the last keystroke
-        // writes what that keystroke left to do first.
-        if self.editor.settle_typing() {
-            self.commit(&mut ctx.edits());
-        }
-        self.editor.handle_event(event, ctx);
-        let mut edits = ctx.edits();
-        self.commit(&mut edits);
-        self.drain_find_replace(&mut edits);
+        self.erased().handle_event_dyn(event, ctx);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -967,51 +1152,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     /// The editor's tree, each block's row with its Duplicate button, which
     /// the editor keeps with the row while the button is the same.
     fn accessibility_shared(&self) -> Option<ui::a11y::SharedAccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let disabled = self.source.read_only() || self.is_composing();
-        let duplicate_label = ui::i18n!("widget-block-duplicate");
-        let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
-            AccessNode::new(Role::Button)
-                .with_name(duplicate_label.clone())
-                .with_action_target(format!("notes.block-duplicate:{id}"))
-                .with_state(AccessState::new().focusable(!disabled).disabled(disabled))
-                .with_bounds(bounds)
-        };
-        let mut tree =
-            self.editor
-                .accessibility_shared_with(Some(&ui::widget::block_editor::RowControl {
-                    key: u64::from(disabled),
-                    build: &duplicate,
-                }))?;
-        let selection_disabled = disabled || self.editor.selected_block_range().is_none();
-        let mut duplicate = AccessNode::new(Role::Button)
-            .with_name(ui::i18n!("widget-block-duplicate-selection"))
-            .with_action_target("notes.editor:duplicate")
-            .with_state(
-                AccessState::new()
-                    .focusable(!selection_disabled)
-                    .disabled(selection_disabled),
-            );
-        duplicate.bounds = tree.node.bounds;
-        tree.children.push(std::sync::Arc::new(duplicate));
-        for up in [true, false] {
-            let disabled = disabled || self.editor.selected_block_move(up).is_none();
-            let mut movement = AccessNode::new(Role::Button)
-                .with_name(if up {
-                    ui::i18n!("widget-block-move-selection-up")
-                } else {
-                    ui::i18n!("widget-block-move-selection-down")
-                })
-                .with_action_target(if up {
-                    "notes.editor:move-up"
-                } else {
-                    "notes.editor:move-down"
-                })
-                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
-            movement.bounds = tree.node.bounds;
-            tree.children.push(std::sync::Arc::new(movement));
-        }
-        Some(tree)
+        self.erased_ref().accessibility_shared_dyn()
     }
 
     /// Only adds children to the editor's node, so its root is the editor's.
@@ -1026,44 +1167,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        if target == "notes.find:replace-all" {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.replace_all_find_matches(state);
-        }
-        if target == "notes.find:replace" {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.replace_find_match(state);
-        }
-        if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.move_selected_blocks(state, target.ends_with(":move-up"));
-        }
-        if target == "notes.editor:duplicate" {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(state, None);
-        }
-        if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
-            if !matches!(action, ui::a11y::Action::Activate) {
-                return false;
-            }
-            let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(state, Some(id));
-        }
-        // What the action edited is written by the settle pass that follows.
-        self.editor
-            .perform_semantic_action(target, action, state, path)
+        self.erased()
+            .perform_semantic_action_dyn(target, action, state, path)
     }
 
     // Every edit is an action bounded into undo steps by its source or the
@@ -1075,27 +1180,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
-        match action {
-            ui::a11y::Action::Focus => {
-                Widget::set_focus(&mut self.editor, true);
-                true
-            }
-            ui::a11y::Action::SetValue(text) => {
-                if self.source.read_only() || self.source.revision().is_none() {
-                    return false;
-                }
-                self.set_text(state, text);
-                true
-            }
-            // What the action edited is written by the settle pass that
-            // follows.
-            _ => self.editor.perform_action(action, &[], state, path),
-        }
+        self.erased().perform_action_dyn(action, key_path, state, path)
     }
 }
 
