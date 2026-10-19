@@ -187,12 +187,11 @@ impl AppContentProvider {
 
     fn row(&self, indexed: &IndexedEntry, score: i32) -> SearchResult {
         let IndexedEntry { slot, entry } = indexed;
-        let app_name = app_name(&slot.app);
         let subtitle = entry
             .subtitle
             .clone()
             .or_else(|| entry.group.clone())
-            .unwrap_or_else(|| app_name.clone());
+            .unwrap_or_else(|| app_name(&slot.app));
         let door = self.door.clone();
         let opened_slot = slot.clone();
         let opened = entry.clone();
