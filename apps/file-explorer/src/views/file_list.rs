@@ -378,7 +378,7 @@ impl ListSlot {
         state.fit = Some((inputs.geo, inputs.scale, inputs.text_scale));
         let shape = Shape::for_width(state.width, &inputs.geo, inputs.scale, inputs.text_scale);
         if state.table.is_none() || state.shape != Some(shape) {
-            let scroll = state.table.as_ref().map_or(0.0, DataTable::scroll_y);
+            let scroll = state.table.as_ref().map_or(0.0, |table| table.scroll_y());
             let table = build_table(shape, &state.mailbox, &inputs.geo, inputs.text_scale);
             state.table = Some(table);
             state.shape = Some(shape);
@@ -437,7 +437,7 @@ impl ListSlot {
             .borrow()
             .table
             .as_ref()
-            .map_or(0.0, DataTable::scroll_y)
+            .map_or(0.0, |table| table.scroll_y())
     }
 
     /// Scroll to `y` (clamped by the table).
@@ -454,7 +454,7 @@ impl ListSlot {
             .borrow()
             .table
             .as_ref()
-            .map_or(0.0, DataTable::max_scroll_y)
+            .map_or(0.0, |table| table.max_scroll_y())
     }
 
     /// The table's laid-out rectangle.
@@ -564,7 +564,7 @@ impl ListSlot {
             .borrow()
             .table
             .as_ref()
-            .and_then(DataTable::scrollbar_thumb)
+            .and_then(|table| table.scrollbar_thumb())
             .is_some_and(|thumb| at.x >= thumb.x0 - 2.0)
     }
 
