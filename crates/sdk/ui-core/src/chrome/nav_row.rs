@@ -1378,8 +1378,13 @@ mod tests {
         assert!(nav_section_height(&theme, false) > nav_section_height(&theme, true));
     }
 
+    // From the coordinator (2026-10-19): shared rails never hyphenate a
+    // single word; a caption wraps only at spaces and a word too long for
+    // the rail elides. This test once pinned the hyphenated break
+    // ("Chan-nels") that rule replaced; at high contrast and double text
+    // it now pins that the word stays whole on one line.
     #[test]
-    fn hc200_rail_keeps_a_short_destination_meaningful() {
+    fn hc200_rail_never_breaks_a_short_destination_inside_the_word() {
         let theme = Theme::high_contrast().with_text_scale(2.0);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
@@ -1389,19 +1394,15 @@ mod tests {
             "Channels",
             rail_caption_width(&theme, 76.0),
         );
+        assert_eq!(lines.len(), 1, "one word is one line: {lines:?}");
         assert!(
-            lines.len() <= 2,
-            "the rail caption remains at most two lines"
+            lines.iter().all(|line| !line.ends_with('-')),
+            "the word is never cut with a hyphen: {lines:?}"
         );
-        assert!(
-            lines.iter().all(|line| !line.contains('\u{2026}')),
-            "a short destination is not reduced to an ambiguous fragment: {lines:?}"
-        );
-        assert_eq!(lines.concat().replace('-', ""), "Channels");
         assert!(
             nav_rail_item_height(&theme, &mut text, "Channels", 76.0)
                 >= nav_rail_row_height(&theme),
-            "the shared measured height reserves the repaired caption"
+            "the shared measured height reserves the caption"
         );
     }
 
