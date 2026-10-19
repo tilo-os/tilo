@@ -158,6 +158,30 @@ else
   bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
 fi
 
+# Each app is held to its own budget (tools/perf/tapp-size-budget) when it is
+# packed, not only to the format ceiling: an app that grew is named with its
+# size and budget, instead of a whole layer failing later as "over 8 MB".
+budget_probe=$(
+  msg() { printf '%s\n' "$*" >&2; }
+  die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+  BUDGET_DIR="$REPO/tools/perf/tapp-size-budget" TAPP_ARCH=aarch64 TAPP_BUDGET=enforce
+  eval "$(sed -n '/^app_budget() {/,/^for t in "\$PKG_BIN"/p' "$PACK" | sed '$d')"
+  budget=$(app_budget so.tilo.imager aarch64)
+  [ -n "$budget" ] || exit 1
+  check_budget "imager (so.tilo.imager)" so.tilo.imager "$budget" || exit 1
+  if refusal=$(check_budget "imager (so.tilo.imager)" so.tilo.imager "$((budget + 1))"); then exit 1; fi
+  printf '%s\n' "$refusal"
+)
+if [ -n "$budget_probe" ] \
+   && grep -q "so.tilo.imager" <<<"$budget_probe" \
+   && grep -q "over its aarch64 budget of" <<<"$budget_probe" \
+   && grep -q 'check_budget "\$app (\$id)"' "$PACK" \
+   && grep -q 'COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget' "$CONTAINERFILE"; then
+  ok "pack-apps refuses an app over its own size budget and names the app, its size and its budget"
+else
+  bad "pack-apps does not hold each app to its budget in tools/perf/tapp-size-budget"
+fi
+
 # The dependencies are the collector's closure: DT_NEEDED and the libraries the
 # runtime loads on first use (GLib, GStreamer; #4020).
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \

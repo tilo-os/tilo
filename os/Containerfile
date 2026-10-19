@@ -1096,6 +1096,9 @@ RUN --mount=type=secret,id=browser_runtime_identity \
        fi
 
 # ---- Pack + install every app into the image-wide app store -----------------
+# Each app's size budget, which pack-apps.sh holds every package to. Copied
+# here, after the builds, so a budget change does not rebuild anything.
+COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # Without this the launcher's registry is empty on a fresh install and the
 # command palette's Applications provider has nothing to list, however many
 # app binaries the image contains.
@@ -1122,6 +1125,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
        fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
+    TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
