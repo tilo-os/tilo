@@ -273,7 +273,7 @@ impl ResourceRoot {
                 self.decorate_publication(state, tree.head().clone(), Decoration::Actions);
             let document = self.published_children(tree.children(), opens);
             let document = if surface {
-                self.with_live_rows(document, opens)
+                self.with_live_rows(tree.children(), document, opens)
             } else {
                 document
             };
@@ -412,13 +412,22 @@ impl ResourceRoot {
     /// `document`, the published document children, with the live rows the
     /// surfaces show merged in by id, as [`super::super::rows::merge`] merges
     /// them into the whole tree, and the edits surfaces bind to rows bound
-    /// on them. A row a surface hands out again (the same [`LiveRow`], kept
+    /// on them. A row joins `raw`, the document child of its id as the
+    /// document has it, which is then decorated as `document`'s children
+    /// are: decorating first would give an item the framework's own view
+    /// beside the row's, where the row's views replace it (`open` on items
+    /// keeps an app's explicit views). A row a surface hands out again (the same [`LiveRow`], kept
     /// while what it shows holds) over the same document child publishes
     /// the node it published last time, so what reads the forest skips it
     /// as seen; only a surface that binds edits to rows
     /// ([`super::super::ResourceSurface::ROW_DECLARATIONS`]) has its rows
     /// bound afresh.
-    fn with_live_rows(&self, document: SharedChildren, opens: bool) -> SharedChildren {
+    fn with_live_rows(
+        &self,
+        raw: &SharedChildren,
+        document: SharedChildren,
+        opens: bool,
+    ) -> SharedChildren {
         let _profile = tilo_resource::profiling::Phase::start("framework.live_rows");
         let mut rows = Vec::new();
         let mut binds = false;
@@ -463,7 +472,8 @@ impl ResourceRoot {
                 continue;
             };
             let target = at.get(id.as_str()).copied();
-            let base = target.and_then(|index| document.as_slice().get(index));
+            // `document` holds `raw`'s children one for one, decorated.
+            let base = target.and_then(|index| raw.as_slice().get(index));
             let published = last
                 .as_ref()
                 .and_then(|last| last.groups.get(&id))
@@ -994,5 +1004,131 @@ mod tests {
             before.children().ptr_eq(after.children()),
             "a keystroke in the draft builds no item"
         );
+    }
+
+    /// The board with each task shown as a row offering its own view, as
+    /// Chat's channel rows offer their conversation, in a view that opens
+    /// items.
+    struct ViewedBoardApp;
+
+    impl ResourceApp for ViewedBoardApp {
+        type Resource = Board;
+        const ID: &'static str = "so.tilo.test-viewed-board";
+        const TITLE: &'static str = "Board";
+
+        fn view(cx: &mut ViewCx<Board>) -> Element {
+            cx.on_open_item(|_| Ok(()));
+            cx.surface(TaskRows::default())
+        }
+    }
+
+    #[derive(Default)]
+    struct TaskRows {
+        rect: Rect,
+        tasks: Vec<Id>,
+    }
+
+    impl Widget for TaskRows {
+        fn build_layout(
+            &mut self,
+            taffy: &mut crate::advanced::TaffyTree<()>,
+            _: &Theme,
+            _: &mut std::collections::HashMap<crate::advanced::NodeId, *mut dyn Widget>,
+        ) -> crate::advanced::NodeId {
+            taffy
+                .new_leaf(ui_core::taffy::Style::default())
+                .unwrap_or_else(|_| crate::advanced::NodeId::from(0_u64))
+        }
+
+        fn apply_layout(
+            &mut self,
+            _: &crate::advanced::TaffyTree<()>,
+            _: crate::advanced::NodeId,
+            origin: Point,
+        ) {
+            self.rect = Rect::from_origin_size(origin, Size::ZERO);
+        }
+
+        fn name(&self) -> &'static str {
+            "TaskRows"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    impl ResourceSurface<Board> for TaskRows {
+        fn present(&mut self, board: &std::rc::Rc<Board>) {
+            self.tasks = board.tasks.ids().cloned().collect();
+        }
+
+        fn live_rows(&self) -> Vec<LiveRow> {
+            self.tasks
+                .iter()
+                .map(|task| {
+                    LiveRow::new(
+                        tilo_resource::items::item_resource_id::<Board>("tasks", task),
+                        "test.shared-board.task",
+                        "Task",
+                    )
+                    .view(
+                        tilo_actions::ResourceViewSpec::new("look", "Look", "open")
+                            .with_primary(true),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    /// An item a row offers a view of shows that view, as the whole tree
+    /// publishes it, and not also the item view the framework offers items
+    /// without one: two primary views opened by one action break the action
+    /// contract, and the host then published nothing of the app (Chat in a
+    /// site's workspace listed no conversation to agents or the palette).
+    #[test]
+    fn a_rows_view_replaces_the_frameworks_item_view() {
+        let mut app = TestApp::<ViewedBoardApp>::new().expect("the board opens");
+        app.call("add", json!({ "title": "Read", "index": 0 }))
+            .expect("a task is added");
+        let app_task = app.state().tasks.ids().next().cloned().expect("the task");
+        let doc = app.read_document(Clone::clone);
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let shared = root
+                    .shared_resources(None, &doc)
+                    .expect("the board publishes a shared forest");
+                let shared = ui_core::published::to_resources(&shared);
+                let item = tilo_resource::items::item_resource_id::<Board>("tasks", &app_task);
+                let task = shared[0]
+                    .children
+                    .iter()
+                    .find(|child| child.id.as_str() == item)
+                    .expect("the task")
+                    .clone();
+                let views: Vec<(&str, bool)> = task
+                    .views
+                    .iter()
+                    .map(|view| (view.id.as_str(), view.primary))
+                    .collect();
+                assert_eq!(
+                    views,
+                    [("look", true)],
+                    "the row's view is the task's one view"
+                );
+                assert!(
+                    task.actions.iter().any(|action| action.id == "open"),
+                    "the task's `open` shows it"
+                );
+                assert_eq!(
+                    shared.iter().map(outline).collect::<Vec<_>>(),
+                    root.resources_for(None, &doc)
+                        .iter()
+                        .map(outline)
+                        .collect::<Vec<_>>(),
+                    "the shared forest is the whole tree"
+                );
+            })
+            .expect("the root is the board's");
     }
 }
