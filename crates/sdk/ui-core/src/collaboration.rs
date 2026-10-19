@@ -961,27 +961,6 @@ pub enum PresencePayload {
         text: String,
         automatic: bool,
     },
-    /// How available the authenticated sender is, and the voice channel
-    /// they are in, if any. Desktop presence: the shell shows it on faces
-    /// and in the roster; it never reaches an app ([`Self::reaches_apps`]).
-    Availability {
-        state: crate::Availability,
-        call: Option<String>,
-    },
-    /// The authenticated sender waves at `target` (a roster id). Desktop
-    /// presence, like [`Self::Availability`].
-    Wave {
-        target: String,
-    },
-}
-
-impl PresencePayload {
-    /// Whether apps receive this: everything but the desktop's own
-    /// presence (availability, waves), which only the shell shows.
-    #[must_use]
-    pub const fn reaches_apps(&self) -> bool {
-        !matches!(self, Self::Availability { .. } | Self::Wave { .. })
-    }
 }
 
 /// Explicit correlation supplied by owner-backed membership, never decoded

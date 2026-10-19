@@ -389,7 +389,6 @@ impl std::fmt::Debug for Tooltip {
             .field("rect", &self.rect)
             .field("anchor", &self.anchor)
             .field("hover_since", &self.hover_since)
-            .field("appear", &self.appear)
             .finish()
     }
 }
@@ -642,8 +641,7 @@ impl std::fmt::Debug for TooltipHost {
             .field("dwell", &self.dwell)
             .field("visible", &self.visible)
             .field("has_target", &self.target.is_some())
-            .field("appear", &self.appear)
-            .finish_non_exhaustive()
+            .finish()
     }
 }
 

@@ -93,11 +93,6 @@ pub(crate) const PUBLISH: &str = "publish";
 pub(crate) const UNPUBLISH: &str = "unpublish";
 /// Whether the room is public, and with which listing.
 pub(crate) const PUBLICATION: &str = "publication";
-/// Asking the room's host to run a bot from the directory.
-pub(crate) const REQUEST_BOT: &str = "request-bot";
-/// Taking back the room's request for a bot: its host stops and
-/// uninstalls it.
-pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
 /// The roles a public workspace hands out at its door.
 const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
@@ -130,7 +125,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 16] = [
+const VERBS: [Verb; 14] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -229,20 +224,6 @@ const VERBS: [Verb; 16] = [
         kind: ActionKind::Read,
         params: Vec::new,
     },
-    Verb {
-        id: REQUEST_BOT,
-        label: "Add a bot",
-        gate: governance::INSTALL_BOT,
-        kind: roles::GOVERNANCE_KIND,
-        params: bot_request_params,
-    },
-    Verb {
-        id: WITHDRAW_BOT_REQUEST,
-        label: "Remove a bot",
-        gate: governance::UNINSTALL_BOT,
-        kind: roles::GOVERNANCE_KIND,
-        params: bot_entry_params,
-    },
 ];
 
 /// Destructive governance this provider names but does not run until the
@@ -330,29 +311,6 @@ fn restrict_params() -> Vec<ActionParam> {
             "How long they may change nothing; 60 minutes when omitted. They keep reading.",
         ),
     ]
-}
-
-fn bot_entry_param() -> ActionParam {
-    ActionParam::required(
-        "entry",
-        ParamType::Text,
-        "The bot's entry in the registry's directory, such as so.tilo.bots.standup.",
-    )
-}
-
-fn bot_request_params() -> Vec<ActionParam> {
-    vec![
-        bot_entry_param(),
-        ActionParam::required(
-            "version",
-            ParamType::Text,
-            "The listed version the room's host runs.",
-        ),
-    ]
-}
-
-fn bot_entry_params() -> Vec<ActionParam> {
-    vec![bot_entry_param()]
 }
 
 fn publish_params() -> Vec<ActionParam> {
@@ -874,7 +832,6 @@ impl Rooms {
             | ADMIT
             | DECLINE => self.governance_invitations(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
-            REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             _ => self.governance_members(action, call).await,
         }
     }
@@ -925,37 +882,6 @@ impl Rooms {
                 .map_err(|error| refused(&error)),
             _ => Ok(listed(self.listing(room))),
         }
-    }
-
-    /// The bots the room asks its host to run: asking for one, and taking
-    /// the request back.
-    async fn governance_bots(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionHostError> {
-        use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
-        let GovernanceCall {
-            room,
-            device,
-            request_id,
-            args,
-        } = call;
-        let entry = args.required_text("entry")?.to_owned();
-        let command = if action == REQUEST_BOT {
-            WorkspaceMembershipCommand::RequestBot(BotRequest {
-                entry,
-                version: args.required_text("version")?.to_owned(),
-            })
-        } else {
-            WorkspaceMembershipCommand::WithdrawBotRequest { entry }
-        };
-        command.validate().map_err(invalid)?;
-        let done = self
-            .ask_for_bot(room, device, request_id, command)
-            .await
-            .map_err(|error| refused(&error))?;
-        Ok(json!({ "generation": done.generation }))
     }
 
     /// Inviting, and what inviting covers: the invitations and join

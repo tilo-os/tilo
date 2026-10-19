@@ -1675,7 +1675,7 @@ impl AudioModel {
                 effect(AudioEffect::SET_OUTPUT_VOLUME),
             );
             let mute = self.cx.bind_invocation(
-                ui::widget::primitives::IconButton::regular(
+                ui::widget::primitives::IconButton::new(
                     "audio.mute",
                     if self.muted {
                         ui::icons::Icon::VolumeX
@@ -1990,7 +1990,7 @@ impl AudioModel {
             ),
         );
         let mute = bound(
-            ui::widget::primitives::IconButton::regular(
+            ui::widget::primitives::IconButton::new(
                 &format!("audio.stream.{id}.muted.tg"),
                 if muted {
                     ui::icons::Icon::VolumeX

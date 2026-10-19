@@ -200,9 +200,6 @@ impl ShellNetwork {
             PeerSyncRequest::Publish { room, listing } => self
                 .publish(room, listing)
                 .map(PeerSyncResponse::Publication),
-            PeerSyncRequest::AskForBot { room, ask } => self
-                .ask_for_bot(room, &ask)
-                .map(|()| PeerSyncResponse::Message(String::new())),
             PeerSyncRequest::ResendInvitation(id) => {
                 self.resend_invitation(&id).map(PeerSyncResponse::Message)
             }

@@ -237,9 +237,10 @@ pub(crate) fn syntax_fixture() -> ConsumerCapability {
         .collect(),
     }
 }
-#[cfg(all(test, target_os = "linux", feature = "installation"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn original_image_review_refuses_legacy_ambiguous_and_changed_held_images() {
         use sha2::{Digest, Sha256};

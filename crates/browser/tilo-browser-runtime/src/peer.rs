@@ -34,8 +34,8 @@ use tilo_browser_peer::{
     SignFuture,
 };
 use tilo_relay_protocol::live::{
-    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveReaction,
-    LiveRecord, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
+    DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveRecord, OpsFrame,
+    ParticipantKind, PresenceFrame, PreviewOp,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
@@ -799,24 +799,6 @@ struct JsPresence {
     participant: Option<JsParticipant>,
     #[serde(default)]
     place: Option<String>,
-    /// Cursor chat: `{text, sent}`, beside the pointer.
-    #[serde(default)]
-    chat: Option<JsChat>,
-    /// The latest reaction: `{seq, emoji}`.
-    #[serde(default)]
-    reaction: Option<JsReaction>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsChat {
-    text: String,
-    sent: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsReaction {
-    seq: u32,
-    emoji: String,
 }
 
 fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
@@ -949,14 +931,6 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             .transpose()?,
         participant: value.participant.map(participant_from_js).transpose()?,
         place: value.place,
-        chat: value.chat.map(|chat| CursorChat {
-            text: chat.text,
-            sent: chat.sent,
-        }),
-        reaction: value.reaction.map(|reaction| LiveReaction {
-            seq: reaction.seq,
-            emoji: reaction.emoji,
-        }),
     })
 }
 
@@ -981,14 +955,6 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
         }),
         participant: frame.participant.map(participant_to_js),
         place: frame.place,
-        chat: frame.chat.map(|chat| JsChat {
-            text: chat.text,
-            sent: chat.sent,
-        }),
-        reaction: frame.reaction.map(|reaction| JsReaction {
-            seq: reaction.seq,
-            emoji: reaction.emoji,
-        }),
     }
 }
 

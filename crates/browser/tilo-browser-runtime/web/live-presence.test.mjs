@@ -302,19 +302,3 @@ test('a change of focused app or record snaps without carrying old-surface motio
     for (const at of [16,20,60]) assert.deepEqual(remote.sample(at).pointer,[10,20]);
   }
 });
-
-test("receiver times a sent cursor-chat message on its own clock and plays each reaction once", () => {
-  const remote = createRemotePresence();
-  remote.accept(frame(1, 100, {pointer: [1, 1], chat: {text: 'hel', sent: false}}), 110);
-  assert.deepEqual(remote.sample(120).chat, {text: 'hel', sent: false});
-  assert.equal(remote.sample(120).chatSentAt, null, 'being typed');
-  remote.accept(frame(2, 200, {pointer: [1, 1], chat: {text: 'hello', sent: true}}), 210);
-  assert.equal(remote.sample(220).chatSentAt, 210, 'sent when it arrived here');
-  remote.accept(frame(3, 3200, {pointer: [1, 1], chat: {text: 'hello', sent: true}}), 3210);
-  assert.equal(remote.sample(3220).chatSentAt, 210, 'a keepalive does not restart it');
-  remote.accept(frame(4, 3300, {pointer: [1, 1], reaction: {seq: 7, emoji: '\u{1f44d}'}}), 3310);
-  assert.deepEqual(remote.sample(3320).reaction, {seq: 7, emoji: '\u{1f44d}', at: 3310});
-  assert.equal(remote.sample(3320).chat, null, 'the message was cleared');
-  remote.accept(frame(5, 3400, {pointer: [2, 2], reaction: {seq: 7, emoji: '\u{1f44d}'}}), 3410);
-  assert.equal(remote.sample(3420).reaction.at, 3310, 'a restated reaction is the same one');
-});

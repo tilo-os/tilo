@@ -142,11 +142,6 @@ pub enum EventOutcome {
         )>,
     },
     RemoveAgent(String),
-    /// Find a bot for this workspace (the Store's bots).
-    AddBot,
-    /// Take back this workspace's request for the bot of this directory
-    /// entry: its host stops and removes it.
-    RemoveBot(String),
     Revoke(String),
     SetMemberRole(UserId, CapRole),
     ConfirmRemoveMember(UserId),
@@ -238,10 +233,6 @@ pub struct WorkspaceSettingsOverlay {
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
-    /// The Bots section's Add a bot, and each requested bot's Remove by its
-    /// directory entry.
-    bot_add_rect: Rect,
-    bot_remove_rects: Vec<(String, Rect)>,
     /// The agent whose answers the Agents tab shows instead of the roster,
     /// and which of its apps is open.
     agent_review: Option<(
@@ -287,8 +278,6 @@ impl Default for WorkspaceSettingsOverlay {
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
-            bot_add_rect: Rect::ZERO,
-            bot_remove_rects: Vec::new(),
             agent_review: None,
             agent_access: super::agent_access::AgentAccessLayout::default(),
             agent_access_scroll: 0.0,
@@ -742,8 +731,6 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
-        self.bot_add_rect = Rect::ZERO;
-        self.bot_remove_rects.clear();
         self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.member_sheet_option_rects.clear();
     }
@@ -757,16 +744,6 @@ impl WorkspaceSettingsOverlay {
             }
             if self.agent_add_rect.area() > 0.0 && self.agent_add_rect.contains(point) {
                 return Some(EventOutcome::AddAgent);
-            }
-            if self.bot_add_rect.area() > 0.0 && self.bot_add_rect.contains(point) {
-                return Some(EventOutcome::AddBot);
-            }
-            if let Some((entry, _)) = self
-                .bot_remove_rects
-                .iter()
-                .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
-            {
-                return Some(EventOutcome::RemoveBot(entry.clone()));
             }
         }
         self.agent_control_rects
@@ -1943,8 +1920,6 @@ impl WorkspaceSettingsOverlay {
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_control_rects.clear();
-        self.bot_add_rect = Rect::ZERO;
-        self.bot_remove_rects.clear();
         self.default_app_rects.clear();
         self.agent_access = super::agent_access::AgentAccessLayout::default();
         let body_rect = Self::body_rect(rect);
@@ -1977,12 +1952,6 @@ impl WorkspaceSettingsOverlay {
         }
         self.agent_add_rect = agents_add_rect(body_rect);
         if let Some(ws) = model.desktop.active_workspace() {
-            self.bot_add_rect = super::bots_add_rect(ws, body_rect);
-            for row in super::bots_pane_rows(ws, body_rect) {
-                if let Some(entry) = row.bot.entry.clone() {
-                    self.bot_remove_rects.push((entry, row.remove_rect));
-                }
-            }
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
@@ -3445,26 +3414,6 @@ mod tests {
             assert_eq!(
                 overlay.hit_test(hit_rect.center(), WsTab::General),
                 EventOutcome::WorkspaceDefault(resource)
-            );
-        }
-
-        // Phase `bot_hits_name_the_bots_entry`.
-        {
-            let mut overlay = WorkspaceSettingsOverlay::default();
-            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-            let add = Rect::new(900.0, 260.0, 1010.0, 288.0);
-            let remove = Rect::new(900.0, 300.0, 980.0, 334.0);
-            overlay.bot_add_rect = add;
-            overlay
-                .bot_remove_rects
-                .push(("so.tilo.bots.standup".into(), remove));
-            assert_eq!(
-                overlay.hit_test(add.center(), WsTab::Agents),
-                EventOutcome::AddBot
-            );
-            assert_eq!(
-                overlay.hit_test(remove.center(), WsTab::Agents),
-                EventOutcome::RemoveBot("so.tilo.bots.standup".into()),
             );
         }
 

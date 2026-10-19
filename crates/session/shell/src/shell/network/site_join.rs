@@ -259,11 +259,15 @@ impl ShellNetwork {
             workspace: Some(local),
             progress,
         };
+        // The slot says Joining… from the moment its exchange starts, not
+        // once the host answered it.
+        self.hosted_sites.set_join(joining(JoinProgress::Joining));
         match self.accept_invitation_via(local, invitation, via) {
             Ok(PeerSyncResponse::EnrollmentPending { id }) => {
-                self.finish_when_enrolled(room, id, background)
-                    .map_err(SiteError::Refused)?;
-                self.hosted_sites.set_join(joining(JoinProgress::Joining));
+                if let Err(error) = self.finish_when_enrolled(room, id, background) {
+                    self.hosted_sites.end_join(room);
+                    return Err(SiteError::Refused(error));
+                }
                 Ok(SiteJoin::Enrolling {
                     room,
                     local,

@@ -282,68 +282,6 @@ fn names_are_validated_and_the_last_strip_cannot_be_removed() {
 }
 
 #[test]
-fn a_strip_moves_before_another_or_to_the_bottom_and_a_stale_move_changes_nothing() {
-    let mut workspace = workspace_with_group();
-    let mut mint = minter(800);
-    for name in ["Second", "Third"] {
-        apply_command(
-            &mut workspace,
-            &DesktopCommand::CreateStrip { name: name.into() },
-            &mut mint,
-            &mut create,
-        )
-        .unwrap();
-    }
-    let order = |workspace: &Workspace| {
-        workspace
-            .strips
-            .iter()
-            .map(|strip| strip.name.clone())
-            .collect::<Vec<_>>()
-    };
-    let (main, third) = (workspace.strips[0].id.0, workspace.strips[2].id.0);
-    apply_command(
-        &mut workspace,
-        &DesktopCommand::MoveStrip {
-            strip: third,
-            before: Some(main),
-        },
-        &mut mint,
-        &mut create,
-    )
-    .unwrap();
-    assert_eq!(order(&workspace), ["Third", "Main", "Second"]);
-    apply_command(
-        &mut workspace,
-        &DesktopCommand::MoveStrip {
-            strip: third,
-            before: None,
-        },
-        &mut mint,
-        &mut create,
-    )
-    .unwrap();
-    assert_eq!(order(&workspace), ["Main", "Second", "Third"]);
-    for stale in [
-        DesktopCommand::MoveStrip {
-            strip: 4040,
-            before: None,
-        },
-        DesktopCommand::MoveStrip {
-            strip: main,
-            before: Some(4040),
-        },
-        DesktopCommand::MoveStrip {
-            strip: main,
-            before: Some(main),
-        },
-    ] {
-        assert!(apply_command(&mut workspace, &stale, &mut mint, &mut create).is_err());
-        assert_eq!(order(&workspace), ["Main", "Second", "Third"], "{stale:?}");
-    }
-}
-
-#[test]
 fn a_group_moves_whole_into_an_empty_strip_and_a_stale_move_changes_nothing() {
     let mut workspace = workspace_with_group();
     let mut mint = minter(700);

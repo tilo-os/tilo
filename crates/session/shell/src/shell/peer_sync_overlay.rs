@@ -81,11 +81,6 @@ pub enum PeerSyncRequest {
         room: crate::shell::state::RoomId,
         listing: Option<tilo_relay_protocol::directory::Listing>,
     },
-    /// Ask the workspace in `room` for a bot, or take the request back.
-    AskForBot {
-        room: crate::shell::state::RoomId,
-        ask: crate::shell::network::BotAsk,
-    },
 }
 
 /// What an `invitation.issue` action asks to be minted for the active
@@ -564,8 +559,7 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::JoinListed(_)
                 | PeerSyncRequest::ReportWorkspace { .. }
                 | PeerSyncRequest::Publication(_)
-                | PeerSyncRequest::Publish { .. }
-                | PeerSyncRequest::AskForBot { .. },
+                | PeerSyncRequest::Publish { .. },
                 _,
             ) => {}
 

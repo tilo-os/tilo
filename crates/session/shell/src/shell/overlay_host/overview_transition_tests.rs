@@ -102,81 +102,92 @@ fn overview_panel_curve_is_settled_monotonic_and_keeps_windows_inset() {
     the_panel_curve_never_reverses();
 }
 
-fn motion(reduced: bool) -> ui::tokens::EffectiveMotion {
-    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), reduced)
-}
-
-fn millis(ms: u64) -> std::time::Duration {
-    std::time::Duration::from_millis(ms)
-}
-
 #[test]
-fn the_overview_zoom_flies_reverses_from_where_it_is_drawn_and_follows_its_input() {
-    use ui::tokens::MotionSource;
-    let durations = ui::tokens::Motion::default().durations;
+fn overview_transition_latches_completes_reverses_and_snaps_with_reduced_motion() {
+    fn idle_holds_zero_until_target_changes() {
+        let mut h = host();
+        for _ in 0..5 {
+            let t = h.tick_overview_transition(0.0, false);
+            assert_eq!(t, 0.0);
+        }
+    }
 
-    // Closed and asked to stay closed: nothing moves, nothing asks for frames.
-    let mut h = host();
-    assert_eq!(
-        h.sync_overview_zoom(false, MotionSource::Pointer, motion(false)),
-        0.0
-    );
-    assert!(!h.overview_zoom_moving(ui::time::now()));
+    fn target_change_latches_transition_and_completes() {
+        let mut h = host();
+        h.tick_overview_transition(1.0, false);
+        assert!(h.transition_started.is_some(), "should latch transition");
+        assert!(
+            h.needs_animation_frame(),
+            "the transition still asks for frames on the animation clock"
+        );
+        let now = std::time::Instant::now();
+        if let Some(deadline) = h.next_wake_deadline() {
+            assert!(
+                deadline.saturating_duration_since(now) > std::time::Duration::from_millis(2),
+                "a running overview transition must not wake the shell every millisecond"
+            );
+        }
+        assert_eq!(h.overview_target, 1.0);
+        // Past the full duration, value settles exactly at the target.
+        // Backdate the latched start instead of sleeping through the
+        // transition: `tick_overview_transition` measures `started.elapsed()`.
+        let started = h
+            .transition_started
+            .expect("the toggle latched a transition");
+        h.transition_started = Some(
+            started
+                .checked_sub(std::time::Duration::from_millis(
+                    OVERVIEW_TRANSITION_MS + 30,
+                ))
+                .expect("the monotonic clock is older than one transition"),
+        );
+        let t = h.tick_overview_transition(1.0, false);
+        assert!((t - 1.0).abs() < f32::EPSILON);
+        assert!(h.transition_started.is_none(), "transition should clear");
+    }
 
-    // A click on "Overview": a whole-view change, at most `slow`, and it
-    // asks for frames on the animation clock until it lands exactly.
-    let before = ui::time::now();
-    h.sync_overview_zoom(true, MotionSource::Pointer, motion(false));
-    assert!(
-        h.overview_zoom.is_open(),
-        "input acts on the open overview at once"
-    );
-    assert!(h.needs_animation_frame());
-    let rest = h
-        .overview_zoom
-        .settles_at()
-        .expect("the windows are flying");
-    assert!(rest.saturating_duration_since(before) <= durations.slow() + millis(1));
-    assert_eq!(h.overview_zoom.progress(rest), 1.0);
-    assert!(!h.overview_zoom.is_moving(rest), "then it costs nothing");
+    fn mid_flight_re_toggle_picks_up_from_current_t() {
+        // Flip target mid-fade; `transition_from` should capture the
+        // current `overview_t`, not 0, so the reverse starts from there.
+        let mut h = host();
+        h.tick_overview_transition(1.0, false);
+        // Backdate the latched start by half the transition instead of
+        // sleeping for it; the tick reads `started.elapsed()`.
+        let started = h
+            .transition_started
+            .expect("the toggle latched a transition");
+        h.transition_started = Some(
+            started
+                .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+                .expect("the monotonic clock is older than half a transition"),
+        );
+        let t_mid = h.tick_overview_transition(1.0, false);
+        assert!(
+            t_mid > 0.0 && t_mid < 1.0,
+            "mid-flight t should be between 0 and 1, got {t_mid}"
+        );
+        h.tick_overview_transition(0.0, false);
+        assert!(
+            (h.transition_from - t_mid).abs() < 0.01,
+            "reverse should start from current alpha, got from={} t_mid={}",
+            h.transition_from,
+            t_mid
+        );
+        assert_eq!(h.overview_target, 0.0);
+    }
 
-    // Toggled again mid-flight, it reverses from where the windows are.
-    let mid = before + millis(120);
-    let drawn = h.overview_zoom.progress(mid);
-    assert!(drawn > 0.0 && drawn < 1.0, "mid-flight: {drawn}");
-    h.overview_zoom.show(
-        false,
-        ui::motion::Zoom::OVERVIEW,
-        motion(false),
-        MotionSource::Pointer,
-        mid,
-    );
-    assert!(
-        (h.overview_zoom.progress(mid) - drawn).abs() < 1e-9,
-        "no jump"
-    );
+    fn reduced_motion_snaps_overview_to_each_target() {
+        let mut h = host();
+        assert_eq!(h.tick_overview_transition(1.0, true), 1.0);
+        assert!(h.transition_started.is_none());
+        assert_eq!(h.tick_overview_transition(0.0, true), 0.0);
+        assert!(h.transition_started.is_none());
+    }
 
-    // Super+Tab: still a flight, as spatial context, never longer than `fast`.
-    let mut keyed = host();
-    let before = ui::time::now();
-    keyed.sync_overview_zoom(true, MotionSource::Keyboard, motion(false));
-    let rest = keyed
-        .overview_zoom
-        .settles_at()
-        .expect("a key still flies them");
-    assert!(rest.saturating_duration_since(before) <= durations.fast() + millis(1));
-
-    // Reduced motion: a click fades at `fast`, a key lands.
-    let mut reduced = host();
-    let before = ui::time::now();
-    reduced.sync_overview_zoom(true, MotionSource::Pointer, motion(true));
-    let rest = reduced.overview_zoom.settles_at().expect("a fade");
-    assert!(rest.saturating_duration_since(before) <= durations.fast() + millis(1));
-    let mut reduced_key = host();
-    assert_eq!(
-        reduced_key.sync_overview_zoom(true, MotionSource::Keyboard, motion(true)),
-        1.0
-    );
+    idle_holds_zero_until_target_changes();
+    target_change_latches_transition_and_completes();
+    mid_flight_re_toggle_picks_up_from_current_t();
+    reduced_motion_snaps_overview_to_each_target();
 }
 
 /// A desktop of two displays side by side, with the chrome that says which
@@ -242,9 +253,14 @@ fn on_first_display(damage: &[Rect], sample: &str) {
 
 #[test]
 fn overview_transition_damages_one_display_not_both() {
-    // Each draw samples the clock, so hold the zoom halfway.
+    // Each draw samples the wall clock, so pin the fade halfway just before it.
     fn mid_fade(host: &mut ShellOverlayHost) {
-        host.overview_zoom = ui::motion::Presence::held_at(500);
+        host.tick_overview_transition(1.0, false);
+        host.transition_started = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+                .expect("the clock is older than half a transition"),
+        );
     }
 
     let mut host = two_display_host();
@@ -271,8 +287,15 @@ fn overview_transition_damages_one_display_not_both() {
         assert!(rect.x1 <= 1920.0, "a later fade frame stays on one display");
     }
 
-    // The close has landed.
-    host.overview_zoom.snap(false);
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing the overview latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS + 1))
+            .expect("the clock is older than the transition"),
+    );
     let finished = overview_section(&mut host, &mut renderer, &theme, false);
     on_first_display(&overview_damage(&again, &finished), "finished close");
     let settled = overview_section(&mut host, &mut renderer, &theme, false);
@@ -289,9 +312,13 @@ fn both_overview_directions_damage_only_the_overview_display() {
     let mut renderer = TextRenderer::new();
     let closed = overview_section(&mut host, &mut renderer, &theme, false);
 
-    // The open's first sample is still the instant the chord landed, so
+    // The open's first sample is still the millisecond the chord landed, so
     // progress is 0: it paints nothing yet, and is no dense frame either.
-    host.overview_zoom = ui::motion::Presence::held_at(0);
+    host.tick_overview_transition(1.0, false);
+    host.overview_t = 0.0;
+    host.transition_from = 0.0;
+    host.overview_target = 1.0;
+    host.transition_started = Some(std::time::Instant::now());
     let first = overview_section(&mut host, &mut renderer, &theme, true);
     assert!(
         overview_damage(&closed, &first).is_empty(),
@@ -299,10 +326,21 @@ fn both_overview_directions_damage_only_the_overview_display() {
     );
 
     // Open and settled, then halfway through the close: one display.
-    host.overview_zoom.snap(true);
+    host.overview_t = 1.0;
+    host.overview_target = 1.0;
+    host.transition_from = 1.0;
+    host.transition_started = None;
     let open = overview_section(&mut host, &mut renderer, &theme, true);
     on_first_display(&overview_damage(&first, &open), "open");
-    host.overview_zoom = ui::motion::Presence::held_at(500);
+    host.tick_overview_transition(0.0, false);
+    let started = host
+        .transition_started
+        .expect("closing latches a transition");
+    host.transition_started = Some(
+        started
+            .checked_sub(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2))
+            .expect("half a transition fits in the clock"),
+    );
     let closing = overview_section(&mut host, &mut renderer, &theme, false);
     on_first_display(&overview_damage(&open, &closing), "mid-close");
     assert!(
@@ -314,18 +352,18 @@ fn both_overview_directions_damage_only_the_overview_display() {
 #[test]
 fn a_full_presenter_does_not_finish_the_transition() {
     let mut host = host();
-    host.sync_overview_zoom(true, ui::tokens::MotionSource::Pointer, motion(false));
-    let rest = host
-        .overview_zoom
-        .settles_at()
-        .expect("the windows are flying");
-    host.defer_running_transitions(ui::tokens::Motion::default().durations.slow() + millis(50));
+    host.tick_overview_transition(1.0, false);
+    assert!(host.transition_started.is_some());
+    host.defer_running_transitions(std::time::Duration::from_millis(
+        OVERVIEW_TRANSITION_MS + 50,
+    ));
+    let progress = host.tick_overview_transition(1.0, false);
     assert!(
-        host.overview_zoom.settles_at().expect("still flying") > rest,
-        "time spent waiting on a full presenter is not overview progress"
+        progress < 1.0,
+        "time spent waiting on a full presenter is not overview progress ({progress})"
     );
     assert!(
-        host.transition_present_pending(),
+        host.transition_started.is_some(),
         "the open stays pending until a frame is presented"
     );
 
@@ -347,13 +385,12 @@ fn a_full_presenter_does_not_finish_the_transition() {
 }
 
 #[test]
-fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
+fn keyboard_overview_arrives_immediately_and_pointer_motion_can_resume() {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
     use winit::event::Modifiers;
     use winit::keyboard::ModifiersState;
 
-    let fast = ui::tokens::Motion::default().durations.fast();
     let mut tree = WorkspaceTree::bootstrap_demo();
     tree.append_empty_workspace("Second");
     let chrome = ChromeState::new(tree);
@@ -365,42 +402,51 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     let mut handled = false;
     let super_key = Modifiers::from(ModifiersState::SUPER);
     let tab = Key::Named(NamedKey::Tab);
-    let mut chord = |h: &mut ShellOverlayHost, repeat: bool| {
-        let pressed = ui::time::now();
+
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        false,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(handled);
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0, "the first frame is fully arrived");
+    assert!(h.transition_started.is_none());
+    assert_eq!(h.overview_selection, h.overview_here_index());
+    assert!(!h.needs_animation_frame());
+
+    // A held toggle cannot close the panel or start decorative motion.
+    assert!(h.handle_shell_keyboard_event(
+        &tab,
+        super_key,
+        true,
+        &doc,
+        &automerge::ROOT,
+        &mut handled,
+    ));
+    assert!(chrome.borrow().overlays.overview);
+    assert_eq!(h.overview_t, 1.0);
+    assert!(h.transition_started.is_none());
+
+    // A second chord closes immediately, and the next one opens immediately.
+    for target in [0.0, 1.0] {
         assert!(h.handle_shell_keyboard_event(
             &tab,
             super_key,
-            repeat,
+            false,
             &doc,
             &automerge::ROOT,
             &mut handled,
         ));
-        pressed
-    };
-
-    // Super+Tab opens it at once and flies the windows for `fast` at most.
-    let pressed = chord(&mut h, false);
-    assert!(chrome.borrow().overlays.overview);
-    assert!(h.overview_zoom.is_open());
-    assert_eq!(h.overview_selection, h.overview_here_index());
-    let rest = h.overview_zoom.settles_at().expect("the windows fly in");
-    assert!(rest.saturating_duration_since(pressed) <= fast + millis(1));
-    assert!(h.needs_animation_frame(), "the flight asks for frames");
-
-    // A held toggle cannot close it.
-    chord(&mut h, true);
-    assert!(chrome.borrow().overlays.overview);
-    assert!(h.overview_zoom.is_open());
-
-    // A second chord closes it at once, the next opens it again.
-    for open in [false, true] {
-        chord(&mut h, false);
-        assert_eq!(chrome.borrow().overlays.overview, open);
-        assert_eq!(h.overview_zoom.is_open(), open);
+        assert_eq!(h.overview_t, target);
+        assert!(h.transition_started.is_none());
+        assert!(!h.needs_animation_frame());
     }
 
-    // Arrow + Enter goes to another workspace: the overview is closed the
-    // moment the key is handled, whatever the windows still show.
+    // Arrow + Enter activates another workspace and leaves no closing fade.
     assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::ArrowDown), false, &mut handled));
     let selected = h
         .overview_selection
@@ -409,15 +455,21 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     assert!(h.handle_overview_keyboard_nav(&Key::Named(NamedKey::Enter), false, &mut handled));
     assert_eq!(chrome.borrow().tree().desktop.active, destination);
     assert!(!chrome.borrow().overlays.overview);
-    assert!(!h.overview_zoom.is_open());
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
 
-    // Opened with a click, it is a whole-view change; Escape closes it.
+    // Pointer opening still animates. Escape cancels that flight immediately.
     chrome.borrow_mut().overlays.overview = true;
-    let clicked = ui::time::now();
-    h.latch_overview_transition_from(ui::tokens::MotionSource::Pointer);
-    let rest = h.overview_zoom.settles_at().expect("the windows fly in");
-    assert!(rest.saturating_duration_since(clicked) > fast);
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
     assert!(h.handle_shell_escape_chord(&mut handled));
     assert!(!chrome.borrow().overlays.overview);
-    assert!(!h.overview_zoom.is_open());
+    assert_eq!(h.overview_t, 0.0);
+    assert!(h.transition_started.is_none());
+
+    // Settling a keyboard event never sets a persistent reduced-motion flag.
+    chrome.borrow_mut().overlays.overview = true;
+    h.latch_overview_transition();
+    assert!(h.transition_started.is_some());
+    assert_eq!(h.overview_target, 1.0);
 }

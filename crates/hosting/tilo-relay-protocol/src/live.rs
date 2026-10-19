@@ -320,7 +320,7 @@ impl LiveParticipant {
 }
 
 /// Latest-value presence of one publisher.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresenceFrame {
     /// Monotonic per-publisher sequence; receivers drop older frames.
@@ -343,91 +343,15 @@ pub struct PresenceFrame {
     /// is focused. 1..=[`MAX_PLACE_BYTES`] bytes.
     #[serde(default)]
     pub place: Option<String>,
-    /// What the publisher is saying beside its pointer (cursor chat): shown
-    /// live while it types and for a moment after it sends. Never stored.
-    #[serde(default)]
-    pub chat: Option<CursorChat>,
-    /// The publisher's latest reaction, floating up from its pointer. A
-    /// receiver plays it once per new [`LiveReaction::seq`]; restating the
-    /// frame restates the same reaction, which plays nothing.
-    #[serde(default)]
-    pub reaction: Option<LiveReaction>,
 }
 
 /// Largest presence place.
 pub const MAX_PLACE_BYTES: usize = 64;
-/// Longest cursor-chat message, in characters.
-pub const MAX_CURSOR_CHAT_CHARS: usize = 120;
-/// Largest cursor-chat message, in bytes: with every other field at its
-/// ceiling the frame still fits [`MAX_PRESENCE_FRAME_BYTES`] for ordinary
-/// text, and a sender trims to both bounds before it publishes.
-pub const MAX_CURSOR_CHAT_BYTES: usize = 360;
-/// Largest reaction: one emoji, however many code points it joins.
-pub const MAX_REACTION_BYTES: usize = 32;
-
-/// A short message beside a pointer: talking, not chat. Nothing keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CursorChat {
-    /// What is typed so far, at most [`MAX_CURSOR_CHAT_CHARS`] characters
-    /// and [`MAX_CURSOR_CHAT_BYTES`] bytes; empty while the bubble is open
-    /// with nothing typed yet.
-    pub text: String,
-    /// The publisher pressed Enter: receivers keep the message a moment,
-    /// then fade it, rather than showing it as being typed.
-    pub sent: bool,
-}
-
-impl CursorChat {
-    fn validate(&self) -> Result<()> {
-        if self.text.len() > MAX_CURSOR_CHAT_BYTES
-            || self.text.chars().count() > MAX_CURSOR_CHAT_CHARS
-            || (self.sent && self.text.trim().is_empty())
-            || self.text.chars().any(char::is_control)
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// One emoji sent as a reaction from the publisher's pointer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveReaction {
-    /// Per-publisher counter; a new value is a new reaction.
-    pub seq: u32,
-    /// The emoji, 1..=[`MAX_REACTION_BYTES`] bytes with no whitespace.
-    pub emoji: String,
-}
-
-impl LiveReaction {
-    fn validate(&self) -> Result<()> {
-        if self.emoji.is_empty()
-            || self.emoji.len() > MAX_REACTION_BYTES
-            || self
-                .emoji
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
 
 impl PresenceFrame {
     fn validate(&self) -> Result<()> {
         if let Some(participant) = &self.participant {
             participant.validate()?;
-        }
-        if let Some(chat) = &self.chat {
-            chat.validate()?;
-        }
-        if let Some(reaction) = &self.reaction {
-            reaction.validate()?;
         }
         if self
             .place
@@ -1015,8 +939,6 @@ mod tests {
     fn focused(seq: u64) -> LiveFrame {
         LiveFrame::Presence(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -1037,8 +959,6 @@ mod tests {
         let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
         let frame = LiveFrame::Presence(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1135,8 +1055,6 @@ mod tests {
     fn a_live_frame_without_a_record_or_cipher_is_never_sealed() {
         let unfocused = PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1176,8 +1094,6 @@ mod tests {
     fn frames_round_trip_canonically() {
         let presence = LiveFrame::Presence(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1215,8 +1131,6 @@ mod tests {
             drag: None,
             participant: None,
             place: Some("4242".into()),
-            chat: None,
-            reaction: None,
         });
         for frame in [
             presence,
@@ -1229,71 +1143,10 @@ mod tests {
         }
     }
 
-    /// Cursor chat and a reaction ride the presence frame, sealed with it:
-    /// a message at the character ceiling fits, one past it or a sent empty
-    /// one does not, and a reaction is one emoji, never text with spaces.
-    #[test]
-    fn cursor_chat_and_reactions_ride_presence_within_their_bounds() {
-        let chatting = |text: &str, sent: bool| {
-            LiveFrame::Presence(PresenceFrame {
-                seq: 4,
-                sent_at_ms: 1,
-                focus: Some(record()),
-                pointer: Some([10.0, 20.0]),
-                chat: Some(CursorChat {
-                    text: text.into(),
-                    sent,
-                }),
-                reaction: Some(LiveReaction {
-                    seq: 2,
-                    emoji: "\u{1f44b}\u{1f3fd}".into(),
-                }),
-                ..PresenceFrame::default()
-            })
-        };
-        let longest = "a".repeat(MAX_CURSOR_CHAT_CHARS);
-        for frame in [
-            chatting("", false),
-            chatting("hi there", true),
-            chatting(&longest, true),
-        ] {
-            let bytes = frame.encode().unwrap();
-            assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-            let sealed =
-                SealedLiveFrame::decode(&SealedLiveFrame::seal(&frame, seal).unwrap()).unwrap();
-            assert_eq!(sealed.open(open).unwrap(), frame, "it travels sealed");
-        }
-        let too_long = "a".repeat(MAX_CURSOR_CHAT_CHARS + 1);
-        let too_wide = "\u{1f600}".repeat(MAX_CURSOR_CHAT_BYTES / 4 + 1);
-        for refused in [
-            chatting(&too_long, false),
-            chatting(&too_wide, false),
-            chatting("  ", true),
-            chatting("line\nbreak", false),
-        ] {
-            assert_eq!(refused.encode(), Err(LiveWireError::Invalid));
-        }
-        for emoji in ["", "two words", &"\u{1f600}".repeat(9)] {
-            let LiveFrame::Presence(mut frame) = chatting("", false) else {
-                unreachable!()
-            };
-            frame.reaction = Some(LiveReaction {
-                seq: 1,
-                emoji: emoji.into(),
-            });
-            assert_eq!(
-                LiveFrame::Presence(frame).encode(),
-                Err(LiveWireError::Invalid)
-            );
-        }
-    }
-
     #[test]
     fn out_of_bounds_frames_are_refused() {
         let nan = LiveFrame::Presence(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1305,8 +1158,6 @@ mod tests {
         assert_eq!(nan.encode(), Err(LiveWireError::Invalid));
         let unnamed = LiveFrame::Presence(PresenceFrame {
             place: None,
-            chat: None,
-            reaction: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1331,8 +1182,6 @@ mod tests {
                 drag: None,
                 participant: None,
                 place: Some(place),
-                chat: None,
-                reaction: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }

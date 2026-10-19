@@ -7906,11 +7906,6 @@ impl CapnpBrokerState {
         key: &PresenceKey,
         payload: &PresencePayload,
     ) {
-        // The desktop's own presence (availability, waves) is the shell's
-        // to show; an app never receives it.
-        if !payload.reaches_apps() {
-            return;
-        }
         let key_bytes = match postcard::to_stdvec(key) {
             Ok(v) => v,
             Err(e) => {
@@ -13470,11 +13465,6 @@ impl presence_stream::Server for PresenceStreamServer {
                 }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
-                PresencePayload::Availability { .. } | PresencePayload::Wave { .. } => {
-                    return Err(capnp::Error::failed(
-                        "desktop presence is never fanned to an app".into(),
-                    ));
-                }
             }
             Ok(())
         })

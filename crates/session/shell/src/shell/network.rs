@@ -7,7 +7,6 @@ mod boot_join;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
 pub use directory::{DirectoryListing, Publication};
-pub use relay_rooms::BotAsk;
 pub use hosted_sites::{Arrival, JoinProgress, SiteJoinState};
 pub use site_join::SiteRoom;
 #[cfg(test)]
@@ -68,6 +67,7 @@ mod same_person_room_tests;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;
+mod site_slots;
 
 use std::collections::VecDeque;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
@@ -1578,13 +1578,6 @@ pub struct ShellNetwork {
     /// Names live members asked to be drawn with, per room and handle:
     /// browsers and agents that are no peers of the room document.
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
-    /// What live members say beside their pointers and react with, as it
-    /// arrived, for the presence pump ([`Self::take_live_chat`]).
-    live_chat: Mutex<Vec<LiveChat>>,
-    /// What the people in each room may see of this person, as the person
-    /// chose ([`Self::set_presence_visibility`]); a room not named is
-    /// "Where I am".
-    presence_visibility: Mutex<std::collections::HashMap<String, ui::PresenceVisibility>>,
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
@@ -1660,43 +1653,6 @@ pub enum WorkspaceControlNetworkEvent {
 }
 
 const LEGACY_INBOX_CAP: usize = 256;
-
-/// Whether a presence payload says where its sender is: which window,
-/// their pointer, caret, selection or typing, whom they follow, what they
-/// act on. Arriving, leaving, a status, availability and a wave say only
-/// that they are here.
-fn tells_where(payload: &collab_types::PeerPresencePayload) -> bool {
-    use collab_types::PeerPresencePayload as P;
-    !matches!(
-        payload,
-        P::Arrived | P::Left | P::Status { .. } | P::Availability { .. } | P::Wave { .. }
-    )
-}
-
-/// Whether `visibility` lets `payload` leave this session.
-fn visibility_allows(
-    visibility: ui::PresenceVisibility,
-    payload: &collab_types::PeerPresencePayload,
-) -> bool {
-    if tells_where(payload) {
-        visibility.shows_where()
-    } else {
-        // Leaving is always said, so nobody keeps showing someone who
-        // turned invisible.
-        visibility.shows_presence() || matches!(payload, collab_types::PeerPresencePayload::Left)
-    }
-}
-
-/// What one live member said or reacted with, in one frame.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LiveChat {
-    /// The sender's session handle (`peer@<handle>` in presence).
-    pub peer: u64,
-    pub room: String,
-    /// What they are saying beside their pointer; `None` for nothing.
-    pub chat: Option<tilo_relay_protocol::live::CursorChat>,
-    pub reaction: Option<tilo_relay_protocol::live::LiveReaction>,
-}
 
 /// One received app-presence frame, fanned to local apps by the
 /// `collab_broker` drainer. Carries no record id: presence is fanned
@@ -2204,8 +2160,6 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
-            live_chat: Mutex::default(),
-            presence_visibility: Mutex::default(),
             peer_colours: Mutex::default(),
             peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -3320,9 +3274,7 @@ impl ShellNetwork {
         cluster_id: String,
         presence: collab_types::PeerPresence,
     ) {
-        if self.is_local_person_room(&cluster_id)
-            || !visibility_allows(self.presence_visibility(&cluster_id), &presence.payload)
-        {
+        if self.is_local_person_room(&cluster_id) {
             return;
         }
         let msg = NeighbourMsg::AppPresenceV2 {
@@ -3345,11 +3297,9 @@ impl ShellNetwork {
         record_id: &str,
         presence: &collab_types::PeerPresence,
     ) {
-        let Some(room) = RoomId::parse(cluster_id).filter(|room| {
-            !room.is_nil()
-                && self.person_root_of_room(*room).is_none()
-                && self.presence_visibility(cluster_id).shows_where()
-        }) else {
+        let Some(room) = RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil() && self.person_root_of_room(*room).is_none())
+        else {
             return;
         };
         let ws = room_topic_id(room);
@@ -3369,112 +3319,6 @@ impl ShellNetwork {
         if let Some(frame) = frame.and_then(|frame| Self::seal_live(room, &frame)) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
         }
-    }
-
-    /// Say `chat` beside this person's pointer, at `pointer` from the
-    /// top-left of the window showing `app_id`'s `record_id` in room
-    /// `cluster_id`, to everyone in that window on the room's live plane; or
-    /// stop saying anything with `None`. Returns whether it went out: a room
-    /// with no workspace host has no live plane, and a message past the
-    /// plane's bounds is refused.
-    pub fn publish_cursor_chat(
-        &self,
-        at: (&str, &str, &str),
-        pointer: (f64, f64),
-        chat: Option<tilo_relay_protocol::live::CursorChat>,
-    ) -> bool {
-        self.publish_live_with(at, pointer, |live, ws, at, participant, now| {
-            live.say(ws, at, participant, chat, now)
-        })
-    }
-
-    /// React with `emoji` from this person's pointer, as
-    /// [`Self::publish_cursor_chat`] says a message.
-    pub fn publish_reaction(
-        &self,
-        at: (&str, &str, &str),
-        pointer: (f64, f64),
-        emoji: String,
-    ) -> bool {
-        self.publish_live_with(at, pointer, |live, ws, at, participant, now| {
-            live.react(ws, at, participant, emoji, now)
-        })
-    }
-
-    /// Fold one statement into the room's live frame with `fold` and publish
-    /// the result, sealed. `at` is `(room, app, record)`.
-    fn publish_live_with(
-        &self,
-        at: (&str, &str, &str),
-        pointer: (f64, f64),
-        fold: impl FnOnce(
-            &mut crate::shell::live_presence::Outbound,
-            u64,
-            (tilo_relay_protocol::live::LiveRecord, [f32; 2]),
-            tilo_relay_protocol::live::LiveParticipant,
-            std::time::Instant,
-        ) -> Option<Vec<u8>>,
-    ) -> bool {
-        let (cluster_id, app_id, record_id) = at;
-        let Some(room) = RoomId::parse(cluster_id).filter(|room| {
-            !room.is_nil()
-                && self.person_root_of_room(*room).is_none()
-                && self.presence_visibility(cluster_id).shows_where()
-        }) else {
-            return false;
-        };
-        let ws = room_topic_id(room);
-        let focus = tilo_relay_protocol::live::LiveRecord {
-            app: app_id.to_owned(),
-            record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
-        };
-        let pointer = [
-            ui::num::f32_of_f64(pointer.0),
-            ui::num::f32_of_f64(pointer.1),
-        ];
-        let participant = self.live_participant();
-        let frame = self.live_presence.lock().ok().and_then(|mut live| {
-            fold(
-                &mut live,
-                ws,
-                (focus, pointer),
-                participant,
-                std::time::Instant::now(),
-            )
-        });
-        let Some(frame) = frame.and_then(|frame| Self::seal_live(room, &frame)) else {
-            return false;
-        };
-        self.cmd_tx
-            .try_send(NetCmd::PublishLive { ws, frame })
-            .is_ok()
-    }
-
-    /// What the people in `room` see of this person from now on. Every
-    /// pointer, caret, selection and live frame this session publishes in
-    /// that room is held to it here, whoever asked for it to go out.
-    pub fn set_presence_visibility(&self, room: &str, visibility: ui::PresenceVisibility) {
-        if let Ok(mut rooms) = self.presence_visibility.lock() {
-            rooms.insert(room.to_owned(), visibility);
-        }
-    }
-
-    /// What the people in `room` see of this person.
-    pub fn presence_visibility(&self, room: &str) -> ui::PresenceVisibility {
-        self.presence_visibility
-            .lock()
-            .ok()
-            .and_then(|rooms| rooms.get(room).copied())
-            .unwrap_or(ui::PresenceVisibility::WhereIAm)
-    }
-
-    /// What live members said and reacted with since the last call, oldest
-    /// first.
-    pub fn take_live_chat(&self) -> Vec<LiveChat> {
-        self.live_chat
-            .lock()
-            .map(|mut chat| std::mem::take(&mut *chat))
-            .unwrap_or_default()
     }
 
     /// Repeat quiet live presence so other devices keep drawing it.
@@ -3526,16 +3370,19 @@ impl ShellNetwork {
         })
     }
 
-    /// How this device asks live members to draw it: the person's name.
+    /// How this device asks live members to draw it: the person's name,
+    /// else the device's certified label.
     fn live_participant(&self) -> tilo_relay_protocol::live::LiveParticipant {
-        // The person's name, never the device's: the people in a public
-        // workspace learn nothing of this person's devices.
         let label = ui::local_identity::load()
             .map(|identity| identity.display_name)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                ui::history_source::participant_display_label(&crate::shell::state::local_user_id())
-            });
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                self.host_identity
+                    .as_ref()
+                    .map(|identity| identity.device_cert.device_label.clone())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Tilo".into());
         crate::shell::live_presence::participant(label, crate::shell::state::local_presence_hue())
     }
 
@@ -3550,13 +3397,7 @@ impl ShellNetwork {
         }) else {
             return;
         };
-        self.take_live_frame(room, from, &frame);
-    }
-
-    /// A live member's frame, opened: what [`Self::handle_live_frame`] does
-    /// once the frame is out of its seal.
-    pub(crate) fn take_live_frame(&self, room: RoomId, from: [u8; 32], frame: &[u8]) {
-        let Some(inbound) = crate::shell::live_presence::inbound(frame) else {
+        let Some(inbound) = crate::shell::live_presence::inbound(&frame) else {
             return;
         };
         let cluster_id = room.to_string();
@@ -3570,14 +3411,6 @@ impl ShellNetwork {
             updates = ?inbound.updates.iter().map(|update| &update.payload).collect::<Vec<_>>(),
             "live presence from a workspace member"
         );
-        if let Ok(mut chat) = self.live_chat.lock() {
-            chat.push(LiveChat {
-                peer,
-                room: cluster_id.clone(),
-                chat: inbound.chat.clone(),
-                reaction: inbound.reaction.clone(),
-            });
-        }
         if let Some(label) = inbound.label
             && let Ok(mut labels) = self.live_labels.lock()
         {
@@ -3640,11 +3473,6 @@ impl ShellNetwork {
         cluster_id: String,
         presence: collab_types::PeerPresence,
     ) {
-        // Someone who shows nothing sees nothing of where others are.
-        if !self.presence_visibility(&cluster_id).sees_pointers() && tells_where(&presence.payload)
-        {
-            return;
-        }
         if let Ok(mut buf) = self.inbound_app_presence.lock() {
             buf.push(InboundAppPresence {
                 peer,
@@ -8560,8 +8388,6 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
-        live_chat: Mutex::default(),
-        presence_visibility: Mutex::default(),
         peer_colours: Mutex::default(),
         peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),

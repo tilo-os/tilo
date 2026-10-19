@@ -165,15 +165,9 @@ fn catch_up_reveals_once_on_entry_after_transitions_and_manual_opening_consumes_
 )]
 fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent() {
     fn collaboration_preferences_round_trip_privacy_and_manual_intent() {
-        let lounge = crate::shell::state::RoomId::new();
         let preferences = CollaborationPreferences {
             sharing: ui::StatusSharing::Off,
             manual_status: Some("Reviewing Q2 assumptions".into()),
-            availability: ui::Availability::Focusing,
-            visibility: [(lounge, ui::PresenceVisibility::Nothing)]
-                .into_iter()
-                .collect(),
-            introduced: [lounge].into_iter().collect(),
         };
         assert_eq!(
             CollaborationPreferences::from_values(&preferences.values()),
@@ -199,19 +193,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             ui::StatusSharing::ManualOnly,
             "an unknown stored value must not unexpectedly enable inference"
         );
-
-        // What people see: a choice this build does not know is dropped, so
-        // that workspace takes its default, never something looser; idle is
-        // the machine's to say, never stored as a choice.
-        let room = crate::shell::state::RoomId::new();
-        values.insert(
-            "presence_visibility".into(),
-            serde_json::json!({ room.to_string(): "everything", "not-a-room": "where" }),
-        );
-        values.insert("availability".into(), "idle".into());
-        let preferences = CollaborationPreferences::from_values(&values);
-        assert!(preferences.visibility.is_empty());
-        assert_eq!(preferences.availability, ui::Availability::Available);
     }
 
     fn automatic_status_fallback_describes_intent_not_an_activity_count() {
@@ -1963,22 +1944,85 @@ fn paint(h: &mut Harness) {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() {
-    /// The roster's one job is who is here: adding somebody is its only
-    /// footer action. Joining another workspace is in the workspace menu,
-    /// and what happened here is History's.
-    fn collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer() {
+    /// The visible affordance: the collaborator dropdown answers "who is in
+    /// this room", and its foot opens "what happened in this room".
+    fn collaborator_dropdown_row_opens_the_sheet() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        let row = h.host.collaborators_overlay.activity_rect();
+        assert!(row.area() > 0.0, "the footer row painted a hit target");
+        assert_eq!(
+            row,
+            h.host.collaborators_overlay.activity_rect(),
+            "the cached hit rect is the one that was drawn"
+        );
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(row.center()), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
+        assert!(handled);
+        assert!(
+            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+                .is_none()
+        );
+        assert!(pump(&mut h, &mouse_release(), mods));
+        assert!(
+            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+                .is_some(),
+            "the row opened the tiled activity window"
+        );
+        assert!(!h.chrome.borrow().overlays.room_activity);
+        assert!(
+            !h.chrome.borrow().overlays.collaborators,
+            "the dropdown closed behind it rather than sitting on top"
+        );
+    }
+
+    /// The footer rect must not survive the dropdown closing, or a click in
+    /// empty space where it used to be would open the sheet.
+    fn collaborator_footer_rect_is_cleared_when_the_dropdown_closes() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        assert!(h.host.collaborators_overlay.activity_rect().area() > 0.0);
+
+        h.chrome.borrow_mut().overlays.collaborators = false;
+        paint(&mut h);
+        assert_eq!(
+            h.host.collaborators_overlay.activity_rect(),
+            Rect::ZERO,
+            "a stale footer rect is a click target the user cannot see"
+        );
+    }
+
+    /// The dropdown's subject is who is in this room, so it must offer both
+    /// ways that changes: adding somebody, and joining somebody else's room.
+    fn collaborator_dropdown_offers_invite_and_join() {
         let mut h = build_harness();
         adopt_rooms(&h);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
 
-        let invite = h.host.collaborators_invite_rect_for_tests();
+        let (invite, join) = h.host.collaborators_action_rects_for_tests();
         assert!(invite.area() > 0.0, "Invite painted a hit target");
-        let panel = h.host.collaborators_overlay.panel_rect();
+        assert!(join.area() > 0.0, "Join painted a hit target");
         assert!(
-            panel.contains(invite.center()) && panel.contains(invite.origin()),
-            "Invite is inside the panel it is painted on"
+            invite.x1 <= join.x0,
+            "the two buttons do not overlap: {invite:?} / {join:?}"
+        );
+        let panel = h.host.collaborators_overlay.panel_rect();
+        for (name, r) in [("Invite", invite), ("Join", join)] {
+            assert!(
+                panel.contains(r.center()) && panel.contains(r.origin()),
+                "{name} is inside the popover it is painted on"
+            );
+        }
+        assert!(
+            invite.y1 <= h.host.collaborators_overlay.activity_rect().y0,
+            "the actions band sits above the Room activity row rather than over it"
         );
     }
 
@@ -1991,7 +2035,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
-        let invite = h.host.collaborators_invite_rect_for_tests();
+        let (invite, _) = h.host.collaborators_action_rects_for_tests();
         assert!(invite.area() > 0.0, "there is a button to press");
 
         let mods = Modifiers::default();
@@ -2015,6 +2059,33 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
         );
     }
 
+    /// The other machine's half of the same gesture.
+    fn collaborator_join_button_opens_the_connect_prompt() {
+        let mut h = build_harness();
+        adopt_rooms(&h);
+        h.chrome.borrow_mut().peer_sync_enabled = true;
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        let (_, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(join.area() > 0.0, "there is a button to press");
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(join.center()), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
+        assert!(handled, "the button claimed the click");
+        assert!(
+            h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
+            "the press remains cancellable"
+        );
+        assert!(pump(&mut h, &mouse_release(), mods));
+
+        assert_eq!(
+            h.chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::PromptConnect],
+            "the click opens the prompt that consumes a token"
+        );
+    }
+
     /// Peer sync off means nothing can mint a token, so the button must not
     /// offer to. The room is adopted first so peer-sync is the *only*
     /// capability missing.
@@ -2026,8 +2097,8 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
         paint(&mut h);
 
         assert_eq!(
-            h.host.collaborators_invite_rect_for_tests(),
-            Rect::ZERO,
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
             "a session that cannot mint offers no button that says it can"
         );
         assert_no_peer_sync_work_from_a_click_in_the_panel(&mut h);
@@ -2061,34 +2132,39 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
         paint(&mut h);
 
         assert_eq!(
-            h.host.collaborators_invite_rect_for_tests(),
-            Rect::ZERO,
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
             "a guest is not offered the room's membership controls"
         );
         assert_no_peer_sync_work_from_a_click_in_the_panel(&mut h);
     }
 
-    /// The rects must not survive the dropdown closing, or empty space
-    /// where a button used to be stays clickable.
+    /// Same rule as the footer row: the rects must not survive the
+    /// dropdown closing, or empty space where a button used to be stays
+    /// clickable.
     fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
         let mut h = build_harness();
         adopt_rooms(&h);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
-        assert!(h.host.collaborators_invite_rect_for_tests().area() > 0.0);
+        let (invite, join) = h.host.collaborators_action_rects_for_tests();
+        assert!(invite.area() > 0.0 && join.area() > 0.0);
 
         h.chrome.borrow_mut().overlays.collaborators = false;
         paint(&mut h);
         assert_eq!(
-            h.host.collaborators_invite_rect_for_tests(),
-            Rect::ZERO,
+            h.host.collaborators_action_rects_for_tests(),
+            (Rect::ZERO, Rect::ZERO),
             "stale action rects are click targets the user cannot see"
         );
     }
 
-    collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer();
+    collaborator_dropdown_row_opens_the_sheet();
+    collaborator_footer_rect_is_cleared_when_the_dropdown_closes();
+    collaborator_dropdown_offers_invite_and_join();
     collaborator_invite_button_asks_who_before_minting();
+    collaborator_join_button_opens_the_connect_prompt();
     collaborator_actions_are_absent_when_peer_sync_is_off();
     collaborator_actions_are_absent_without_the_invite_capability();
     collaborator_action_rects_are_cleared_when_the_dropdown_closes();
@@ -2714,11 +2790,11 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     {
         let chrome = h.chrome.borrow_mut();
@@ -2748,7 +2824,7 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2775,7 +2851,7 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2801,7 +2877,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .is_none()
     );
 
@@ -2812,11 +2888,11 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2845,7 +2921,7 @@ fn people_completed_click_defers_follow_until_release() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2866,7 +2942,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
         let target = h
             .host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2905,7 +2981,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -2964,11 +3040,8 @@ fn capture_people_completed(h: &mut Harness, name: &str) {
 }
 
 #[test]
-fn people_completed_submit_release_stays_owned_after_invite_opens() {
+fn people_completed_submit_release_stays_owned_after_activity_opens() {
     let mut h = roster_follow_fixture();
-    adopt_rooms(&h);
-    h.chrome.borrow_mut().peer_sync_enabled = true;
-    paint(&mut h);
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::End)), mods));
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
@@ -2979,7 +3052,7 @@ fn people_completed_submit_release_stays_owned_after_invite_opens() {
     }
     assert!(
         pump(&mut h, &release, mods),
-        "People owns the submit key-up after opening the invitation"
+        "People owns the submit key-up after opening Activity"
     );
 }
 
@@ -2990,7 +3063,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3013,7 +3086,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3050,7 +3123,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3059,7 +3132,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let moved = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
@@ -3070,12 +3143,178 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
+fn people_status_fixture() -> Harness {
+    let mut h = roster_follow_fixture();
+    h.host.local_status = Some("Reviewing draft".into());
+    h.host.local_status_origin = ui::StatusOrigin::Manual;
+    paint(&mut h);
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    let mut release = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut release {
+        event.state = ElementState::Released;
+    }
+    assert!(pump(&mut h, &release, mods));
+    assert!(h.host.status_editing);
+    h
+}
 
+#[test]
+fn people_status_dismissal_cancels_the_hidden_editor_before_reopen() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert_eq!(h.host.status_draft, "Reviewing draftx");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(100.0, 300.0)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    h.chrome.borrow_mut().overlays.collaborators = true;
+    paint(&mut h);
+    capture_people_completed(&mut h, "status-reopened");
+    assert!(
+        !h.host.status_editing,
+        "dismissed draft cannot reopen as an active editor"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
 
+#[test]
+fn people_status_external_close_releases_keyboard_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    let mods = Modifiers::default();
+    assert!(
+        !pump(&mut h, &key_press(Key::Character("x".into())), mods),
+        "closed People releases the next key"
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim the next key"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
 
+#[test]
+fn people_status_external_close_releases_ime_before_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    assert!(
+        !pump(
+            &mut h,
+            &WindowEvent::Ime(winit::event::Ime::Commit("hidden text".into())),
+            Modifiers::default(),
+        ),
+        "closed People releases the IME commit",
+    );
+    assert!(
+        !h.host.status_editing,
+        "hidden editor cannot claim an IME commit"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
 
+#[test]
+fn people_status_external_close_cancels_the_editor_at_paint() {
+    let mut h = people_status_fixture();
+    h.chrome.borrow_mut().overlays.collaborators = false;
+    paint(&mut h);
+    assert!(
+        !h.host.status_editing,
+        "a hidden paint must end the edit lifecycle"
+    );
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::default()
+    );
+}
 
+#[test]
+fn people_status_visible_shared_editing_submits_once_and_escape_discards() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+    assert!(pump(&mut h, &key_press(Key::Character("a".into())), ctrl));
+    assert!(pump(
+        &mut h,
+        &WindowEvent::Ime(winit::event::Ime::Commit("  Editing café  ".into())),
+        mods,
+    ));
+    assert_eq!(h.host.status_draft, "  Editing café  ");
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Home)), mods));
+    assert_eq!(h.host.status_selection.cursor, 0);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::End)), mods));
+    assert_eq!(h.host.status_selection.cursor, h.host.status_draft.len());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(!h.host.status_editing);
+    assert_eq!(
+        h.chrome.borrow_mut().take_presence_requests(),
+        vec![
+            crate::shell::chrome_state::PresenceRequest::SetManualStatus(Some(
+                "Editing café".into()
+            ))
+        ],
+        "one explicit submit queues one normalized status request",
+    );
+    let mut repeat = key_press(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &repeat, mods));
+    assert!(!h.host.status_editing);
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[1]));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
+    assert!(
+        h.chrome.borrow().overlays.collaborators,
+        "first Escape leaves the editor"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(
+        !h.chrome.borrow().overlays.collaborators,
+        "second Escape dismisses People"
+    );
+}
 
+#[test]
+fn people_status_activity_transition_discards_only_the_unpublished_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(h.host.status_editing, "press is still cancellable");
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert!(!h.chrome.borrow().overlays.collaborators);
+    assert!(!h.host.status_editing);
+    assert!(h.host.status_draft.is_empty());
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(
+        crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+            .is_some()
+    );
+}
 
 fn people_viewport_probe_fixture() -> Harness {
     let mut h = roster_follow_fixture();
@@ -3112,18 +3351,50 @@ fn people_viewport_probe_end_focus_is_reachable_on_a_narrow_output() {
         Modifiers::default()
     ));
     let tree = h.host.collaborators_overlay.accessibility_snapshot();
-    assert!(tree.children.last().expect("Invite").state.focused);
+    assert!(tree.children.last().expect("Activity").state.focused);
     assert!(
         h.host
             .rect
-            .contains(h.host.collaborators_invite_rect_for_tests().center()),
-        "End selects Invite, on the visible output"
+            .contains(h.host.collaborators_overlay.activity_rect().center()),
+        "End selects Activity outside the visible output"
     );
 }
 
+#[test]
+fn people_status_pointer_reentry_preserves_the_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
+    let expected = h.host.status_draft.clone();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_eq!(
+        h.host.status_draft, expected,
+        "clicking the active field must not reload the saved status"
+    );
+    assert!(
+        h.host.status_selection.cursor < expected.len(),
+        "TextInput places the caret at the pointer"
+    );
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
 
 #[test]
-fn people_viewport_keyboard_reaches_everyone_and_returns_to_the_first() {
+fn people_viewport_keyboard_reaches_everyone_and_returns_to_status() {
     let mut h = people_viewport_probe_fixture();
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
     paint(&mut h);
@@ -3170,8 +3441,12 @@ fn people_viewport_keyboard_reaches_everyone_and_returns_to_the_first() {
         .host
         .collaborators_overlay
         .accessibility_rect_for_path(&[1])
-        .expect("the first person's first control");
-    assert!(h.host.rect.contains(rect.origin()), "Home scrolls back to the top");
+        .expect("status field");
+    assert!(h.host.rect.contains(rect.origin()));
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
+    assert!(h.host.status_editing);
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert!(!h.host.status_editing);
 }
 
 #[test]
@@ -3200,16 +3475,85 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
         result,
         ui::widget::PrimaryScrollResult::Changed(_) | ui::widget::PrimaryScrollResult::Unchanged(_)
     ));
-    let invite = h.host.collaborators_invite_rect_for_tests();
-    assert!(h.host.rect.contains(invite.center()));
-    assert!(pump(&mut h, &cursor_moved_at(invite.center()), mods));
+    let activity = h.host.collaborators_overlay.activity_rect();
+    assert!(h.host.rect.contains(activity.center()));
+    assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
     assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
 }
 
+#[test]
+fn people_status_pointer_drag_selection_edits_the_host_draft() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(
+            rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5,
+            rect.center().y
+        )),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(
+        &mut h,
+        &cursor_moved_at(Point::new(rect.x1 - 8.0, rect.center().y)),
+        mods
+    ));
+    assert!(pump(&mut h, &mouse_release(), mods));
+    assert_ne!(
+        h.host.status_selection.anchor,
+        h.host.status_selection.cursor
+    );
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café".into())),
+        mods
+    ));
+    assert_eq!(h.host.status_draft, "café");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+    assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
+    assert_eq!(h.host.local_status.as_deref(), Some("Reviewing draft"));
+}
 
+#[test]
+fn people_status_pointer_places_unicode_caret_at_physical_scale_two() {
+    let mut h = people_status_fixture();
+    let mods = Modifiers::default();
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Character("café👩‍💻".into())),
+        mods
+    ));
+    paint(&mut h);
+    let rect = h
+        .host
+        .collaborators_overlay
+        .accessibility_rect_for_path(&[1])
+        .expect("status field");
+    let point = Point::new(
+        (rect.x0 + f64::from(Theme::dark().padding_standard) + 0.5) * 2.0,
+        rect.center().y * 2.0,
+    );
+    assert!(pump_at_scale(&mut h, &cursor_moved_at(point), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_press(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_release(), mods, 2.0));
+    assert_eq!(
+        h.host.status_selection,
+        ui::text_selection::Selection::collapsed(0)
+    );
+    assert!(pump(&mut h, &key_press(Key::Character("✓".into())), mods));
+    assert_eq!(h.host.status_draft, "✓Reviewing draftcafé👩‍💻");
+    assert!(h.chrome.borrow_mut().take_presence_requests().is_empty());
+}
 
 #[test]
 fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
@@ -3242,7 +3586,7 @@ fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
     assert!(
         h.host
             .rect
-            .contains(h.host.collaborators_invite_rect_for_tests().center())
+            .contains(h.host.collaborators_overlay.activity_rect().center())
     );
     pump(&mut h, &WindowEvent::Focused(false), mods);
     assert!(pump(

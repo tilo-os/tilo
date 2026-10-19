@@ -202,6 +202,11 @@ impl ShellNetwork {
         let spawned = std::thread::Builder::new()
             .name("tilo-community".into())
             .spawn(move || {
+                // Before the first pass, which retries the saved proof in
+                // its slot: the empty slots earlier passes made beside it go.
+                if let Some(network) = net.upgrade() {
+                    network.retire_duplicate_site_slots();
+                }
                 let mut retry = FIRST_RETRY;
                 while let Some(network) = net.upgrade() {
                     let pass = network.keep_community(&site);

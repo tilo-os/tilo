@@ -78,13 +78,6 @@ pub(crate) fn browser_text_demands_emoji(text: &str) -> bool {
     crate::text_break::graphemes(text).any(browser_grapheme_demands_emoji)
 }
 
-/// Whether one grapheme is an emoji (drawn from the colour emoji font),
-/// the way the browser build decides it: an emoji presentation, a joined or
-/// keycap sequence, or a variation selector asking for one.
-pub(crate) fn grapheme_is_emoji(grapheme: &str) -> bool {
-    browser_grapheme_demands_emoji(grapheme)
-}
-
 fn browser_grapheme_demands_emoji(grapheme: &str) -> bool {
     use unicode_properties::{EmojiStatus, UnicodeEmoji};
     if grapheme.contains('\u{fe0e}') {

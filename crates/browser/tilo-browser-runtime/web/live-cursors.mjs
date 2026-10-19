@@ -34,33 +34,6 @@ export function markerStyle(kind, color) {
     : `${base};border-radius:0 8px 8px 8px`;
 }
 
-/** A sent cursor-chat message stays this long, then fades. */
-export const CHAT_LINGER_MS = 5000;
-/** How long a sent message takes to fade at the end of its linger. */
-export const CHAT_FADE_MS = 300;
-/** How long a reaction floats up from the pointer before it is gone. */
-export const REACTION_MS = 1200;
-/** How far a reaction rises over its life, in surface pixels. */
-const REACTION_RISE_PX = 48;
-
-/**
- * How visible a member's cursor-chat bubble is at `at` (0 hidden, 1 fully
- * shown): fully while it is being typed, then for {@link CHAT_LINGER_MS}
- * after it was sent, fading over the last {@link CHAT_FADE_MS}.
- */
-export function chatOpacity(chat, sentAt, at) {
-  if (!chat) return 0;
-  if (!chat.sent) return chat.text ? 1 : 0;
-  if (sentAt == null) return 0;
-  const left = sentAt + CHAT_LINGER_MS - at;
-  return left <= 0 ? 0 : Math.min(1, left / CHAT_FADE_MS);
-}
-
-/** Inline style of a cursor-chat bubble, in the member's colour. */
-export function chatStyle(color) {
-  return `position:absolute;left:0;top:0;max-width:240px;padding:4px 10px;font:13px/18px system-ui;color:#fff;background:${color};border-radius:4px 12px 12px 12px;white-space:pre-wrap;overflow-wrap:anywhere;box-shadow:0 2px 8px rgba(0,0,0,.25);will-change:transform,opacity`;
-}
-
 /** The desktop's own record, a member's focus while no window has it. */
 const DESKTOP_APP = 'so.tilo.browser-desktop';
 
@@ -113,8 +86,6 @@ export function createLiveCursors({
   overlay.style.cssText = 'position:absolute;inset:0;pointer-events:none;overflow:hidden';
   surface.append(overlay);
   const markers = new Map();
-  const bubbles = new Map();
-  const reactions = new Map();
   let frame;
   let lastFrameAt = -Infinity;
   let closed = false;
@@ -142,66 +113,6 @@ export function createLiveCursors({
   function drop(publisher) {
     markers.get(publisher)?.remove();
     markers.delete(publisher);
-    dropBubble(publisher);
-    reactions.get(publisher)?.node.remove();
-    reactions.delete(publisher);
-  }
-  function dropBubble(publisher) {
-    bubbles.get(publisher)?.remove();
-    bubbles.delete(publisher);
-  }
-  // What the member is saying, under its name tag. Returns whether it is
-  // still on screen (a sent one fades on this clock, so frames continue).
-  function bubble(publisher, remote, color, x, y, at) {
-    const opacity = chatOpacity(remote.chat, remote.chatSentAt, at);
-    if (opacity <= 0) {
-      dropBubble(publisher);
-      return false;
-    }
-    let node = bubbles.get(publisher);
-    if (!node) {
-      node = doc.createElement('div');
-      node.className = 'tilo-live-chat';
-      node.dataset.publisher = publisher;
-      overlay.append(node);
-      bubbles.set(publisher, node);
-    }
-    if (node.dataset.color !== color) {
-      node.dataset.color = color;
-      node.style.cssText = chatStyle(color);
-    }
-    if (node.textContent !== remote.chat.text) node.textContent = remote.chat.text;
-    node.style.opacity = String(opacity);
-    node.style.transform = `translate(${x + 12}px,${y + 22}px)`;
-    return remote.chat.sent;
-  }
-  // The member's latest reaction, floating up from its pointer once.
-  // Returns whether it is still rising.
-  function reaction(publisher, remote, x, y, at) {
-    const current = remote.reaction;
-    const age = current ? at - current.at : Infinity;
-    let shown = reactions.get(publisher);
-    if (!current || age >= REACTION_MS) {
-      shown?.node.remove();
-      reactions.delete(publisher);
-      return false;
-    }
-    if (!shown || shown.seq !== current.seq) {
-      shown?.node.remove();
-      const node = doc.createElement('div');
-      node.className = 'tilo-live-reaction';
-      node.style.cssText = 'position:absolute;left:0;top:0;font:28px/1 system-ui;will-change:transform,opacity';
-      node.textContent = current.emoji;
-      overlay.append(node);
-      shown = {seq: current.seq, node};
-      reactions.set(publisher, shown);
-    }
-    const t = Math.max(0, age) / REACTION_MS;
-    // Decelerating rise; fades over the second half of its life.
-    const rise = REACTION_RISE_PX * (1 - (1 - t) * (1 - t));
-    shown.node.style.transform = `translate(${x - 14}px,${y - 32 - rise}px)`;
-    shown.node.style.opacity = String(t < 0.5 ? 1 : (1 - t) * 2);
-    return true;
   }
   function render() {
     frame = undefined;
@@ -209,20 +120,16 @@ export function createLiveCursors({
     const at = now();
     const seen = new Set();
     const shownWindows = windows();
-    let animating = false;
     for (const remote of layer.remoteState(at)) {
       if (!remote.pointer || remote.stale) continue;
       const placed = placePointer(remote.pointer, remote.focus, shownWindows);
       if (!placed) continue;
       seen.add(remote.publisher);
       const [x, y] = placed;
-      const node = marker(remote.publisher, remote.participant);
-      node.style.transform = `translate(${x}px,${y}px)`;
-      animating = bubble(remote.publisher, remote, node.dataset.color, x, y, at) || animating;
-      animating = reaction(remote.publisher, remote, x, y, at) || animating;
+      marker(remote.publisher, remote.participant).style.transform = `translate(${x}px,${y}px)`;
     }
     for (const publisher of [...markers.keys()]) if (!seen.has(publisher)) drop(publisher);
-    if (animating || at - lastFrameAt < SETTLE_MS) schedule();
+    if (at - lastFrameAt < SETTLE_MS) schedule();
   }
   function schedule() {
     if (frame === undefined && !closed) frame = requestFrame(render);
@@ -244,8 +151,6 @@ export function createLiveCursors({
   return {
     /** Publishers whose marker is on screen. */
     shown: () => [...markers.keys()],
-    /** Publishers whose cursor-chat bubble is on screen, with its text. */
-    chats: () => [...bubbles].map(([publisher, node]) => [publisher, node.textContent]),
     close() {
       if (closed) return;
       closed = true;
@@ -255,8 +160,6 @@ export function createLiveCursors({
       surface.removeEventListener('pointerleave', leave);
       overlay.remove();
       markers.clear();
-      bubbles.clear();
-      reactions.clear();
     },
   };
 }

@@ -1349,7 +1349,7 @@ impl EmojiPicker {
         );
         let x = glyph.x1 + f64::from(self.spacing.s2);
         let style = ctx.theme.tokens.typography.style(TextRole::Caption);
-        let name_style = style.with_weight(TextWeight::Medium);
+        let name_style = style.clone().with_weight(TextWeight::Medium);
         let hint_x = if footer.stacked {
             x
         } else {

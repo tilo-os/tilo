@@ -978,68 +978,6 @@ impl Rooms {
         .await
     }
 
-    /// Ask `room`'s host to run a bot from the directory, or take the
-    /// request back ([`WorkspaceMembershipCommand::RequestBot`],
-    /// [`WorkspaceMembershipCommand::WithdrawBotRequest`]), as a member the
-    /// room lets install (or uninstall) bots: any such member of a room this
-    /// host governs, not only its administrators. The request is a governed
-    /// change every member reads; [`Self::bot_requests`] is what the host
-    /// follows.
-    ///
-    /// # Errors
-    /// Refuses another command, a malformed request, and a member the room
-    /// does not let install (or uninstall) bots.
-    ///
-    /// [`WorkspaceMembershipCommand::RequestBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RequestBot
-    /// [`WorkspaceMembershipCommand::WithdrawBotRequest`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::WithdrawBotRequest
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
-    )]
-    pub async fn ask_for_bot(
-        &self,
-        room: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        let gate = match &command {
-            Command::RequestBot(_) => governance::INSTALL_BOT,
-            Command::WithdrawBotRequest { .. } => governance::UNINSTALL_BOT,
-            _ => {
-                return Err(CollaborationError::new(
-                    "only asking for a bot or taking the request back asks for a bot",
-                ));
-            }
-        };
-        command.validate()?;
-        let now = tilo_clock::unix_now_ns();
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        self.authorize(member, Some(&room), RoomOp::Govern(gate), now)?;
-        let key = self.inner.host.key.clone();
-        room.peer()
-            .clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(member, &command, &key, system_time(now))?;
-        self.administer(
-            &mut room,
-            request_id,
-            request_digest(&("bot.request", &command))?,
-            |peer| {
-                peer.workspace_mut().apply_workspace_membership_command(
-                    member,
-                    &command,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
-        )
-        .await
-    }
-
     /// The bots `room` asks its host to run, as its governance records
     /// them now.
     ///
