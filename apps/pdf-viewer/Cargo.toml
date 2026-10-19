@@ -50,6 +50,8 @@ anyhow.workspace = true
 # Rendering, text layer, forms and export through Tilo's sandboxed PDF engine.
 tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
 image = { workspace = true, features = ["png", "jpeg"] }
+# PNG encoding through the shared runtime (the screenshot swatch).
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tempfile.workspace = true
 # Documents the user opens and saves.
 tilo-files = { path = "../../crates/platform/tilo-files" }

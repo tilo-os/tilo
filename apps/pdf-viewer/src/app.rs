@@ -1025,7 +1025,15 @@ impl PdfApp {
         else {
             return;
         };
-        if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
+        // Encoded by the shared runtime's PNG encoder: `DynamicImage::save`
+        // is generic over the path and picks the format at run time, so it
+        // compiled every encoder the image crate has into this app.
+        let swatch = thumbnail::RgbaThumb {
+            rgba: img.into_raw(),
+            width: w,
+            height: h,
+        };
+        if thumbnail::encode_png(&swatch).is_some_and(|bytes| std::fs::write(&png, bytes).is_ok()) {
             self.import_file(&png);
         }
     }
