@@ -118,19 +118,19 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
         invoke_confirmed(
             &mut live,
             11,
-            notes::actions::page_resource_id(f.root),
+            &notes::actions::page_resource_id(f.root),
             "delete",
         );
         invoke_confirmed(
             &mut live,
             11,
-            notes::actions::page_resource_id(f.empty),
+            &notes::actions::page_resource_id(f.empty),
             "delete",
         );
         invoke_confirmed(
             &mut live,
             11,
-            notes::actions::tag_resource_id(f.tag),
+            &notes::actions::tag_resource_id(f.tag),
             "delete-tag",
         );
         assert_eq!(revision(&f, &checkout), 3);
