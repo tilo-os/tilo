@@ -609,7 +609,7 @@ impl PdfMarkup {
                 StoredReply {
                     author,
                     text,
-                    rich: rich,
+                    rich,
                 },
             );
         }

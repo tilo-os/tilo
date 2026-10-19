@@ -92,15 +92,21 @@ pub(crate) fn demo_picture(id: &str) -> Option<vello::peniko::ImageData> {
     Some(ui::raster::rgba8(rgba, w, h))
 }
 
+/// A camera frame's colours: the room's top and bottom, skin and shirt.
+type RoomPalette = ([u8; 3], [u8; 3], [u8; 3], [u8; 3]);
+
 /// A head and shoulders against a softly lit room, in one of four palettes.
 fn camera_frame(palette: usize) -> (u32, u32, Vec<u8>) {
-    const ROOMS: [([u8; 3], [u8; 3], [u8; 3], [u8; 3]); 4] = [
+    const ROOMS: [RoomPalette; 4] = [
         ([74, 86, 104], [38, 44, 56], [214, 170, 140], [62, 92, 150]),
         ([96, 84, 72], [48, 40, 34], [176, 128, 96], [120, 60, 70]),
         ([70, 96, 88], [34, 48, 44], [232, 196, 168], [44, 52, 60]),
         ([104, 92, 112], [46, 40, 52], [150, 104, 80], [180, 150, 90]),
     ];
-    let (top, bottom, skin, shirt) = ROOMS[palette % ROOMS.len()];
+    let (top, bottom, skin, shirt) = ROOMS
+        .get(palette.checked_rem(ROOMS.len()).unwrap_or(0))
+        .copied()
+        .unwrap_or_default();
     let (w, h) = (640u32, 360u32);
     let mut c = Canvas::new(w, h);
     c.vgradient(top, bottom);

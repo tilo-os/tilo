@@ -2537,7 +2537,7 @@ impl ChatApp {
         };
         if self.direct_agent_intent_allowed(intent) {
             self.agent_intents.update(|intents| {
-                _ = intents.insert((crate::app::ROOM_SCOPE.to_owned(), agent), intent)
+                _ = intents.insert((crate::app::ROOM_SCOPE.to_owned(), agent), intent);
             });
             self.sync_agent_route();
         }
