@@ -1475,9 +1475,9 @@ mod tests {
         let (mut tree, tab) = tree_with_local_app(app);
         set_note(&mut tree, tab, NOT_INSTALLED.into());
         let card = crate::shell::app_notice_card::AppNoticeCard::get(tab, app, "Missing");
-        let harness = ui::headless::FrameHarness::new_with_theme(
+        let mut harness = ui::headless::FrameHarness::for_root(
             ui::State::new(),
-            Box::new(card),
+            card,
             (456, 500),
             ui::launch::shot_theme_from_env().unwrap(),
         );
@@ -1499,15 +1499,20 @@ mod tests {
             "{text:#?}"
         );
 
-        let mut card = crate::shell::app_notice_card::AppNoticeCard::get(tab, app, "Missing");
-        card.press_for_test();
+        // Pressed on the card as painted: its quiet Close is a painted
+        // target, so it only exists once the card has been drawn.
+        harness
+            .root_mut::<crate::shell::app_notice_card::AppNoticeCard>()
+            .press_for_test();
         examine(&mut tree);
         assert_eq!(
             local_app_note(&tree, tab),
             NOT_INSTALLED,
             "Get opens the Store; the window stays until the app reopens in it"
         );
-        card.press_close_for_test();
+        harness
+            .root_mut::<crate::shell::app_notice_card::AppNoticeCard>()
+            .press_close_for_test();
         examine(&mut tree);
         assert!(
             !tree
