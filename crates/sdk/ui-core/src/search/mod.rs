@@ -36,6 +36,7 @@
 
 mod body;
 pub mod capability;
+pub mod index_publication;
 mod ordinals;
 mod provider;
 mod query;

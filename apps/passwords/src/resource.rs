@@ -111,6 +111,10 @@ impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
         PasswordsSurface::search_entries(self)
     }
 
+    fn secrets_unlocked(&self) -> Option<bool> {
+        PasswordsSurface::secrets_unlocked(self)
+    }
+
     fn live_rows(&self) -> Vec<LiveRow> {
         self.item_rows()
     }

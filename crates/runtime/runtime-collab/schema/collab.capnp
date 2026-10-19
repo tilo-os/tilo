@@ -474,6 +474,14 @@ interface ChannelHandle {
   # Native Chat's original person actor only; reauthorized on every next.
   subscribePersonChat @65 (publicKey :Text, onBehalfOf :Data) -> (stream :PersonChatStream);
 
+  # A change to this application's entries in the session's persistent
+  # search index: bounded JSON, the vocabulary of
+  # `ui::search::index_publication::IndexDelta`. Bound to this certified
+  # primary route like reportContinuation (the broker derives workspace and
+  # record from it), never relayed to peers. The session keeps the entries
+  # after the application closes, so its content stays findable.
+  publishSearchIndex @67 (appId :Text, deltaJson :Data) -> ();
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
