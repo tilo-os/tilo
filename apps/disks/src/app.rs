@@ -965,19 +965,16 @@ mod tests {
         );
     }
 
-    /// The sidebar docks beside the detail when wide and becomes a drawer when narrow, and each stays usable.
+    /// The drive list docks beside the detail while the detail keeps its
+    /// minimum width, and is a screen of its own when narrower.
     #[test]
-    fn the_drive_list_docks_when_wide_and_collapses_to_a_drawer_when_narrow() {
+    fn the_drive_list_docks_when_wide_and_is_a_screen_when_narrow() {
         let wide = at_width(1280.0);
         assert_eq!(wide.shell.geometry().sidebar, SidebarPlacement::Docked);
         assert!(wide.shell.is_sidebar_open());
 
         let narrow = at_width(520.0);
-        assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Drawer);
-        assert!(
-            !narrow.shell.is_sidebar_open(),
-            "the drawer starts closed so the detail has the window"
-        );
+        assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
     }
 
     /// Choosing a drive or a tab from the window's controls repoints the detail.

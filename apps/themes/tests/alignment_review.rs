@@ -58,13 +58,15 @@ fn near(a: f64, b: f64, why: &str) {
 
 #[test]
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
-    let mut app = frame("editor", (480, 2400), 1.0);
+    // The narrowest window that keeps the theme list docked beside the editor.
+    let width = 600.0;
+    let mut app = frame("editor", (600, 2400), 1.0);
     let toggle = rect(&mut app, "nav-shell-sidebar");
     assert!(toggle.width() > 0.0 && toggle.height() > 0.0);
     let preview = rect(&mut app, "theme-preview");
     let gutter = f64::from(app.harness().theme().tokens.spacing.s4);
     assert!(
-        preview.x0 >= gutter && preview.x1 <= 480.0 - gutter,
+        preview.x0 >= gutter && preview.x1 <= width - gutter,
         "preview {preview:?} retains content gutters"
     );
     assert!(
@@ -82,7 +84,7 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     let actions: Vec<_> = action_ids.iter().map(|id| rect(&mut app, id)).collect();
     for (i, action) in actions.iter().enumerate() {
         assert!(
-            action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= 480.0,
+            action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= width,
             "{} remains inside the window: {action:?}",
             action_ids[i]
         );
@@ -183,8 +185,10 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
 #[test]
 fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     let mut one = frame("editor", (480, 4000), 1.0);
+    // At double text the list no longer fits beside the editor: the editor
+    // is a screen of its own, its Back the shared control it must not cover.
     let mut two = frame("editor", (480, 4000), 2.0);
-    let toggle = rect(&mut two, "nav-shell-sidebar");
+    let toggle = rect(&mut two, "nav-shell-back");
     let preview = rect(&mut two, "theme-preview");
     assert!(
         preview.y0 >= toggle.y1,
@@ -201,7 +205,7 @@ fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     for (i, action) in actions.iter().enumerate() {
         assert!(
             disjoint(toggle, *action),
-            "action must not cover the sidebar control"
+            "action must not cover the Back control"
         );
         assert!(action.x0 >= 0.0 && action.x1 <= 480.0);
         assert!(

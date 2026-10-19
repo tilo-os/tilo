@@ -2205,7 +2205,7 @@ mod tests {
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
-            ((800, 600), InspectorPlacement::Drawer),
+            ((800, 600), InspectorPlacement::Docked),
             ((480, 820), InspectorPlacement::Drawer),
         ] {
             let harness = window(app(), viewport);
