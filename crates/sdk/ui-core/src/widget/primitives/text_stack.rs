@@ -136,6 +136,15 @@ impl<'a> TextStackFace<'a> {
         width.ceil()
     }
 
+    /// The centre line of the title as [`Self::paint`] places it in
+    /// `rect`: what a leading icon beside a multi-line stack lines up with.
+    #[must_use]
+    pub fn title_centre(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let styles = StackStyles::of(self.size, theme);
+        let title = f64::from(text.measure_style("Ag", None, &styles.title).1);
+        rect.y0 + (rect.height() - self.height(text, theme)) / 2.0 + title / 2.0
+    }
+
     /// Paint the stack in `rect`, centred vertically, each line elided to
     /// the rect's width. Inks are measured on `ctx.theme`'s ground, so a
     /// stack on a selected row or a floating panel reads.

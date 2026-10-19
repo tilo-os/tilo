@@ -177,6 +177,15 @@ impl DisclosureRow {
         })
     }
 
+    /// Where the title's text column starts from the row's leading edge:
+    /// past the icon and its gap. The open body lines up with it too.
+    fn text_inset(leading: Option<Icon>, theme: &Theme) -> f64 {
+        leading.map_or(0.0, |_| {
+            f64::from(theme.tokens.metrics.icon_control)
+                + f64::from(theme.tokens.spacing.rhythm.sibling)
+        })
+    }
+
     fn progress(&self) -> f64 {
         self.reveal.progress(crate::time::now())
     }
@@ -208,26 +217,31 @@ impl DisclosureRow {
         let icon = f64::from(m.icon_control);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         let cy = self.header.center().y;
-        let mut x = self.header.x0;
-        if let Some(leading) = self.leading {
-            leading.draw(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(x, cy - icon / 2.0, x + icon, cy + icon / 2.0),
-                colors.text_dim,
-            );
-            x += icon + gap;
-        }
+        let x = self.header.x0 + Self::text_inset(self.leading, theme);
         let chevron = Rect::new(
             self.header.x1 - icon,
             cy - icon / 2.0,
             self.header.x1,
             cy + icon / 2.0,
         );
-        self.face().paint(
-            ctx,
-            Rect::new(x, self.header.y0, chevron.x0 - gap, self.header.y1),
-        );
+        let text = Rect::new(x, self.header.y0, chevron.x0 - gap, self.header.y1);
+        if let Some(leading) = self.leading {
+            // Beside two lines the icon belongs to the title, not to the
+            // middle of the pair, where it reads as sitting low.
+            let icon_cy = if self.secondary.is_empty() {
+                cy
+            } else {
+                self.face().title_centre(text, ctx.text, theme)
+            };
+            let x0 = self.header.x0;
+            leading.draw(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(x0, icon_cy - icon / 2.0, x0 + icon, icon_cy + icon / 2.0),
+                colors.text_dim,
+            );
+        }
+        self.face().paint(ctx, text);
         // The chevron turns a quarter, from pointing at the row's end to
         // pointing down, with the reveal.
         let turn = Disclose::reveal(self.progress(), 1.0).turn;
@@ -270,6 +284,16 @@ impl Widget for DisclosureRow {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
                     height: taffy::Dimension::length(crate::num::f32_of_f64(revealed)),
+                },
+                // The body starts on the title's text column, not under the
+                // icon.
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(crate::num::f32_of_f64(
+                        Self::text_inset(self.leading, theme),
+                    )),
+                    right: taffy::LengthPercentage::length(0.0),
+                    top: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Visible,
@@ -501,6 +525,36 @@ mod tests {
         assert!(b.is_open() && !a.is_open(), "opening one closes the other");
         b.set_open(false);
         assert_eq!(group.open.get(), None);
+    }
+
+    #[test]
+    fn the_open_body_starts_on_the_titles_text_column() {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let body = Box::new(crate::widget::Spacer::fixed(40.0));
+        let mut row = DisclosureRow::new("Saved devices", body)
+            .secondary("3 devices")
+            .icon(Icon::Bluetooth)
+            .opened();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = row.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .expect("layout");
+        row.apply_layout(&taffy, node, Point::ZERO);
+        let inset = DisclosureRow::text_inset(Some(Icon::Bluetooth), &theme);
+        assert!(inset > 0.0);
+        assert!(
+            (row.body.get_rect().x0 - (row.header.x0 + inset)).abs() < 0.5,
+            "the body lines up with the title, not the icon"
+        );
     }
 
     #[test]
