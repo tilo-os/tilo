@@ -769,7 +769,7 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
 
     eprintln!("phase block_identity_is_preserved_and_shape_errors_install_nothing");
     {
-        use automerge::{ReadDoc, transaction::Transactable};
+        use automerge::ReadDoc;
         use ui::application_view::ApplicationViewState;
         let f = NotebookFixture::rich();
         let checkout = notebook(&f);
