@@ -14,6 +14,9 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(super) enum ReviewCommand {
     Open,
+    /// Take back just the selected change, leaving everything since: a
+    /// forward change of its own, undoable, so it asks no confirmation.
+    RevertChange,
     Confirm,
     FileConfirm(uuid::Uuid),
     Cancel,
@@ -132,7 +135,10 @@ impl HistoryHost {
         if matches!(command, ReviewCommand::FileConfirm(_)) {
             return false;
         }
-        if matches!(command, ReviewCommand::Open | ReviewCommand::Refresh) {
+        if matches!(
+            command,
+            ReviewCommand::Open | ReviewCommand::Refresh | ReviewCommand::RevertChange
+        ) {
             // Review against a finished boundary: the word still being typed
             // becomes its own step, and the review sees the frontier after it.
             if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
@@ -144,6 +150,12 @@ impl HistoryHost {
             {
                 tracing::debug!(%error, "history review could not observe the live frontier");
             }
+        }
+        if self.controller.is_none() {
+            return false;
+        }
+        if matches!(command, ReviewCommand::RevertChange) {
+            return self.revert_selected_change(state, (authority, author));
         }
         let Some(controller) = &self.controller else {
             return false;
@@ -190,9 +202,9 @@ impl HistoryHost {
                 controller,
                 review,
             },
-            authority,
-            author,
+            (authority, author),
             now,
+            crate::state::owned_restore::RestoreExtent::Whole,
         );
         match result {
             Ok(receipt) => {
@@ -201,6 +213,62 @@ impl HistoryHost {
                     self.restored_source = Some(self.source().clone());
                     // Existing writers observe the new canonical heads. Never
                     // finish another action or manufacture another undo span.
+                    if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
+                        owner.schedule_committed_history();
+                    }
+                }
+                receipt.changed
+            }
+            Err(message) => {
+                self.show_review(None, message);
+                false
+            }
+        }
+    }
+
+    /// Restore just this change: take back what the selected change did, on
+    /// its own, against the live frontier as it is now. A refusal shows in
+    /// the review panel, as a refused restore does.
+    fn revert_selected_change(
+        &mut self,
+        state: &mut State,
+        (authority, author): (&PermissionContext, &UserId),
+    ) -> bool {
+        let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
+            return false;
+        };
+        let Some(controller) = &self.controller else {
+            return false;
+        };
+        let Ok(review) = controller.review_restore() else {
+            self.show_review(
+                None,
+                I18nManager::lookup_plain("history-review-not-content"),
+            );
+            return false;
+        };
+        let Some(now) = (self.clock)() else {
+            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
+            return false;
+        };
+        let selected = self.selected.clone();
+        let result = crate::state::owned_restore::restore_reviewed_history(
+            state,
+            &crate::state::owned_restore::ReviewedRestore {
+                source: self.source(),
+                scope,
+                controller,
+                review: &review,
+            },
+            (authority, author),
+            now,
+            crate::state::owned_restore::RestoreExtent::Changes(&selected),
+        );
+        match result {
+            Ok(receipt) => {
+                self.review = None;
+                if receipt.changed {
+                    self.restored_source = Some(self.source().clone());
                     if let HistorySourceRegistration::OwnedDocument { owner, .. } = self.source() {
                         owner.schedule_committed_history();
                     }

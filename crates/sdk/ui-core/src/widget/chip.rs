@@ -140,6 +140,9 @@ pub enum ChipLead {
     Dot(Color),
     /// A glyph, for chips that name an action rather than a value.
     Glyph(Icon),
+    /// A person's face: the initials of the chip's label (their name) on
+    /// their presence colour, as their avatar shows them everywhere.
+    Face(Color),
 }
 
 /// A pill's geometry in one theme: everything the text scale moves.
@@ -172,11 +175,17 @@ impl PillMetrics {
         }
     }
 
+    /// A face in a chip: as tall as the label's line, inside the pill.
+    fn face(&self) -> f64 {
+        (self.height - 8.0).max(self.glyph)
+    }
+
     fn lead_width(&self, lead: ChipLead) -> f64 {
         match lead {
             ChipLead::None => 0.0,
             ChipLead::Dot(_) => self.dot,
             ChipLead::Glyph(_) => self.glyph,
+            ChipLead::Face(_) => self.face(),
         }
     }
 
@@ -496,6 +505,15 @@ pub(crate) fn paint_pill(
                 &Circle::new(Point::new(x + metrics.dot / 2.0, cy), metrics.dot / 2.0),
             );
             x += metrics.dot + metrics.gap;
+        }
+        ChipLead::Face(colour) => {
+            let side = metrics.face();
+            let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
+            let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            crate::widget::avatar::AvatarFace::new(pill.label, pill.label)
+                .presence(colour)
+                .paint(&mut ctx, face);
+            x += side + metrics.gap;
         }
         ChipLead::Glyph(icon) => {
             let glyph = Rect::from_center_size(

@@ -565,6 +565,23 @@ pub fn revert_changes(
         .collect())
 }
 
+/// The changes `entries` name, each with the actor whose work it is, newest
+/// first: what [`revert_changes`] takes. An entry not in `doc` is skipped.
+pub fn changes_of_entries(
+    doc: &mut AutoCommit,
+    entries: &[HistoryEntryId],
+) -> Vec<(ChangeHash, String)> {
+    let mut found: Vec<(ChangeHash, String)> = doc
+        .get_changes(&[])
+        .into_iter()
+        .filter(|change| entries.contains(&entry_id_from_hash(&change.hash().to_string())))
+        .map(|change| (change.hash(), change.actor_id().to_hex_string()))
+        .collect();
+    // `get_changes` lists them in causal order; undo the newest first.
+    found.reverse();
+    found
+}
+
 /// The contiguous run of changes authored by `actor_hex`, ending at the
 /// document's newest change by that actor.
 ///

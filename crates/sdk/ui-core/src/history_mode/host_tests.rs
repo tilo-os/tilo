@@ -328,9 +328,12 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
                 .contains("Notebook: first")
         );
         let targets = driver.targets();
+        // USER REQUIREMENT (2026-10-19): History is "a right-side panel per
+        // window or active tab"; selecting an entry "previews that state in
+        // place".
         assert!(
-            targets["activity_timeline"].x1 <= targets["history-preview"].x0,
-            "wide activity sits beside the content"
+            targets["history-preview"].x1 <= targets["activity_timeline"].x0,
+            "wide activity is a panel at the trailing side, the preview in place beside it"
         );
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
             driver.render_png(&std::path::Path::new(&directory).join("wide.png"));
@@ -778,6 +781,9 @@ fn assert_history_frame_idle(driver: &mut FrameHarness, context: &str) {
 
 #[test]
 fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
+    // Each branch is read at rest: History's panel slides in as it opens,
+    // and a settled clock shows where it lands.
+    let _settled = crate::motion::testing::settled();
     let (mut wide, target, _) = versioned_driver((900, 650));
     assert_history_frame_idle(&mut wide, "toolbar");
 
@@ -1553,7 +1559,7 @@ fn history_chrome_follows_the_desktop_language() {
     for german in [
         "Vorher",
         "Nachher",
-        "Frühere Version: Nachher",
+        "Frühere Version, schreibgeschützt",
         "Wiederherstellen…",
     ] {
         assert!(
@@ -1792,4 +1798,84 @@ fn opening_history_lays_the_shell_out_at_its_narrower_width() {
         );
         assert!(rect.x1 <= 1280.0, "{id} stays in the window: {rect:?}");
     }
+}
+
+/// The text at `key` of `doc`'s root, if it holds text.
+fn root_text(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
+    doc.get(ROOT, key)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.as_str().map(str::to_owned))
+}
+
+// USER REQUIREMENT (2026-10-19): "A right-side panel per window or active tab
+// ... Selecting an entry previews that state in place (read-only), with
+// Restore or Restore just this change."
+#[test]
+fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_own() {
+    let mut state = State::new();
+    state.doc.put(ROOT, "title", "Draft").unwrap();
+    state.commit_action(None, None);
+    state.doc.put(ROOT, "body", "first").unwrap();
+    state.commit_action(None, None);
+    let body_change = state.doc.get_heads().pop().unwrap();
+    state.doc.put(ROOT, "status", "done").unwrap();
+    state.commit_action(None, None);
+    let root = Column::new().push(Box::new(Button::new("live-effect", "Send")));
+    let mut driver = FrameHarness::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(root), registration()),
+        (900, 650),
+    )
+    .unwrap();
+    driver.click_named("history-open").unwrap();
+    let targets = driver.targets();
+    let timeline = targets["activity_timeline"];
+    assert!(
+        timeline.x0 >= 900.0 - host::SIDE_PANEL_WIDTH - 1.0,
+        "History stands at the window's trailing side: {timeline:?}"
+    );
+    assert!(
+        (timeline.x1 - 900.0).abs() < 24.0,
+        "the panel reaches the window's trailing edge: {timeline:?}"
+    );
+
+    let target = format!(
+        "timeline-entry:{}",
+        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+            &body_change.to_string()
+        ))
+    );
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    let targets = driver.targets();
+    assert!(
+        targets["history-preview"].x1 <= targets["activity_timeline"].x0,
+        "the selected version shows in place of the content, beside the panel"
+    );
+    assert!(targets.contains_key("history-restore"), "Restore");
+    assert!(
+        targets.contains_key("history-back-now"),
+        "the way back to now"
+    );
+    driver
+        .click_named("history-restore-change")
+        .expect("a document's change restores on its own");
+    let doc = &driver.state_mut().doc;
+    assert_eq!(
+        root_text(doc, "body"),
+        None,
+        "just this change is taken back"
+    );
+    assert_eq!(root_text(doc, "title").as_deref(), Some("Draft"));
+    assert_eq!(
+        root_text(doc, "status").as_deref(),
+        Some("done"),
+        "what came after it stays"
+    );
 }

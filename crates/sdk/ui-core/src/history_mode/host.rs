@@ -24,9 +24,18 @@ use vello::{
     kurbo::{Affine, Point, Rect},
 };
 use winit::event::WindowEvent;
+/// Below this width History takes the whole window, its preview a page of
+/// its own; at or above it, History is a panel beside the content.
+const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
+/// The side panel's width.
+pub(super) const SIDE_PANEL_WIDTH: f64 = 360.0;
+
 #[derive(Clone, Copy)]
 enum Command {
     Live,
+    /// Leave the selected change and show the live document again, History
+    /// still open beside it.
+    Now,
     Earlier,
     Activity,
     Before,
@@ -103,6 +112,12 @@ pub struct HistoryHost {
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
+    /// The side panel's foot while a change is selected: what it was, the
+    /// before/after switch, Restore and Restore just this change.
+    footer: Column,
+    /// Over the preview while a change is selected: it is an earlier
+    /// version, read-only, with the way back to now.
+    banner: Row,
     timeline: ActivityTimeline,
     unavailable: crate::widget::EmptyState,
     unavailable_node: Option<NodeId>,
@@ -156,6 +171,17 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
+    /// The side panel and the content beside it, its foot and the banner
+    /// over the preview, while History shows as a side panel.
+    panel_node: Option<NodeId>,
+    content_node: Option<NodeId>,
+    footer_node: Option<NodeId>,
+    banner_node: Option<NodeId>,
+    panel_rect: Rect,
+    /// The side panel sliding in from the window's trailing edge as History
+    /// opens, and the motion settings the last frame drew with.
+    panel_motion: crate::motion::Presence,
+    motion: crate::tokens::EffectiveMotion,
     /// What the frame being drawn painted ([`Self::draw_compared`]), and
     /// what the last presented frame did ([`Self::paint_presented`]).
     #[cfg(feature = "native")]
@@ -332,9 +358,17 @@ impl HistoryHost {
             observed_file_binding: None,
             file_target_resolved: false,
             toolbar,
+            footer: Column::new().with_no_padding().with_intrinsic_height(),
+            banner: Row::new(),
             unavailable,
             unavailable_node: None,
-            timeline: ActivityTimeline::new().with_preview_selection(),
+            timeline: {
+                // History is read by who did what: its strip filters by person
+                // and agent.
+                let mut timeline = ActivityTimeline::new().with_preview_selection();
+                timeline.set_filters_people(true);
+                timeline
+            },
             open_requested: request,
             requested_entry: None,
             open: false,
@@ -350,6 +384,13 @@ impl HistoryHost {
             body_node: None,
             timeline_node: None,
             canvas_node: None,
+            panel_node: None,
+            content_node: None,
+            footer_node: None,
+            banner_node: None,
+            panel_rect: Rect::ZERO,
+            panel_motion: crate::motion::Presence::closed(),
+            motion: crate::tokens::EffectiveMotion::default(),
             commands: Rc::new(RefCell::new(VecDeque::new())),
             selected: vec![],
             before: PreviewCanvas::new(),
@@ -503,6 +544,11 @@ impl HistoryHost {
         self.canvas_node = None;
         self.unavailable_node = None;
         self.review_node = None;
+        self.panel_node = None;
+        self.content_node = None;
+        self.footer_node = None;
+        self.banner_node = None;
+        self.panel_rect = Rect::ZERO;
     }
     pub(crate) fn live_interactive(&self) -> bool {
         !self.captures_input() && !self.invalid_owner
@@ -1034,6 +1080,7 @@ impl HistoryHost {
             | WindowEvent::Touch(_) => {
                 self.toolbar.get_rect().contains(point)
                     || (self.show_timeline() && self.timeline.get_rect().contains(point))
+                    || self.panel_rect.contains(point)
             }
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
                 fn focused(widget: &dyn Widget) -> bool {
@@ -1075,6 +1122,8 @@ impl HistoryHost {
         // focus flags before restoring the suspended live owner, otherwise the
         // closed toolbar continues to capture keyboard input from that owner.
         clear_focus(&mut self.toolbar);
+        clear_focus(&mut self.footer);
+        clear_focus(&mut self.banner);
         clear_focus(&mut self.timeline);
         clear_focus(&mut self.unavailable);
         clear_focus(&mut self.before);
@@ -1093,13 +1142,15 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
-    fn owned_layout_roots(&self) -> [Option<NodeId>; 5] {
+    fn owned_layout_roots(&self) -> [Option<NodeId>; 7] {
         [
             self.toolbar_node,
             self.timeline_node,
             self.canvas_node,
             self.unavailable_node,
             self.review_node,
+            self.footer_node,
+            self.banner_node,
         ]
     }
     pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
@@ -1288,6 +1339,7 @@ impl HistoryHost {
         if self.open_requested.replace(false) {
             self.open = !self.open;
             opening = self.open;
+
             self.returning_live = !self.open;
             if !self.open {
                 self.close_files_presentation();
@@ -1362,6 +1414,19 @@ impl HistoryHost {
                     self.open = false;
                     self.activity_page = false;
                     self.returning_live = true;
+                    if let Some(controller) = &mut self.controller {
+                        controller.back_to_live();
+                    }
+                }
+                Command::Now => {
+                    self.review = None;
+                    self.review_request = None;
+                    self.assets.cancel();
+                    self.selected.clear();
+                    self.timeline.set_selection(None);
+                    self.before.preview = None;
+                    self.after.preview = None;
+                    self.activity_page = false;
                     if let Some(controller) = &mut self.controller {
                         controller.back_to_live();
                     }
@@ -1552,9 +1617,19 @@ impl HistoryHost {
             self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
             return;
         }
+        let side_panel = self.side_panel();
+        self.footer = Column::new()
+            .with_no_padding()
+            .with_gap(8.0)
+            .with_intrinsic_height();
+        self.banner = Row::new();
+        if side_panel {
+            toolbar = toolbar.push(Box::new(self.panel_header()));
+        }
         if self.selected.is_empty() {
-            if (self.fallback_bar && self.open_button && !self.app_presents_button)
-                || (self.open && !self.window_presents)
+            if !side_panel
+                && ((self.fallback_bar && self.open_button && !self.app_presents_button)
+                    || (self.open && !self.window_presents))
             {
                 // This bar already reserves the History control's height. Status
                 // belongs beside it, not in a new row that moves the live app
@@ -1705,6 +1780,9 @@ impl HistoryHost {
                     Command::Earlier,
                 )));
             }
+        } else if side_panel {
+            self.build_selection_panel();
+            toolbar = self.preview_page_toolbar(toolbar);
         } else {
             let mut header = Row::new();
             if self.width < 600.0 && !self.activity_page {
@@ -1745,25 +1823,7 @@ impl HistoryHost {
             } else {
                 "history-mode-showing-after"
             })));
-            if self
-                .registration
-                .definition
-                .scopes
-                .get(self.active_scope)
-                .is_some_and(|scope| {
-                    scope.content_schema.is_some()
-                        || matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. })
-                        || (matches!(
-                            scope.presentation,
-                            HistoryPresentation::Domain { .. }
-                                | HistoryPresentation::DomainWithAssets { .. }
-                        ) && matches!(
-                            self.source(),
-                            HistorySourceRegistration::HostDocument { .. }
-                                | HistorySourceRegistration::OwnedDocument { .. }
-                        ))
-                })
-            {
+            if self.offers_restore() {
                 compare = compare.push(Box::new(self.command_button(
                     "history-restore",
                     "history-mode-restore",
@@ -1817,6 +1877,183 @@ impl HistoryHost {
         self.toolbar_dirty = false;
         self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
     }
+    /// History shows as a panel at the window's trailing side, the content
+    /// in place beside it: open in a window wide enough for both.
+    pub(super) fn side_panel(&self) -> bool {
+        self.open && self.width >= SIDE_PANEL_MIN_WIDTH
+    }
+
+    /// Whether the selected version can be restored in this scope.
+    fn offers_restore(&self) -> bool {
+        self.registration
+            .definition
+            .scopes
+            .get(self.active_scope)
+            .is_some_and(|scope| {
+                scope.content_schema.is_some()
+                    || matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. })
+                    || (matches!(
+                        scope.presentation,
+                        HistoryPresentation::Domain { .. }
+                            | HistoryPresentation::DomainWithAssets { .. }
+                    ) && matches!(
+                        self.source(),
+                        HistorySourceRegistration::HostDocument { .. }
+                            | HistorySourceRegistration::OwnedDocument { .. }
+                    ))
+            })
+    }
+
+    /// Whether the selected changes can be taken back on their own: a
+    /// document's own changes, not a file's versions or an outside effect.
+    fn offers_change_restore(&self) -> bool {
+        matches!(
+            self.source(),
+            HistorySourceRegistration::HostDocument { .. }
+                | HistorySourceRegistration::OwnedDocument { .. }
+        ) && self
+            .selected_entries()
+            .any(crate::widget::HistoryEntry::is_revertible)
+    }
+
+    /// The selected changes as the timeline lists them.
+    fn selected_entries(&self) -> impl Iterator<Item = &crate::widget::HistoryEntry> {
+        self.timeline
+            .entries()
+            .iter()
+            .filter(|entry| self.selected.contains(&entry.id))
+    }
+
+    /// The side panel's head: its name, and the control that closes it.
+    /// Where no window presents History's control and nothing is selected,
+    /// that is the History control itself, shown on; otherwise it is Back to
+    /// live (closing the panel returns to the live document, as that
+    /// control does), so either keeps its address.
+    fn panel_header(&self) -> Row {
+        let close: Button = if self.selected.is_empty() && !self.window_presents {
+            // No window presents History's control: the panel holds it, on.
+            let clicked = self.open_requested.clone();
+            crate::standalone_history_host::history_control_face(
+                "history-open",
+                crate::widget::window_header::HistoryControl::Open,
+            )
+            .on_click(move || clicked.set(true))
+        } else {
+            let label = I18nManager::lookup_plain(if self.selected.is_empty() {
+                "history-panel-close"
+            } else {
+                "history-mode-back-to-live"
+            });
+            let close = self.commands.clone();
+            Button::icon_only("history-back-live", crate::icons::Icon::X, &label)
+                .on_click(move || close.borrow_mut().push_back(Command::Live))
+        };
+        // The panel's name is painted beside the control
+        // ([`Self::draw`]): the control already carries History's name for
+        // assistive technology, and one name per thing reads once.
+        Row::new()
+            .with_justify(taffy::JustifyContent::FlexEnd)
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(close))
+    }
+
+    /// The panel's foot and the preview's banner for the selected change:
+    /// who made it and when, Before and After, Restore and Restore just this
+    /// change; over the preview, that it is an earlier version, read-only.
+    fn build_selection_panel(&mut self) {
+        let mut footer = Column::new()
+            .with_no_padding()
+            .with_gap(8.0)
+            .with_intrinsic_height();
+        let picked: Vec<crate::widget::HistoryEntry> = self.selected_entries().cloned().collect();
+        if let Some(newest) = picked.iter().max_by_key(|entry| entry.timestamp) {
+            let summary = if picked.len() > 1 {
+                I18nManager::format(
+                    "history-panel-selected-changes",
+                    &[("count", picked.len().into())],
+                )
+            } else {
+                newest.summary.clone()
+            };
+            footer = footer.push(Box::new(Text::new(&summary).strong()));
+            let when = crate::widget::format_relative_time(newest.timestamp, crate::time::wall());
+            footer = footer.push(Box::new(
+                Row::new()
+                    .with_gap(12.0)
+                    .push(Box::new(
+                        Text::new(&newest.author.name).with_role(crate::tokens::TextRole::Caption),
+                    ))
+                    .push(Box::new(
+                        Text::new(&when)
+                            .with_role(crate::tokens::TextRole::Caption)
+                            .dimmed(),
+                    )),
+            ));
+        }
+        let mut compare = Row::new().with_gap(4.0);
+        for (id, label, command, side) in [
+            (
+                "history-before",
+                "history-mode-before",
+                Command::Before,
+                PreviewSide::Before,
+            ),
+            (
+                "history-after",
+                "history-mode-after",
+                Command::After,
+                PreviewSide::After,
+            ),
+        ] {
+            compare = compare.push(Box::new(
+                self.command_button(id, label, command)
+                    .control_size(crate::widget::ControlSize::Small)
+                    .toggled(self.side == side),
+            ));
+        }
+        footer = footer.push(Box::new(compare));
+        let mut restore = Row::new().with_gap(8.0);
+        if self.offers_restore() {
+            restore = restore.push(Box::new(
+                self.command_button(
+                    "history-restore",
+                    "history-mode-restore",
+                    Command::Review(review::ReviewCommand::Open),
+                )
+                .role(ButtonRole::Primary),
+            ));
+        }
+        if self.offers_change_restore() {
+            restore = restore.push(Box::new(self.command_button(
+                "history-restore-change",
+                "history-mode-restore-change",
+                Command::Review(review::ReviewCommand::RevertChange),
+            )));
+        }
+        if !restore.children().is_empty() {
+            footer = footer.push(Box::new(restore));
+        }
+        self.footer = footer;
+        let now = self.commands.clone();
+        self.banner = Row::new()
+            .with_justify(taffy::JustifyContent::SpaceBetween)
+            .with_align_items(taffy::AlignItems::Center)
+            .with_padding(16.0, 6.0)
+            .push(Box::new(
+                Text::new(if self.side == PreviewSide::Before {
+                    "history-preview-before"
+                } else {
+                    "history-preview-after"
+                })
+                .with_role(crate::tokens::TextRole::Label),
+            ))
+            .push(Box::new(
+                Button::new("history-back-now", "history-preview-now")
+                    .role(ButtonRole::Plain)
+                    .on_click(move || now.borrow_mut().push_back(Command::Now)),
+            ));
+    }
+
     /// What this host's layout presents: which widgets its children are.
     pub(super) fn composition(&self) -> Composition {
         Composition {
