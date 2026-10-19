@@ -106,16 +106,9 @@ fn fixture_with_root_acl(root_acl: bool) -> Fixture {
     let media = root.join("media");
     private(&media);
     if root_acl {
-        assert!(
-            std::process::Command::new("/usr/bin/setfacl")
-                .args([
-                    "-m",
-                    "u::rwx,g::r-x,m::---,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---"
-                ])
-                .arg(&source)
-                .status()
-                .unwrap()
-                .success()
+        crate::portable_transfer::acl::fixture::modify(
+            &source,
+            "u::rwx,g::r-x,m::---,o::---,d:u::rwx,d:g::r-x,d:m::r-x,d:o::---",
         );
     }
     let expected = HomeSource::review(&source)
@@ -574,15 +567,7 @@ fn portable_home_root_acl_reaches_active_home_and_restart_verifies_it() {
     );
     assert!(finished(&mut review.start_adoption(&cancel).unwrap()).complete);
     review.verify_completed_adoption(&cancel).unwrap();
-    let get = |path: &std::path::Path| {
-        let value = std::process::Command::new("/usr/bin/getfacl")
-            .args(["-cpn"])
-            .arg(path)
-            .output()
-            .unwrap();
-        assert!(value.status.success());
-        value.stdout
-    };
+    let get = crate::portable_transfer::acl::fixture::state;
     assert_eq!(get(&fixture.source), get(&fixture.grants.home));
     assert_eq!(
         fs::metadata(&fixture.grants.home)
@@ -623,33 +608,17 @@ fn portable_home_root_acl_reaches_active_home_and_restart_verifies_it() {
     );
     fs::remove_file(fixture.grants.home.join("created-after-adoption")).unwrap();
     resumed.verify_completed_adoption(&cancel).unwrap();
-    assert!(
-        std::process::Command::new("/usr/bin/setfacl")
-            .args(["-m", "d:m::---"])
-            .arg(&fixture.grants.home)
-            .status()
-            .unwrap()
-            .success()
-    );
+    crate::portable_transfer::acl::fixture::modify(&fixture.grants.home, "d:m::---");
     assert!(resumed.verify_completed_adoption(&cancel).is_err());
 }
 #[test]
 fn portable_home_refuses_to_replace_existing_root_default_acl() {
     let fixture = fixture_with_root_acl(true);
-    assert!(
-        std::process::Command::new("/usr/bin/setfacl")
-            .args(["-m", "d:u::rwx,d:g::---,d:m::---,d:o::---"])
-            .arg(&fixture.grants.home)
-            .status()
-            .unwrap()
-            .success()
+    crate::portable_transfer::acl::fixture::modify(
+        &fixture.grants.home,
+        "d:u::rwx,d:g::---,d:m::---,d:o::---",
     );
-    let before = std::process::Command::new("/usr/bin/getfacl")
-        .args(["-cpn"])
-        .arg(&fixture.grants.home)
-        .output()
-        .unwrap();
-    assert!(before.status.success());
+    let before = crate::portable_transfer::acl::fixture::state(&fixture.grants.home);
     let cancel = AtomicBool::new(false);
     let mut review = PortableHomeReview::review(
         fixture.grants.clone(),
@@ -664,13 +633,10 @@ fn portable_home_refuses_to_replace_existing_root_default_acl() {
             .prepare(Zeroizing::new(PASSWORD.to_vec()), &cancel)
             .is_err()
     );
-    let after = std::process::Command::new("/usr/bin/getfacl")
-        .args(["-cpn"])
-        .arg(&fixture.grants.home)
-        .output()
-        .unwrap();
-    assert!(after.status.success());
-    assert_eq!(before.stdout, after.stdout);
+    assert_eq!(
+        before,
+        crate::portable_transfer::acl::fixture::state(&fixture.grants.home)
+    );
     assert!(!fixture.grants.home.join("document").exists());
     assert_eq!(
         fs::read(fixture.source.join("document")).unwrap(),
