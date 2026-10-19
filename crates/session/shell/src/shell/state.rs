@@ -5144,10 +5144,10 @@ impl WorkspaceTree {
         salt == 0 || salt == self.local_salt()
     }
 
-    /// Create or rename a strip of the active workspace, as a person at this
-    /// machine does it: the model's own
-    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip)
-    /// and `RenameStrip` reductions on the cache, then the room document and
+    /// Create, rename or move a strip of the active workspace, as a person at
+    /// this machine does it: the model's own
+    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip),
+    /// `RenameStrip` and `MoveStrip` reductions on the cache, then the room document and
     /// the restart snapshot. A created strip takes focus. Returns the strip
     /// the command named or made.
     ///
@@ -5163,7 +5163,7 @@ impl WorkspaceTree {
         use tilo_desktop_model::commands::{DesktopCommand, apply_command};
         let renamed = match command {
             DesktopCommand::CreateStrip { .. } => None,
-            DesktopCommand::RenameStrip { strip, .. } => {
+            DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::MoveStrip { strip, .. } => {
                 let strip = StripId(*strip);
                 if !self.may_rename_strip(strip) {
                     return Err("target belongs to another topology owner".into());
@@ -10108,5 +10108,27 @@ mod strip_command_tests {
             .is_err(),
             "a peer's strip is renamed by its owner"
         );
+        assert!(
+            tree.commit_strip_command(&DesktopCommand::MoveStrip {
+                strip: theirs.raw(),
+                before: None,
+            })
+            .is_err(),
+            "a peer's strip is moved by its owner"
+        );
+
+        // A strip of this machine moves in the stack, and the room
+        // document carries the new order.
+        let order_before = names(&tree);
+        let last = order_before.last().map(|(id, _)| *id).expect("strips");
+        tree.commit_strip_command(&DesktopCommand::MoveStrip {
+            strip: made.raw(),
+            before: Some(first.raw()),
+        })
+        .expect("moved");
+        let moved = names(&tree);
+        assert_eq!(moved.first().map(|(id, _)| *id), Some(made));
+        assert_eq!(moved.len(), order_before.len());
+        assert_eq!(moved.last().map(|(id, _)| *id), Some(last));
     }
 }
