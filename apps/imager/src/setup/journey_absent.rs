@@ -11,6 +11,10 @@
 //! journey's own delivery answers when no native preparation is available
 //! (`journey/prepared_media/presentation.rs`): nothing is pending, and a
 //! request to deliver is refused.
+#![allow(
+    clippy::uninhabited_references,
+    reason = "the types here are uninhabited by design: no reference to one can exist, so the empty matches are unreachable"
+)]
 
 /// The original system's files a person granted to the installer journey.
 pub mod portable_source {

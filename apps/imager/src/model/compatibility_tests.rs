@@ -3,6 +3,10 @@
     dead_code,
     reason = "the frozen fixture retains the entire pre-extraction model API"
 )]
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the frozen fixture keeps the pre-extraction signatures verbatim"
+)]
 #[path = "../../tests/fixtures/model_before.rs"]
 mod before;
 

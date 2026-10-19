@@ -848,7 +848,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     let progress_path = &authorized.progress_path;
     let cancel_path = &authorized.cancel_path;
     let request_bytes = &authorized.bytes;
-    let request: WriteRequest = serde_json::from_slice(&request_bytes)?;
+    let request: WriteRequest = serde_json::from_slice(request_bytes)?;
     if begin_job(&request, &request.target.dev_path()) != JobStart::Started {
         return Err("write helper rejected an invalid or unsafe request".into());
     }

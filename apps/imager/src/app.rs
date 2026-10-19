@@ -2474,21 +2474,17 @@ impl ImagerApp {
         }
     }
     fn status_value(&self) -> serde_json::Value {
-        let status = serde_json::json!({
+        let mut status = serde_json::json!({
             "phase": self.progress.phase.key(),
             "progress": self.progress.overall(),
             "message": self.status,
         });
-        let status = {
-            let mut status = status;
-            status["prepared_setup"] = self.prepared_delivery.projection();
-            status["capacity"] = serde_json::json!({"state":if self.required_capacity().is_some(){"ready"}else{"checking"},"required":self.required_capacity(),"available":self.target().map(|drive|drive.size),"estimated":true});
-            status["source_checking"] = self
-                .write_preflight
-                .load(std::sync::atomic::Ordering::Acquire)
-                .into();
-            status
-        };
+        status["prepared_setup"] = self.prepared_delivery.projection();
+        status["capacity"] = serde_json::json!({"state":if self.required_capacity().is_some(){"ready"}else{"checking"},"required":self.required_capacity(),"available":self.target().map(|drive|drive.size),"estimated":true});
+        status["source_checking"] = self
+            .write_preflight
+            .load(std::sync::atomic::Ordering::Acquire)
+            .into();
         status
     }
     fn write_another(&mut self) {
