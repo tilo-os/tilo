@@ -356,7 +356,7 @@ pub async fn hydrate_full_workspace(
                 };
                 let chunk_hash = Hash::from(chunk.hash);
                 let chunk_bytes = match hydrator
-                    .read_blob(chunk_hash, 0, u64::from(chunk.len))
+                    .read_chunk(chunk_hash, u64::from(chunk.len), manifest_hash)
                     .await
                 {
                     Ok(bytes) => bytes,

@@ -397,6 +397,26 @@ impl Hydrator {
             .map_err(|message| anyhow!(message))
     }
 
+    /// One chunk of `manifest_hash`, from the store or fetched with its
+    /// manifest named: a serving peer authorises a chunk only through a
+    /// manifest in the same request, so a bare [`Self::read_blob`] of a
+    /// chunk is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no known peer serves the chunk.
+    pub async fn read_chunk(&self, hash: Hash, len: u64, manifest_hash: Hash) -> Result<Bytes> {
+        if let Some(bytes) = self.store.local(hash).await {
+            return Ok(bytes);
+        }
+        self.fetch_many(vec![Want::chunk(hash, len, manifest_hash)])
+            .await;
+        self.store
+            .local(hash)
+            .await
+            .ok_or_else(|| anyhow!("no peer served chunk {hash} of {manifest_hash}"))
+    }
+
     /// Read a byte range of a file given its content id: fetch the manifest,
     /// then only what `[offset, offset+size)` needs.
     ///
@@ -448,7 +468,10 @@ impl Hydrator {
             let hash = Hash::from(chunk.hash);
             let bytes = match self.store.local(hash).await {
                 Some(bytes) => bytes,
-                None => Bytes::from(self.read_blob(hash, 0, u64::from(chunk.len)).await?),
+                None => {
+                    self.read_chunk(hash, u64::from(chunk.len), manifest_hash)
+                        .await?
+                }
             };
             crate::store::copy_part(&mut out, &bytes, chunk_start, start, end);
         }
@@ -697,7 +720,9 @@ impl Hydrator {
             for chunk in window {
                 let hash = Hash::from(chunk.hash);
                 if !self.store.has(hash).await {
-                    let _ = self.read_blob(hash, 0, u64::from(chunk.len)).await?;
+                    let _ = self
+                        .read_chunk(hash, u64::from(chunk.len), manifest_hash)
+                        .await?;
                 }
             }
             completed = completed.saturating_add(bytes).min(total);
