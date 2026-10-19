@@ -4,12 +4,14 @@ use imager_backend::media_layout::gpt;
 pub use imager_backend::media_layout::{
     DATA_PARTITION_NAME, DATA_PARTITION_TYPE, MediaPartitionBinding, binding, provision,
 };
+#[cfg(any(test, feature = "installation"))]
 use std::{fs::File, io};
 #[cfg(all(test, feature = "native-capture-qualification"))]
 mod native_capacity_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[cfg(any(test, feature = "installation"))]
 pub(crate) use imager_backend::media_layout::PreparedLayout;
 
 #[cfg(feature = "installation")]
