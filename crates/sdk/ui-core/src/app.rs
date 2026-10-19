@@ -757,7 +757,7 @@ impl AppConstructionInputs {
             pending_continuation_restore: crate::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
-                crate::floating_surface::FloatingSurfaceServiceClient::discover,
+                crate::floating_surface::FloatingSurfaceServiceClient::for_window,
             startup_presence_scope: PresenceKey::for_local_workspace,
             surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
@@ -1354,6 +1354,17 @@ impl App {
     pub fn from_factory(state: State, factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
         Self::from_factory_with_inputs(state, factory, || {
             AppConstructionInputs::production(CollaborationManager::new())
+        })
+    }
+
+    /// A window showing `factory`'s root that joins no workspace: what a
+    /// launch shows while its workspace has no identity selected
+    /// ([`crate::workspace_identity`]). It takes the process's other system
+    /// services as any window does; collaboration waits for the identity.
+    #[cfg(feature = "native")]
+    pub(crate) fn without_workspace(factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
+        Self::from_factory_with_inputs(State::new(), factory, || {
+            AppConstructionInputs::production(CollaborationManager::disabled())
         })
     }
 

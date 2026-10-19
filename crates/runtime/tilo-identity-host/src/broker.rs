@@ -320,7 +320,7 @@ fn serve(
 fn metadata_response(room: &RoomId, presentation: bool) -> Response {
     let profile = match crate::registry::selected_identity_profile(&room.to_string()) {
         Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
     let record = match runtime_identity::load_metadata_from_path(&profile.record_path) {
@@ -417,7 +417,7 @@ fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
     }
     let profile = match crate::registry::selected_identity_profile(&bound.room.to_string()) {
         Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
     if foreign(&profile) {
@@ -477,7 +477,7 @@ fn sign_collaboration_op(
     }
     let profile = match crate::registry::selected_identity_profile(&bound_room.to_string()) {
         Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
     if !launch_room && !bound.in_person_room(&profile, workspace_id) {
@@ -595,7 +595,7 @@ fn channel_keys(
     let launch = bound.room.to_string();
     let profile = match crate::registry::selected_identity_profile(&launch) {
         Ok(Some(profile)) => profile,
-        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Ok(None) => return Response::Denied(runtime_identity::wire::NO_IDENTITY_SELECTED.into()),
         Err(error) => return Response::Error(error.to_string()),
     };
     if !launch_room && !bound.in_person_room(&profile, route.workspace_id) {
@@ -757,7 +757,7 @@ pub fn trusted_current_device_public(room: &str) -> io::Result<LocalDeviceIdenti
         crate::registry::selected_identity_profile(&room.to_string())?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "no identity selected for this workspace",
+                runtime_identity::wire::NO_IDENTITY_SELECTED,
             )
         })?;
     let (device, _cert) = require_trusted_current_device(&profile)?;

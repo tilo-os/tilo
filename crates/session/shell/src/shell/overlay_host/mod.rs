@@ -9562,6 +9562,26 @@ impl ShellOverlayHost {
         self.palette_visible = true;
     }
 
+    /// Open the identity chooser, as an app whose workspace has no identity
+    /// selected asks (the chooser service's `ChooseIdentity`): the palette
+    /// over everything, on choosing the identity this workspace uses
+    /// (`identity.select`). The person picks the identity and confirms it
+    /// there; nothing is chosen for them. Whether the palette shows it.
+    pub(crate) fn open_identity_chooser(&mut self) -> bool {
+        use crate::shell::chrome_state::SearchScope;
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
+            self.open_palette_with_scope(SearchScope::All);
+        }
+        self.palette.set_query(&t("search-action-identity-select"));
+        self.last_search_query = "\0identity-chooser\0".into();
+        self.palette_visible = true;
+        self.palette_layout_dirty = true;
+        true
+    }
+
     /// Open the palette in `scope`, or close it if the same scope fires
     /// twice (mirrors the old second-press-dismisses chord behaviour). A
     /// different scope while open just swaps scope without losing the

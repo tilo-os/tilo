@@ -202,6 +202,14 @@ pub trait ResourceApp: 'static {
     /// platform without the runtime) says no.
     const ATTACHES_RUNTIME: bool = true;
 
+    /// Whether the app opens while its workspace has no identity selected,
+    /// joined to nothing, instead of a window asking who works there. Only
+    /// for an app whose own purpose is not the workspace's (Settings, for the
+    /// device): it reads [`ui_core::workspace_identity::missing`] and shows
+    /// [`ui_core::workspace_identity::required_state`] where it needs the
+    /// workspace. Once an identity is chosen it opens again, joined to it.
+    const OPENS_WITHOUT_IDENTITY: bool = false;
+
     /// The app's message catalog, loaded before its view is built in every
     /// host that mounts the app, so the view's lookups find its messages.
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -1458,6 +1466,11 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .allowed_options(&["--data-dir"])
         .allowed_live_options(live_options::<A>())
         .allowed_live_flags(live_flags::<A>());
+    let spec = if A::OPENS_WITHOUT_IDENTITY {
+        spec.runs_without_identity()
+    } else {
+        spec
+    };
     let spec = if !A::ATTACHES_RUNTIME {
         spec.runtime_attachment(|_| false)
     } else if A::PRIVATE_WINDOWS {

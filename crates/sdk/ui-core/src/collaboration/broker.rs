@@ -3166,6 +3166,43 @@ fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_porta
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
+/// What a native launch that could not connect reports: that the workspace
+/// needs an identity chosen, which the launch waits for, or why the service
+/// failed.
+#[cfg(feature = "native")]
+fn native_launch_refusal(error: &runtime_portal::NotAvailable) -> crate::launch::LaunchError {
+    if runtime_identity::is_no_identity_selected(error) {
+        crate::launch::LaunchError::IdentityRequired
+    } else {
+        crate::launch::LaunchError::Operation(error.to_string())
+    }
+}
+
+#[cfg(all(test, feature = "native"))]
+mod native_launch_refusal_tests {
+    // USER REQUIREMENT (2026-10-19): "An app never exits because no identity is selected."
+    #[test]
+    fn a_workspace_without_an_identity_asks_for_one_and_other_failures_say_why() {
+        let no_identity = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            runtime_identity::NoIdentitySelected,
+        ));
+        assert!(matches!(
+            super::native_launch_refusal(&no_identity),
+            crate::launch::LaunchError::IdentityRequired
+        ));
+        let refused = runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "workspace identity has no certified device",
+        ));
+        assert!(matches!(
+            super::native_launch_refusal(&refused),
+            crate::launch::LaunchError::Operation(message)
+                if message.contains("workspace identity has no certified device")
+        ));
+    }
+}
+
 /// Primary-route barrier shared by the blocking constructors and
 /// [`CollaborationManager::await_primary_route`].
 fn await_primary_route_on(
@@ -3395,8 +3432,19 @@ impl CollaborationManager {
             .map_err(|error| error.to_string())
     }
 
+    /// The window's manager for a native launch: connected to its route,
+    /// or disabled where no service was configured.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::launch::LaunchError::IdentityRequired`] while the workspace
+    /// has no identity selected (someone can choose one, and the launch waits
+    /// for it); [`crate::launch::LaunchError::Operation`] for every other
+    /// failure to reach the configured service.
     #[cfg(feature = "native")]
-    pub(crate) fn for_native_launch(kind: &crate::record::RecordKind) -> Result<Self, String> {
+    pub(crate) fn for_native_launch(
+        kind: &crate::record::RecordKind,
+    ) -> Result<Self, crate::launch::LaunchError> {
         if crate::host::environment()
             .identity
             .collab_service_configured
@@ -3408,7 +3456,9 @@ impl CollaborationManager {
                 .identity
                 .collab_service_configured
             {
-                return Err("configured native collaboration service is unavailable".into());
+                return Err(crate::launch::LaunchError::Operation(
+                    "configured native collaboration service is unavailable".into(),
+                ));
             }
             return Ok(Self::disabled());
         }
@@ -3423,7 +3473,7 @@ impl CollaborationManager {
         app: String,
         room: Uuid,
         kind: &crate::record::RecordKind,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, crate::launch::LaunchError> {
         Self::connect_route_kind(
             source,
             RouteSpec {
@@ -3437,7 +3487,7 @@ impl CollaborationManager {
             "person",
         )
         .map(Self::from_connected)
-        .map_err(|error| error.to_string())
+        .map_err(|error| native_launch_refusal(&error))
     }
 
     #[cfg(test)]

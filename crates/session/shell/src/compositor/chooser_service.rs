@@ -14,6 +14,11 @@
 //! Who answers a chooser: a session with someone at it (an attached agent
 //! driving the screen, or an ordinary desktop) shows it; an unattended one
 //! answers [`Reply::Nobody`] and the app falls back to its unattended picker.
+//!
+//! An app whose workspace has no identity selected yet waits for one here
+//! ([`Request::AwaitIdentity`]), answered the moment the workspace has one,
+//! and asks for the shell's identity chooser ([`Request::ChooseIdentity`]):
+//! the palette, opened on choosing who to be in the workspace on screen.
 
 mod contents;
 
@@ -35,6 +40,9 @@ use crate::shell::i18n::{t, t_args};
 /// Whether someone is at the computer to answer a chooser.
 pub type Presence = Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// Whether the workspace of a room (its id) has an identity selected.
+pub type IdentitySelected = Arc<dyn Fn(&str) -> Result<bool, String> + Send + Sync>;
+
 /// What the service needs from the session.
 pub struct ChooserContext {
     pub grants: GrantStoreHandle,
@@ -44,6 +52,9 @@ pub struct ChooserContext {
     pub save_directory: Option<PathBuf>,
     /// Wakes the compositor loop to mount a queued chooser or run an open.
     pub wake: crate::session_runtime::Wake,
+    /// Read again whenever what decides it may have changed
+    /// (`tilo_identity_host::policy_change`).
+    pub identity_selected: IdentitySelected,
 }
 
 /// An app asked for `path` to be opened in the app that owns its type.
@@ -62,6 +73,13 @@ pub struct LinkOpenRequest {
     pub reply: mpsc::Sender<LinkOpened>,
 }
 
+/// An app asked for the identity chooser of its workspace. Answered on the
+/// compositor thread, which owns the palette: whether it is on screen.
+pub struct IdentityChooserRequest {
+    pub caller: PortalCaller,
+    pub reply: mpsc::Sender<Result<(), String>>,
+}
+
 /// How the shell answered a [`LinkOpenRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkOpened {
@@ -77,12 +95,14 @@ pub enum LinkOpened {
 struct OpenQueues {
     documents: mpsc::Sender<OpenRequest>,
     links: mpsc::Sender<LinkOpenRequest>,
+    identities: mpsc::Sender<IdentityChooserRequest>,
 }
 
 pub struct ChooserService {
     grants: GrantStoreHandle,
     opens: mpsc::Receiver<OpenRequest>,
     links: mpsc::Receiver<LinkOpenRequest>,
+    identities: mpsc::Receiver<IdentityChooserRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -112,9 +132,11 @@ impl ChooserService {
             .map_err(|error| format!("bind chooser service {}: {error}", path.display()))?;
         let (opens_tx, opens_rx) = mpsc::channel();
         let (links_tx, links_rx) = mpsc::channel();
+        let (identities_tx, identities_rx) = mpsc::channel();
         let queues = OpenQueues {
             documents: opens_tx,
             links: links_tx,
+            identities: identities_tx,
         };
         let grants = context.grants.clone();
         let context = Arc::new(context);
@@ -152,6 +174,7 @@ impl ChooserService {
             grants,
             opens: opens_rx,
             links: links_rx,
+            identities: identities_rx,
             stop,
             acceptor: Some(acceptor),
             path,
@@ -187,6 +210,11 @@ impl ChooserService {
 }
 
 impl ChooserService {
+    /// The identity choosers apps asked for; each must be answered.
+    pub fn drain_identity_choosers(&self) -> Vec<IdentityChooserRequest> {
+        self.identities.try_iter().collect()
+    }
+
     /// Open the links apps asked for, through the dispatcher the shell's
     /// search uses, in the asking app's workspace when it is the one on
     /// screen.
@@ -236,18 +264,23 @@ fn serve_connection(stream: UnixStream, context: &Arc<ChooserContext>, opens: &O
     };
     let writer = Arc::new(Mutex::new(writer));
     let mut reader = BufReader::new(stream);
-    let Some(caller) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
+    let Some(handshake) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
         .ok()
         .flatten()
         .and_then(|frame| serde_json::from_slice::<Handshake>(&frame).ok())
-        .and_then(|handshake| authenticate(&context.grants, &handshake))
     else {
         return;
     };
+    let Some(caller) = authenticate(&context.grants, &handshake) else {
+        return;
+    };
+    // The room the launcher named: whose identity this app waits for.
+    let room: Arc<str> = Arc::from(handshake.workspace_id);
     let selections = Arc::new(contents::ConnectionGrants::default());
     if selections.maintain().is_err() {
         return;
     }
+    let identity_waits = Arc::new(IdentityWaits::default());
     loop {
         let request = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => match serde_json::from_slice::<Request>(&frame) {
@@ -270,23 +303,138 @@ fn serve_connection(stream: UnixStream, context: &Arc<ChooserContext>, opens: &O
         let caller = caller.clone();
         let writer = Arc::clone(&writer);
         let selections = Arc::clone(&selections);
+        let room = Arc::clone(&room);
+        let identity_waits = Arc::clone(&identity_waits);
         let _ = std::thread::Builder::new()
             .name("tilo-chooser-req".into())
             .spawn(move || {
-                let reply = if matches!(
-                    &request,
-                    Request::PickContents { .. }
-                        | Request::ReadContents { .. }
-                        | Request::ReleaseContents { .. }
-                ) {
-                    contents::answer(&context, &caller, request, &selections)
-                } else {
-                    answer(&context, &opens, &caller, request)
+                let reply = match request {
+                    Request::AwaitIdentity { id } => {
+                        await_identity(&context, &room, id, &identity_waits)
+                    }
+                    request @ (Request::PickContents { .. }
+                    | Request::ReadContents { .. }
+                    | Request::ReleaseContents { .. }) => {
+                        Some(contents::answer(&context, &caller, request, &selections))
+                    }
+                    request => Some(answer(&context, &opens, &caller, request)),
                 };
-                send(&writer, &reply);
+                if let Some(reply) = reply {
+                    send(&writer, &reply);
+                }
             });
     }
+    identity_waits.close();
     selections.close();
+}
+
+/// The identity waits of one connection ([`Request::AwaitIdentity`]): the
+/// connection closing ends each of them.
+#[derive(Default)]
+struct IdentityWaits {
+    closed: AtomicBool,
+    wakes: Mutex<Vec<mpsc::Sender<()>>>,
+}
+
+impl IdentityWaits {
+    /// Wake through `wake` when the connection closes; `false` when it
+    /// already has.
+    fn join(&self, wake: mpsc::Sender<()>) -> bool {
+        let Ok(mut wakes) = self.wakes.lock() else {
+            return false;
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return false;
+        }
+        wakes.push(wake);
+        true
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Ok(mut wakes) = self.wakes.lock() {
+            for wake in wakes.drain(..) {
+                let _ = wake.send(());
+            }
+        }
+    }
+}
+
+/// Answer once `room` has an identity selected: read again on every
+/// announcement of a change to what decides it (the identity registry is
+/// among them), never on a clock. `None` when the connection closed first:
+/// nobody is left to tell.
+fn await_identity(
+    context: &ChooserContext,
+    room: &str,
+    id: u64,
+    waits: &IdentityWaits,
+) -> Option<Reply> {
+    let (wake, woken) = mpsc::channel::<()>();
+    let watch = {
+        let wake = wake.clone();
+        tilo_identity_host::policy_change::Watch::new(move || {
+            let _ = wake.send(());
+        })
+    };
+    if !waits.join(wake) {
+        return None;
+    }
+    loop {
+        // Armed before reading, so a selection made while it reads still
+        // wakes the next turn.
+        watch.arm();
+        if waits.is_closed() {
+            return None;
+        }
+        match (context.identity_selected)(room) {
+            Ok(true) => return Some(Reply::IdentitySelected { id }),
+            Ok(false) => {}
+            Err(reason) => return Some(Reply::Failed { id, reason }),
+        }
+        if woken.recv().is_err() {
+            return None;
+        }
+    }
+}
+
+/// Show the identity chooser for the caller's workspace, when someone is at
+/// the computer to choose and that workspace is the one on screen.
+fn answer_choose_identity(
+    context: &ChooserContext,
+    identities: &mpsc::Sender<IdentityChooserRequest>,
+    caller: &PortalCaller,
+    id: u64,
+) -> Reply {
+    if !(context.presence)() {
+        return Reply::Nobody { id };
+    }
+    let (reply, outcome) = mpsc::channel();
+    if identities
+        .send(IdentityChooserRequest {
+            caller: caller.clone(),
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(Ok(())) => Reply::Opened { id },
+        Ok(Err(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
+    }
 }
 
 /// The caller the launcher named, if its room is one of this session's.
@@ -382,6 +530,14 @@ fn answer(
         }
         Request::Open { id, path } => answer_open(context, &opens.documents, caller, id, path),
         Request::OpenUri { id, uri } => answer_open_uri(context, &opens.links, caller, id, uri),
+        Request::ChooseIdentity { id } => {
+            answer_choose_identity(context, &opens.identities, caller, id)
+        }
+        // Served by the connection, which knows its room and its waits.
+        Request::AwaitIdentity { id } => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
     }
 }
 
@@ -585,6 +741,8 @@ mod tests {
         pickers: FilePickerQueue,
         present: Arc<AtomicBool>,
         wakes: Arc<std::sync::atomic::AtomicU64>,
+        /// Whether the room has an identity selected.
+        selected: Arc<AtomicBool>,
         room: String,
         socket: PathBuf,
         inbox: PathBuf,
@@ -627,6 +785,14 @@ mod tests {
         };
         let wakes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let wake_counter = Arc::clone(&wakes);
+        let selected = Arc::new(AtomicBool::new(false));
+        let identity_selected = {
+            let selected = Arc::clone(&selected);
+            let room = room.clone();
+            Arc::new(move |asked: &str| {
+                Ok::<bool, String>(asked == room && selected.load(Ordering::Acquire))
+            })
+        };
         let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(
             socket.clone(),
@@ -638,6 +804,7 @@ mod tests {
                 wake: Arc::new(move || {
                     wake_counter.fetch_add(1, Ordering::Release);
                 }),
+                identity_selected,
             },
         )
         .unwrap();
@@ -646,6 +813,7 @@ mod tests {
             pickers,
             present,
             wakes,
+            selected,
             room,
             socket,
             inbox,
@@ -753,6 +921,69 @@ mod tests {
                 workspace_id: "room-7".into(),
             }
         );
+    }
+
+    /// The identity chooser the service asked the compositor for, once it has.
+    fn identity_chooser_request(session: &Session) -> IdentityChooserRequest {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("ten seconds fit in an Instant");
+        loop {
+            if let Some(request) = session.service.drain_identity_choosers().pop() {
+                return request;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no identity chooser reached the compositor"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Once an identity is selected, the app
+    // connects and shows its content without a restart."
+    #[test]
+    fn an_app_waiting_for_its_workspaces_identity_hears_the_moment_one_is_chosen() {
+        let session = session_with_save_hint(false);
+        let mut app = App::launch(&session, APP, &session.room);
+        app.send(&Request::AwaitIdentity { id: 1 });
+        app.writer
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        assert_eq!(app.reply(), None, "nothing is selected, so nothing is said");
+
+        session.selected.store(true, Ordering::Release);
+        // What the identity registry announces when it is written.
+        tilo_identity_host::policy_change::announce();
+        app.writer
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        assert_eq!(app.reply(), Some(Reply::IdentitySelected { id: 1 }));
+
+        app.send(&Request::AwaitIdentity { id: 2 });
+        assert_eq!(
+            app.reply(),
+            Some(Reply::IdentitySelected { id: 2 }),
+            "a workspace that has one is answered at once"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-19): "The button invokes the shell's identity
+    // chooser action".
+    #[test]
+    fn an_app_asks_for_the_identity_chooser_of_its_own_workspace() {
+        let session = session_with_save_hint(false);
+        let mut app = App::launch(&session, APP, &session.room);
+        app.send(&Request::ChooseIdentity { id: 3 });
+        let request = identity_chooser_request(&session);
+        assert_eq!(request.caller.workspace_id, WorkspaceId(7));
+        request.reply.send(Ok(())).unwrap();
+        assert_eq!(app.reply(), Some(Reply::Opened { id: 3 }));
+
+        session.present.store(false, Ordering::Release);
+        app.send(&Request::ChooseIdentity { id: 4 });
+        assert_eq!(app.reply(), Some(Reply::Nobody { id: 4 }));
+        assert!(session.service.drain_identity_choosers().is_empty());
     }
 
     #[test]
@@ -1497,6 +1728,7 @@ mod tests {
                 presence: Arc::new(|| true),
                 save_directory: None,
                 wake: Arc::new(|| {}),
+                identity_selected: Arc::new(|_: &str| Ok::<bool, String>(false)),
             },
         )
         .unwrap();

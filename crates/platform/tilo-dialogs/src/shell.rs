@@ -43,6 +43,8 @@ pub const PROTOCOL: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
+const NOBODY_TO_CHOOSE: &str = "nobody is at this computer to choose an identity";
+const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 const CLOSED: &str = "the session's file chooser is gone";
 const UNREACHABLE: &str = "could not reach the session's file chooser";
 /// How long a link waits for the shell, which answers once its compositor
@@ -144,6 +146,19 @@ pub enum Request {
         id: u64,
         uri: String,
     },
+    /// Answer once the workspace the app was launched into has an identity
+    /// selected: [`Reply::IdentitySelected`], at once when it already has
+    /// one, or [`Reply::Failed`]. Nothing is shown.
+    AwaitIdentity {
+        id: u64,
+    },
+    /// Show the shell's identity chooser for the workspace the app was
+    /// launched into; answered by [`Reply::Opened`] once it is on screen,
+    /// [`Reply::Nobody`] or [`Reply::Failed`]. What the person chooses
+    /// reaches the app through [`Self::AwaitIdentity`].
+    ChooseIdentity {
+        id: u64,
+    },
 }
 
 /// Shell → app. Every reply names the request it answers.
@@ -184,6 +199,11 @@ pub enum Reply {
         id: u64,
         reason: String,
     },
+    /// The app's workspace has an identity selected
+    /// ([`Request::AwaitIdentity`]).
+    IdentitySelected {
+        id: u64,
+    },
 }
 
 impl Reply {
@@ -198,6 +218,7 @@ impl Reply {
             | Reply::Nobody { id }
             | Reply::Opened { id }
             | Reply::Unclaimed { id }
+            | Reply::IdentitySelected { id }
             | Reply::Failed { id, .. } => *id,
         }
     }
@@ -364,6 +385,39 @@ impl ShellLink {
         })
     }
 
+    /// Call `selected` once the workspace this app was launched into has an
+    /// identity selected (at once when it already has one), with the reason
+    /// when the shell cannot say. It runs on the connection's reader thread.
+    pub fn await_identity(&self, selected: impl FnOnce(Result<(), String>) + Send + 'static) {
+        self.connection().ask(
+            |id| Request::AwaitIdentity { id },
+            Box::new(move |reply| {
+                selected(match reply {
+                    Reply::IdentitySelected { .. } => Ok(()),
+                    Reply::Failed { reason, .. } => Err(reason),
+                    _ => Err(OUT_OF_TURN.to_owned()),
+                });
+            }),
+        );
+    }
+
+    /// Ask the shell to show its identity chooser for this app's workspace;
+    /// `answered` hears whether it is on screen, on the connection's reader
+    /// thread. The choice itself arrives through [`Self::await_identity`].
+    pub fn choose_identity(&self, answered: impl FnOnce(Result<(), String>) + Send + 'static) {
+        self.connection().ask(
+            |id| Request::ChooseIdentity { id },
+            Box::new(move |reply| {
+                answered(match reply {
+                    Reply::Opened { .. } => Ok(()),
+                    Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE.to_owned()),
+                    Reply::Failed { reason, .. } => Err(reason),
+                    _ => Err(OUT_OF_TURN.to_owned()),
+                });
+            }),
+        );
+    }
+
     fn connection(&self) -> &Connection {
         &self.0.connection
     }
@@ -470,9 +524,7 @@ impl crate::UriOpener for ShellOpener {
                 self.elsewhere.open(uri)
             }
             Ok(Reply::Failed { reason, .. }) => Err(std::io::Error::other(reason)),
-            Ok(_) => Err(std::io::Error::other(
-                "the session's shell answered out of turn",
-            )),
+            Ok(_) => Err(std::io::Error::other(OUT_OF_TURN)),
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "the session's shell did not open the link",
@@ -848,7 +900,9 @@ mod tests {
             | Request::OpenUri { id, .. }
             | Request::PickContents { id, .. }
             | Request::ReadContents { id, .. }
-            | Request::ReleaseContents { id, .. } => *id,
+            | Request::ReleaseContents { id, .. }
+            | Request::AwaitIdentity { id }
+            | Request::ChooseIdentity { id } => *id,
         }
     }
 
@@ -1016,6 +1070,36 @@ mod tests {
             self.0.lock().unwrap().push(uri.to_owned());
             Ok(())
         }
+    }
+
+    #[test]
+    fn identity_requests_hear_the_choice_and_whether_the_chooser_opened() {
+        let link = ShellLink::connect(shell(|request| match request {
+            Request::AwaitIdentity { id } => Reply::IdentitySelected { id },
+            Request::ChooseIdentity { id } => Reply::Opened { id },
+            other => Reply::Failed {
+                id: id_of(&other),
+                reason: "unexpected".into(),
+            },
+        }))
+        .unwrap();
+        let (selected_tx, selected) = std::sync::mpsc::channel();
+        link.await_identity(move |outcome| selected_tx.send(outcome).unwrap());
+        assert_eq!(selected.recv_timeout(ANSWER).unwrap(), Ok(()));
+        let (opened_tx, opened) = std::sync::mpsc::channel();
+        link.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
+        assert_eq!(opened.recv_timeout(ANSWER).unwrap(), Ok(()));
+
+        let unattended = ShellLink::connect(shell(|request| Reply::Nobody {
+            id: id_of(&request),
+        }))
+        .unwrap();
+        let (opened_tx, opened) = std::sync::mpsc::channel();
+        unattended.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
+        assert_eq!(
+            opened.recv_timeout(ANSWER).unwrap(),
+            Err(NOBODY_TO_CHOOSE.to_owned())
+        );
     }
 
     #[test]

@@ -22,6 +22,35 @@ mod async_client;
 pub use async_client::AsyncBrokerSigningIdentity;
 pub use runtime_portal::NotAvailable;
 
+/// Why the identity service refused: the workspace the app was launched into
+/// has no identity selected yet. The service says so in
+/// [`wire::NO_IDENTITY_SELECTED`]; a client turns that refusal into this
+/// error (inside [`NotAvailable::ConnectionFailed`], kind permission denied),
+/// so a caller tells it apart from every other refusal with
+/// [`is_no_identity_selected`] rather than by reading the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoIdentitySelected;
+
+impl std::fmt::Display for NoIdentitySelected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(wire::NO_IDENTITY_SELECTED)
+    }
+}
+
+impl std::error::Error for NoIdentitySelected {}
+
+/// Whether `error` is the identity service saying the workspace has no
+/// identity selected ([`NoIdentitySelected`]): someone has to choose one
+/// before the app can join its workspace. Every other failure reads `false`.
+#[must_use]
+pub fn is_no_identity_selected(error: &NotAvailable) -> bool {
+    matches!(
+        error,
+        NotAvailable::ConnectionFailed(error)
+            if error.get_ref().is_some_and(<dyn std::error::Error + Send + Sync>::is::<NoIdentitySelected>)
+    )
+}
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -76,6 +105,10 @@ pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
 pub mod wire {
     use serde::{Deserialize, Serialize};
     use wire_frame::Framing;
+
+    /// What the service refuses with while the workspace the connection is
+    /// bound to has no identity selected (see [`crate::NoIdentitySelected`]).
+    pub const NO_IDENTITY_SELECTED: &str = "no identity selected for this workspace";
 
     /// The launcher's [`Handshake`]: a little-endian `u32` length, then JSON.
     pub const HANDSHAKE_FRAMING: Framing = Framing::little_endian(1024 * 1024);

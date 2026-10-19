@@ -791,3 +791,6 @@ history-mode-restore-change = Nur diese Änderung wiederherstellen
 history-preview-after = Frühere Version, schreibgeschützt
 history-preview-before = Vor dieser Änderung, schreibgeschützt
 history-preview-now = Zurück zu jetzt
+workspace-identity-required-title = Wähle, wer du hier bist
+workspace-identity-required-body = Dieser Arbeitsbereich muss wissen, wer darin arbeitet, bevor { $app } öffnen kann.
+workspace-identity-required-choose = Identität wählen

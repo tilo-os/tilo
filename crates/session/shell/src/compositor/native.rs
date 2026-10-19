@@ -1808,6 +1808,11 @@ fn start_chooser_service(
         presence: Arc::new(move || !unattended || attended.load(Ordering::Acquire)),
         save_directory,
         wake,
+        identity_selected: Arc::new(|room: &str| {
+            crate::identity_registry::selected_identity_profile(room)
+                .map(|profile| profile.is_some())
+                .map_err(|error| error.to_string())
+        }),
     };
     match crate::compositor::chooser_service::ChooserService::start(context) {
         Ok(service) => {
@@ -1862,6 +1867,30 @@ fn pump_chooser_opens(
         let _ = open.reply.send(outcome);
     }
     service.open_requested_links(chrome);
+}
+
+/// Open the identity chooser apps asked for (their workspace has no identity
+/// selected yet), when the asking app's workspace is the one on screen: the
+/// identity is chosen for the workspace in front. Whether one opened.
+fn pump_identity_choosers(
+    service: &crate::compositor::chooser_service::ChooserService,
+    frame_builder: &mut FrameBuilder,
+) -> bool {
+    let mut opened = false;
+    for request in service.drain_identity_choosers() {
+        let active = frame_builder.chrome_handle().borrow().tree().desktop.active;
+        let outcome = if request.caller.workspace_id == active {
+            opened |= frame_builder.host_mut().open_identity_chooser();
+            Ok(())
+        } else {
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
+        };
+        if let Err(reason) = &outcome {
+            tracing::info!(app = %request.caller.app_id, %reason, "identity chooser refused");
+        }
+        let _ = request.reply.send(outcome);
+    }
+    opened
 }
 
 /// Answer an app's request about its own tab. The app id is the one the
@@ -11001,6 +11030,9 @@ pub fn run() {
         }
         if let Some(service) = chooser_service.as_ref() {
             pump_chooser_opens(service, &frame_builder.chrome_handle());
+            if pump_identity_choosers(service, &mut frame_builder) {
+                force_first_paint = true;
+            }
         }
         if let Some(broker) = render_broker.as_ref() {
             broker.sync_rooms();

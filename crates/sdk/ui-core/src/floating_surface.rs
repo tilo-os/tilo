@@ -641,6 +641,20 @@ pub struct FloatingSurfaceServiceClient {
     /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
     rearm_wake: Option<std::sync::mpsc::Sender<()>>,
+    /// The last appearance the shell told: the shell says it once per
+    /// change, so a window this connection is handed to next
+    /// ([`Self::hand_to_next_window`]) hears it from here.
+    appearance: Option<FloatingSurfaceHostMessage>,
+    /// Messages the next [`Self::pump`] answers before reading.
+    replay: Vec<FloatingSurfaceHostMessage>,
+}
+
+#[cfg(all(unix, feature = "local-daemons"))]
+thread_local! {
+    /// The connection of a window that gave its place to the next one,
+    /// until that window takes it ([`FloatingSurfaceServiceClient::for_window`]).
+    static HANDED_OVER: std::cell::RefCell<Option<FloatingSurfaceServiceClient>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(unix)]
@@ -662,6 +676,48 @@ impl FloatingSurfaceServiceClient {
         Self::from_stream_waking(UnixStream::from(owned), move || wake.wake()).ok()
     }
 
+    /// The connection a new window takes: the one the window before it
+    /// handed over ([`Self::hand_over`]), else the one the launcher handed
+    /// this process ([`Self::discover`]).
+    pub(crate) fn for_window() -> Option<Self> {
+        #[cfg(feature = "local-daemons")]
+        if let Some(mut client) = HANDED_OVER.with(|slot| slot.borrow_mut().take()) {
+            client.hand_to_next_window();
+            return Some(client);
+        }
+        Self::discover()
+    }
+
+    /// Keep this connection for the next window the process opens, instead
+    /// of closing it with this one: the launcher hands each process one
+    /// connection, and a window that gives its place to the next
+    /// (`crate::workspace_identity`) gives it its connection too.
+    #[cfg(feature = "local-daemons")]
+    #[cfg_attr(
+        not(all(target_os = "linux", feature = "native")),
+        expect(dead_code, reason = "only a Linux window gives its place to the next")
+    )]
+    pub(crate) fn hand_over(self) {
+        HANDED_OVER.with(|slot| *slot.borrow_mut() = Some(self));
+    }
+
+    /// Hand this connection to the next window of the process: the window a
+    /// launch opens in place of one that waited for its workspace's identity
+    /// (`crate::workspace_identity`). The connection, and the version it
+    /// said, carry over; the shell's unprompted messages wake the window in
+    /// front from now on, and it hears the appearance the last one was told.
+    #[cfg(feature = "local-daemons")]
+    fn hand_to_next_window(&mut self) {
+        let wake = crate::wake::WakeHandle::new();
+        match spawn_readable_watcher(&self.stream, move || wake.wake()) {
+            Ok(rearm) => self.rearm_wake = Some(rearm),
+            Err(error) => {
+                tracing::warn!(%error, "the next window does not wake for the shell's messages");
+            }
+        }
+        self.replay.extend(self.appearance.clone());
+    }
+
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
     /// something the app has not read yet: one wake, then nothing until the
     /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
@@ -671,51 +727,7 @@ impl FloatingSurfaceServiceClient {
         stream: UnixStream,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
-        use std::os::fd::AsRawFd as _;
-        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
-        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-        // Its own descriptor for the same socket: closing the client's never
-        // leaves the watcher polling a number the process reused.
-        let watched = stream.try_clone()?;
-        let (rearm, armed) = std::sync::mpsc::channel::<()>();
-        tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
-            loop {
-                let mut readable = libc::pollfd {
-                    fd: watched.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
-                // SAFETY: one valid pollfd for a descriptor this thread owns.
-                let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
-                if ready < 0 {
-                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return;
-                }
-                if ready == 0 {
-                    // Idle: stop once the client is gone. A rearm that
-                    // arrives while armed means nothing.
-                    match armed.try_recv() {
-                        Err(TryRecvError::Disconnected) => return,
-                        Ok(()) | Err(TryRecvError::Empty) => continue,
-                    }
-                }
-                wake();
-                if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                    return;
-                }
-                loop {
-                    match armed.recv_timeout(POLL) {
-                        Ok(()) => break,
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                }
-                while armed.try_recv().is_ok() {}
-            }
-        })?;
+        let rearm = spawn_readable_watcher(&stream, wake)?;
         let mut client = Self::from_stream(stream)?;
         client.rearm_wake = Some(rearm);
         Ok(client)
@@ -748,6 +760,8 @@ impl FloatingSurfaceServiceClient {
             outgoing_bytes: 0,
             #[cfg(any(test, feature = "local-daemons"))]
             rearm_wake: None,
+            appearance: None,
+            replay: Vec::new(),
         };
         client
             .send(&FloatingSurfaceClientMessage::Hello {
@@ -820,7 +834,7 @@ impl FloatingSurfaceServiceClient {
             let _ = rearm.send(());
         }
 
-        let mut messages = Vec::new();
+        let mut messages = std::mem::take(&mut self.replay);
         while let Some(newline) = self.incoming.iter().position(|byte| *byte == b'\n') {
             let frame: Vec<u8> = self.incoming.drain(..=newline).collect();
             let payload = frame.get(..newline).unwrap_or_default();
@@ -834,6 +848,9 @@ impl FloatingSurfaceServiceClient {
                     "the shell speaks shell-ui version {shell}, this app \
                      {FLOATING_SURFACE_PROTOCOL_VERSION}; the shell updates the one behind"
                 ));
+            }
+            if matches!(message, FloatingSurfaceHostMessage::Appearance { .. }) {
+                self.appearance = Some(message.clone());
             }
             messages.push(message);
         }
@@ -866,6 +883,63 @@ impl FloatingSurfaceServiceClient {
     }
 }
 
+/// Watch `stream` for what the shell writes, calling `wake` once each time
+/// it has written something the app has not read yet; the app rearms the
+/// watch through the returned sender after reading, and dropping it stops
+/// the watcher within one poll interval.
+#[cfg(all(unix, any(test, feature = "local-daemons")))]
+fn spawn_readable_watcher(
+    stream: &UnixStream,
+    wake: impl Fn() + Send + 'static,
+) -> std::io::Result<std::sync::mpsc::Sender<()>> {
+    use std::os::fd::AsRawFd as _;
+    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+    // Its own descriptor for the same socket: closing the client's never
+    // leaves the watcher polling a number the process reused.
+    let watched = stream.try_clone()?;
+    let (rearm, armed) = std::sync::mpsc::channel::<()>();
+    tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
+        loop {
+            let mut readable = libc::pollfd {
+                fd: watched.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
+            // SAFETY: one valid pollfd for a descriptor this thread owns.
+            let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return;
+            }
+            if ready == 0 {
+                // Idle: stop once the client is gone. A rearm that
+                // arrives while armed means nothing.
+                match armed.try_recv() {
+                    Err(TryRecvError::Disconnected) => return,
+                    Ok(()) | Err(TryRecvError::Empty) => continue,
+                }
+            }
+            wake();
+            if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return;
+            }
+            loop {
+                match armed.recv_timeout(POLL) {
+                    Ok(()) => break,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            while armed.try_recv().is_ok() {}
+        }
+    })?;
+    Ok(rearm)
+}
+
 /// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
 /// the optional client API available so applications compile and naturally
 /// retain their attached in-window surface.
@@ -875,6 +949,10 @@ pub struct FloatingSurfaceServiceClient;
 #[cfg(not(unix))]
 impl FloatingSurfaceServiceClient {
     pub fn discover() -> Option<Self> {
+        None
+    }
+
+    pub(crate) fn for_window() -> Option<Self> {
         None
     }
 
