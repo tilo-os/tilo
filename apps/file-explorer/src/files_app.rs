@@ -9700,6 +9700,72 @@ impl EntryIds {
     }
 }
 
+impl FileExplorerWidget {
+    /// When the listing is next read: its poll, or the read a reported
+    /// change asked for once its gap has passed
+    /// ([`Self::refresh_metadata_if_due`]).
+    fn listing_deadline(&self) -> Option<Instant> {
+        // A rename or pin drag defers the read; its end is input of its own,
+        // and a due deadline here would only spin until then.
+        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
+        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
+            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+        });
+        [self.next_metadata_refresh, changed_directory]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// Every deadline besides the listing's, which the sync serves.
+    fn other_deadline(&self) -> Option<Instant> {
+        let document_open_reply = self
+            .pending_document_open
+            .as_ref()
+            .and_then(|(token, reply)| {
+                reply
+                    .try_borrow()
+                    .ok()
+                    .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
+            });
+        // Nearby Send asks only when the shell announces a change; the asks
+        // that announcement queued go out on the next pump, at once.
+        self.nearby_send
+            .has_requests()
+            .then(Instant::now)
+            .into_iter()
+            .chain(document_open_reply)
+            .chain(
+                (!self.open_queue.is_empty()
+                    && self.pending_document_open.is_none()
+                    && self.pending_launch.is_none())
+                .then(Instant::now),
+            )
+            .chain(self.local_clipboard.next_wake())
+            .chain(self.drives.next_wake())
+            .chain(self.notice.deadline())
+            .chain((!self.incoming.is_empty()).then(Instant::now))
+            .chain(
+                self.preview
+                    .as_ref()
+                    .filter(|preview| preview.is_loading())
+                    .map(|_| Instant::now() + Duration::from_millis(50)),
+            )
+            .chain(
+                crate::file_ops::active_transfers()
+                    .first()
+                    .and_then(|transfer| transfer.started)
+                    .map(|started| {
+                        (started + TRANSFER_SHOWN_AFTER)
+                            .max(Instant::now() + Duration::from_millis(250))
+                    }),
+            )
+            .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))
+            .chain(self.nav.next_wake_deadline())
+            .min()
+    }
+}
+
 #[path = "native_observer.rs"]
 mod native_observer;
 
@@ -9984,58 +10050,21 @@ impl Widget for FileExplorerWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let document_open_reply = self
-            .pending_document_open
-            .as_ref()
-            .and_then(|(token, reply)| {
-                reply
-                    .try_borrow()
-                    .ok()
-                    .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
-            });
-        // A rename or pin drag defers the read; its end is input of its own,
-        // and a due deadline here would only spin until then.
-        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
-        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
-            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
-        });
-        // Nearby Send asks only when the shell announces a change; the asks
-        // that announcement queued go out on the next pump, at once.
-        self.nearby_send
-            .has_requests()
-            .then(Instant::now)
+        [self.listing_deadline(), self.other_deadline()]
             .into_iter()
-            .chain(self.next_metadata_refresh)
-            .chain(changed_directory)
-            .chain(document_open_reply)
-            .chain(
-                (!self.open_queue.is_empty()
-                    && self.pending_document_open.is_none()
-                    && self.pending_launch.is_none())
-                .then(Instant::now),
-            )
-            .chain(self.local_clipboard.next_wake())
-            .chain(self.drives.next_wake())
-            .chain(self.notice.deadline())
-            .chain((!self.incoming.is_empty()).then(Instant::now))
-            .chain(
-                self.preview
-                    .as_ref()
-                    .filter(|preview| preview.is_loading())
-                    .map(|_| Instant::now() + Duration::from_millis(50)),
-            )
-            .chain(
-                crate::file_ops::active_transfers()
-                    .first()
-                    .and_then(|transfer| transfer.started)
-                    .map(|started| {
-                        (started + TRANSFER_SHOWN_AFTER)
-                            .max(Instant::now() + Duration::from_millis(250))
-                    }),
-            )
-            .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))
-            .chain(self.nav.next_wake_deadline())
+            .flatten()
             .min()
+    }
+
+    // The listing's poll and change reads are served here: the directory is
+    // read again and compared, and only a listing that changed (or trusted
+    // identities, or the collaborative catalogue) asks for a sync. Any other
+    // due deadline is the sync's.
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        if self.other_deadline().is_some_and(|due| due <= now) {
+            return true;
+        }
+        self.refresh_metadata_if_due(now)
     }
 
     fn build_layout(

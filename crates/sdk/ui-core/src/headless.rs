@@ -3308,6 +3308,14 @@ impl FrameHarness {
             && !updated
             && !structure_changed
             && !crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
+        // A deadline the widgets asked for is served as the live window
+        // serves it: the frame syncs and publishes only when serving it
+        // changed something ([`Widget::serve_deadline`]).
+        let now = crate::time::now();
+        let deadline_served = quiet
+            && self.root.next_wake_deadline().is_some_and(|due| due <= now)
+            && self.root.serve_deadline(now);
+        let quiet = quiet && !deadline_served;
         if quiet {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
@@ -3319,6 +3327,8 @@ impl FrameHarness {
                     "ui.loud.history"
                 } else if updated {
                     "ui.loud.update"
+                } else if deadline_served {
+                    "ui.loud.deadline"
                 } else if structure_changed {
                     "ui.loud.structure"
                 } else {

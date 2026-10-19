@@ -4396,7 +4396,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // poll found nothing and still presented at ~2 Hz because
             // `needs_sync` forced a full redraw.
             let updated = app.update_native_model();
-            let _ = app.sync_model(true);
+            // A deadline of the host's own (a long press, an input capture,
+            // presence) syncs; one the widgets asked for syncs only when
+            // serving it changed something ([`Widget::serve_deadline`]): a
+            // directory poll that found nothing reads nothing again and
+            // keeps the published tree.
+            let now = crate::time::now();
+            let host_due = self
+                .touch_pointer
+                .long_press_deadline()
+                .into_iter()
+                .chain(app.local_input_capture_deadline())
+                .chain(app.presence_ctx.interaction_next_wake_deadline(now))
+                .any(|due| due <= now);
+            let widget_due = app
+                .root_widget
+                .next_wake_deadline()
+                .is_some_and(|due| due <= now);
+            if updated || host_due || !widget_due || app.root_widget.serve_deadline(now) {
+                let _ = app.sync_model(true);
+            }
             let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
                 updated || structure || app.layout.layout_dirty,

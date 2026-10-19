@@ -2275,6 +2275,17 @@ pub trait Widget {
         defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
     }
 
+    /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is
+    /// due at `now`: do the work it was for, and say whether anything the
+    /// subtree shows or publishes changed. The host syncs, and drops the
+    /// published resource tree, only when it did: a poll that found nothing
+    /// costs nothing more. The default says it did, so the host syncs as for
+    /// any wake; a widget overrides it only where it serves here every
+    /// deadline it asks for and reports every change that serving makes.
+    fn serve_deadline(&mut self, _now: Instant) -> bool {
+        true
+    }
+
     /// `Some(rect)` when this subtree holds an *open* modal, its panel box.
     /// While any widget reports `Some`, the host suppresses its own global
     /// focus shortcuts and swallows unhandled pointer presses so nothing

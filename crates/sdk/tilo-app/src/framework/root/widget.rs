@@ -258,6 +258,19 @@ impl Decorator for RootWidget {
             || self.0.save_indicator().is_visible(ui_core::time::now())
     }
 
+    // The save status's deadline is the sync's; the view serves its own.
+    fn serve_deadline(&mut self, now: ui_core::time::Instant) -> bool {
+        if self
+            .0
+            .save_indicator()
+            .next_wake_deadline()
+            .is_some_and(|due| due <= now)
+        {
+            return true;
+        }
+        self.0.view_mut().serve_deadline(now)
+    }
+
     fn next_wake_deadline(&self) -> Option<ui_core::time::Instant> {
         let view = self.0.view().next_wake_deadline();
         match (view, self.0.save_indicator().next_wake_deadline()) {

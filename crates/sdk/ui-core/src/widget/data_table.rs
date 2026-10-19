@@ -1724,10 +1724,10 @@ impl DataTableCore {
             .iter()
             .enumerate()
             .map(|(index, row)| {
-                let value = self
-                    .row_key
-                    .as_ref()
-                    .map_or_else(|| u64::try_from(index).unwrap_or(u64::MAX), |key| key(&**row));
+                let value = self.row_key.as_ref().map_or_else(
+                    || u64::try_from(index).unwrap_or(u64::MAX),
+                    |key| key(&**row),
+                );
                 let occurrence = occurrences.entry(value).or_default();
                 let identity = RowIdentity {
                     value,

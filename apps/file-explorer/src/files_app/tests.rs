@@ -7568,3 +7568,31 @@ fn an_unchanged_entry_publishes_the_row_it_published() {
         "an unchanged entry's row is kept"
     );
 }
+
+/// The listing's poll is served without a sync: a read that finds the folder
+/// as it was asks for nothing (no sync, nothing republished), and one that
+/// finds a new file asks for the sync that shows it.
+#[test]
+fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
+    let mut files = FileExplorerWidget::new();
+    files.navigate(directory.path().to_path_buf());
+    files.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
+    let now = Instant::now();
+    let long_ago = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+    files.directory_changed = true;
+    files.last_directory_read = long_ago;
+    assert!(
+        !files.serve_deadline(now),
+        "the folder is as it was: no sync"
+    );
+    std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
+    files.directory_changed = true;
+    files.last_directory_read = long_ago;
+    assert!(
+        files.serve_deadline(now),
+        "a new file asks for the sync that shows it"
+    );
+    assert!(files.entries.iter().any(|entry| entry.name == "b.txt"));
+}

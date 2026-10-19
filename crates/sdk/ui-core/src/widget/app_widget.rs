@@ -1328,6 +1328,25 @@ mod component_adapter {
                     .as_deref()
                     .is_some_and(Widget::has_transient_feedback)
         }
+        // The save status's deadline is the sync's; the component's root
+        // serves its own, inside the component's scope.
+        fn serve_deadline(&mut self, now: Instant) -> bool {
+            if self
+                .component
+                .save_status_wake_deadline()
+                .is_some_and(|due| due <= now)
+            {
+                return true;
+            }
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return true;
+            };
+            self.component
+                .root
+                .as_deref_mut()
+                .is_none_or(|root| root.serve_deadline(now))
+        }
         fn next_wake_deadline(&self) -> Option<Instant> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

@@ -490,6 +490,7 @@ decorator_trait! {
         fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
         fn sync(state: &AppModel, path: &ModelPath);
         fn update(state: &AppModel, path: &ModelPath) -> bool;
+        fn serve_deadline(now: Instant) -> bool;
         fn settle(edits: &mut crate::widget::Edits<'_>, path: &automerge::ObjId);
         fn measure(
             known: taffy::Size<Option<f32>>,
