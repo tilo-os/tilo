@@ -406,7 +406,7 @@ fn short(hash: &str) -> &str {
 /// The rest of [`describe_apply`] for a laptop's `device` slot, the owner's
 /// login: what merged, which services and desktops restarted, or why not.
 fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
-    text.push_str("; merged into the machine's /usr with systemd-sysext");
+    text.push_str("; signed and merged into the machine's /usr");
     let services: Vec<&str> = result
         .actions
         .iter()
@@ -482,7 +482,7 @@ pub fn describe_apply(result: &ApplyResult) -> String {
                     _ => None,
                 })
                 .collect();
-            text.push_str("; VM /usr refreshed with systemd-sysext");
+            text.push_str("; signed and merged into the VM's /usr");
             if !units.is_empty() {
                 let _ = write!(text, "; restarted {}", units.join(", "));
             }
@@ -501,7 +501,7 @@ pub fn describe_apply(result: &ApplyResult) -> String {
             }
         }
         Policy::Reboot => {
-            text.push_str("; VM /usr refreshed with systemd-sysext");
+            text.push_str("; signed and merged into the VM's /usr");
             match result.boot.as_ref() {
                 Some(boot) => match (&boot.kver, &boot.entry) {
                     (Some(kver), Some(entry)) => {
@@ -7518,8 +7518,8 @@ mod tests {
             login.slot = "device".into();
             assert_eq!(
                 describe_apply(&login),
-                "generation 4 applied to slot device; merged into the machine's /usr with \
-                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
+                "generation 4 applied to slot device; signed and merged into the machine's /usr; \
+                 me's desktop restarted in place (still logged in; apps reopen)"
             );
             let vm = describe_apply(&result(
                 Policy::VmRefresh,

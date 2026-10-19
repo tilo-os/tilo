@@ -93,10 +93,13 @@ Unsaved work in an app that does not keep its state is lost, so on a machine
 someone is using, say before you swap.
 
 greetd runs the login in the machine's own mount namespace, so the slot's
-layers merge into the machine's `/usr` with `systemd-sysext`, together with
-the `vm` slot's: every process that starts afterwards sees them, the greeter
-and other accounts included, and they stay merged across reboots until a
-rollback removes them. `vm ssh -- sha256sum /usr/bin/shell` shows the same
+layers merge into the machine's `/usr` as signed layers, together with the
+`vm` slot's, through the system extension activation that also merges a
+production device's extensions: every process that starts afterwards sees
+them, the greeter and other accounts included, and they stay merged across
+reboots until a rollback removes them. The machine merges only layers signed
+by a key its owner enrolled: once per machine, `tilo-vm --target yoga trust
+enroll` (`tilo-vm guide trust`). `vm ssh -- sha256sum /usr/bin/shell` shows the same
 file as `slot exec`.
 
 If the new desktop does not come back, the swap fails with the journal and

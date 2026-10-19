@@ -64,12 +64,13 @@ CPUs, because the host usually runs other builds; `--jobs` or
 
 1. The staged `usr/lib/modules/<release>/` is synced to the VM (rsync, only
    what changed) and imported as a layer in the `vm` slot: a new generation,
-   like any VM-wide swap. systemd-sysext merges it, so the modules are in
-   `/usr/lib/modules/<release>/`.
+   like any VM-wide swap. It is signed and merged as a signed layer by the
+   system extension activation (`tilo-vm guide trust`), so the modules are
+   in `/usr/lib/modules/<release>/`.
 2. tilo-vmd builds the initramfs in the VM with the image's own dracut,
    against those modules, with the arguments `os/Containerfile` builds the
    image's initramfs with, plus overlayfs loaded early (`--force-drivers
-   overlay`: systemd-sysext needs it to merge the layer that carries it).
+   overlay`: the merge needs it to overlay the layer that carries it).
    vmlinuz and the initramfs go to
    `/boot/tilo-vm/<entry>/`, with a boot loader entry
    `tilo-vm-<release>-<layer>.conf` that takes the running command line.
@@ -81,9 +82,9 @@ CPUs, because the host usually runs other builds; `--jobs` or
    the VM: the old default boots, and the error says so.
 
 The previous default entry stays as the fallback, and the image's own
-kernel entry is never touched. Modules load from the layer only after
-systemd-sysext has merged it at boot; a drop-in
-(`systemd-sysext.service.d/50-tilo-vm-kernel.conf`) then re-triggers udev
+kernel entry is never touched. Modules load from the layer only after the
+activation has verified and merged it at boot; a drop-in
+(`tilo-extension-activate.service.d/50-tilo-vm-kernel.conf`) then re-triggers udev
 and `systemd-modules-load`, so drivers requested earlier (the virtio NIC,
 vkms, uinput) load. Drivers the root filesystem needs are built in or in the
 initramfs.
@@ -129,8 +130,8 @@ everything else. The VM keeps booting that kernel until
   the cache: the tree and its objects take about 5 GB, the staged modules
   about 120 MB);
 - a VM that boots with systemd-boot (the Tilo dev image) or GRUB with BLS
-  entries in `/boot/loader/entries`, with `systemd-sysext.service` enabled
-  (the dev image does);
+  entries in `/boot/loader/entries`, with `tilo-extension-activate.service`
+  enabled (the dev image does);
 - for `--direct`: the libvirt adapter.
 
 Other boot components (initramfs on its own, UKI sealing, bootloader,

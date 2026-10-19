@@ -144,6 +144,35 @@ next boot, to a layer `tilo-extension live:*` built under
 `/var/lib/tilo/live-update/layers` from the staged image it mounted with its
 fs-verity digest (docs/architecture/compatibility.md).
 
+### Signed layers
+
+The activation also merges *signed layers*: read-only `/usr` (and `/opt`)
+trees that an extension authority the owner enrolled has signed. It is how a
+development machine's tilo-vm layers reach `/usr` (`tilo-vm guide trust`);
+nothing else on the device produces them.
+
+* `/etc/tilo/extension-authorities.d/<name>.pub` is the owner's trust: one
+  Ed25519 public key per file, PEM `PUBLIC KEY` (what `openssl pkey -pubout`
+  writes), root-owned and writable by no one else. Images ship it empty;
+  `tilo-security-audit` lists every authority by fingerprint (`sha256:` of the
+  key's SubjectPublicKeyInfo) and fails a production image that has one.
+* `/var/lib/tilo/signed-layers/<name>/` is the desired set: `manifest.json`,
+  `manifest.json.sig` (base64 Ed25519 over `tilo.signed-layer.v1\0` and the
+  manifest's exact bytes) and `payload`, a link to the tree. Nothing there is
+  trusted.
+* At every activation, for each entry: the signature against the enrolled
+  authorities, before the manifest is parsed; the manifest (`type`
+  `tilo.signed-layer`, schema 1, the entries hashing to `content_sha256`);
+  then the tree: every file by its kernel-measured fs-verity digest when it is
+  sealed with the signed one, by its SHA-256 otherwise; every link target and
+  executable bit; the exact extension-release; nothing added or missing; no
+  set-id bit; everything owned by root and writable by no one else. A layer
+  that passes is linked as `/run/extensions/<name>`; one that does not is
+  left out and named, with the reason, in `/run/tilo/signed-layers.json` and
+  the journal, and the activation exits 1. The others still merge.
+* `crates/system/layer-trust` holds the format and both sides of the check
+  (`describe` seals and describes, `verify_payload` checks).
+
 `/usr/libexec/tilo-extension` (built from `crates/system/extension-helper`)
 is the only consumer. It takes exactly one
 argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
@@ -297,6 +326,9 @@ administrator; the existing polkit rule already allows it).
 | `/var/cache/tilo-extension/<id>/partial/<sha256>` | Downloads in progress, resumed by byte offset |
 | `/var/lib/extensions/<part>` | The parts as last rebuilt by activation |
 | `/etc/tilo/extensions/opt-in/<id>` | The installer's handoff of an opt-in, adopted once |
+| `/etc/tilo/extension-authorities.d/<name>.pub` | Extension authorities the owner enrolled (empty on production) |
+| `/var/lib/tilo/signed-layers/<name>/` | Desired signed layers: manifest, signature, payload link |
+| `/run/tilo/signed-layers.json` | What the last activation merged and refused |
 
 Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 `installing`, `installed`, `removing`, `failed`), `desired`, `progress`
