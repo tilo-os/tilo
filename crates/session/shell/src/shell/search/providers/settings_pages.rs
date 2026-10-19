@@ -151,7 +151,6 @@ impl SettingsPagesProvider {
         }
         let pages = rows.len();
         let mut setting_pages = Vec::new();
-        let app = t("search-settings-page-subtitle");
         for setting in index::SETTINGS {
             if QUICK_ACTION_SETTINGS.contains(&setting.id) {
                 continue;
@@ -186,7 +185,9 @@ impl SettingsPagesProvider {
                 kind,
                 format!("setting:{}", setting.id),
                 name,
-                vec![page_title.clone(), app.clone()],
+                // The page is what tells two settings apart; the app is
+                // already the section the row stands in.
+                vec![page_title.clone()],
                 setting.link(),
             ));
         }

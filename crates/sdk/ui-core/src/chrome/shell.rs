@@ -397,8 +397,21 @@ pub fn panel_ground(theme: &Theme) -> Color {
 /// The edge around a floating [`ChromeRole::Panel`]. See
 /// [`PANEL_BORDER_ALPHA`].
 pub fn panel_border(theme: &Theme) -> Color {
-    Colors::hairline_on(theme.tokens.colors.surfaces.base, PANEL_BORDER_ALPHA)
+    // The full-strength edge is for high contrast, where it is the only thing
+    // separating a panel. Elsewhere the panel's ground, shadow and inner
+    // light edge already do; a bright line on top read as a frame drawn
+    // around the panel rather than its edge.
+    let alpha = if theme.high_contrast {
+        PANEL_BORDER_ALPHA
+    } else {
+        PANEL_BORDER_QUIET_ALPHA
+    };
+    Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
 }
+
+/// The panel edge outside high contrast: about a sixth, so the edge reads as
+/// the panel's own and not a line around it.
+pub const PANEL_BORDER_QUIET_ALPHA: u8 = 40;
 
 /// Lay down a floating panel's elevation, clipped to the ring *outside*
 /// its own silhouette. The shadow is [`crate::surface::shadow`], a blur of
