@@ -118,9 +118,10 @@ fn production_provision_preserves_payload_and_matches_native_partition_reader() 
         partition["size"].as_u64(),
         Some(result.last_lba - result.first_lba + 1)
     );
+    // GUIDs compare without case: sfdisk prints them in capitals.
     assert_eq!(
-        partition["uuid"].as_str(),
-        Some(result.partition_guid.as_str())
+        partition["uuid"].as_str().map(str::to_ascii_lowercase),
+        Some(result.partition_guid.to_ascii_lowercase())
     );
 }
 #[test]
