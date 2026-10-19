@@ -12,12 +12,13 @@ pub(crate) struct Binding {
     workspace: String,
 }
 impl Binding {
+    /// Whether this resolution names the channel `value` binds: the same
+    /// app, record and channel id. The channel's object and the workspace it
+    /// once named are recorded, not compared: the object changes when two
+    /// devices made the same channel and the document keeps both copies, and
+    /// Chat no longer has workspaces of its own, so neither identifies it.
     pub(crate) fn matches(&self, value: &ChatCallBindingV1) -> bool {
-        self.app == value.app_id
-            && self.record == value.record_id
-            && self.channel == value.channel_id
-            && self.object == value.channel_object
-            && self.workspace == value.chat_workspace_id
+        value.names_channel(&self.app, &self.record, &self.channel)
     }
 
     pub(super) fn into_legacy(self) -> ChatCallBindingV1 {
@@ -103,7 +104,10 @@ fn resolve<R: ObjectIdWrite>(
     // key and, under `v`, the channel itself.
     let channels = read::strict_map(room, &room.root(), "channels").map_err(strict_error)?;
     let entry = read::strict_map(room, &channels, channel).map_err(strict_error)?;
-    let object = read::strict_map(room, &entry, "v").map_err(strict_error)?;
+    // Two devices that made the same channel (a room's first `#voice`) each
+    // wrote its value; the document keeps both and every replica reads the
+    // same winner, as Chat itself does.
+    let object = winner_map(room, &entry, "v")?;
     if read::strict_string(room, &object, "kind").map_err(strict_error)? != "voice" {
         return Err(policy(MediaPolicyError::Binding));
     }
@@ -133,7 +137,7 @@ fn resolve<R: ObjectIdWrite>(
         })
         .transpose()?;
     let object_copy = object_text.map(str::to_owned);
-    let workspace = read::strict_string(room, &object, "workspace").map_err(strict_error)?;
+    let workspace = former_workspace(room, &object)?;
     let object = object_copy.ok_or_else(|| policy(MediaPolicyError::Binding))?;
     validate_fields(&app, &record, &channel, &object, &workspace).map_err(policy)?;
     Ok(Binding {
@@ -204,6 +208,40 @@ pub(crate) fn validate_native(
         resolve_native(app, record, channel, doc)
     })
 }
+/// The winning map value of `key` under `parent`.
+fn winner_map<R: RoomRead>(room: &R, parent: &R::Object, key: &str) -> Result<R::Object, Error> {
+    let mut result = None;
+    room.visit_property(parent, key, Selection::Winner, |value| match value {
+        RoomValue::Object {
+            kind: automerge::ObjType::Map,
+            object,
+        } => {
+            result = Some(object);
+            Ok(())
+        }
+        _ => Err(policy(MediaPolicyError::Binding)),
+    })
+    .map_err(visit_error)?;
+    result.ok_or_else(|| policy(MediaPolicyError::Binding))
+}
+
+/// The workspace a channel of a chat that still had workspaces named, or
+/// empty: Chat runs in its room and its channels name none. A value that is
+/// present but no text is malformed.
+fn former_workspace<R: RoomRead>(room: &R, object: &R::Object) -> Result<String, Error> {
+    let mut result = None;
+    room.visit_property(object, "workspace", Selection::All, |value| match value {
+        RoomValue::Str(text) if result.as_deref().is_none_or(|prior| prior == text) => {
+            result = Some(text.to_owned());
+            Ok(())
+        }
+        RoomValue::Str(_) => Err(policy(MediaPolicyError::Conflict)),
+        _ => Err(policy(MediaPolicyError::Malformed)),
+    })
+    .map_err(visit_error)?;
+    Ok(result.unwrap_or_default())
+}
+
 pub(super) fn validate_fields(
     app: &str,
     record: &str,
@@ -215,7 +253,7 @@ pub(super) fn validate_fields(
     if app != "so.tilo.chat"
         || !super::text_valid(record, super::MAX_RECORD_BYTES, true)
         || !super::text_valid(channel, super::MAX_CHANNEL_BYTES, false)
-        || !super::text_valid(workspace, super::MAX_CHANNEL_BYTES, false)
+        || !super::text_valid(workspace, super::MAX_CHANNEL_BYTES, true)
         || !super::text_valid(object, super::MAX_OBJECT_BYTES, false)
     {
         return Err(MediaPolicyError::Binding);
