@@ -150,15 +150,19 @@ impl FileExplorerWidget {
             // The host, not this command bus, mints the original addressed
             // invocation. Both pointer and keyboard submenu activation use this
             // same current published OpenWith action as the full chooser.
-            self.selected_open.control = Some(ui::tilo_actions::ControlInvocation {
-                address: crate::effects::FilesEffect::OPEN_WITH.on(&*resource),
-                arguments: serde_json::Map::from_iter([
-                    ("app".into(), app_id.into()),
-                    ("always".into(), false.into()),
-                    ("access".into(), "read-only".into()),
-                ]),
-            });
-            return true;
+            if let Some(address) =
+                ui::tilo_actions::ActionAddress::checked(&*resource, OPEN_WITH_ACTION)
+            {
+                self.selected_open.control = Some(ui::tilo_actions::ControlInvocation {
+                    address,
+                    arguments: serde_json::Map::from_iter([
+                        ("app".into(), app_id.into()),
+                        ("always".into(), false.into()),
+                        ("access".into(), "read-only".into()),
+                    ]),
+                });
+                return true;
+            }
         }
         let Some(route) = self.open_with_route() else {
             self.status = Some(t_args("files-open-with-unavailable", &[arg("name", name)]));

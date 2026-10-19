@@ -104,15 +104,10 @@ impl Invocation {
         if self.app.is_empty() || self.app.contains(':') {
             return Err(invalid("not an application id"));
         }
-        if self.resource.is_empty() || self.action.is_empty() {
-            return Err(invalid("not an action"));
-        }
         // A separator in either half would name another address than the
         // one checked here once it is carried as one string.
-        let address = ActionAddress::new(self.resource.clone(), self.action.clone());
-        if ActionAddress::parse(&address.encode()).as_ref() != Some(&address) {
-            return Err(invalid("not an action"));
-        }
+        let address = ActionAddress::checked(&self.resource, &self.action)
+            .ok_or_else(|| invalid("not an action"))?;
         Ok(Checked {
             device,
             app: self.app.clone(),
