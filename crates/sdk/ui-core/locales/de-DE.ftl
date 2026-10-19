@@ -164,7 +164,7 @@ history-chip-access = Zugriff
 history-chip-access-short = Zugriff
 history-chip-deletions = Löschungen
 history-chip-deletions-short = Lösch.
-history-op-splice = Text / Struktur
+history-op-splice = Text und Struktur
 history-op-edit-meta = Metadaten
 history-op-move = Verschieben
 history-op-comment = Kommentare
@@ -583,7 +583,7 @@ block-editor-replace-placeholder = Ersetzen durch
 block-editor-replace = Ersetzen
 
 block-editor-replace-all = Alle ersetzen
-block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld
+block-editor-replace-all-help = Umschalt+Enter im Ersetzungsfeld ersetzt alle
 
 block-callout-note = Hinweis
 block-callout-tip = Tipp
@@ -654,7 +654,7 @@ terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht �
 framework-unreadable = Dies kann nicht geöffnet werden
 display-arrangement-offline = Offline
 display-arrangement-excluded = Nicht im Layout
-display-arrangement-offline-excluded = Offline · Nicht im Layout
+display-arrangement-offline-excluded = Offline, nicht in der Anordnung
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
 
