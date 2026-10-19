@@ -5864,6 +5864,37 @@ pub fn set_pending_placement_for_identities(
     });
 }
 
+/// The launch noted under `noted` turned out to be the host app `key` (a
+/// restored window whose app is a `.desktop` entry, not a package): carry
+/// that same note over to the host app's key and window identities instead
+/// of noting the launch a second time. Two notes for one launch left the
+/// second waiting, ready to pull the next window of that app into the
+/// restored tab. `false` when there was no unclaimed note under `noted`.
+pub fn retarget_pending_placement(noted: &str, key: &str, identities: &[String]) -> bool {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == noted && note.claimed_by.is_none())
+    else {
+        return false;
+    };
+    key.clone_into(&mut note.key);
+    for identity in identities {
+        if !note
+            .identities
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(identity))
+        {
+            note.identities.push(identity.clone());
+        }
+    }
+    drop(pending);
+    lock(&session.awaiting_window).insert(key.to_string());
+    true
+}
+
 /// Automatic restoration waits for the preceding window of this app to map.
 /// The existing launch failure and expiry paths retire unanswered placements;
 /// claimed placements remain briefly for the compositor's second lookup.
@@ -6898,6 +6929,43 @@ mod tests {
         let deadline = lock(&LaunchSession::current().pending)[0].present_before;
         assert_eq!(expire_pending_placements_at(deadline), vec![package]);
         assert!(!has_unclaimed_launch(package));
+        clear_pending_placements();
+    }
+
+    /// Restoring a host app's window notes the launch for its tab, finds
+    /// the app is a `.desktop` entry, and launches that: still one launch.
+    /// A second note stayed queued and would pull the next window of the
+    /// app, opened by the person, into the restored tab.
+    #[test]
+    fn a_restored_host_window_is_noted_once_under_the_host_apps_identities() {
+        use crate::shell::tab_binding::Placement;
+        clear_pending_placements();
+        let noted = "dev.tilo.restored-host";
+        set_pending_placement(noted, Placement::IntoTab(77));
+        assert!(retarget_pending_placement(
+            noted,
+            "org.example.Terminal",
+            &["Terminal".to_string(), "org.example.Terminal".to_string()],
+        ));
+        assert_eq!(
+            lock(&LaunchSession::current().pending).len(),
+            1,
+            "one launch, one note"
+        );
+        assert_eq!(
+            placement_for_toplevel("Terminal", 501),
+            Some(Placement::IntoTab(77)),
+            "the restored window lands in its tab, found by the host app's identity"
+        );
+        assert_eq!(
+            placement_for_toplevel("Terminal", 502),
+            None,
+            "the next window of the app is the person's own, not the restored tab's"
+        );
+        assert!(
+            !retarget_pending_placement("dev.tilo.never-noted", "x", &[]),
+            "nothing noted: the caller notes the launch itself"
+        );
         clear_pending_placements();
     }
 

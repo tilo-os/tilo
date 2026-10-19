@@ -794,7 +794,15 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
                 && matches!(err, launcher::LaunchError::NotInstalled { .. })
                 && let Some(app) = crate::shell::host_apps::resolve(&item.app_id)
             {
-                crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
+                // The launch was noted for this tab before it was tried
+                // (`stage_continuation_for_tab`); it is the same launch.
+                if !launcher::retarget_pending_placement(
+                    &item.app_id,
+                    &app.desktop_id,
+                    &app.window_identities,
+                ) {
+                    crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
+                }
                 // The restored window belongs to this workspace, so an X11
                 // client joins that workspace's private X server.
                 return crate::shell::host_apps::launch(&app.desktop_id, Some(ws.room.to_string()))
