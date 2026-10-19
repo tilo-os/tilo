@@ -2644,7 +2644,10 @@ shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht ve
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
-shell-window-retry = Fenster erneut öffnen
+shell-window-retry = Erneut öffnen
+shell-window-app-missing = { $app } ist nicht auf diesem Computer
+shell-window-get-app = { $app } holen
+shell-window-close = Schließen
 
 task-review-approve = Aufgabenausführung freigeben
 

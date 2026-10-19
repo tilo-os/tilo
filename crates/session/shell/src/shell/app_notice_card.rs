@@ -1,5 +1,6 @@
-//! App status cards share the toolkit `EmptyState`: install a missing peer app
-//! or explicitly reopen a failed saved window in its existing tab.
+//! App status cards share the toolkit `EmptyState`: install a missing peer app,
+//! get a saved window's app that this computer doesn't have, or explicitly
+//! reopen a failed saved window in its existing tab.
 
 use std::collections::HashMap;
 
@@ -15,11 +16,29 @@ use ui::widget::{AppKind, AppWidget, EmptyState, EventCtx, IconDescriptor, Model
 
 use crate::shell::state::TabId;
 
+/// What a card's primary action asks the shell for.
+enum Primary {
+    /// Install the peer window's app and open it here.
+    Install,
+    /// Reopen this saved window in its tab.
+    Reopen(String),
+    /// Open the Store on this saved window's app.
+    Get(String),
+}
+
+/// The quiet Close beside a Get card's primary action.
+const CLOSE_TARGET: &str = "close";
+
 pub struct AppNoticeCard {
     tab: TabId,
     title: String,
-    retry_app: Option<String>,
+    primary: Primary,
     card: EmptyState,
+    /// The quiet Close under the primary action, for a window that can't
+    /// be reopened here: painted, hit-tested and announced by these.
+    close: Option<(String, ui::widget::PaintedTargets)>,
+    /// The Close's hover or press changed since it was last painted.
+    close_changed: bool,
 }
 
 impl AppNoticeCard {
@@ -43,8 +62,38 @@ impl AppNoticeCard {
         Self {
             tab,
             title: title.to_owned(),
-            retry_app: None,
+            primary: Primary::Install,
             card,
+            close: None,
+            close_changed: false,
+        }
+    }
+
+    /// A saved window whose app, `display_name`, this computer doesn't
+    /// have: "Get {App}" opens the Store on it, and a quiet Close closes the
+    /// window. Reopening can't work until it is installed, so it is not
+    /// offered.
+    pub fn get(tab: TabId, app_id: &str, display_name: &str) -> Self {
+        let title = crate::shell::i18n::t_args(
+            "shell-window-app-missing",
+            &[("app", display_name.to_owned().into())],
+        );
+        let card = EmptyState::new(title.clone())
+            .with_action(crate::shell::i18n::t_args(
+                "shell-window-get-app",
+                &[("app", display_name.to_owned().into())],
+            ))
+            .with_action_id(format!("get-app:{tab}"));
+        Self {
+            tab,
+            title,
+            primary: Primary::Get(app_id.to_owned()),
+            card,
+            close: Some((
+                crate::shell::i18n::t("shell-window-close"),
+                ui::widget::PaintedTargets::new(),
+            )),
+            close_changed: false,
         }
     }
 
@@ -53,23 +102,53 @@ impl AppNoticeCard {
         Self {
             tab,
             title: title.to_owned(),
-            retry_app: Some(app_id.to_owned()),
+            primary: Primary::Reopen(app_id.to_owned()),
             card: EmptyState::new(title)
                 .with_message(detail)
                 .with_action(crate::shell::i18n::t("shell-window-retry"))
                 .with_action_id(format!("reopen-window:{tab}")),
+            close: None,
+            close_changed: false,
         }
     }
 
     /// Hand an explicit card action to the shell's next reconciliation.
     fn forward_action(&mut self) {
+        use crate::shell::peer_windows::{CardRequest, request};
         if self.card.take_action() {
-            if let Some(app_id) = &self.retry_app {
-                crate::shell::peer_windows::request_retry(self.tab, app_id);
-            } else {
-                crate::shell::peer_windows::request_install(self.tab);
+            match &self.primary {
+                Primary::Install => crate::shell::peer_windows::request_install(self.tab),
+                Primary::Reopen(app_id) => request(CardRequest::Reopen, self.tab, app_id),
+                Primary::Get(app_id) => request(CardRequest::Get, self.tab, app_id),
             }
         }
+        let closed = self
+            .close
+            .as_mut()
+            .is_some_and(|(_, targets)| !targets.take_activated().is_empty());
+        if closed && let Primary::Get(app_id) = &self.primary {
+            request(CardRequest::Close, self.tab, app_id);
+        }
+    }
+
+    /// Where the quiet Close stands: centred under the primary action.
+    fn close_rect(&self, text: &mut TextRenderer, theme: &Theme, label: &str) -> Rect {
+        let action = self.card.action_rect();
+        let style = theme.text(ui::TextRole::Body);
+        let (w, h) = text.measure_style(label, None, &style);
+        let width = f64::from(w) + 32.0;
+        let height = (f64::from(h) + 16.0).max(32.0);
+        let x0 = action.center().x - width / 2.0;
+        let y0 = action.y1 + f64::from(theme.tokens.spacing.s2);
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn press_close_for_test(&mut self) {
+        if let Some((_, targets)) = &mut self.close {
+            targets.perform_semantic_action(&ui::a11y::Action::Activate, CLOSE_TARGET);
+        }
+        self.forward_action();
     }
 
     #[cfg(test)]
@@ -122,15 +201,57 @@ impl Widget for AppNoticeCard {
     ) {
         self.card
             .draw(scene, transform, text_renderer, theme, presence);
+        self.close_changed = false;
+        let Some(label) = self.close.as_ref().map(|(label, _)| label.clone()) else {
+            return;
+        };
+        let rect = self.close_rect(text_renderer, theme, &label);
+        let Some((_, targets)) = &mut self.close else {
+            return;
+        };
+        targets.begin_frame();
+        if self.card.action_rect().area() > 0.0 {
+            targets.target(CLOSE_TARGET, rect, label.clone());
+        }
+        targets.end_frame();
+        let interaction = targets.interaction(CLOSE_TARGET);
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(rect, &label)
+                .role(ui::widget::ButtonRole::Plain)
+                .hovered(interaction.hovered)
+                .pressed(interaction.pressed),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.card.handle_event(event, ctx);
+        if !*ctx.handled
+            && let Some((_, targets)) = &mut self.close
+        {
+            let mut handled = false;
+            self.close_changed |= targets.handle_pointer_event(event, ctx.scale_factor, &mut handled);
+            *ctx.handled |= handled;
+        }
         self.forward_action();
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self
+            .close
+            .as_ref()
+            .is_some_and(|(_, targets)| targets.hit(point).is_some())
+        {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         self.card.cursor_shape(point)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.close_changed || self.card.needs_redraw()
     }
 
     fn is_focusable(&self) -> bool {
@@ -148,11 +269,15 @@ impl Widget for AppNoticeCard {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _key_path: &[u64],
+        key_path: &[u64],
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let performed = self.card.perform_action(action, &[], state, path);
+        let close = self
+            .close
+            .as_mut()
+            .is_some_and(|(_, targets)| targets.perform_action(action, key_path));
+        let performed = close || self.card.perform_action(action, &[], state, path);
         self.forward_action();
         performed
     }
@@ -164,9 +289,14 @@ impl Widget for AppNoticeCard {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let performed = self
-            .card
-            .perform_semantic_action(target, action, state, path);
+        let close = self
+            .close
+            .as_mut()
+            .is_some_and(|(_, targets)| targets.perform_semantic_action(action, target));
+        let performed = close
+            || self
+                .card
+                .perform_semantic_action(target, action, state, path);
         self.forward_action();
         performed
     }
@@ -184,9 +314,12 @@ impl Widget for AppNoticeCard {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.card
-            .accessibility()
-            .map(|node| node.with_semantic_key(format!("app-notice:{}", self.tab)))
+        self.card.accessibility().map(|mut node| {
+            if let Some((_, targets)) = &self.close {
+                node.children.extend(targets.accessibility_children());
+            }
+            node.with_semantic_key(format!("app-notice:{}", self.tab))
+        })
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {

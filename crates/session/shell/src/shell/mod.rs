@@ -577,6 +577,19 @@ fn try_to_ui_tile_for_tab(
                 )],
             ),
         },
+        // A saved window whose app this computer doesn't have: get it, or
+        // close the window. Reopening can't work until it is installed.
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if tab.is_some() && note == peer_windows::NOT_INSTALLED => {
+            UiTile::App(Box::new(app_notice_card::AppNoticeCard::get(
+                tab.unwrap_or_default(),
+                app_id,
+                &peer_windows::app_display_name(app_id, label),
+            )))
+        }
         ShellTile::LocalApp {
             app_id,
             label,
