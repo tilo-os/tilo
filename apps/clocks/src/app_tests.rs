@@ -252,8 +252,8 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     app.settle();
     let timer = app.state().timers.values().next().cloned().unwrap();
     assert!(
-        timer.ends_at_ms.is_some() && timer.remaining(chrono::Utc::now()).as_secs() > 2_700,
-        "a minute more, running again: {timer:?}"
+        timer.ends_at_ms.is_none() && timer.remaining(chrono::Utc::now()).as_secs() > 2_700,
+        "a minute more, still paused: {timer:?}"
     );
 
     // Phase: floating is this device's choice, and the shell closes it.

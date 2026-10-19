@@ -310,7 +310,7 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
     let alarm_row = find(&resources, &alarm).expect("alarm row");
     assert_eq!(
         alarm_row.presentation.and_then(|p| p.detail).as_deref(),
-        Some("At 07:30, repeating Once.")
+        Some("At 7:30 AM, repeating Once.")
     );
 
     // Phase: floating a timer from its row changes this device's settings,

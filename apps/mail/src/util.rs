@@ -10,7 +10,7 @@ pub fn local_minutes(utc_min: i64) -> i64 {
     utc_min.saturating_add(i64::from(offset) / 60)
 }
 
-/// The message-list column: the toolkit's list style (`09:42` today,
+/// The message-list column: the toolkit's list style (`9:42 AM` today,
 /// `Yesterday`, `Mon` this week, `Jun 24`, `Jun 24, 2025`), both arguments
 /// minutes since the epoch on the local clock ([`local_minutes`]).
 pub fn format_relative(ts_min: i64, now_min: i64) -> String {
@@ -60,7 +60,7 @@ mod tests {
             let now = minutes_of(2026, 6, 30, 14, 0);
             assert_eq!(
                 format_relative(minutes_of(2026, 6, 30, 9, 30), now),
-                "09:30"
+                "9:30 AM"
             );
             assert_eq!(
                 format_relative(minutes_of(2026, 6, 29, 9, 30), now),
@@ -80,7 +80,7 @@ mod tests {
         // Phase `absolute_format`.
         {
             let s = format_absolute(minutes_of(2026, 6, 30, 13, 42));
-            assert_eq!(s, "2026-06-30 13:42");
+            assert_eq!(s, "Jun 30, 2026, 1:42 PM");
         }
     }
 }

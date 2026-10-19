@@ -667,7 +667,10 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
             &SemanticExpectation::named("schedule-review-0")
                 .name(ui::i18n::I18nManager::format(
                     "shortcuts-schedule-review",
-                    &[("time", ui::i18n::ArgValue::from("09:15"))],
+                    &[(
+                        "time",
+                        ui::i18n::ArgValue::from(ui::clock::hour_minute(9, 15)),
+                    )],
                 ))
                 .within(tilo_test_env::hang_bound()),
         )

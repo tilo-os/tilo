@@ -222,7 +222,7 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(due[1].body, "15:00–15:45 — Meet");
+        assert_eq!(due[1].body, "3:00 PM–3:45 PM — Meet");
         assert!(due.iter().all(|reminder| reminder.title != "No reminder"));
         assert!(
             due.iter().all(|reminder| reminder.title != "Earlier"),

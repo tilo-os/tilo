@@ -1108,6 +1108,30 @@ fn platform_search_opens_finds_and_activates_places() {
     }
 }
 
+/// Minutes past midnight of a clock label in either clock style (`14:05`,
+/// `2:05 PM`), for comparing times the person's clock style writes.
+fn clock_minutes(label: &str) -> Option<u32> {
+    let (clock, half) = match label.split_once(' ') {
+        Some((clock, half)) => (clock, Some(half)),
+        None => (label, None),
+    };
+    let (hour, minute) = clock.split_once(':')?;
+    if minute.len() != 2 {
+        return None;
+    }
+    let (hour, minute): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
+    if minute >= 60 {
+        return None;
+    }
+    let hour = match half {
+        None if hour < 24 => hour,
+        Some("AM") if (1..=12).contains(&hour) => hour % 12,
+        Some("PM") if (1..=12).contains(&hour) => hour % 12 + 12,
+        _ => return None,
+    };
+    Some(hour * 60 + minute)
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1123,10 +1147,20 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
         let a = app_at(1280.0, 800.0);
         let route = a.model.route.clone().expect("demo has a road route");
         let (dep, arr) = a.road_trip_clock(route.duration_s);
-        assert_eq!(dep, "10:42", "a capture leaves at its pinned time");
-        assert!(arr > dep, "arrival derived from now + trip duration: {arr}");
+        assert_eq!(
+            dep,
+            ui::clock::hour_minute(10, 42),
+            "a capture leaves at its pinned time"
+        );
+        assert!(
+            clock_minutes(&arr) > clock_minutes(&dep),
+            "arrival derived from now + trip duration: {arr}"
+        );
         let first = a.model.transit.first().expect("demo has departures");
-        assert!(first.dep > dep, "the departures lie ahead of now");
+        assert!(
+            clock_minutes(&first.dep) > clock_minutes(&dep),
+            "the departures lie ahead of now"
+        );
     }
 
     // Phase `time_picker_available_for_all_modes_and_road_clock_derives`.
@@ -1162,7 +1196,7 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
         a.set_mode(TravelMode::Car);
         let route = a.model.route.clone().expect("road route present");
         a.model.transit_time = crate::model::TransitTime::default();
-        let is_clock = |s: &str| s.len() == 5 && s.as_bytes().get(2) == Some(&b':');
+        let is_clock = |s: &str| clock_minutes(s).is_some();
         let (dep, arr) = a.road_trip_clock(route.duration_s);
         assert!(is_clock(&dep) && is_clock(&arr), "clocks, got {dep} {arr}");
         // Arrive-by flips which end is anchored: the arrival is now the
