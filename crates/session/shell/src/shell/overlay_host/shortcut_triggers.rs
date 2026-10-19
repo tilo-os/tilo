@@ -492,6 +492,11 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The session's application action broker, once it has bound.
+    pub(super) fn action_broker(&self) -> Option<AppActionBroker> {
+        self.shortcut_triggers.broker.clone()
+    }
+
     pub(super) fn attach_shortcut_trigger_broker(&mut self, broker: AppActionBroker) {
         self.shortcut_triggers.attach(broker);
     }

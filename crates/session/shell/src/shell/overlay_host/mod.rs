@@ -21,6 +21,7 @@ mod arrival;
 mod person_markers;
 mod presence_self;
 mod qs_motion;
+mod voice;
 pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -1048,6 +1049,9 @@ pub struct ShellOverlayHost {
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
+    /// The session's calls: who is in which voice channel, and the one this
+    /// device is in ([`Self::set_native_media`]).
+    native_media: Option<crate::shell::native_media::NativeMediaService>,
     followed_tab: Option<u64>,
     followed_session: Option<u64>,
     /// Room the active Follow command was sent to. Keeping this separate
@@ -2818,6 +2822,7 @@ impl ShellOverlayHost {
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
             expanded_collaborator: None,
             followed_peer: None,
+            native_media: None,
             followed_tab: None,
             followed_session: None,
             followed_room: None,
@@ -17531,6 +17536,11 @@ impl ShellOverlayHost {
                     self.wave_at(&target);
                 }
             }
+            CollaboratorsHit::JoinCall(index) => {
+                if let Some(call) = self.collaborators_overlay.join_target(index).cloned() {
+                    self.join_voice(&call);
+                }
+            }
             CollaboratorsHit::OpenChanges(index) => {
                 let author = self
                     .collaborators_overlay
@@ -24791,6 +24801,9 @@ impl ShellOverlayHost {
                 })
                 .collect();
         }
+        // Who is in which voice channel, as the room's calls say, and the
+        // Join each row offers.
+        self.decorate_calls(&mut rows);
         let may_invite = self.may_invite_here();
         let following_pairs = self.roster_following_pairs(presence, &rows);
         self.collaborators_overlay.draw(

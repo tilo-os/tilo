@@ -235,6 +235,8 @@ struct Entry {
     intent: u64,
     generation: u64,
     caller: Caller,
+    /// The voice channel of the caller's record this call is in.
+    channel: String,
     permit: LocalSessionPermit,
     binding: CaptureSessionBinding,
     snapshot: Snapshot,
@@ -295,9 +297,61 @@ struct Shared {
     /// Woken whenever a status may have changed: what a `Watch` waits on.
     changed: tokio::sync::Notify,
 }
+/// One voice channel's call in a room, as last heard from it: which app's
+/// record holds the channel, and who is in it (person ids).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RoomCall {
+    pub app: String,
+    pub record: String,
+    pub channel: String,
+    pub people: Vec<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct NativeMediaService(Arc<Shared>);
 impl NativeMediaService {
+    /// The calls of `workspace`'s voice channels with anyone in them, as
+    /// last heard from the room for the records this device shows.
+    pub(crate) fn room_calls(&self, workspace: &str) -> Vec<RoomCall> {
+        self.0
+            .rosters
+            .lock_recover()
+            .iter()
+            .filter(|((room, _, _), _)| room == workspace)
+            .flat_map(|((_, app, record), rosters)| {
+                rosters.iter().map(move |roster| RoomCall {
+                    app: app.clone(),
+                    record: record.clone(),
+                    channel: roster.channel_id.clone(),
+                    people: roster.people.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// The voice channel this device is in, or on its way into, in
+    /// `workspace`: its app, record and channel. `None` once it left.
+    pub(crate) fn own_call(&self, workspace: &str) -> Option<(String, String, String)> {
+        let calls = self.0.calls.lock().ok()?;
+        calls
+            .entries
+            .values()
+            .find(|entry| {
+                entry.caller.workspace == workspace
+                    && matches!(
+                        entry.snapshot.state,
+                        State::Joining | State::Live | State::Reconnecting
+                    )
+            })
+            .map(|entry| {
+                (
+                    entry.caller.app.clone(),
+                    entry.caller.record.clone(),
+                    entry.channel.clone(),
+                )
+            })
+    }
+
     pub(crate) fn new(
         lifecycle: LocalSessionLifecycle,
         capture: Arc<Mutex<CaptureBroker>>,
@@ -594,6 +648,7 @@ impl NativeMediaService {
             Entry {
                 intent,
                 generation,
+                channel: target.channel.clone(),
                 caller,
                 permit,
                 binding,
