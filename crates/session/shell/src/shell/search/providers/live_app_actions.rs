@@ -1818,15 +1818,23 @@ impl LiveAppActionsProvider {
         ctx: &SearchContext<'_>,
     ) -> Vec<crate::shell::certified_action_session::ActionLifecycle> {
         let actor = ctx.chrome.active_local_user();
-        let mut lifecycles = ctx
+        // The rooms first, and the tree let go of: opening a room's session
+        // verifies its caller against the room's authority, which reads the
+        // tree again, and a read held across that deadlocks the frame loop
+        // as soon as another thread waits to write it.
+        let rooms: Vec<String> = ctx
             .chrome
             .tree()
             .desktop
             .workspaces
             .iter()
-            .filter_map(|workspace| {
+            .map(|workspace| workspace.room.to_string())
+            .collect();
+        let mut lifecycles = rooms
+            .iter()
+            .filter_map(|room| {
                 self.action_sessions
-                    .open(&workspace.room.to_string(), Some(&actor))
+                    .open(room, Some(&actor))
                     .ok()?
                     .lifecycle()
                     .ok()
