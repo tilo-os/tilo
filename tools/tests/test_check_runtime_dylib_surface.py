@@ -115,6 +115,23 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("reaches browser-continuity", found[0])
         self.assertIn("libtilo_browser_import_engine.so", found[0])
 
+    def test_the_store_catalogue_back_in_the_runtime_fails(self) -> None:
+        # Store loads the app host's client and the catalogue from
+        # libtilo_app_host_engine.so; the runtime depending on the catalogue
+        # again maps it into every app process.
+        tree = CLEAN.replace(
+            "4serde v1.0.228\n",
+            "4serde v1.0.228\n2app-catalogue v0.1.0 (/repo/crates/packaging/app-catalogue)\n",
+        ).replace(
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
+            "1app-catalogue v0.1.0 (/repo/crates/packaging/app-catalogue) (*)\n0store",
+        )
+        found = checker.violations(tree, ["notes", "store"], TARGET)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("reaches app-catalogue", found[0])
+        self.assertIn("libtilo_app_host_engine.so", found[0])
+
     def test_account_custody_or_the_zone_database_back_in_the_runtime_fails(self) -> None:
         # Mail and Settings load account custody from
         # libtilo_accounts_engine.so, Calendar and Clocks the zone database

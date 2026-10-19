@@ -22,6 +22,13 @@ web-features = []
 [features]
 default = ["video"]
 thin = ["dep:runtime-dylib"]
+# Reach the emoji catalogue (emoji, with its names and keywords in every
+# locale) through its engine library in the runtime bundle
+# (libtilo_emoji_engine.so, crates/runtime/engines/emoji) instead of linking
+# it. The release collection enables it (dist/apps/app-collections.toml); a
+# `thin` build without it (`tilo-app dev`) links it statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 # A call's pictures are decoded in Chat, hardware first, through the shared
 # media stack's real-time decoder.
 video = ["ui/realtime-video"]
@@ -31,6 +38,7 @@ fnv.workspace = true
 emoji = { path = "../../crates/text/emoji" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the

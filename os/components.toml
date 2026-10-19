@@ -386,6 +386,7 @@ features = [
   "pdf-viewer/runtime-engine", "file-explorer/runtime-engine",
   "print-centre/runtime-engine",
   "imager/runtime-engine", "browser/runtime-engine",
+  "store/runtime-engine", "chat/runtime-engine", "osk/runtime-engine",
 ]
 layer = "direct"
 files = [

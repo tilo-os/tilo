@@ -1,21 +1,8 @@
 //! Native XKB legends over explicitly selected Open Group PC geometry.
-use serde::Deserialize;
-use std::collections::BTreeMap;
+use pc_keyboard_geometry::{Geometry, Key as GeometryKey};
 use std::sync::LazyLock;
 use ui::{KeyboardMap, KeyboardMapKey};
 use vello::kurbo::Point;
-
-#[derive(Deserialize)]
-struct Geometry {
-    // The published drawing's `width` and `height` are not read: the
-    // drawing is cut to its keys ([`tight`]).
-    keys: Vec<GeometryKey>,
-}
-#[derive(Deserialize, Clone)]
-struct GeometryKey {
-    name: String,
-    outline: Vec<[f64; 2]>,
-}
 
 pub(crate) fn valid_model(model: &str) -> bool {
     matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
@@ -54,14 +41,10 @@ pub(crate) fn map_for_form(
     options: Option<&str>,
     compact: bool,
 ) -> Result<KeyboardMap, String> {
-    static GEOMETRIES: LazyLock<Result<BTreeMap<String, Geometry>, serde_json::Error>> =
-        LazyLock::new(|| serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")));
     let source_id = source.to_owned();
     let source = settings_store::hardware::KeyboardInputSource::parse(source)
         .ok_or_else(|| "the source is not an XKB layout".to_owned())?;
-    let geometries = GEOMETRIES
-        .as_ref()
-        .map_err(|_| "keyboard geometry is invalid")?;
+    let geometries = pc_keyboard_geometry::models()?;
     let geometry = geometries
         .get(model)
         .ok_or("unknown physical keyboard model")?;
@@ -285,8 +268,7 @@ mod tests {
     use winit::keyboard::{KeyCode, PhysicalKey};
     #[test]
     fn the_compact_drawing_is_the_main_block_with_arrows_and_stays_inside_its_width() {
-        let geometry: BTreeMap<String, Geometry> =
-            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let geometry = pc_keyboard_geometry::models().unwrap();
         let (width, keys) = compact_geometry(&geometry["pc105"]);
         for gone in ["PRSC", "PGUP", "NMLK", "KP5", "RCTL", "MENU"] {
             assert!(keys.iter().all(|key| key.name != gone), "{gone} stays out");
@@ -310,8 +292,7 @@ mod tests {
     /// beside the keyboard.
     #[test]
     fn the_drawing_is_cut_to_its_keys() {
-        let geometry: BTreeMap<String, Geometry> =
-            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let geometry = pc_keyboard_geometry::models().unwrap();
         let (size, keys) = tight(compact_geometry(&geometry["pc105"]).1);
         let points: Vec<[f64; 2]> = keys.iter().flat_map(|key| key.outline.clone()).collect();
         let min_x = points.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
@@ -331,8 +312,7 @@ mod tests {
 
     #[test]
     fn jis_and_korean_models_preserve_the_native_language_key_positions() {
-        let geometry: BTreeMap<String, Geometry> =
-            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let geometry = pc_keyboard_geometry::models().unwrap();
         for (source, model, positions) in [
             (
                 "jp",
@@ -391,8 +371,7 @@ mod tests {
 
     #[test]
     fn installed_xkb_legends_keep_physical_positions_across_layouts_and_models() {
-        let geometry: BTreeMap<String, Geometry> =
-            serde_json::from_str(include_str!("../data/pc-keyboard-geometry.json")).unwrap();
+        let geometry = pc_keyboard_geometry::models().unwrap();
         assert_eq!(geometry["pc104"].keys.len(), 104);
         assert_eq!(geometry["pc105"].keys.len(), 105);
         assert!(!geometry["pc104"].keys.iter().any(|key| key.name == "LSGT"));

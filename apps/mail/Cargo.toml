@@ -20,6 +20,7 @@ hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/runtime/engines/contact-directory", optional = true }
+tilo-mail-engine = { path = "../../crates/runtime/engines/mail", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
 # infer a writable Downloads path or grant itself broad filesystem authority.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -91,7 +92,7 @@ thin = ["dep:runtime-dylib"]
 # (`tilo-app dev`) links account-custody, async-imap and
 # tilo-contact-directory statically, because an engine library links only
 # through tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin"]
+runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-engine/thin", "tilo-mail-engine/thin"]
 # The default app includes the live account engine; it remains idle without a
 # configured account.
 default = ["live"]

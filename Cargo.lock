@@ -1999,6 +1999,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc",
  "tilo-document",
+ "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-gateway",
  "tilo-paths",
@@ -9024,6 +9025,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc-codecs",
  "tilo-document",
+ "tilo-mail-engine",
  "tilo-mime",
  "tilo-net",
  "tilo-oauth",
@@ -10855,6 +10857,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-emoji-engine",
  "tilo-history",
  "tilo-input-context",
  "tilo-keyboard-map",
@@ -14342,7 +14345,9 @@ dependencies = [
  "tilo-ntfs-mount",
  "tilo-oauth",
  "tilo-paths",
+ "tilo-pc-keyboard-geometry",
  "tilo-relay-protocol",
+ "tilo-settings-engine",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
@@ -15338,6 +15343,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app",
+ "tilo-app-host-engine",
  "tilo-app-package",
  "tilo-automerge-fork",
  "tilo-desktop-entry",
@@ -16456,6 +16462,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-app-host-engine"
+version = "0.1.0"
+dependencies = [
+ "app-catalogue",
+ "app-host",
+ "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-app-package"
 version = "0.1.0"
 dependencies = [
@@ -17375,6 +17391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-emoji-engine"
+version = "0.1.0"
+dependencies = [
+ "emoji",
+ "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-endpoint-reachability"
 version = "0.1.0"
 dependencies = [
@@ -17987,6 +18012,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-mail-engine"
+version = "0.1.0"
+dependencies = [
+ "lettre",
+ "mail-builder",
+ "mail-parser",
+ "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-media"
 version = "0.1.0"
 dependencies = [
@@ -18422,6 +18458,15 @@ dependencies = [
  "tilo-lock",
  "tilo-platform-caps",
  "windows-sys 0.61.2",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-pc-keyboard-geometry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -19307,6 +19352,19 @@ dependencies = [
  "regex",
  "tempfile",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-settings-engine"
+version = "0.1.0"
+dependencies = [
+ "provider-settings-ui",
+ "runtime-dylib",
+ "tilo-accessibility-settings",
+ "tilo-ntfs-mount",
+ "tilo-pc-keyboard-geometry",
+ "tilo-wallpapers",
  "workspace-hack",
 ]
 
