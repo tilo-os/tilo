@@ -274,7 +274,6 @@ pub mod secret_paint;
 pub mod selection;
 pub mod shared_selection;
 pub mod shell_tabs;
-pub mod window_toolbar;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
@@ -298,6 +297,7 @@ pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
+pub mod window_toolbar;
 #[cfg(feature = "native")]
 pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.
