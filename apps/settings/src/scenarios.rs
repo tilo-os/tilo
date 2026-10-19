@@ -38,6 +38,12 @@ const DEVICE_DISPLAYS: &str = "device-displays";
 /// Storage with remembered NTFS drives, drawn tall enough to reach them.
 const STORAGE_DRIVES: &str = "storage-drives";
 
+/// Network with Wi-Fi off, looking for networks, and with a known
+/// network's details open.
+const NETWORK_WIFI_OFF: &str = "network-wifi-off";
+const NETWORK_SCANNING: &str = "network-scanning";
+const NETWORK_KNOWN: &str = "network-known";
+
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
@@ -66,6 +72,9 @@ pub fn names() -> &'static [&'static str] {
                 "keyboard-many",
                 "keyboard-touch",
                 "keyboard-osk",
+                NETWORK_WIFI_OFF,
+                NETWORK_SCANNING,
+                NETWORK_KNOWN,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -110,6 +119,19 @@ pub struct CaptureScene {
     /// The person's trusted devices, as a stand-in for the host's device
     /// list, for the devices & sync capture.
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
+    /// How the sample networks stand, for the network captures.
+    pub network: Option<NetworkSample>,
+}
+
+/// How the network captures' sample stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkSample {
+    /// Wi-Fi is off.
+    WifiOff,
+    /// Wi-Fi is on and looking, nothing found yet.
+    Scanning,
+    /// Connected, with a known network's details open.
+    Known,
 }
 
 /// A capture's room bridged to Discord, its person's account standing as
@@ -189,6 +211,12 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             fleet_fixture()
         } else {
             Vec::new()
+        },
+        network: match fixture.scenario() {
+            Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
+            Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
+            Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            _ => None,
         },
     });
 }
@@ -414,6 +442,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
             Staged::Pane(Category::Keyboard)
         }
+        Some(NETWORK_WIFI_OFF | NETWORK_SCANNING | NETWORK_KNOWN) => {
+            Staged::Pane(Category::Network)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance),
@@ -553,8 +584,11 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 13 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 16 + CODEC_SCENARIOS.len()
         );
+        for scenario in [NETWORK_WIFI_OFF, NETWORK_SCANNING, NETWORK_KNOWN] {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
+        }
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),
             Staged::Pane(Category::Storage)

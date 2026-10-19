@@ -207,9 +207,23 @@ pub enum NetworkEffect {
         #[param("Name servers, comma-separated")]
         dns: Option<String>,
     },
-    /// Show or hide the saved Wi-Fi networks' connection policy.
-    #[effect(view, label = "Connection policy")]
-    ShowConnectionPolicy,
+    /// Open or close a known network's details in place.
+    #[effect(view, row, label = "Network details")]
+    ShowKnownNetwork {
+        #[param("The saved network's id")]
+        profile: String,
+    },
+    /// Count a known network's data against a limit, or leave it to the
+    /// network to say.
+    #[effect(job, row, idempotent, label = "Metered connection")]
+    SetMetered {
+        #[param("The saved network's id")]
+        profile: String,
+        on: bool,
+    },
+    /// Open or close the hotspot's setup.
+    #[effect(view, label = "Hotspot setup")]
+    ShowHotspotSetup,
     /// Set a saved Wi-Fi network's policy; what is omitted is what its
     /// form holds.
     #[effect(job, label = "Apply connection policy")]
@@ -515,6 +529,24 @@ impl NetworkSnapshot {
         }
     }
 
+    /// `networks` alone: every other part is not read, so adopting it
+    /// leaves them as they are.
+    fn networks_only(networks: Result<Vec<WifiNetworkInfo>, String>) -> Self {
+        Self {
+            networks,
+            wifi_enabled: None,
+            sims: None,
+            wired: None,
+            radios: None,
+            connectivity: None,
+            profiles: None,
+            profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
+            hotspot_clients: None,
+            vpns: None,
+        }
+    }
+
     /// Only `networks`, with every other part read and empty.
     fn of_networks(networks: Vec<WifiNetworkInfo>) -> Self {
         Self {
@@ -536,6 +568,20 @@ impl NetworkSnapshot {
         }
     }
 }
+
+/// The status line: its glyph, sentence and detail, and the action that
+/// fixes what it reports (an id, its label and the effect).
+type StatusLine = (
+    ui::icons::Icon,
+    String,
+    String,
+    Option<(&'static str, String, NetworkEffect)>,
+);
+
+/// How often the open page scans for networks while it shows them: often
+/// enough that walking into range shows up while the person looks, rarely
+/// enough that the radio is not kept busy.
+const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The parts of the last snapshot that could not be read, each with the
 /// reason. A part listed here is shown as unreadable, never as a state.
@@ -654,14 +700,20 @@ pub(crate) trait NetworkService: Send + Sync {
     /// and the networks are those last seen: it never waits for a scan.
     fn snapshot(&self, initial: bool) -> NetworkSnapshot;
     /// Scan for Wi-Fi networks and return once the scan has finished, so the
-    /// snapshot that follows lists what the radio sees now. Only the
-    /// explicit refresh does this: a scan takes as long as the hardware
-    /// needs, and no reading may wait for it.
+    /// snapshot that follows lists what the radio sees now. A scan takes as
+    /// long as the hardware needs, so it runs on its own worker (the open
+    /// page's periodic look, an explicit refresh) and no reading waits for
+    /// it.
     ///
     /// # Errors
     /// Why the device could not scan.
     fn scan(&self) -> Result<(), String> {
         Ok(())
+    }
+    /// The networks in range as last seen, and nothing else: what the
+    /// periodic look reads after its scan.
+    fn networks(&self) -> NetworkSnapshot {
+        NetworkSnapshot::networks_only(self.snapshot(false).networks)
     }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
@@ -700,6 +752,10 @@ struct DeviceNetwork {
 }
 
 impl NetworkService for DeviceNetwork {
+    fn networks(&self) -> NetworkSnapshot {
+        NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
+    }
+
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
     }
@@ -780,7 +836,7 @@ impl SampleNetwork {
                 secure: true,
                 security: os_actions::WifiSecurity::Wpa3,
                 connected: true,
-                known: false,
+                known: true,
             },
             WifiNetworkInfo {
                 ssid: "Cafe_Guest".into(),
@@ -805,12 +861,34 @@ impl SampleNetwork {
 impl NetworkService for SampleNetwork {
     fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
         let mut snapshot = NetworkSnapshot::of_networks(Self::networks());
+        // A laptop on Wi-Fi with its Ethernet port empty.
         snapshot.wired = Some(Ok(WiredInfo {
-            connected: true,
+            connected: false,
             device: Some("enp3s0".into()),
-            speed: Some("1000 Mb/s".into()),
-            ipv4: Some("192.168.1.42".into()),
+            speed: None,
+            ipv4: None,
         }));
+        let profile = |uuid: &str, name: &str, autoconnect| SavedNetworkProfile {
+            uuid: uuid.into(),
+            name: name.into(),
+            kind: "802-11-wireless".into(),
+            autoconnect,
+        };
+        snapshot.profiles = Some(Ok(vec![
+            profile("5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10", "Home_Network", true),
+            profile("9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64", "Library", false),
+        ]));
+        snapshot.profile_settings = [(
+            "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10".to_string(),
+            os_actions::ConnectionProfileSettings {
+                metered: Some(os_actions::MeteredPolicy::Automatic),
+                mac: None,
+                proxy: None,
+                ipv4: None,
+            },
+        )]
+        .into_iter()
+        .collect();
         snapshot
     }
 
@@ -1182,8 +1260,16 @@ pub struct NetworkModel {
     expanded: Option<String>,
     /// The password typed into each open prompt.
     join_passwords: HashMap<String, Arc<Mutex<String>>>,
-    policy_open: bool,
+    /// The known network whose details are open in place.
+    known_open: Option<String>,
     enterprise_open: bool,
+    /// The hotspot's setup is open while the hotspot is off.
+    hotspot_open: bool,
+    /// When the open page last scanned for networks: it scans again every
+    /// [`SCAN_EVERY`] while it shows them.
+    scanned_at: Option<ui::time::Instant>,
+    /// A scan the page started has not landed yet.
+    scan_in_flight: bool,
     hotspot_code_shown: bool,
     /// The saved Wi-Fi and wired profile being edited, by label.
     wifi_profile: LocalState<String>,
@@ -1271,7 +1357,7 @@ impl NetworkModel {
             "errors": { "networks":self.read_errors.networks, "wifi_enabled":self.read_errors.wifi_enabled,
                 "radios":self.read_errors.radios, "wired":self.read_errors.wired, "connectivity":self.read_errors.connectivity },
             "labels": { "wifi":t("net-wifi"), "wifi_caption":t("net-wifi-caption"),
-                "enterprise_caption":t("net-enterprise-caption"), "refresh":t("net-refresh") },
+                "enterprise_entry":t("net-enterprise-entry"), "refresh":t("net-refresh") },
         });
         let size = serde_json::to_vec(&value)
             .map_err(|_| "Network inspection could not be encoded.".to_string())?
@@ -1294,11 +1380,34 @@ impl NetworkModel {
         model
     }
 
-    /// Sample networks with a secure one's password prompt open, as
-    /// joining it looks.
+    /// Sample networks: by default a secure one's password prompt open,
+    /// as joining it looks; a network capture asks for another moment.
     fn sample(cx: PaneCx) -> Self {
+        use crate::scenarios::NetworkSample;
+        let wanted = cx.scene().and_then(|scene| scene.network);
         let mut model = Self::loaded_from(cx, Arc::new(SampleNetwork));
-        model.set_expanded(Some("Office_5G".into()));
+        match wanted {
+            Some(NetworkSample::WifiOff) => {
+                model.wifi_enabled = false;
+                model.radios.wifi_enabled = false;
+                model.networks.clear();
+            }
+            Some(NetworkSample::Scanning) => {
+                // The first search under way: none is due again yet, so the
+                // capture holds that moment.
+                model.networks.clear();
+                model.scan_in_flight = true;
+                model.scanned_at = Some(ui::time::now());
+            }
+            Some(NetworkSample::Known) => {
+                model.known_open = model
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.kind == "802-11-wireless")
+                    .map(|profile| profile.uuid.clone());
+            }
+            None => model.set_expanded(Some("Office_5G".into())),
+        }
         model
     }
 
@@ -1336,8 +1445,11 @@ impl NetworkModel {
             notice: None,
             expanded: None,
             join_passwords: HashMap::new(),
-            policy_open: false,
+            known_open: None,
             enterprise_open: false,
+            hotspot_open: false,
+            scanned_at: None,
+            scan_in_flight: false,
             hotspot_code_shown: false,
             wifi_profile: LocalState::new(String::new()),
             wired_profile: LocalState::new(String::new()),
@@ -1778,8 +1890,40 @@ impl NetworkModel {
                     Some(format!("Applying IP settings to {}…", profile.name)),
                 )
             }
-            NetworkEffect::ShowConnectionPolicy => {
-                self.policy_open = !self.policy_open;
+            NetworkEffect::ShowKnownNetwork { profile } => {
+                let profile = self.profile(&profile)?;
+                self.known_open = (self.known_open.as_deref() != Some(profile.uuid.as_str()))
+                    .then_some(profile.uuid);
+                Begun::Done
+            }
+            NetworkEffect::SetMetered { profile, on } => {
+                let profile = self.profile(&profile)?;
+                let metered = if on {
+                    os_actions::MeteredPolicy::Metered
+                } else {
+                    os_actions::MeteredPolicy::Automatic
+                };
+                if let Some(settings) = self.profile_settings.get_mut(&profile.uuid) {
+                    settings.metered = Some(metered);
+                }
+                if let Some(form) = self.policy_forms.get(&profile.uuid) {
+                    form.metered.set(metered_shown(metered_id(metered)));
+                }
+                self.change(
+                    NetworkChange::Policy {
+                        uuid: profile.uuid,
+                        name: profile.name.clone(),
+                        patch: os_actions::ConnectionPolicyPatch {
+                            metered: Some(metered),
+                            mac: None,
+                            proxy: None,
+                        },
+                    },
+                    None,
+                )
+            }
+            NetworkEffect::ShowHotspotSetup => {
+                self.hotspot_open = !self.hotspot_open;
                 Begun::Done
             }
             NetworkEffect::SetConnectionPolicy {
@@ -2363,17 +2507,21 @@ impl NetworkModel {
             }
             return crate::widgets::cards(vec![card(&t("net-pending-title"), rows(pending))]);
         }
-        let mut cards = vec![
-            self.internet_access_card(),
-            self.wifi_card(),
-            self.enterprise_card(),
-            self.wired_card(),
-            self.profile_card(),
-            card(&t("net-diag-title"), rows(self.diagnostic_rows())),
-            card(&t("net-vpn"), rows(self.vpn_rows())),
-            self.airplane_card(),
-            self.hotspot_card(),
-        ];
+        // What is happening now comes first; then Wi-Fi with what is in
+        // range and what this device knows; the rest are their own groups,
+        // short while unused.
+        let mut cards = vec![self.status_section(), self.wifi_card()];
+        if !self.wifi_absent() {
+            cards.push(self.known_networks_card());
+        }
+        if self.wired.device.is_some() || self.read_errors.wired.is_some() {
+            cards.push(self.wired_card());
+        }
+        cards.push(card(&t("net-vpn"), rows(self.vpn_rows())));
+        if !self.wifi_absent() {
+            cards.push(self.hotspot_card());
+        }
+        cards.push(self.airplane_card());
         if self.radios.wwan_available {
             cards.push(card_with_action(
                 &t("net-mobile"),
@@ -2385,92 +2533,212 @@ impl NetworkModel {
                 rows(self.mobile_rows()),
             ));
         }
+        cards.push(card(&t("net-diag-title"), rows(self.diagnostic_rows())));
         crate::widgets::cards(cards)
     }
 
-    /// Connectivity summary card: `NetworkManager`'s captive-portal-aware
-    /// state, plus a sign-in shortcut when a portal is blocking the route.
-    fn internet_access_card(&self) -> SettingsSection {
-        let connectivity = t("net-connectivity");
-        let connectivity_row = match &self.read_errors.connectivity {
-            Some(error) => error_row(
-                &connectivity,
-                &t_args(
-                    "net-connectivity-error",
-                    &[("error", error.as_str().into())],
-                ),
-            ),
-            None => value_row(&connectivity, &connectivity_shown(self.connectivity)),
+    /// The one line on top: how this device is connected now, or that it is
+    /// offline and why, with the action that fixes it.
+    fn status_section(&self) -> SettingsSection {
+        let (icon, title, detail, fix) = self.status_line();
+        let control: El = match fix {
+            Some((id, label, effect)) => Box::new(self.button(id, &label, effect)),
+            None => Box::new(Spacer::new()),
         };
-        let portal = self.connectivity == ConnectivityState::Portal;
-        // A sign-in page in the way is worth a line; plain connectivity
-        // speaks for itself.
-        let mut content = vec![connectivity_row];
-        if portal {
-            content.push(note(&t("net-portal-caption")));
-        }
-        if portal {
-            content.push(self.button_row(
-                "settings.network.captive-portal",
-                &t("net-open-signin"),
-                NetworkEffect::OpenNetworkSignIn,
-            ));
-        }
-        card(&t("net-internet"), rows(content))
+        crate::widgets::untitled(rows(vec![crate::widgets::icon_row(
+            icon, &title, &detail, control,
+        )]))
     }
 
-    /// Wi-Fi card: header carries the switch; body is status + scanned-network
-    /// rows + a Refresh action.
+    /// The status line's glyph, sentence, detail and fixing action.
+    fn status_line(&self) -> StatusLine {
+        use ui::icons::Icon;
+        let connected = self
+            .wifi_enabled
+            .then(|| self.networks.iter().find(|network| network.connected))
+            .flatten();
+        let through = if self.wired.connected && self.wired.device.is_some() {
+            Some((Icon::EthernetPort, t("net-now-wired")))
+        } else if let Some(network) = connected {
+            Some((
+                Icon::Wifi,
+                t_args(
+                    "net-connected-to",
+                    &[("ssid", network.ssid.as_str().into())],
+                ),
+            ))
+        } else {
+            None
+        };
+        if let Some((icon, title)) = through {
+            return match self.connectivity {
+                ConnectivityState::Portal => (
+                    icon,
+                    title,
+                    t("net-now-portal"),
+                    Some((
+                        "settings.network.captive-portal",
+                        t("net-open-signin"),
+                        NetworkEffect::OpenNetworkSignIn,
+                    )),
+                ),
+                ConnectivityState::Limited | ConnectivityState::Offline => {
+                    (icon, title, t("net-now-no-internet"), None)
+                }
+                ConnectivityState::Unknown | ConnectivityState::Full => (
+                    icon,
+                    title,
+                    t(if icon == Icon::EthernetPort {
+                        "net-now-by-cable"
+                    } else {
+                        "net-now-by-wifi"
+                    }),
+                    None,
+                ),
+            };
+        }
+        let offline = t("net-now-offline");
+        if self.radios.airplane_mode && self.read_errors.radios.is_none() {
+            return (
+                Icon::WifiOff,
+                offline,
+                t("net-now-airplane"),
+                Some((
+                    "settings.network.status.airplane",
+                    t("net-turn-off-airplane"),
+                    NetworkEffect::SetAirplaneMode { on: false },
+                )),
+            );
+        }
+        if self.wifi_absent() {
+            let reason = if self.wired.device.is_some() {
+                "net-now-plug-in"
+            } else {
+                "net-no-wifi-adapter"
+            };
+            return (Icon::WifiOff, offline, t(reason), None);
+        }
+        if self.radios.wifi_hardware_blocked {
+            return (Icon::WifiOff, offline, t("net-wifi-hardware-switch"), None);
+        }
+        if !self.wifi_enabled {
+            return (
+                Icon::WifiOff,
+                offline,
+                t("net-wifi-off"),
+                (self.read_errors.wifi_enabled.is_none()).then(|| {
+                    (
+                        "settings.network.status.wifi",
+                        t("net-turn-on-wifi"),
+                        NetworkEffect::SetWifi { on: true },
+                    )
+                }),
+            );
+        }
+        (Icon::Wifi, offline, t("net-now-choose"), None)
+    }
+
+    /// Wi-Fi: the switch says whether the radio is on (the machine's state,
+    /// read back after every change); under it the networks in range, the
+    /// one in use first, each joined with a press (a password asked in
+    /// place), and the way into a work or school network.
     fn wifi_card(&self) -> SettingsSection {
         let wifi_toggle =
             self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
-        // An unread radio state is not offered as a switch position.
-        let wifi_toggle: El = Box::new(
-            if self.read_errors.wifi_enabled.is_none() && !self.wifi_absent() {
-                wifi_toggle
-            } else {
-                wifi_toggle.with_enabled(false)
-            },
-        );
+        // An unread radio state, or a radio a switch holds off, is not
+        // offered as a switch position.
+        let usable = self.read_errors.wifi_enabled.is_none()
+            && !self.wifi_absent()
+            && !self.radios.wifi_hardware_blocked;
+        let wifi_toggle: El = Box::new(wifi_toggle.with_enabled(usable));
 
         let mut wifi_rows: Vec<Item> = Vec::new();
-        let status_label = t("net-status");
         if self.wifi_absent() {
-            wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
-        } else {
-            match self.wifi_status_error() {
-                Some(error) => wifi_rows.push(error_row(&status_label, &error)),
-                None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
-            }
+            wifi_rows.push(note(&t("net-no-wifi-adapter")));
+        } else if let Some(error) = self.wifi_status_error() {
+            wifi_rows.push(error_row(&t("net-status"), &error));
+        } else if !self.wifi_enabled {
+            wifi_rows.push(note(&t(if self.radios.wifi_hardware_blocked {
+                "net-wifi-hardware-switch"
+            } else {
+                "net-wifi-off"
+            })));
         }
         if let Some(notice) = &self.notice {
             wifi_rows.push(note(notice));
         }
-        if self.wifi_enabled {
-            for net in &self.networks {
+        if self.wifi_enabled && !self.wifi_absent() {
+            for net in self.networks_in_order() {
                 wifi_rows.push(self.network_row(net));
                 // The password prompt opens directly beneath its network.
                 if self.expanded.as_deref() == Some(net.ssid.as_str()) {
                     wifi_rows.push(self.password_prompt(&net.ssid));
                 }
             }
+            if self.networks.is_empty() && self.read_errors.networks.is_none() {
+                wifi_rows.push(note(&t(if self.scan_in_flight {
+                    "net-scanning"
+                } else {
+                    "net-none-in-range"
+                })));
+            }
+            wifi_rows.extend(self.enterprise_entry());
         }
         if self.in_flight > 0 {
             wifi_rows.push(note(&t("net-applying")));
-        } else if self.snapshot.is_some() {
-            wifi_rows.push(note(&t("net-refreshing")));
         }
-        wifi_rows.push(row(Box::new(
-            Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(self.button(
-                    "settings.network.refresh",
-                    &t("net-refresh"),
-                    NetworkEffect::RefreshNetworks,
-                ))),
-        )));
-
         card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
+    }
+
+    /// The networks in range as the list shows them: the one in use, then
+    /// the ones this device knows, then by signal, then by name.
+    fn networks_in_order(&self) -> Vec<&WifiNetworkInfo> {
+        let mut order: Vec<&WifiNetworkInfo> = self.networks.iter().collect();
+        order.sort_by(|a, b| {
+            b.connected
+                .cmp(&a.connected)
+                .then(b.known.cmp(&a.known))
+                .then(b.signal.cmp(&a.signal))
+                .then_with(|| a.ssid.to_lowercase().cmp(&b.ssid.to_lowercase()))
+        });
+        order
+    }
+
+    /// "Connect to a work or school network…" under the networks in range,
+    /// opening the enterprise setup in place.
+    fn enterprise_entry(&self) -> Vec<Item> {
+        let mut out = vec![crate::widgets::icon_row(
+            ui::icons::Icon::Landmark,
+            &t("net-enterprise-entry"),
+            &t("net-enterprise-entry-detail"),
+            Box::new(self.disclosure_button(
+                "settings.network.enterprise.editor",
+                &t("net-enterprise-entry"),
+                self.enterprise_open,
+                NetworkEffect::ShowEnterpriseSetup,
+            )),
+        )];
+        if self.enterprise_open {
+            out.extend(self.enterprise_rows());
+        }
+        out
+    }
+
+    /// A quiet chevron button that opens or closes something in place.
+    fn disclosure_button(&self, id: &str, name: &str, open: bool, effect: NetworkEffect) -> Button {
+        self.cx.bind_invocation(
+            Button::icon_only(
+                id,
+                if open {
+                    ui::icons::Icon::ChevronDown
+                } else {
+                    ui::icons::Icon::ChevronRight
+                },
+                name,
+            )
+            .role(ui::widget::ButtonRole::Plain),
+            effect,
+        )
     }
 
     /// Wired card. `NetworkManager` applies the switch to this interface
@@ -2631,7 +2899,21 @@ impl NetworkModel {
         hotspot_rows
     }
 
+    /// The hotspot: its switch, and its setup only while it runs or is
+    /// opened.
     fn hotspot_card(&self) -> SettingsSection {
+        let mut content = vec![setting_row(
+            &t("net-hotspot-setup"),
+            Box::new(self.disclosure_button(
+                "settings.network.hotspot.setup",
+                &t("net-hotspot-setup"),
+                self.hotspot_open || self.radios.hotspot_active,
+                NetworkEffect::ShowHotspotSetup,
+            )),
+        )];
+        if self.hotspot_open || self.radios.hotspot_active {
+            content.extend(self.hotspot_rows());
+        }
         card_with_action(
             &t("net-hotspot"),
             Box::new(self.switch_control(
@@ -2639,33 +2921,25 @@ impl NetworkModel {
                 self.radios.hotspot_active,
                 NetworkEffect::SET_HOTSPOT,
             )),
-            rows(self.hotspot_rows()),
+            rows(content),
         )
     }
 
-    fn profile_card(&self) -> SettingsSection {
-        card_with_action(
-            &t("net-profiles"),
-            Box::new(self.button(
-                "settings.network.advanced",
-                &if self.policy_open {
-                    t("net-hide-policy")
-                } else {
-                    t("net-show-policy")
-                },
-                NetworkEffect::ShowConnectionPolicy,
-            )),
+    /// Known networks: one row each, opening its details in place.
+    fn known_networks_card(&self) -> SettingsSection {
+        card(
+            &t("net-known"),
             rows(match &self.read_errors.profiles {
                 Some(error) => vec![row(error_caption(&t_args(
                     "net-profiles-error",
                     &[("error", error.as_str().into())],
                 )))],
-                None => self.profile_rows(),
+                None => self.known_network_rows(),
             }),
         )
     }
 
-    fn profile_rows(&self) -> Vec<Item> {
+    fn known_network_rows(&self) -> Vec<Item> {
         let wifi_profiles: Vec<&SavedNetworkProfile> = self
             .profiles
             .iter()
@@ -2675,48 +2949,91 @@ impl NetworkModel {
             return vec![note(&t("net-no-saved-wifi"))];
         }
         let mut rows_out: Vec<Item> = Vec::new();
-        for profile in &wifi_profiles {
-            let uuid = profile.uuid.clone();
-            rows_out.push(setting_row(
+        for profile in wifi_profiles {
+            let open = self.known_open.as_deref() == Some(profile.uuid.as_str());
+            rows_out.push(crate::widgets::icon_row(
+                ui::icons::Icon::Wifi,
                 &profile.name,
+                &t(if profile.autoconnect {
+                    "net-known-joins-itself"
+                } else {
+                    "net-known-joins-when-chosen"
+                }),
+                Box::new(self.disclosure_button(
+                    &format!("settings.network.profile.details.{}", profile.uuid),
+                    &t_args(
+                        "net-known-details",
+                        &[("name", profile.name.as_str().into())],
+                    ),
+                    open,
+                    NetworkEffect::ShowKnownNetwork {
+                        profile: profile.uuid.clone(),
+                    },
+                )),
+            ));
+            if open {
+                rows_out.extend(self.known_network_details(profile));
+            }
+        }
+        rows_out
+    }
+
+    /// A known network's details: joining it by itself, metered data, its
+    /// wake, sharing it with the person's other devices, and forgetting it.
+    fn known_network_details(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+        let uuid = profile.uuid.clone();
+        let mut out = vec![setting_row(
+            &t("net-autoconnect"),
+            Box::new(
+                self.cx.bind(
+                    Toggle::from_state(&LocalState::new(profile.autoconnect))
+                        .with_id(&format!("network.profile.autoconnect.{}", profile.uuid)),
+                    effect(NetworkEffect::SET_AUTOCONNECT).map(move |on: bool| (uuid.clone(), on)),
+                ),
+            ),
+        )];
+        if let Some(settings) = self.profile_settings.get(&profile.uuid) {
+            let uuid = profile.uuid.clone();
+            out.push(setting_row_described(
+                &t("net-metered-connection"),
+                &t("net-metered-caption"),
                 Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_rhythm(Rhythm::Related)
-                        .push(Box::new(self.button(
-                            &format!("settings.network.profile.share.{}", profile.uuid),
-                            &t("net-share-devices"),
-                            NetworkEffect::ShareNetwork {
-                                profile: profile.uuid.clone(),
-                            },
-                        )))
-                        .push(Box::new(self.button(
-                            &format!("settings.network.profile.forget.{}", profile.uuid),
-                            &t("net-forget"),
-                            NetworkEffect::ForgetNetwork {
-                                profile: profile.uuid.clone(),
-                            },
-                        )))
-                        .push(Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(profile.autoconnect)).with_id(
-                                    &format!("network.profile.autoconnect.{}", profile.uuid),
-                                ),
-                                effect(NetworkEffect::SET_AUTOCONNECT)
-                                    .map(move |on: bool| (uuid.clone(), on)),
-                            ),
-                        )),
+                    self.cx.bind(
+                        Toggle::from_state(&LocalState::new(
+                            settings.metered == Some(os_actions::MeteredPolicy::Metered),
+                        ))
+                        .with_id(&format!("network.profile.metered.{}", profile.uuid)),
+                        effect(NetworkEffect::SET_METERED).map(move |on: bool| (uuid.clone(), on)),
+                    ),
                 ),
             ));
         }
-        for profile in &wifi_profiles {
-            rows_out.extend(self.wake_rows(profile));
-        }
-        rows_out.push(note(&t("net-share-caption")));
-        if self.policy_open {
-            self.push_policy_rows(&wifi_profiles, &mut rows_out);
-        }
-        rows_out
+        out.extend(self.wake_rows(profile));
+        out.push(setting_row_described(
+            &t("net-share-devices"),
+            &t("net-share-caption"),
+            Box::new(self.button(
+                &format!("settings.network.profile.share.{}", profile.uuid),
+                &t("net-share"),
+                NetworkEffect::ShareNetwork {
+                    profile: profile.uuid.clone(),
+                },
+            )),
+        ));
+        out.push(setting_row(
+            &t("net-forget-network"),
+            Box::new(
+                self.button(
+                    &format!("settings.network.profile.forget.{}", profile.uuid),
+                    &t("net-forget"),
+                    NetworkEffect::ForgetNetwork {
+                        profile: profile.uuid.clone(),
+                    },
+                )
+                .role(ui::widget::ButtonRole::Destructive),
+            ),
+        ));
+        out
     }
 
     fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
@@ -2753,82 +3070,15 @@ impl NetworkModel {
         }
     }
 
-    /// The selected saved Wi-Fi network's policy editor: metered, hardware
-    /// address and proxy.
-    fn push_policy_rows(&self, wifi_profiles: &[&SavedNetworkProfile], rows_out: &mut Vec<Item>) {
-        let Some(profile) = Self::selected(wifi_profiles, &self.wifi_profile) else {
-            return;
-        };
-        if wifi_profiles.len() > 1 {
-            rows_out.push(setting_row(
-                &t("net-edit-profile"),
-                Box::new(
-                    Dropdown::from_state(
-                        wifi_profiles.iter().map(|p| profile_label(p)).collect(),
-                        &self.wifi_profile,
-                    )
-                    .with_placeholder(&profile_label(profile)),
-                ),
-            ));
-        }
-        rows_out.push(note(&t_args(
-            "net-policy-for",
-            &[("name", profile.name.as_str().into())],
-        )));
-        let Some(form) = self.policy_forms.get(&profile.uuid) else {
-            rows_out.push(note(&t("net-policy-unread")));
-            return;
-        };
-        rows_out.push(setting_row(
-            &t("net-metered"),
-            Box::new(
-                Dropdown::from_state(
-                    METERED_POLICIES
-                        .iter()
-                        .map(|id| metered_shown(id))
-                        .collect(),
-                    &form.metered,
-                )
-                .with_id(&format!("network.profile.metered.{}", profile.uuid))
-                .with_placeholder(&form.metered.get()),
-            ),
-        ));
-        rows_out.push(setting_row(
-            &t("net-mac"),
-            Box::new(
-                Dropdown::from_state(
-                    MAC_POLICIES.iter().map(|id| mac_shown(id)).collect(),
-                    &form.mac,
-                )
-                .with_id(&format!("network.profile.mac.{}", profile.uuid))
-                .with_placeholder(&form.mac.get()),
-            ),
-        ));
-        rows_out.push(field_row(
-            &t("net-proxy-url"),
-            Box::new(
-                TextInput::from_state(&form.proxy)
-                    .with_id(&format!("network.profile.proxy.{}", profile.uuid))
-                    .with_placeholder("https://example.org/proxy.pac"),
-            ),
-        ));
-        rows_out.push(self.button_row(
-            &format!("settings.network.profile.policy.{}", profile.uuid),
-            &t("net-apply-policy"),
-            NetworkEffect::SetConnectionPolicy {
-                profile: profile.uuid.clone(),
-                metered: None,
-                mac: None,
-                proxy: None,
-            },
-        ));
-    }
-
     fn diagnostic_rows(&self) -> Vec<Item> {
-        let mut out: Vec<Item> = vec![self.button_row(
-            "settings.network.diagnostics",
-            &t("net-run-diagnostics"),
-            NetworkEffect::RunDiagnostics,
+        let mut out: Vec<Item> = vec![setting_row_described(
+            &t("net-diag-check"),
+            &t("net-diag-check-caption"),
+            Box::new(self.button(
+                "settings.network.diagnostics",
+                &t("net-run-diagnostics"),
+                NetworkEffect::RunDiagnostics,
+            )),
         )];
         if let Some(d) = &self.diagnostics {
             out.push(value_row("NetworkManager", &d.network_manager_state));
@@ -3025,23 +3275,6 @@ impl NetworkModel {
     /// Keep specialist 802.1X credentials out of the ordinary connection
     /// view. The affordance remains visible, while the form appears only when
     /// someone has chosen to add that kind of network.
-    fn enterprise_card(&self) -> SettingsSection {
-        let mut content = vec![note(&t("net-enterprise-caption"))];
-        if self.enterprise_open {
-            content.extend(self.enterprise_rows());
-        }
-        content.push(self.button_row(
-            "settings.network.enterprise.editor",
-            &if self.enterprise_open {
-                t("net-close-enterprise")
-            } else {
-                t("net-setup-enterprise")
-            },
-            NetworkEffect::ShowEnterpriseSetup,
-        ));
-        card(&t("net-enterprise"), rows(content))
-    }
-
     /// One scanned-network row: the network's name, under it whether it
     /// is secured and how strong it is, and on the trailing edge Connect or
     /// Cancel, or a quiet mark for the one in use.
@@ -3201,16 +3434,16 @@ impl NetworkModel {
             )))];
         }
         if self.vpns.is_empty() {
-            return vec![
-                note(&t("net-vpn-empty")),
-                row(Box::new(Row::new().push(Box::new(Spacer::new())).push(
-                    Box::new(self.button(
-                        "settings.network.vpn.studio.open",
-                        &t("net-open-vpn-studio"),
-                        NetworkEffect::OpenVpnStudio { vpn: None },
-                    )),
-                ))),
-            ];
+            // Unused, the group is one line: where a VPN is added.
+            return vec![setting_row_described(
+                &t("net-vpn-add"),
+                &t("net-vpn-empty"),
+                Box::new(self.button(
+                    "settings.network.vpn.studio.open",
+                    &t("net-open-vpn-studio"),
+                    NetworkEffect::OpenVpnStudio { vpn: None },
+                )),
+            )];
         }
         let mut out: Vec<Item> = Vec::new();
         for vpn in &self.vpns {
@@ -3317,6 +3550,7 @@ impl PaneModel for NetworkModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.scan_when_due(ui::time::now());
         let selection = (self.wifi_profile.get(), self.wired_profile.get());
         if selection != self.seen_selection {
             self.seen_selection = selection;
@@ -3328,9 +3562,57 @@ impl PaneModel for NetworkModel {
     fn name(&self) -> &'static str {
         "NetworkPane"
     }
+
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        self.scans_networks()
+            .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
+            .flatten()
+    }
 }
 
 impl NetworkModel {
+    /// Whether the page looks for networks by itself: Wi-Fi is on and the
+    /// device has answered.
+    fn scans_networks(&self) -> bool {
+        self.loaded && self.wifi_enabled && !self.wifi_absent()
+    }
+
+    /// Scan, then read the networks in range, when the last look is
+    /// [`SCAN_EVERY`] old: the list follows the room while the page is
+    /// open, with no Refresh to press. The status never waits for it.
+    fn scan_when_due(&mut self, now: ui::time::Instant) {
+        let due = self.scans_networks()
+            && self.snapshot.is_none()
+            && self.in_flight == 0
+            && self
+                .scanned_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= SCAN_EVERY);
+        if !due {
+            return;
+        }
+        self.scanned_at = Some(now);
+        let (sender, receiver) = crate::channel::channel();
+        let service = Arc::clone(&self.service);
+        let wake = ui::WakeHandle::new();
+        let started = crate::device_read::thread(
+            "settings-network-scan",
+            Box::new(move || {
+                // A failed scan still reads what `NetworkManager` knows.
+                if let Err(error) = service.scan() {
+                    warn!(target: "tilo::settings", op = "scan_wifi", %error, "Wi-Fi scan failed");
+                }
+                if sender.send(service.networks()).is_ok() {
+                    wake.wake();
+                }
+            }),
+        );
+        if started.is_ok() {
+            self.snapshot = Some(receiver);
+            self.scan_in_flight = true;
+            self.changed = true;
+        }
+    }
+
     /// Take in a snapshot or a chosen certificate that arrived.
     fn poll_background(&mut self) {
         let listed = self.cx.radios().now();
@@ -3348,10 +3630,12 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
+                    self.scan_in_flight = false;
                     let _ = self.adopt_snapshot(snapshot);
                 }
                 Err(crate::channel::TryRecvError::Disconnected) => {
                     self.snapshot = None;
+                    self.scan_in_flight = false;
                     self.changed = true;
                 }
                 Err(crate::channel::TryRecvError::Empty) => {}
@@ -3374,7 +3658,7 @@ mod tests {
 
         let fake = Arc::new(FakeNetwork::default());
         let network = model(&fake);
-        let _ = t("net-refresh");
+        let _ = t("net-run-diagnostics");
         I18nManager::set_locale("en-US");
         let root = ModelPane::new(Rc::new(RefCell::new(network)));
         let mut app = Framed::new(
@@ -3385,19 +3669,19 @@ mod tests {
         );
         let host = Framed::harness_mut(&mut app);
         for (locale, expected) in [
-            ("en-US", "Refresh"),
-            ("de-DE", "Aktualisieren"),
-            ("en-US", "Refresh"),
+            ("en-US", "Run diagnostics"),
+            ("de-DE", "Diagnose ausführen"),
+            ("en-US", "Run diagnostics"),
         ] {
             I18nManager::set_locale(locale);
             host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
                 .map_err(|error| error.to_string())?;
-            let name = ui::widget::find_test_id(host.root_widget(), "settings.network.refresh")
+            let name = ui::widget::find_test_id(host.root_widget(), "settings.network.diagnostics")
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.name);
             if name.as_deref() != Some(expected) {
                 return Err(format!(
-                    "the actual network refresh control must follow {locale}: {name:?}"
+                    "the actual network diagnostics control must follow {locale}: {name:?}"
                 ));
             }
         }
@@ -3484,7 +3768,10 @@ mod tests {
                 .ok_or_else(|| "the actual band picker must expose its expanded state".into())
         }
         let fake = Arc::new(FakeNetwork::default());
-        let root = ModelPane::new(Rc::new(RefCell::new(model(&fake))));
+        let mut network = model(&fake);
+        // The band is in the hotspot's setup, open.
+        network.hotspot_open = true;
+        let root = ModelPane::new(Rc::new(RefCell::new(network)));
         let mut app = Framed::new(
             ui::State::new(),
             root,
@@ -3616,6 +3903,15 @@ mod tests {
     }
 
     impl NetworkService for FakeNetwork {
+        /// The periodic look reads only the networks, not a whole snapshot.
+        fn networks(&self) -> NetworkSnapshot {
+            let unreadable = self.unreadable.lock().unwrap().clone();
+            NetworkSnapshot::networks_only(match unreadable {
+                Some(reason) => Err(reason),
+                None => Ok(self.networks.lock().unwrap().clone()),
+            })
+        }
+
         fn scan(&self) -> Result<(), String> {
             let reads = self
                 .snapshot_reads
@@ -3799,7 +4095,7 @@ mod tests {
         let shown = crate::widgets::announced_text(app.harness().root_widget());
         assert!(
             shown.contains(
-                &before["labels"]["enterprise_caption"]
+                &before["labels"]["enterprise_entry"]
                     .as_str()
                     .unwrap()
                     .to_owned()
@@ -4051,6 +4347,166 @@ mod tests {
 
     fn shown(model: &NetworkModel) -> Vec<String> {
         crate::widgets::announced_text(model.build_composition().as_ref())
+    }
+
+    /// Wait for the read a landed change started, as the pane's poll does.
+    fn settle(model: &mut NetworkModel) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            model.poll_background();
+            if model.snapshot.is_none() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The Wi-Fi switch as composed: whether it is on, and whether it can
+    /// be used.
+    fn wifi_switch(model: &NetworkModel) -> (Option<bool>, bool) {
+        let composed = model.build_composition();
+        let node = ui::widget::find_test_id(composed.as_ref(), "network.wifi")
+            .and_then(Widget::accessibility)
+            .expect("the Wi-Fi switch is composed");
+        (node.state.checked, !node.state.disabled)
+    }
+
+    /// `NetworkManager`'s flag and the kernel's kill switch, as far as Wi-Fi
+    /// on and off goes: turning on fails while a hardware switch holds the
+    /// radio off, and every read says how the radio stands.
+    #[derive(Default)]
+    struct NmRadio {
+        on: Mutex<bool>,
+        hard: Mutex<bool>,
+    }
+
+    impl NetworkService for NmRadio {
+        fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+            let on = *self.on.lock().unwrap() && !*self.hard.lock().unwrap();
+            let mut snapshot =
+                NetworkSnapshot::of_networks(if on { networks() } else { Vec::new() });
+            snapshot.wifi_enabled = Some(Ok(on));
+            snapshot.radios = Some(Ok(os_actions::RadioState {
+                wifi_available: true,
+                wifi_enabled: on,
+                wifi_hardware_blocked: *self.hard.lock().unwrap(),
+                ..os_actions::RadioState::default()
+            }));
+            snapshot
+        }
+        fn change(&self, change: &NetworkChange) -> Result<(), String> {
+            if let NetworkChange::Wifi(on) = change {
+                if *on && *self.hard.lock().unwrap() {
+                    return Err("Wi-Fi is switched off with the hardware switch".into());
+                }
+                *self.on.lock().unwrap() = *on;
+            }
+            Ok(())
+        }
+        fn continuity(&self, _: WifiContinuityCommand) -> Result<WifiContinuityReply, String> {
+            Ok(WifiContinuityReply::NotFound)
+        }
+        fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+            Err("no bus".into())
+        }
+        fn sign_in_page(&self) -> Result<String, String> {
+            Err("no portal".into())
+        }
+        fn open_tool(&self, _: ToolIntent) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// The Wi-Fi switch is the radio as `NetworkManager` and the kernel
+    /// report it, read back after every change: off and on again lands
+    /// each time, and a radio a hardware switch holds off shows off, with
+    /// the switch unusable and the reason in place of the networks.
+    #[test]
+    fn the_wifi_switch_follows_the_radio_and_not_the_request() {
+        let nm = Arc::new(NmRadio::default());
+        let profile = tempfile::tempdir().unwrap().keep();
+        let mut model = NetworkModel::loaded_from(
+            PaneCx::in_file(profile.join("settings.json")),
+            Arc::clone(&nm) as Arc<dyn NetworkService>,
+        );
+        assert_eq!(wifi_switch(&model), (Some(false), true));
+        let text = shown(&model).join("\n");
+        assert!(
+            text.contains(&t("net-turn-on-wifi")),
+            "the status offers the fix: {text}"
+        );
+
+        for on in [true, false, true] {
+            run(&mut model, NetworkEffect::SetWifi { on }).unwrap();
+            settle(&mut model);
+            assert_eq!(wifi_switch(&model), (Some(on), true), "after turning {on}");
+            assert_eq!(*nm.on.lock().unwrap(), on);
+        }
+        assert!(
+            shown(&model).join("\n").contains("Home_Network"),
+            "on, the networks in range are listed"
+        );
+
+        run(&mut model, NetworkEffect::SetWifi { on: false }).unwrap();
+        settle(&mut model);
+        *nm.hard.lock().unwrap() = true;
+        let refused = run(&mut model, NetworkEffect::SetWifi { on: true });
+        assert!(refused.is_err());
+        settle(&mut model);
+        assert_eq!(
+            wifi_switch(&model),
+            (Some(false), false),
+            "the radio's state, not the request; nothing to switch"
+        );
+        assert!(
+            shown(&model)
+                .join("\n")
+                .contains(&t("net-wifi-hardware-switch"))
+        );
+    }
+
+    /// A known network's details open in place: joining by itself, metered
+    /// data and forgetting it, each a control of its own.
+    #[test]
+    fn a_known_network_opens_its_details_in_place() {
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
+            uuid: "1234-abcd".into(),
+            name: "Home_Network".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        let mut model = model(&fake);
+        let details = |model: &NetworkModel| {
+            let composed = model.build_composition();
+            ui::widget::find_test_id(composed.as_ref(), "network.profile.autoconnect.1234-abcd")
+                .is_some()
+        };
+        assert!(!details(&model), "closed until asked");
+        assert!(shown(&model).join("\n").contains(&t("net-known")));
+        run(
+            &mut model,
+            NetworkEffect::ShowKnownNetwork {
+                profile: "1234-abcd".into(),
+            },
+        )
+        .unwrap();
+        assert!(details(&model), "open in place");
+        let text = shown(&model).join("\n");
+        assert!(text.contains(&t("net-forget-network")), "{text}");
+        assert!(!text.contains("Connection policy"), "{text}");
+        run(
+            &mut model,
+            NetworkEffect::ShowKnownNetwork {
+                profile: "1234-abcd".into(),
+            },
+        )
+        .unwrap();
+        assert!(!details(&model), "and closed again");
     }
 
     /// A wired-only machine names its missing adapter without treating it as
@@ -4372,6 +4828,8 @@ mod tests {
                 .contains("must be tested separately")
         );
         let mut model = area.model().borrow_mut();
+        // A known network's wake is among its details, open in place.
+        model.known_open = Some(uuid.into());
         assert!(named_switch(
             model.build_composition().as_ref(),
             "Wake over Home"
