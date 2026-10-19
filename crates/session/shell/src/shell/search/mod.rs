@@ -282,6 +282,10 @@ pub struct SearchResult {
     /// Optional secondary line under the title — path, preview snippet,
     /// creator handle.
     pub subtitle: Option<String>,
+    /// The secondary line as separate facts (where it lives, what kind it
+    /// is, when), laid out as runs of their own with space between them.
+    /// Empty: the line is `subtitle`. Never join facts into one string.
+    pub facts: Vec<String>,
     /// Optional short live status rendered by trusted shell chrome.
     pub badge: Option<String>,
     /// The keyboard shortcut that does the same, spelled as the active
@@ -305,6 +309,17 @@ const HEADLESS_MAX_PAGES: usize = 256;
 const HEADLESS_MAX_RESULTS: usize = 16_384;
 const HEADLESS_MAX_BYTES: usize = 16 * 1024 * 1024;
 impl SearchResult {
+    /// Show the secondary line as these facts ([`Self::facts`]): each its
+    /// own run, never one string joined by a glyph.
+    #[must_use]
+    pub fn with_facts(mut self, facts: impl IntoIterator<Item = String>) -> Self {
+        self.facts = facts
+            .into_iter()
+            .filter(|fact| !fact.trim().is_empty())
+            .collect();
+        self
+    }
+
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
     pub fn nullary(
@@ -323,6 +338,7 @@ impl SearchResult {
             id: id.into(),
             title: title.into(),
             subtitle,
+            facts: Vec::new(),
             badge: None,
             shortcut: None,
             score,
@@ -357,6 +373,7 @@ impl SearchResult {
             id: id.into(),
             title: title.into(),
             subtitle,
+            facts: Vec::new(),
             badge: None,
             shortcut: None,
             score,

@@ -1848,6 +1848,7 @@ impl LiveAppActionsProvider {
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
             return SearchResult {
+            facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
@@ -1884,6 +1885,7 @@ impl LiveAppActionsProvider {
         let status_broker = lifecycle;
         let actor = actor.to_string();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Custom("action-job".into()),
             operation_kind: tilo_actions::OperationKind::View,
@@ -2419,6 +2421,7 @@ impl LiveAppActionsProvider {
         let resource = address.resource.clone();
         let action = address.action.clone();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
@@ -2511,6 +2514,7 @@ impl LiveAppActionsProvider {
         };
         let title = row.resource.label.clone();
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
@@ -2847,6 +2851,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let open_start = Rc::clone(&start);
                 let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
+            facts: Vec::new(),
                     shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
@@ -5976,6 +5981,7 @@ mod tests {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room.to_string();
             let result = |cluster: &str| SearchResult {
+            facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,

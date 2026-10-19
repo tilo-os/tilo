@@ -1013,7 +1013,7 @@ impl TabBar {
         } else {
             text_dim
         };
-        let text_style = theme.text(TextRole::Label);
+        let text_style = tab_title_style(theme);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_style(
             &t.title,
@@ -1630,7 +1630,7 @@ impl TabBar {
             crate::chrome::SelectorRole::Item(&pill_appearance(theme, ground, false, true, false)),
             theme,
         );
-        let text_style = theme.text(TextRole::Label);
+        let text_style = tab_title_style(theme);
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_style(
             &c.desc.title,
@@ -2085,7 +2085,7 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let style = theme.text(TextRole::Label);
+        let style = tab_title_style(theme);
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
@@ -3038,7 +3038,7 @@ const ICON_W: f64 = 14.0;
 /// uneven. At 1.5 × `ACTION_W` the three glyphs carry the same 10.5 px of
 /// ink, and with their centres one [`CHIP_PITCH`] apart the gaps between
 /// them are equal too.
-const CLOSE_GLYPH_PX: f64 = ACTION_W * 1.5;
+const CLOSE_GLYPH_PX: f64 = ACTION_W;
 const ICON_GAP: f64 = 6.0;
 const PINNED_W: f64 = 28.0;
 /// Radius of the leading accent dot, when a tab is classified by colour
@@ -3235,6 +3235,12 @@ fn chip_rects(
         Rect::ZERO
     };
     (close, max_rect, search_rect)
+}
+
+/// The style of a tab's title and of a window's title: Body, so a window's
+/// name reads at the size of the text in it rather than a size smaller.
+fn tab_title_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Body)
 }
 
 /// Where the × glyph is drawn inside its close chip rect.
@@ -4873,7 +4879,7 @@ mod tests {
                     .resources
                     .glyph_runs
                     .iter()
-                    .all(|run| run.font_size <= theme.tokens.typography.size(TextRole::Label))
+                    .all(|run| run.font_size <= tab_title_style(&theme).size)
             );
             assert!(
                 scene
@@ -4882,7 +4888,7 @@ mod tests {
                     .glyph_runs
                     .iter()
                     .any(
-                        |run| (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
+                        |run| (run.font_size - tab_title_style(&theme).size).abs()
                             < 0.01
                     ),
                 "tab title must retain the requested 200% font size"

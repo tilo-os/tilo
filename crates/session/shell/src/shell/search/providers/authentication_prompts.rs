@@ -118,6 +118,7 @@ impl SearchProvider for AuthenticationPromptsProvider {
                 });
             let open_invoke = invoke.clone();
             rows.push(SearchResult {
+                facts: Vec::new(),
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),

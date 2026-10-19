@@ -904,6 +904,7 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
     let open = Rc::clone(&run);
     let invoke = Rc::clone(&run);
     let mut row = SearchResult {
+            facts: Vec::new(),
         shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: if verb == Verb::Get {

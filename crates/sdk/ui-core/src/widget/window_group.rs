@@ -431,7 +431,6 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
-            Self::paint_strip_body(&self.bar, scene, (transform, Affine::IDENTITY), theme);
             self.bar.draw(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
@@ -1329,7 +1328,6 @@ impl WindowGroup {
         let capture_rect = host.complete_content_rect()?;
         self.bar
             .set_group_focused(self.focused || self.search_active);
-        Self::paint_strip_body(&self.bar, scene, (transform, Affine::IDENTITY), theme);
         self.bar.draw(scene, transform, tr, theme, presence);
         if let Some(name) = opening_name.as_deref() {
             host.set_opening_name(name);
@@ -3320,6 +3318,7 @@ impl Widget for WindowGroup {
         // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
         let dragged_tab = self.bar.drag_visual(theme).map(|visual| visual.tab_id);
+        let bar_visible = self.navigation_bar_visible();
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
@@ -3331,7 +3330,7 @@ impl Widget for WindowGroup {
                 self.maximized
                     && self.fills_display
                     && !spawn_active
-                    && !self.navigation_bar_visible(),
+                    && !bar_visible,
             );
             let source_is_lifted = dragged_tab == Some(active_id);
             if source_is_lifted {

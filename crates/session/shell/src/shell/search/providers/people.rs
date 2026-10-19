@@ -54,6 +54,7 @@ fn result(row: RosterRow, kind: ResourceKind) -> SearchResult {
     let id = row.id.clone();
     let followable = row.followable;
     SearchResult {
+            facts: Vec::new(),
         kind,
         operation_kind: tilo_actions::OperationKind::View,
         provider_id: PROVIDER_ID.into(),

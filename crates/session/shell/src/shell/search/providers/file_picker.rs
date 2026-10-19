@@ -148,6 +148,7 @@ impl SearchProvider for FilePickerProvider {
             let subject = subject.clone();
             let expected = subject.id;
             SearchResult {
+                facts: Vec::new(),
                 shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: if name == "inspect" {

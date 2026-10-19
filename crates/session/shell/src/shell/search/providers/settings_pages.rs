@@ -101,7 +101,7 @@ fn opening(
     kind: &ResourceKind,
     id: String,
     title: String,
-    subtitle: String,
+    facts: Vec<String>,
     uri: String,
 ) -> SearchResult {
     SearchResult::nullary_fallible(
@@ -109,7 +109,7 @@ fn opening(
         PROVIDER_ID,
         id,
         title,
-        Some(subtitle),
+        Some(facts.join(", ")),
         0,
         move |_doc, _root, chrome| {
             crate::shell::uri_open::open_in_workspace(&uri, chrome)
@@ -120,6 +120,7 @@ fn opening(
                 })
         },
     )
+    .with_facts(facts)
 }
 
 impl SettingsPagesProvider {
@@ -144,7 +145,7 @@ impl SettingsPagesProvider {
                 kind,
                 format!("page:{}", page.slug),
                 title,
-                subtitle,
+                vec![subtitle],
                 page.link(),
             ));
         }
@@ -185,7 +186,7 @@ impl SettingsPagesProvider {
                 kind,
                 format!("setting:{}", setting.id),
                 name,
-                format!("{page_title} · {app}"),
+                vec![page_title.clone(), app.clone()],
                 setting.link(),
             ));
         }

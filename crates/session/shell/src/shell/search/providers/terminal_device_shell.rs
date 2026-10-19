@@ -101,6 +101,7 @@ impl TerminalDeviceShellProvider {
             ));
         }
         SearchResult {
+            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: if matches!(operation, "inspect" | "read") {

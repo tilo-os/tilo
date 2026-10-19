@@ -175,6 +175,7 @@ impl SearchProvider for NowPlayingProvider {
                 let source = Rc::clone(&self.source);
                 let token = player_token(&player.bus_name);
                 out.push(SearchResult {
+                    facts: Vec::new(),
                     shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: tilo_actions::OperationKind::Effect,

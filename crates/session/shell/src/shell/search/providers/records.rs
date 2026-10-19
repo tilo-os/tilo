@@ -253,7 +253,7 @@ impl RecordsProvider {
         &self,
         record: &KnownRecord,
         title: String,
-        subtitle: String,
+        facts: Vec<String>,
         score: i32,
     ) -> SearchResult {
         let index = Rc::clone(&self.index);
@@ -264,10 +264,11 @@ impl RecordsProvider {
             "records",
             record.id.as_str().to_string(),
             title,
-            Some(subtitle),
+            Some(facts.join(", ")),
             score,
             move |chrome: &Chrome| bring_into_this_room(&index, &id, &kind, chrome),
         )
+        .with_facts(facts)
     }
 }
 
@@ -322,7 +323,7 @@ fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
 /// The line under the title: where this record lives. Not decoration —
 /// without it, two rooms' `notes.md` are identical rows and activating
 /// one is a guess.
-fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, String)]) -> String {
+fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, String)]) -> Vec<String> {
     let where_it_lives = if here.is_some_and(|h| record.is_in(h)) {
         t("search-record-in-this-workspace")
     } else {
@@ -344,11 +345,9 @@ fn provenance(record: &KnownRecord, here: Option<RoomId>, rooms: &[(RoomId, Stri
         }
     };
     match record.id.file_path() {
-        Some(path) => format!("{where_it_lives} · {}", display_path(&path)),
-        None if !record.kind.as_str().is_empty() => {
-            format!("{where_it_lives} · {}", record.kind)
-        }
-        None => where_it_lives,
+        Some(path) => vec![where_it_lives, display_path(&path)],
+        None if !record.kind.as_str().is_empty() => vec![where_it_lives, record.kind.to_string()],
+        None => vec![where_it_lives],
     }
 }
 
@@ -664,9 +663,9 @@ mod tests {
             );
             assert_eq!(out[0].kind, ResourceKind::Record);
             assert_eq!(
-                out[0].subtitle.as_deref(),
-                Some("In Reading · book"),
-                "the row must say which room the record lives in"
+                out[0].facts,
+                vec!["In Reading".to_owned(), "book".to_owned()],
+                "the row must say which room the record lives in, as its own fact"
             );
         }
 
@@ -804,7 +803,7 @@ mod tests {
             assert_eq!(out.len(), 1);
             assert_eq!(
                 out[0].subtitle.as_deref(),
-                Some("In another workspace · /shared/minutes.odt")
+                Some("In another workspace, /shared/minutes.odt")
             );
         }
 
@@ -821,12 +820,12 @@ mod tests {
 
             assert_eq!(
                 query(&provider, "book", &chrome)[0].subtitle.as_deref(),
-                Some("In Reading · book")
+                Some("In Reading, book")
             );
             activate(&chrome, reading_ws);
             assert_eq!(
                 query(&provider, "book", &chrome)[0].subtitle.as_deref(),
-                Some("In this workspace · book")
+                Some("In this workspace, book")
             );
         }
     }

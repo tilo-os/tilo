@@ -130,6 +130,7 @@ impl SearchProvider for DeviceLocalActionsProvider {
                 let address = descriptor.address.clone();
                 let open_address = address.clone();
                 rows.push(SearchResult {
+            facts: Vec::new(),
                     kind: ResourceKind::Action,
                     operation_kind: descriptor.kind,
                     provider_id: PROVIDER_ID.into(),

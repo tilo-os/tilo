@@ -231,24 +231,25 @@ fn app_name(tree: &crate::shell::state::DesktopTree, row: &WindowRow) -> Option<
     (!name.trim().is_empty()).then_some(name)
 }
 
-/// A window row's second line: the app, when the title names a document
-/// rather than the app, and where it is when that tells it apart.
-fn window_subtitle(row: &WindowRow, app: Option<&str>) -> Option<String> {
+/// A window row's second line as facts: the app, when the title names a
+/// document rather than the app, and where it is when that tells it apart.
+fn window_facts(row: &WindowRow, app: Option<&str>) -> Vec<String> {
     let app = app.filter(|app| !row.title.eq_ignore_ascii_case(app));
     match (app, row.subtitle.as_deref()) {
         (Some(app), Some(place)) if matches!(row.action, WindowAction::FocusTab { .. }) => {
-            Some(format!("{app} · {place}"))
+            vec![app.to_owned(), place.to_owned()]
         }
         (Some(app), None) if matches!(row.action, WindowAction::FocusTab { .. }) => {
-            Some(app.to_owned())
+            vec![app.to_owned()]
         }
-        (_, place) => place.map(str::to_owned),
+        (_, place) => place.map(str::to_owned).into_iter().collect(),
     }
 }
 
 fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
     let action = row.action;
-    let subtitle = window_subtitle(&row, app);
+    let facts = window_facts(&row, app);
+    let subtitle = (!facts.is_empty()).then(|| facts.join(", "));
     let params = if row.destinations.is_empty() {
         Vec::new()
     } else {
@@ -262,6 +263,7 @@ fn result(row: WindowRow, app: Option<&str>, score: i32) -> SearchResult {
         ]
     };
     SearchResult {
+        facts,
         shortcut: None,
         kind: match row.kind {
             WindowRowKind::Tab => ResourceKind::Tab,
