@@ -2227,8 +2227,19 @@ impl ShellOverlayHost {
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
         ));
+        // Apps' content, from the session's persistent index: found whether
+        // or not the app runs, opened through the broker like a live hit.
+        let app_content =
+            std::rc::Rc::new(crate::shell::search::providers::AppContentProvider::new(
+                crate::shell::search::app_content_index::session(),
+                broker.clone(),
+            ));
+        self.search_registry
+            .register(std::rc::Rc::clone(&app_content)
+                as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         let app_actions =
             std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
+        app_actions.set_app_content(app_content);
         self.search_registry
             .register(std::rc::Rc::clone(&app_actions)
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
