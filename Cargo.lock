@@ -19619,6 +19619,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unic-langid",
+ "unicode-bidi",
  "unicode-linebreak",
  "unicode-normalization",
  "unicode-properties",

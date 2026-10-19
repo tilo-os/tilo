@@ -761,3 +761,17 @@ mod tests {
         }
     }
 }
+
+/// The Unicode Bidirectional Algorithm (UAX #9) run over `text` with its
+/// paragraph direction taken from its first strong character: the embedding
+/// level of every byte and the paragraphs, for code that orders a line's
+/// runs itself.
+///
+/// Call this rather than `unicode_bidi::BidiInfo::new`, which is generic over
+/// its character data and text: an app calling it compiled the whole
+/// algorithm again, while this one is compiled once, into the toolkit.
+#[inline(never)]
+#[must_use]
+pub fn bidi_info(text: &str) -> unicode_bidi::BidiInfo<'_> {
+    unicode_bidi::BidiInfo::new(text, None)
+}

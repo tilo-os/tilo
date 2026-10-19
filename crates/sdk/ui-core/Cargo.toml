@@ -227,6 +227,9 @@ unic-langid.workspace = true
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
+# UAX #9 levels, for apps that lay out bidirectional text themselves (Ebook's
+# pages); cosmic-text uses the same crate. See text_break::bidi_info.
+unicode-bidi = "0.3.18"
 # Confusable skeletons: a bot's shown name that looks like a room member's
 # is labelled with its service.
 unicode-normalization = "0.1.25"
