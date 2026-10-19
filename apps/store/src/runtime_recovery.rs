@@ -395,7 +395,7 @@ type = "gui"
             ),
             (
                 "de-DE",
-                "Der App-Dienst ist nicht verfügbar. Kein Download wurde gestartet.",
+                "Der App-Dienst ist nicht verfügbar. Es wurde kein Download gestartet.",
                 "Keine aktivierte Quelle bietet die benötigte Laufzeit für dieses Gerät an.",
             ),
         ] {

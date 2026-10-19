@@ -1128,13 +1128,13 @@ pub fn mount_in_process(
     })
 }
 
-/// Spacing of the strip column under the top bar: the same margin above the
-/// windows as below them, so the work area reads as one evenly framed space.
-/// With nothing above them, the windows' bars sat directly against the top
-/// bar and the two read as one cramped stack.
+/// Spacing of the strip column under the top bar: a small step between the
+/// desktop's bar and the windows' own bars, enough that the two read as two
+/// bars rather than one cramped stack without leaving an empty band; the
+/// windows keep a margin over the bottom edge, which nothing else provides.
 pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
     tilo_desktop::composition::WorkArea::Flush {
-        top: 12.0,
+        top: 4.0,
         bottom: 12.0,
     };
 

@@ -3038,7 +3038,7 @@ const ICON_W: f64 = 14.0;
 /// uneven. At 1.5 × `ACTION_W` the three glyphs carry the same 10.5 px of
 /// ink, and with their centres one [`CHIP_PITCH`] apart the gaps between
 /// them are equal too.
-const CLOSE_GLYPH_PX: f64 = ACTION_W;
+const CLOSE_GLYPH_PX: f64 = ACTION_W * 1.5;
 const ICON_GAP: f64 = 6.0;
 const PINNED_W: f64 = 28.0;
 /// Radius of the leading accent dot, when a tab is classified by colour

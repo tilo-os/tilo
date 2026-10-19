@@ -335,10 +335,17 @@ pub fn application_search_fields<'a>(
 #[must_use]
 pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
     use super::MatchTier;
-    if weight == super::FieldWeight::KEYWORD
-        && matches!(tier, MatchTier::Exact | MatchTier::PrefixWord | MatchTier::Prefix)
-    {
-        return MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+    if weight == super::FieldWeight::KEYWORD {
+        match tier {
+            // Typed whole: the app's other name, as its name's start.
+            MatchTier::Exact | MatchTier::PrefixWord => {
+                return MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+            }
+            // Begun: a step below, so "memo", Notes' whole word, leads
+            // Monitor's "memory" begun.
+            MatchTier::Prefix => return MatchTier::Word.rank_in(super::FieldWeight::TITLE),
+            _ => {}
+        }
     }
     tier.rank_in(weight)
 }

@@ -357,6 +357,9 @@ pub struct TileHost {
     /// The window fills its display ([`Widget::set_full_bleed`]): square,
     /// unclipped and without an edge.
     full_bleed: bool,
+    /// The tile's bottom edge is the display's (a maximized window): its
+    /// lower corners are square, its upper ones stay round under its bar.
+    square_bottom: bool,
     /// `None` by default, matching the "animations only fire for runtime
     /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
@@ -667,6 +670,7 @@ impl TileHost {
             pointer: None,
             flush_edges: false,
             full_bleed: false,
+            square_bottom: false,
             spawned_at: None,
             opening_name: String::new(),
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
@@ -2917,11 +2921,11 @@ impl TileHost {
         let inner_offset = outer_offset - edge_width;
         let outer = RoundedRect::from_rect(
             rect.inflate(outer_offset, outer_offset),
-            radius + outer_offset,
+            self.corner_radii(radius + outer_offset),
         );
         let inner = RoundedRect::from_rect(
             rect.inflate(inner_offset, inner_offset),
-            (radius + inner_offset).max(0.0),
+            self.corner_radii((radius + inner_offset).max(0.0)),
         );
         let mut edge = outer.to_path(0.01);
         edge.extend(inner.path_elements(0.01));
@@ -2932,6 +2936,21 @@ impl TileHost {
             None,
             &edge,
         );
+    }
+
+    /// The tile's corners at `radius`: all round, or round only at the top
+    /// while its bottom edge is the display's ([`Self::set_square_bottom`]).
+    fn corner_radii(&self, radius: f64) -> vello::kurbo::RoundedRectRadii {
+        if self.square_bottom {
+            vello::kurbo::RoundedRectRadii::new(radius, radius, 0.0, 0.0)
+        } else {
+            vello::kurbo::RoundedRectRadii::from_single_radius(radius)
+        }
+    }
+
+    /// The tile's bottom edge is the display's: square its lower corners.
+    pub fn set_square_bottom(&mut self, square: bool) {
+        self.square_bottom = square;
     }
 
     fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {
@@ -2987,7 +3006,7 @@ impl TileHost {
         // A tile casts no shadow: it is separated by the ground and its
         // window edge. Only floating things cast one.
         let radius = f64::from(theme.tokens.radii.tile);
-        let shape = RoundedRect::from_rect(self.rect, radius);
+        let shape = RoundedRect::from_rect(self.rect, self.corner_radii(radius));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

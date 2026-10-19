@@ -274,7 +274,12 @@ fn quick_settings_keeps_natural_tiles_and_scrolls_in_a_640_by_400_window() {
         }
     };
     natural_size(&h);
-    assert!(target(&h, "quick_settings_settings").is_some());
+    // The everyday controls come first; the shortcut footer starts below.
+    assert!(target(&h, "quick_settings_brightness").is_some());
+    assert!(
+        target(&h, "quick_settings_settings").is_none(),
+        "the footer starts out of view"
+    );
     assert!(
         target(&h, "quick_settings_power_profile").is_none(),
         "the last row starts out of view"
@@ -283,8 +288,8 @@ fn quick_settings_keeps_natural_tiles_and_scrolls_in_a_640_by_400_window() {
     let profile = reveal(&mut h, "quick_settings_power_profile", vw, vh);
     assert!(h.host.qs_root.scroll_offset() > 0.0);
     assert!(
-        target(&h, "quick_settings_settings").is_none(),
-        "the top tiles scrolled away rather than shrinking"
+        target(&h, "quick_settings_brightness").is_none(),
+        "the sliders scrolled away rather than shrinking"
     );
     natural_size(&h);
     tap(&mut h, profile.center(), vw, vh);

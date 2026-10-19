@@ -2116,7 +2116,13 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         let id = "app:org.example.Editor";
-        let resource = find(&app.harness().resources(), id).unwrap();
+        let resources = app.harness().resources();
+        let resource = find(&resources, id).unwrap_or_else(|| {
+            panic!(
+                "{id} missing; published: {:?}",
+                resources.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+            )
+        });
         let contract = resource
             .actions
             .iter()

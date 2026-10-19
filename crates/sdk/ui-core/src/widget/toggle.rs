@@ -637,8 +637,9 @@ mod tests {
             let off = toggle_face_colors(&theme, false, ToggleInteract::default());
             let on = toggle_face_colors(&theme, true, ToggleInteract::default());
             assert_eq!(
-                on.track, theme.tokens.colors.intent.inverted,
-                "on-track is the inverted fill"
+                on.track,
+                crate::tokens::colors::active_fill(&theme.tokens.colors),
+                "on-track is the on colour"
             );
             assert_eq!(
                 off.track, theme.tokens.colors.intent.selection,
@@ -647,9 +648,8 @@ mod tests {
             assert_ne!(on.track, off.track, "on and off tracks must differ");
         }
 
-        // Case `toggle_knob_is_inverted_on_and_a_raised_object_off_in_light`.
-        // On, the switch is an inverted control and its knob is the inverted
-        // label colour. Off, a light material shows a raised white knob with
+        // Case `toggle_knob_is_white_on_and_a_raised_object_off_in_light`.
+        // On, the switch is the on colour with a white knob. Off, a light material shows a raised white knob with
         // a derived ring (never a dark disc); a dark one the secondary ink.
         // Legible on every material either way.
         {
@@ -657,7 +657,7 @@ mod tests {
                 let colors = &theme.tokens.colors;
                 let off = toggle_face_colors(&theme, false, ToggleInteract::default());
                 let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-                assert_eq!(on.knob, colors.intent.on_inverted, "{}", theme.name);
+                assert_eq!(on.knob, crate::tokens::colors::ACTIVE_KNOB, "{}", theme.name);
                 assert_eq!(on.knob_edge, None);
                 if light_material(colors) {
                     assert_eq!(off.knob, colors.surfaces.raised, "{}", theme.name);
