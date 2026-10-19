@@ -1,6 +1,17 @@
-discord-not-connected = Not connected to a Discord server yet.
-discord-status-importing = Importing the server's layout · { $channels } channels seen · { $links } linked accounts
-discord-status-bridged = Bridged · { $channels } channels · { $links } linked accounts
+discord-empty-title = Bring a Discord server into this room
+discord-empty-body = Once a room admin connects a server with the Discord Bridge bot, its channels and messages show up in this room's Chat and stay in step both ways. Then you can link your Discord account here.
+discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
+discord-status-bridged = Messages go both ways between this room's Chat and the server.
+discord-channels = { $count ->
+    [one] 1 channel
+   *[other] { $count } channels
+}
+discord-linked-accounts = { $count ->
+    [one] 1 linked account
+   *[other] { $count } linked accounts
+}
+discord-your-account = Your Discord account
+discord-link-explanation = Link your account so what you write in Discord shows up as you here.
 discord-link-account = Link my Discord account
 discord-link-code = In Discord, type /link with this code. It works for 10 minutes.
 

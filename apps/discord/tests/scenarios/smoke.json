@@ -2,7 +2,7 @@
   {
     "expect": {
       "target": "guild-status",
-      "name": "Not connected to a Discord server yet."
+      "name": "Bring a Discord server into this room"
     }
   }
 ]
