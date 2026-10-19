@@ -120,6 +120,10 @@ impl ResourceApp for SettingsShell {
     };
     /// A `settings://` link.
     const ARGUMENTS: usize = 1;
+    /// The device's settings belong to no workspace: they open while the
+    /// workspace has no identity selected, and only the pages about that
+    /// identity ask for one (`Category::needs_workspace_identity`).
+    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
         // Private host profiles also own their account stores and mutation journal.

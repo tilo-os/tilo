@@ -165,6 +165,10 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    /// The workspace's identity was chosen while this window waited for it
+    /// ([`crate::workspace_identity`]): the loop ends with the window kept
+    /// for the launch to open the app in.
+    handing_over: bool,
 }
 
 #[cfg(test)]
@@ -4079,6 +4083,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
+        // Someone chose who works in this workspace while the window waited
+        // for it: save what it holds and leave the loop, keeping the window,
+        // so the launch opens the app joined to its workspace in it.
+        if !self.handing_over && crate::workspace_identity::chosen() {
+            self.handing_over = true;
+            for error in self.app.checkpoint_before_close() {
+                tracing::error!(%error, "could not save before opening the workspace");
+            }
+            event_loop.exit();
+            return;
+        }
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
             return;
@@ -5164,8 +5179,19 @@ impl App {
             host_appearance,
             settings_store_changed,
             _settings_watch: settings_watch,
+            handing_over: false,
         };
-        match event_loop.run_app(&mut handler) {
+        // Run on demand where a window may give its place to the next one
+        // (`hand_over`): the loop is kept for that window to run on.
+        #[cfg(target_os = "linux")]
+        let (ended, event_loop) = {
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
+            let mut event_loop = event_loop;
+            (event_loop.run_app_on_demand(&mut handler), event_loop)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let ended = event_loop.run_app(&mut handler);
+        match ended {
             Ok(()) => {}
             Err(winit::error::EventLoopError::ExitFailure(status)) => {
                 tracing::debug!(status, "window system disconnected; application exiting");
@@ -5174,14 +5200,43 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+        let handing_over = handler.handing_over;
+        #[cfg(target_os = "linux")]
+        if handing_over {
+            hand_over(&mut handler, event_loop);
+        }
         // The app and its state are dropped (and saved) before the process
         // reports how its window ended, and so are the settings it changed.
         drop(handler);
         crate::storage::flush_settings_writes();
-        if let Some(reason) = take_abnormal_stop() {
+        if !handing_over && let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);
         }
     }
+}
+
+/// Keep what the next window of this process takes up, as the launch made
+/// them before the first: the loop, the window (its `resumed` adopts it, so
+/// it never leaves the screen) and the shell-ui connection, which the
+/// launcher hands each process once. What the window drew with was shut
+/// down when the loop exited; the next window draws anew.
+#[cfg(target_os = "linux")]
+fn hand_over(handler: &mut AppHandler, event_loop: EventLoop<UserEvent>) {
+    // A window the platform says is shown (X11) cannot take a new
+    // accessibility adapter: the next window is made afresh there. A Wayland
+    // window never says, and is kept.
+    if let Some(window) = handler
+        .window
+        .take()
+        .filter(|window| window.is_visible() != Some(true))
+    {
+        let app_id = primary_window_app_id(handler.app.window.app_id.as_deref());
+        EARLY_WINDOW.with(|slot| *slot.borrow_mut() = Some((app_id, window)));
+    }
+    if let Some(client) = handler.app.floating.client.take() {
+        client.hand_over();
+    }
+    EARLY_EVENT_LOOP.with(|slot| *slot.borrow_mut() = Some(event_loop));
 }
 
 /// Why the window is stopping, when no one asked it to close.

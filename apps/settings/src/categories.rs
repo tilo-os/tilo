@@ -156,6 +156,19 @@ impl Category {
         }
     }
 
+    /// Whether the page is about the workspace's identity rather than this
+    /// device: who you are here (Users), the devices that identity trusts
+    /// (Devices & sync) and the speakers made of them (Speakers). Until the
+    /// workspace has an identity selected such a page asks for one
+    /// ([`ui::workspace_identity::required_state`]); every other page works
+    /// without it.
+    pub fn needs_workspace_identity(self) -> bool {
+        matches!(
+            self,
+            Category::Users | Category::DeviceMesh | Category::Speakers
+        )
+    }
+
     /// The categories belonging to a section, in sidebar order.
     pub fn in_section(section: Section) -> impl Iterator<Item = Category> {
         Category::ALL

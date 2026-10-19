@@ -682,9 +682,30 @@ impl SettingsApp {
         }
     }
 
+    /// Settings opens while the workspace has no identity selected; the
+    /// pages about that identity ask for one in place of their content.
+    fn identity_request(&self) -> Option<Box<dyn Widget>> {
+        if !(self.selected.needs_workspace_identity() && ui::workspace_identity::missing()) {
+            return None;
+        }
+        self.pane_waits.set(false);
+        self.keyboard_partial.set(false);
+        // Inline: a page's content, hugging what it says, as the other
+        // pages' sections do; the pane scrolls it.
+        Some(Box::new(
+            ui::workspace_identity::required_state(
+                <crate::resource::SettingsShell as ui::framework::ResourceApp>::TITLE,
+            )
+            .inline(),
+        ))
+    }
+
     /// Dispatch to the per-category pane body: the pane, or what stands in
     /// for it while its area is read ([`Self::pane_reading`]).
     fn build_pane_body(&self) -> Box<dyn Widget> {
+        if let Some(asks) = self.identity_request() {
+            return asks;
+        }
         let reading = self.pane_reading();
         self.pane_waits.set(reading);
         self.keyboard_partial
@@ -2118,6 +2139,41 @@ mod tests {
                 Widget::accessibility(&*app).expect("Settings landmark survives narrow shell");
             assert_eq!(narrow.semantic_key, wide.semantic_key);
         }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "Settings is a special case: system
+    // settings that don't need a workspace identity should still work. [...]
+    // show the sign-in state only on the workspace panes."
+    #[test]
+    fn without_a_workspace_identity_only_the_identity_pages_ask_for_one() {
+        use ui::prelude::TestApp;
+
+        ui::workspace_identity::set_missing(true);
+        let mut app = TestApp::<crate::SettingsShell>::new()
+            .expect("Settings opens while the workspace has no identity");
+        for category in Category::ALL.iter().copied() {
+            crate::effects::show_pane(&mut app, category);
+            app.harness().wait_until(ui::time::Duration::ZERO, |_| true);
+            let asks = app
+                .harness()
+                .a11y_node_named("Choose who you are here")
+                .is_some();
+            assert_eq!(
+                asks,
+                category.needs_workspace_identity(),
+                "{category:?} asks for an identity only when it is about one"
+            );
+            if asks {
+                assert!(
+                    app.harness().a11y_node_named("Choose identity").is_some(),
+                    "{category:?} offers the identity chooser"
+                );
+            }
+        }
+        assert!(Category::Users.needs_workspace_identity());
+        assert!(!Category::Appearance.needs_workspace_identity());
+        assert!(!Category::Network.needs_workspace_identity());
+        ui::workspace_identity::set_missing(false);
     }
 }
 

@@ -795,3 +795,6 @@ history-mode-restore-change = Restore just this change
 history-preview-after = Earlier version, read-only
 history-preview-before = Before this change, read-only
 history-preview-now = Back to now
+workspace-identity-required-title = Choose who you are here
+workspace-identity-required-body = This workspace needs to know who’s working in it before { $app } can open.
+workspace-identity-required-choose = Choose identity
