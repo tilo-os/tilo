@@ -107,11 +107,11 @@ impl DisclosureState {
     }
 
     fn progress(&self) -> f64 {
-        self.0.borrow().reveal.progress(crate::time::now())
+        self.0.borrow().reveal.progress(crate::motion::frame_now())
     }
 
     fn is_moving(&self) -> bool {
-        self.0.borrow().reveal.is_moving(crate::time::now())
+        self.0.borrow().reveal.is_moving(crate::motion::frame_now())
     }
 
     fn body_height(&self) -> f64 {
