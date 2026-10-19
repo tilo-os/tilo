@@ -389,20 +389,34 @@ fn assert_number_keys_navigate_sections() {
 
 fn assert_sidebar_and_list_assistive_activation() {
     let mut d = offline();
-    let images = d
+    let (images, destination) = d
         .a11y_nodes()
         .into_iter()
         // The destination, not a header that names it.
         .find(|(_, node)| {
             node.label() == Some("Images") && node.role() != ui::accesskit::Role::Heading
         })
-        .map(|(id, _)| id)
+        .map(|(id, node)| (id, node.role()))
         .expect("the Images destination is named");
     d.perform_a11y_action(images, &ui::a11y::Action::Activate)
         .unwrap();
     assert_eq!(app(&mut d).section(), Section::Images);
 
-    d.key("1");
+    // The sidebar holds focus now, and typing in a focused list jumps to a
+    // row by name, so the way back is the Containers destination itself.
+    d.frame();
+    let containers = d
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Containers") && node.role() == destination)
+        .map_or_else(
+            || panic!("the Containers destination is named: {:?}", labels(&d)),
+            |(id, _)| id,
+        );
+    d.perform_a11y_action(containers, &ui::a11y::Action::Activate)
+        .unwrap();
+    assert_eq!(app(&mut d).section(), Section::Containers);
+    d.frame();
     let postgres = sample_engine()
         .containers
         .into_iter()
@@ -412,8 +426,10 @@ fn assert_sidebar_and_list_assistive_activation() {
         .a11y_nodes()
         .into_iter()
         .find(|(_, node)| node.label() == Some("postgres"))
-        .map(|(id, _)| id)
-        .expect("the postgres row is named");
+        .map_or_else(
+            || panic!("the postgres row is named: {:?}", labels(&d)),
+            |(id, _)| id,
+        );
     d.perform_a11y_action(row, &ui::a11y::Action::Activate)
         .unwrap();
     assert_eq!(
@@ -515,16 +531,21 @@ fn keyboard_pointer_and_semantic_navigation() {
 #[test]
 fn the_sample_never_claims_a_connection() {
     let d = offline();
-    let labels = labels(&d);
+    // The sidebar's status line speaks its state as a value.
+    let spoken: Vec<String> = d
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().or_else(|| node.value()).map(str::to_owned))
+        .collect();
     assert!(
-        labels
-            .iter()
-            .any(|label| label == "Not connected to Podman"),
-        "{labels:?}"
+        spoken.iter().any(|text| text.ends_with("Sample data")),
+        "{spoken:?}"
     );
     assert!(
-        !labels.iter().any(|label| label == "Connected"),
-        "{labels:?}"
+        !spoken
+            .iter()
+            .any(|text| text == "Connected" || text.ends_with(": Connected")),
+        "{spoken:?}"
     );
 }
 
