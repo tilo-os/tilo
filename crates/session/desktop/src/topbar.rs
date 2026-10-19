@@ -2891,7 +2891,7 @@ impl TopBarChrome {
             colors.surfaces.overlay,
         );
         self.face_rects = rects;
-        faces.len() + usize::from(badge.is_some())
+        faces.len().saturating_add(usize::from(badge.is_some()))
     }
 
     /// The person's own avatar, ending at `right_x`, in their colour with
@@ -6477,8 +6477,9 @@ mod tests {
         let (unread, _) = paint(3);
         assert!(people.area() > 0.0, "the empty room shows its Invite seat");
         let around = people.inflate(12.0, 12.0);
-        for y in around.y0.max(0.0) as u32..around.y1.min(48.0) as u32 {
-            for x in around.x0.max(0.0) as u32..around.x1.min(1600.0) as u32 {
+        let px = ui::num::u32_of_f64;
+        for y in px(around.y0)..px(around.y1.min(48.0)) {
+            for x in px(around.x0)..px(around.x1.min(1600.0)) {
                 assert_eq!(
                     ui::offscreen::OffscreenRenderer::sample(&quiet, 1600, x, y),
                     ui::offscreen::OffscreenRenderer::sample(&unread, 1600, x, y),
