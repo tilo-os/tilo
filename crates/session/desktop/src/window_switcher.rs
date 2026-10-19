@@ -1754,7 +1754,7 @@ mod tests {
             std::path::PathBuf::from,
         );
         std::fs::create_dir_all(&out).expect("capture output");
-        for (name, theme, width, height) in [
+        for (name, theme, width, height) in vec![
             ("dark", Theme::dark(), 960_u32, 540_u32),
             ("light", Theme::light(), 960, 540),
             ("high-contrast", Theme::high_contrast(), 960, 540),

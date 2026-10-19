@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("provide output directory")?;
     let out = Path::new(&directory);
     std::fs::create_dir_all(out)?;
-    for (name, width, height, theme) in [
+    for (name, width, height, theme) in vec![
         ("dark", 800, 700, Theme::dark()),
         ("light", 800, 700, Theme::light()),
         ("large-text", 800, 700, Theme::dark().with_text_scale(2.0)),
