@@ -370,18 +370,54 @@ pub fn caption(text: &str) -> El {
     Box::new(Text::new(text).with_role(TextRole::Caption).dimmed())
 }
 
+/// A failure's message ("Can't read time settings: timedatectl exited …")
+/// split into what failed, in the person's words, and the technical reason
+/// after the first ": ", which the screen keeps behind "Details".
+fn split_failure(message: &str) -> (&str, Option<&str>) {
+    match message.split_once(": ") {
+        Some((what, reason)) if !what.trim().is_empty() && !reason.trim().is_empty() => {
+            (what, Some(reason))
+        }
+        _ => (message, None),
+    }
+}
+
+/// The technical reason of a failure, behind a closed "Details" disclosure.
+fn failure_details(reason: &str) -> El {
+    Box::new(
+        Section::new(vec![Box::new(
+            Text::new(reason).with_role(TextRole::Caption).dimmed(),
+        )])
+        .with_header(SectionHeader::group(crate::i18n::t(
+            "settings-failure-details",
+        )))
+        .collapsed(),
+    )
+}
+
 /// A reading the pane could not make, said as a failure. `message` is the
 /// whole sentence ("Can't read network status: …"); it replaces the value
 /// the pane would otherwise show, so a failed read never looks like a state
-/// of the device ("Not connected", "Off", an empty list). Screen readers
-/// announce it when it appears.
+/// of the device ("Not connected", "Off", an empty list). What failed shows;
+/// the technical reason waits behind "Details". Screen readers announce the
+/// whole sentence when it appears.
 pub fn error_caption(message: &str) -> El {
-    Box::new(
-        Text::new(message)
-            .with_role(TextRole::Caption)
-            .with_weight(ui::text_render::TextWeight::Semibold)
-            .with_live(ui::a11y::Politeness::Polite),
-    )
+    let (what, reason) = split_failure(message);
+    let headline = Text::new(what)
+        .with_role(TextRole::Caption)
+        .with_weight(ui::text_render::TextWeight::Semibold)
+        .with_live(ui::a11y::Politeness::Polite)
+        .with_spoken(message);
+    match reason {
+        None => Box::new(headline),
+        Some(reason) => Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(headline))
+                .push(failure_details(reason)),
+        ),
+    }
 }
 
 /// A label whose value could not be read: the label keeps its place in the
@@ -560,4 +596,36 @@ pub fn card_with_action(title: &str, action: El, body: Body) -> SettingsSection 
 /// [`page`], by its old name.
 pub fn cards(sections: Vec<SettingsSection>) -> El {
     page(sections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failed reading shows what failed; the command's own words wait
+    /// behind a closed "Details", and a screen reader hears the whole
+    /// sentence.
+    #[test]
+    fn a_failed_reading_shows_what_failed_and_keeps_the_reason_behind_details() {
+        let message = "Can't read time settings: timedatectl exited with status 1";
+        let caption = error_caption(message);
+        let spoken = announced_text(caption.as_ref());
+        assert!(spoken.iter().any(|line| line == message), "{spoken:?}");
+        assert!(
+            spoken
+                .iter()
+                .any(|line| *line == crate::i18n::t("settings-failure-details")),
+            "{spoken:?}"
+        );
+        assert!(
+            !spoken
+                .iter()
+                .any(|line| line == "timedatectl exited with status 1"),
+            "the reason is closed until opened: {spoken:?}"
+        );
+        assert_eq!(
+            split_failure("Nothing to split"),
+            ("Nothing to split", None)
+        );
+    }
 }

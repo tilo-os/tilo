@@ -144,6 +144,7 @@ agent-notice-install-err = Installation could not start: { $error }
 agent-location-hosted = Hosted provider
 agent-location-this-device = This device (local)
 agent-location-private = Private network
+settings-failure-details = Details
 settings-read-error = Can't read
 agent-key-read-error = Can't tell whether a key is saved: { $error }
 

@@ -165,6 +165,9 @@ pub struct Text {
     tone: Option<super::Tone>,
     /// How assistive technology meets this text.
     access: TextAccess,
+    /// What assistive technology reads instead of the shown words: a
+    /// failure's headline shown, its whole reason spoken.
+    spoken: Option<String>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -229,6 +232,7 @@ impl Text {
             dimmed: false,
             tone: None,
             access: TextAccess::Text,
+            spoken: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -593,6 +597,15 @@ impl Text {
     #[must_use]
     pub fn with_heading_level(mut self, level: u8) -> Self {
         self.heading_level = Some(level.clamp(1, 6));
+        self
+    }
+
+    /// Have assistive technology read `spoken` instead of the shown words:
+    /// a failure shows its headline and speaks its whole reason, which the
+    /// screen keeps behind a "Details" disclosure.
+    #[must_use]
+    pub fn with_spoken(mut self, spoken: impl Into<String>) -> Self {
+        self.spoken = Some(spoken.into());
         self
     }
 
@@ -1103,7 +1116,7 @@ impl Widget for Text {
         use crate::a11y::{AccessNode, Role};
         // The FTL-resolved text *is* the accessible name. Empty text carries no
         // meaning, so it stays presentational (collapses out of the tree).
-        let label = self.resolved_label();
+        let label = self.spoken.clone().unwrap_or_else(|| self.resolved_label());
         if label.is_empty() || self.access == TextAccess::Presentational {
             return None;
         }
