@@ -1245,58 +1245,117 @@ mod tests {
         );
     }
 
-    fn published_bytes(encoded: &str) -> Vec<u8> {
-        use base64::Engine as _;
-        use std::io::Read as _;
-        let packed = base64::engine::general_purpose::STANDARD
-            .decode(encoded.lines().collect::<String>())
-            .unwrap();
-        let mut bytes = Vec::new();
-        flate2::read::GzDecoder::new(packed.as_slice())
-            .take(8 * 1024 * 1024)
-            .read_to_end(&mut bytes)
-            .unwrap();
-        bytes
+    /// A complete archive and the Store offer for it, made the way the
+    /// registry makes one: an owner-signed catalogue lists a publisher-signed
+    /// entry naming the archive's size and hash, and the offer comes from
+    /// verifying that catalogue.
+    fn offered_archive() -> (Vec<u8>, store::StoreItem, registry_types::TappArtifact) {
+        use ed25519_dalek::SigningKey;
+        #[cfg(target_arch = "aarch64")]
+        let (arch, isa, target_isa) = ("aarch64", "armv8-a", "aarch64");
+        #[cfg(not(target_arch = "aarch64"))]
+        let (arch, isa, target_isa) = ("x86_64", "baseline", "x86_64");
+        let publisher = SigningKey::from_bytes(&[76; 32]);
+        let identity = tilo_app_package::SigningIdentity::from_signing_key(publisher.clone());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        std::fs::write(
+            dir.path().join("bin/app"),
+            b"#!/bin/true\nchooser-fixture\n",
+        )
+        .unwrap();
+        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+            r#"[package]
+id = "so.tilo.chooser-fixture"
+version = "1.0.0"
+kind = "app"
+name = "Chooser fixture"
+[package.isa]
+{arch} = "{isa}"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+            hex::encode(identity.public_key_bytes())
+        ))
+        .unwrap();
+        let packed = tilo_app_package::pack(dir.path(), &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+        let offered = registry_types::TappArtifact {
+            tapp_url: "https://packages.test/chooser-fixture.tapp".into(),
+            tapp_root_hash_hex: packed.id().to_hex(),
+            tapp_size_bytes: bytes.len() as u64,
+            tapp_blake3_hex: tilo_content::hash_bytes(&bytes),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: arch.into(),
+                isa: target_isa.into(),
+                runtime: None,
+                interfaces: Vec::new(),
+            },
+        };
+        let mut entry = registry_types::RegistryEntry {
+            package_id: manifest.package.id,
+            kind: registry_types::EntryKind::App,
+            name: "Chooser fixture".into(),
+            description: "A signed test app".into(),
+            tagline: "Signed and listed".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
+            categories: Vec::new(),
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
+            versions: vec![registry_types::RegistryVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 1,
+                artifact: registry_types::VersionArtifact::Tapp(offered.clone()),
+            }],
+            updated_at_unix: 2,
+            signature_hex: String::new(),
+        };
+        registry_types::sign_entry(&mut entry, &publisher);
+        let owner = SigningKey::from_bytes(&[77; 32]);
+        let now = 1_800_000_000;
+        let mut snapshot = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
+            sequence: 1,
+            issued_at_unix: now,
+            expires_at_unix: now + 3600,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: vec![registry_types::PublisherAuthorization {
+                pubkey_hex: entry.publisher_pubkey_hex.clone(),
+                can_add_new: true,
+            }],
+            entries: vec![entry],
+            owner_signature_hex: String::new(),
+            channel_authorization: None,
+        };
+        registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
+        let entries = app_cli::client::classify_snapshot(
+            &registry_types::CatalogueSnapshot::Full(snapshot),
+            &hex::encode(owner.verifying_key().to_bytes()),
+            now,
+        )
+        .unwrap();
+        let item = store::sources::tilo_to_store_item(&entries[0], "Signed catalogue", &[]);
+        (bytes, item, offered)
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn contents_picker_delivers_published_archive_to_normal_store_review() {
-        let snapshot = registry_types::CatalogueSnapshot::from_json(&published_bytes(
-            include_str!("../../../../../apps/store/fixtures/published/snapshot379.json.gz.b64"),
-        ))
-        .unwrap();
-        let entries = app_cli::client::classify_snapshot(
-            &snapshot,
-            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
-            1_791_214_328,
-        )
-        .unwrap();
-        let entry = entries
-            .iter()
-            .find(|entry| entry.entry.package_id == "so.tilo.store")
-            .unwrap();
-        let offered = entry
-            .entry
-            .versions
-            .iter()
-            .find(|v| {
-                v.version.starts_with("0.1.70738+")
-                    && v.target().is_some_and(|t| t.architecture == "x86_64")
-            })
-            .unwrap();
-        let offered = offered.tapp().unwrap();
-        let bytes = published_bytes(include_str!(
-            "../../../../../apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64"
-        ));
-        assert_eq!(tilo_content::hash_bytes(&bytes), offered.tapp_blake3_hex);
-        let mut item = store::sources::tilo_to_store_item(
-            entry,
-            "Historical independently verified fixture",
-            &[],
-        );
-        item.versions
-            .retain(|v| v.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str()));
+    fn contents_picker_delivers_offered_archive_to_normal_store_review() {
+        let (bytes, item, offered) = offered_archive();
         let session = session_with_save_hint(false);
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", &session.elsewhere);
