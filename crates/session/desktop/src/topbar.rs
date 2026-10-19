@@ -731,6 +731,25 @@ fn paint_bar_selector(
     }
 }
 
+/// Whether `key` moves keyboard focus through the bar: the keys whose use
+/// shows the focus ring (design-system: focus-visible follows keyboard
+/// navigation, never a pointer press or a key that moves nothing).
+fn navigates(key: &winit::keyboard::Key) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Tab
+                | NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown
+                | NamedKey::Home
+                | NamedKey::End
+        )
+    )
+}
+
 /// Per-frame sizing + palette snapshot for the tray pill, computed once
 /// in [`TopBarChrome::draw_tray_pill_body`] and reused by the icon
 /// helpers so [`Widget::draw`] stays under the line budget.
@@ -4412,10 +4431,15 @@ impl Widget for TopBarChrome {
                 state: winit::event::ElementState::Pressed,
                 ..
             } => self.focus_origin = FocusOrigin::Pointer,
-            // A key the focused bar takes is keyboard use of the bar; focus
-            // the shell merely placed here is not, until one arrives.
+            // Moving through the focused bar with the keyboard is reading it
+            // with the keyboard; focus the shell merely placed here, or a
+            // click left, is not, until such a key arrives. Any other key
+            // (Escape closing a menu, a shortcut) moves nothing and lights
+            // nothing: focus-visible follows keyboard navigation only.
             WindowEvent::KeyboardInput { event, .. }
-                if self.focused && event.state == winit::event::ElementState::Pressed =>
+                if self.focused
+                    && event.state == winit::event::ElementState::Pressed
+                    && navigates(&event.logical_key) =>
             {
                 self.focus_origin = FocusOrigin::Keyboard;
             }
@@ -5504,6 +5528,21 @@ mod tests {
         assert!(
             bar.focus_ring_visible(),
             "focus tabbed into afresh starts unpointed"
+        );
+
+        // A click, then Escape (closing the menu the click opened): Escape
+        // moves no focus, so no ring lights where the click left focus.
+        let _ = dispatch_topbar_event(&mut bar, &press);
+        assert!(!bar.focus_ring_visible());
+        let escape = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            None,
+            winit::event::ElementState::Pressed,
+        ));
+        let _ = dispatch_topbar_event(&mut bar, &escape);
+        assert!(
+            !bar.focus_ring_visible(),
+            "Escape after a click leaves no focus ring behind"
         );
     }
 
