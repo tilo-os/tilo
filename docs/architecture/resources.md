@@ -307,7 +307,27 @@ returns typed `Derived` entries whose actions are the parent's verbs with
 arguments bound, e.g. `Derived::new(folder_label).with(Snippets::NEW_SNIPPET.bind(snippets::NewSnippet::paths().folder, name))`.
 No string ids.
 
-### 2.6 References to actions
+### 2.6 Child records
+
+A child that can need its own permissions, sharing or history (a chat's
+channel, a category) is a record of its own, not a field: `Children` in the
+parent lists each one by id, in order, with its kind, the sibling it is
+grouped under and whether it is in the room's trash
+(`tilo_resource::children`). Its record is `RecordId::child` of the parent,
+under an id minted once that never changes, so moving it moves only its
+reference and every reference to it keeps working.
+
+A type names where it is listed (`impl ChildRecord for Channel`), the app
+declares it (`records.children::<Channel>()`) and reads it from a view
+(`cx.children::<Channel>()`). The framework holds every listed child,
+publishes the container beside the app's resource (each child with its own
+actions, carried out on its record) and gives every container the same
+lifecycle, which the app does not write: `create` with the child's first
+fields, `delete` to the trash (record and id kept), `restore`, and `move` to
+another group or place. All of it is checked against the room's roles and
+recorded in history like the app's own actions.
+
+### 2.7 References to actions
 
 `Snippets::NEW_SNIPPET` is an `ActionRef<Snippets, snippets::NewSnippet>`. It
 carries an `ActionKey` (app id, resource kind, public action id), and building
