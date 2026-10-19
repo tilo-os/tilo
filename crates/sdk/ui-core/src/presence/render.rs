@@ -1366,6 +1366,17 @@ pub fn contrast_ink(bg: Color) -> Color {
     }
 }
 
+/// The quieter ink on a person's colour (a placeholder, a hint): the
+/// [`contrast_ink`] at the share a secondary line takes.
+#[must_use]
+pub fn contrast_ink_dim(bg: Color) -> Color {
+    contrast_ink(bg).with_alpha(SECONDARY_INK_ON_COLOUR)
+}
+
+/// The share of the contrast ink a secondary line on a person's colour
+/// shows.
+const SECONDARY_INK_ON_COLOUR: f32 = 0.7;
+
 /// The clickable/paintable rect of an off-screen peer's mist band, centred
 /// on `mist.along`, clamped to the viewport. Shared by
 /// [`draw_remote_presence`] (paints) and

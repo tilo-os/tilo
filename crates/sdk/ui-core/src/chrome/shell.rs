@@ -351,6 +351,13 @@ pub fn lightness_step(a: Color, b: Color) -> f32 {
     (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
 }
 
+/// The desktop's own ground: what shell chrome drawn over the whole desktop
+/// (the overview's pictured windows and their captions) stands on.
+#[must_use]
+pub fn desktop_ground(theme: &Theme) -> Color {
+    theme.tokens.colors.surfaces.base
+}
+
 /// The opaque colour a chrome surface is built from: the floating level,
 /// `surfaces.overlay`, verbatim (`docs/design-language.md`, "Surfaces"). A
 /// floating surface separates by its level, its two-layer shadow and its
