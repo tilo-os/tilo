@@ -2734,7 +2734,8 @@ impl MapsApp {
 
     /// Text over the substrate grid telling the person the imagery is
     /// loading (or unreachable), so a first-run / offline map is never a
-    /// silent void. Text only, centred in the visible map area.
+    /// silent void. Text only, centred low in the visible map area: the
+    /// centre is where the chosen place and its pin are drawn.
     fn draw_imagery_hint(
         &self,
         scene: &mut Scene,
@@ -2752,10 +2753,11 @@ impl MapsApp {
         let style = theme.text(TextRole::Body);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let h = draw::line_h(ctx.text, &style);
+        let low = area.y0 + area.height() * 0.75;
         draw::text_center(
             &mut ctx,
             msg,
-            Point::new(area.center().x, area.center().y - h / 2.0),
+            Point::new(area.center().x, low - h / 2.0),
             &style,
             theme.text_dim,
         );
