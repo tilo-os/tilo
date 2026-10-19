@@ -2593,16 +2593,16 @@ impl NetworkModel {
             .flatten();
         let through = if self.wired.connected && self.wired.device.is_some() {
             Some((Icon::EthernetPort, t("net-now-wired")))
-        } else if let Some(network) = connected {
-            Some((
-                Icon::Wifi,
-                t_args(
-                    "net-connected-to",
-                    &[("ssid", network.ssid.as_str().into())],
-                ),
-            ))
         } else {
-            None
+            connected.map(|network| {
+                (
+                    Icon::Wifi,
+                    t_args(
+                        "net-connected-to",
+                        &[("ssid", network.ssid.as_str().into())],
+                    ),
+                )
+            })
         };
         if let Some((icon, title)) = through {
             return match self.connectivity {
@@ -3375,7 +3375,7 @@ impl NetworkModel {
                 .secondary(detail),
             ));
         }
-        let live = network_live(net);
+        let invocation_live = network_live(net);
         let mut line = ListRow::new(id, net.ssid.clone())
             .icon(ui::icons::Icon::Wifi)
             .secondary(detail);
@@ -3385,7 +3385,7 @@ impl NetworkModel {
             line = line.value(t("net-connecting"));
         } else {
             line = match self.cx.row_invocation(
-                &live,
+                &invocation_live,
                 NetworkEffect::ConnectNetwork {
                     ssid: net.ssid.clone(),
                     password: None,

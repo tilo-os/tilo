@@ -353,7 +353,7 @@ impl HistoryChart {
             let mut area = BezPath::new();
             area.move_to((at(first).x, plot.y1));
             line.move_to(at(first));
-            for point in run.iter() {
+            for point in *run {
                 area.line_to(at(point));
                 line.line_to(at(point));
             }

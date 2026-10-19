@@ -895,7 +895,7 @@ fn utc_offset(seconds: i32) -> String {
     }
     let sign = if seconds < 0 { "-" } else { "+" };
     let minutes = seconds.unsigned_abs() / 60;
-    let shown = if minutes % 60 == 0 {
+    let shown = if minutes.is_multiple_of(60) {
         format!("{sign}{}", minutes / 60)
     } else {
         format!("{sign}{}:{:02}", minutes / 60, minutes % 60)
@@ -953,7 +953,7 @@ impl Widget for TimeDatePane {
         let children = self
             .composed
             .element()
-            .and_then(|element| element.next_wake_deadline());
+            .and_then(Widget::next_wake_deadline);
         if !self.cx.reaches_devices() {
             // A capture's clock stands still.
             return children;
@@ -973,7 +973,7 @@ impl Widget for TimeDatePane {
             || self
                 .composed
                 .element()
-                .is_some_and(|element| element.has_pending_visual_work())
+                .is_some_and(Widget::has_pending_visual_work)
     }
 
     fn name(&self) -> &'static str {
