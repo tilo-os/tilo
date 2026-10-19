@@ -24,7 +24,7 @@ crate-type = ["dylib"]
 # Music and Tube, account custody, IMAP and WebDAV for Mail, Settings and
 # Calendar, the time-zone database for Calendar and Clocks, the contact
 # directory for Contacts, Mail and Messages, the PDF engine for PDF Viewer,
-# Files, Writer and Print Centre, the FUSE presentation for Imager), and a
+# Files and Print Centre, the FUSE presentation for Imager), and a
 # bundled C library apps call themselves (SQLite: this library exports no C
 # symbols, so an app whose own code calls sqlite3_* could not link). Code the
 # toolkit reaches for every app but only on a particular use is an engine

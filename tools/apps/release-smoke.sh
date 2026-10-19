@@ -215,7 +215,6 @@ engines() (
                "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
                "pdf-viewer libtilo_pdf_engine.so" \
                "file-explorer libtilo_pdf_engine.so" \
-               "word-processor libtilo_pdf_engine.so" \
                "print-centre libtilo_pdf_engine.so" \
                "imager libtilo_fuse_engine.so" \
                "imager libtilo_accounts_engine.so" \
