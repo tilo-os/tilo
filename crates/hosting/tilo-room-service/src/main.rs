@@ -577,6 +577,14 @@ impl Service {
                 "restarting"
             };
             fields.insert("relay".into(), relay.into());
+            // Why it is down, so a failed deploy is diagnosable from
+            // outside the cluster: the relay's error, sanitized.
+            if let Some(failure) = persistent.relay_failure().await {
+                fields.insert(
+                    "relay_error".into(),
+                    serde_json::to_value(&failure).unwrap_or_default(),
+                );
+            }
         }
         Self::json(StatusCode::OK, &mode)
     }
