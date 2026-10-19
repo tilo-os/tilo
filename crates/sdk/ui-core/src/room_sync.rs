@@ -63,9 +63,11 @@ struct Told {
 
 thread_local! {
     static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
-    /// The spinner step an empty state painted last, and whether this frame
-    /// painted a new one the frame's damage has not covered yet.
-    static SPINNER: Cell<(Option<u64>, bool)> = const { Cell::new((None, false)) };
+    /// The spinner step an empty state painted last, and where (scene
+    /// pixels) a new pose was painted that no presented frame has damaged
+    /// yet.
+    static SPINNER: Cell<(Option<u64>, Option<vello::kurbo::Rect>)> =
+        const { Cell::new((None, None)) };
 }
 
 /// What the shell says now about the room this app's window is in; `None`:
@@ -82,7 +84,8 @@ pub fn set(sync: Option<RoomSync>) -> bool {
             .filter(|told| told.sync.before_first_sync())
             .map_or_else(crate::time::now, |told| told.since);
         *told = sync.map(|sync| Told { sync, since });
-        SPINNER.with(|spinner| spinner.set((None, true)));
+        // What the window shows changes with it: it is laid out again.
+        SPINNER.with(|spinner| spinner.set((None, None)));
         true
     })
 }
@@ -149,12 +152,18 @@ pub(crate) fn waiting() -> Option<Waiting> {
 }
 
 /// An empty state painted the waiting spinner at `step` (its pose since the
-/// room began waiting): the frame pump keeps frames coming while it turns,
-/// and repaints when the pose changed.
-pub(crate) fn spinner_painted(step: u64, turning: bool) {
+/// room began waiting) over `scene_rect`, its slot in scene (physical)
+/// pixels: the frame pump keeps frames coming while it turns, and a new pose
+/// damages that slot alone.
+pub(crate) fn spinner_painted(step: u64, turning: bool, scene_rect: vello::kurbo::Rect) {
     SPINNER.with(|spinner| {
-        let (last, stepped) = spinner.get();
-        spinner.set((Some(step), stepped || last != Some(step)));
+        let (last, pending) = spinner.get();
+        let pending = if last == Some(step) {
+            pending
+        } else {
+            Some(pending.map_or(scene_rect, |earlier| earlier.union(scene_rect)))
+        };
+        spinner.set((Some(step), pending));
     });
     if turning {
         crate::motion::want_frames_until(
@@ -163,13 +172,14 @@ pub(crate) fn spinner_painted(step: u64, turning: bool) {
     }
 }
 
-/// Whether the waiting spinner moved since the last frame was presented;
-/// it paints outside any widget's damage, so a moved pose repaints.
-pub(crate) fn take_spinner_stepped() -> bool {
+/// Where the waiting spinner painted a new pose since the last frame, in
+/// scene (physical) pixels: it paints outside any widget's box, so the
+/// frame damages that slot. `None` when its pose did not move.
+pub(crate) fn take_spinner_damage() -> Option<vello::kurbo::Rect> {
     SPINNER.with(|spinner| {
-        let (last, stepped) = spinner.get();
-        spinner.set((last, false));
-        stepped && last.is_some()
+        let (last, pending) = spinner.get();
+        spinner.set((last, None));
+        pending
     })
 }
 
@@ -210,15 +220,20 @@ mod tests {
     }
 
     #[test]
-    fn the_spinner_repaints_only_when_its_pose_moves() {
+    fn the_spinner_damages_only_its_slot_and_only_when_its_pose_moves() {
+        let slot = vello::kurbo::Rect::new(100.0, 80.0, 148.0, 128.0);
         set(told(RoomSyncState::Connecting));
-        let _ = take_spinner_stepped();
-        spinner_painted(3, false);
-        assert!(take_spinner_stepped());
-        spinner_painted(3, false);
-        assert!(!take_spinner_stepped(), "the same pose damages nothing");
-        spinner_painted(4, false);
-        assert!(take_spinner_stepped());
+        let _ = take_spinner_damage();
+        spinner_painted(3, false, slot);
+        assert_eq!(
+            take_spinner_damage(),
+            Some(slot),
+            "its slot, not the window"
+        );
+        spinner_painted(3, false, slot);
+        assert_eq!(take_spinner_damage(), None, "the same pose damages nothing");
+        spinner_painted(4, false, slot);
+        assert_eq!(take_spinner_damage(), Some(slot));
         set(None);
     }
 
