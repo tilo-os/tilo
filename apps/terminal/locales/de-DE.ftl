@@ -1,5 +1,5 @@
 terminal-find-scrollback = Im Terminalverlauf suchen
-terminal-target-host = Dieses Gerät (ohne Sandbox)
+terminal-target-host = Deine Shell auf diesem Gerät
 terminal-target-default = Standardumgebung
 terminal-target-legacy = Legacy-VM
 terminal-target-manage = Umgebungen verwalten…
@@ -9,7 +9,7 @@ terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Ger
 terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
 terminal-no-runtime-status = Hier kann keine Umgebung starten — Eingabetaste öffnet die eigene Shell dieses Geräts
 terminal-no-runtime-title = Die Umgebung dieses Terminals kann auf diesem Gerät nicht starten.
-terminal-no-runtime-host = Drücke die Eingabetaste, um stattdessen die eigene Shell dieses Geräts zu öffnen (ohne Sandbox; Tilo fragt dich vorher),
+terminal-no-runtime-host = Drücke die Eingabetaste, um stattdessen die eigene Shell dieses Geräts zu öffnen (Tilo fragt dich vorher),
 terminal-no-runtime-picker = oder wähle oben in diesem Tab im Zielmenü einen anderen Ort.
 terminal-no-runtime-install = Eine Umgebung braucht ein env-runtime-Image: aktualisiere Tilo oder installiere eines aus dem App Store.
 terminal-env-title = Umgebungen
