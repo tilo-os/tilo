@@ -725,7 +725,7 @@ impl Widget for TimeZoneGlobe {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
+        _text_renderer: &mut ui::text_render::TextRenderer,
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
@@ -802,15 +802,8 @@ impl Widget for TimeZoneGlobe {
             &disk,
         );
 
+        // The pane shows no globe without zones to place on it.
         if self.points.is_empty() {
-            text_renderer.draw_style(
-                scene,
-                &t("time-map-unavailable"),
-                theme.text_dim,
-                transform * Affine::translate((16.0 - self.rect.width() / 2.0, -8.0)),
-                Some((self.rect.width() - 32.0).max(1.0) as f32),
-                &theme.text(ui::TextRole::Caption),
-            );
             return;
         }
 

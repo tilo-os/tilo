@@ -816,9 +816,16 @@ impl TimeDatePane {
             ]),
         );
 
-        let mut map_rows = vec![block(self.zone_picker())];
-        map_rows.extend(map_note.as_deref().map(note));
-        let map = section(&t("time-map-title"), rows(map_rows));
+        // The globe places the zones this device accepts at their tzdata
+        // coordinates. Without that list (the time service didn't answer,
+        // which the Time zone row already says) or without the coordinates
+        // there is nothing to place, and no globe is shown rather than an
+        // empty one with an apology.
+        let map = (!self.timezone_points.is_empty()).then(|| {
+            let mut map_rows = vec![block(self.zone_picker())];
+            map_rows.extend(map_note.as_deref().map(note));
+            section(&t("time-map-title"), rows(map_rows))
+        });
 
         let source = section(
             &t("time-source-title"),
@@ -835,7 +842,9 @@ impl TimeDatePane {
             }),
         );
 
-        let mut cards = vec![clock, map, source];
+        let mut cards = vec![clock];
+        cards.extend(map);
+        cards.push(source);
         if let Some(notice) = &self.notice_shown {
             cards.insert(
                 0,
@@ -1192,6 +1201,10 @@ mod tests {
             "{text:#?}"
         );
         assert!(!says(&t("time-sync-unknown")), "{text:#?}");
+        assert!(
+            !says(&t("time-map-title")),
+            "with no zones to place there is no globe, not an empty one: {text:#?}"
+        );
         assert!(
             !text.iter().any(|line| line.contains(SAMPLE_TIMEZONE)),
             "{text:#?}"
