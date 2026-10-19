@@ -1224,7 +1224,6 @@ inputs = [
 ]
 readers = [
   "crates/session/installer/src/disks.rs",
-  "crates/session/installer/src/installer_app/surface_tests/capacity_tests.rs",
   "crates/session/installer/src/online_accounts/browser.rs",
 ]
 
