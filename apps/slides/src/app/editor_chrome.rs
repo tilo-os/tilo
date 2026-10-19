@@ -1661,14 +1661,10 @@ impl SlidesApp {
                     .toggled(*selected)
                     .hovered(hovered);
                 Button::paint(scene, t, tr, theme, &face);
-                let edge = f64::from(theme.tokens.metrics.icon_sm);
-                let swatch = Rect::from_center_size(
-                    Point::new(
-                        b.rect.x0 + f64::from(theme.tokens.spacing.s3) + edge / 2.0,
-                        b.rect.center().y,
-                    ),
-                    (edge, edge),
-                );
+                // The swatch is the chip's icon: painted over the icon's
+                // own place, so the chip shows one mark, not a ring beside
+                // a dot.
+                let swatch = face.icon_rect(tr, theme).unwrap_or(b.rect);
                 ColorSwatchFace::new(swatch, Palette::resolve(*kind, theme).accent, kind.label())
                     .target_rect(b.rect)
                     .selected(*selected)

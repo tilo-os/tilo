@@ -1289,6 +1289,30 @@ impl<'a> ButtonFace<'a> {
         }
         .intrinsic_width(&metrics, text, metrics.height)
     }
+    /// Where this face draws its icon: on a labelled face it leads the
+    /// label, the two centred together. A host that paints its own mark in
+    /// the icon's place (a colour swatch over the choice it names) puts it
+    /// exactly here, so the two never stand side by side. Ignores a
+    /// shortcut hint.
+    pub fn icon_rect(&self, text: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
+        self.icon?;
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        let rect = self.rect;
+        let icon_px = metrics.icon.min(rect.height());
+        let iy = rect.center().y - icon_px / 2.0;
+        let label = localized_label(self.label);
+        if label.is_empty() {
+            let ix = rect.center().x - icon_px / 2.0;
+            return Some(Rect::new(ix, iy, ix + icon_px, iy + icon_px));
+        }
+        let lead = icon_px + metrics.icon_gap;
+        let room = (rect.width() - 2.0 * metrics.pad_x - lead).max(1.0);
+        let style = &metrics.label_style;
+        let shown = text.elide_to_width_style(&label, f32_of_f64(room + 0.5), style);
+        let label_w = f64::from(text.measure_style(&shown, None, style).0);
+        let start_x = rect.center().x - (lead + label_w) / 2.0;
+        Some(Rect::new(start_x, iy, start_x + icon_px, iy + icon_px))
+    }
     /// Where a pointer activates this face: its rect, grown about its centre
     /// to the minimum pointer target.
     pub fn hit_rect(&self, theme: &Theme) -> Rect {
