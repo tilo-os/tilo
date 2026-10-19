@@ -1205,8 +1205,12 @@ mod tests {
             "the pre-1.3.207 spelling must carry the same choice: {env:?}"
         );
         assert!(!env.iter().any(|(_, v)| v.contains("nvidia")), "{env:?}");
-        // Every file the env names is offered for binding.
-        for (key, value) in env {
+        // Every file the env names is offered for binding; the device-select
+        // switch names no file.
+        for (key, value) in env
+            .into_iter()
+            .filter(|(key, _)| *key != NO_DEVICE_SELECT_ENV)
+        {
             assert!(
                 amd.manifest_files()
                     .iter()
