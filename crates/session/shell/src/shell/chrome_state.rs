@@ -104,12 +104,19 @@ mod dropped_content_startup_tests {
         drop(tree);
         // The drop opened the tab, so its document exists: the window shows
         // the file, never "record does not exist".
+        // The fixture's store keeps documents in memory, so the record is
+        // asked for among the open ones (opening by storage key needs a disk).
         assert!(
             state
                 .records()
-                .try_open_record(&crate::shell::tab_documents::scratch_tab_record(tab))
-                .is_ok(),
-            "a dropped file's tab has its document"
+                .is_ready(&crate::shell::tab_documents::scratch_tab_record(tab).id),
+            "a dropped file's tab has its document; pending {}, failed {:?}",
+            state.pending_tab_records.len(),
+            state
+                .failed_tab_records
+                .values()
+                .map(|(_, error)| error)
+                .collect::<Vec<_>>()
         );
         drop(state);
     }
