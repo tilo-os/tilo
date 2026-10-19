@@ -81,15 +81,18 @@
 //!
 //! ## Custom resource types
 //!
-//! A type with its own layout and merge semantics — a timeline whose clips
-//! patch field by field, a rich-text document, a sheet — implements
-//! [`Resource`] by hand: [`read`](Resource::read) its state from a document,
-//! name its replayable [`Action`](Resource::Action) type, and optionally
-//! [`declarations`](Resource::declarations) for named, typed palette entries.
-//! It then gets exactly the same services. Edits without a named declaration
-//! travel as the generic [`APPLY`] action, so nothing a custom surface does
-//! has to bypass permissions, history or undo. `APPLY` is for surfaces,
-//! agents and scripts, never a palette row; each value's own
+//! A type with its own layout and merge semantics — a rich-text document, a
+//! sheet — implements [`Resource`] by hand: [`read`](Resource::read) its
+//! state from a document, name its replayable [`Action`](Resource::Action)
+//! type, and optionally [`declarations`](Resource::declarations) for named,
+//! typed palette entries. The SDK ships those types (`RichText`, plain text,
+//! `Grid`); an app derives its record with `#[derive(Model)]` and
+//! `#[resource]` and holds them as fields, never implementing `Resource`
+//! itself (docs/architecture/resources.md §8). Such a type gets exactly the
+//! same services. Edits without a named declaration travel as the generic
+//! [`APPLY`] action, so nothing a custom surface does has to bypass
+//! permissions, history or undo. `APPLY` is for surfaces, agents and
+//! scripts, never a palette row; each value's own
 //! [`risk`](tilo_actions::Action::risk) decides whether it needs
 //! confirmation, so a destructive typed edit is confirmed exactly as a
 //! declared destructive action is.
