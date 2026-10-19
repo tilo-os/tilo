@@ -10,44 +10,38 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
 use tilo_agent::{Config, Session};
 
 /// A participant without a window: joins the session's collaboration broker
 /// and carries out broker-leased tasks (`--task-runs`).
-#[derive(Parser, Debug)]
-#[command(name = "tilo-agent")]
+///
+/// Read by hand rather than through an argument-parser crate: the launcher
+/// passes a handful of long options, and a parser's builder, help renderer
+/// and suggestion engine are a fifth of this tapp.
+#[derive(Debug, PartialEq)]
 struct Cli {
     /// The room (workspace) the document lives in — the `TILO_WORKSPACE_ID`
     /// the app was launched with.
-    #[arg(long)]
     workspace: uuid::Uuid,
     /// The record the app announced for the document, e.g.
     /// `file:/var/workspace/Demo/brief.docx`. Omit for an untitled document.
-    #[arg(long)]
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
-    #[arg(long, default_value = "so.tilo.word-processor")]
     app: String,
     /// The display name used by name-addressed instructions. Structured
     /// mentions and authorship use the stable --agent-id.
-    #[arg(long, default_value = "Claude")]
     name: String,
     /// Stable admitted agent id. Defaults to the name for existing launchers.
-    #[arg(long)]
     agent_id: Option<String>,
     /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
-    #[arg(long)]
     endpoint: Option<PathBuf>,
     /// Receive broker-minted Task Center leases, the agent's only mode; every
     /// launcher passes it. A task uses only the agent's admitted, permission-
     /// filtered action catalogue and cannot infer work from room traffic.
-    #[arg(long)]
     task_runs: bool,
     /// Decide by keyword only, without asking a model. The run is then
     /// reproducible and needs no network — and says so in its log.
-    #[arg(long)]
     no_model: bool,
     /// How long a model may take to choose before the keyword vocabulary
     /// decides instead. Short on purpose: an instruction must never wait on
@@ -61,20 +55,147 @@ struct Cli {
     /// Default 9000 ms; a managed (launcher-started) agent, or one given
     /// `--provider` by the desktop, defaults to 30000 ms, the whole budget of
     /// a multi-turn action decision.
-    #[arg(long)]
     model_timeout_ms: Option<u64>,
     /// An application the desktop started beside this agent for its tasks
     /// (web search). Repeatable. The agent plans its first run only once
     /// each has published its actions, waiting a bounded while, so that run
     /// is not planned without them.
-    #[arg(long = "companion")]
     companions: Vec<String>,
     /// The model to plan with, as the desktop's nonsecret
     /// `{"profile_id","model_id","protocol"}` selection. The model gateway
     /// holds the endpoint and the credential; a launched agent cannot read
     /// Settings, so without this it plans by keyword only.
-    #[arg(long)]
     provider: Option<String>,
+}
+
+/// What `tilo-agent --help` prints.
+const USAGE: &str = "\
+A participant without a window: joins the session's collaboration broker and
+carries out broker-leased tasks.
+
+Usage: tilo-agent --workspace <UUID> --task-runs [OPTIONS]
+
+Options:
+      --workspace <UUID>          The room the document lives in
+      --record <RECORD>           The record the app announced for the document
+      --app <APP>                 The app whose document this is [default: so.tilo.word-processor]
+      --name <NAME>               The display name instructions address [default: Claude]
+      --agent-id <ID>             Stable admitted agent id [default: the name]
+      --endpoint <PATH>           Broker socket for headless diagnostics
+      --task-runs                 Receive broker-leased tasks (required)
+      --no-model                  Decide by keyword only, without asking a model
+      --model-timeout-ms <MS>     How long a model may take to choose
+      --companion <APP>           An application started beside this agent (repeatable)
+      --provider <JSON>           The model selection the desktop hands over
+  -h, --help                      Print this help
+";
+
+/// How reading the command line ends when it does not give a [`Cli`].
+#[derive(Debug, PartialEq)]
+enum CliExit {
+    /// `--help`: print [`USAGE`] and succeed.
+    Help,
+    /// A usage error, said in one sentence.
+    Usage(String),
+}
+
+impl Cli {
+    /// Read the arguments after the program name. Options take their value
+    /// as the next argument or after `=` (`--name=Claude`).
+    fn parse_from(args: impl IntoIterator<Item = String>) -> Result<Self, CliExit> {
+        let mut workspace = None;
+        let mut cli = Cli {
+            workspace: uuid::Uuid::nil(),
+            record: None,
+            app: "so.tilo.word-processor".to_owned(),
+            name: "Claude".to_owned(),
+            agent_id: None,
+            endpoint: None,
+            task_runs: false,
+            no_model: false,
+            model_timeout_ms: None,
+            companions: Vec::new(),
+            provider: None,
+        };
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            let (option, inline) = match arg.split_once('=') {
+                Some((option, value)) if option.starts_with("--") => {
+                    (option.to_owned(), Some(value.to_owned()))
+                }
+                _ => (arg, None),
+            };
+            let flag = |set: &mut bool| {
+                if inline.is_some() {
+                    return Err(CliExit::Usage(format!("{option} takes no value")));
+                }
+                *set = true;
+                Ok(())
+            };
+            match option.as_str() {
+                "-h" | "--help" => return Err(CliExit::Help),
+                "--task-runs" => flag(&mut cli.task_runs)?,
+                "--no-model" => flag(&mut cli.no_model)?,
+                "--workspace" | "--record" | "--app" | "--name" | "--agent-id" | "--endpoint"
+                | "--model-timeout-ms" | "--companion" | "--provider" => {
+                    let value = match inline {
+                        Some(value) => value,
+                        None => args
+                            .next()
+                            .ok_or_else(|| CliExit::Usage(format!("{option} needs a value")))?,
+                    };
+                    match option.as_str() {
+                        "--workspace" => {
+                            workspace = Some(value.parse().map_err(|error| {
+                                CliExit::Usage(format!("--workspace {value}: {error}"))
+                            })?);
+                        }
+                        "--record" => cli.record = Some(value),
+                        "--app" => cli.app = value,
+                        "--name" => cli.name = value,
+                        "--agent-id" => cli.agent_id = Some(value),
+                        "--endpoint" => cli.endpoint = Some(PathBuf::from(value)),
+                        "--model-timeout-ms" => {
+                            cli.model_timeout_ms = Some(value.parse().map_err(|error| {
+                                CliExit::Usage(format!("--model-timeout-ms {value}: {error}"))
+                            })?);
+                        }
+                        "--companion" => cli.companions.push(value),
+                        _ => cli.provider = Some(value),
+                    }
+                }
+                _ => return Err(CliExit::Usage(format!("unexpected argument {option}"))),
+            }
+        }
+        cli.workspace =
+            workspace.ok_or_else(|| CliExit::Usage("--workspace <UUID> is required".to_owned()))?;
+        Ok(cli)
+    }
+
+    /// The process's own command line; prints the help or the usage error
+    /// and ends the process when it does not give a [`Cli`].
+    fn parse() -> Self {
+        match Self::parse_from(std::env::args().skip(1)) {
+            Ok(cli) => cli,
+            Err(exit) => {
+                let code = match exit {
+                    CliExit::Help => {
+                        print!("{USAGE}");
+                        0
+                    }
+                    CliExit::Usage(error) => {
+                        eprintln!("error: {error}\n\nFor more information, try '--help'.");
+                        2
+                    }
+                };
+                #[allow(
+                    clippy::exit,
+                    reason = "a command line that names no run is the whole run of the binary"
+                )]
+                std::process::exit(code);
+            }
+        }
+    }
 }
 
 /// The model budget of one turn of a managed action decision: the most the
@@ -176,6 +297,97 @@ fn device_content() -> tilo_content::ContentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, CliExit> {
+        Cli::parse_from(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    /// The launcher's own command line reads as before, with the defaults the
+    /// flags had.
+    #[test]
+    fn the_launchers_command_line_reads_with_its_defaults() {
+        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let cli = parse(&[
+            "--workspace",
+            room,
+            "--app",
+            "so.tilo.agent",
+            "--name",
+            "agent-1",
+            "--task-runs",
+        ])
+        .unwrap();
+        assert_eq!(cli.workspace, room.parse::<uuid::Uuid>().unwrap());
+        assert_eq!(cli.app, "so.tilo.agent");
+        assert_eq!(cli.name, "agent-1");
+        assert!(cli.task_runs);
+        assert!(!cli.no_model);
+        assert_eq!(cli.agent_id, None);
+        assert_eq!(cli.model_timeout_ms, None);
+
+        let defaults = parse(&["--workspace", room]).unwrap();
+        assert_eq!(defaults.app, "so.tilo.word-processor");
+        assert_eq!(defaults.name, "Claude");
+        assert!(!defaults.task_runs);
+    }
+
+    /// Values after `=`, repeated companions and every option the flags took.
+    #[test]
+    fn every_option_reads_in_both_spellings() {
+        let cli = parse(&[
+            "--workspace=6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+            "--record=file:/var/workspace/Demo/brief.docx",
+            "--agent-id",
+            "stable",
+            "--endpoint",
+            "/run/broker.sock",
+            "--no-model",
+            "--model-timeout-ms=1500",
+            "--companion",
+            "so.tilo.web-search",
+            "--companion=so.tilo.notes",
+            "--provider",
+            r#"{"profile_id":"p"}"#,
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.record.as_deref(),
+            Some("file:/var/workspace/Demo/brief.docx")
+        );
+        assert_eq!(cli.agent_id.as_deref(), Some("stable"));
+        assert_eq!(cli.endpoint, Some(PathBuf::from("/run/broker.sock")));
+        assert!(cli.no_model);
+        assert_eq!(cli.model_timeout_ms, Some(1500));
+        assert_eq!(cli.companions, ["so.tilo.web-search", "so.tilo.notes"]);
+        assert_eq!(cli.provider.as_deref(), Some(r#"{"profile_id":"p"}"#));
+    }
+
+    /// A missing room, a missing value, a bad number or an unknown argument
+    /// is a usage error, and `--help` asks for the help.
+    #[test]
+    fn a_wrong_command_line_is_a_usage_error() {
+        let room = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        assert!(matches!(parse(&["--task-runs"]), Err(CliExit::Usage(_))));
+        assert!(matches!(parse(&["--workspace"]), Err(CliExit::Usage(_))));
+        assert!(matches!(
+            parse(&["--workspace", "not-a-uuid"]),
+            Err(CliExit::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&["--workspace", room, "--model-timeout-ms", "soon"]),
+            Err(CliExit::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&["--workspace", room, "--frobnicate"]),
+            Err(CliExit::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&["--workspace", room, "--task-runs=yes"]),
+            Err(CliExit::Usage(_))
+        ));
+        assert_eq!(parse(&["--help"]), Err(CliExit::Help));
+        assert_eq!(parse(&["--workspace", room, "-h"]), Err(CliExit::Help));
+    }
 
     /// A shell-launched agent given `--provider` gets a managed agent's
     /// budget: the short default would cut off a multi-turn plan midway.
