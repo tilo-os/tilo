@@ -268,7 +268,11 @@ containerfile="$repo/os/Containerfile"
 # libraries in memory, is a deliberate addition, and so are its user units
 # (tilo-runtime-resident.service and .path), which keep the runtimes a person
 # installed into their own store.
-expected_contract=c5e0594a5534d05f561d5c08c982eec8a78d4e49e6fe47389921caa830c8f76e
+# The shell component installs /usr/share/tilo/system-interfaces.toml, the
+# interface declaration it reads, so a shell swapped onto an older image never
+# judges apps by that image's declaration: its manifest row replaces the
+# context COPY of the same file.
+expected_contract=65ba52ccf01f12b234d7c93cbcc6eae4399f1d4a10fa2a19c5cb4da439c0489e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
