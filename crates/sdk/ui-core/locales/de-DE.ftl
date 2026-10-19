@@ -658,6 +658,12 @@ terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht �
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = Dies kann nicht geöffnet werden
+framework-unreadable-hint = Diese Version der App kann nicht lesen, was hier gespeichert ist. Es wurde nichts verändert; ein Update der App kann es öffnen.
+# The disclosure under an empty or error state that holds what went wrong technically.
+empty-state-details = Details
+# Shown instead of a window's document while it cannot be opened.
+record-unavailable-title = Dieses Dokument kann nicht geöffnet werden
+record-unavailable-hint = Es ist auf diesem Gerät gerade nicht verfügbar. Vielleicht ist es noch unterwegs, oder es wurde verschoben oder gelöscht.
 display-arrangement-offline = Offline
 display-arrangement-excluded = Nicht im Layout
 display-arrangement-offline-excluded = Offline, nicht in der Anordnung

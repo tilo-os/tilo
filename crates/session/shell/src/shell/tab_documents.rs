@@ -226,7 +226,7 @@ mod tests {
             assert!(
                 !spoken
                     .iter()
-                    .any(|(name, _)| name == "Document unavailable")
+                    .any(|(name, _)| *name == ui::widget::record_unavailable_title())
             );
             assert!(
                 store.open_records().is_empty(),
