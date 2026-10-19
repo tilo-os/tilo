@@ -27,10 +27,14 @@ impl SessionAdmission {
     }
 
     pub(in crate::standalone) fn check(&self, joined: &Joined) -> Result<(), String> {
+        if !self.caller.execution_is_live() {
+            return Err("execution session ended".into());
+        }
+        self.check_original_custody(joined)
+    }
+
+    fn check_original_custody(&self, joined: &Joined) -> Result<(), String> {
         let result = (|| {
-            if !self.caller.execution_is_live() {
-                return Err("execution session ended".into());
-            }
             let (certificate, enrollment) = joined.mcp_material(self.room, self.own_room)?;
             if certificate != self.certificate || enrollment != self.enrollment {
                 return Err("original room or device custody changed".into());
@@ -49,9 +53,16 @@ impl Joined {
         // Baselines come only from host-admitted sessions, never a presented
         // certificate. Release the registry lock before material reads.
         let admissions = self.executions.admissions(room)?;
+        self.recheck_admissions(&admissions)
+    }
+
+    fn recheck_admissions(&self, admissions: &[Arc<SessionAdmission>]) -> Result<(), String> {
         let mut result = Ok(());
         for admission in admissions {
-            if let Err(error) = admission.check(self) {
+            // An execution may end normally after the snapshot. Its lifetime
+            // says nothing about the room's custody, so only the pinned
+            // material is compared; a retired run stays retired.
+            if let Err(error) = admission.check_original_custody(self) {
                 result = Err(error);
             }
         }
@@ -138,3 +149,7 @@ impl Joined {
         Ok(admission)
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_admission_tests.rs"]
+mod tests;
