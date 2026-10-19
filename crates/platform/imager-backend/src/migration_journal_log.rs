@@ -197,7 +197,6 @@ pub fn create_private<T: Serialize>(
     let identity = Metadata::from_file(&file)?;
     Ok((file, identity, sequence))
 }
-#[cfg(any(target_os = "linux", test))]
 pub struct Log {
     pub file: FileLock,
     pub sequence: u64,
@@ -206,7 +205,6 @@ pub struct Log {
     identity: Metadata,
     failed: bool,
 }
-#[cfg(any(target_os = "linux", test))]
 impl Log {
     pub fn create<T: Serialize>(path: &Path, magic: [u8; 8], header: &T) -> io::Result<Self> {
         let (parent, name) = parent(path)?;
