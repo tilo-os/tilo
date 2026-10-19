@@ -25,9 +25,15 @@ impl Phase {
         Self
     }
 
-    /// Close the scope here, before the end of its block.
+    /// Close the scope here, before the end of its block. Not `const`: a
+    /// `const fn` cannot drop a value, and whether this build's `Phase`
+    /// has a destructor must never decide whether the crate compiles.
     #[inline]
-    pub const fn end(self) {
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "const would stop compiling the moment this Phase gains a destructor, as the recorder's has"
+    )]
+    pub fn end(self) {
         let Self = self;
     }
 }

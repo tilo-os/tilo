@@ -300,7 +300,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
                         cold.phases
                             .entry(format!("mark {name}"))
                             .or_default()
-                            .push(ms.parse::<u64>().unwrap_or_default() * 1000);
+                            .push(ms.parse::<u64>().unwrap_or_default().saturating_mul(1000));
                     }
                 }
             }

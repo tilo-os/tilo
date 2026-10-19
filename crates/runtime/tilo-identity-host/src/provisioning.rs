@@ -1523,7 +1523,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("system"));
-        for label in ["".to_owned(), "bad\nlabel".into(), "x".repeat(65)] {
+        for label in [String::new(), "bad\nlabel".into(), "x".repeat(65)] {
             assert!(
                 ensure_collaboration_identity_with_device_label(&identity, &paths, FILES, &label)
                     .is_err()

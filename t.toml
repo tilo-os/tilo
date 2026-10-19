@@ -544,6 +544,19 @@ cargo_packages = ["imager", "imager-backend"]
 inputs = ["tools/ci/package_features.py"]
 cost = "minutes"
 
+# The shell's own binaries (the `shots` renderer, the UX bench, the load and
+# click clients) under the features their builds use: no test builds them, so
+# a feature combination only they select broke them silently.
+[[check]]
+name = "shell-binaries"
+requires = ["arch=any"]
+requirement = { cores = 8, memory = "24GiB" }
+run = """
+cargo build --locked -p shell --bins
+"""
+cargo_packages = ["shell"]
+cost = "minutes"
+
 # Without default features: tilo-ui is the portable toolkit another host embeds,
 # tilo-app the framework of a headless tool.
 [[check]]
