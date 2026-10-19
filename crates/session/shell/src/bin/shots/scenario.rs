@@ -1444,6 +1444,7 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
     if let Action::AddHostedTab { app, title } = action {
         let app = *app;
         let title = *title;
+        let mut added = None;
         driver.with_chrome(|st: &mut ChromeState| {
             let mut tree = st.tree_mut();
             // One past the highest tab id anywhere in the tree.
@@ -1484,9 +1485,14 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
                 },
             });
             group.active_tab = id;
+            added = Some(id);
             drop(tree);
             st.bump();
         });
+        // Opening the tab makes its document, as the open-app action does.
+        if let Some(added) = added {
+            driver.open_tab_records(&[added]);
+        }
     }
 }
 
@@ -1497,6 +1503,7 @@ fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
             let title = *title;
+            let mut opened = None;
             driver.with_chrome(|st: &mut ChromeState| {
                 // Where the window goes is decided now, against the
                 // layout on screen — the same rule a launch applies. A
@@ -1511,14 +1518,19 @@ fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
                         st.strip_viewport(),
                     )
                 };
-                {
+                let tab = {
                     let mut tree = st.tree_mut();
                     shell::compositor::tab_binding::open_hosted_app(
                         &mut tree, kind, title, placement,
-                    );
-                }
+                    )
+                };
                 st.bump();
+                opened = Some(tab);
             });
+            // The window's document, made by its opening as in a session.
+            if let Some(tab) = opened {
+                driver.open_tab_records(&[tab]);
+            }
         }
         Action::EnableNativeAppSearch => {
             match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
