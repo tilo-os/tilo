@@ -384,7 +384,7 @@ impl ColdStart {
             .iter()
             .map(|(name, samples)| (name, median(samples)))
             .collect();
-        phases.sort_by(|a, b| b.1.cmp(&a.1));
+        phases.sort_by_key(|phase| std::cmp::Reverse(phase.1));
         for (name, us) in phases.into_iter().filter(|(_, us)| *us >= 100) {
             eprintln!("perf {} cold start phase {name}: {us}us", self.label);
         }
