@@ -44,7 +44,6 @@ pub fn environment_spec(environment: &tilo_environment::Environment) -> Environm
             .collect(),
         grants: environment
             .grants
-            .0
             .iter()
             .filter(|grant| tilo_environment::is_runtime_grant(grant))
             .filter_map(|grant| match &grant.scope {
@@ -280,10 +279,10 @@ mod tests {
             )]
             .into(),
         });
-        environment.grants.0.push(
+        environment.grants.push(
             tilo_environment::dir_grant(std::path::Path::new("/home/alice/src"), true).unwrap(),
         );
-        environment.grants.0.push(
+        environment.grants.push(
             tilo_environment::dir_grant(std::path::Path::new("/home/alice/docs"), false).unwrap(),
         );
         let spec = environment_spec(&environment);
