@@ -19,7 +19,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, Json, JsonSchema, Refusal};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
