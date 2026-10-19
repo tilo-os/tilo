@@ -7,15 +7,20 @@ pub use imager_backend::plan::{
 };
 
 #[cfg(test)]
-use super::platform::{Disk, SystemVolume};
+use super::platform::Disk;
+#[cfg(all(test, feature = "installation"))]
+use super::platform::SystemVolume;
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::super::platform::Partition;
     use super::*;
 
+    #[cfg(feature = "installation")]
     const MIB: u64 = 1 << 20;
+    #[cfg(feature = "installation")]
     const GIB: u64 = 1 << 30;
+    #[cfg(feature = "installation")]
     const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 
     pub(crate) fn firmware() -> FirmwareFacts {
@@ -28,6 +33,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(feature = "installation")]
     pub(crate) fn part(number: u32, guid: &str, first_lba: u64, last_lba: u64) -> Partition {
         Partition {
             number,
@@ -52,9 +58,11 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(feature = "installation")]
     pub(crate) const C_GUID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
     /// ESP 100 MiB, MSR 16 MiB, C: to `c_end_gib`, optional WinRE right after C:.
+    #[cfg(feature = "installation")]
     pub(crate) fn windows_basis(
         disk_gib: u64,
         c_end_gib: u64,

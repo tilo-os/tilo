@@ -95,7 +95,8 @@ enum Heading {
     None,
     Title(String),
     Trailing(String, El),
-    Action(String, Button),
+    /// Boxed: a button is many times the other headings' size.
+    Action(String, Box<Button>),
 }
 
 impl SettingsSection {
@@ -133,7 +134,7 @@ impl SettingsSection {
                 section.with_header(SectionHeader::heading(title).trailing(trailing))
             }
             Heading::Action(title, action) => {
-                section.with_header(SectionHeader::heading(title).action(action))
+                section.with_header(SectionHeader::heading(title).action(*action))
             }
         }
     }
@@ -211,7 +212,7 @@ pub fn section_with(title: &str, trailing: El, body: Body) -> SettingsSection {
 /// trailing edge.
 pub fn section_action(title: &str, action: Button, body: Body) -> SettingsSection {
     SettingsSection {
-        heading: Heading::Action(title.to_owned(), action),
+        heading: Heading::Action(title.to_owned(), Box::new(action)),
         body: body.0,
     }
 }

@@ -101,6 +101,24 @@ profile-section-linked = Verknüpfte Konten
 profile-link = { $service }-Konto verknüpfen
 profile-unlink = Trennen
 profile-copy = Kopieren
+profile-sharing = Teilen, woran du arbeitest
+profile-sharing-auto = Automatisch
+profile-sharing-manual = Eigene Worte
+profile-sharing-off = Gar nicht
+profile-section-status = Status
+profile-available = Verfügbar
+profile-focusing = Konzentriert
+profile-away = Abwesend
+profile-status = Was du gerade machst
+profile-status-placeholder = Was du gerade machst
+profile-section-colour = Deine Farbe
+profile-section-visibility = Was andere in { $workspace } sehen
+profile-visibility-where = Wo ich bin
+profile-visibility-here = Dass ich da bin
+profile-visibility-nothing = Nichts
+profile-visibility-where-detail = Dein Gesicht, dein Fenster und dein Zeiger
+profile-visibility-here-detail = Dein Gesicht, nie dein Fenster oder dein Zeiger
+profile-visibility-nothing-detail = Du erscheinst nicht und siehst auch die Zeiger der anderen nicht
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -774,6 +792,15 @@ workspace-settings-agents-help = Agenten sind sichtbar nicht-menschliche Mitwirk
 workspace-settings-add-agent = Agent hinzufügen
 workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
 workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
+workspace-settings-bots-header = Bots
+workspace-settings-add-bot = Bot hinzufügen
+workspace-settings-bots-empty = In diesem Arbeitsbereich laufen keine Bots
+workspace-settings-bot-tag = Bot
+workspace-settings-bot-starting = Startet
+workspace-settings-bot-paused = Angehalten
+workspace-settings-bot-running = Läuft
+workspace-settings-bot-version = Version { $version }
+workspace-settings-remove-bot = Entfernen
 workspace-settings-agents-header = Agenten
 workspace-settings-service-member = { $access ->
     [admin] Verwaltet
@@ -913,39 +940,15 @@ workspace-settings-stat-app-rules = { $count ->
 
 # People popover
 a11y-shell-people = Personen
-a11y-shell-people-description = Live-Anwesenheit im Arbeitsbereich, aktuelle Tätigkeit, Absicht und Datenschutz für den Status
-a11y-shell-people-screen-visible = Jetzt sichtbarer Bildschirm: { $exposure }
+a11y-shell-people-description = Wer hier ist, wo und woran gerade gearbeitet wird
 a11y-shell-people-here-now = Jetzt anwesend
 a11y-shell-people-agent = Agent
-a11y-shell-people-invited = Eingeladen, derzeit nicht anwesend
-a11y-shell-people-present = Jetzt anwesend
 a11y-shell-people-now = Jetzt: { $activity }
-a11y-shell-people-intent = Absicht: { $status }
-a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
-a11y-shell-people-recent = Zuletzt: { $summary }
-a11y-shell-people-recent-inferred = Zuletzt, zusammengefasst: { $summary }
 a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
-a11y-shell-people-recent-toggle-description = Eine kurze Zusammenfassung der letzten Minuten ein- oder ausblenden
-a11y-shell-people-watching = { $count } { $count ->
-        [one] Person schaut
-       *[other] Personen schauen
-    } zu, ohne teilzunehmen
-a11y-shell-status-name = Dein Zusammenarbeitsstatus
-a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
-a11y-shell-status-set = Lege fest, woran du gerade arbeitest
-people-panel-sharing-line-auto = Du teilst, was du gerade machst
-people-panel-sharing-line-manual = Du teilst nur, was du selbst schreibst
-people-panel-sharing-line-off = Du teilst nicht, was du gerade machst
-people-panel-sharing-change = Ändern
-people-panel-sharing-choice-auto = Automatisch teilen
-people-panel-sharing-choice-manual = Selbst schreiben
-people-panel-sharing-choice-off = Nicht teilen
+a11y-shell-people-recent-toggle-description = Ihre letzten Änderungen ein- oder ausblenden
 a11y-shell-rename = Deinen Namen ändern, { $name }
 a11y-shell-rename-description = Wähle den Namen, den andere hier sehen
 a11y-shell-sharing-change = Ändern, was du teilst
-a11y-shell-status-automatic-description = Einen kurzen Status lokal aus den letzten Aktionen im Arbeitsbereich ableiten
-a11y-shell-status-manual-description = Nur selbst eingegebenen Text teilen
-a11y-shell-status-off-description = Keinen Status in diesem Arbeitsbereich veröffentlichen
 a11y-shell-follow-collaborator = Mitwirkender Person folgen
 a11y-shell-follow = { $name } folgen
 a11y-shell-follow-description = Die Live-Ansicht dieser Person im Arbeitsbereich spiegeln
@@ -978,25 +981,31 @@ launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt al
 # Peers arriving in and leaving a workspace, batched into one toast
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-here-now = { $count } gerade hier
-people-panel-watching = +{ $count } { $count ->
-        [one] schaut zu
-       *[other] schauen zu
-    }
-people-panel-screen-visible = Bildschirm gerade sichtbar
-people-panel-only-you = Nur du bist hier
-people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
-people-panel-status-empty = Lege fest, woran du gerade arbeitest …
-people-panel-own-status = Du · { $status }
 people-panel-agent-tag = Agent
-people-panel-invited-tag = eingeladen
-people-panel-following = Du folgst
-people-panel-following-activity = Du folgst · { $activity }
+people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
+people-panel-here-count = { $count ->
+    [one] 1 hier
+   *[other] { $count } hier
+}
+people-panel-here-watching = { $count } hier, { $watching } schauen zu
+people-panel-section-people = Personen
+people-panel-section-agents = Agenten
+people-panel-wave = Winken
+people-panel-in-call = In { $channel }
+people-panel-focusing = Konzentriert
+people-panel-away = Abwesend
+people-panel-idle = Inaktiv
+people-panel-empty = Gerade ist niemand sonst hier
+people-panel-changes = Ihre Änderungen ansehen
+people-panel-invite-people = Personen einladen
+a11y-shell-wave = { $name } zuwinken
+a11y-shell-wave-description = Ihr Gesicht zeigt, dass du gewunken hast
+a11y-shell-people-changes = Was { $name } geändert hat
+a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffnen
+a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
-people-panel-invite = Einladen
-people-panel-join = Beitreten
 launchpad-subtitle = Wähle, wie du beginnen möchtest. Inhalte des Arbeitsbereichs werden synchronisiert; deine Anordnung und Bedienelemente bleiben lokal.
 
 # The emoji picker (Super+. by default)

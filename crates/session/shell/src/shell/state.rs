@@ -1043,6 +1043,7 @@ impl WorkspaceTree {
             self.stewarded_rooms.remove(&room);
         }
         let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
+        let bots = tilo_peer_state::room::room_bots_of(document);
         let sandbox = projection::room_sandbox_of(document);
         let presets = projection::workspace_presets_of(document);
         let tasks = projection::workspace_tasks_of(document);
@@ -1062,6 +1063,7 @@ impl WorkspaceTree {
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             ws.policy = policy;
             ws.presets = presets;
+            ws.bots = bots;
             ws.sandbox = sandbox;
             ws.sandbox.extend(local);
             ws.tasks = tasks;
@@ -2572,6 +2574,7 @@ impl WorkspaceTree {
         }
 
         let (name, mut policy) = tilo_peer_state::room::extract_governed_fields(&candidate);
+        let bots = tilo_peer_state::room::room_bots_of(&candidate);
         let mut sandbox = projection::room_sandbox_of(&candidate);
         let presets = projection::workspace_presets_of(&candidate);
         let mut tasks = projection::workspace_tasks_of(&candidate);
@@ -2646,6 +2649,10 @@ impl WorkspaceTree {
         }
         if ws.presets != presets {
             ws.presets = presets;
+            fields_changed = true;
+        }
+        if ws.bots != bots {
+            ws.bots = bots;
             fields_changed = true;
         }
         tasks.sort_by(|left, right| left.id.cmp(&right.id));
@@ -5144,10 +5151,10 @@ impl WorkspaceTree {
         salt == 0 || salt == self.local_salt()
     }
 
-    /// Create or rename a strip of the active workspace, as a person at this
-    /// machine does it: the model's own
-    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip)
-    /// and `RenameStrip` reductions on the cache, then the room document and
+    /// Create, rename or move a strip of the active workspace, as a person at
+    /// this machine does it: the model's own
+    /// [`DesktopCommand::CreateStrip`](tilo_desktop_model::commands::DesktopCommand::CreateStrip),
+    /// `RenameStrip` and `MoveStrip` reductions on the cache, then the room document and
     /// the restart snapshot. A created strip takes focus. Returns the strip
     /// the command named or made.
     ///
@@ -5163,7 +5170,7 @@ impl WorkspaceTree {
         use tilo_desktop_model::commands::{DesktopCommand, apply_command};
         let renamed = match command {
             DesktopCommand::CreateStrip { .. } => None,
-            DesktopCommand::RenameStrip { strip, .. } => {
+            DesktopCommand::RenameStrip { strip, .. } | DesktopCommand::MoveStrip { strip, .. } => {
                 let strip = StripId(*strip);
                 if !self.may_rename_strip(strip) {
                     return Err("target belongs to another topology owner".into());
@@ -10108,5 +10115,27 @@ mod strip_command_tests {
             .is_err(),
             "a peer's strip is renamed by its owner"
         );
+        assert!(
+            tree.commit_strip_command(&DesktopCommand::MoveStrip {
+                strip: theirs.raw(),
+                before: None,
+            })
+            .is_err(),
+            "a peer's strip is moved by its owner"
+        );
+
+        // A strip of this machine moves in the stack, and the room
+        // document carries the new order.
+        let order_before = names(&tree);
+        let last = order_before.last().map(|(id, _)| *id).expect("strips");
+        tree.commit_strip_command(&DesktopCommand::MoveStrip {
+            strip: made.raw(),
+            before: Some(first.raw()),
+        })
+        .expect("moved");
+        let moved = names(&tree);
+        assert_eq!(moved.first().map(|(id, _)| *id), Some(made));
+        assert_eq!(moved.len(), order_before.len());
+        assert_eq!(moved.last().map(|(id, _)| *id), Some(last));
     }
 }

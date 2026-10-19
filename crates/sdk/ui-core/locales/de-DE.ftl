@@ -674,7 +674,7 @@ search-apps-group-more-apps = Weitere Apps
 search-apps-group-developer-tools = Entwicklerwerkzeuge
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
-author-bot-chip = BOT
+author-bot-chip = Bot
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft

@@ -86,6 +86,20 @@ pub fn status_line(
     })
 }
 
+/// Who `row` is to live presence: their own id when presence knows it,
+/// else the one presence names as they are named.
+#[must_use]
+pub fn presence_id(presence: &PresenceCtx, row: &RosterRow) -> Option<ui::permissions::UserId> {
+    let direct = ui::permissions::UserId(row.id.clone());
+    if presence.names.contains_key(&direct) || presence.has_availability(&direct) {
+        return Some(direct);
+    }
+    presence
+        .names
+        .iter()
+        .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.label).then(|| id.clone()))
+}
+
 /// The strip and window `participant_id` is on in the active workspace.
 #[must_use]
 pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<String> {

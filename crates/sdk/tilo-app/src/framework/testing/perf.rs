@@ -57,16 +57,16 @@ impl Report {
     pub fn phase_us(&self, phase: &str) -> u64 {
         let steps = u128::try_from(self.samples.len().max(1)).unwrap_or(1);
         self.phases.get(phase).map_or(0, |(ns, _)| {
-            u64::try_from(ns / steps / 1000).unwrap_or(u64::MAX)
+            u64::try_from(ns.checked_div(steps).unwrap_or(0) / 1000).unwrap_or(u64::MAX)
         })
     }
 
     /// Calls per step of the scope `phase`, rounded down.
     #[must_use]
     pub fn phase_calls(&self, phase: &str) -> usize {
-        self.phases
-            .get(phase)
-            .map_or(0, |(_, calls)| calls / self.samples.len().max(1))
+        self.phases.get(phase).map_or(0, |(_, calls)| {
+            calls.checked_div(self.samples.len()).unwrap_or(*calls)
+        })
     }
 
     fn quantile(&self, q: f64) -> u64 {
@@ -119,7 +119,7 @@ impl Report {
             per_step(|f| f.resource_availability_us),
         );
         let mut phases: Vec<_> = self.phases.iter().collect();
-        phases.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        phases.sort_by_key(|(_, (ns, _))| std::cmp::Reverse(*ns));
         for (phase, (_, calls)) in phases {
             eprintln!(
                 "perf {} phase {phase}: {}us per step over {} calls",
@@ -136,16 +136,14 @@ impl Report {
 /// plain capture), at [`YOGA`], with every frame the launch queued run.
 ///
 /// # Errors
-/// Returns the capture's launch failure.
-///
-/// # Panics
-/// When the app refuses the Yoga's viewport.
+/// Returns the capture's launch failure, or an invalid viewport when the app
+/// refuses the Yoga's.
 pub fn open<A: ResourceApp>(scenario: Option<&str>) -> Result<HeadlessApp<A>, LaunchError> {
     let mut app = HeadlessApp::<A>::capture_at(scenario, YOGA)?;
     app.settle();
     app.harness()
         .resize(YOGA)
-        .expect("the app lays out at the Yoga's viewport");
+        .map_err(|error| LaunchError::InvalidViewport(error.to_string()))?;
     app.settle();
     Ok(app)
 }

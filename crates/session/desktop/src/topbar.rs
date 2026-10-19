@@ -94,9 +94,6 @@ const NARROW_MENU_BAR_PX: f64 = 720.0;
 const BAR_CONTROL_LOGICAL: f32 =
     ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
-/// Centre-to-centre distance of the bar's avatar chips: 20 px chips whose
-/// rings cut only each other's edge.
-const AVATAR_STEP: f64 = 20.0;
 
 /// Inset of a lane-filling centre widget (the system monitor, the
 /// calendar, a live activity) from its pill's ends, the same each side so
@@ -213,6 +210,10 @@ struct CacheFingerprint {
     collaborator_names: Vec<String>,
     collaborator_agents: Vec<bool>,
     collaborator_overflow: usize,
+    /// Each face's live look: dimmed, its call ring's level and its
+    /// bounce, quantised, so presence repaints the bar only when a face
+    /// changes.
+    faces: Vec<(bool, Option<u8>, u16)>,
     watching: u32,
     sharing: (usize, usize, usize),
     activity_headline: Option<String>,
@@ -241,6 +242,17 @@ struct CacheFingerprint {
     own: Option<crate::chrome::OwnChip>,
     /// The bar control under the pointer: it lifts.
     hovered_control: Option<&'static str>,
+}
+
+/// How one face in the people stack looks now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FaceLook {
+    /// Idle or away.
+    dimmed: bool,
+    /// In a call: the breathing ring's level.
+    call: Option<f32>,
+    /// A wave's bounce (1 at rest).
+    scale: f64,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -569,6 +581,17 @@ pub struct TopBarChrome {
     collaborator_colors: Vec<Color>,
     /// Same index as `collaborator_initials`: drawn with the agent mark.
     collaborator_agents: Vec<bool>,
+    /// Same index as `collaborator_initials`: the roster id presence knows
+    /// them by (idle, in a call, a wave's bounce).
+    collaborator_ids: Vec<String>,
+    /// Same index as `collaborator_initials`: how each face looks now, read
+    /// from presence at each draw.
+    face_looks: Vec<FaceLook>,
+    /// Where each face was painted, same index.
+    face_rects: Vec<Rect>,
+    /// When someone here was first seen in a call, so their ring breathes
+    /// from its start.
+    call_since: Option<Instant>,
     /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
     collaborator_overflow: usize,
     /// Copied off the chrome on each revision bump. Empty until
@@ -872,6 +895,10 @@ impl TopBarChrome {
             collaborator_names: Vec::new(),
             collaborator_colors: Vec::new(),
             collaborator_agents: Vec::new(),
+            collaborator_ids: Vec::new(),
+            face_looks: Vec::new(),
+            face_rects: Vec::new(),
+            call_since: None,
             collaborator_overflow: 0,
             status: crate::chrome::SystemStatus::default(),
             chrome: None,
@@ -944,6 +971,19 @@ impl TopBarChrome {
             collaborator_names: self.collaborator_names.clone(),
             collaborator_agents: self.collaborator_agents.clone(),
             collaborator_overflow: self.collaborator_overflow,
+            faces: self
+                .face_looks
+                .iter()
+                .map(|look| {
+                    (
+                        look.dimmed,
+                        // A breath in eight steps, a bounce in thousandths.
+                        look.call
+                            .map(|level| ui::num::u8_of_f64(f64::from(level) * 8.0)),
+                        u16::try_from(ui::num::u32_of_f64(look.scale * 1000.0)).unwrap_or(u16::MAX),
+                    )
+                })
+                .collect(),
             watching: self.watching(),
             sharing: self.sharing_summary(),
             activity_headline: self.activity_headline.clone(),
@@ -1266,6 +1306,7 @@ impl TopBarChrome {
         self.collaborator_names.clear();
         self.collaborator_colors.clear();
         self.collaborator_agents.clear();
+        self.collaborator_ids.clear();
         let now = tilo_clock::unix_now();
         // Counted with the same `present` filter as the avatars, so the
         // overflow chip agrees with the row.
@@ -1276,7 +1317,8 @@ impl TopBarChrome {
             || roster_colors(roster, ""),
             |local| roster_colors(roster, local),
         );
-        for c in roster.iter().filter(present).take(3) {
+        let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
+        for c in roster.iter().filter(present).take(shown) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
@@ -1291,8 +1333,9 @@ impl TopBarChrome {
                 .push(crate::collaborators::collaborator_is_agent(
                     active_ws, c, now,
                 ));
+            self.collaborator_ids.push(c.id.clone());
         }
-        self.collaborator_overflow = peer_count.saturating_sub(3);
+        self.collaborator_overflow = peer_count.saturating_sub(self.collaborator_initials.len());
         self.sync_strips(tree);
     }
 
@@ -1300,6 +1343,33 @@ impl TopBarChrome {
     /// when a screenshot harness needs every frame to hold still.
     fn current_clock_string(&self) -> String {
         self.live_clock().clock
+    }
+
+    /// Read how each face looks from `presence`: who is idle or away, in a
+    /// call (their ring breathing), or bouncing from a wave.
+    fn read_face_looks(&mut self, presence: &PresenceCtx, motion: ui::tokens::EffectiveMotion) {
+        let now = Instant::now();
+        let mut anyone_in_call = false;
+        let since = *self.call_since.get_or_insert(now);
+        self.face_looks = self
+            .collaborator_ids
+            .iter()
+            .map(|id| {
+                let user = ui::permissions::UserId(id.clone());
+                let in_call = presence.call_of(&user).is_some();
+                anyone_in_call |= in_call;
+                FaceLook {
+                    dimmed: presence.availability_of(&user).dims(),
+                    call: in_call.then(|| {
+                        ui::motion::Breathe::level(now.saturating_duration_since(since), motion)
+                    }),
+                    scale: presence.face_scale(&user, now),
+                }
+            })
+            .collect();
+        if !anyone_in_call {
+            self.call_since = None;
+        }
     }
 
     pub fn collaborator_initials(&self) -> &[char] {
@@ -2201,6 +2271,21 @@ impl TopBarChrome {
         );
     }
 
+    /// The tray's status glyph slots: volume, network link and battery
+    /// when known, and one bell slot (the unread count rides beside it, and
+    /// quiet mode silences it).
+    fn tray_slot_count(&self) -> usize {
+        [
+            self.status.volume.is_some(),
+            self.status.link.is_some(),
+            self.status.battery_percent().is_some(),
+            self.bell.unread > 0 || self.bell.quiet,
+        ]
+        .into_iter()
+        .filter(|shown| *shown)
+        .count()
+    }
+
     /// Sizes the tray pill, paints its body + the critical-battery
     /// highlight, and returns the layout the icon helpers reuse.
     fn draw_tray_pill_body(
@@ -2236,29 +2321,12 @@ impl TopBarChrome {
             0.0
         };
 
-        let has_volume = self.status.volume.is_some();
-        let has_link = self.status.link.is_some();
-        let battery_pct = self.status.battery_percent();
-        let pct_label = battery_pct.map(|p| format!("{p}%"));
+        let pct_label = self.status.battery_percent().map(|p| format!("{p}%"));
         let pct_strong = pct_style.clone().with_weight(TextWeight::Semibold);
         let pct_w = pct_label.as_ref().map_or(0.0, |s| {
             f64::from(text_renderer.measure_style(s, None, &pct_strong).0)
         });
-        let mut slots = 0usize;
-        if has_volume {
-            slots = slots.saturating_add(1);
-        }
-        if has_link {
-            slots = slots.saturating_add(1);
-        }
-        if battery_pct.is_some() {
-            slots = slots.saturating_add(1);
-        }
-        // One bell slot: the unread count rides beside it, and quiet mode
-        // silences it.
-        if self.bell.unread > 0 || self.bell.quiet {
-            slots = slots.saturating_add(1);
-        }
+        let slots = self.tray_slot_count();
         let mut tray_w = if slots == 0 {
             // Still the quick-settings trigger, so keep one slot for
             // the settings glyph.
@@ -2784,7 +2852,7 @@ impl TopBarChrome {
     /// chip last, the whole stack ending at `stack_right_x`. Returns how
     /// many circles were drawn (chips + the overflow chip, if any).
     fn draw_avatar_chips(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -2793,87 +2861,37 @@ impl TopBarChrome {
         stack_right_x: f64,
     ) -> usize {
         let colors = &theme.tokens.colors;
-        let slots = self
-            .collaborator_initials
-            .len()
-            .saturating_add(usize::from(self.collaborator_overflow > 0));
-        // Slot `k` of `slots`, left to right; each chip's ring cuts only the
-        // edge of the one before it, never its initial.
-        let slot_center = |k: usize| {
-            Point::new(
-                stack_right_x
-                    - 10.0
-                    - small_count_to_f64(slots.saturating_sub(1).saturating_sub(k)) * AVATAR_STEP,
-                center_y,
-            )
-        };
-        // Routed through `ui::Avatar` so the roster stays pixel-identical
-        // to app rosters.
-        for (i, initial) in self.collaborator_initials.iter().enumerate() {
-            let center = slot_center(i);
-            // 20 px chip; large enough that an initial remains legible at 1:1.
-            let rect = Rect::new(
-                center.x - 10.0,
-                center.y - 10.0,
-                center.x + 10.0,
-                center.y + 10.0,
-            );
-            let fill = self
-                .collaborator_colors
-                .get(i)
-                .copied()
-                .unwrap_or(colors.intent.you);
-            if self.collaborator_agents.get(i).copied().unwrap_or(false) {
-                // Software is never drawn as a person: the shared agent mark,
-                // seated on the same ring so the stack still separates.
-                let ring = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.surfaces.overlay,
-                    None,
-                    &RoundedRect::from_rect(
-                        rect.inflate(ring, ring),
-                        f64::from(theme.tokens.radii.detail),
-                    ),
-                );
-                ui::agent_identity::draw_agent_identity_mark(
-                    scene,
-                    transform,
-                    rect,
-                    colors.presence.of(fill),
-                    theme,
-                    ui::agent_identity::AgentIdentityStyle::Solid,
-                );
-                continue;
-            }
-            // The ring reads against the bar it's drawn on.
-            ui::widget::AvatarFace::new(&initial.to_string(), "")
-                .presence(fill)
-                .ringed_on(colors.surfaces.overlay)
-                .paint(
-                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                    rect,
-                );
-        }
-
-        if self.collaborator_overflow > 0 {
-            let center = slot_center(self.collaborator_initials.len());
-            let rect = Rect::new(
-                center.x - 10.0,
-                center.y - 10.0,
-                center.x + 10.0,
-                center.y + 10.0,
-            );
-            ui::widget::AvatarFace::paint_overflow(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                self.collaborator_overflow,
-                Some(colors.surfaces.overlay),
-            );
-        }
-
-        slots
+        let faces: Vec<ui::presence::Face<'_>> = self
+            .collaborator_names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let look = self.face_looks.get(i).copied();
+                ui::presence::Face {
+                    name: name.as_str(),
+                    identity: self.collaborator_ids.get(i).map_or("", String::as_str),
+                    colour: self
+                        .collaborator_colors
+                        .get(i)
+                        .copied()
+                        .unwrap_or(colors.intent.you),
+                    // Software is never drawn as a person: the shared agent
+                    // mark in the same ring.
+                    is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
+                    dimmed: look.is_some_and(|look| look.dimmed),
+                    in_call: look.and_then(|look| look.call),
+                    scale: look.map_or(1.0, |look| look.scale),
+                }
+            })
+            .collect();
+        let (rects, badge) = ui::presence::FaceStack::BAR.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (stack_right_x, center_y),
+            (&faces, self.collaborator_overflow),
+            colors.surfaces.overlay,
+        );
+        self.face_rects = rects;
+        faces.len() + usize::from(badge.is_some())
     }
 
     /// The person's own avatar, ending at `right_x`, in their colour with
@@ -3060,15 +3078,13 @@ impl TopBarChrome {
     ) {
         let (center_y, stack_right_x) = pos;
         if slot_count > 0 {
-            // The stack ends at `stack_right_x`; each circle is 20 px wide,
-            // one AVATAR_STEP from the next.
-            let leftmost_cx = stack_right_x - (small_count_to_f64(slot_count) - 1.0) * AVATAR_STEP;
-            let y_mid = center_y;
+            let width = ui::presence::FaceStack::BAR
+                .width_of(self.collaborator_initials.len(), self.collaborator_overflow);
             self.avatar_stack_rect = Rect::new(
-                leftmost_cx - 20.0,
-                y_mid - BAR_CONTROL_PX / 2.0,
+                stack_right_x - width,
+                center_y - BAR_CONTROL_PX / 2.0,
                 stack_right_x,
-                y_mid + BAR_CONTROL_PX / 2.0,
+                center_y + BAR_CONTROL_PX / 2.0,
             );
             return;
         }
@@ -3394,50 +3410,6 @@ impl TopBarChrome {
             }
         }
         text_renderer.elide_to_width_style(headline, max_width, &medium)
-    }
-
-    fn draw_activity_badge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        if self.activity_unread == 0 || self.avatar_stack_rect.is_zero_area() {
-            return;
-        }
-        let label = self.activity_unread.min(99).to_string();
-        let radius = 8.0;
-        let center = Point::new(
-            self.avatar_stack_rect.x1 - 2.0,
-            self.avatar_stack_rect.y0 + 2.0,
-        );
-        // An unread count is filled in the person's own colour.
-        let fill = theme.tokens.colors.intent.you;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &vello::kurbo::Circle::new(center, radius),
-        );
-        let style = theme.text(TextRole::Caption);
-        let (w, h) = text_renderer.measure_style(&label, None, &style);
-        let ink = theme
-            .tokens
-            .colors
-            .readable_on(fill, theme.tokens.colors.text_primary);
-        text_renderer.draw_style(
-            scene,
-            &label,
-            ink,
-            at(
-                transform,
-                (center.x - f64::from(w) / 2.0, center.y - f64::from(h) / 2.0),
-            ),
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
-        );
     }
 
     /// Keyboard focus is shown; focus a click gave the bar is not.
@@ -4218,7 +4190,21 @@ impl Widget for TopBarChrome {
     /// The end of the time reading on screen. Only a future instant: once
     /// it passes, `update` reports the bar dirty and schedules the next one.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.time_wake.filter(|at| Instant::now() < *at)
+        let now = Instant::now();
+        // Someone here is in a call: their ring breathes, gently.
+        let breath = self.call_since.and_then(|_| {
+            ui::motion::Breathe::next_frame(
+                now,
+                self.cache_theme.as_ref().map_or_else(
+                    || ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
+                    Theme::motion,
+                ),
+            )
+        });
+        [self.time_wake.filter(|at| now < *at), breath]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     fn build_layout(
@@ -4303,7 +4289,7 @@ impl Widget for TopBarChrome {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Zero-height (fullscreen) paints nothing; without this guard
         // the encode below still runs at intrinsic size, overflowing
@@ -4327,6 +4313,7 @@ impl Widget for TopBarChrome {
             ui::tokens::MotionSource::Pointer,
             ui::time::now(),
         );
+        self.read_face_looks(presence, theme.motion());
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
@@ -4389,7 +4376,6 @@ impl Widget for TopBarChrome {
         if !self.is_compact() {
             self.draw_session_clusters(scene, theme, text_renderer, center_y);
         }
-        self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
         let clock_activity = self.chrome.as_ref().and_then(|chrome| {
             let snapshot = chrome.snapshot();
@@ -6430,6 +6416,76 @@ mod tests {
             "{name}"
         );
         assert!(!name.contains("unidentified session"), "{name}");
+    }
+
+    /// The people control says who is here and nothing else: unread room
+    /// activity is told by the activity pill in the centre (and History),
+    /// never by a badge on the people. The badge it had sat half above the
+    /// bar, white on white, on the empty room's Invite seat.
+    #[test]
+    fn unread_activity_paints_nothing_on_the_people_control() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let theme = Theme::default();
+        let paint = |unread: usize| {
+            let mut bar = TopBarChrome::from_tree(&tree);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+            let vp = taffy
+                .new_with_children(
+                    Style {
+                        size: Size::from_lengths(1600.0, TOPBAR_HEIGHT_PX),
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout_with_measure(
+                    vp,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1600.0),
+                        height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .unwrap();
+            bar.apply_layout(&taffy, node, Point::ORIGIN);
+            bar.activity_unread = unread;
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            bar.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            assert_eq!(bar.activity_unread, unread, "nothing else reset it");
+            let rgba = ui::offscreen::OffscreenRenderer::new(1600, 48).render(&scene, Color::BLACK);
+            (rgba, bar.avatar_stack_rect)
+        };
+        let (quiet, people) = paint(0);
+        let (unread, _) = paint(3);
+        assert!(people.area() > 0.0, "the empty room shows its Invite seat");
+        let around = people.inflate(12.0, 12.0);
+        for y in around.y0.max(0.0) as u32..around.y1.min(48.0) as u32 {
+            for x in around.x0.max(0.0) as u32..around.x1.min(1600.0) as u32 {
+                assert_eq!(
+                    ui::offscreen::OffscreenRenderer::sample(&quiet, 1600, x, y),
+                    ui::offscreen::OffscreenRenderer::sample(&unread, 1600, x, y),
+                    "unread activity painted on the people control at ({x}, {y})"
+                );
+            }
+        }
     }
 
     #[test]

@@ -89,8 +89,15 @@ display-identify-unnamed = Bildschirm { $number }
 
 # Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
 overview-windows-title = Fenster in diesem Arbeitsbereich
-overview-windows-description = Zuletzt verwendete zuerst. Links und Rechts wechseln zwischen ihnen, Enter öffnet eines. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
+overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
+overview-strips-title = Leisten in diesem Arbeitsbereich
+overview-strip-empty = Keine Fenster
+overview-strip-rename = Umbenennen
+overview-strip-move-up = Nach oben
+overview-strip-move-down = Nach unten
+overview-strip-move-failed = Diese Leiste lässt sich nicht verschieben
+overview-strip-rename-failed = Diese Leiste lässt sich nicht umbenennen
 
 # Feste Tastenkombinationen der Shell, wie Tastaturhilfe und Tastaturübersicht sie nennen
 shortcut-screenshot = Bildschirmfoto
@@ -768,7 +775,7 @@ a11y-leave-workspace = { $name } verlassen
 
 # Der Ansicht einer Person folgen
 follow-label = Du folgst { $person }
-follow-detail = Deine Ansicht. Alle hier sehen sie.
+follow-stopped = Folgen beendet
 follow-stop = Beenden
 
 # Filterchips der Suche
@@ -1385,6 +1392,12 @@ search-action-collaborators-open = Mitwirkende anzeigen
 search-action-collaborators-open-subtitle = Mitwirkende, die gerade in diesem Arbeitsbereich sind
 search-action-presence-follow-stop = Nicht mehr folgen
 search-action-presence-follow-stop-subtitle = Diese Ansicht wieder lokal navigieren
+search-action-presence-wave = Winken
+search-action-presence-wave-subtitle = Jemandem hier zuwinken; dein Gesicht zeigt, dass du es warst
+search-action-presence-availability-set = Verfügbarkeit festlegen
+search-action-presence-availability-set-subtitle = Verfügbar, Konzentriert oder Abwesend, neben deinem Gesicht
+search-action-presence-visibility-set = Festlegen, was andere hier sehen
+search-action-presence-visibility-set-subtitle = Wo du bist, dass du da bist, oder nichts
 search-action-room-activity-open = Aktivität im Arbeitsbereich anzeigen
 search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änderungen, Berechtigungen, wer was wann getan hat
 search-action-peer-invite = Mitwirkende einladen …
@@ -1397,6 +1410,12 @@ search-action-workspace-unpublish = Diesen Arbeitsbereich privat machen
 search-action-workspace-unpublish-subtitle = Aus dem Verzeichnis nehmen; die Mitglieder bleiben
 search-action-workspace-report = Diesen Arbeitsbereich melden…
 search-action-workspace-report-subtitle = Den Betreibenden dieses öffentlichen Arbeitsbereichs sagen, was nicht stimmt
+search-action-bot-add = Einen Bot zu diesem Arbeitsbereich hinzufügen…
+search-action-bot-add-subtitle = Sein Host lässt hier einen Bot aus dem Verzeichnis laufen
+search-action-bot-remove = Einen Bot aus diesem Arbeitsbereich entfernen…
+search-action-bot-remove-subtitle = Sein Host hält den Bot an und entfernt ihn
+bots-add-failed = Der Bot wurde nicht hinzugefügt
+bots-remove-failed = Der Bot wurde nicht entfernt
 search-action-pair-device = Neues Gerät koppeln
 search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen
 search-action-tab-new-terminal-here = Neuer Terminal-Tab hier
@@ -2184,6 +2203,8 @@ search-action-strip-rename = Diese Leiste umbenennen
 search-action-strip-rename-subtitle = Der Leiste mit dem Fokus einen Namen geben
 search-action-strip-invalid-name = Gib einen Leistennamen mit 1 bis 48 Zeichen ohne Steuerzeichen ein.
 search-action-strip-rename-missing = Diese Leiste gibt es in diesem Arbeitsbereich nicht.
+search-action-strip-move = Leiste verschieben
+search-action-strip-move-subtitle = Eine Leiste dieses Arbeitsbereichs weiter nach oben oder unten setzen
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.
@@ -2897,6 +2918,9 @@ search-kw-presence-follow = folgen, mitverfolgen, jemandem folgen
 search-kw-presence-follow-stop = nicht mehr folgen, entfolgen, folgen beenden
 search-kw-presence-status-set = status, abwesend, beschäftigt, verfügbar
 search-kw-presence-status-sharing-set = status teilen, status privatsphäre, status verbergen
+search-kw-presence-wave = winken, hallo sagen, grüßen
+search-kw-presence-availability-set = status, verfügbar, konzentriert, abwesend, beschäftigt
+search-kw-presence-visibility-set = privatsphäre, unsichtbar, verbergen, was andere sehen
 search-kw-room-activity-open = aktivität, verlauf, änderungen, zeitleiste, nachholen, chronik, protokoll
 search-kw-peer-invite = einladen, teilen, person hinzufügen, zusammenarbeiten, einladungslink
 search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben, öffentliche arbeitsbereiche, durchsuchen, entdecken, verzeichnis, community
@@ -2922,6 +2946,7 @@ search-kw-workspace-previous = vorheriger arbeitsbereich, arbeitsbereich wechsel
 search-kw-workspace-next = nächster arbeitsbereich, arbeitsbereich wechseln, desktop wechseln
 search-kw-strip-create = neue leiste, leiste hinzufügen, zeile hinzufügen, leiste erstellen, streifen
 search-kw-strip-rename = leiste umbenennen, leiste benennen, leistenname, zeile benennen
+search-kw-strip-move = leiste verschieben, leisten ordnen, leiste nach oben, leiste nach unten, zeilen umsortieren
 search-kw-tab-previous = vorheriger tab, linker tab, zurück
 search-kw-tab-next = nächster tab, rechter tab, weiter
 search-kw-group-move-left = fenster verschieben, anordnen, links
@@ -3105,3 +3130,15 @@ arrival-others = { $count ->
     [one] und 1 weitere Person
    *[other] und { $count } weitere
 }
+
+# Cursor chat: a short message beside your pointer, shown to everyone in that window.
+cursor-chat-placeholder = Sag etwas
+cursor-chat-you = Du
+
+# The line under the top bar when you arrive where people are, or someone waves.
+presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
+presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
+presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
+presence-arrival-change = Ändern
+presence-wave-notice = { $person } winkt
+presence-someone = Jemand

@@ -22,6 +22,12 @@ NATIVE_TEST_FEATURES = {
     "imager-backend": ("installation",),
 }
 
+# Packages whose tested features above are not their default build. The
+# default build is what ships (the Imager's Tilo app), so clippy also checks it
+# on its own, tests included: otherwise code and tests the default leaves out
+# rot unseen, as the Imager's did when the installation became a feature.
+DEFAULT_BUILDS_ALSO_CHECKED = ("imager", "imager-backend")
+
 
 def arguments(packages: list[str]) -> list[str]:
     features = [f"{package}/{feature}" for package in sorted(set(packages))
@@ -29,14 +35,22 @@ def arguments(packages: list[str]) -> list[str]:
     return ["--features", ",".join(features)] if features else []
 
 
+def default_builds(packages: list[str]) -> list[str]:
+    """The selected packages whose default build clippy checks separately."""
+    return sorted(set(packages) & set(DEFAULT_BUILDS_ALSO_CHECKED))
+
+
 def main(argv: list[str]) -> None:
+    defaults = bool(argv) and argv[0] == "--default-builds"
+    if defaults:
+        argv = argv[1:]
     packages = []
     for index, arg in enumerate(argv):
         if arg in ("-p", "--package"):
             packages.append(argv[index + 1])
-        elif arg == "--workspace":
+        elif arg == "--workspace" and not defaults:
             packages.extend(NATIVE_TEST_FEATURES)
-    print(" ".join(arguments(packages)))
+    print(" ".join(default_builds(packages) if defaults else arguments(packages)))
 
 
 if __name__ == "__main__":

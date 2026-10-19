@@ -41,6 +41,7 @@ pub use facades::{
 };
 mod bot_members;
 mod delegates;
+pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
 pub use delegates::{GovernedAgent, GovernedDelegateRow};
 mod local_admission;

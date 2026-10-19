@@ -250,7 +250,6 @@ impl<'a> BarControlFace<'a> {
     }
 
     /// The accessible node of the control at `rect`.
-    #[must_use]
     pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Button)
@@ -277,7 +276,7 @@ impl IconButton {
     /// `name`.
     #[must_use]
     #[track_caller]
-    pub fn new(id: &str, icon: Icon, name: &str) -> Button {
+    pub fn regular(id: &str, icon: Icon, name: &str) -> Button {
         Button::icon_only(id, icon, name)
     }
 
@@ -290,7 +289,7 @@ impl IconButton {
 
     /// The immediate face of an icon button at `rect`, for a painted host.
     #[must_use]
-    pub fn face<'a>(rect: Rect, icon: Icon, name: &'a str) -> crate::widget::ButtonFace<'a> {
+    pub fn face(rect: Rect, icon: Icon, name: &str) -> crate::widget::ButtonFace<'_> {
         crate::widget::ButtonFace::icon_only(rect, icon, name).role(ButtonRole::Plain)
     }
 

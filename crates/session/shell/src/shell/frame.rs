@@ -4108,7 +4108,59 @@ impl FrameBuilder {
         let tiles = self.host.tab_tiles();
         let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
-        moved || roster_changed
+        // Cursor chat: offered over a shared window, and what was typed goes
+        // to the window it is over on the room's live plane.
+        let room = self
+            .chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        let available = room
+            .as_deref()
+            .is_some_and(|room| relay.chat_target(room).is_some());
+        self.host.set_cursor_chat_available(available);
+        // Waves at this person, from whoever waved.
+        let own = relay.own_presence_id();
+        let waves: Vec<String> = self
+            .presence
+            .take_waves()
+            .into_iter()
+            .filter(|(_, target, _)| *target == own)
+            .map(|(from, _, _)| from.0)
+            .collect();
+        let waved = !waves.is_empty() && self.host.receive_waves(waves);
+        let bounced = self.host.take_wave_bounces();
+        for target in &bounced {
+            self.presence.bounce(
+                ui::permissions::UserId(target.clone()),
+                self.theme.motion(),
+                Instant::now(),
+            );
+        }
+        let waved = waved || !bounced.is_empty();
+        let said = self.host.take_cursor_chat_outbox(Instant::now());
+        if let Some(target) = room
+            .as_deref()
+            .filter(|_| !said.is_empty())
+            .and_then(|room| relay.chat_destination(room))
+        {
+            for out in said {
+                match out {
+                    crate::shell::overlay_host::ChatOut::Say(said) => {
+                        relay.say(
+                            &target,
+                            said.as_ref().map(|(text, sent)| (text.as_str(), *sent)),
+                        );
+                    }
+                    crate::shell::overlay_host::ChatOut::React(emoji) => {
+                        relay.react(&target, &emoji);
+                    }
+                }
+            }
+        }
+        moved || roster_changed || waved
     }
 
     /// Read-only view of the presence the next paint will draw.
@@ -4120,6 +4172,12 @@ impl FrameBuilder {
     /// that a received peer packet uses. Deterministic product proofs need
     /// this seam so they can render intent without standing up a network
     /// relay; it is unavailable in production-only builds.
+    /// The presence the next paint draws, to seed it for captures.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn presence_mut_for_shots(&mut self) -> &mut PresenceCtx {
+        &mut self.presence
+    }
+
     #[cfg(feature = "hosted-test-control")]
     pub fn apply_remote_presence_for_shots(
         &mut self,
@@ -4326,6 +4384,25 @@ impl FrameBuilder {
                 .and_then(Widget::next_wake_deadline),
             self.chrome.borrow().window_transfers.next_poll(),
             self.peer_windows_poll(),
+            self.presence_wake(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// When peers' presence next changes on its own: a still pointer's name
+    /// steps aside, a sent cursor-chat message starts to fade or goes.
+    fn presence_wake(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let fade = if self.theme.reduce_motion {
+            std::time::Duration::ZERO
+        } else {
+            ui::presence::POINTER_FADE
+        };
+        [
+            self.presence.next_pointer_name_fade(now, fade),
+            self.presence.chats.next_change(now, self.theme.motion()),
         ]
         .into_iter()
         .flatten()
@@ -5697,13 +5774,7 @@ impl FrameBuilder {
         // clicks the button a person clicks rather than invoking the action
         // behind it — a click proves the control is wired, an invocation
         // only proves the action.
-        let (collab_invite, collab_join) = host.collaborators_action_rects_for_tests();
-        put("collab_invite".into(), collab_invite);
-        put("collab_join".into(), collab_join);
-        put(
-            "collab_room_activity".into(),
-            host.collaborators_activity_rect_for_tests(),
-        );
+        put("collab_invite".into(), host.collaborators_invite_rect_for_tests());
         for (name, rect) in host.quick_settings_semantic_rects() {
             put(name, rect);
         }

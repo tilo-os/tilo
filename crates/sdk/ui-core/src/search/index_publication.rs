@@ -58,10 +58,6 @@ impl IndexWeight {
     }
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 /// A published action a hit invokes: an action of a resource the app
 /// publishes, by their ids.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -100,7 +96,7 @@ pub struct IndexEntry {
     pub fields: Vec<(String, IndexWeight)>,
     /// The entry describes a secret: found only while the app reports its
     /// secrets unlocked.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
 }
 
@@ -177,7 +173,7 @@ impl IndexEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IndexDelta {
     /// Discard what this app published in its slot before applying the rest.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reset: bool,
     /// Entries new or changed, by their key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

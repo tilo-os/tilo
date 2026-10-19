@@ -91,6 +91,19 @@ const STRIP_RENAME_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+const STRIP_MOVE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "strip",
+        ParamType::Integer,
+        "Which strip of the active workspace to move, counting from 1 at the top.",
+    ),
+    ActionParam::required(
+        "position",
+        ParamType::Integer,
+        "Where it ends up, counting from 1 at the top; past the last strip means the bottom.",
+    ),
+];
+
 /// Longest strip name a person or an agent may give, in characters: what the
 /// strip switcher's row shows without eliding most of it.
 pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
@@ -141,6 +154,33 @@ fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Action
     .ok_or_else(|| ActionError::Refused(t("search-action-strip-rename-missing")))?;
     state
         .rename_strip(strip, name)
+        .map_err(ActionError::Refused)
+}
+
+/// Move a strip of the active workspace to another place in its stack: the
+/// overview's Move up and Move down, for an agent or a script.
+fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
+    let index_of = |key: &str| {
+        args.integer(key)
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(|n| n.checked_sub(1))
+    };
+    let from = index_of("strip").ok_or_else(missing)?;
+    let to = index_of("position").ok_or_else(missing)?;
+    let (strip, before) = {
+        let tree = state.tree();
+        let strips = &tree.desktop.active_workspace().ok_or_else(missing)?.strips;
+        let strip = strips.get(from).ok_or_else(missing)?.id;
+        let others: Vec<_> = strips
+            .iter()
+            .map(|s| s.id)
+            .filter(|id| *id != strip)
+            .collect();
+        (strip, others.get(to).copied())
+    };
+    state
+        .move_strip(strip, before)
         .map_err(ActionError::Refused)
 }
 
@@ -263,6 +303,18 @@ const PRESENCE_SHARING_PARAMS: &[ActionParam] = &[ActionParam::required(
     "off, manual, or automatic.",
 )];
 
+const PRESENCE_AVAILABILITY_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "availability",
+    ParamType::Text,
+    "available, focusing, or away.",
+)];
+
+const PRESENCE_VISIBILITY_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "visibility",
+    ParamType::Text,
+    "What the people in this workspace see of you: where (your window and pointer), here (only that you are here), or nothing.",
+)];
+
 const DEVICE_REVOKE_PARAMS: &[ActionParam] = crate::shell::identity_admin::REVOKE_PARAMS;
 
 fn workspace_create_contract() -> tilo_actions::ActionContract {
@@ -344,7 +396,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" => {
+        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -360,9 +412,17 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Who may walk in is the room's business on its host; a report
         // reaches the people who run a workspace.
-        WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID => {
+        WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID | BOT_ADD_ID => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
+        }
+        // Its host stops the bot and uninstalls it; adding it again is a
+        // new request.
+        BOT_REMOVE_ID => {
+            contract.kind = ActionKind::Outside;
+            contract.risk = RiskLevel::Destructive;
+            contract.confirmation = ConfirmationPolicy::Confirm;
+            contract.retry = RetryPolicy::AtMostOnce;
         }
         // Ends the agent's access at once; undone only by admitting it again.
         "agent.remove" => {
@@ -439,7 +499,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" => {
+        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -863,6 +923,66 @@ pub(crate) const WORKSPACE_PUBLISH_ID: &str = "workspace.publish";
 pub(crate) const WORKSPACE_UNPUBLISH_ID: &str = "workspace.unpublish";
 /// Reporting the public workspace shown to the people who run it.
 pub(crate) const WORKSPACE_REPORT_ID: &str = "workspace.report";
+/// Asking the active workspace's host to run a bot from the directory.
+pub(crate) const BOT_ADD_ID: &str = "bot.add";
+/// Taking the active workspace's request for a bot back: its host stops
+/// and uninstalls it.
+pub(crate) const BOT_REMOVE_ID: &str = "bot.remove";
+
+const BOT_ADD_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "entry",
+        ParamType::Text,
+        "The bot's entry in the registry's directory, such as so.tilo.bots.standup.",
+    ),
+    ActionParam::required(
+        "version",
+        ParamType::Text,
+        "The listed version the workspace's host runs.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Add this bot to the workspace: its host runs it, with what it may reach.",
+    ),
+];
+
+const BOT_REMOVE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "entry",
+        ParamType::Text,
+        "The bot's entry in the registry's directory.",
+    ),
+    ActionParam::required(
+        "confirm",
+        ParamType::Boolean,
+        "Remove this bot: its host stops it.",
+    ),
+];
+
+/// The label of the system action `id` when an app may prepare it for the
+/// person ([`ui::search::SearchOffer`]): only adding a bot, which the person
+/// still confirms in the palette.
+pub(crate) fn app_offerable_label(id: &str) -> Option<String> {
+    (id == BOT_ADD_ID).then(|| t("search-action-bot-add"))
+}
+
+/// The bot `args` ask the active workspace for (or take back), as `ask`
+/// builds it from the entry and version.
+fn bot_ask(
+    args: &ActionArgs,
+    ask: fn(String, Option<String>) -> crate::shell::network::BotAsk,
+) -> Result<crate::shell::network::BotAsk, ActionError> {
+    let entry = args.text("entry").unwrap_or_default().trim().to_owned();
+    let version = args
+        .text("version")
+        .map(|version| version.trim().to_owned());
+    let ask = ask(entry, version);
+    ask.command().validate().map_err(|_| {
+        ActionError::Refused("a bot is named by its directory entry and version".into())
+    })?;
+    Ok(ask)
+}
 
 const WORKSPACE_PUBLISH_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -1978,6 +2098,89 @@ impl Action {
                 Ok(())
             },
         },
+        Action {
+            id: "presence.wave",
+            label: "search-action-presence-wave",
+            subtitle: "search-action-presence-wave-subtitle",
+            params: PRESENCE_FOLLOW_PARAMS,
+            apply: |st, args| {
+                let id = args.text("collaborator").unwrap_or_default().trim();
+                let here = tilo_desktop::collaborators::collaborator_roster_rows(
+                    &st.tree().desktop,
+                    &crate::shell::state::local_user_id(),
+                )
+                .into_iter()
+                .any(|row| row.id == id && !row.invited);
+                if !here {
+                    return Err(ActionError::Refused(format!(
+                        "`{id}` is not here in this workspace"
+                    )));
+                }
+                st.push_presence_request(crate::shell::chrome_state::PresenceRequest::Wave(
+                    id.to_string(),
+                ));
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.availability.set",
+            label: "search-action-presence-availability-set",
+            subtitle: "search-action-presence-availability-set-subtitle",
+            params: PRESENCE_AVAILABILITY_PARAMS,
+            apply: |st, args| {
+                let chosen = match args
+                    .text("availability")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "available" => ui::Availability::Available,
+                    "focusing" => ui::Availability::Focusing,
+                    "away" => ui::Availability::Away,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "availability must be available, focusing, or away".into(),
+                        ));
+                    }
+                };
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetAvailability(chosen),
+                );
+                Ok(())
+            },
+        },
+        Action {
+            id: "presence.visibility.set",
+            label: "search-action-presence-visibility-set",
+            subtitle: "search-action-presence-visibility-set-subtitle",
+            params: PRESENCE_VISIBILITY_PARAMS,
+            apply: |st, args| {
+                let choice = match args
+                    .text("visibility")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "where" => ui::PresenceVisibility::WhereIAm,
+                    "here" => ui::PresenceVisibility::ThatImHere,
+                    "nothing" => ui::PresenceVisibility::Nothing,
+                    _ => {
+                        return Err(ActionError::Refused(
+                            "visibility must be where, here, or nothing".into(),
+                        ));
+                    }
+                };
+                let Some(room) = st.tree().desktop.active_workspace().map(|w| w.room) else {
+                    return Err(ActionError::Refused("no workspace is open".into()));
+                };
+                st.push_presence_request(
+                    crate::shell::chrome_state::PresenceRequest::SetVisibility(room, choice),
+                );
+                Ok(())
+            },
+        },
         chrome(
             "room.activity.open",
             "search-action-room-activity-open",
@@ -2066,6 +2269,43 @@ impl Action {
             params: &[],
             apply: |st, _| {
                 st.publish_active_workspace(None);
+                st.bump();
+                Ok(())
+            },
+        },
+        // Bots of the active workspace: asked of its host, which runs
+        // what the room's governance lets this person ask for.
+        Action {
+            id: BOT_ADD_ID,
+            label: "search-action-bot-add",
+            subtitle: "search-action-bot-add-subtitle",
+            params: BOT_ADD_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "add this bot")?;
+                let ask = bot_ask(args, |entry, version| crate::shell::network::BotAsk::Add {
+                    entry,
+                    version: version.unwrap_or_default(),
+                })?;
+                if !st.ask_active_workspace_for_bot(ask) {
+                    return Err(ActionError::Refused("no active workspace".into()));
+                }
+                st.bump();
+                Ok(())
+            },
+        },
+        Action {
+            id: BOT_REMOVE_ID,
+            label: "search-action-bot-remove",
+            subtitle: "search-action-bot-remove-subtitle",
+            params: BOT_REMOVE_PARAMS,
+            apply: |st, args| {
+                require_explicit_confirmation(args, "remove this bot")?;
+                let ask = bot_ask(args, |entry, _| crate::shell::network::BotAsk::Remove {
+                    entry,
+                })?;
+                if !st.ask_active_workspace_for_bot(ask) {
+                    return Err(ActionError::Refused("no active workspace".into()));
+                }
                 st.bump();
                 Ok(())
             },
@@ -2391,6 +2631,13 @@ impl Action {
             subtitle: "search-action-strip-rename-subtitle",
             params: STRIP_RENAME_PARAMS,
             apply: rename_strip,
+        },
+        Action {
+            id: "strip.move",
+            label: "search-action-strip-move",
+            subtitle: "search-action-strip-move-subtitle",
+            params: STRIP_MOVE_PARAMS,
+            apply: move_strip,
         },
         Action {
             id: "workspace.create",
@@ -5420,6 +5667,70 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn adding_a_bot_asks_the_active_workspace_once_the_person_confirms() {
+        use crate::shell::network::BotAsk;
+        use crate::shell::overlay_host::PeerSyncAction;
+        let chrome = chrome_with_room();
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room;
+        let standup = serde_json::json!({
+            "entry": "so.tilo.bots.standup",
+            "version": "1.2.0",
+        });
+        assert!(
+            invoke_shell_action(&chrome, BOT_ADD_ID, &standup).is_err(),
+            "nothing is asked of the workspace before the person confirms"
+        );
+        assert!(chrome.borrow_mut().take_peer_sync_requests().is_empty());
+        let mut confirmed = standup.clone();
+        confirmed["confirm"] = true.into();
+        invoke_shell_action(&chrome, BOT_ADD_ID, &confirmed).unwrap();
+        assert_eq!(
+            chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::AskForBot {
+                room,
+                ask: BotAsk::Add {
+                    entry: "so.tilo.bots.standup".into(),
+                    version: "1.2.0".into(),
+                },
+            }]
+        );
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                BOT_ADD_ID,
+                &serde_json::json!({"entry": "../standup", "version": "1.2.0", "confirm": true}),
+            )
+            .is_err(),
+            "a bot is a directory entry, never a path"
+        );
+        invoke_shell_action(
+            &chrome,
+            BOT_REMOVE_ID,
+            &serde_json::json!({"entry": "so.tilo.bots.standup", "confirm": true}),
+        )
+        .unwrap();
+        assert_eq!(
+            chrome.borrow_mut().take_peer_sync_requests(),
+            vec![PeerSyncAction::AskForBot {
+                room,
+                ask: BotAsk::Remove {
+                    entry: "so.tilo.bots.standup".into(),
+                },
+            }]
+        );
+        // An app may prepare adding a bot for the person, and nothing else.
+        assert!(app_offerable_label(BOT_ADD_ID).is_some());
+        assert!(app_offerable_label(BOT_REMOVE_ID).is_none());
+        assert!(app_offerable_label(WORKSPACE_PUBLISH_ID).is_none());
+    }
+
+    #[test]
     fn display_outputs_inspection_reads_the_published_displays_and_the_waiting_change() {
         use settings_store::hardware::{
             DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
@@ -5623,6 +5934,57 @@ mod tests {
     }
 
     /// A session with a room this machine administers — what `agent.invite` needs.
+    #[test]
+    fn strip_move_puts_a_strip_where_it_is_told_and_refuses_a_strip_that_is_not_there() {
+        let chrome = chrome_with_room();
+        for name in ["Main", "Second", "Third"] {
+            chrome.borrow_mut().create_strip(name).expect("a strip");
+        }
+        let names = || {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .map(|strip| strip.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let before = names();
+        let count = before.len();
+        assert!(count >= 3, "{before:?}");
+        invoke_shell_action(
+            &chrome,
+            "strip.move",
+            &serde_json::json!({ "strip": count, "position": 1 }),
+        )
+        .expect("the last strip moves to the top");
+        let moved = names();
+        assert_eq!(moved.first(), before.last(), "{moved:?}");
+        invoke_shell_action(
+            &chrome,
+            "strip.move",
+            &serde_json::json!({ "strip": 1, "position": count + 5 }),
+        )
+        .expect("past the end means the bottom");
+        assert_eq!(names(), before);
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                "strip.move",
+                &serde_json::json!({ "strip": count + 1, "position": 1 }),
+            )
+            .is_err(),
+            "there is no such strip"
+        );
+        assert_eq!(names(), before);
+    }
+
     fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut tree = WorkspaceTree::default();

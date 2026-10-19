@@ -86,8 +86,15 @@ display-identify-unnamed = Display { $number }
 
 # The overview's row of the current workspace's windows.
 overview-windows-title = Windows in this workspace
-overview-windows-description = Most recently used first. Left and Right move between them and Enter goes to one. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
+overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
 overview-window-move-failed = Can't move this window
+overview-strips-title = Strips in this workspace
+overview-strip-empty = No windows
+overview-strip-rename = Rename
+overview-strip-move-up = Move up
+overview-strip-move-down = Move down
+overview-strip-move-failed = Can't move this strip
+overview-strip-rename-failed = Can't rename this strip
 
 # Fixed shell chords, as the shortcut guide and the keyboard map name them
 shortcut-screenshot = Screenshot
@@ -765,7 +772,7 @@ a11y-leave-workspace = Leave { $name }
 
 # Following someone's view
 follow-label = Following { $person }
-follow-detail = Your view. Everyone here can see it.
+follow-stopped = Stopped following
 follow-stop = Stop
 
 # Search filter chips
@@ -1401,6 +1408,12 @@ search-action-collaborators-open = Show collaborators
 search-action-collaborators-open-subtitle = Collaborators currently in this workspace
 search-action-presence-follow-stop = Stop following
 search-action-presence-follow-stop-subtitle = Return this view to local navigation
+search-action-presence-wave = Wave
+search-action-presence-wave-subtitle = Wave at someone here; their face says it was you
+search-action-presence-availability-set = Set your availability
+search-action-presence-availability-set-subtitle = Available, Focusing or Away, beside your face
+search-action-presence-visibility-set = Choose what people here see
+search-action-presence-visibility-set-subtitle = Where you are, that you're here, or nothing
 search-action-room-activity-open = Show workspace activity
 search-action-room-activity-open-subtitle = History of this workspace: changes, permissions, who did what and when
 search-action-peer-invite = Invite a collaborator…
@@ -1413,6 +1426,12 @@ search-action-workspace-unpublish = Make this workspace private
 search-action-workspace-unpublish-subtitle = Take it out of the directory; its members stay
 search-action-workspace-report = Report this workspace…
 search-action-workspace-report-subtitle = Tell the people who run this public workspace what is wrong
+search-action-bot-add = Add a bot to this workspace…
+search-action-bot-add-subtitle = Its host runs a bot from the directory here
+search-action-bot-remove = Remove a bot from this workspace…
+search-action-bot-remove-subtitle = Its host stops the bot and removes it
+bots-add-failed = The bot wasn't added
+bots-remove-failed = The bot wasn't removed
 search-action-pair-device = Pair a new device
 search-action-pair-device-subtitle = Make your phone, a browser or another computer one of your devices
 search-action-tab-new-terminal-here = New terminal tab here
@@ -2200,6 +2219,8 @@ search-action-strip-rename = Rename this strip
 search-action-strip-rename-subtitle = Give the focused strip a name
 search-action-strip-invalid-name = Enter a strip name of 1 to 48 characters without control characters.
 search-action-strip-rename-missing = There is no such strip in this workspace.
+search-action-strip-move = Move a strip
+search-action-strip-move-subtitle = Put a strip of this workspace higher or lower in its stack
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
@@ -2940,6 +2961,9 @@ search-kw-presence-follow = follow, spectate, watch someone, follow person
 search-kw-presence-follow-stop = unfollow, stop following
 search-kw-presence-status-set = status, away, busy, availability
 search-kw-presence-status-sharing-set = status privacy, share status, hide status
+search-kw-presence-wave = wave, say hi, hello
+search-kw-presence-availability-set = status, available, focusing, away, busy, do not disturb
+search-kw-presence-visibility-set = privacy, invisible, hide, what people see, show where I am
 search-kw-room-activity-open = activity, history, what changed, changes, timeline, catch up, log, recent
 search-kw-peer-invite = invite, share, add person, collaborate, join link, send invite
 search-kw-peer-connect = join, join workspace, accept invite, connect, enter code, public workspaces, browse workspaces, discover, directory, community
@@ -2965,6 +2989,7 @@ search-kw-workspace-previous = previous workspace, switch workspace, back, deskt
 search-kw-workspace-next = next workspace, switch workspace, desktop
 search-kw-strip-create = new strip, add strip, add row, new lane, create strip
 search-kw-strip-rename = rename strip, name strip, strip name, label row
+search-kw-strip-move = move strip, reorder strips, strip up, strip down, rearrange rows
 search-kw-tab-previous = previous tab, left tab, back
 search-kw-tab-next = next tab, right tab, forward
 search-kw-group-move-left = move window, arrange, reorder, left
@@ -3148,3 +3173,15 @@ arrival-others = { $count ->
     [one] and 1 other
    *[other] and { $count } others
 }
+
+# Cursor chat: a short message beside your pointer, shown to everyone in that window.
+cursor-chat-placeholder = Say something
+cursor-chat-you = You
+
+# The line under the top bar when you arrive where people are, or someone waves.
+presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
+presence-arrival-intro-here = People here see your name and your colour, never where you are
+presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
+presence-arrival-change = Change
+presence-wave-notice = { $person } waves
+presence-someone = Someone
