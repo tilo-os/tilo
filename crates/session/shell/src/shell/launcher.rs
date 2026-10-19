@@ -6191,10 +6191,14 @@ pub fn expire_pending_placements() -> Vec<String> {
 fn expire_pending_placements_at(now: Instant) -> Vec<String> {
     let session = LaunchSession::current();
     let mut expired = Vec::new();
+    let mut unshown = Vec::new();
     lock(&session.pending).retain(|note| {
         let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
         let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
         let keep = !presentation_timed_out && !retired;
+        if retired && let Some(surface) = note.claimed_by {
+            unshown.push((note.launch_metric_id, note.key.clone(), surface));
+        }
         // A clean parent's handoff deadline can precede the presentation
         // deadline. Report its unclaimed launch too, so the saved opening
         // card is answered rather than losing the only expiry observer.
@@ -6211,7 +6215,30 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
     for package_id in &expired {
         super::doc_open::forget_unpresented_documents(&session, package_id);
     }
+    report_unshown_windows(&unshown);
     expired
+}
+
+/// Say what became of the buffer commits of each launched window whose claim
+/// retired before it showed a frame: whether a commit applied, which are
+/// still blocked on their capture, and where the capture worker has them.
+/// Read outside the launch table's lock, as the frame store is locked by
+/// painting.
+fn report_unshown_windows(unshown: &[(u64, String, u64)]) {
+    let store = crate::shell::foreign::store();
+    for (launch_id, package_id, surface_id) in unshown {
+        if store.frame_seq(*surface_id) != 0 {
+            continue;
+        }
+        tracing::info!(
+            target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
+            launch_id,
+            package_id = %package_id,
+            surface_id,
+            capture = %store.capture_report(*surface_id),
+            "application window has no frame when its launch retired"
+        );
+    }
 }
 
 /// A normal desktop application should announce its first surface promptly.

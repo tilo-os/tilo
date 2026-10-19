@@ -1603,6 +1603,8 @@ struct AsyncDmabufCapture {
     recycled: Arc<Mutex<HashMap<SurfaceId, Arc<Vec<u8>>>>>,
     wake: SyncSender<()>,
     completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
+    /// The surface and commit token the worker is capturing right now.
+    running: Arc<Mutex<Option<(SurfaceId, u64)>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1662,6 +1664,8 @@ impl AsyncDmabufCapture {
         let worker_recycled = Arc::clone(&recycled);
         let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
         let worker_completion_ping = Arc::clone(&completion_ping);
+        let running = Arc::new(Mutex::new(None::<(SurfaceId, u64)>));
+        let worker_running = Arc::clone(&running);
         // Capacity one is only a wake edge, never a job queue. The authoritative
         // queue is the latest-only map above, so `try_send` cannot block the
         // compositor even while the worker is busy.
@@ -1685,7 +1689,9 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let surface = job.surface;
+                        *worker_running.lock_recover() = Some((surface, job.token));
                         let (accepted, barrier, client) = capture_dmabuf_job(job, rgba);
+                        *worker_running.lock_recover() = None;
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -1709,7 +1715,30 @@ impl AsyncDmabufCapture {
             recycled,
             wake,
             completion_ping,
+            running,
         })
+    }
+
+    /// Where `surface`'s capture jobs are: the commit token waiting for its
+    /// buffer's fence, the one queued for the worker, and the one the worker
+    /// is reading now.
+    fn report(&self, surface: SurfaceId) -> String {
+        let awaiting = self
+            .awaiting_fence
+            .lock_recover()
+            .jobs
+            .get(&surface)
+            .map(|job| job.token);
+        let queued = self
+            .pending
+            .lock_recover()
+            .jobs
+            .get(&surface)
+            .map(|job| job.token);
+        let running = (*self.running.lock_recover())
+            .filter(|(running, _)| *running == surface)
+            .map(|(_, token)| token);
+        format!("awaiting_fence={awaiting:?} queued={queued:?} reading={running:?}")
     }
 
     /// A job whose buffer is still being rendered: it runs once
@@ -3919,6 +3948,48 @@ impl ForeignFrameStore {
         guard
             .get(&id)
             .is_some_and(|e| e.first_seen.elapsed() >= OPENING_CONFIGURE_GRACE)
+    }
+
+    /// What became of `id`'s buffer commits, for the log line about a window
+    /// that never showed a frame: whether any commit applied (`mapped`), the
+    /// commit tokens still waiting to apply, the captures waiting for their
+    /// commit, and where the capture worker has the surface's jobs.
+    pub fn capture_report(&self, id: SurfaceId) -> String {
+        let guard = self.entries.lock_recover();
+        let Some(entry) = guard.get(&id) else {
+            return "no entry".to_string();
+        };
+        #[cfg(any(test, target_os = "linux"))]
+        let (pending, staged) = {
+            let mut staged: Vec<u64> = entry.ready_captures.keys().copied().collect();
+            staged.sort_unstable();
+            (
+                entry.capture_tokens.iter().copied().collect::<Vec<_>>(),
+                staged,
+            )
+        };
+        #[cfg(not(any(test, target_os = "linux")))]
+        let (pending, staged): (Vec<u64>, Vec<u64>) = (Vec::new(), Vec::new());
+        let entry_report = format!(
+            "adopted={} mapped={} presented={} seq={} size={}x{} configured={:?} pending_tokens={pending:?} staged_tokens={staged:?} activated={:?} shm_queued={} shm_done={} error={:?}",
+            entry.adopted,
+            entry.mapped,
+            entry.presented,
+            entry.seq,
+            entry.width,
+            entry.height,
+            entry.configured,
+            entry.activated_capture,
+            entry.shm_queued,
+            entry.shm_done,
+            entry.last_error,
+        );
+        drop(guard);
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+            return format!("{entry_report} {}", worker.report(id));
+        }
+        entry_report
     }
 
     /// Reason the last capture failed, if any.

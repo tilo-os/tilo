@@ -135,3 +135,177 @@ fn the_first_dmabuf_commit_returns_to_the_compositor_loop() {
         }
     }
 }
+
+/// The app id of the window restored into its saved tab below.
+const RESTORED_APP: &str = "org.tilo.test.restored-dmabuf";
+
+/// A tab saved from the last session, still showing its opening card, which
+/// the next window of [`RESTORED_APP`] binds into: what restoring a window at
+/// shell start leaves for the relaunched app.
+fn restore_a_saved_tab(h: &mut Harness) -> shell::shell::state::TabId {
+    use shell::shell::state::TileContent;
+    use shell::shell::tab_binding::{self, Placement};
+    let target = {
+        let mut tree = h.state.workspace_tree.write();
+        // A placeholder surface id that no client owns stands in for the tab
+        // the saved session carried.
+        let tab = tab_binding::adopt_toplevel_at(
+            &mut tree,
+            0x7e57_0000_0001,
+            Some(RESTORED_APP.into()),
+            Placement::NewGroup,
+        );
+        for group in tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| workspace.strips.iter_mut())
+            .flat_map(|strip| strip.window_groups.iter_mut())
+        {
+            for saved in group.tabs.iter_mut().filter(|saved| saved.id == tab) {
+                saved.tile = TileContent::PeerWindow {
+                    app_id: RESTORED_APP.into(),
+                    label: "Restored".into(),
+                    note: "Opening here".into(),
+                    missing: None,
+                };
+            }
+        }
+        tab
+    };
+    // The opening card was laid out, so the window is configured to its
+    // size in the dispatch that binds it.
+    shell::compositor::foreign::store().note_opening_tab(target, Rect::new(0.0, 0.0, 640.0, 480.0));
+    shell::shell::launcher::set_pending_placement(RESTORED_APP, Placement::IntoTab(target));
+    target
+}
+
+/// Apply released capture barriers until `id` shows a frame.
+fn wait_for_first_frame(h: &mut Harness, id: u64) -> u64 {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        h.pump();
+        let display = h.display.handle();
+        h.state.pump_foreign_capture_barriers(&display);
+        let seq = shell::compositor::foreign::store().frame_seq(id);
+        if seq != 0 {
+            return seq;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the restored window's first dmabuf frame never reached its tab: an idle client draws nothing more, so the tab would say the window can't be shown"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// A window restored at shell start binds into its saved tab and commits its
+/// first dmabuf frame. That frame is the one its tab shows: the client is
+/// idle afterwards and draws nothing more. `commit_on_map` commits it in the
+/// same flush as the configure's ack, as a client that draws immediately
+/// does; otherwise the client waits for a second configure first.
+fn restored_window_shows_its_first_frame(commit_on_map: bool) -> bool {
+    let mut h = Harness::new();
+    let Some(dmabuf) =
+        h.try_bind::<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1>("zwp_linux_dmabuf_v1", 4)
+    else {
+        return false;
+    };
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm_base = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    h.pump();
+    let target = restore_a_saved_tab(&mut h);
+
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg_surface.get_toplevel(&qh, ());
+    toplevel.set_app_id(RESTORED_APP.into());
+    surface.commit();
+    h.pump();
+    let id = h
+        .state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(|toplevel| shell::compositor::state::surface_id(toplevel.wl_surface()))
+        .next()
+        .expect("the restored window's toplevel");
+    {
+        let tree = h.state.workspace_tree.read();
+        assert_eq!(
+            shell::shell::tab_binding::app_id_for_surface(&tree, id),
+            Some(RESTORED_APP),
+            "the window bound into a tab"
+        );
+        assert!(
+            tree.desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .any(|tab| tab.id == target
+                    && matches!(&tab.tile, shell::shell::state::TileContent::Foreign { surface_id, .. } if *surface_id == id)),
+            "the window took its saved tab"
+        );
+    }
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+    assert!(h.client.configured, "the restored window was configured");
+    if !commit_on_map {
+        h.client.configured = false;
+        shell::compositor::foreign::store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+        shell::compositor::foreign::flush_configures(&mut h.state);
+        h.pump();
+        assert!(h.client.configured, "the second configure arrived");
+    }
+
+    let memfd = linear_argb_memfd();
+    let params = dmabuf.create_params(&qh, ());
+    params.add(memfd.as_fd(), 0, 0, STRIDE, 0, 0);
+    let buffer = params.create_immed(
+        WIDTH,
+        HEIGHT,
+        DRM_FORMAT_ARGB8888,
+        zwp_linux_buffer_params_v1::Flags::empty(),
+        &qh,
+        (),
+    );
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, WIDTH, HEIGHT);
+    surface.commit();
+    let seq = wait_for_first_frame(&mut h, id);
+    assert!(
+        shell::compositor::foreign::store().is_mapped(id),
+        "the frame's commit applied"
+    );
+    assert_ne!(seq, 0);
+    shell::shell::launcher::clear_pending_placements();
+    std::mem::forget((
+        surface,
+        xdg_surface,
+        toplevel,
+        buffer,
+        params,
+        wm_base,
+        memfd,
+    ));
+    true
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn a_restored_window_that_commits_on_map_shows_its_first_frame() {
+    if !restored_window_shows_its_first_frame(true) {
+        eprintln!("skipping: no advertisable render node on this machine");
+    }
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn a_restored_window_that_waits_for_its_tab_size_shows_its_first_frame() {
+    if !restored_window_shows_its_first_frame(false) {
+        eprintln!("skipping: no advertisable render node on this machine");
+    }
+}
