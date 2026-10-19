@@ -10,6 +10,10 @@
 //! keystroke. [`install_and_launch`] fetches, then starts through the
 //! *same* [`crate::shell::launcher::launch`] every installed app uses,
 //! so it's sandboxed, roomed and placed identically.
+//!
+//! The rest of the catalogue the Store and search share, Flathub and the
+//! block list ([`shared_catalogue`]), is read from the files
+//! [`app_catalogue`] names, on a worker, when they change.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -331,6 +335,137 @@ pub fn invalidate() {
     CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
 }
 
+// ---------------------------------------------------------------------
+// The rest of the shared catalogue (`app_catalogue`): Flathub, read from
+// Flatpak's cached AppStream metadata, and the block list. Other schedules
+// keep those files current (Flatpak's AppStream update in the hourly
+// `tilo-app-update` run, the Store for the block list); this re-reads a
+// file on a worker when it changed, never on a keystroke.
+// ---------------------------------------------------------------------
+
+/// How often the files behind the shared catalogue are looked at again.
+/// Only `stat`s run at this pace; a file is read again when it changed.
+const SHARED_RECHECK: Duration = Duration::from_secs(30);
+
+/// Flathub's apps and the block list, as last read.
+#[derive(Clone, Default)]
+pub struct SharedCatalogue {
+    pub flathub: std::sync::Arc<Vec<app_catalogue::CatalogueEntry>>,
+    pub blocks: std::sync::Arc<app_catalogue::BlockList>,
+}
+
+struct SharedState {
+    catalogue: SharedCatalogue,
+    /// The cache stamp and desktop language Flathub was read for.
+    flathub_read: Option<(u64, String)>,
+    blocks_stamp: Option<u64>,
+    checked_at: Option<Instant>,
+}
+
+static SHARED: Mutex<Option<SharedState>> = Mutex::new(None);
+static SHARED_REVISION: AtomicU64 = AtomicU64::new(0);
+static SHARED_CHECKING: AtomicBool = AtomicBool::new(false);
+
+/// Flathub's apps and the block list, as last read. Returns immediately
+/// and reads no file; [`refresh_shared`] keeps it current.
+pub fn shared_catalogue() -> SharedCatalogue {
+    SHARED
+        .lock_recover()
+        .as_ref()
+        .map(|state| state.catalogue.clone())
+        .unwrap_or_default()
+}
+
+/// [`shared_catalogue`] with the revision it was read at; `0` when it
+/// changed during the read.
+pub fn shared_snapshot() -> (u64, SharedCatalogue) {
+    let before = SHARED_REVISION.load(Ordering::Acquire);
+    let catalogue = shared_catalogue();
+    let after = SHARED_REVISION.load(Ordering::Acquire);
+    (if before == after { before } else { 0 }, catalogue)
+}
+
+/// Changes whenever Flathub's apps or the block list do.
+#[must_use]
+pub fn shared_generation() -> u64 {
+    SHARED_REVISION.load(Ordering::Relaxed)
+}
+
+/// Look again at the files behind the shared catalogue when that is due,
+/// on a worker, and read whichever changed.
+pub fn refresh_shared() {
+    let due = SHARED
+        .lock_recover()
+        .as_ref()
+        .and_then(|state| state.checked_at)
+        .is_none_or(|at| at.elapsed() >= SHARED_RECHECK);
+    if !due || SHARED_CHECKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("shared catalogue refresh");
+    let locale = crate::shell::i18n::current_locale();
+    let wake = crate::shell::search::invocation_wake::waker();
+    let spawned = std::thread::Builder::new()
+        .name("catalogue-shared".to_string())
+        .spawn(move || {
+            let (flathub_read, blocks_stamp) = SHARED
+                .lock_recover()
+                .as_ref()
+                .map_or((None, None), |state| {
+                    (state.flathub_read.clone(), state.blocks_stamp)
+                });
+            let sources = app_catalogue::appstream::cached_sources();
+            let read = (app_catalogue::appstream::cache_stamp(&sources), locale);
+            let flathub = (flathub_read.as_ref() != Some(&read)).then(|| {
+                std::sync::Arc::new(app_catalogue::appstream::load_all(&sources, &read.1))
+            });
+            let block_stamp = app_catalogue::block::current_stamp();
+            let blocks = (blocks_stamp != Some(block_stamp))
+                .then(|| std::sync::Arc::new(app_catalogue::BlockList::load()));
+            let changed = flathub.is_some() || blocks.is_some();
+            {
+                let mut guard = SHARED.lock_recover();
+                let state = guard.get_or_insert_with(|| SharedState {
+                    catalogue: SharedCatalogue::default(),
+                    flathub_read: None,
+                    blocks_stamp: None,
+                    checked_at: None,
+                });
+                if let Some(flathub) = flathub {
+                    state.catalogue.flathub = flathub;
+                    state.flathub_read = Some(read);
+                }
+                if let Some(blocks) = blocks {
+                    state.catalogue.blocks = blocks;
+                    state.blocks_stamp = Some(block_stamp);
+                }
+                state.checked_at = Some(Instant::now());
+            }
+            if changed {
+                SHARED_REVISION.fetch_add(1, Ordering::Release);
+                wake.wake();
+            }
+            SHARED_CHECKING.store(false, Ordering::SeqCst);
+        });
+    if spawned.is_err() {
+        SHARED_CHECKING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Make the shared catalogue `catalogue`, as a fresh read would, and keep
+/// it from being read again for this test.
+#[cfg(test)]
+pub(crate) fn replace_shared_for_test(catalogue: SharedCatalogue) {
+    *SHARED.lock_recover() = Some(SharedState {
+        catalogue,
+        flathub_read: Some((u64::MAX, String::new())),
+        blocks_stamp: Some(u64::MAX),
+        checked_at: Some(Instant::now()),
+    });
+    SHARED_REVISION.fetch_add(1, Ordering::Release);
+}
+
 /// A failure caches an *empty* list rather than leaving the cache cold
 /// (which would mean a new HTTP attempt per character typed), and
 /// expires under [`FAILED_REFRESH_BACKOFF`] so a registry that comes
@@ -459,6 +594,24 @@ pub fn install_and_launch(
     room: RoomId,
     capabilities: collab_types::caps::LaunchGrants,
 ) {
+    install_then(package_id, display_name, move |package_id, display_name| {
+        // The install is done; the window is now due as for any start.
+        launcher::hold_presentation_for(package_id, Duration::ZERO);
+        launcher::set_workspace_capabilities(capabilities);
+        if let Err(e) = launcher::launch(package_id, room) {
+            push_failure(package_id, display_name, e.user_message());
+        }
+    });
+}
+
+/// Fetch `package_id` on a worker, then run `then` there with its id and
+/// name once it is installed. A failure is reported as a launch failure of
+/// `display_name`, and `then` does not run.
+pub fn install_then(
+    package_id: String,
+    display_name: String,
+    then: impl FnOnce(&str, &str) + Send + 'static,
+) {
     let Some(bin) = resolve_catalogue_bin() else {
         push_failure(
             &package_id,
@@ -503,13 +656,7 @@ pub fn install_and_launch(
 
         invalidate();
         launcher::invalidate_app_cache();
-        // The install is done; the window is now due as for any start.
-        launcher::hold_presentation_for(&package_id, Duration::ZERO);
-
-        launcher::set_workspace_capabilities(capabilities);
-        if let Err(e) = launcher::launch(&package_id, room) {
-            push_failure(&package_id, &display_name, e.user_message());
-        }
+        then(&package_id, &display_name);
     });
     if spawn_result.is_err() {
         push_failure(
@@ -551,6 +698,135 @@ pub(crate) fn update_package(package_id: &str) -> crate::shell::app_versions::Up
             })
         }
     }
+}
+
+/// Report that getting `package_id` failed, as a failed launch of
+/// `display_name` saying `detail`: the place held for it says so and offers
+/// to try again.
+pub(crate) fn report_install_failure(package_id: &str, display_name: &str, detail: String) {
+    push_failure(package_id, display_name, detail);
+}
+
+// ---------------------------------------------------------------------
+// Installing from Flathub: the app host's rule (`app_catalogue::flathub`),
+// into the person's own installation, then opened like any host app.
+// ---------------------------------------------------------------------
+
+/// Flathub installs under way, by app id, so a repeated press is one install.
+static FLATHUB_INSTALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Reading Flatpak's configured sources is local and quick.
+const FLATPAK_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether `app_id` is being installed from Flathub.
+pub(crate) fn installing_from_flathub(app_id: &str) -> bool {
+    FLATHUB_INSTALLS
+        .lock_recover()
+        .iter()
+        .any(|id| id == app_id)
+}
+
+/// Install `app_id` from Flathub on a worker, then open it at `placement`
+/// once its desktop entry is there. A failure is reported as a failed
+/// launch of `display_name`.
+pub(crate) fn install_flathub_and_open(
+    app_id: String,
+    display_name: String,
+    placement: crate::shell::tab_binding::Placement,
+    portal_workspace_id: Option<String>,
+) {
+    {
+        let mut installs = FLATHUB_INSTALLS.lock_recover();
+        if installs.iter().any(|id| *id == app_id) {
+            return;
+        }
+        installs.push(app_id.clone());
+    }
+    let builder = std::thread::Builder::new().name("flathub-install".to_string());
+    let identity = (app_id.clone(), display_name.clone());
+    let spawned = launcher::spawn_reporting(builder, move || {
+        let outcome = install_from_flathub(&app_id);
+        FLATHUB_INSTALLS.lock_recover().retain(|id| *id != app_id);
+        if let Err(detail) = outcome {
+            push_failure(&app_id, &display_name, detail);
+            return;
+        }
+        crate::shell::host_apps::invalidate_cache();
+        let Some(app) = crate::shell::host_apps::find(&app_id) else {
+            push_failure(
+                &app_id,
+                &display_name,
+                crate::shell::i18n::t("catalogue-error-flathub-not-found"),
+            );
+            return;
+        };
+        let queued = crate::shell::host_apps::queue_launch(crate::shell::host_apps::QueuedLaunch {
+            app,
+            placement,
+            portal_workspace_id,
+            requested_at: Instant::now(),
+            reopen_from_tray: true,
+        });
+        if let Err(error) = queued {
+            push_failure(&app_id, &display_name, error.user_message());
+        }
+    });
+    if spawned.is_err() {
+        FLATHUB_INSTALLS
+            .lock_recover()
+            .retain(|id| *id != identity.0);
+        push_failure(
+            &identity.0,
+            &identity.1,
+            crate::shell::i18n::t("catalogue-error-spawn"),
+        );
+    }
+}
+
+/// Run the Flatpak commands that install `app_id` from Flathub. Blocks.
+fn install_from_flathub(app_id: &str) -> Result<(), String> {
+    let run = |args: &[String], timeout: Duration| -> Result<Vec<u8>, String> {
+        let mut command = std::process::Command::new("flatpak");
+        command.args(args);
+        let output = bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, timeout)
+            .map_err(|error| {
+                crate::shell::i18n::t_args(
+                    "catalogue-error-flathub-run",
+                    &[("error", error.to_string().into())],
+                )
+            })?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(safe_diagnostic(&output.stderr))
+        }
+    };
+    let remotes = run(
+        &[
+            "remotes".to_owned(),
+            "--columns=name,url,title,options".to_owned(),
+        ],
+        FLATPAK_QUERY_TIMEOUT,
+    )?;
+    let commands =
+        app_catalogue::flathub::install_commands(app_id, &String::from_utf8_lossy(&remotes))
+            .map_err(|refusal| {
+                crate::shell::i18n::t(match refusal {
+                    app_catalogue::flathub::InstallRefusal::InvalidId => {
+                        "catalogue-error-flathub-invalid"
+                    }
+                    app_catalogue::flathub::InstallRefusal::UntrustedUserSource => {
+                        "catalogue-error-flathub-untrusted"
+                    }
+                    app_catalogue::flathub::InstallRefusal::NoFlathub => {
+                        "catalogue-error-flathub-missing"
+                    }
+                })
+            })?;
+    for args in commands {
+        run(&args, INSTALL_TIMEOUT)?;
+    }
+    Ok(())
 }
 
 fn push_failure(package_id: &str, display_name: &str, detail: String) {

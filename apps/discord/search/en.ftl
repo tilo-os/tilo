@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = voice chat, communities, community servers
+# What the app does, in one plain phrase (English): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Bridges a Discord server and a Tilo room both ways

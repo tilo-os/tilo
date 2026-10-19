@@ -108,7 +108,7 @@ pub fn remote_error(remote: &Remote, error: &str) -> String {
 /// need keeps this stable against Flathub's ongoing shape changes
 /// (serde ignores unknown fields by default, but a `serde(deny_unknown_fields)`
 /// slip somewhere upstream in a shared crate could still bite us).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct AppStreamRecord {
     #[serde(rename = "flatpakAppId", alias = "id")]
     pub app_id: String,
@@ -134,6 +134,15 @@ pub struct AppStreamRecord {
     /// image per record so the detail sheet has a hero to show.
     #[serde(default)]
     pub screenshots: Vec<ScreenshotRef>,
+    /// Who makes the app (`developer_name`), as the app's metadata says.
+    #[serde(default)]
+    pub developer: String,
+    /// SPDX licence expression (`project_license`).
+    #[serde(default)]
+    pub license: String,
+    /// When the app last changed on Flathub, Unix seconds; 0 when unknown.
+    #[serde(default)]
+    pub updated_at_unix: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -335,10 +344,173 @@ fn record_from_value(value: &serde_json::Value) -> Result<AppStreamRecord, Flath
         icon: string_field(value, &["icon", "icon_url"]),
         current_release_version,
         categories,
-        homepage: string_field(value, &["homepage"]),
+        homepage: string_field(value, &["homepage"]).or_else(|| {
+            value
+                .get("urls")
+                .and_then(|urls| string_field(urls, &["homepage"]))
+        }),
         urls: None,
         screenshots,
+        developer: string_field(value, &["developer_name"])
+            .or_else(|| {
+                value
+                    .get("developer")
+                    .and_then(|developer| string_field(developer, &["name"]))
+            })
+            .unwrap_or_default(),
+        license: string_field(value, &["project_license", "license"]).unwrap_or_default(),
+        updated_at_unix: unix_field(value, &["updated_at", "last_updated"]),
     })
+}
+
+/// A Unix-seconds field that Flathub sends as a number or a numeric string.
+fn unix_field(value: &serde_json::Value, names: &[&str]) -> u64 {
+    names
+        .iter()
+        .find_map(|name| {
+            let field = value.get(*name)?;
+            field
+                .as_u64()
+                .or_else(|| field.as_str().and_then(|text| text.trim().parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
+/// The language part of `locale` as Flathub's `locale` query parameter
+/// names it (`de`, `pt_BR`), so its localized fields follow the desktop.
+pub fn locale_parameter(locale: &str) -> String {
+    let tag = locale.split('.').next().unwrap_or(locale).replace('-', "_");
+    let valid = !tag.is_empty()
+        && tag.len() <= 16
+        && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid { tag } else { "en".to_owned() }
+}
+
+/// GET `url` as text within the Store's bounded HTTP timeout.
+fn get_text(url: &str) -> Result<String, FlathubError> {
+    client()?
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .map_err(|e| FlathubError::Http(e.to_string()))
+}
+
+/// One of Flathub's collections (`popular`, `trending`, `recently-updated`,
+/// `recently-added`), first page, in `locale`.
+///
+/// # Errors
+///
+/// Returns why the request or its decoding failed.
+pub fn fetch_collection(
+    name: &str,
+    per_page: usize,
+    locale: &str,
+) -> Result<Vec<AppStreamRecord>, FlathubError> {
+    let text = get_text(&format!(
+        "{}/collection/{name}?page=1&per_page={}&locale={}",
+        api_base(),
+        per_page.clamp(1, 250),
+        locale_parameter(locale)
+    ))?;
+    decode_records(&text)
+}
+
+/// One page of Flathub's whole catalogue in `locale`: the search index with
+/// an empty query, `per_page` apps at a time. Answers the records and how
+/// many pages there are.
+///
+/// # Errors
+///
+/// Returns why the request or its decoding failed.
+pub fn fetch_catalogue_page(
+    page: usize,
+    per_page: usize,
+    locale: &str,
+) -> Result<(Vec<AppStreamRecord>, usize), FlathubError> {
+    let text = client()?
+        .post(format!(
+            "{}/search?locale={}",
+            api_base(),
+            locale_parameter(locale)
+        ))
+        .json(&serde_json::json!({
+            "query": "",
+            "hits_per_page": per_page.clamp(1, 250),
+            "page": page.max(1),
+        }))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .map_err(|e| FlathubError::Http(e.to_string()))?;
+    let pages = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("totalPages")
+                .or_else(|| value.get("total_pages"))
+                .and_then(serde_json::Value::as_u64)
+        })
+        .map_or(1, |pages| usize::try_from(pages).unwrap_or(1));
+    Ok((decode_records(&text)?, pages))
+}
+
+/// Full-text search of Flathub in `locale`.
+///
+/// # Errors
+///
+/// Returns why the request or its decoding failed.
+pub fn search_localized(query: &str, locale: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let text = client()?
+        .post(format!(
+            "{}/search?locale={}",
+            api_base(),
+            locale_parameter(locale)
+        ))
+        .json(&serde_json::json!({ "query": query }))
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .map_err(|e| FlathubError::Http(e.to_string()))?;
+    decode_records(&text)
+}
+
+/// The full `AppStream` document of one app in `locale`, as JSON: the
+/// localized description, screenshots, releases, licence and developer.
+///
+/// # Errors
+///
+/// Returns why the request or its decoding failed.
+pub fn fetch_appstream_document(
+    app_id: &str,
+    locale: &str,
+) -> Result<serde_json::Value, FlathubError> {
+    if !crate::reports::valid_app_id(app_id) {
+        return Err(FlathubError::Decode("invalid app id".into()));
+    }
+    let text = get_text(&format!(
+        "{}/appstream/{app_id}?locale={}",
+        api_base(),
+        locale_parameter(locale)
+    ))?;
+    serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))
+}
+
+/// What Flathub's build summary says about one app: its download and
+/// installed size and the permissions its sandbox grants, as JSON.
+///
+/// # Errors
+///
+/// Returns why the request or its decoding failed.
+pub fn fetch_summary(app_id: &str) -> Result<serde_json::Value, FlathubError> {
+    if !crate::reports::valid_app_id(app_id) {
+        return Err(FlathubError::Decode("invalid app id".into()));
+    }
+    let text = get_text(&format!("{}/summary/{app_id}", api_base()))?;
+    serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))
 }
 
 fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {

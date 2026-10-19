@@ -46,6 +46,7 @@ fn main() {
     let item = StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: store::model::Listing::default(),
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),

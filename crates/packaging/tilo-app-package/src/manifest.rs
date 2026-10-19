@@ -271,6 +271,25 @@ pub struct Package {
     /// app is packed (`tilo-app-package-cli pack`), never by hand.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keywords: std::collections::BTreeMap<String, Vec<String>>,
+    /// The app's tag line in each language, keyed by BCP 47 tag: one plain
+    /// phrase saying what the app does, shown under its name in the Store and
+    /// in search.
+    ///
+    /// ```toml
+    /// [package.taglines]
+    /// en = "Notes you write alone or together"
+    /// de = "Notizen, allein oder gemeinsam geschrieben"
+    /// ```
+    ///
+    /// Authored as the `app-tagline` message of `apps/<app>/search/<tag>.ftl`
+    /// and joined here when the app is packed, like [`Self::keywords`].
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub taglines: std::collections::BTreeMap<String, String>,
+    /// Screenshots the package carries, as paths under its `screenshots/`
+    /// directory (`screenshots/home.png`), in the order the Store shows them.
+    /// PNG, JPEG or WebP; validated by [`crate::validate`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
     /// Freedesktop-style menu category (`Office`, `Development`, ...);
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
@@ -346,6 +365,22 @@ pub struct ServiceProtocol {
 }
 
 impl Package {
+    /// The tag line to show in `locale` (BCP 47): its exact tag, else its
+    /// language, else English; `None` when the app declares none.
+    #[must_use]
+    pub fn tagline_for(&self, locale: &str) -> Option<&str> {
+        let language = locale.split(['-', '_']).next().unwrap_or(locale);
+        [locale, language, "en"]
+            .into_iter()
+            .find_map(|wanted| {
+                self.taglines
+                    .iter()
+                    .find(|(tag, _)| tag.eq_ignore_ascii_case(wanted))
+            })
+            .map(|(_, tagline)| tagline.as_str())
+            .filter(|tagline| !tagline.trim().is_empty())
+    }
+
     /// The runtime build a native package binds: the one an app links, or
     /// the one a runtime package provides. This is what a registry version's
     /// `target.runtime` records.

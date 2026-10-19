@@ -107,10 +107,44 @@ pub enum StoreEffect {
     #[effect(job)]
     UpdateAll,
     /// Search apps.
+    ///
+    /// Finds apps and bots in the catalogue on this device as you type, by
+    /// name, tag line, developer or category.
     #[effect(kind = "read")]
     SetSearch {
         #[param("App name, publisher, category, or description")]
         query: String,
+    },
+    /// Show a part of the Store.
+    ///
+    /// Home, the apps with updates, the apps on this device, or the bots.
+    #[effect(kind = "read")]
+    ShowView {
+        #[param("home, updates, installed or bots")]
+        view: String,
+    },
+    /// Show more apps.
+    ///
+    /// Lists the next apps of a long category or search.
+    #[effect(kind = "read")]
+    ShowMore,
+    /// Block app.
+    ///
+    /// The app then appears nowhere in the Store or in search, and cannot be
+    /// opened or installed from them. Only you can unblock it.
+    #[effect(idempotent)]
+    BlockApp {
+        #[param("App identity (for example com.example.Game)")]
+        app: String,
+    },
+    /// Unblock app.
+    ///
+    /// Lifts your own block; a block set by a workspace or this device's
+    /// administrator stays.
+    #[effect(idempotent)]
+    UnblockApp {
+        #[param("App identity")]
+        app: String,
     },
     /// Browse apps from a configured Flatpak repository.
     #[effect(job, kind = "read")]
@@ -118,19 +152,13 @@ pub enum StoreEffect {
         #[param("Configured repository resource identity, including its account or device scope")]
         remote: String,
     },
-    /// Filter apps by source.
-    #[effect(kind = "read")]
-    SetSource {
-        #[param("All, Tilo, Flatpak, On device, or Updates")]
-        source: String,
-    },
-    /// Filter apps by category.
+    /// Show a category.
     #[effect(kind = "read")]
     SetCategory {
         #[param("App category, or All")]
         category: String,
     },
-    /// Clear catalogue filters.
+    /// Clear the search.
     #[effect(kind = "read")]
     ClearFilters,
     /// Show app details.
@@ -194,12 +222,6 @@ pub enum StoreEffect {
     /// Back to apps.
     #[effect(kind = "read")]
     ShowCatalogue,
-    /// Previous catalogue page.
-    #[effect(kind = "read")]
-    PreviousPage,
-    /// Next catalogue page.
-    #[effect(kind = "read")]
-    NextPage,
     /// Show Flatpak remotes.
     #[effect(kind = "read")]
     ShowRemotes,
@@ -422,10 +444,11 @@ pub struct CaptureCatalogue {
     pub items: Vec<crate::StoreItem>,
 }
 
-/// The screenshots: the wide and narrow catalogue, a search, an app's details
-/// (wide and narrow, one with an update, a Flatpak app), the remotes, a
-/// package job in flight and one that failed, each moderation state, and an
-/// empty and an unreachable catalogue.
+/// The screenshots: Home wide and narrow, a search, an app's page (wide and
+/// narrow, one with an update, a Flathub app, a blocked one), Updates, On
+/// this device, Bots, a category, the remotes, a package job in flight and
+/// one that failed, each moderation state, and an empty and an unreachable
+/// catalogue.
 const SCENARIOS: &[&str] = &[
     "wide",
     "narrow",
@@ -435,12 +458,16 @@ const SCENARIOS: &[&str] = &[
     "detail-technical",
     "detail-update",
     "detail-flatpak",
+    "detail-blocked",
+    "updates",
+    "installed",
+    "bots",
+    "category",
     "remotes",
     "account-setup",
     "account-remotes",
     "remotes-disabled",
     "search-notes",
-    "paging",
     "flatpak-detail",
     "flatpak-installed",
     "progress",
@@ -886,11 +913,15 @@ mod tests {
                             .unwrap();
                         let mut request = [0; 4096];
                         let length = stream.read(&mut request).unwrap();
+                        let request = String::from_utf8_lossy(&request[..length]);
+                        // Flathub's catalogue: its popular collection, then
+                        // its catalogue pages through the search index.
                         assert!(
-                            String::from_utf8_lossy(&request[..length])
-                                .starts_with("GET /collection/popular?")
+                            request.starts_with("GET /collection/popular?")
+                                || request.starts_with("POST /search?"),
+                            "{request}"
                         );
-                        let body = r#"{"hits":[]}"#;
+                        let body = r#"{"hits":[],"totalPages":1}"#;
                         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -996,8 +1027,8 @@ mod tests {
                 app.settle();
             }
             for name in match page {
-                "catalogue" => &["Refresh catalogues", "Flatpak remotes"][..],
-                "remotes" => &["Back", "Refresh remotes"][..],
+                "catalogue" => &["Flatpak repositories", "Trust and moderation"][..],
+                "remotes" => &["Back", "Refresh repositories"][..],
                 _ => &[],
             } {
                 let control = app
@@ -1028,10 +1059,9 @@ mod tests {
                 }
             }
             if page == "catalogue" {
-                app.harness().click_named("search-open").unwrap();
+                // Search inside the Store is the window's filter field.
                 let targets = app.harness().targets();
-                assert!(targets.contains_key("action-palette"), "{targets:?}");
-                app.harness().key("Escape");
+                assert!(targets.contains_key("store.search"), "{targets:?}");
             }
         }
     }
@@ -1614,7 +1644,7 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Search");
+        assert_visible_owner_control(&mut app, "Filter");
         assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
         assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
         app.effect(&StoreEffect::SetSearch {
@@ -1630,10 +1660,9 @@ mod tests {
                     .unwrap()
                     .value
                     .unwrap();
-                snapshot["status"]
-                    .as_str()
-                    .is_some_and(|status| status.contains("results for “Editor”"))
-                    && snapshot["query"] == "Editor"
+                // Search answers from the catalogue on this device at once,
+                // whatever the slow repository is doing.
+                snapshot["query"] == "Editor"
                     && snapshot["items"]
                         .as_array()
                         .unwrap()
@@ -1654,7 +1683,7 @@ mod tests {
                 .unwrap()
         );
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Search");
+        assert_visible_owner_control(&mut app, "Filter");
         assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &gate);
         service.shutdown().unwrap();
     }
@@ -2413,7 +2442,7 @@ mod tests {
         })
         .unwrap();
         let shown = frame(&mut app);
-        assert!(shown.contains("Ideas worth keeping, together."));
+        assert!(shown.contains("Notes you write alone or together"));
         assert!(shown.contains("Capture ideas, organise projects"));
         assert!(shown.contains("Supported languages"));
         assert!(shown.contains("en, es"));
@@ -2421,12 +2450,12 @@ mod tests {
         let notes = find(&resources, "app:so.tilo.notes").unwrap();
         assert_eq!(
             notes.presentation.unwrap().detail.as_deref(),
-            Some("Ideas worth keeping, together.")
+            Some("Notes you write alone or together")
         );
         let terminal = find(&resources, "app:so.tilo.terminal").unwrap();
         assert_eq!(
             terminal.presentation.unwrap().detail.as_deref(),
-            Some("A fast terminal for commands, scripts, and development tools.")
+            Some("A terminal for your shell and command-line tools")
         );
         let inspection = app
             .effect(&StoreEffect::InspectCatalogue {
@@ -2434,7 +2463,10 @@ mod tests {
             })
             .unwrap();
         let value = inspection.value.unwrap();
-        assert_eq!(value["detail"]["tagline"], "Ideas worth keeping, together.");
+        assert_eq!(
+            value["detail"]["tagline"],
+            "Notes you write alone or together"
+        );
         assert_eq!(
             value["detail"]["supported_languages"],
             serde_json::json!(["en", "es"])
@@ -2450,10 +2482,10 @@ mod tests {
     }
 
     #[test]
-    fn captures_cover_account_setup_search_paging_and_flatpak_actions() {
+    fn captures_cover_account_setup_search_views_and_flatpak_actions() {
         for (scenario, control) in [
-            ("account-setup", "Refresh catalogues"),
-            ("account-remotes", "Refresh remotes"),
+            ("account-setup", "Trust and moderation"),
+            ("account-remotes", "Refresh repositories"),
         ] {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
             let shown = frame(&mut app);
@@ -2469,11 +2501,24 @@ mod tests {
         assert!(shown.contains("Notes"));
         assert!(!shown.contains("Terminal"));
 
-        let mut paging = TestApp::<StoreShell>::capture(Some("paging")).unwrap();
-        let shown = frame(&mut paging);
-        assert!(shown.contains("Page 2 of 2"));
-        assert!(shown.contains("Capture app 48"));
-        assert!(!shown.contains("Capture app 00"));
+        for (scenario, present, absent) in [
+            ("updates", &["Files", "Update all"][..], "Inkscape"),
+            ("bots", &["Notes digest"][..], "Terminal"),
+            ("category", &["Inkscape"][..], "Terminal"),
+            ("installed", &["Terminal", "VLC"][..], "Inkscape"),
+            (
+                "detail-blocked",
+                &["The School workspace blocked this app."][..],
+                "Block app",
+            ),
+        ] {
+            let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
+            let shown = frame(&mut app);
+            for text in present {
+                assert!(shown.contains(text), "{scenario} shows {text}");
+            }
+            assert!(!shown.contains(absent), "{scenario} leaves out {absent}");
+        }
 
         for (scenario, name, action) in [
             ("flatpak-detail", "Chess", "Install"),

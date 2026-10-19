@@ -4,3 +4,7 @@
 # whatever the desktop speaks. Comma separated, one phrase each. The packer
 # writes them into the signed manifest; tilo-app.toml carries no copy.
 search-keywords = disk space, storage, space, large files, cleanup, clean up, free space, what takes space
+# What the app does, in one plain phrase (English): the tag line under its
+# name in the Store and in search. No marketing; the packer signs it into the
+# manifest.
+app-tagline = Shows which folders and files take up space

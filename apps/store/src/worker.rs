@@ -19,8 +19,7 @@ use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::search::StoreDirectory;
 use crate::sources::{
-    flathub_record_to_item, installed_flatpak_to_item, installed_tilo_to_store_item, merge,
-    tilo_to_store_item_on_channel,
+    installed_flatpak_to_item, installed_tilo_to_store_item, merge, tilo_to_store_item_on_channel,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -38,8 +37,9 @@ const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
 pub enum Request {
     ReviewRuntime(crate::runtime_recovery::RuntimeTarget),
     AcquireRuntime(Box<app_host::runtime_transaction::RuntimeReview>),
+    /// Refresh every source; `force` refetches Flathub's catalogue even
+    /// when the kept one is recent (the person asked for it).
     Refresh,
-    Search(String),
     BrowseRemote(String),
     Detail(String),
     /// Review a precise runtime through the trusted host.
@@ -136,6 +136,10 @@ pub struct Snapshot {
     /// Enabled native repositories that have not answered the current
     /// refresh, so installed apps they list are described only locally.
     pub unanswered_repositories: Vec<String>,
+    /// Who blocked which app, as the worker last read the block list.
+    pub blocks: app_catalogue::BlockList,
+    /// The app Update all is updating now, so its row shows the progress.
+    pub updating: Option<String>,
 }
 
 struct QueuedRequest {
@@ -321,15 +325,24 @@ struct State {
     catalogue_error: Option<String>,
     /// See [`Snapshot::unanswered_repositories`].
     unanswered_repositories: Vec<String>,
-    searches: LruCache<String, Vec<StoreItem>>,
     details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
     directory: StoreDirectory,
-    /// The catalogue's names and descriptions, indexed while they stay the
-    /// same.
-    item_index: ui::search::ListIndex,
+    /// Apps blocked by the person, a workspace or the device's administrator:
+    /// the same list desktop search hides them by (`app_catalogue::BlockList`).
+    blocks: app_catalogue::BlockList,
+    /// The person's repositories as the last refresh read them. Kept here so
+    /// publishing the directory never asks the host again: each ask runs
+    /// `app repo list` on the host.
+    registries: Vec<RegistryConfig>,
+    /// Flathub's catalogue as the last refresh read it, so the next refresh
+    /// lists Flathub's apps from its first snapshot while it reads again.
+    flathub: Option<crate::catalogue::flathub::FlathubFeed>,
+    /// The person asked for this refresh: Flathub's catalogue is read again
+    /// even when the kept one is recent.
+    force_refresh: bool,
 }
 
 fn initial_state(
@@ -347,7 +360,10 @@ fn initial_state(
             .ok(),
         opened_ref: None,
         imported_package: None,
-        base_items: Vec::new(),
+        // The catalogue the last window kept: a refresh keeps describing
+        // every app it lists until that app's own source answers, so the
+        // window never empties while the sources are asked again.
+        base_items: crate::catalogue::cache::load().map_or_else(Vec::new, |cached| cached.items),
         installed: Vec::new(),
         installed_origins: std::collections::HashMap::new(),
         remotes: Vec::new(),
@@ -355,10 +371,12 @@ fn initial_state(
         flatpak_error: None,
         catalogue_error: None,
         unanswered_repositories: Vec::new(),
-        searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
+        blocks: app_catalogue::BlockList::load(),
         directory,
-        item_index: ui::search::ListIndex::default(),
+        registries: Vec::new(),
+        flathub: crate::catalogue::flathub::load(),
+        force_refresh: false,
     }
 }
 
@@ -445,7 +463,11 @@ fn run(
                     state.operation_notice = None;
                 }
                 if matches!(request, Request::Refresh) && refresh.is_none() {
+                    // Only a refresh someone asked for (an effect's job)
+                    // reads Flathub's whole catalogue again.
+                    state.force_refresh = done.is_some();
                     refresh = Some(refresh::Refresh::start(&state, done));
+                    state.force_refresh = false;
                     continue;
                 }
                 let package_operation = matches!(
@@ -511,6 +533,7 @@ fn poll_refresh(
     if finished {
         let done = refresh.done.take();
         *active = None;
+        keep_catalogue(state);
         let label = state
             .operation_notice
             .clone()
@@ -546,7 +569,35 @@ fn poll_refresh(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: state.catalogue_error.clone(),
             unanswered_repositories: state.unanswered_repositories.clone(),
+            blocks: state.blocks.clone(),
+            updating: None,
         })
+}
+
+/// Keep the catalogue the refresh settled on for the next window's first
+/// frame. Rows a handed file added (an opened `.flatpakref`, a reviewed
+/// local package) belong to this window only and are left out.
+fn keep_catalogue(state: &State) {
+    let opened = state
+        .opened_ref
+        .as_ref()
+        .map(|reference| reference.app_id.as_str());
+    let imported = state
+        .imported_package
+        .as_ref()
+        .map(|package| package.item.id.as_str());
+    let items: Vec<StoreItem> = state
+        .base_items
+        .iter()
+        .filter(|item| Some(item.id.as_str()) != opened && Some(item.id.as_str()) != imported)
+        .cloned()
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    if let Err(error) = crate::catalogue::cache::save(&items, &crate::catalogue::desktop_locale()) {
+        tracing::warn!(%error, "could not keep the catalogue for the next window");
+    }
 }
 
 /// Resolve only enabled repositories through the launcher-issued host capability.
@@ -607,6 +658,7 @@ fn runtime_item(offer: app_cli::CatalogueApp) -> StoreItem {
     StoreItem {
         bot: None,
         awaiting_developer: false,
+        listing: crate::model::Listing::default(),
         id: offer.package_id,
         name: offer.display_name,
         description: offer.description,
@@ -680,6 +732,8 @@ fn handle(
                 flatpak_error: state.flatpak_error.clone(),
                 operation_error: None,
                 unanswered_repositories: state.unanswered_repositories.clone(),
+                blocks: state.blocks.clone(),
+                updating: None,
             };
             let mut last_report = None::<std::time::Instant>;
             let result = state
@@ -730,7 +784,6 @@ fn handle(
             (alive, Some(Err(error)))
         }
         Request::BrowseRemote(id) => browse_remote(&id, state, snapshots),
-        Request::Search(query) => (search(&query, state, snapshots), None),
         Request::Detail(id) => (detail(&id, state, snapshots), None),
         Request::RuntimeDetails { runtime, registry } => {
             let opened = runtime_details(&runtime, registry.as_deref(), state);
@@ -920,7 +973,9 @@ fn handle(
         Request::Act(item, action) => {
             let outcome =
                 crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
-            refresh(state);
+            // The refresh this asks for reads the device again in the
+            // background; the answer does not wait for Flatpak to be asked.
+            state.refresh_requested = true;
             let operation_error = (!outcome.ok).then(|| outcome.status_line.clone());
             let alive = send_tracked(
                 snapshots,
@@ -1109,7 +1164,6 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
                     state.base_items.push(item.clone());
                 }
             }
-            state.searches.clear();
             state.details.clear();
             sync_authoritative_catalogue(state);
             let label = ui::i18n::I18nManager::format(
@@ -1119,7 +1173,14 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
                     ("count", ui::i18n::ArgValue::Text(items.len().to_string())),
                 ],
             );
-            let alive = send(snapshots, state, items, &label, Some(String::new()), None);
+            let alive = send(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &label,
+                None,
+                None,
+            );
             (alive, Some(Ok(Finished::status(label))))
         }
         Err(error) => {
@@ -1141,74 +1202,7 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
     }
 }
 
-fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
-    let query = query.trim().to_string();
-    if query.is_empty() {
-        return send(
-            snapshots,
-            state,
-            state.base_items.clone(),
-            "Search cleared.",
-            Some(query),
-            None,
-        );
-    }
-    let mut operation_error = None;
-    let items = if let Some(cached) = state.searches.get(&query).cloned() {
-        cached
-    } else {
-        let candidates: Vec<&StoreItem> = state.base_items.iter().collect();
-        let ranks = crate::model::relevance(&state.item_index, &query, &candidates);
-        let tilo: Vec<StoreItem> = candidates
-            .into_iter()
-            .zip(ranks)
-            .filter_map(|(item, rank)| rank.map(|_| item.clone()))
-            .collect();
-        let records = match crate::flathub_client::search(&query) {
-            Ok(records) => records,
-            Err(error) => {
-                operation_error = Some(format!("Could not search Flathub: {error}"));
-                Vec::new()
-            }
-        };
-        let flatpak: Vec<StoreItem> = records
-            .iter()
-            .map(|record| flathub_record_to_item(record, &state.installed))
-            .collect();
-        let native_names: std::collections::HashSet<_> = tilo
-            .iter()
-            .filter(|item| matches!(item.source, StoreSource::Tilo { .. }))
-            .map(|item| item.name.trim().to_ascii_lowercase())
-            .collect();
-        let mut items = tilo;
-        for mut item in flatpak {
-            crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
-            if !items.iter().any(|existing| existing.id == item.id)
-                && (item.installed.is_installed()
-                    || !native_names.contains(&item.name.trim().to_ascii_lowercase()))
-            {
-                items.push(item);
-            }
-        }
-        if operation_error.is_none() {
-            state.searches.put(query.clone(), items.clone());
-        }
-        items
-    };
-    let label = format!("{} results for “{}”.", items.len(), query);
-    send_tracked(
-        snapshots,
-        state,
-        items,
-        &label,
-        Some(query),
-        None,
-        operation_error,
-    )
-}
-
 fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
-    let mut operation_error = None;
     let loaded = if let Some(cached) = state.details.get(id).cloned() {
         Some(cached)
     } else if let Some(item) = state
@@ -1227,23 +1221,10 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         state.details.put(id.to_string(), item.clone());
         Some(item)
     } else {
-        let loaded = match crate::flathub_client::fetch_appstream(id) {
-            Ok(record) => {
-                let mut item = flathub_record_to_item(&record, &state.installed);
-                crate::sources::apply_flatpak_origin(&mut item, &state.installed_origins);
-                Some(item)
-            }
-            Err(error) => {
-                operation_error = Some(format!("Could not load app details: {error}"));
-                state.base_items.iter().find(|item| item.id == id).cloned()
-            }
-        };
-        if let Some(item) = loaded.as_ref()
-            && operation_error.is_none()
-        {
-            state.details.put(id.to_string(), item.clone());
-        }
-        loaded
+        // A Flathub app's page fetches its details on the Store's fetch
+        // thread (`catalogue::fetcher`): the serialized package worker never
+        // waits on the network for a page.
+        state.base_items.iter().find(|item| item.id == id).cloned()
     };
     let label = loaded.as_ref().map_or_else(
         || format!("Could not load details for {id}."),
@@ -1259,7 +1240,7 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
             id: id.to_string(),
             item: loaded,
         }),
-        operation_error,
+        None,
     )
 }
 
@@ -1291,10 +1272,16 @@ fn update_all(
     for (index, item) in items.iter().enumerate() {
         let progress = Snapshot {
             items: state.base_items.clone(),
-            status_line: format!(
-                "Updating {} of {total}: {}…",
-                index.saturating_add(1),
-                item.name
+            status_line: ui::i18n::I18nManager::format(
+                "store-update-all-progress",
+                &[
+                    (
+                        "index",
+                        ui::i18n::ArgValue::Text(index.saturating_add(1).to_string()),
+                    ),
+                    ("total", ui::i18n::ArgValue::Text(total.to_string())),
+                    ("name", ui::i18n::ArgValue::Text(item.name.clone())),
+                ],
             ),
             query: None,
             detail: None,
@@ -1303,6 +1290,8 @@ fn update_all(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
             unanswered_repositories: state.unanswered_repositories.clone(),
+            blocks: state.blocks.clone(),
+            updating: Some(item.id.clone()),
         };
         if !snapshots.progress(progress) {
             return (false, None);
@@ -1316,7 +1305,7 @@ fn update_all(
             failures.push(format!("{}: {}", item.name, outcome.status_line));
         }
     }
-    refresh(state);
+    state.refresh_requested = true;
     let summary = update_all_summary(total, &failures);
     let operation_error = (!failures.is_empty()).then(|| summary.clone());
     let alive = send_tracked(
@@ -1337,18 +1326,23 @@ fn update_all(
 }
 
 fn update_all_summary(total: usize, failures: &[String]) -> String {
-    let apps = if total == 1 { "app" } else { "apps" };
+    use ui::i18n::{ArgValue, I18nManager};
+    let count = |n: usize| ArgValue::Number(f64::from(u32::try_from(n).unwrap_or(u32::MAX)));
     match failures {
-        [] => format!("Updated {total} {apps}."),
-        [first, rest @ ..] => {
-            let updated = total.saturating_sub(failures.len());
-            let more = if rest.is_empty() {
-                String::new()
+        [] => I18nManager::format("store-update-all-done", &[("total", count(total))]),
+        [first, rest @ ..] => I18nManager::format(
+            if rest.is_empty() {
+                "store-update-all-failed"
             } else {
-                format!(" (and {} more failed)", rest.len())
-            };
-            format!("Updated {updated} of {total} {apps}; {first}{more}")
-        }
+                "store-update-all-failed-more"
+            },
+            &[
+                ("updated", count(total.saturating_sub(failures.len()))),
+                ("total", count(total)),
+                ("first", ArgValue::Text(first.clone())),
+                ("more", count(rest.len())),
+            ],
+        ),
     }
 }
 
@@ -1373,6 +1367,8 @@ fn send_tracked(
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
         unanswered_repositories: state.unanswered_repositories.clone(),
+        blocks: state.blocks.clone(),
+        updating: None,
     })
 }
 
@@ -1427,11 +1423,7 @@ fn refresh(state: &mut State) {
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
     state.directory.sync(&state.base_items);
-    state.directory.set_registries(
-        crate::config::repositories(state.host.as_ref())
-            .unwrap_or_default()
-            .registries,
-    );
+    state.directory.set_registries(state.registries.clone());
 }
 
 #[cfg(test)]
@@ -1439,6 +1431,7 @@ mod tests {
     #[test]
     fn update_all_reports_what_it_updated_and_the_first_failure() {
         use super::update_all_summary;
+        crate::resource::STORE_CATALOG.ensure();
         assert_eq!(update_all_summary(1, &[]), "Updated 1 app.");
         assert_eq!(update_all_summary(3, &[]), "Updated 3 apps.");
         assert_eq!(
@@ -1458,6 +1451,7 @@ mod tests {
         StoreItem {
             bot: None,
             awaiting_developer: false,
+            listing: crate::model::Listing::default(),
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),
@@ -1501,10 +1495,12 @@ mod tests {
             flatpak_error: None,
             catalogue_error: None,
             unanswered_repositories: Vec::new(),
-            searches: LruCache::new(CACHE_CAP),
             details: LruCache::new(CACHE_CAP),
             directory,
-            item_index: ui::search::ListIndex::default(),
+            blocks: app_catalogue::BlockList::empty(),
+            registries: Vec::new(),
+            flathub: None,
+            force_refresh: false,
         }
     }
 
@@ -1930,7 +1926,7 @@ mod tests {
         {
             let worker = StoreWorker::spawn(StoreDirectory::default(), WakeHandle::new());
             let started = ui::time::now();
-            assert!(worker.request(Request::Search("editor".into())));
+            assert!(worker.request(Request::Detail("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
             let started = ui::time::now();
             let _ = worker.try_snapshot();

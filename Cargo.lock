@@ -509,6 +509,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-catalogue"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "quick-xml 0.41.0",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-paths",
+ "workspace-hack",
+]
+
+[[package]]
 name = "app-cli"
 version = "0.1.0"
 dependencies = [
@@ -14529,6 +14543,7 @@ dependencies = [
  "account-custody",
  "accounts",
  "agent-provider-config",
+ "app-catalogue",
  "app-cli",
  "ash",
  "base64",
@@ -15301,6 +15316,7 @@ dependencies = [
 name = "store"
 version = "0.1.2"
 dependencies = [
+ "app-catalogue",
  "app-cli",
  "app-host",
  "base64",

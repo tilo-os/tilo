@@ -90,7 +90,7 @@ impl BlockingClient {
                     text_result(value).map(std::path::PathBuf::from)
                 };
                 let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
-                let about = PackageAbout::from_manifest(&manifest.package);
+                let about = PackageAbout::from_full_manifest(&manifest);
                 let package = InstalledPackage {
                     id: manifest.package.id,
                     version: manifest.package.version,

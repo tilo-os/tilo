@@ -4,6 +4,7 @@
 //! compositions; this module only holds the reusable piece that shows up on
 //! more than one screen: the catalogue card and the app icon.
 
+pub mod app;
 pub mod card;
 
 pub use card::{
