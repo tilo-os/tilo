@@ -654,6 +654,7 @@ impl ActionPalette {
     /// Follow whether it is presented, with the motion the person allows:
     /// its host calls this every frame, drawn or not, so a palette hidden
     /// and shown again arrives again.
+    #[cfg(feature = "native")]
     pub(crate) fn follow_presence(&mut self, motion: crate::tokens::EffectiveMotion) {
         let presented = self.is_presented();
         self.appear.follow(presented, motion);
