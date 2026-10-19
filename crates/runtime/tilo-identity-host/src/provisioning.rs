@@ -522,7 +522,7 @@ fn install_joined_device_presented(
     let record_id = public_record_id(&identity_id);
     let record = runtime_identity::public_member_record_with_presentation(
         if presentation.display_name.trim().is_empty() {
-            "My Tilo identity"
+            runtime_identity::UNNAMED_DISPLAY_NAME
         } else {
             presentation.display_name.trim()
         },
@@ -670,7 +670,7 @@ pub fn complete_enrolled_device(
     let record_path = identity_dir.join(format!("{record_id}.json"));
     if !record_path.exists() {
         let record = runtime_identity::public_member_record(
-            "My Tilo identity",
+            runtime_identity::UNNAMED_DISPLAY_NAME,
             [88, 101, 242],
             cert.user_public_key,
         )?;

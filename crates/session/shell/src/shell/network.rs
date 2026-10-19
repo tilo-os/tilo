@@ -1692,17 +1692,34 @@ fn visibility_allows(
     }
 }
 
-/// The name this person goes by in the rooms they are in: the name they
-/// chose (`display_name`), else "Guest", which the people there tell apart
-/// by number like any shared name (`ui::presence::ParticipantLabels`) and
-/// by colour. Never a device's name, nor a key: a room, and a public one
-/// above all, learns nothing of this person's devices.
-pub(crate) fn shared_person_name(display_name: Option<String>) -> String {
+/// The name this person goes by, on their own desktop and in the rooms they
+/// are in: the name they gave their identity (`display_name`), else the login
+/// account's real name (its full name, else the user name). Never a device's
+/// name, nor a key, nor "Guest": the owner of this machine is known by name.
+pub(crate) fn own_person_name(display_name: Option<String>) -> String {
+    own_person_name_or(
+        display_name,
+        tilo_identity_host::provisioning::login_account_display_name,
+    )
+}
+
+/// [`own_person_name`] with the login account's name read by `account`.
+pub(crate) fn own_person_name_or(
+    display_name: Option<String>,
+    account: impl FnOnce() -> String,
+) -> String {
     display_name
         .as_deref()
+        .filter(|name| runtime_identity::is_chosen_display_name(name))
         .and_then(|name| tilo_user_identity::display_name(name).ok())
-        .map(str::to_owned)
-        .unwrap_or_else(|| crate::shell::i18n::t("presence-guest-name"))
+        .map_or_else(account, str::to_owned)
+}
+
+/// Whether this person has given their identity a name of their own: the
+/// avatar menu asks for one until they have.
+pub(crate) fn own_name_is_chosen() -> bool {
+    ui::local_identity::load()
+        .is_some_and(|identity| runtime_identity::is_chosen_display_name(&identity.display_name))
 }
 
 /// What one live member said or reacted with, in one frame.
@@ -3634,7 +3651,7 @@ impl ShellNetwork {
         // The person's name, never the device's: the people in a public
         // workspace learn nothing of this person's devices.
         let label =
-            shared_person_name(ui::local_identity::load().map(|identity| identity.display_name));
+            own_person_name(ui::local_identity::load().map(|identity| identity.display_name));
         crate::shell::live_presence::participant(label, crate::shell::state::local_presence_hue())
     }
 

@@ -822,6 +822,7 @@ impl BrowserShell {
             name,
             colour: rgb.map(|(r, g, b)| ui::vello::peniko::Color::from_rgb8(r, g, b)),
             can_rename: self.handle.offers_host_action(RENAME_ACTION),
+            ask_name: false,
             actions,
             linked: self.chrome.shared.linked.accounts(),
             // What the page shares of what the person is doing is theirs to

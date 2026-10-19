@@ -1831,6 +1831,18 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 /// # Errors
 ///
 /// Returns an I/O error if the public identity record cannot be serialized.
+/// The name a record carries when it was made without one (provisioning
+/// before the person named themselves): a stand-in, not a person's name.
+pub const UNNAMED_DISPLAY_NAME: &str = "My Tilo identity";
+
+/// Whether `name` is a name the person gave: not blank and not
+/// [`UNNAMED_DISPLAY_NAME`].
+#[must_use]
+pub fn is_chosen_display_name(name: &str) -> bool {
+    let name = name.trim();
+    !name.is_empty() && name != UNNAMED_DISPLAY_NAME
+}
+
 pub fn public_member_record(
     display_name: &str,
     avatar_color: [u8; 3],

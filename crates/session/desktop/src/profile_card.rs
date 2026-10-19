@@ -104,6 +104,10 @@ pub struct ProfileModel {
     pub colour: Option<Color>,
     /// The person may change their name here.
     pub can_rename: bool,
+    /// The person has not named themselves yet (`name` is their login
+    /// account's): the card asks, once, for the name people here should
+    /// see, until they give one.
+    pub ask_name: bool,
     pub actions: Vec<ProfileAction>,
     /// The services the room is connected to, with the person's account
     /// at each; none hides the section.
@@ -210,6 +214,7 @@ impl ProfileCard {
             avatar = avatar.with_presence(colour);
         }
         let chosen = Rc::clone(&self.chosen);
+        let asked = Rc::clone(&self.chosen);
         let name: Box<dyn Widget> = if model.can_rename {
             Box::new(
                 TextInput::from_state(&self.draft)
@@ -232,15 +237,33 @@ impl ProfileCard {
                     .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
             )
         };
+        // Not named yet: in place of the hint, a field asking for the name
+        // people here should see. Gone once they give one.
+        let below: Box<dyn Widget> = if model.ask_name && !model.can_rename {
+            Box::new(
+                TextInput::from_state(&self.draft)
+                    .with_id("profile-add-name")
+                    .with_placeholder(t("profile-add-your-name"))
+                    .with_accessible_name(t("profile-add-your-name"))
+                    .on_submit(move |typed| {
+                        let typed = typed.trim();
+                        if !typed.is_empty() {
+                            *asked.borrow_mut() = Some(ProfileChoice::Rename(typed.to_owned()));
+                        }
+                    }),
+            )
+        } else {
+            Box::new(
+                Text::new(&t("profile-name-hint"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )
+        };
         let who = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(name)
-            .push(Box::new(
-                Text::new(&t("profile-name-hint"))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            ));
+            .push(below);
         let header = Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center)
@@ -575,7 +598,12 @@ impl ProfileCard {
             return;
         }
         self.shown.clone_from(&model.name);
-        self.draft.set(model.name.clone());
+        // Asked for a name: the field starts empty, showing what to type.
+        self.draft.set(if model.ask_name && !model.can_rename {
+            String::new()
+        } else {
+            model.name.clone()
+        });
         self.status_draft.set(model.status.clone());
         self.chosen.borrow_mut().take();
         self.placed = (anchor, viewport);
@@ -746,6 +774,7 @@ mod tests {
             identity: "kim-root".into(),
             colour: None,
             can_rename: true,
+            ask_name: false,
             actions: vec![
                 ProfileAction {
                     id: "keep-identity".into(),
@@ -804,6 +833,34 @@ mod tests {
         let harness = ui::headless::Framed::harness_mut(frame);
         harness.poll_frame().unwrap();
         harness.inspection_json().unwrap()
+    }
+
+    /// A person who has not named themselves is asked, gently, in the card:
+    /// "Add your name", in place of the hint, until they have.
+    #[test]
+    fn a_person_without_a_name_is_asked_for_one() {
+        let open = |ask_name: bool| {
+            ui::i18n::I18nManager::init("en-US");
+            let mut card = ProfileCard::new();
+            card.toggle(
+                &ProfileModel {
+                    name: "bob".into(),
+                    can_rename: false,
+                    ask_name,
+                    ..model()
+                },
+                Rect::new(1200.0, 2.0, 1220.0, 22.0),
+                Rect::new(0.0, 0.0, 1280.0, 720.0),
+            );
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+        };
+        let mut asked = open(true);
+        let said = says(&mut asked);
+        assert!(said.contains("Add your name"), "{said}");
+        let mut named = open(false);
+        let said = says(&mut named);
+        assert!(!said.contains("Add your name"), "{said}");
+        assert!(said.contains(&t("profile-name-hint")));
     }
 
     #[test]

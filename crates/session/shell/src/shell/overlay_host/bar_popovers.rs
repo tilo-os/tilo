@@ -317,6 +317,9 @@ impl ShellOverlayHost {
             // from the shell, so the card shows it and Settings' identities
             // page is one press away.
             can_rename: false,
+            // Until the person names themselves, the card asks for the name
+            // people here should see.
+            ask_name: !crate::shell::network::own_name_is_chosen(),
             actions: NativeProfileAction::ALL
                 .into_iter()
                 .map(NativeProfileAction::profile_action)
@@ -484,8 +487,12 @@ impl ShellOverlayHost {
                 }
                 return;
             }
-            // The card offers no name field here.
-            ProfileChoice::Rename(_) | ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
+            // The name the person gave when the card asked for it.
+            ProfileChoice::Rename(name) => {
+                self.set_own_name(name);
+                return;
+            }
+            ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
                 return;
             }
         };
@@ -506,6 +513,38 @@ impl ShellOverlayHost {
         };
         if let Err(error) = crate::shell::uri_open::open_in_workspace(link, chrome) {
             tracing::warn!(?error, link, "could not open Settings");
+        }
+    }
+
+    /// Name this person's identity `name`, as the avatar menu asked them:
+    /// their active identity record takes it, so their own desktop and the
+    /// people they work with see it from now on. Says so when it could not.
+    pub(super) fn set_own_name(&mut self, name: &str) {
+        let saved = runtime_identity::identity_dir_from_env().and_then(|dir| {
+            let record = runtime_identity::resolve_active_identity(&dir).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "no active identity")
+            })?;
+            let id = record
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .ok_or_else(|| std::io::Error::other("identity record without an id"))?
+                .to_owned();
+            let colour = runtime_identity::load_metadata_from_path(&record)
+                .map(|metadata| metadata.avatar_color)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            runtime_identity::update_identity_profile(&dir, &id, name, colour)
+        });
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        match saved {
+            Ok(_) => chrome.borrow_mut().bump(),
+            Err(error) => {
+                tracing::warn!(%error, "could not keep the person's name");
+                chrome
+                    .borrow_mut()
+                    .push_warning_notification(t("profile-name-not-saved"), error.to_string());
+            }
         }
     }
 
