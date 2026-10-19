@@ -350,6 +350,30 @@ fn zoom_fits_one_rect_into_another() {
 }
 
 #[test]
+fn the_overview_zoom_stays_spatial_context_when_a_key_opens_it() {
+    let fast = Motion::default().durations.fast();
+    let slow = Motion::default().durations.slow();
+    let enter = |motion, source| Zoom::OVERVIEW.settle_time(Direction::Enter, motion, source);
+    // Super+Tab: the windows still fly to their places, at `fast` at most.
+    let keyed = enter(on(), MotionSource::Keyboard);
+    assert!(keyed > Duration::ZERO, "a key still shows where they went");
+    assert!(keyed <= fast + Duration::from_millis(1), "{keyed:?}");
+    // A click on "Overview" is a whole-view change.
+    assert!(enter(on(), MotionSource::Pointer) <= slow + Duration::from_millis(1));
+    assert!(enter(on(), MotionSource::Pointer) > keyed);
+    // Reduced motion: a key lands, a click fades at `fast`.
+    assert_eq!(enter(reduced(), MotionSource::Keyboard), Duration::ZERO);
+    assert!(enter(reduced(), MotionSource::Pointer) <= fast + Duration::from_millis(1));
+    // The shared element's own rule is unchanged: a shortcut lands.
+    assert_eq!(
+        Zoom::SPEC.settle_time(Direction::Enter, on(), MotionSource::Keyboard),
+        Duration::ZERO
+    );
+    assert_eq!(Zoom::radius_at(14.0, 8.0, 0.0), 14.0);
+    assert_eq!(Zoom::radius_at(14.0, 8.0, 1.0), 8.0);
+}
+
+#[test]
 fn panel_content_reflows_once_at_the_wide_end() {
     assert_eq!(PanelSlide::content_width(700.0, 940.0, true), 940.0);
     assert_eq!(PanelSlide::content_width(700.0, 940.0, false), 700.0);
@@ -387,7 +411,7 @@ fn ambient_chrome_leaves_at_once_and_arrives_gently_unless_asked() {
 }
 
 /// Every routine standard motion, for the rules they all keep.
-fn routine_specs() -> [MotionSpec; 9] {
+fn routine_specs() -> [MotionSpec; 10] {
     [
         Appear::SPEC,
         Drill::SPEC,
@@ -397,6 +421,7 @@ fn routine_specs() -> [MotionSpec; 9] {
         ListChange::MOVE,
         ListChange::FADE,
         Zoom::SPEC,
+        Zoom::OVERVIEW,
         WindowMotion::MOVE,
     ]
 }
