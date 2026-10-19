@@ -754,7 +754,7 @@ impl Widget for CollaborationLaunchpad {
                 scene,
                 transform,
                 icon_rect,
-                theme.tokens.colors.intent.inverted,
+                theme.tokens.colors.intent.accent_ink,
                 1.6,
             );
             let label = text.elide_to_width(&action.label(), base, (rect.width() - 72.0) as f32);

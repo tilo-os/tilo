@@ -1489,7 +1489,7 @@ impl Widget for ContextMenu {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &crate::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
             );

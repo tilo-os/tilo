@@ -2260,7 +2260,7 @@ fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
-        theme.tokens.colors.intent.you,
+        theme.tokens.colors.intent.accent_ink,
         None,
         &vello::kurbo::Circle::new(centre, d / 2.0),
     );

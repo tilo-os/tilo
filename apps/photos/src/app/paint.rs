@@ -1152,7 +1152,7 @@ impl PhotosApp {
             ctx.scene.fill(
                 Fill::NonZero,
                 ctx.transform,
-                colors.intent.inverted,
+                colors.intent.accent,
                 None,
                 &disc,
             );
@@ -1160,7 +1160,7 @@ impl PhotosApp {
                 ctx.scene,
                 ctx.transform,
                 mark.inset(-f64::from(theme.tokens.spacing.s1)),
-                colors.intent.on_inverted,
+                colors.intent.on_accent,
             );
         } else {
             ui::floating_surface::paint_material(

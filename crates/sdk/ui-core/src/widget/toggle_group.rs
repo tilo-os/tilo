@@ -1255,7 +1255,16 @@ fn segment_tier(
     state: SelectionState,
 ) -> crate::chrome::SelectionTier {
     let ground = segment_ground(theme, style);
+    let palette = &theme.tokens.colors.palette;
     match style {
+        // On a light material the raised track is a darker well, and the
+        // chosen segment's thumb is the one white object standing in it.
+        SegmentedStyle::Segmented if !palette.dark && !palette.high_contrast && state.active => {
+            SelectionTier {
+                fill: theme.tokens.colors.surfaces.overlay,
+                ..crate::chrome::selector_tier(theme, state, ground)
+            }
+        }
         SegmentedStyle::Segmented | SegmentedStyle::Tabs => {
             crate::chrome::selector_tier(theme, state, ground)
         }
@@ -1661,7 +1670,7 @@ impl ToggleGroup {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &crate::surface::edge_outline(ring, metrics.track_radius),
             );
@@ -2215,7 +2224,7 @@ impl Widget for ToggleGroup {
             colors.surfaces.raised,
             colors.surfaces.content,
             colors.text_primary,
-            colors.intent.you,
+            colors.intent.accent_ink,
         ];
         if self.drawn_palette != Some(palette) {
             self.drawn_palette = Some(palette);
@@ -2290,7 +2299,7 @@ impl Widget for ToggleGroup {
             self.cached.stroke(
                 &Stroke::new(2.0),
                 Affine::IDENTITY,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &crate::surface::edge_outline(*seg, self.metrics.track_radius),
             );

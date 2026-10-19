@@ -76,9 +76,14 @@ pub fn paint_card_shadow(
     alpha: f32,
     theme: &Theme,
 ) {
-    let mut shadow = card_shadow(theme);
-    shadow.color = shadow.color.multiply_alpha(alpha);
-    crate::surface::shadow(scene, transform, rect, card_radius(rect, theme), &shadow);
+    crate::surface::floating_shadow(
+        scene,
+        transform,
+        rect,
+        card_radius(rect, theme),
+        alpha,
+        theme,
+    );
 }
 
 /// Paint a floating card's body without its shadow: the opaque ground and
@@ -108,17 +113,9 @@ pub fn paint_card_body_with(
     paint_card_edge(scene, transform, rect, theme);
 }
 
-/// A floating card's edges, drawn over its content: the panel edge and the
-/// inner light edge.
+/// A floating card's edge, drawn over its content: the inner hairline.
 pub fn paint_card_edge(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let radius = card_radius(rect, theme);
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        crate::chrome::panel_border(theme),
-        None,
-        &crate::surface::edge_outline(rect, radius),
-    );
     crate::surface::floating_edge(scene, transform, rect, radius, theme);
 }
 
@@ -143,12 +140,11 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     // A blurred filled shape also covers its interior. Keep that shadow
     // outside the panel: the material below records this scene for blur,
     // and must not sample its own shadow as a dimmed foreground.
-    let elevation = &theme.tokens.elevation.floating;
     let reach = shadow_reach(theme);
     let mut exterior = rect.inflate(reach, reach).to_path(0.1);
     exterior.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_clip_layer(Fill::EvenOdd, transform, &exterior);
-    crate::surface::shadow(scene, transform, rect, radius, elevation);
+    crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
     scene.pop_layer();
     crate::surface::panel(scene, transform, rect, radius, theme);
 }
@@ -171,13 +167,23 @@ pub fn menu_inset(theme: &Theme) -> f64 {
 /// like the sidebar lift.
 pub const OVERLAY_LIFT: f32 = 1.5;
 
+/// [`OVERLAY_LIFT`] on a light material, whose lift step is smaller.
+pub const OVERLAY_LIFT_LIGHT: f32 = OVERLAY_LIFT + 0.5;
+
 /// The fill of a menu's armed row (the row Enter or a click activates) and
 /// the ink on it: the panel ground's overlay lift ([`OVERLAY_LIFT`]) with
 /// primary ink measured on it. Hue-free under the default emphasis.
 #[must_use]
 pub fn armed_row(theme: &Theme) -> (Color, Color) {
     let colors = &theme.tokens.colors;
-    let fill = colors.lift_on(crate::chrome::panel_ground(theme), OVERLAY_LIFT);
+    // A light material's lift is a smaller step (calm hovers everywhere
+    // else), so its armed row takes more of them to clear the same ΔL*.
+    let steps = if colors.palette.dark {
+        OVERLAY_LIFT
+    } else {
+        OVERLAY_LIFT_LIGHT
+    };
+    let fill = colors.lift_on(crate::chrome::panel_ground(theme), steps);
     let ink = colors.ink_on_any(
         &[fill],
         colors.text_primary,
@@ -734,10 +740,7 @@ mod tests {
                 delta > list_delta,
                 "{name}: the overlay lift ({delta:.1}) is stronger than a list lift ({list_delta:.1})"
             );
-            assert_ne!(
-                fill, colors.intent.inverted,
-                "{name}: not the inverted fill"
-            );
+            assert_ne!(fill, colors.intent.accent, "{name}: not the inverted fill");
             assert!(
                 crate::a11y::contrast_ratio(ink, fill)
                     >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,

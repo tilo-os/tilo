@@ -655,9 +655,7 @@ impl QuickSettingsWifiPane {
                 row_cursor,
                 100.0,
                 &network.ssid,
-                status
-                    .as_deref()
-                    .map(|status| (status, colors.intent.inverted)),
+                status.as_deref().map(|status| (status, colors.text_dim)),
             );
             if self.keyboard_focus == Some(Self::NETWORK_FOCUS_START.saturating_add(index)) {
                 Button::paint(
@@ -710,7 +708,7 @@ impl QuickSettingsWifiPane {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.intent.inverted,
+                    colors.intent.on_state,
                     None,
                     &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );

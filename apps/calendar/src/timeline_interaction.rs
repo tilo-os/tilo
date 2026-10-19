@@ -630,8 +630,8 @@ impl TimelineInteraction {
                 let number_w = f64::from(ctx.text.measure_style(&number, None, &ty.day).0);
                 let side = day_h.max(number_w + s2);
                 let disc = Rect::new(text_x - s1, day_y, text_x - s1 + side, day_y + day_h);
-                ctx.fill_round(disc, day_h / 2.0, colors.intent.inverted);
-                text_centered(ctx, &number, &ty.day, colors.intent.on_inverted, disc);
+                ctx.fill_round(disc, day_h / 2.0, colors.intent.accent);
+                text_centered(ctx, &number, &ty.day, colors.intent.on_accent, disc);
             } else {
                 ctx.text(
                     &number,

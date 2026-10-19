@@ -10,11 +10,11 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 
-/// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
-/// minimum target so the tap area stays 32/48 px while the mark reads at
-/// label size. Fixed rather than read from the scaled spacing tokens because
+/// The box itself: 18 px, centred in the interaction minimum target so the
+/// tap area stays 32/48 px while the mark sits with 16 px icons and body
+/// text. Fixed rather than read from the scaled spacing tokens because
 /// the target it sits in does not follow `ui_scale` either.
-const BOX_EDGE: f64 = 24.0;
+const BOX_EDGE: f64 = 18.0;
 /// Space between the target's trailing edge and the label; shared by
 /// `measure` and `draw` so the label lands where it was measured. 10 px is
 /// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
@@ -40,6 +40,8 @@ pub struct CheckboxFace {
     checked: bool,
     indeterminate: bool,
     interact: CheckboxInteract,
+    /// A radio: a circle with a dot, one of a set.
+    radio: bool,
 }
 
 impl CheckboxFace {
@@ -49,7 +51,16 @@ impl CheckboxFace {
             checked,
             indeterminate: false,
             interact: CheckboxInteract::default(),
+            radio: false,
         }
+    }
+
+    /// Paint a radio: a circle, filled with the on state and a dot when
+    /// chosen.
+    #[must_use]
+    pub fn radio(mut self) -> Self {
+        self.radio = true;
+        self
     }
 
     /// Show the standard mixed mark without changing the boolean value.
@@ -97,6 +108,8 @@ pub struct Checkbox {
     /// paints: the checkbox needs a redraw only when they differ.
     painted: Option<Painted>,
     drawing: Option<Painted>,
+    /// A radio of a set rather than a checkbox.
+    radio: bool,
 }
 
 /// What a checkbox's paint depends on besides its place and the theme:
@@ -135,7 +148,16 @@ impl Checkbox {
             intrinsic: false,
             painted: None,
             drawing: None,
+            radio: false,
         }
+    }
+
+    /// A radio: one choice of a set, a circle with a dot when chosen, and a
+    /// radio button to assistive technology.
+    #[must_use]
+    pub fn radio(mut self) -> Self {
+        self.radio = true;
+        self
     }
 
     fn painted_now(&self) -> Painted {
@@ -186,7 +208,11 @@ impl Checkbox {
     /// with the item radius.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
         let rect = square_box(face.rect);
-        let radius = f64::from(theme.tokens.radii.item);
+        let radius = if face.radio {
+            rect.width() / 2.0
+        } else {
+            f64::from(theme.tokens.radii.item)
+        };
         let shape = RoundedRect::from_rect(rect, radius);
         if face.interact.disabled {
             scene.push_layer(
@@ -203,7 +229,7 @@ impl Checkbox {
         // `border_standard` vanished on a raised dark card.
         let marked = face.checked || face.indeterminate;
         let box_color = if marked {
-            crate::tokens::colors::active_fill(&theme.tokens.colors)
+            theme.tokens.colors.intent.on_state
         } else if face.interact.hovered {
             theme
                 .tokens
@@ -222,7 +248,20 @@ impl Checkbox {
             );
         }
 
-        if marked {
+        let mark = theme.tokens.colors.ink_on_any(
+            &[box_color],
+            theme.tokens.colors.intent.on_state_mark,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        if marked && face.radio {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                mark,
+                None,
+                &vello::kurbo::Circle::new(rect.center(), rect.width() * 0.2),
+            );
+        } else if marked {
             let mut path = BezPath::new();
             if face.indeterminate {
                 path.move_to((rect.x0 + rect.width() * 0.25, rect.center().y));
@@ -246,11 +285,7 @@ impl Checkbox {
                     .with_caps(vello::kurbo::Cap::Round)
                     .with_join(vello::kurbo::Join::Round),
                 transform,
-                theme.tokens.colors.ink_on_any(
-                    &[box_color],
-                    crate::tokens::colors::ACTIVE_KNOB,
-                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                ),
+                mark,
                 None,
                 &path,
             );
@@ -267,7 +302,7 @@ impl Checkbox {
         // The unchecked edge is the only thing that shows the box on its
         // ground, so it is held to the 3:1 a control's bounds need there.
         let edge = if face.interact.focused {
-            Some((2.0, theme.tokens.colors.intent.you))
+            Some((2.0, theme.tokens.colors.intent.accent_ink))
         } else if marked {
             None
         } else {
@@ -408,16 +443,13 @@ impl Widget for Checkbox {
             self.control.rect.center()
         };
         let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
-        Self::paint(
-            scene,
-            transform,
-            theme,
-            &CheckboxFace::new(visual, self.control.is_checked)
-                .indeterminate(self.indeterminate)
-                .hovered(self.control.is_hovered)
-                .focused(self.control.focus_visible())
-                .disabled(!self.control.effectively_enabled()),
-        );
+        let face = CheckboxFace::new(visual, self.control.is_checked)
+            .indeterminate(self.indeterminate)
+            .hovered(self.control.is_hovered)
+            .focused(self.control.focus_visible())
+            .disabled(!self.control.effectively_enabled());
+        let face = if self.radio { face.radio() } else { face };
+        Self::paint(scene, transform, theme, &face);
         if let Some(label) = self.label.as_ref() {
             let label = crate::i18n!(label);
             let gap = f64::from(LABEL_GAP);
@@ -483,10 +515,14 @@ impl Widget for Checkbox {
             .disabled(!self.is_enabled())
             .checked(self.control.is_checked);
         state.mixed = self.indeterminate;
-        let mut node = AccessNode::new(Role::Checkbox)
-            .with_semantic_key(self.test_id().unwrap_or("checkbox"))
-            .with_optional_name(name)
-            .with_state(state);
+        let mut node = AccessNode::new(if self.radio {
+            Role::RadioButton
+        } else {
+            Role::Checkbox
+        })
+        .with_semantic_key(self.test_id().unwrap_or("checkbox"))
+        .with_optional_name(name)
+        .with_state(state);
         if self.control.action.is_none() && self.control.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
         }

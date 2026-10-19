@@ -421,9 +421,9 @@ fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Colo
     match tone {
         CellTone::Active | CellTone::Primary => {
             if pressed || hovered {
-                c.intent.inverted_hover
+                c.intent.accent_hover
             } else {
-                c.intent.inverted
+                c.intent.accent
             }
         }
         CellTone::Plain => {
@@ -567,8 +567,8 @@ fn draw_alternates(ctx: &mut PaintCtx<'_>, popup: &AlternatesPopup) {
                     .radii
                     .concentric(panel_radius as f32, pad as f32),
             );
-            ctx.fill_round(inner, radius, colors.intent.inverted);
-            colors.intent.on_inverted
+            ctx.fill_round(inner, radius, colors.intent.accent);
+            colors.intent.on_accent
         } else {
             colors.text_primary
         };
@@ -720,7 +720,7 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
     }
 
     let fg = match tone {
-        CellTone::Active | CellTone::Primary => c.intent.on_inverted,
+        CellTone::Active | CellTone::Primary => c.intent.on_accent,
         _ if dim_label => c.text_dim,
         _ => c.text_primary,
     };

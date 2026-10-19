@@ -538,7 +538,7 @@ fn build_metrics_card() -> Box<dyn Widget> {
 /// Ring gauge, sparkline, bar gauge and area chart. Split out of
 /// `build_showcase` to keep that under the line cap.
 fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
-    let accent = theme.tokens.colors.intent.inverted;
+    let accent = theme.tokens.colors.intent.accent;
     card(
         Some(CARD_W),
         "Charts & Gauges",

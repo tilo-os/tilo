@@ -1,7 +1,8 @@
 //! The active workspace's strips as named places in the bar.
 //!
 //! A host that knows who is where hands the bar [`StripPlaces`]; the bar
-//! then lists the workspace's strips beside its name ("Games · 3") when
+//! then lists the workspace's strips beside its name ("Games", a people icon
+//! and "3") when
 //! there is more than one, and moves to one on a click. A new desk and the
 //! workspace's new name, asked for in the workspace menu, are typed in
 //! place here. Without places nothing here paints or takes input.
@@ -55,7 +56,6 @@ enum Purpose {
     RenameWorkspace,
 }
 
-
 /// The drawn chevron between the workspace and the strip's name.
 const STRIP_CHEVRON_PX: f64 = 12.0;
 
@@ -76,10 +76,19 @@ pub(super) struct StripsKey {
     naming: Option<(String, usize, usize)>,
 }
 
-/// One chip's text: the name, and the people count when anyone is there.
+/// One chip's text: the name, and the people count when anyone is there,
+/// shown as its own fact (a people icon and the number), never joined to
+/// the name.
 fn chip_text(name: &str, count: usize) -> (String, Option<String>) {
-    let count = (count > 0).then(|| format!(" · {count}"));
+    let count = (count > 0).then(|| count.to_string());
     (name.to_owned(), count)
+}
+
+/// The width the people fact after a chip's name takes: the related gap,
+/// the icon, the tight gap and the number.
+fn count_fact_width(theme: &Theme, number_w: f32) -> f64 {
+    let rhythm = theme.tokens.spacing.rhythm;
+    f64::from(rhythm.related + theme.tokens.metrics.icon_sm + rhythm.tight + number_w)
 }
 
 /// Which strips fit in `room`: the active one first, so it always stays
@@ -288,9 +297,9 @@ impl TopBarChrome {
         let pad = f64::from(theme.tokens.spacing.s3);
         let name_w = text_renderer.measure_style(&name, None, &style).0;
         let count_w = count.map_or(0.0, |count| {
-            text_renderer.measure_style(&count, None, &style).0
+            count_fact_width(theme, text_renderer.measure_style(&count, None, &style).0)
         });
-        f64::from(name_w + count_w) + 2.0 * pad
+        f64::from(name_w) + count_w + 2.0 * pad
     }
 
     /// The widest the "+N" chip gets with up to `most` strips hidden.
@@ -480,11 +489,21 @@ impl TopBarChrome {
             &style,
         );
         if let Some(count) = count {
+            let rhythm = theme.tokens.spacing.rhythm;
+            let icon = f64::from(theme.tokens.metrics.icon_sm);
+            let x = chip.x0 + pad + f64::from(name_w) + f64::from(rhythm.related);
+            let cy = chip.center().y;
+            ui::icons::Icon::Users.draw(
+                scene,
+                transform,
+                Rect::new(x, cy - icon / 2.0, x + icon, cy + icon / 2.0),
+                colors.text_dim,
+            );
             text_renderer.draw_style(
                 scene,
                 &count,
                 colors.text_dim,
-                at(transform, (chip.x0 + pad + f64::from(name_w), y)),
+                at(transform, (x + icon + f64::from(rhythm.tight), y)),
                 None,
                 &style,
             );
@@ -1009,7 +1028,7 @@ mod tests {
 
     #[test]
     fn counts_show_only_where_people_are() {
-        assert_eq!(chip_text("Games", 3), ("Games".into(), Some(" · 3".into())));
+        assert_eq!(chip_text("Games", 3), ("Games".into(), Some("3".into())));
         assert_eq!(chip_text("Quiet", 0), ("Quiet".into(), None));
     }
 

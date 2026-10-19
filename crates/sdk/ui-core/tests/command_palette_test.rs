@@ -95,10 +95,10 @@ fn command_palette_filters_and_registers_its_panel_edge() {
             let delta = (luminance_of(edge) - luminance_of(inside)).abs();
             eprintln!("command-palette/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
             assert!(
-                delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
                 "{name}: palette edge {edge:?} does not register against its fill {inside:?} \
              (Δlum={delta:.4} < {})",
-                tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
+                tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
             );
         }
     }

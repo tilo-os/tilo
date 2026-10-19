@@ -175,16 +175,18 @@ impl Acknowledgement {
             radius,
             &theme.tokens.elevation.floating,
         );
-        // The theme's inverted surface stands apart from whatever window
-        // is behind it, in light and dark alike.
-        let intent = &theme.tokens.colors.intent;
+        // A floating surface: the floating level with its inner hairline,
+        // over the shadow above; the check is the success status.
+        let colors = &theme.tokens.colors;
         scene.fill(
             Fill::NonZero,
             transform,
-            intent.inverted,
+            colors.surfaces.overlay,
             None,
             &RoundedRect::from_rect(rect, radius),
         );
+        crate::surface::floating_edge(scene, transform, rect, radius, theme);
+        let ink = colors.on_surface(colors.surfaces.overlay).ink;
         let x0 = rect.center().x - content_width / 2.0;
         let center_y = rect.center().y;
         crate::icons::draw_icon(
@@ -192,7 +194,7 @@ impl Acknowledgement {
             transform,
             Rect::from_center_size(Point::new(x0 + icon / 2.0, center_y), (icon, icon)),
             crate::icons::Icon::Check,
-            intent.on_inverted,
+            colors.semantic.success,
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let origin = Point::new(x0 + icon + gap, center_y - text_height / 2.0);
@@ -204,7 +206,7 @@ impl Acknowledgement {
         text_renderer.draw_style(
             scene,
             &self.text,
-            intent.on_inverted,
+            ink,
             transform.pre_translate(origin.to_vec2()),
             max_width,
             &style,

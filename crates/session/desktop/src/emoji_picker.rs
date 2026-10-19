@@ -132,7 +132,7 @@ struct Geometry {
 /// Shaped footer content; geometry uses the same typography as painting.
 struct FooterText {
     name: String,
-    hint: Vec<String>,
+    hint: Vec<ui::widget::KeyHint>,
     hint_width: f64,
     hint_height: f64,
     line_height: f64,
@@ -1139,11 +1139,19 @@ impl EmojiPicker {
         }
     }
 
-    fn hint(&self) -> String {
-        match self.selected() {
-            Some(text) if self.takes_tone(text) => t("emoji-picker-hint-tones"),
-            _ => t("emoji-picker-hint"),
+    /// What the keys do now: drawn keycaps and their outcomes.
+    fn hint(&self) -> Vec<ui::widget::KeyHint> {
+        use ui::widget::KeyHint;
+        let mut hints = vec![KeyHint::new(["Enter"], t("emoji-picker-hint-insert"))];
+        if self.selected().is_some_and(|text| self.takes_tone(text)) {
+            hints.push(KeyHint::new(
+                ["Shift", "Enter"],
+                t("emoji-picker-hint-tone"),
+            ));
+        } else {
+            hints.push(KeyHint::new(["Esc"], t("emoji-picker-hint-close")));
         }
+        hints
     }
 
     // --- accessibility ---------------------------------------------------
@@ -1303,26 +1311,21 @@ impl EmojiPicker {
         let style = theme.tokens.typography.style(TextRole::Caption);
         let name_style = style.clone().with_weight(TextWeight::Medium);
         let name_width = f64::from(text.measure_style(&name, None, &name_style).0);
-        let (hint_width, hint_height) = text.measure_style(&hint, None, &style);
-        let stacked = name_width + gap + f64::from(hint_width) > width;
-        let line_height = f64::from(style.line_height_px());
-        let lines = if stacked {
-            text.clamp_to_lines_style(&hint, f32_of_f64(width), usize::MAX, &style)
-        } else {
-            vec![hint]
-        };
+        let hints = ui::widget::KeyHintsFace::new(&hint);
+        let hint_width = hints.width(text, theme);
+        let hint_height = ui::widget::KeyHintsFace::height(theme);
+        let stacked = name_width + gap + hint_width > width;
+        let line_height = f64::from(style.line_height_px()).max(hint_height);
         let height = if stacked {
-            f64::from(self.metrics.bar_height).max(line_height)
-                + gap
-                + line_height * f64_of_usize(lines.len())
+            f64::from(self.metrics.bar_height).max(line_height) + gap + line_height
         } else {
             f64::from(self.metrics.bar_height)
         };
         Some(FooterText {
             name: text.elide_to_width_style(&name, f32_of_f64(width), &name_style),
-            hint: lines,
-            hint_width: f64::from(hint_width),
-            hint_height: f64::from(hint_height),
+            hint,
+            hint_width,
+            hint_height,
             line_height,
             height,
             stacked,
@@ -1375,18 +1378,10 @@ impl EmojiPicker {
         } else {
             rect.center().y - footer.hint_height / 2.0
         };
-        for (index, line) in footer.hint.iter().enumerate() {
-            ctx.text.draw_style(
-                ctx.scene,
-                line,
-                ctx.theme.tokens.colors.text_dim,
-                ctx.transform.pre_translate(
-                    (hint_x, hint_y + footer.line_height * f64_of_usize(index)).into(),
-                ),
-                None,
-                &style,
-            );
-        }
+        ui::widget::KeyHintsFace::new(&footer.hint).paint(
+            ctx,
+            Rect::new(hint_x, hint_y, rect.x1, hint_y + footer.hint_height),
+        );
     }
 
     // --- paint -----------------------------------------------------------
@@ -1948,7 +1943,8 @@ mod tests {
         let name = picker.spoken_name(picker.selected().expect("match"));
         let style = theme.tokens.typography.style(TextRole::Caption);
         let name_width = f64::from(text.measure_style(&name, None, &style).0);
-        let hint_width = f64::from(text.measure_style(&picker.hint(), None, &style).0);
+        let hints = picker.hint();
+        let hint_width = ui::widget::KeyHintsFace::new(&hints).width(&mut text, &theme);
         assert!(
             picker.geometry.footer.height() >= 2.0 * f64::from(style.line_height_px())
                 || name_width + hint_width + f64::from(picker.metrics.bar_height)

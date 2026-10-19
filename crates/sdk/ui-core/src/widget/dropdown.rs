@@ -2051,7 +2051,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
     ctx.scene
         .fill(Fill::NonZero, ctx.transform, bg, None, &shape);
     let (bw, bc) = if active {
-        (2.0, theme.tokens.colors.intent.you)
+        (2.0, theme.tokens.colors.intent.accent_ink)
     } else {
         (1.0, crate::surface::edge_on(raised))
     };

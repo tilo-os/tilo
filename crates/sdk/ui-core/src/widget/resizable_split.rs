@@ -379,7 +379,7 @@ impl SplitHandle {
             }
         };
         let colour = if active {
-            theme.tokens.colors.intent.inverted
+            theme.tokens.colors.intent.neutral_fill
         } else {
             crate::surface::edge_on(ground)
         };

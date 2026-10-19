@@ -683,7 +683,7 @@ fn rect_scene() -> Scene {
     let mut scene = Scene::new();
     // Use the product accent token so the fixture remains within the same
     // palette contract as the scenes whose retained composition it probes.
-    let fixture_color = Theme::dark().tokens.colors.intent.inverted;
+    let fixture_color = Theme::dark().tokens.colors.intent.accent;
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,

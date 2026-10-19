@@ -249,7 +249,7 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|stage| stage == "✓ Tilo is ready")
+            .any(|stage| stage == "Tilo is ready")
     );
     let listed = ask(&mut driver, &console, r#"{"op":"actions_enumerate"}"#);
     let everything = format!("{finished}{listed}{}", driver.dump_json());

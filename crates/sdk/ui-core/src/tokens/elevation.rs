@@ -32,31 +32,43 @@ impl Shadow {
     }
 }
 
-/// How much of the dark material's shadow a **light** material keeps.
+/// How much of the dark material's floating shadow a **light** material
+/// keeps: the design language's light floating layer (alpha 0.14) over the
+/// dark one (0.38).
 ///
 /// A drop shadow is black in either polarity, so equal alpha does not buy
 /// equal weight: the same wash that a dark ground swallows whole lands hard
-/// on a pale one. At 45 % the light shadow reads as the same lift.
-pub const LIGHT_SHADOW_SCALE: f32 = 0.45;
+/// on a pale one.
+pub const LIGHT_SHADOW_SCALE: f32 = 0.14 / 0.38;
 
-/// Elevation, by the design language's one rule: **only floating things
-/// cast a shadow.** Window tiles, bars, cards and selected controls have
-/// none — a tile is separated by the ground and its window edge, a
+/// A shadow of `blur` at `offset_y`, black at `alpha`.
+const fn black(offset_y: f32, blur: f32, alpha: u8) -> Shadow {
+    Shadow {
+        offset_y,
+        blur,
+        color: Color::from_rgba8(0, 0, 0, alpha),
+    }
+}
+
+/// Elevation (`docs/design-language.md`, "Surfaces"): a window tile casts
+/// one soft shadow that lifts it off the desktop ground; a floating thing
+/// casts two, a tight contact layer that defines its edge and a wide one
+/// that reads as distance. Bars, cards and selected controls cast none: a
 /// selection is a lift ([`crate::tokens::Intents::selection`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Elevation {
-    /// The one shadow a floating thing casts — a menu, popover, the
+    /// The soft shadow under a window tile on the desktop ground, painted
+    /// at the tile's radius.
+    pub window: Shadow,
+    /// The wide layer of a floating thing's shadow — a menu, popover, the
     /// palette, a sheet, quick settings, a toast, a tooltip, a dragged
-    /// object: soft and wide, so it reads as distance rather than as an
-    /// outline. Paint it with [`crate::surface::shadow`] at the surface's
-    /// own radius.
+    /// object. Paint both layers with [`crate::surface::floating_shadow`].
     pub floating: Shadow,
-    /// A tight shadow at a floating surface's foot, under the wide one: it
-    /// defines the edge of a surface that has no outline of its own (a
-    /// notification card) where the wide shadow alone reads as haze.
+    /// The tight layer at a floating surface's foot, under the wide one: it
+    /// defines the edge where the wide shadow alone reads as haze.
     pub contact: Shadow,
-    /// The 1 px inner light edge a floating surface draws on a dark
-    /// material, just inside its outline. Transparent on a light material.
+    /// The 1 px inner hairline a floating surface draws just inside its
+    /// outline: white on a dark material, black on a light one.
     pub floating_edge: Color,
     /// The wheel disc's rim light: a different vocabulary from a drop
     /// shadow, of which only the hue is read.
@@ -72,42 +84,33 @@ impl Elevation {
     /// Elevation on a **dark** material.
     pub fn dark() -> Self {
         Self {
-            // Wide (blur 32) and soft (25 %); `offset_y` stays a quarter of
-            // `blur`, or the falloff slides onto the bottom edge and reads as
-            // a dark bar under the panel instead of distance.
-            floating: Shadow {
-                offset_y: 8.0,
-                blur: 32.0,
-                color: Color::from_rgba8(0, 0, 0, 60),
-            },
-            contact: Shadow {
-                offset_y: 1.0,
-                blur: 3.0,
-                color: Color::from_rgba8(0, 0, 0, 72),
-            },
-            floating_edge: Color::from_rgba8(255, 255, 255, 20),
+            // 0.28, 0.38 and 0.30 of black.
+            window: black(2.0, 16.0, 71),
+            floating: black(12.0, 32.0, 97),
+            contact: black(1.0, 2.0, 77),
+            // White at 7 %.
+            floating_edge: Color::from_rgba8(255, 255, 255, 18),
             glass_inner: Shadow {
                 offset_y: 0.0,
                 blur: 1.0,
                 color: Color::from_rgba8(255, 255, 255, 20),
             },
-            glass_outer: Shadow {
-                offset_y: 12.0,
-                blur: 32.0,
-                color: Color::from_rgba8(0, 0, 0, 120),
-            },
+            glass_outer: black(12.0, 32.0, 120),
             shadow_scale: 1.0,
         }
     }
 
-    /// Elevation on a **light** material — the same geometry, softened by
-    /// [`LIGHT_SHADOW_SCALE`], with no inner edge.
+    /// Elevation on a **light** material: the same geometry, lighter, and
+    /// a black inner hairline.
     pub fn light() -> Self {
         let d = Self::dark();
         Self {
-            floating: d.floating.with_alpha_scaled(LIGHT_SHADOW_SCALE),
-            contact: d.contact.with_alpha_scaled(LIGHT_SHADOW_SCALE),
-            floating_edge: Color::TRANSPARENT,
+            // 0.10, 0.14 and 0.08 of black.
+            window: black(2.0, 16.0, 26),
+            floating: black(12.0, 32.0, 36),
+            contact: black(1.0, 2.0, 20),
+            // Black at 8 %.
+            floating_edge: Color::from_rgba8(0, 0, 0, 20),
             glass_inner: d.glass_inner,
             glass_outer: d.glass_outer,
             shadow_scale: LIGHT_SHADOW_SCALE,
@@ -127,32 +130,46 @@ mod tests {
     use crate::color_compat::ColorCompat;
 
     #[test]
-    fn floating_is_one_soft_wide_shadow_softer_on_light() {
+    fn windows_cast_one_soft_shadow_and_floating_things_two() {
+        // phase: the_design_languages_numbers
+        {
+            let d = Elevation::dark();
+            let l = Elevation::light();
+            let alpha = |s: Shadow| (s.color.a(), s.offset_y, s.blur);
+            assert_eq!(alpha(d.window), (71, 2.0, 16.0));
+            assert_eq!(alpha(l.window), (26, 2.0, 16.0));
+            assert_eq!(alpha(d.contact), (77, 1.0, 2.0));
+            assert_eq!(alpha(l.contact), (20, 1.0, 2.0));
+            assert_eq!(alpha(d.floating), (97, 12.0, 32.0));
+            assert_eq!(alpha(l.floating), (36, 12.0, 32.0));
+        }
         // phase: light_keeps_the_geometry_and_softens_the_weight
         {
             let d = Elevation::dark();
             let l = Elevation::light();
-            assert!(l.floating.color.a() < d.floating.color.a());
-            assert!((l.floating.blur - d.floating.blur).abs() < f32::EPSILON);
-            assert!((l.floating.offset_y - d.floating.offset_y).abs() < f32::EPSILON);
-            assert!((l.shadow_scale - LIGHT_SHADOW_SCALE).abs() < f32::EPSILON);
+            for (dark, light) in [
+                (d.window, l.window),
+                (d.floating, l.floating),
+                (d.contact, l.contact),
+            ] {
+                assert!(light.color.a() < dark.color.a());
+                assert!((light.blur - dark.blur).abs() < f32::EPSILON);
+                assert!((light.offset_y - dark.offset_y).abs() < f32::EPSILON);
+            }
         }
-        // phase: offset_stays_a_quarter_of_blur_and_the_shadow_stays_soft
+        // phase: the_contact_layer_is_tight_and_the_wide_layer_soft
         {
             let e = Elevation::default();
-            assert!((e.floating.offset_y * 4.0 - e.floating.blur).abs() < f32::EPSILON);
+            assert!(e.contact.blur < 4.0, "tight");
             assert!(e.floating.blur >= 24.0, "wide");
-            assert!(e.floating.color.components[3] <= 0.25, "soft");
+            assert!(e.floating.color.components[3] <= 0.40, "soft");
         }
-        // phase: only_the_dark_material_draws_an_inner_light_edge
+        // phase: the_inner_hairline_is_white_on_dark_and_black_on_light
         {
             let d = Elevation::dark().floating_edge;
-            assert_eq!([d.r(), d.g(), d.b()], [255, 255, 255]);
-            assert!(
-                d.a() > 0 && d.a() < 64,
-                "a whisper of light, not an outline"
-            );
-            assert_eq!(Elevation::light().floating_edge.a(), 0);
+            assert_eq!([d.r(), d.g(), d.b(), d.a()], [255, 255, 255, 18]);
+            let l = Elevation::light().floating_edge;
+            assert_eq!([l.r(), l.g(), l.b(), l.a()], [0, 0, 0, 20]);
         }
     }
 }

@@ -2371,7 +2371,13 @@ impl WindowGroup {
         let Some(edge) = self.edge_highlight() else {
             return;
         };
-        let grip_col = theme.tokens.colors.border_focus;
+        // Neutral ink, never the accent: secondary at rest, primary while
+        // the edge is being dragged.
+        let grip_col = if self.edge_drag.is_some() {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim
+        };
         let total_h = self.rect.height();
         let grip_h = (total_h * GRIP_HEIGHT_SHARE).clamp(
             f64::from(theme.tokens.spacing.s6),

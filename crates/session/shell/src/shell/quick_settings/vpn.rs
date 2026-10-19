@@ -360,7 +360,7 @@ impl QuickSettingsVpnPane {
                 scene,
                 &status,
                 if profile.active {
-                    colors.intent.inverted
+                    colors.text_primary
                 } else {
                     colors.text_dim
                 },

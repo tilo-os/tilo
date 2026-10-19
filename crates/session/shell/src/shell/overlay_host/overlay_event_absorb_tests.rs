@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-use tilo_desktop::i18n::t as desktop_text;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -1122,7 +1121,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
         assert_eq!(chosen.fill, colors.lift(1.0));
         assert_ne!(
-            chosen.fill, colors.intent.inverted,
+            chosen.fill, colors.intent.accent,
             "a chosen chip is lifted, not accent-filled"
         );
         assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
@@ -3533,17 +3532,11 @@ fn workspace_name_native_render_and_resize_matrix() {
             );
             let panel = h.host.workspace_settings_overlay.rect();
             let mut footer_text = TextRenderer::new();
-            let (hint_width, hint_height) = footer_text.measure_style(
-                &desktop_text("workspace-settings-edit-hint"),
-                None,
-                &theme.text(TextRole::Caption),
-            );
-            let inset = f64::from(theme.tokens.spacing.s6);
-            let footer = Rect::new(
-                panel.x1 - inset - f64::from(hint_width),
-                panel.y1 - inset - f64::from(hint_height),
-                panel.x1 - inset,
-                panel.y1 - inset,
+            let footer = WorkspaceSettingsOverlay::footer_hint_rect(
+                panel,
+                &WorkspaceSettingsOverlay::footer_hints(true),
+                &mut footer_text,
+                &theme,
             );
             assert!(
                 h.host.workspace_settings_overlay.general_body_rect().y1

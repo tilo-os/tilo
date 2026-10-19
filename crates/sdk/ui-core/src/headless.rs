@@ -1740,6 +1740,7 @@ impl FrameHarness {
     /// root marked it handled. Nothing is laid out until the next frame,
     /// which rebuilds only if the root reports a structural change.
     pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
+        crate::focus_visible::note(event);
         self.invalidate_local();
         let modifiers = self.modifiers;
         self.dispatch_to_root_with(event, &modifiers)

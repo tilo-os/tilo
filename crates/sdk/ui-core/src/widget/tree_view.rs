@@ -2979,7 +2979,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // this theme at layout.
         let indent_px = self.indent_px;
         // Drop and insertion marks are the person's own colour.
-        let insertion = tokens.colors.intent.you;
+        let insertion = tokens.colors.intent.accent_ink;
         let now = crate::time::now();
         // The tree stands on the ground its container handed it (the
         // region's theme re-points `surfaces.content`); only an explicit

@@ -259,7 +259,7 @@ impl Widget for ShortcutRecorder {
             let ink = if self.invalid {
                 theme.tokens.colors.semantic.danger
             } else if self.focused || self.capturing {
-                theme.tokens.colors.intent.you
+                theme.tokens.colors.intent.accent_ink
             } else {
                 crate::surface::edge_on(theme.tokens.colors.surfaces.content)
             };

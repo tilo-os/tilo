@@ -14,7 +14,7 @@ use ui::widget::{TextInput, Widget};
 use vello::kurbo::Rect;
 
 use super::{DialogView, PendingDialog, PortalDialogController, PortalDialogQueue};
-use crate::shell::i18n::{t, t_args};
+use crate::shell::i18n::t;
 
 const TARGET_PREFIX: &str = "portal-sheet:";
 
@@ -185,10 +185,8 @@ impl PortalDialogController {
                 "portal-usb-row-read-only"
             };
             let mut node = AccessNode::new(Role::Checkbox)
-                .with_name(t_args(
-                    access_key,
-                    &[("device", device.label.as_str().into())],
-                ))
+                .with_name(device.label.clone())
+                .with_description(t(access_key))
                 .with_action_target(target(Part::Choice(index)))
                 .with_position(index.saturating_add(1), devices.len())
                 .with_state(AccessState {

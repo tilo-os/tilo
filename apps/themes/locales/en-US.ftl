@@ -28,6 +28,7 @@ themes-rung-primary = Primary text
 themes-rung-secondary = Secondary text
 themes-rung-tertiary = Tertiary text
 themes-emphasis = Emphasis
+themes-accent = Accent colour
 themes-emphasis-kind = Actions and selection
 themes-tint = Tint
 themes-presence = Presence

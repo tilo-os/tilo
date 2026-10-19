@@ -3003,9 +3003,23 @@ impl TileHost {
             self.draw_full_bleed(scene, transform, tr, theme, presence);
             return;
         }
-        // A tile casts no shadow: it is separated by the ground and its
-        // window edge. Only floating things cast one.
+        // A window lifts off the desktop ground on one soft shadow
+        // (`docs/design-language.md`, "Surfaces"), its own damage part so a
+        // tile that moves repaints where its shadow was.
         let radius = f64::from(theme.tokens.radii.tile);
+        let shadow = theme.tokens.elevation.window;
+        // It falls below the tile only: tiles stand side by side, and a
+        // shadow reaching sideways would dim the neighbour's edge.
+        if let Some(reach) = crate::surface::shadow_bounds(self.rect, &shadow) {
+            let below = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, reach.y1);
+            let key = crate::scene_parts::PartKey::new("ui.tile-shadow", ());
+            let bounds = vec![transform.transform_rect_bbox(below)];
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &below);
+                crate::surface::shadow(scene, transform, self.rect, radius, &shadow);
+                scene.pop_layer();
+            });
+        }
         let shape = RoundedRect::from_rect(self.rect, self.corner_radii(radius));
         scene.fill(
             vello::peniko::Fill::NonZero,

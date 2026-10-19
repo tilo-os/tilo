@@ -411,16 +411,23 @@ impl WorkspaceSettingsOverlay {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let hint = t("workspace-settings-close-hint");
-        let style = theme.text(TextRole::Caption);
-        let (width, _) = text_renderer.measure_style(&hint, None, &style);
-        text_renderer.draw_style(
-            scene,
-            &hint,
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((card.x1 - f64::from(width) - 24.0, card.y1 - 24.0).into()),
-            None,
-            &style,
+        let hints = [ui::widget::KeyHint::new(
+            ["Esc"],
+            t("workspace-settings-hint-close"),
+        )];
+        let face = ui::widget::KeyHintsFace::new(&hints);
+        let width = face.width(text_renderer, theme);
+        let height = ui::widget::KeyHintsFace::height(theme);
+        let inset = f64::from(theme.tokens.spacing.s6);
+        let rect = Rect::new(
+            card.x1 - inset - width,
+            card.y1 - inset - height,
+            card.x1 - inset,
+            card.y1 - inset,
+        );
+        face.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
         );
     }
 
@@ -1082,7 +1089,6 @@ impl WorkspaceSettingsOverlay {
         model: &WorkspaceSettingsModel<'_>,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
 
         // `ws_settings_rect()` is the single source of truth for the
         // centered-modal geometry; hit-tests reach for the same helper
@@ -1123,16 +1129,7 @@ impl WorkspaceSettingsOverlay {
 
         self.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
         let editing = model.owner_controls && model.editing_name.is_some();
-        let hsize = tokens.typography.style(TextRole::Caption);
-        let hint = text_renderer.elide_to_width_style(
-            &t(if editing {
-                "workspace-settings-edit-hint"
-            } else {
-                "workspace-settings-close-hint"
-            }),
-            f32_of_f64(rect.width() - 2.0 * f64::from(tokens.spacing.s6)),
-            &hsize,
-        );
+        let hint = Self::footer_hints(editing);
         let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
         self.general_footer_height = rect.y1 - footer.y0 + f64::from(tokens.spacing.s2);
         self.scroll_general(0.0);
@@ -1184,23 +1181,41 @@ impl WorkspaceSettingsOverlay {
 
         scene.pop_layer();
 
-        text_renderer.draw_style(
-            scene,
-            &hint,
-            colors.text_dim,
-            transform.pre_translate((footer.x0, footer.y0).into()),
-            None,
-            &hsize,
+        ui::widget::KeyHintsFace::new(&hint).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            footer,
         );
         self.draw_member_sheet(scene, transform, text_renderer, theme, rect, model);
     }
 
-    fn footer_hint_rect(rect: Rect, hint: &str, text: &mut TextRenderer, theme: &Theme) -> Rect {
-        let (width, height) = text.measure_style(hint, None, &theme.text(TextRole::Caption));
+    /// What the keys do in the General pane's footer: save or cancel while
+    /// a name is being edited, close otherwise.
+    pub fn footer_hints(editing: bool) -> Vec<ui::widget::KeyHint> {
+        use ui::widget::KeyHint;
+        if editing {
+            vec![
+                KeyHint::new(["Enter"], t("workspace-settings-hint-save")),
+                KeyHint::new(["Esc"], t("workspace-settings-hint-cancel")),
+            ]
+        } else {
+            vec![KeyHint::new(["Esc"], t("workspace-settings-hint-close"))]
+        }
+    }
+
+    /// Where the footer's key hints stand: at the pane's trailing bottom
+    /// corner, one content gutter in.
+    pub fn footer_hint_rect(
+        rect: Rect,
+        hints: &[ui::widget::KeyHint],
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Rect {
+        let width = ui::widget::KeyHintsFace::new(hints).width(text, theme);
+        let height = ui::widget::KeyHintsFace::height(theme);
         let inset = f64::from(theme.tokens.spacing.s6);
         Rect::new(
-            rect.x1 - inset - f64::from(width),
-            rect.y1 - inset - f64::from(height),
+            rect.x1 - inset - width,
+            rect.y1 - inset - height,
             rect.x1 - inset,
             rect.y1 - inset,
         )
@@ -1297,7 +1312,7 @@ impl WorkspaceSettingsOverlay {
             text_renderer.draw_style(
                 scene,
                 &subject,
-                colors.intent.inverted_hover,
+                colors.intent.accent_hover,
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
                 &tokens.typography.style(TextRole::Caption),
@@ -1377,7 +1392,7 @@ impl WorkspaceSettingsOverlay {
             let tint = if destructive {
                 colors.semantic.danger
             } else {
-                colors.intent.inverted
+                colors.intent.accent
             };
             let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.control));
             scene.fill(
@@ -1413,14 +1428,21 @@ impl WorkspaceSettingsOverlay {
                 );
             }
         }
-        let hint = t("workspace-settings-sheet-keyboard-hint");
-        text_renderer.draw_style(
-            scene,
-            &hint,
-            colors.text_dim,
-            transform.pre_translate((card.x0 + 20.0, card.y1 - 22.0).into()),
-            None,
-            &tokens.typography.style(TextRole::Caption),
+        let hints = [
+            ui::widget::KeyHint::new(["Up", "Down"], t("workspace-settings-hint-choose")),
+            ui::widget::KeyHint::new(["Enter"], t("workspace-settings-hint-apply")),
+            ui::widget::KeyHint::new(["Esc"], t("workspace-settings-hint-cancel")),
+        ];
+        let height = ui::widget::KeyHintsFace::height(theme);
+        let inset = f64::from(tokens.spacing.s4);
+        ui::widget::KeyHintsFace::new(&hints).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            Rect::new(
+                card.x0 + inset,
+                card.y1 - inset - height,
+                card.x1 - inset,
+                card.y1 - inset,
+            ),
         );
     }
 
@@ -1467,7 +1489,7 @@ impl WorkspaceSettingsOverlay {
             text_renderer.draw_style(
                 scene,
                 &caption,
-                colors.intent.inverted_hover,
+                colors.intent.accent_hover,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
                 None,
                 &tokens.typography.style(TextRole::Caption),
@@ -1488,7 +1510,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer.draw_style(
             scene,
             &t("workspace-settings-current-workspace"),
-            colors.intent.inverted_hover,
+            colors.intent.accent_hover,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
             &tokens.typography.style(TextRole::Caption),
@@ -1578,7 +1600,7 @@ impl WorkspaceSettingsOverlay {
             transform,
             mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
-            colors.intent.inverted_hover,
+            colors.intent.accent_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
@@ -1748,7 +1770,7 @@ impl WorkspaceSettingsOverlay {
                     ),
                     icon,
                     if active {
-                        colors.intent.inverted_hover
+                        colors.intent.accent_hover
                     } else {
                         color
                     },
@@ -2277,7 +2299,7 @@ impl WorkspaceSettingsOverlay {
             transform,
             share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
-            colors.intent.inverted_hover,
+            colors.intent.accent_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_renderer.draw_style(

@@ -486,7 +486,7 @@ fn draw_resume_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.intent.inverted,
+        colors.intent.accent,
         None,
         &RoundedRect::new(rect.x0, rect.y0 + 8.0, rect.x0 + 3.0, rect.y1 - 8.0, 1.5),
     );
@@ -513,12 +513,12 @@ fn draw_resume_card(
     tr.draw_style(
         scene,
         &t("activity-resume-heading"),
-        colors.intent.inverted_hover,
+        colors.intent.accent_hover,
         at(transform, rect.x0 + 46.0, rect.y0 + 8.0),
         None,
         &theme.text(TextRole::Caption),
     );
-    // The button fits its label ("Fortsetzen →" is wider than "Resume →");
+    // The button fits its label ("Fortsetzen" is wider than "Resume");
     // the title and context take what it leaves.
     let button_label = t("activity-resume-button");
     let (label_w, _) = tr.measure_style(&button_label, None, &theme.text(TextRole::Label));
@@ -3723,7 +3723,7 @@ impl RoomActivityPane {
         tr.draw_style(
             scene,
             &t("activity-agent-task"),
-            theme.tokens.colors.intent.inverted_hover,
+            theme.tokens.colors.intent.accent_hover,
             at(transform, x, y),
             None,
             &theme
@@ -4704,7 +4704,7 @@ impl RoomActivityPane {
                 &Stroke::new(1.0),
                 transform,
                 if active {
-                    theme.tokens.colors.intent.inverted_hover
+                    theme.tokens.colors.intent.accent_hover
                 } else {
                     idle_edge
                 },
@@ -7834,7 +7834,7 @@ fn draw_task_card(
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
         } else {
-            theme.tokens.colors.intent.inverted_hover
+            theme.tokens.colors.intent.accent_hover
         },
         at(transform, rect.x0 + 12.0, rect.y0 + 9.0),
         None,
@@ -7896,7 +7896,7 @@ fn draw_task_card(
             tr.draw_style(
                 scene,
                 notice,
-                theme.tokens.colors.intent.inverted_hover,
+                theme.tokens.colors.intent.accent_hover,
                 at(transform, rect.x0 + 12.0, audit_y),
                 Some(text_width(rect.width() - 24.0)),
                 &theme.text(TextRole::Caption),
@@ -8503,7 +8503,7 @@ fn draw_brief_card(
         scene,
         &affordance,
         if expanded {
-            theme.tokens.colors.intent.inverted_hover
+            theme.tokens.colors.intent.accent_hover
         } else {
             theme.tokens.colors.text_dim
         },
@@ -8637,7 +8637,7 @@ fn draw_work_session_boundary(
                     .tokens
                     .colors
                     .intent
-                    .inverted_hover
+                    .accent_hover
                     .with_alpha_factor(0.65)
             } else {
                 theme.tokens.colors.border_standard

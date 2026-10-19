@@ -113,8 +113,8 @@ impl ToggleColors {
 /// Single source of truth for both the retained [`Toggle`]'s draw and
 /// [`Toggle::paint`], so every switch shares one palette per state.
 ///
-/// On, the switch is an inverted control: the track is `intent.inverted` and
-/// the knob its label colour (`intent.on_inverted`). Off, the track is a lift
+/// On, the switch is an inverted control: the track is `intent.accent` and
+/// the knob its label colour (`intent.on_accent`). Off, the track is a lift
 /// of the ground (HIG §9.2, §9.5 "Rest edges"). On a light material the off
 /// knob is a raised white object with a derived ring, never a dark disc; on a
 /// dark one it is the secondary ink, and hover lifts it to the primary ink.
@@ -124,11 +124,11 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
     let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
     // A lift of the window ground: lighter on a dark material, darker on a
     // light one, so a white knob always stands out from it.
-    let off_track = colors.intent.selection;
+    let off_track = colors.lift_on(colors.surfaces.content, 1.0);
     // On is green, the colour every person reads as "on": an inverted
     // (white) track on a black-and-white surface didn't read as on at all.
     let track = if on {
-        crate::tokens::colors::active_fill(colors)
+        colors.intent.on_state
     } else {
         off_track
     };
@@ -139,12 +139,20 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
         ink_across(&[track], tone, reached + 1.0)
     };
     let (knob, knob_edge) = if on {
-        let knob = ink_across(&[track], crate::tokens::colors::ACTIVE_KNOB, floor);
-        (if interact.hovered { harder(knob) } else { knob }, None)
+        // The knob is white; at rest it holds back a touch so the pointer
+        // can make it fully white, never darker: a darker knob on the green
+        // track read as off.
+        let mark = colors.intent.on_state_mark;
+        let knob = if interact.hovered {
+            mark
+        } else {
+            crate::tokens::colors::mix8(track, mark, 0.9)
+        };
+        (ink_across(&[track], knob, floor), None)
     } else if light_material(colors) {
         let ring = ink_across(&[track], colors.text_tertiary, floor);
         (
-            colors.surfaces.raised,
+            colors.surfaces.overlay,
             Some(if interact.hovered { harder(ring) } else { ring }),
         )
     } else if interact.hovered {
@@ -153,7 +161,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
         (ink_across(&[track], colors.text_dim, floor), None)
     };
     let (edge, edge_width) = if interact.focused {
-        (colors.intent.you, 2.0)
+        (colors.intent.accent_ink, 2.0)
     } else {
         (crate::surface::edge_on(track), 1.0)
     };
@@ -637,8 +645,7 @@ mod tests {
             let off = toggle_face_colors(&theme, false, ToggleInteract::default());
             let on = toggle_face_colors(&theme, true, ToggleInteract::default());
             assert_eq!(
-                on.track,
-                crate::tokens::colors::active_fill(&theme.tokens.colors),
+                on.track, theme.tokens.colors.intent.on_state,
                 "on-track is the on colour"
             );
             assert_eq!(
@@ -657,10 +664,24 @@ mod tests {
                 let colors = &theme.tokens.colors;
                 let off = toggle_face_colors(&theme, false, ToggleInteract::default());
                 let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-                assert_eq!(on.knob, crate::tokens::colors::ACTIVE_KNOB, "{}", theme.name);
+                let white = toggle_face_colors(
+                    &theme,
+                    true,
+                    ToggleInteract {
+                        hovered: true,
+                        ..ToggleInteract::default()
+                    },
+                );
+                assert_eq!(white.knob, colors.intent.on_state_mark, "{}", theme.name);
+                assert!(
+                    crate::a11y::contrast_ratio(on.knob, on.track)
+                        >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "{}",
+                    theme.name
+                );
                 assert_eq!(on.knob_edge, None);
                 if light_material(colors) {
-                    assert_eq!(off.knob, colors.surfaces.raised, "{}", theme.name);
+                    assert_eq!(off.knob, colors.surfaces.overlay, "{}", theme.name);
                     assert!(
                         crate::a11y::relative_luminance(off.knob)
                             > crate::a11y::relative_luminance(off.track),
@@ -701,7 +722,7 @@ mod tests {
                 },
             );
             assert_eq!(
-                focused.edge, theme.tokens.colors.intent.you,
+                focused.edge, theme.tokens.colors.intent.accent_ink,
                 "focus is your colour"
             );
             assert_eq!(focused.edge_width, 2.0, "focused border is 2px");

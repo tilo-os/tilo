@@ -772,7 +772,7 @@ impl FrameProfiler {
             let color = if f.over_budget() {
                 Color::from_rgba8(230, 70, 70, 255)
             } else {
-                theme.tokens.colors.intent.inverted
+                theme.tokens.colors.intent.neutral_fill
             };
             scene.fill(Fill::NonZero, transform, color, None, &bar);
         }

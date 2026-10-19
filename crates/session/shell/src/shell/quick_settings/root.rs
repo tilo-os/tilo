@@ -10,8 +10,8 @@ use crate::shell::quick_settings::{PowerProfile, QsLevel};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, CONTROL_PAD, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SECTION_GAP,
-    SIBLING_GAP, TARGET, centred_text_top, control_radius, leading_glyph,
-    paint_control, trailing_glyph, trailing_toggle,
+    SIBLING_GAP, TARGET, centred_text_top, control_radius, leading_glyph, paint_control,
+    trailing_glyph, trailing_toggle,
 };
 use ui::TextRole;
 use ui::num::f64_of_usize;
@@ -2208,13 +2208,13 @@ impl QuickSettingsRoot {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                ui::tokens::colors::active_fill(colors),
+                colors.intent.on_state,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(r, f64::from(theme.tokens.radii.control)),
             );
         }
         let (ink, ink_dim) = if on {
-            let knob = ui::tokens::colors::ACTIVE_KNOB;
+            let knob = colors.intent.on_state_mark;
             (knob, knob.multiply_alpha(0.82))
         } else {
             (colors.text_primary, colors.text_dim)
@@ -2392,7 +2392,7 @@ impl QuickSettingsRoot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.intent.inverted,
+                colors.intent.accent_ink,
                 None,
                 &RoundedRect::from_rect(
                     Rect::new(
@@ -2420,7 +2420,7 @@ impl QuickSettingsRoot {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.intent.inverted,
+                    colors.intent.accent_ink,
                     None,
                     &RoundedRect::from_rect(
                         Rect::new(
@@ -3818,7 +3818,10 @@ mod tests {
             assert!(close(links[1].y0 - links[0].y1, s3), "row ↔ row is s3");
             let power = root.power_geometry(panel, &state);
             assert!(close(power.y0 - links[1].y1, s3), "rows → power is s3");
-            assert!(close(tiles[0].y0 - power.y1, s4), "power → footer tiles is s4");
+            assert!(
+                close(tiles[0].y0 - power.y1, s4),
+                "power → footer tiles is s4"
+            );
             assert!(
                 close(panel.y1 - tiles[0].y1, s4),
                 "footer tiles → panel edge is the panel padding"

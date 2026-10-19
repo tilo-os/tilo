@@ -169,7 +169,7 @@ impl Widget for Spinner {
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
-        let accent = theme.tokens.colors.intent.inverted;
+        let accent = theme.tokens.colors.intent.neutral_fill;
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {

@@ -1240,7 +1240,7 @@ impl VideoPlayer {
         };
         self.play_button_rect = layout.hit_rect(play_btn);
         self.draw_play_glyph(scene, transform, play_btn, layout.ink);
-        self.paint_settings_cluster(scene, transform, theme, &mut layout, position_w);
+        self.paint_settings_cluster(scene, transform, &mut layout, position_w);
 
         let time = TimeLabel {
             text: &time_text,
@@ -1248,7 +1248,7 @@ impl VideoPlayer {
             height: th,
             style: time_style,
         };
-        self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
+        self.paint_volume_time_track(scene, transform, text_renderer, &layout, &time);
 
         self.paint_menu(scene, transform, text_renderer, theme);
     }
@@ -1282,7 +1282,6 @@ impl VideoPlayer {
         self.paint_scrub_track(
             scene,
             transform,
-            theme,
             &timeline_layout,
             bar.x0 + pad,
             bar.x1 - pad,
@@ -1343,7 +1342,7 @@ impl VideoPlayer {
                 mid_y + icon * 0.5,
             );
             let tint = if self.open_menu == Some(OpenMenu::Gear) {
-                colors.intent.inverted
+                colors.text_primary
             } else {
                 colors.text_primary
             };
@@ -1372,7 +1371,7 @@ impl VideoPlayer {
     ) {
         let (play, mid_y, cluster_x0, pad, icon) = layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = colors.text_primary;
         let time_text = format!(
             "{} / {}",
             format_ms(self.position_ms),
@@ -1468,7 +1467,6 @@ impl VideoPlayer {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        theme: &Theme,
         layout: &mut ControlsLayout,
         tw: f32,
     ) {
@@ -1481,8 +1479,7 @@ impl VideoPlayer {
             ink,
             ..
         } = *layout;
-        let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = ink;
 
         let fs_size = icon;
         let btn = icon;
@@ -1547,8 +1544,7 @@ impl VideoPlayer {
         // plus the full-slice fallback keeps that provable to the reader
         // without a raw range-index.
         let shown_slice = prio.get(..shown).unwrap_or(&prio);
-        let leftmost_glyph_x0 =
-            self.paint_setting_icons(scene, transform, theme, layout, cx, shown_slice);
+        let leftmost_glyph_x0 = self.paint_setting_icons(scene, transform, layout, cx, shown_slice);
 
         self.gear_entries.clear();
         self.gear_entries.extend(prio.iter().skip(shown).copied());
@@ -1597,13 +1593,11 @@ impl VideoPlayer {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        theme: &Theme,
         layout: &ControlsLayout,
         start_cx: f64,
         shown: &[usize],
     ) -> Option<f64> {
-        let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = layout.ink;
         let btn = layout.icon;
         let gap = layout.gap();
         let mid_y = layout.mid_y;
@@ -1634,7 +1628,6 @@ impl VideoPlayer {
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
-        theme: &Theme,
         layout: &ControlsLayout,
         time: &TimeLabel<'_>,
     ) {
@@ -1646,7 +1639,7 @@ impl VideoPlayer {
             ..
         } = *layout;
 
-        let vol_x0 = self.paint_volume_slider(scene, transform, theme, layout);
+        let vol_x0 = self.paint_volume_slider(scene, transform, layout);
 
         let track_x0 = play_btn.x1 + pad;
         let time_x1 = vol_x0 - pad;
@@ -1682,7 +1675,7 @@ impl VideoPlayer {
             self.time_label_rect = Rect::ZERO;
             time_x1
         };
-        self.paint_scrub_track(scene, transform, theme, layout, track_x0, track_x1);
+        self.paint_scrub_track(scene, transform, layout, track_x0, track_x1);
     }
 
     /// Draws the speaker glyph and volume level track. Returns its left
@@ -1691,7 +1684,6 @@ impl VideoPlayer {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        theme: &Theme,
         layout: &ControlsLayout,
     ) -> f64 {
         let ControlsLayout {
@@ -1703,8 +1695,7 @@ impl VideoPlayer {
             ink,
             ..
         } = *layout;
-        let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = layout.ink;
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
@@ -1762,7 +1753,6 @@ impl VideoPlayer {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        theme: &Theme,
         layout: &ControlsLayout,
         track_x0: f64,
         track_x1: f64,
@@ -1772,8 +1762,7 @@ impl VideoPlayer {
             return;
         }
         let mid_y = layout.mid_y;
-        let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = layout.ink;
 
         let track = Rect::new(
             track_x0,
@@ -2023,7 +2012,7 @@ impl VideoPlayer {
         let pad = f64::from(theme.tokens.spacing.s2);
         let text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = colors.text_primary;
 
         if theme.text_scale > 1.25 {
             self.paint_large_setting_row(
@@ -2125,7 +2114,7 @@ impl VideoPlayer {
         if !value.is_empty() {
             let value = text_renderer.elide_to_width(&value, 12.0, text_budget);
             let tint = matches!(setting.control, PlayerSettingControl::Toggle { on: true })
-                .then_some(colors.intent.inverted)
+                .then_some(colors.text_primary)
                 .unwrap_or(colors.text_dim);
             text_renderer.draw_text(
                 scene,
@@ -2163,7 +2152,7 @@ impl VideoPlayer {
         let row_h = row_rect.height() + 2.0;
         let pad = f64::from(theme.tokens.spacing.s2);
         let colors = &theme.tokens.colors;
-        let accent = colors.intent.inverted;
+        let accent = colors.text_primary;
 
         let selected = *selected == oi;
         // The standalone popover has no header, so no indent.
@@ -2278,7 +2267,7 @@ impl VideoPlayer {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.inverted,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &RoundedRect::from_rect(rect.inflate(3.0, 3.0), 6.0),
             );

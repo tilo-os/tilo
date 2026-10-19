@@ -46,7 +46,7 @@ impl ToolFeedback {
             Self::Erased { marked } => (
                 Stroke::new(rule).with_dashes(0.0, if marked { [6.0, 3.0] } else { [2.0, 3.0] }),
                 if marked {
-                    colors.intent.you
+                    colors.intent.accent_ink
                 } else {
                     colors.text_dim
                 },
@@ -389,7 +389,7 @@ impl SelectionHandles {
         theme: &Theme,
     ) {
         let zoom = zoom.max(1e-6);
-        let accent = theme.tokens.colors.intent.you;
+        let accent = theme.tokens.colors.intent.accent_ink;
         let surface = theme.tokens.colors.surfaces.base;
         let line = Stroke::new(1.5);
         let place = preview * self.orientation();

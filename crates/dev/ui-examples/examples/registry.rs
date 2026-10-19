@@ -92,6 +92,7 @@ const SHOT_SOURCES: &[&str] = &[
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
+    "design_gallery_shots.rs",
     "fractional_scale_shots.rs",
     "floating_surface_shots.rs",
     "gallery_harness_shots.rs",

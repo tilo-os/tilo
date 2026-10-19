@@ -380,7 +380,7 @@ impl Scrollbar {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(thumb.inflate(2.0, 2.0), radius + 2.0),
             );

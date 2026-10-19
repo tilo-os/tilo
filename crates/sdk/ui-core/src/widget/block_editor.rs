@@ -6800,7 +6800,7 @@ fn draw_visual_formula_editor(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.you,
+            theme.tokens.colors.intent.accent_ink,
             None,
             &caret,
         );
@@ -8578,7 +8578,7 @@ fn draw_code_block_prefix(
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
-        ctx.theme.tokens.colors.intent.inverted,
+        ctx.theme.tokens.colors.intent.accent_ink,
         None,
         &bar,
     );
@@ -9780,7 +9780,12 @@ impl Widget for BlockEditor {
                 ctx.scene.fill(
                     vello::peniko::Fill::NonZero,
                     ctx.transform,
-                    ctx.theme.tokens.colors.intent.you.with_alpha_factor(0.35),
+                    ctx.theme
+                        .tokens
+                        .colors
+                        .intent
+                        .accent_ink
+                        .with_alpha_factor(0.35),
                     None,
                     &b.line.get_rect(),
                 );
@@ -10265,7 +10270,12 @@ impl Widget for BlockEditor {
         // The opaque drag preview can cover its destination. Keep the drop
         // marker above both the preview and its code/header chrome.
         if let Some(drag) = self.block_drag.filter(|drag| drag.active) {
-            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.intent.you, drag);
+            self.draw_block_drop_indicator(
+                scene,
+                transform,
+                theme.tokens.colors.intent.accent_ink,
+                drag,
+            );
         }
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
         // Link hit geometry depends on the shaped positions produced by this

@@ -199,12 +199,12 @@ impl CalendarApp {
         let disc = Point::new(cell.x0 + m.inset + m.pill_r, cell.y0 + m.inset + m.pill_r);
         let num_rect = Rect::from_center_size(disc, (2.0 * m.pill_r, 2.0 * m.pill_r));
         if is_today {
-            crate::draw_util::disc(ctx, disc, m.pill_r, c.intent.inverted);
+            crate::draw_util::disc(ctx, disc, m.pill_r, c.intent.accent);
             text_centered(
                 ctx,
                 &num,
                 &m.day.clone().strong(),
-                c.intent.on_inverted,
+                c.intent.on_accent,
                 num_rect,
             );
         } else {

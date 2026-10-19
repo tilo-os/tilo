@@ -78,10 +78,10 @@ fn toast_stack_expires_caps_and_registers_its_edge() {
             let delta = (luminance_of(edge) - luminance_of(inside)).abs();
             eprintln!("toast/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
             assert!(
-                delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
                 "{name}: toast edge {edge:?} does not register against its fill {inside:?} \
              (Δlum={delta:.4} < {})",
-                tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
+                tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
             );
         }
     }

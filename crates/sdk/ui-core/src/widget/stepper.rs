@@ -250,12 +250,12 @@ impl<'a> StepperFace<'a> {
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
-                    colors.intent.inverted,
+                    colors.intent.neutral_fill,
                     None,
                     &Circle::new(centre, radius),
                 );
                 let glyph = Rect::from_center_size(centre, (radius, radius));
-                Icon::Check.draw(ctx.scene, ctx.transform, glyph, colors.intent.on_inverted);
+                Icon::Check.draw(ctx.scene, ctx.transform, glyph, colors.surfaces.content);
             } else {
                 let (ring, ink) = if current {
                     (theme.text_primary, theme.text_primary)

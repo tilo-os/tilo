@@ -289,7 +289,7 @@ impl<'a> ProgressRingFace<'a> {
 
     fn fill_colour(&self, theme: &Theme) -> Color {
         match self.fill {
-            RingFill::Progress => theme.tokens.colors.intent.inverted,
+            RingFill::Progress => theme.tokens.colors.intent.neutral_fill,
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a 0..=1 fraction narrows to the thresholds' f32 exactly enough"
@@ -722,7 +722,7 @@ impl BarGauge {
         match self.fill {
             Fillcolor::Threshold(t) => t.color(theme, self.frac),
             Fillcolor::Fixed(c) => c,
-            Fillcolor::Neutral => theme.tokens.colors.intent.inverted,
+            Fillcolor::Neutral => theme.tokens.colors.intent.neutral_fill,
         }
     }
 
@@ -943,7 +943,7 @@ mod tests {
                 rect,
                 &GaugeReading {
                     frac: 0.0,
-                    color: theme.tokens.colors.intent.inverted,
+                    color: theme.tokens.colors.intent.accent,
                     label: "",
                     value: "",
                 },
@@ -954,7 +954,7 @@ mod tests {
                 rect,
                 &GaugeReading {
                     frac: 0.5,
-                    color: theme.tokens.colors.intent.inverted,
+                    color: theme.tokens.colors.intent.accent,
                     label: "",
                     value: "",
                 },
@@ -976,7 +976,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 200.0, 32.0),
                 &GaugeReading {
                     frac: 0.4,
-                    color: theme.tokens.colors.intent.inverted,
+                    color: theme.tokens.colors.intent.accent,
                     label: "Memory",
                     value: "4.2 GB",
                 },
@@ -1107,7 +1107,7 @@ mod tests {
             Rect::new(0.0, 0.0, 120.0, 6.0),
             &theme,
             (0.7, 0.7),
-            &Brush::Solid(theme.tokens.colors.intent.inverted),
+            &Brush::Solid(theme.tokens.colors.intent.accent),
             &GaugeStyle::default(),
         );
         assert_eq!(count_color_tags(&scene), 2);

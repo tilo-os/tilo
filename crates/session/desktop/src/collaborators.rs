@@ -666,14 +666,14 @@ impl CollaboratorsOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.intent.inverted.multiply_alpha(0.12),
+                colors.intent.accent_ink.multiply_alpha(0.12),
                 None,
                 &RoundedRect::from_rect(banner, f64::from(tokens.radii.detail)),
             );
             text_renderer.draw_style(
                 scene,
                 &crate::i18n::t("people-panel-screen-visible"),
-                colors.intent.inverted,
+                colors.intent.accent_ink,
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
                 None,
                 &tokens.typography.style(TextRole::Caption),
@@ -756,7 +756,7 @@ impl CollaboratorsOverlay {
             scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.intent.inverted_hover,
+                theme.tokens.colors.intent.accent_hover,
                 None,
                 &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail)),
             );
@@ -2267,7 +2267,7 @@ impl CollaboratorsOverlay {
         text_renderer.draw_style(
             scene,
             &change,
-            colors.intent.inverted,
+            colors.intent.accent_ink,
             transform.pre_translate((x + f64::from(lead_width), y).into()),
             None,
             &caption,
@@ -2419,7 +2419,7 @@ impl CollaboratorsOverlay {
                     self.status.x1 - 8.0,
                     self.status.center().y + side / 2.0,
                 );
-                Icon::Sparkles.draw(scene, transform, badge, colors.intent.inverted);
+                Icon::Sparkles.draw(scene, transform, badge, colors.intent.accent_ink);
             }
         }
         if let Some(activity) = model.own_activity {
@@ -2434,7 +2434,7 @@ impl CollaboratorsOverlay {
                     scene,
                     transform,
                     Rect::from_center_size((x + 6.0, top + line / 2.0), (12.0, 12.0)),
-                    colors.intent.inverted,
+                    colors.intent.accent_ink,
                 );
             } else {
                 let dot = vello::kurbo::Circle::new(Point::new(x + 6.0, top + line / 2.0), 3.0);
@@ -2453,7 +2453,7 @@ impl CollaboratorsOverlay {
                 scene,
                 &activity,
                 if model.own_activity_generated {
-                    colors.intent.inverted
+                    colors.intent.accent_ink
                 } else {
                     colors.text_dim
                 },
@@ -2850,10 +2850,10 @@ impl CollaboratorsOverlay {
             // pencil; a line read off what they did gets their colour.
             match status.source {
                 LineSource::Generated => {
-                    Icon::Sparkles.draw(scene, transform, icon_rect, colors.intent.inverted);
+                    Icon::Sparkles.draw(scene, transform, icon_rect, colors.intent.accent_ink);
                 }
                 LineSource::Written => {
-                    Icon::Pencil.draw(scene, transform, icon_rect, colors.intent.inverted);
+                    Icon::Pencil.draw(scene, transform, icon_rect, colors.intent.accent_ink);
                 }
                 LineSource::Observed => {
                     let dot = vello::kurbo::Circle::new(icon_rect.center(), 3.0);
@@ -2873,7 +2873,7 @@ impl CollaboratorsOverlay {
             text_renderer.draw_style(
                 scene,
                 &shown,
-                colors.intent.inverted,
+                colors.intent.accent_ink,
                 transform.pre_translate((status_text_x, next_line).into()),
                 None,
                 &caption,
@@ -2979,7 +2979,7 @@ impl CollaboratorsOverlay {
         // Model prose carries the same sparkle as an inferred status, so a
         // summary is never read as the person's own words.
         let (icon, ink) = if recent.source == LineSource::Generated {
-            (Icon::Sparkles, colors.intent.inverted)
+            (Icon::Sparkles, colors.intent.accent_ink)
         } else {
             (Icon::History, colors.text_dim)
         };

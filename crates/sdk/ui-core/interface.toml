@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 6
+version = 7
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -80,6 +80,7 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "Emphasis::inverted" = "unit"
 "Emphasis::tinted" = "struct"
 "Emphasis::tinted.hue" = "f32"
+"Emphasis::you" = "unit"
 "FloatingSurfaceClientMessage" = "enum internal tag=type"
 "FloatingSurfaceClientMessage::action_markers" = "struct"
 "FloatingSurfaceClientMessage::action_markers.markers" = "Vec<PaintedActionMarker>"

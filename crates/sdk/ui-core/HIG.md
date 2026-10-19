@@ -261,8 +261,10 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   "certified", "admitted", a job, surface or process number, Rust `{:?}`
   output). An error is mapped to its outcome and next step and shown once,
   on the surface that failed.
-- One clause per row: sentence case, no all-caps words, at most one " · "
-  (a name and its value). A row that is one action shows a button named for
+- One clause per row: sentence case, no all-caps words, and no facts joined
+  with a separator glyph ("·", "•", "|", dashes, " / "); a second fact goes
+  on a secondary line or into `Facts`, and a key goes into key hints with
+  drawn keycaps. A row that is one action shows a button named for
   it ("Stop", "Try again"), never "select to stop". A confirming button names
   its outcome ("Move", "Allow"), never "Continue" or "OK".
 - One thing has one name everywhere; `tools/policy/copy_glossary.toml` lists

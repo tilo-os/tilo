@@ -34,11 +34,18 @@ pub enum Role {
     TextPrimary,
     TextDim,
     TextTertiary,
-    Inverted,
-    InvertedHover,
-    OnInverted,
-    /// The person's own colour as their focus ring, caret and unread mark.
+    /// A primary action's fill at rest, under the pointer and pressed.
+    Accent,
+    AccentHover,
+    AccentPressed,
+    /// The label on an accent fill.
+    OnAccent,
+    /// The accent as ink and mark: a link, the focus ring, the caret.
     Focus,
+    /// What is switched on: a switch's track, a checked box.
+    OnState,
+    /// The knob or mark on the on state.
+    OnStateMark,
     /// Each of the twelve presence colours: a collaborator's caret, cursor
     /// and pill. A floor on it holds for every slot.
     Presence,
@@ -64,10 +71,13 @@ impl Role {
             Self::TextPrimary => "text_primary",
             Self::TextDim => "text_dim",
             Self::TextTertiary => "text_tertiary",
-            Self::Inverted => "intent.inverted",
-            Self::InvertedHover => "intent.inverted_hover",
-            Self::OnInverted => "intent.on_inverted",
-            Self::Focus => "intent.you",
+            Self::Accent => "intent.accent",
+            Self::AccentHover => "intent.accent_hover",
+            Self::AccentPressed => "intent.accent_pressed",
+            Self::OnAccent => "intent.on_accent",
+            Self::Focus => "intent.accent_ink",
+            Self::OnState => "intent.on_state",
+            Self::OnStateMark => "intent.on_state_mark",
             Self::Presence => "presence",
             Self::Success => "semantic.success",
             Self::Warning => "semantic.warning",
@@ -92,10 +102,13 @@ impl Role {
             Self::TextPrimary => colors.text_primary,
             Self::TextDim => colors.text_dim,
             Self::TextTertiary => colors.text_tertiary,
-            Self::Inverted => colors.intent.inverted,
-            Self::InvertedHover => colors.intent.inverted_hover,
-            Self::OnInverted => colors.intent.on_inverted,
-            Self::Focus => colors.intent.you,
+            Self::Accent => colors.intent.accent,
+            Self::AccentHover => colors.intent.accent_hover,
+            Self::AccentPressed => colors.intent.accent_pressed,
+            Self::OnAccent => colors.intent.on_accent,
+            Self::Focus => colors.intent.accent_ink,
+            Self::OnState => colors.intent.on_state,
+            Self::OnStateMark => colors.intent.on_state_mark,
             Self::Presence => colors.presence.get(0),
             Self::Success => colors.semantic.success,
             Self::Warning => colors.semantic.warning,
@@ -109,7 +122,7 @@ impl Role {
     const fn is_text(self) -> bool {
         matches!(
             self,
-            Self::TextPrimary | Self::TextDim | Self::TextTertiary | Self::OnInverted
+            Self::TextPrimary | Self::TextDim | Self::TextTertiary | Self::OnAccent
         )
     }
 }
@@ -159,13 +172,14 @@ const TERTIARY: [ContrastFloor; 6] = on_every_surface(Role::TextTertiary, NON_TE
 /// - Primary and secondary ink are body text on every surface and on a
 ///   selected or hovered row; tertiary ink is large-text quiet on every
 ///   surface and body text on content, where it is defined.
-/// - A primary action's label reads on its fill at rest and under the
-///   pointer, and the fill (an on switch, a filled track) stands off the
-///   window (WCAG 1.4.11).
+/// - A primary action's label reads on its fill at rest, under the pointer
+///   and pressed, and the fill stands off the window (WCAG 1.4.11).
+/// - The on state stands off the window and its knob stands on it.
 /// - A selected row is a visible step off the window.
-/// - Your colour is a focus indicator (WCAG 2.4.11) on every surface of a
-///   window and on floating chrome; every presence colour reads as a caret
-///   or pill on the window, its fields and floating chrome.
+/// - The accent ink reads as a link on the window and is a focus indicator
+///   (WCAG 2.4.11) on every surface of a window and on floating chrome;
+///   every presence colour reads as a caret or pill on the window, its
+///   fields and floating chrome.
 /// - Status is ink on a neutral control and a dot on the desktop.
 pub const FLOORS: &[ContrastFloor] = &[
     PRIMARY[0],
@@ -196,14 +210,13 @@ pub const FLOORS: &[ContrastFloor] = &[
     ),
     floor(Role::TextDim, Role::SelectionHover, BODY_TEXT_MIN_CONTRAST),
     floor(Role::Selection, Role::Content, SELECTION_STEP),
-    floor(Role::OnInverted, Role::Inverted, BODY_TEXT_MIN_CONTRAST),
-    floor(
-        Role::OnInverted,
-        Role::InvertedHover,
-        BODY_TEXT_MIN_CONTRAST,
-    ),
-    floor(Role::Inverted, Role::Content, NON_TEXT_MIN_CONTRAST),
-    floor(Role::Focus, Role::Content, NON_TEXT_MIN_CONTRAST),
+    floor(Role::OnAccent, Role::Accent, BODY_TEXT_MIN_CONTRAST),
+    floor(Role::OnAccent, Role::AccentHover, BODY_TEXT_MIN_CONTRAST),
+    floor(Role::OnAccent, Role::AccentPressed, BODY_TEXT_MIN_CONTRAST),
+    floor(Role::Accent, Role::Content, NON_TEXT_MIN_CONTRAST),
+    floor(Role::OnState, Role::Content, NON_TEXT_MIN_CONTRAST),
+    floor(Role::OnStateMark, Role::OnState, NON_TEXT_MIN_CONTRAST),
+    floor(Role::Focus, Role::Content, BODY_TEXT_MIN_CONTRAST),
     floor(Role::Focus, Role::Sidebar, NON_TEXT_MIN_CONTRAST),
     floor(Role::Focus, Role::Inspector, NON_TEXT_MIN_CONTRAST),
     floor(Role::Focus, Role::Raised, NON_TEXT_MIN_CONTRAST),
@@ -317,8 +330,8 @@ pub fn repair(colors: &mut Colors) -> Vec<ContrastFinding> {
             repair_one(colors, finding);
         }
     }
-    colors.border_focus = colors.intent.you;
-    colors.intent.selection_tint = crate::paint::with_alpha(colors.intent.you, 82);
+    colors.border_focus = colors.intent.accent_ink;
+    colors.intent.selection_tint = crate::paint::with_alpha(colors.intent.accent_ink, 82);
     before
 }
 
@@ -389,10 +402,13 @@ fn repair_one(colors: &mut Colors, finding: ContrastFinding) {
         Role::TextPrimary => &mut colors.text_primary,
         Role::TextDim => &mut colors.text_dim,
         Role::TextTertiary => &mut colors.text_tertiary,
-        Role::Inverted => &mut colors.intent.inverted,
-        Role::InvertedHover => &mut colors.intent.inverted_hover,
-        Role::OnInverted => &mut colors.intent.on_inverted,
-        Role::Focus => &mut colors.intent.you,
+        Role::Accent => &mut colors.intent.accent,
+        Role::AccentHover => &mut colors.intent.accent_hover,
+        Role::AccentPressed => &mut colors.intent.accent_pressed,
+        Role::OnAccent => &mut colors.intent.on_accent,
+        Role::Focus => &mut colors.intent.accent_ink,
+        Role::OnState => &mut colors.intent.on_state,
+        Role::OnStateMark => &mut colors.intent.on_state_mark,
         Role::Success => &mut colors.semantic.success,
         Role::Warning => &mut colors.semantic.warning,
         Role::Danger => &mut colors.semantic.danger,
@@ -450,17 +466,18 @@ mod tests {
             let no_temperature = std::iter::once(None);
             for hue in no_temperature.chain((0..36_u16).map(|step| Some(f32::from(step) * 10.0))) {
                 let palette = Palette { hue, ..preset };
-                for you in PresenceHue::ALL {
-                    let colors = Colors::as_authored(
-                        &palette,
-                        Emphasis::Inverted,
-                        palette.stock_presence(),
-                        you,
-                    );
+                for (you, emphasis) in PresenceHue::ALL.into_iter().flat_map(|you| {
+                    [
+                        (you, Emphasis::Inverted),
+                        (you, Emphasis::stock_for(&palette)),
+                    ]
+                }) {
+                    let colors =
+                        Colors::as_authored(&palette, emphasis, palette.stock_presence(), you);
                     let findings = audit(&colors);
                     assert!(
                         findings.is_empty(),
-                        "{palette:?} as {you:?}: {}",
+                        "{palette:?} as {you:?} ({emphasis:?}): {}",
                         findings
                             .iter()
                             .map(ToString::to_string)
@@ -511,7 +528,7 @@ mod tests {
             assert_eq!(audit(&repaired), Vec::new());
             assert_eq!(repaired.surfaces.content, authored.surfaces.content);
             assert_eq!(repaired.surfaces.overlay, authored.surfaces.overlay);
-            assert_eq!(repaired.border_focus, repaired.intent.you);
+            assert_eq!(repaired.border_focus, repaired.intent.accent_ink);
             let lightness: Vec<f32> = (0..PRESENCE_LEN)
                 .map(|s| (Oklch::from_color(repaired.presence.get(s)).l * 100.0).round())
                 .collect();

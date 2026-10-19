@@ -4294,7 +4294,7 @@ impl TabBar {
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
             transform,
-            theme.tokens.colors.intent.you,
+            theme.tokens.colors.intent.accent_ink,
             None,
             &ring,
         );
@@ -9045,7 +9045,7 @@ mod tests {
     fn the_active_tab_is_the_lift_alone_unless_the_host_shows_group_focus() {
         let theme = crate::theme::Theme::dark();
         let colour = |c: vello::peniko::Color| c.premultiply().to_rgba8().to_u32();
-        let you = colour(theme.tokens.colors.intent.you);
+        let you = colour(theme.tokens.colors.intent.accent_ink);
         let ink = colour(theme.tokens.colors.text_primary);
         let paint = |b: &mut TabBar| {
             lay_out_at_width_with(b, 600.0, &theme);

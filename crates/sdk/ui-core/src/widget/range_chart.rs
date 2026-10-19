@@ -341,7 +341,7 @@ impl Widget for RangeChart {
             let x0 = self.x(bar.start.min(bar.end), domain);
             let x1 = self.x(bar.start.max(bar.end), domain);
             let y = row_y + (self.style.row_height - self.style.bar_height) / 2.0;
-            let color = bar.color.unwrap_or(theme.tokens.colors.intent.inverted);
+            let color = bar.color.unwrap_or(theme.tokens.colors.intent.neutral_fill);
             let rect = if (bar.end - bar.start).abs() <= f64::EPSILON {
                 let r = self.style.bar_height * 0.42;
                 let mut diamond = BezPath::new();

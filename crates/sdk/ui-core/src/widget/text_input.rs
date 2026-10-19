@@ -2693,7 +2693,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.you,
+            theme.tokens.colors.intent.accent_ink,
             None,
             &caret,
         );
@@ -2723,7 +2723,7 @@ impl TextInput {
         if painted.width() <= 0.0 || painted.height() <= 0.0 {
             return None;
         }
-        let color = theme.tokens.colors.intent.you;
+        let color = theme.tokens.colors.intent.accent_ink;
         // Clear of the clip's rounded corners, the clip is its rectangle:
         // the caret's part of it needs no layer of its own.
         let radii = shape.radii();
@@ -3150,7 +3150,7 @@ impl TextInput {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &caret,
             );
@@ -5250,39 +5250,46 @@ fn paint_field_chrome(
         None,
         shape,
     );
-    // Rest edge derived from the field fill; focus keeps `border_focus`;
-    // a value the form rejected edges the field in danger ink, the one
-    // status colour a field takes.
+    // A field is a raised well: no edge at rest (the level step separates
+    // it), and no ring when focused (the caret is the focus). A value the
+    // form rejected edges the field in danger ink, the one status colour a
+    // field takes; forced colours keep the declared contrast edge.
     let colors = &theme.tokens.colors;
-    let (border_w, border_color) = if state.focused && !disabled {
-        (2.0, colors.border_focus)
-    } else if state.invalid && !disabled {
-        (
+    let edge = if state.invalid && !disabled {
+        Some((
             1.5,
             colors.ink_on_any(
                 &[bg_color, colors.surfaces.content],
                 colors.semantic.danger,
                 crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
-        )
+        ))
     } else if theme.colors_are_forced() {
         // Accessibility deliberately collapses surface levels. Keep the
         // declared contrast edge instead of deriving a decorative hairline;
         // disabled fields keep this edge under the existing group opacity.
-        (1.0, colors.border_standard)
+        Some((
+            if state.focused { 2.0 } else { 1.0 },
+            if state.focused {
+                colors.border_focus
+            } else {
+                colors.border_standard
+            },
+        ))
     } else {
-        (1.0, crate::surface::edge_on(rest))
+        None
     };
-    // Rest edge and focus ring share one half-pixel-inset outline, so
-    // the hairline never bleeds onto the ground and the ring sits where
-    // the edge was.
-    scene.stroke(
-        &Stroke::new(border_w),
-        transform,
-        border_color,
-        None,
-        &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
-    );
+    // The edge sits on a half-pixel-inset outline, so it never bleeds onto
+    // the ground.
+    if let Some((border_w, border_color)) = edge {
+        scene.stroke(
+            &Stroke::new(border_w),
+            transform,
+            border_color,
+            None,
+            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
+        );
+    }
     if disabled {
         scene.pop_layer();
     }
@@ -6897,7 +6904,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.you,
+            theme.tokens.colors.intent.accent_ink,
             None,
             &cursor_rect,
         );

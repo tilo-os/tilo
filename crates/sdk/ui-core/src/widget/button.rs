@@ -129,11 +129,11 @@ fn theme_key(theme: &Theme) -> ThemeKey {
     let colors = &theme.tokens.colors;
     (
         colors.surfaces.raised,
-        colors.intent.inverted,
-        colors.intent.on_inverted,
+        colors.intent.accent,
+        colors.intent.on_accent,
         colors.text_primary,
         colors.semantic.danger,
-        colors.intent.you,
+        colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
     )
 }
@@ -350,7 +350,12 @@ impl Button {
     /// its [`ControlSize`]'s height (never under the minimum pointer target)
     /// and, like every toolbar glyph, a [`ButtonRole::Plain`] button unless
     /// a role is given.
+    #[track_caller]
     pub fn icon_only(id: &str, icon: crate::icons::Icon, label: &str) -> Self {
+        debug_assert!(
+            !label.trim().is_empty(),
+            "an icon-only button needs its accessible name: it is also its tooltip"
+        );
         Self::new(id, "")
             .with_icon(icon)
             .with_accessible_name(label)
@@ -593,7 +598,7 @@ fn confirmation_face_colors(theme: &Theme, interact: ButtonInteract) -> FaceColo
     // the pointer, and the feedback never costs it its contrast.
     let ink = colors.ink_on_any(
         &[rest, active],
-        colors.intent.on_inverted,
+        colors.intent.on_accent,
         ON_FILL_MIN_CONTRAST,
     );
     let fill = if interact.hovered || interact.pressed {
@@ -639,9 +644,9 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
     match role {
         ButtonRole::Primary => {
             let (rest, hover, pressed) = (
-                intent.inverted,
-                intent.inverted_hover,
-                colors.inverted_pressed(),
+                intent.accent,
+                intent.accent_hover,
+                colors.intent.accent_pressed,
             );
             let fill = if interact.pressed {
                 pressed
@@ -651,11 +656,11 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
                 rest
             };
             // The label of the inverted fill is the theme's own
-            // (`intent.on_inverted`, the window ground), resolved over every
+            // (`intent.on_accent`, the window ground), resolved over every
             // fill so it does not change under the pointer.
             let ink = colors.ink_on_any(
                 &[rest, hover, pressed],
-                intent.on_inverted,
+                intent.on_accent,
                 ON_FILL_MIN_CONTRAST,
             );
             (fill, None, ink)
@@ -676,9 +681,9 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
                 colors.text_primary
             };
             let ink = colors.ink_on_any(&[rest, hover, active], wanted, ON_FILL_MIN_CONTRAST);
-            // The edge is derived from the rest face and held across hover
-            // and press.
-            (fill, Some(crate::surface::edge_on(rest)), ink)
+            // A raised face has no edge: the level step separates it
+            // (`docs/design-language.md`, "Surfaces").
+            (fill, None, ink)
         }
         ButtonRole::Key => {
             // A key rests on a faint lift of its ground and lifts further
@@ -704,8 +709,11 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
             (fill, None, ink)
         }
         ButtonRole::Plain => {
+            // Hover and press are neutral lifts of the ground: never the
+            // accent, which is for what is selected.
+            let pressed = colors.lift_on(colors.surfaces.content, 1.0);
             let fill = if interact.pressed {
-                intent.selection
+                pressed
             } else if interact.hovered {
                 intent.selection_hover
             } else {
@@ -716,11 +724,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
             // `Theme::on_ground` inside a region), and hover and press are
             // that ground's lift.
             let ink = colors.ink_on_any(
-                &[
-                    colors.surfaces.content,
-                    intent.selection_hover,
-                    intent.selection,
-                ],
+                &[colors.surfaces.content, intent.selection_hover, pressed],
                 colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
@@ -763,10 +767,11 @@ impl FaceMetrics {
     fn of(size: ControlSize, theme: &Theme) -> Self {
         let metrics = &theme.tokens.metrics;
         let spacing = &theme.tokens.spacing;
+        // Lucide at 16 in every small and regular control, 20 in a large one.
         let (pad_x, icon) = match size {
-            ControlSize::Small => (spacing.s2, metrics.icon_sm),
-            ControlSize::Regular => (spacing.s3, metrics.icon_md),
-            ControlSize::Large => (spacing.s4, metrics.icon_lg),
+            ControlSize::Small => (spacing.s2, metrics.icon_control),
+            ControlSize::Regular => (spacing.s3, metrics.icon_control),
+            ControlSize::Large => (spacing.s4, metrics.icon_bar),
         };
         let height = size.height(theme);
         // The icon grows with the label at a large text scale, never past
@@ -1131,7 +1136,7 @@ impl FacePaint<'_> {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 ctx.transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.accent_ink,
                 None,
                 &outline,
             );
@@ -2705,11 +2710,11 @@ mod tests {
 
             // Primary is inverted: primary ink as the fill, never a hue.
             let (fill, edge, ink) = face_colors(&theme, ButtonRole::Primary, rest);
-            assert_eq!(fill, colors.intent.inverted, "{}", theme.name);
+            assert_eq!(fill, colors.intent.accent, "{}", theme.name);
             assert_eq!(edge, None);
             assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
             let (hover_fill, _, hover_ink) = face_colors(&theme, ButtonRole::Primary, hover);
-            assert_eq!(hover_fill, colors.intent.inverted_hover);
+            assert_eq!(hover_fill, colors.intent.accent_hover);
             assert_eq!(
                 hover_ink, ink,
                 "the label does not change under the pointer"
@@ -2717,7 +2722,7 @@ mod tests {
             // Pressed reads past hover: rest, hover and press are three
             // distinct steps, and the label holds across all of them.
             let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
-            assert_eq!(press_fill, colors.inverted_pressed(), "{}", theme.name);
+            assert_eq!(press_fill, colors.intent.accent_pressed, "{}", theme.name);
             assert_ne!(press_fill, hover_fill, "{}", theme.name);
             let step = |a, b| crate::chrome::shell::lightness_step(a, b);
             assert!(
@@ -2980,7 +2985,7 @@ mod tests {
                 .control_size(ControlSize::Small);
             let theme = Theme::dark();
             let (bg, border, fg) = f.colors(&theme);
-            assert_eq!(bg, theme.tokens.colors.intent.inverted_hover);
+            assert_eq!(bg, theme.tokens.colors.intent.accent_hover);
             assert_eq!(border, None);
             // Resolves through `face_colors`, so it carries the same derived
             // label rather than a literal of its own.

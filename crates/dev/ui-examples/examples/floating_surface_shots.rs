@@ -97,7 +97,7 @@ impl Widget for Preview {
                     (self.rect.x0 + 210.0, self.rect.y1 - 60.0),
                     (self.rect.x1 - 44.0, self.rect.y0 + 38.0),
                 );
-                s.stroke(&Stroke::new(7.0), t, c.intent.inverted_hover, None, &route);
+                s.stroke(&Stroke::new(7.0), t, c.intent.accent_hover, None, &route);
                 let instruction = Rect::new(
                     self.rect.x0 + 14.0,
                     self.rect.y0 + 14.0,

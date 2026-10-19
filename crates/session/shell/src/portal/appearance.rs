@@ -75,7 +75,7 @@ impl LegacyAppearance {
         let luma = 0.2126 * f64::from(background.r)
             + 0.7152 * f64::from(background.g)
             + 0.0722 * f64::from(background.b);
-        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
+        let accent = theme.tokens.colors.intent.accent.to_rgba8();
         let accessibility = tilo_accessibility_settings::AccessibilitySettings::from_section(
             &settings_store::section(text, tilo_accessibility_settings::SECTION),
         );

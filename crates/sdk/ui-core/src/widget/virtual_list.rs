@@ -1654,7 +1654,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             transform,
             &self.rect,
         );
-        let accent = theme.tokens.colors.intent.inverted;
+        let accent = theme.tokens.colors.intent.accent_ink;
         self.push_row_selection();
         let rects: Vec<Option<Rect>> = self
             .mounted

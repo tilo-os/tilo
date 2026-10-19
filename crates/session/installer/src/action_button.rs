@@ -171,11 +171,11 @@ impl ActionButton {
             )
         } else if self.primary {
             let bg = if self.is_pressed || self.is_hovered {
-                theme.tokens.colors.intent.inverted_hover
+                theme.tokens.colors.intent.accent_hover
             } else {
-                theme.tokens.colors.intent.inverted
+                theme.tokens.colors.intent.accent
             };
-            (bg, theme.tokens.colors.intent.on_inverted)
+            (bg, theme.tokens.colors.intent.on_accent)
         } else {
             let bg = if self.is_pressed {
                 theme.tokens.colors.lift_on(raised, 1.0)
@@ -388,43 +388,13 @@ impl Widget for ActionButton {
                 tx + side,
                 self.rect.center().y + side / 2.0,
             );
-            let box_shape = RoundedRect::from_rect(box_rect, 4.0);
-            scene.fill(
-                Fill::NonZero,
+            // The shared checkbox face: the on state with its drawn mark.
+            ui::widget::Checkbox::paint(
+                scene,
                 transform,
-                if checked {
-                    theme.tokens.colors.intent.inverted
-                } else {
-                    theme.tokens.colors.surfaces.raised
-                },
-                None,
-                &box_shape,
+                theme,
+                &ui::widget::CheckboxFace::new(box_rect, checked),
             );
-            scene.stroke(
-                &Stroke::new(if checked { 1.5 } else { 1.0 }),
-                transform,
-                if checked {
-                    Color::WHITE
-                } else {
-                    theme.border_standard
-                },
-                None,
-                &box_shape,
-            );
-            if checked {
-                let (cw, ch) = text_renderer.measure("✓", 12.0, None);
-                text_renderer.draw_text(
-                    scene,
-                    "✓",
-                    12.0,
-                    Color::WHITE,
-                    transform.pre_translate(Vec2::new(
-                        box_rect.center().x - f64::from(cw) / 2.0,
-                        box_rect.center().y - f64::from(ch) / 2.0,
-                    )),
-                    None,
-                );
-            }
         }
         text_renderer.draw_text(
             scene,

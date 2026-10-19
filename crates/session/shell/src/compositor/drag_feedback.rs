@@ -151,7 +151,7 @@ fn draw_chip(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         Affine::IDENTITY,
-        theme.tokens.colors.intent.inverted,
+        theme.tokens.colors.intent.accent_ink,
         None,
         &rect,
     );

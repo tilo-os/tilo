@@ -2850,7 +2850,9 @@ mod tests {
         overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
         let offline = overlay.displays.remote().remove(1);
         assert!(!offline.online && !offline.enabled);
-        assert!(offline.detail().contains("Offline") && offline.detail().contains("Not in layout"));
+        assert!(
+            offline.detail().contains("Offline") && offline.detail().contains("not in the layout")
+        );
         let accessible = overlay.accessibility();
         let switches = accessible
             .children

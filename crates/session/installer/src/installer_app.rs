@@ -2943,7 +2943,7 @@ impl InstallerApp {
             let start = ui::format::memory(plan.free_start_bytes);
             let size = ui::format::memory(plan.free_size_bytes);
             let label = if self.selected_guided_extent == Some(index) {
-                format!("✓ Selected · {size} free at {start}")
+                format!("Selected: {size} free at {start}")
             } else {
                 format!("Use {size} free at {start}")
             };
@@ -3958,7 +3958,7 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
     for line in lines {
         let lower = line.to_ascii_lowercase();
         if lower.contains("starting install") {
-            add("✓ Installation choices verified");
+            add("Installation choices verified");
         } else if lower.contains("copying the running tilo image")
             || lower.contains("copying blob")
             || lower.contains("copying config")
@@ -3996,7 +3996,7 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         {
             add("Finalizing the secure boot setup…");
         } else if lower.contains("installed — remove the medium") {
-            add("✓ Tilo is ready");
+            add("Tilo is ready");
         }
     }
 
@@ -6270,7 +6270,7 @@ mod tests {
             assert_eq!(
                 friendly_install_status(&lines),
                 vec![
-                    "✓ Installation choices verified",
+                    "Installation choices verified",
                     "Copying verified Tilo system files…",
                     "Preparing encrypted storage…",
                 ]

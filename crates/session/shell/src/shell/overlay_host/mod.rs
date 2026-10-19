@@ -1661,7 +1661,13 @@ fn collaborators_screen_exposure(
                             if workspace.id == tree.desktop.active {
                                 tab.title.clone()
                             } else {
-                                format!("{} › {}", workspace.name, tab.title)
+                                tilo_desktop::i18n::t_args(
+                                    "topbar-sharing-window-in-workspace",
+                                    &[
+                                        ("window", tab.title.as_str().into()),
+                                        ("workspace", workspace.name.as_str().into()),
+                                    ],
+                                )
                             }
                         })
                 })
@@ -21653,6 +21659,8 @@ impl Widget for ShellOverlayHost {
         }
         // The toolkit's own menus and popovers inside the shell follow it too.
         ui::motion::note_input(event);
+        // Focus rings show for keyboard focus only: a click hides them.
+        ui::focus_visible::note(event);
         // MouseInput carries no coordinates. Keep the host's pointer cache
         // current before any modal can return early, because onboarding and
         // the other compositor-owned gates hit-test the following button edge
@@ -23666,6 +23674,70 @@ fn active_tab_provider_id(
 /// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
 /// its panel rather than reading as raised cards. The palette's own body is
 /// the floating material.
+/// One row of a review sheet's multi-select: a real checkbox, its label and
+/// an optional detail in secondary ink, the row lifted while focused.
+struct CheckRow<'a> {
+    checked: bool,
+    label: &'a str,
+    detail: Option<&'a str>,
+    focused: bool,
+}
+
+fn draw_check_row(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    row: CheckRow<'_>,
+) {
+    let radius = f64::from(theme.tokens.radii.item);
+    ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(row.focused))
+        .paint(scene, transform, rect, radius);
+    let pad = f64::from(theme.tokens.spacing.rhythm.sibling);
+    let side = 18.0;
+    let cy = rect.center().y;
+    let check = Rect::new(
+        rect.x0 + pad,
+        cy - side / 2.0,
+        rect.x0 + pad + side,
+        cy + side / 2.0,
+    );
+    ui::widget::Checkbox::paint(
+        scene,
+        transform,
+        theme,
+        &ui::widget::CheckboxFace::new(check, row.checked),
+    );
+    let style = theme.text(TextRole::Body);
+    let x = check.x1 + pad;
+    let room = (rect.x1 - pad - x).max(0.0);
+    let label = text_renderer.elide_to_width_style(row.label, ui::num::f32_of_f64(room), &style);
+    let (w, h) = text_renderer.measure_style(&label, None, &style);
+    let y = cy - f64::from(h) / 2.0;
+    text_renderer.draw_style(
+        scene,
+        &label,
+        theme.tokens.colors.text_primary,
+        transform.pre_translate((x, y).into()),
+        None,
+        &style,
+    );
+    if let Some(detail) = row.detail {
+        let dx = x + f64::from(w) + pad;
+        let room = (rect.x1 - pad - dx).max(0.0);
+        let detail = text_renderer.elide_to_width_style(detail, ui::num::f32_of_f64(room), &style);
+        text_renderer.draw_style(
+            scene,
+            &detail,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((dx, y).into()),
+            None,
+            &style,
+        );
+    }
+}
+
 fn palette_surface_theme(theme: &Theme) -> Theme {
     let mut themed = theme.clone();
     themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
@@ -23892,7 +23964,7 @@ impl ShellOverlayHost {
                     scene.stroke(
                         &vello::kurbo::Stroke::new(7.0),
                         transform,
-                        theme.tokens.colors.intent.inverted,
+                        theme.tokens.colors.intent.accent,
                         None,
                         &display.inset(-4.0),
                     );
@@ -25075,7 +25147,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.intent.inverted,
+            colors.intent.accent,
             None,
             &RoundedRect::from_rect(done, 10.0),
         );
@@ -25094,7 +25166,7 @@ impl ShellOverlayHost {
         text_renderer.draw_style(
             scene,
             &done_label,
-            colors.intent.on_inverted,
+            colors.intent.on_accent,
             transform.pre_translate(
                 (
                     done.center().x - f64::from(done_w) / 2.0,
@@ -25450,7 +25522,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
                                 transform,
-                                colors.intent.inverted,
+                                colors.intent.accent,
                                 None,
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
@@ -25493,7 +25565,7 @@ impl ShellOverlayHost {
                             scene.stroke(
                                 &Stroke::new(2.0),
                                 transform,
-                                colors.intent.inverted,
+                                colors.intent.accent,
                                 None,
                                 &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
                             );
@@ -25993,24 +26065,19 @@ impl ShellOverlayHost {
                 } else {
                     "portal-usb-row-read-only"
                 };
-                let label = format!(
-                    "[{}] {}",
-                    if device.selected { "✓" } else { " " },
-                    crate::shell::i18n::t_args(
-                        access_key,
-                        &[("device", device.label.as_str().into())]
-                    )
-                );
                 let focused = index == self.portal_dialogs.selected();
-                draw_filter_chip(
+                draw_check_row(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     *rect,
-                    &label,
-                    &theme.text(TextRole::Body),
-                    ui::chrome::SelectionState::active(focused),
+                    CheckRow {
+                        checked: device.selected,
+                        label: &device.label,
+                        detail: Some(&crate::shell::i18n::t(access_key)),
+                        focused,
+                    },
                 );
             }
             if let Some(editor) = view.launcher_editor() {
@@ -26065,16 +26132,18 @@ impl ShellOverlayHost {
                 self.portal_dialogs.remember_display(),
                 self.portal_dialogs.remember_label(),
             ) {
-                let label = format!("[{}] {}", if remember { "✓" } else { " " }, remember_label);
-                draw_filter_chip(
+                draw_check_row(
                     scene,
                     transform,
                     text_renderer,
                     theme,
                     rect,
-                    &label,
-                    &theme.text(TextRole::Body),
-                    ui::chrome::SelectionState::active(focused),
+                    CheckRow {
+                        checked: remember,
+                        label: &remember_label,
+                        detail: None,
+                        focused,
+                    },
                 );
             }
             if let Some(error) = self.portal_dialogs.entry_error() {
@@ -29117,14 +29186,14 @@ impl ShellOverlayHost {
                 Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
                 icon,
                 if selected_row {
-                    theme.tokens.colors.intent.on_inverted
+                    theme.tokens.colors.intent.on_accent
                 } else {
                     theme.tokens.colors.text_primary
                 },
                 1.5,
             );
             let text_color = if selected_row {
-                theme.tokens.colors.intent.on_inverted
+                theme.tokens.colors.intent.on_accent
             } else {
                 theme.tokens.colors.text_primary
             };
@@ -29140,7 +29209,7 @@ impl ShellOverlayHost {
                 scene,
                 &detail,
                 if selected_row {
-                    theme.tokens.colors.intent.on_inverted
+                    theme.tokens.colors.intent.on_accent
                 } else {
                     theme.tokens.colors.text_dim
                 },
