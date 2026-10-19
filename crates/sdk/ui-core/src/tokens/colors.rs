@@ -1995,3 +1995,19 @@ mod tests {
         assert_eq!(rgba(media.guide.with_alpha(1.0)), rgba(media.ink));
     }
 }
+
+
+/// The fill of a control that is on (a switch's track, a checked box, an
+/// active quick setting): green, the colour people read as "on". Status
+/// colours stay for status; this is state.
+#[must_use]
+pub fn active_fill(colors: &Colors) -> Color {
+    if crate::a11y::relative_luminance(colors.surfaces.content) > 0.5 {
+        oklch(0.58, 0.15, 150.0)
+    } else {
+        oklch(0.62, 0.15, 150.0)
+    }
+}
+
+/// The knob or mark standing on [`active_fill`].
+pub const ACTIVE_KNOB: Color = Color::from_rgba8(255, 255, 255, 255);

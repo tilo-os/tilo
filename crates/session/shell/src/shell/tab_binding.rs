@@ -662,6 +662,15 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     strip.window_groups.insert(insert_at, group);
     // Someone else's view: the person stays where they are.
     if !matches!(placement, Placement::Beside(_)) {
+        // A new window the person opened is where they go next: a window
+        // maximized over the strip steps back to its width so the strip can
+        // scroll to the new one, instead of the new one opening unseen
+        // behind it.
+        for other in &mut strip.window_groups {
+            if other.id != group_id && other.maximized {
+                other.maximized = false;
+            }
+        }
         tree.desktop.active_strip.insert(ws_id, strip_id);
         tree.desktop.set_active_group(strip_id, group_id);
     }

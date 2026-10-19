@@ -25,6 +25,9 @@ pub(super) struct BoolControl {
     pub is_hovered: bool,
     pub is_checked: bool,
     pub is_focused: bool,
+    /// The focus came from a click on this control, not from the keyboard:
+    /// it is shown as no ring, only the keyboard's is.
+    pub pressed_into_focus: bool,
     pub presence_path: Vec<PathSegment>,
     pub permission_scope: Option<PermissionScope>,
     /// When `false` the control is skipped by focus, rejects input (no flip,
@@ -52,6 +55,7 @@ impl BoolControl {
             is_hovered: false,
             is_checked: false,
             is_focused: false,
+            pressed_into_focus: false,
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
@@ -72,6 +76,13 @@ impl BoolControl {
             binding: Some(binding),
             ..Self::new("", accessible_name)
         }
+    }
+
+    /// Focus a person needs to be shown: keyboard focus, not the focus a
+    /// click on the control gave it.
+    #[must_use]
+    pub fn focus_visible(&self) -> bool {
+        self.is_focused && !self.pressed_into_focus
     }
 
     pub fn effectively_enabled(&self) -> bool {
@@ -152,6 +163,7 @@ impl BoolControl {
                 ..
             } if self.is_hovered && *element_state == ElementState::Pressed => {
                 *ctx.handled = true;
+                self.pressed_into_focus |= !self.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
                 self.flip();
             }
@@ -319,6 +331,7 @@ macro_rules! bool_control_widget_methods {
         }
         fn set_focus(&mut self, focused: bool) {
             self.control.is_focused = focused;
+            self.control.pressed_into_focus &= focused;
         }
         fn is_focused(&self) -> bool {
             self.control.is_focused

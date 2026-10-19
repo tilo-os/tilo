@@ -125,8 +125,10 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
     // A lift of the window ground: lighter on a dark material, darker on a
     // light one, so a white knob always stands out from it.
     let off_track = colors.intent.selection;
+    // On is green, the colour every person reads as "on": an inverted
+    // (white) track on a black-and-white surface didn't read as on at all.
     let track = if on {
-        colors.intent.inverted
+        crate::tokens::colors::active_fill(colors)
     } else {
         off_track
     };
@@ -137,7 +139,7 @@ pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> 
         ink_across(&[track], tone, reached + 1.0)
     };
     let (knob, knob_edge) = if on {
-        let knob = ink_across(&[track], colors.intent.on_inverted, floor);
+        let knob = ink_across(&[track], crate::tokens::colors::ACTIVE_KNOB, floor);
         (if interact.hovered { harder(knob) } else { knob }, None)
     } else if light_material(colors) {
         let ring = ink_across(&[track], colors.text_tertiary, floor);
@@ -410,7 +412,7 @@ impl Widget for Toggle {
             theme,
             &ToggleFace::new(track_rect(c.rect, theme), c.is_checked)
                 .hovered(c.is_hovered)
-                .focused(c.is_focused)
+                .focused(c.focus_visible())
                 .disabled(!c.effectively_enabled()),
         );
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
