@@ -179,9 +179,11 @@ impl ui::framework::ActionControl<String> for ThemeTiles {
 fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme, radius: f64) {
     let colors = &theme.tokens.colors;
     let surfaces = &colors.surfaces;
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
+        // ratchet-allow(desktop_ground): a theme tile is a miniature of that theme, drawn in its own colours
         surfaces.base,
         None,
         &RoundedRect::from_rect(area, radius),
@@ -189,6 +191,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     let inset = (area.height() * 0.12).round();
     let window = Rect::new(area.x0 + inset, area.y0 + inset, area.x1, area.y1);
     let corner = (radius * 0.6).max(3.0);
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -210,6 +213,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
         window.x0 + window.width() * 0.32,
         window.y1,
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -225,6 +229,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     );
     let unit = (window.height() / 9.0).max(2.0);
     let bar = |scene: &mut Scene, x: f64, y: f64, width: f64, color| {
+        // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
         scene.fill(
             Fill::NonZero,
             transform,
@@ -236,6 +241,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
     for row in 0..3 {
         let y = sidebar.y0 + unit * (1.2 + f64::from(row) * 1.6);
         if row == 1 {
+            // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -255,6 +261,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
             sidebar.x0 + unit,
             y,
             sidebar.width() * 0.55,
+            // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
             colors.text_dim.multiply_alpha(0.7),
         );
     }
@@ -274,6 +281,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
         left,
         window.y0 + unit * 2.8,
         width * 0.9,
+        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     bar(
@@ -281,10 +289,12 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
         left,
         window.y0 + unit * 4.0,
         width * 0.7,
+        // ratchet-allow(literal_alpha): a theme tile is a miniature of that theme, drawn in its own colours
         colors.text_dim.multiply_alpha(0.6),
     );
     let control = unit * 1.6;
     let bottom = window.y1 - unit * 1.2;
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -304,6 +314,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
         window.x1 - unit * 1.2,
         bottom,
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -311,6 +322,7 @@ fn paint_window(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme,
         None,
         &RoundedRect::from_rect(track, control / 2.0),
     );
+    // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
     scene.fill(
         Fill::NonZero,
         transform,
@@ -417,6 +429,7 @@ impl Widget for ThemeTiles {
             let edge = RoundedRect::from_rect(area, radius);
             if chosen {
                 // The chosen theme: the accent ring around its picture.
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -425,6 +438,7 @@ impl Widget for ThemeTiles {
                     &edge.rect().inflate(3.0, 3.0).to_rounded_rect(radius + 3.0),
                 );
             } else {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -434,6 +448,7 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.hover == Some(index) && !chosen {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -443,6 +458,7 @@ impl Widget for ThemeTiles {
                 );
             }
             if self.focused && self.cursor == index {
+                // ratchet-allow(raw_paint): a theme tile is a miniature of that theme, drawn in its own colours
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,

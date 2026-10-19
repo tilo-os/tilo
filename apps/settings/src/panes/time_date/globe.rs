@@ -221,13 +221,13 @@ pub(super) struct View {
 
 /// How far the globe may tilt toward a pole: past this the land near the
 /// pole is all that shows.
-const MAX_TILT: f64 = 70.0;
+const MAX_TILT_DEGREES: u8 = 70;
 
 impl View {
     fn facing(longitude: f64, latitude: f64) -> Self {
         Self {
             longitude: wrap_longitude(longitude),
-            latitude: latitude.clamp(-MAX_TILT, MAX_TILT),
+            latitude: latitude.clamp(-f64::from(MAX_TILT_DEGREES), f64::from(MAX_TILT_DEGREES)),
         }
     }
 }
@@ -445,14 +445,20 @@ impl GlobePalette {
     fn of(colors: &ui::tokens::colors::Colors) -> Self {
         if colors.palette.dark {
             Self {
+                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 land: colors.text_primary.multiply_alpha(0.26),
+                // ratchet-allow(literal_alpha, desktop_ground): the time-zone globe is content drawing (land, night and shade on the sphere)
                 night: colors.surfaces.base.multiply_alpha(0.5),
+                // ratchet-allow(literal_alpha, desktop_ground): the time-zone globe is content drawing (land, night and shade on the sphere)
                 shade: colors.surfaces.base.multiply_alpha(0.55),
             }
         } else {
             Self {
+                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 land: colors.text_primary.multiply_alpha(0.16),
+                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 night: colors.text_primary.multiply_alpha(0.07),
+                // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
                 shade: colors.text_primary.multiply_alpha(0.08),
             }
         }
@@ -498,9 +504,9 @@ pub(super) struct TimeZoneGlobe {
 }
 
 /// The globe's diameter, at the default text size.
-const DIAMETER: f32 = 280.0;
+const DIAMETER: f32 = ui::tokens::Metrics::BASE.figure_size;
 /// How far a press may move and still be a click.
-const DRAG_SLOP: f64 = 4.0;
+const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.click_slop as f64;
 
 impl TimeZoneGlobe {
     pub(super) fn new(
@@ -736,6 +742,7 @@ impl Widget for TimeZoneGlobe {
         let transform = transform * Affine::translate(self.rect.center().to_vec2());
         let projection = Projection::new(Point::ZERO, self.radius(), self.view());
         let disk = Circle::new(projection.centre, projection.radius);
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(
             Fill::NonZero,
             transform,
@@ -745,6 +752,7 @@ impl Widget for TimeZoneGlobe {
         );
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &disk);
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -762,12 +770,14 @@ impl Widget for TimeZoneGlobe {
                 state.land = Some((projection, projection.land()));
             }
             if let Some((_, land)) = &state.land {
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(Fill::EvenOdd, transform, palette.land, None, land);
             }
         }
         // The night: the twilight band, then the night inside it.
         let night = palette.night;
         for angle in [96.0, 90.0] {
+            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
             scene.fill(
                 Fill::EvenOdd,
                 transform,
@@ -782,10 +792,13 @@ impl Widget for TimeZoneGlobe {
             (projection.radius * 1.55) as f32,
         )
         .with_stops([
+            // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
             (0.0_f32, palette.shade.multiply_alpha(0.0)),
+            // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
             (0.6_f32, palette.shade.multiply_alpha(0.0)),
             (1.0_f32, palette.shade),
         ]);
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(
             Fill::NonZero,
             transform,
@@ -794,6 +807,7 @@ impl Widget for TimeZoneGlobe {
             &disk,
         );
         scene.pop_layer();
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -809,6 +823,7 @@ impl Widget for TimeZoneGlobe {
 
         let selected = self.selected_index();
         let cursor = self.cursor().filter(|_| self.focused);
+        // ratchet-allow(literal_alpha): the time-zone globe is content drawing (land, night and shade on the sphere)
         let dots = colors.text_primary.multiply_alpha(0.55);
         let mut marks = BezPath::new();
         for index in 0..self.points.len() {
@@ -823,6 +838,7 @@ impl Widget for TimeZoneGlobe {
                 marks.extend(Circle::new(at, 1.8).path_elements(0.1));
             }
         }
+        // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
         scene.fill(Fill::NonZero, transform, dots, None, &marks);
         for (index, emphasis) in [(self.hover, false), (cursor, false), (selected, true)] {
             let Some(index) = index else { continue };
@@ -836,6 +852,7 @@ impl Widget for TimeZoneGlobe {
             if emphasis {
                 // The chosen city: the person's accent, ringed in the ground
                 // so it stands off the land and the night.
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -843,6 +860,7 @@ impl Widget for TimeZoneGlobe {
                     None,
                     &Circle::new(at, 6.5),
                 );
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -851,6 +869,7 @@ impl Widget for TimeZoneGlobe {
                     &Circle::new(at, 4.5),
                 );
             } else {
+                // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -865,6 +884,7 @@ impl Widget for TimeZoneGlobe {
             }
         }
         if self.focused {
+            // ratchet-allow(raw_paint): the time-zone globe is content drawing (land, night and shade on the sphere)
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,

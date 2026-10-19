@@ -321,10 +321,10 @@ fn device_is_headphones(name: &str) -> bool {
 }
 
 /// How wide an app's volume slider is, and the narrowest it gets.
-const STREAM_SLIDER_WIDTH: f32 = 172.0;
-const STREAM_SLIDER_MIN_WIDTH: f32 = 88.0;
+const STREAM_SLIDER_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_width;
+const STREAM_SLIDER_MIN_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_min_width;
 /// How wide the output volume slider is, with its value beside it.
-const OUTPUT_SLIDER_WIDTH: f32 = 184.0;
+const OUTPUT_SLIDER_WIDTH: f32 = ui::tokens::Metrics::BASE.row_slider_valued_width;
 
 struct NoopAudioRuntime;
 impl AudioRuntimeControl for NoopAudioRuntime {

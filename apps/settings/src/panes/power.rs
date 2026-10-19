@@ -398,7 +398,7 @@ impl PowerControl for SamplePower {
 /// asleep overnight (no points), and at 72 % now, as the capture's battery
 /// reads.
 fn sample_history(now: u64) -> os_actions::BatteryHistory {
-    const LIMIT: f64 = 80.0;
+    const LIMIT_PERCENT: u8 = 80;
     let start = now - 7 * 24 * 60;
     let mut points = Vec::new();
     let mut capacity: f64 = 70.0;
@@ -413,7 +413,7 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
         } else {
             let on_ac = (18..20).contains(&hour) || (day % 2 == 0 && hour == 12);
             capacity = if on_ac {
-                (capacity + 9.0).min(LIMIT)
+                (capacity + 9.0).min(f64::from(LIMIT_PERCENT))
             } else {
                 (capacity - 1.25).max(3.0)
             };
@@ -429,7 +429,7 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
     for (minute, capacity, on_ac) in points {
         history.record(os_actions::BatteryHistoryPoint::sampled(
             minute,
-            (capacity + shift).round().clamp(3.0, LIMIT) as u32,
+            (capacity + shift).round().clamp(3.0, f64::from(LIMIT_PERCENT)) as u32,
             Some(80),
             on_ac,
         ));

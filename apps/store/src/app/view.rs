@@ -52,11 +52,11 @@ pub(super) enum Measure {
 impl Measure {
     /// The page column's width in lines of body text: the shell lines the
     /// title, its actions and the search field up with it.
-    pub(super) const CATALOGUE_LINES: f32 = 55.0;
+    pub(super) const CATALOGUE_LINES: u8 = 55;
 
     fn width(self, theme: &Theme) -> f32 {
         let lines = match self {
-            Self::Catalogue => Self::CATALOGUE_LINES,
+            Self::Catalogue => f32::from(Self::CATALOGUE_LINES),
             Self::Reading => 32.0,
         };
         (theme.text(TextRole::Body).line_height_px() * lines).round()

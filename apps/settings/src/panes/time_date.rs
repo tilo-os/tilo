@@ -866,7 +866,7 @@ impl TimeDatePane {
 /// How many cities the nearby list shows.
 const NEARBY: usize = 6;
 /// The nearby list's narrowest width before it moves under the globe.
-const NEARBY_MIN_WIDTH: f32 = 240.0;
+const NEARBY_MIN_WIDTH: f32 = ui::tokens::Metrics::BASE.aside_min_width;
 
 /// The `count` cities nearest `around`, nearest first.
 fn nearest(points: &[TimeZonePoint], around: (f64, f64), count: usize) -> Vec<usize> {
