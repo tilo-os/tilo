@@ -22,6 +22,35 @@ thread_local! {
     static FRAMES_UNTIL: Cell<Option<Instant>> = const { Cell::new(None) };
     /// How many [`testing::settled`] scopes are open on this thread.
     static SETTLED: Cell<u32> = const { Cell::new(0) };
+    /// The instant this thread's frame reads its motions at, while a frame's
+    /// layout is pinned ([`pin_frame`]).
+    static FRAME_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// The instant a motion is read at: the frame's, while its layout is pinned
+/// ([`pin_frame`]), else now. A widget that sizes itself by a motion (a
+/// disclosure opening) reads it here, so every layout pass of one frame sees
+/// the same pose and the frame's composition can settle; read at the clock,
+/// each pass saw the motion a little further on and the passes never agreed.
+#[must_use]
+pub fn frame_now() -> Instant {
+    FRAME_AT.with(Cell::get).unwrap_or_else(crate::time::now)
+}
+
+/// While the guard lives, motions on this thread read at the instant it was
+/// taken ([`frame_now`]). Nested pins keep the outer frame's instant.
+pub(crate) fn pin_frame() -> PinnedFrame {
+    let at = frame_now();
+    PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
+}
+
+/// Restores the frame clock [`pin_frame`] pinned.
+pub(crate) struct PinnedFrame(Option<Instant>);
+
+impl Drop for PinnedFrame {
+    fn drop(&mut self) {
+        FRAME_AT.with(|cell| cell.set(self.0));
+    }
 }
 
 /// A motion on this thread moves until `until`: the frame pump draws frames

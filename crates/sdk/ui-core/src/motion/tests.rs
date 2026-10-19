@@ -753,3 +753,40 @@ fn a_speaking_ring_comes_with_the_voice_and_eases_out_in_the_pause() {
     assert_eq!(ring.level(now), 0.0, "reduced motion: gone at once");
     assert!(!ring.is_moving(now));
 }
+
+/// Every layout pass of one frame reads a motion at the same instant, so a
+/// widget sized by a motion (a disclosure opening) measures the same in each
+/// pass and the frame's composition settles. Read at the clock, a slow pass
+/// saw the motion further on each time and resizing during it failed with
+/// `CompositionDidNotSettle`.
+#[test]
+fn a_frame_reads_its_motions_at_one_instant_across_its_layout_passes() {
+    let start = crate::time::now();
+    let mut seen = Vec::new();
+    let mut passes = 0;
+    let settled = crate::widget::layout::settle_widget_composition(true, |_| {
+        passes += 1;
+        let at = frame_now();
+        seen.push(at);
+        // A size that follows the motion's clock, as a disclosure's does.
+        let grown = at.saturating_duration_since(start).as_secs_f32();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        Ok((
+            Some(vec![(
+                0,
+                taffy::Point { x: 0.0, y: 0.0 },
+                taffy::Size {
+                    width: 1.0,
+                    height: grown,
+                },
+            )]),
+            passes == 1,
+        ))
+    });
+    assert!(settled.is_ok(), "{settled:?}");
+    assert!(seen.windows(2).all(|pair| pair[0] == pair[1]), "{seen:?}");
+    assert!(
+        frame_now() >= seen[0],
+        "outside the frame the clock runs on"
+    );
+}
