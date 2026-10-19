@@ -51,6 +51,8 @@ import package_sets  # noqa: E402
 import products  # noqa: E402
 import t_matrix  # noqa: E402
 import suites  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent / "os"))
+import os_toml  # noqa: E402
 import workspace_graph  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "policy"))
@@ -767,7 +769,9 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
             "security-reads": security_reads(), "policy-steps": policy_checks(),
             "workspace-layout-reads": workspace_layout_reads(),
             "t-toml-reads": t_toml_reads(manifest),
-            **product_blocks(products.load()), **cargo_checks(manifest)}
+            **product_blocks(products.load()), **cargo_checks(manifest),
+            # The OS image's layer actions, keyed by what each of os/image/'s pieces reads.
+            "os-layers": os_toml.block()}
 
 
 def product_blocks(manifest: dict) -> dict[str, str]:

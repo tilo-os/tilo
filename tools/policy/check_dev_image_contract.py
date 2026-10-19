@@ -107,8 +107,11 @@ def rel(repo: Path, path: Path) -> str:
 
 
 def production_containerfiles(repo: Path) -> list[Path]:
-    return sorted(p for p in (repo / "os").glob("Containerfile*")
-                  if p.is_file() and p.name != Path(DEV_CONTAINERFILE).name)
+    """The production image recipes, and the compile they pack (os/image/compile.sh)."""
+    recipes = [p for p in (repo / "os").glob("Containerfile*")
+               if p.is_file() and p.name != Path(DEV_CONTAINERFILE).name]
+    compile_script = repo / "os/image/compile.sh"
+    return sorted(recipes + ([compile_script] if compile_script.is_file() else []))
 
 
 # ---- 1. the dev image is never the production image ---------------------------

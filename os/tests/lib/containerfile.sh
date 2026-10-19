@@ -21,15 +21,32 @@ containerfile_instructions() {
   ' "$1"
 }
 
+# The stages whose instructions make the image's own layers, space-separated. The
+# OS image is built as layers (os/image/layers.toml), one piece each, so its rootfs
+# is the stages of every piece (tools/ci/os/pieces.py stages); any other
+# Containerfile's is its rootfs stage and the base that stage builds on.
+containerfile_image_stages() {
+  local file="$1" os_dir
+  os_dir="$(cd "$(dirname "$file")" && pwd)"
+  if [ "$(basename "$file")" = Containerfile ] && [ -f "$os_dir/image/layers.toml" ]; then
+    python3 "$os_dir/../tools/ci/os/pieces.py" stages | tr '\n' ' '
+  else
+    printf 'rootfs-base rootfs'
+  fi
+}
+
 # Emit the effective file-copy contract as:
 #   source-stage<TAB>source<TAB>destination
 # The `context` source stage denotes the build context. Grouped COPY destinations
 # must be directories; Docker installs each source under its basename there.
+# The stage `rootfs` stands for every stage of the image's layers
+# (containerfile_image_stages).
 containerfile_copy_contract() {
-  file="$1" wanted_stage="${2:-}"
-  containerfile_instructions "$file" | awk -v wanted="$wanted_stage" '
+  file="$1" wanted_stage="${2:-}" stages=""
+  [ "$wanted_stage" != rootfs ] || stages=" $(containerfile_image_stages "$file") "
+  containerfile_instructions "$file" | awk -v wanted="$wanted_stage" -v stages="$stages" '
     $1 == "FROM" { current = $NF; next }
-    $1 == "COPY" && (wanted == "" || current == wanted || current == wanted "-base") {
+    $1 == "COPY" && (wanted == "" || current == wanted || index(stages, " " current " ")) {
       stage = "context"; first = 2
       while (first <= NF && substr($first, 1, 2) == "--") {
         if ($first ~ /^--from=/) { stage = $first; sub(/^--from=/, "", stage) }

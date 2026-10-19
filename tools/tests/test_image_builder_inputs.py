@@ -19,7 +19,7 @@ sys.modules[SPEC.name] = policy
 SPEC.loader.exec_module(policy)
 
 NARROW = """\
-FROM base AS builder
+FROM base AS apps-payload
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/
 COPY .cargo /build/.cargo
@@ -75,7 +75,7 @@ class ImageBuilderInputsTests(unittest.TestCase):
         self.assertEqual(self.findings(NARROW), [])
 
     def test_copying_the_whole_context_is_refused(self) -> None:
-        found = self.findings("FROM base AS builder\nWORKDIR /build\nCOPY . /build\nRUN cargo build\n")
+        found = self.findings("FROM base AS apps-payload\nWORKDIR /build\nCOPY . /build\nRUN cargo build\n")
         self.assertEqual(len(found), 1, found)
         self.assertIn("copies the whole build context", found[0])
 
@@ -92,6 +92,17 @@ class ImageBuilderInputsTests(unittest.TestCase):
         found = self.findings(NARROW.replace("COPY os/scripts/build.sh /build/os/scripts/\n", ""))
         self.assertEqual(len(found), 1, found)
         self.assertIn("os/scripts/build.sh", found[0])
+
+    def test_a_script_the_outside_compile_runs_must_be_copied(self) -> None:
+        self.write("os/scripts/compile-step.sh", "#!/bin/sh\n")
+        self.write("os/image/compile.sh", "#!/bin/sh\n# os/scripts/commented.sh is no input\nsh os/scripts/compile-step.sh\n")
+        found = self.findings(NARROW)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not copy os/scripts/compile-step.sh", found[0])
+        self.assertIn("os/image/compile.sh:3 reads it", found[0])
+        self.assertEqual(self.findings(NARROW.replace(
+            "COPY os/scripts/build.sh /build/os/scripts/\n",
+            "COPY os/scripts/build.sh os/scripts/compile-step.sh /build/os/scripts/\n")), [])
 
     def test_a_workspace_member_root_must_be_copied(self) -> None:
         found = self.findings(NARROW.replace("COPY crates /build/crates\n", ""))

@@ -73,7 +73,8 @@ class GatewayFeaturesTests(unittest.TestCase):
         self.assertIn("tools/ci/package_features.py", test["inputs"])
 
     def test_os_release_builds_full_gateway_and_stages_http_binary(self):
-        containerfile = (ROOT / "os/Containerfile").read_text()
+        # The OS image's compile runs outside any image build.
+        containerfile = (ROOT / "os/image/compile.sh").read_text()
         # The release build names every feature in one list (the relay's
         # web feature rides in it too); the gateway's two must both be there.
         enabled = {feature for listed in re.findall(r"--features (\S+)", containerfile)

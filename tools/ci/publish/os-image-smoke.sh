@@ -23,19 +23,25 @@ case $arch in
   aarch64) qemu=(edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci) ;;
   *) die "unknown architecture $arch" ;;
 esac
-revision=$(git rev-parse --verify HEAD) || die 'the check names its commit: git = true'
-[[ $(cat "$in/revision") == "$revision" ]] || die "$in/image.oci.tar is of $(cat "$in/revision"), this check of $revision"
-[[ $(archive_digest "$in/image.oci.tar") == "$(cat "$in/digest")" ]] || die "$in/image.oci.tar is not the build"
+# The OS image as os-image-<arch> composed it: an OCI layout named by its digest, whichever
+# commit's run composed it from the same layers.
+[[ -f $in/oci/index.json ]] || die "$in holds no OS image layout (oci/)"
 [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
 
 # Root's tools in the guest: podman for the image, what disk-image.sh installs with, and QEMU.
-dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \
-  util-linux jq python3 dosfstools btrfs-progs systemd systemd-container binutils socat \
-  qemu-img ipxe-roms-qemu "${qemu[@]}" >/dev/null
+# The OS assembler image has podman and the verification tools; QEMU and the disk tools come
+# from the frozen snapshot where the image lacks them.
+missing=()
+for p in dosfstools btrfs-progs systemd-container binutils socat qemu-img ipxe-roms-qemu "${qemu[@]}"; do
+  rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
+done
+command -v podman >/dev/null || missing+=(podman skopeo fuse-overlayfs e2fsprogs util-linux jq python3)
+((${#missing[@]} == 0)) || dnf install -y --setopt=install_weak_deps=False "${missing[@]}" >/dev/null
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 use_cosign
-id=$(podman pull -q "oci-archive:$in/image.oci.tar")
+id=$(podman pull -q "oci:$in/oci")
+[[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$in/digest")" ]] || die "$in/oci is not the image $in/digest names"
 podman tag "$id" localhost/tilo:ci
 mkdir -p "$out"
 status=0

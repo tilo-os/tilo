@@ -27,6 +27,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 CONTAINERFILE="$REPO/os/Containerfile"
+# The compile, outside any image build: what the image packs, and with which features.
+COMPILE="$REPO/os/image/compile.sh"
 # shellcheck source=lib/containerfile.sh
 . "$REPO/os/tests/lib/containerfile.sh"
 PACK="$REPO/os/scripts/pack-apps.sh"
@@ -198,7 +200,7 @@ fi
 store="$(sed -n 's/^STORE="\${STORE:-\(.*\)}"$/\1/p' "$PACK" | head -1)"
 if [ -z "$store" ]; then
   bad "could not read the default STORE out of os/scripts/pack-apps.sh"
-elif containerfile_has_copy "$CONTAINERFILE" "$store/" "$store/" builder; then
+elif containerfile_has_copy "$CONTAINERFILE" "$store/" "$store/" apps-payload; then
   ok "the image copies the app store from and to $store, so registry paths resolve"
 else
   bad "os/Containerfile does not copy $store/ to $store/
@@ -260,7 +262,7 @@ else
   # the builder's tree to /image$sysroot (beside the font catalog's hard links,
   # #4003); the rootfs copies that /image/usr/ to /usr/ whole.
   if containerfile_has_copy "$CONTAINERFILE" "/image/usr/" "/usr/" runtime-image-payload \
-     && grep -q -- "--mount=type=bind,from=builder,source=$sysroot,target=/tilo-runtime,ro" "$CONTAINERFILE" \
+     && grep -q -- "--mount=type=bind,from=apps-payload,source=$sysroot,target=/tilo-runtime,ro" "$CONTAINERFILE" \
      && grep -q -- "cp -a /tilo-runtime /image$sysroot " "$CONTAINERFILE"; then
     ok "the image copies the runtime bundle from and to $sysroot"
   else
@@ -397,7 +399,7 @@ fi
 # --- every media feature the image turns on has to exist ---------------------
 # The apps' engines sit behind cargo features that default off so that --shots,
 # the offline tests and CI need no GStreamer stack, no camera and no network.
-# os/Containerfile names them in APP_FEATURES; the list must match the default
+# os/image/compile.sh names them in APP_FEATURES; the list must match the default
 # collection in dist/apps/app-collections.toml (what CI package-apps builds).
 #
 # A pair naming a feature no crate has is not a no-op and not a silent
@@ -416,9 +418,9 @@ fi
 # machine held it. A manifest that cannot be read is a FAILURE, not a skip:
 # "could not look" and "looked and found nothing wrong" are the same output
 # otherwise.
-feat_line="$(sed -n 's/^ *&& APP_FEATURES="\([^"]*\)".*/\1/p' "$CONTAINERFILE" | head -1)"
+feat_line="$(sed -n 's/^ *&& APP_FEATURES="\([^"]*\)".*/\1/p' "$COMPILE" | head -1)"
 if [ -z "$feat_line" ]; then
-  bad "could not read APP_FEATURES from os/Containerfile — the declaration it is
+  bad "could not read APP_FEATURES from os/image/compile.sh — the declaration it is
       parsed out of moved. Unchecked, the image would build every media app on its
       default feature set: a music player that cannot produce sound, a video player
       that synthesises frames, a camera that cannot capture."
@@ -491,7 +493,7 @@ else
       collection: $collection_sorted
       a divergent graph is what made image thin apps ~1.9 MB of .text larger than CI"
 fi
-if grep -Fq 'if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi' "$CONTAINERFILE" \
+if grep -Fq 'if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi' "$COMPILE" \
    && ! grep -Eq '^exclude *=.*"browser"' "$REPO/dist/apps/app-collections.toml"; then
   ok "image thin apps carry the Browser like the default collection, unless the image omits it"
 else
