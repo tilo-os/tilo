@@ -659,6 +659,44 @@ impl SessionProtocol {
         write_frame(send, &SessionFrameV1::Done).await
     }
 
+    /// The current bytes of small records the requester was just sent, inline.
+    async fn send_inline(
+        &self,
+        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
+        inline_limit: u64,
+        send: &mut SendStream,
+    ) -> Result<()> {
+        let mut blobs = Vec::new();
+        let mut size = 0_usize;
+        let mut inlined = HashSet::new();
+        for hash in current.into_values() {
+            for blob in self
+                .inline_blobs(iroh_blobs::Hash::from(hash), inline_limit)
+                .await
+            {
+                if !inlined.insert(blob.hash) {
+                    continue;
+                }
+                size = size.saturating_add(blob.bytes.len());
+                blobs.push(blob);
+                if size >= TARGET_FRAME_BYTES {
+                    write_frame(
+                        send,
+                        &SessionFrameV1::Blobs {
+                            blobs: std::mem::take(&mut blobs),
+                        },
+                    )
+                    .await?;
+                    size = 0;
+                }
+            }
+        }
+        if !blobs.is_empty() {
+            write_frame(send, &SessionFrameV1::Blobs { blobs }).await?;
+        }
+        Ok(())
+    }
+
     /// The manifest and chunks of a small file, when all are local.
     async fn inline_blobs(&self, manifest: iroh_blobs::Hash, limit: u64) -> Vec<SessionBlobV1> {
         let Some(bytes) = self.store.local(manifest).await else {

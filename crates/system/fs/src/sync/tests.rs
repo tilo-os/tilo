@@ -3566,7 +3566,6 @@ fn exchanges_for(
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
     PeerExchanges::new(
         PassShared {
-            endpoint: endpoint.clone(),
             namespace: Arc::clone(namespace),
             hydrator: Arc::new(Hydrator::new(
                 endpoint.clone(),
@@ -3575,7 +3574,6 @@ fn exchanges_for(
             sender: None,
             identity: identity.clone(),
             policy,
-            workspace_id: workspace,
             records: None,
             sessions: Arc::new(SessionPool::new(
                 endpoint.clone(),
