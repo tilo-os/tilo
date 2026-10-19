@@ -670,12 +670,7 @@ impl TimeDatePane {
     /// zone's city until one is), each with its time now.
     fn zone_picker(&self) -> Box<dyn Widget> {
         let unix = self.clock.unix_now();
-        self.minute.set(unix.div_euclid(60));
-        let (focus, revision) = {
-            let globe = self.globe.borrow();
-            (globe.focus, globe.focus_revision)
-        };
-        self.globe_revision.set(revision);
+        let focus = self.globe.borrow().focus;
         let globe = TimeZoneGlobe::new(
             Rc::clone(&self.timezone_points),
             self.timezone.clone(),
@@ -770,7 +765,20 @@ impl TimeDatePane {
         row
     }
 
+    /// Whether the minute or the place picked on the globe moved on since
+    /// the composition was built.
+    fn outdated(&self) -> bool {
+        self.globe.borrow().focus_revision != self.globe_revision.get()
+            || self.clock.unix_now().div_euclid(60) != self.minute.get()
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
+        // What this composition shows: the minute and the place picked on
+        // the globe. `sync` builds again when either moves on, globe shown
+        // or not.
+        self.minute.set(self.clock.unix_now().div_euclid(60));
+        self.globe_revision
+            .set(self.globe.borrow().focus_revision);
         let (now, today) = self.clock.now(self.h24);
         let now = value_row(&t("time-current-time"), &now);
         let today = value_row(&t("time-current-date"), &today);
@@ -935,9 +943,7 @@ impl Widget for TimeDatePane {
         }
         // A place picked on the globe, or a new minute, changes the times
         // and cities shown.
-        if self.globe.borrow().focus_revision != self.globe_revision.get()
-            || self.clock.unix_now().div_euclid(60) != self.minute.get()
-        {
+        if self.outdated() {
             self.composed.invalidate();
         }
         self.composed.sync(state, root);
@@ -1204,6 +1210,11 @@ mod tests {
         assert!(
             !says(&t("time-map-title")),
             "with no zones to place there is no globe, not an empty one: {text:#?}"
+        );
+        assert!(
+            !pane.outdated(),
+            "a composition without the globe is current until the minute turns, \
+             or the window would rebuild it on every pass and never settle"
         );
         assert!(
             !text.iter().any(|line| line.contains(SAMPLE_TIMEZONE)),
