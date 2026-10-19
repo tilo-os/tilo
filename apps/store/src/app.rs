@@ -4812,13 +4812,18 @@ mod tests {
             assert_eq!(visible[0].name, "Terminal");
         }
 
-        // Case `search_ranks_name_prefix_hits_first`.
+        // Case `search_finds_words_by_their_start`: the Store's index
+        // matches the start of a word, as desktop search does, so "te"
+        // finds Terminal and not the "te" inside Notes.
         {
             let mut app = seeded_app();
             app.set_query("te".into());
             let visible = app.visible_items();
-            assert!(visible.len() >= 2);
-            assert_eq!(visible[0].name, "Terminal", "prefix hit ranks first");
+            assert_eq!(visible.first().map(|item| item.name.as_str()), Some("Terminal"));
+            assert!(
+                visible.iter().all(|item| item.name != "Notes"),
+                "a letter pair inside a word is no match"
+            );
         }
 
         // Case `categories_are_the_catalogues`.

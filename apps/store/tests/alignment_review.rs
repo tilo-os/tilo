@@ -42,16 +42,6 @@ fn first_named(root: &dyn Widget, label: &str) -> Rect {
     out.unwrap_or_else(|| panic!("no widget named {label:?}"))
 }
 
-fn last_named(root: &dyn Widget, label: &str) -> Rect {
-    let mut out = None;
-    walk(root, &mut |w| {
-        if w.accessibility().and_then(|n| n.name).as_deref() == Some(label) {
-            out = Some(w.get_rect());
-        }
-    });
-    out.unwrap_or_else(|| panic!("no widget named {label:?}"))
-}
-
 fn by_test_id(root: &dyn Widget, id: &str) -> Rect {
     let mut out = None;
     walk(root, &mut |w| {
@@ -205,7 +195,8 @@ fn details_page_aligns_identity_and_facts() {
     let tight = f64::from(theme.tokens.spacing.s2);
     for width in [480.0, 1200.0] {
         let app = lay_out(staged("detail"), (width, 900.0));
-        let title = last_named(&*app, "Notes");
+        // The page's own heading, not the window's title of the same name.
+        let title = by_test_id(&*app, "store.detail.name");
         let developer = by_test_id(&*app, "store.detail.developer");
         close(
             developer.y0 - title.y1,
