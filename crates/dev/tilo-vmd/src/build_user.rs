@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn only_a_root_listener_on_the_port_counts() {
         let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-   0: 0100007F:108A 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1\n\
+   0: 0100007F:1082 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1\n\
    1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 2 1\n\
    2: 0100007F:1F91 0100007F:9C40 01 00000000:00000000 00:00000000 00000000     0        0 3 1\n";
         assert!(table_has_root_listener(table, 4226));
