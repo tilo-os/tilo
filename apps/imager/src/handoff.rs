@@ -794,7 +794,9 @@ mod tests {
         assert_eq!(nm_keyfile_value("  lead"), "\\s\\slead");
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
-        assert!(!media.contains("orange-pi"));
+        // The device's name is a preference the media carries; the
+        // passphrase never is.
+        assert!(media.contains("\"device_label\":\"orange-pi\""));
         let paths = tilo_user_identity::IdentityPaths::under(dir.path().join("var/lib/tilo"));
         assert!(
             tilo_user_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()

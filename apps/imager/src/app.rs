@@ -4715,8 +4715,8 @@ mod tests {
             .path()
             .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection");
         let contents = std::fs::read_to_string(&network).unwrap();
-        assert!(contents.contains("ssid=\"studio\""));
-        assert!(contents.contains("psk=\"correct-horse\""));
+        assert!(contents.contains("\nssid=studio\n"));
+        assert!(contents.contains("\npsk=correct-horse\n"));
         let request = app
             .write_request(
                 app.source.clone().unwrap(),

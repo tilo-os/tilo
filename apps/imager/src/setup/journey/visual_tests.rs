@@ -794,6 +794,13 @@ fn motion_frames(app: &mut TestApp<GuidedInstallerShell>, name: &str, direction:
                 .render_png(&directory.join(format!("{name}-{percent:03}.png")));
         }
     }
+    // A held capture pose stays until released; at rest at its end, the
+    // next frame retires the transition and its departing scene.
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.slide = Some((direction, ui::motion::Presence::opened()));
+    })
+    .unwrap();
+    app.harness().render_rgba();
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.slide.is_none());
         assert!(preview.outgoing.is_none());
@@ -853,6 +860,13 @@ fn personal_motion_frames(
             )));
         }
     }
+    // A held capture pose stays until released; at rest at its end, the
+    // next frame retires the transition and its departing scene.
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.slide = Some((direction, ui::motion::Presence::opened()));
+    })
+    .unwrap();
+    app.harness().render_rgba();
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.slide.is_none());
         assert!(preview.outgoing.is_none());
