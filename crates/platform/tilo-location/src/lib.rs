@@ -90,7 +90,7 @@ pub fn system() -> Arc<dyn LocationProvider> {
 
 /// A provider that never locates, for hosts that offer none.
 pub fn unavailable() -> Arc<dyn LocationProvider> {
-    Arc::new(Refusing("location is unavailable in this host"))
+    Arc::new(Refusing("Location isn't available here"))
 }
 
 struct Refusing(&'static str);

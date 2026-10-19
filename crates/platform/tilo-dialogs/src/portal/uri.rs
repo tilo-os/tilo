@@ -25,7 +25,7 @@ pub fn open_uri_scoped(uri: String, scope: impl EffectGate) -> Receiver<Result<(
             let _ = sender.send(outcome);
         });
     if spawned.is_err() {
-        let _ = failed.send(Err("opening URI unavailable in this host".into()));
+        let _ = failed.send(Err("Opening links isn't available here".into()));
     }
     receiver
 }
