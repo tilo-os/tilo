@@ -1104,9 +1104,10 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             "a sibling hash is never authority"
         );
 
-        // Exercise the real provider interceptor. Each single authorized blob
-        // transfers, the sibling is denied, and a mixed get-many is rejected
-        // before either member is imported into the client store.
+        // Exercise the real provider interceptor. Each single authorized root
+        // transfers, a chunk only beside its manifest, the sibling is denied,
+        // and a mixed get-many is rejected before either member is imported
+        // into the client store.
         let _router = Router::builder(server_ep.clone())
             .accept(
                 iroh_blobs::ALPN,
@@ -1119,7 +1120,7 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
                 )),
             )
             .spawn();
-        for hash in [allowed_manifest, allowed_chunk, thumbnail] {
+        for hash in [allowed_manifest, thumbnail] {
             let connection = client_ep
                 .connect(server_ep.addr(), iroh_blobs::ALPN)
                 .await
@@ -1131,6 +1132,38 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
                 "authorized record blob must transfer through the real guard"
             );
         }
+        // A chunk is authorised through a manifest named in the same request.
+        let connection = client_ep
+            .connect(server_ep.addr(), iroh_blobs::ALPN)
+            .await
+            .unwrap();
+        assert!(
+            iroh_blobs::get::request::get_blob(connection, allowed_chunk)
+                .await
+                .is_err(),
+            "a chunk asked for without its manifest is refused"
+        );
+        let chunk_client_store = ContentStore::memory();
+        let connection = client_ep
+            .connect(server_ep.addr(), iroh_blobs::ALPN)
+            .await
+            .unwrap();
+        assert!(
+            chunk_client_store
+                .store()
+                .remote()
+                .execute_get_many(
+                    connection,
+                    GetManyRequest::new(
+                        vec![allowed_manifest, allowed_chunk],
+                        ChunkRangesSeq::all(),
+                    ),
+                )
+                .await
+                .is_ok(),
+            "a chunk beside its readable manifest transfers through the real guard"
+        );
+        assert!(chunk_client_store.has(allowed_chunk).await);
         let connection = client_ep
             .connect(server_ep.addr(), iroh_blobs::ALPN)
             .await
