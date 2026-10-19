@@ -282,10 +282,12 @@ class NativeQualificationBoundary(unittest.TestCase):
             receipt = Path(temporary) / 'saved-ready.json'
             receipt.write_text('{"schema":1,"publication_qualified":true}')
             receipt.chmod(0o600)
+            # The timeout only bounds a hang: under a loaded suite a fresh
+            # interpreter's imports alone can take seconds before it refuses.
             result = subprocess.run([sys.executable, str(Path(qualifier.__file__)),
                 '--host', sys.executable, '--pins', str(receipt), '--sidecar', temporary,
                 '--arch', 'x86_64', '--cohort', str(receipt), '--image', 'sha256:' + 'a' * 64],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(result.stdout, b'')
             self.assertIn(b'qualification refused', result.stderr)

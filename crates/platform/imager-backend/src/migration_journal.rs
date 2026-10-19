@@ -1514,8 +1514,8 @@ mod tests {
                 );
                 for p in [&output, &output.join("a"), &output.join("empty")] {
                     let m = fs::metadata(p).unwrap();
-                    assert_eq!(m.modified().unwrap(), time);
-                    assert_eq!(m.accessed().unwrap(), time);
+                    assert_eq!(m.modified().unwrap(), time, "{}", p.display());
+                    assert_eq!(m.accessed().unwrap(), time, "{}", p.display());
                 }
             },
         );
