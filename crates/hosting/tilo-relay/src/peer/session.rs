@@ -23,6 +23,8 @@ struct SessionLoop<'s, 'a> {
     /// Subscribe replays the reader has handed to the writer and the writer
     /// has not finished; live frames wait while any is pending.
     pending_replays: &'s std::sync::atomic::AtomicUsize,
+    /// Woken each time the writer finishes one of those replays.
+    replay_written: &'s tokio::sync::Notify,
 }
 
 impl<'s, 'a> SessionLoop<'s, 'a> {
@@ -30,11 +32,30 @@ impl<'s, 'a> SessionLoop<'s, 'a> {
         peer: &'s AuthenticatedPeer,
         session: &'s SessionCtx<'a>,
         pending_replays: &'s std::sync::atomic::AtomicUsize,
+        replay_written: &'s tokio::sync::Notify,
     ) -> Self {
         Self {
             peer,
             session,
             pending_replays,
+            replay_written,
+        }
+    }
+
+    /// Until the writer has finished every replay the reader handed it.
+    async fn replays_written(self) -> Result<(), PeerError> {
+        loop {
+            let written = self.replay_written.notified();
+            tokio::pin!(written);
+            written.as_mut().enable();
+            if self
+                .pending_replays
+                .load(std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return Ok(());
+            }
+            written.await;
         }
     }
 }
@@ -174,7 +195,8 @@ where
     // queueing them for store-and-forward, and they are lost.
     let (reply_tx, mut reply_rx) = mpsc::channel::<ReplayWrite>(8);
     let pending_replays = std::sync::atomic::AtomicUsize::new(0);
-    let cx = SessionLoop::new(&peer, &session, &pending_replays);
+    let replay_written = tokio::sync::Notify::new();
+    let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written);
     let reading = SessionReaderLoop::new(
         &mut reader,
         &mut subscribed,

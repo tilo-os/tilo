@@ -2149,18 +2149,26 @@ async fn paused_state_private_roundtrip(
                     .await
                     .unwrap();
             }
-            tilo_test_env::within("the explicit unsubscribe to complete", async {
+            let closed = tilo_test_env::within("the explicit unsubscribe to complete", async {
                 loop {
                     match br.read_next().await.unwrap() {
-                        Some(EnvelopeV2::State(Envelope::Pong)) => break,
+                        Some(EnvelopeV2::State(Envelope::Pong)) => break false,
                         Some(EnvelopeV2::State(
                             Envelope::Delta { .. } | Envelope::Ready { .. },
                         )) => {}
+                        None => break true,
                         other => panic!("unexpected explicit-unsubscribe reply: {other:?}"),
                     }
                 }
             })
             .await;
+            if closed {
+                // The relay ended the session: say how, not just that it did.
+                let ended = tilo_test_env::within("the closed session's outcome", tasks.remove(1))
+                    .await
+                    .expect("the closed session's outcome");
+                panic!("the relay closed the session on explicit unsubscribe: {ended:?}");
+            }
             assert!(
                 !workspace
                     .lock()

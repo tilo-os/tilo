@@ -129,6 +129,7 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
                 self.write,
             ))
             .await?;
+            cx.replay_written.notify_waiters();
             self.private_burst = 0;
             return Ok(WriterTurn::Wrote);
         }
