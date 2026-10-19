@@ -3289,17 +3289,18 @@ pub fn draw_agents_pane(
             "workspace-settings-view-only"
         }),
     );
+    // Add agent stands under the intro whatever the pane lists.
+    draw_primary_button(
+        scene,
+        transform,
+        agents_add_rect(pane_rect),
+        &t("workspace-settings-add-agent"),
+        is_owner,
+        text_renderer,
+        theme,
+    );
     if rows.is_empty() && !ws.bots.is_empty() {
         // No agents, but bots: the bots stand under the Add agent button.
-        draw_primary_button(
-            scene,
-            transform,
-            agents_add_rect(pane_rect),
-            &t("workspace-settings-add-agent"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
         draw_bots_section(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             pane_rect,
@@ -3312,15 +3313,6 @@ pub fn draw_agents_pane(
         return;
     }
     if rows.is_empty() {
-        draw_primary_button(
-            scene,
-            transform,
-            agents_add_rect(pane_rect),
-            &t("workspace-settings-add-agent"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
         let empty = Rect::new(
             pane_rect.x0,
             pane_rect.y0
@@ -3358,15 +3350,6 @@ pub fn draw_agents_pane(
         ),
         &t("workspace-settings-agents-header"),
         Some(count),
-        text_renderer,
-        theme,
-    );
-    draw_primary_button(
-        scene,
-        transform,
-        agents_add_rect(pane_rect),
-        &t("workspace-settings-add-agent"),
-        is_owner,
         text_renderer,
         theme,
     );

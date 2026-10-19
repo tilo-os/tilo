@@ -62,6 +62,10 @@ pub enum CollaboratorsHit {
 /// One row of the roster. People and agents are listed apart, so an agent
 /// is never reported as a person.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one participant (software, a bot, invited, followable), each read on its own"
+)]
 pub struct RosterRow {
     pub id: String,
     pub label: String,
@@ -161,6 +165,26 @@ pub enum RosterFollowRelationship {
 }
 
 impl CollaboratorsModel<'_> {
+    /// The rows of who is here, not merely invited, as people and agents.
+    fn present_groups(&self) -> (Vec<usize>, Vec<usize>) {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.invited)
+            .map(|(index, row)| (index, row.is_agent))
+            .fold(
+                (Vec::new(), Vec::new()),
+                |(mut people, mut agents), (index, is_agent)| {
+                    if is_agent {
+                        agents.push(index);
+                    } else {
+                        people.push(index);
+                    }
+                    (people, agents)
+                },
+            )
+    }
+
     #[must_use]
     pub fn relationship_for(&self, row_id: &str) -> Option<RosterFollowRelationship> {
         self.following_pairs.iter().find_map(|(follower, target)| {
@@ -286,7 +310,7 @@ impl CollaboratorsOverlay {
         self.follow_expansion(model);
         self.host = model.host;
         self.shown_rows = model.rows.to_vec();
-        self.shown_workspace = model.workspace.to_owned();
+        model.workspace.clone_into(&mut self.shown_workspace);
         self.shown_followed = model.followed_id.map(str::to_owned);
         self.shown_exposure = model.exposure.map(str::to_owned);
         self.layout(text, theme, model);
@@ -346,23 +370,7 @@ impl CollaboratorsOverlay {
             .secondary("0")
             .height(text, theme);
         let control = f64::from(metrics.bar_control_height);
-        let present: Vec<usize> = model
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| !row.invited)
-            .map(|(index, _)| index)
-            .collect();
-        let people: Vec<usize> = present
-            .iter()
-            .copied()
-            .filter(|index| model.rows.get(*index).is_some_and(|row| !row.is_agent))
-            .collect();
-        let agents: Vec<usize> = present
-            .iter()
-            .copied()
-            .filter(|index| model.rows.get(*index).is_some_and(|row| row.is_agent))
-            .collect();
+        let (people, agents) = model.present_groups();
         let face = FloatingPanelFace::new()
             .header(header_h)
             .footer(if model.may_invite { control } else { 0.0 })
@@ -385,20 +393,20 @@ impl CollaboratorsOverlay {
             self.details_height,
         )
         .height;
-        let mut body_h = 0.0;
-        let mut sections = 0;
-        for group in [&people, &agents] {
-            if group.is_empty() {
-                continue;
-            }
-            sections += 1;
-            body_h += heading_h + row_h * ui::num::f64_of_usize(group.len());
-        }
-        if sections == 0 {
-            body_h = row_h;
+        let sections = [&people, &agents]
+            .into_iter()
+            .filter(|group| !group.is_empty())
+            .count();
+        let mut body_h = if sections == 0 {
+            row_h
         } else {
-            body_h += f64::from(spacing.s2) * f64::from(sections - 1);
-        }
+            [&people, &agents]
+                .into_iter()
+                .filter(|group| !group.is_empty())
+                .map(|group| heading_h + row_h * ui::num::f64_of_usize(group.len()))
+                .sum::<f64>()
+                + f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
+        };
         let exposure_h = model.exposure.map_or(0.0, |exposure| {
             ListRowFace::new(exposure)
                 .two_line_title()
@@ -431,7 +439,44 @@ impl CollaboratorsOverlay {
             Rect::ZERO
         };
 
-        // Rows, in content coordinates (before scrolling).
+        self.place_rows(
+            text,
+            theme,
+            model,
+            &RowsPlan {
+                people: &people,
+                agents: &agents,
+                open_index,
+                shown_changes,
+                revealed,
+                exposure_h,
+            },
+        );
+    }
+
+    /// The rows, in content coordinates (before scrolling): the exposure
+    /// notice, then each group's heading and rows, the open row's details
+    /// under it.
+    fn place_rows(
+        &mut self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        plan: &RowsPlan<'_>,
+    ) {
+        let metrics = &theme.tokens.metrics;
+        let spacing = &theme.tokens.spacing;
+        let row_h = f64::from(metrics.row_avatar);
+        let heading_h = f64::from(metrics.row_single);
+        let control = f64::from(metrics.bar_control_height);
+        let RowsPlan {
+            people,
+            agents,
+            open_index,
+            shown_changes,
+            revealed,
+            exposure_h,
+        } = *plan;
         self.rows.clear();
         self.headings.clear();
         let bleed = ui::chrome::row_bleed(theme);
@@ -458,32 +503,9 @@ impl CollaboratorsOverlay {
         // Wave and Follow sit in the row's trailing slot, inside its
         // disclosure chevron when it has one.
         self.trailing_w = follow_w + TRAILING_GAP + control;
-        let trailing_w = self.trailing_w;
-        let mut trailing = |rect: Rect, row: &RosterRow| {
-            let mut probe = ListRowFace::new(&row.label).trailing_width(trailing_w);
-            if !row.recent.is_empty() {
-                probe = probe.disclosure();
-            }
-            let right = probe
-                .trailing_rect(rect, text, theme)
-                .map_or(rect.x1 - bleed, |slot| slot.x1);
-            let follow = Rect::new(
-                right - follow_w,
-                rect.center().y - control / 2.0,
-                right,
-                rect.center().y + control / 2.0,
-            );
-            let wave = Rect::new(
-                follow.x0 - TRAILING_GAP - control,
-                follow.y0,
-                follow.x0 - TRAILING_GAP,
-                follow.y1,
-            );
-            (follow, wave)
-        };
         for (key, group) in [
-            ("people-panel-section-people", &people),
-            ("people-panel-section-agents", &agents),
+            ("people-panel-section-people", people),
+            ("people-panel-section-agents", agents),
         ] {
             if group.is_empty() {
                 continue;
@@ -498,8 +520,10 @@ impl CollaboratorsOverlay {
             y += heading_h;
             for &index in group {
                 let rect = Rect::new(self.body.x0 - bleed, y, self.body.x1 + bleed, y + row_h);
-                let row = &model.rows[index];
-                let (follow, wave) = trailing(rect, row);
+                let Some(row) = model.rows.get(index) else {
+                    continue;
+                };
+                let (follow, wave) = self.trailing_slots(text, theme, rect, row, follow_w);
                 // The open part's lines end where Follow ends.
                 let line_right = follow.x1 + bleed;
                 let follow = if row.followable { follow } else { Rect::ZERO };
@@ -535,6 +559,39 @@ impl CollaboratorsOverlay {
                 self.rows.push(place);
             }
         }
+    }
+
+    /// Follow and Wave in `row`'s trailing slot at `rect`, inside its
+    /// disclosure chevron when it has one.
+    fn trailing_slots(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        row: &RosterRow,
+        follow_w: f64,
+    ) -> (Rect, Rect) {
+        let control = f64::from(theme.tokens.metrics.bar_control_height);
+        let mut probe = ListRowFace::new(&row.label).trailing_width(self.trailing_w);
+        if !row.recent.is_empty() {
+            probe = probe.disclosure();
+        }
+        let right = probe
+            .trailing_rect(rect, text, theme)
+            .map_or_else(|| rect.x1 - ui::chrome::row_bleed(theme), |slot| slot.x1);
+        let follow = Rect::new(
+            right - follow_w,
+            rect.center().y - control / 2.0,
+            right,
+            rect.center().y + control / 2.0,
+        );
+        let wave = Rect::new(
+            follow.x0 - TRAILING_GAP - control,
+            follow.y0,
+            follow.x0 - TRAILING_GAP,
+            follow.y1,
+        );
+        (follow, wave)
     }
 
     fn configure_scroll(&mut self, theme: &Theme) {
@@ -593,7 +650,12 @@ impl CollaboratorsOverlay {
         let (_, inner) = face.paint(scene, transform, self.panel, 1.0, theme);
         let theme = &inner;
         let colors = &theme.tokens.colors;
-        let here = model.rows.iter().filter(|row| !row.invited).count() + 1;
+        let here = model
+            .rows
+            .iter()
+            .filter(|row| !row.invited)
+            .count()
+            .saturating_add(1);
         let here_text = if model.watching > 0 {
             t_args(
                 "people-panel-here-watching",
@@ -617,7 +679,7 @@ impl CollaboratorsOverlay {
             transform,
             &self.body.inflate(ui::chrome::row_bleed(theme), 0.0),
         );
-        let scrolled = transform * Affine::translate((0.0, -self.scroll_offset()));
+        let scrolled = transform.pre_translate((0.0, -self.scroll_offset()).into());
         let cursor = cursor.map(|p| Point::new(p.x, p.y + self.scroll_offset()));
         if let Some(exposure) = model.exposure.filter(|_| self.exposure.area() > 0.0) {
             ListRowFace::new(exposure)
@@ -638,11 +700,13 @@ impl CollaboratorsOverlay {
                 scene,
                 &empty,
                 colors.text_dim,
-                transform
-                    * Affine::translate((
+                transform.pre_translate(
+                    (
                         self.body.center().x - f64::from(w) / 2.0,
                         self.body.center().y - f64::from(h) / 2.0,
-                    )),
+                    )
+                        .into(),
+                ),
                 None,
                 &style,
             );
@@ -656,11 +720,13 @@ impl CollaboratorsOverlay {
                 scene,
                 &heading.text,
                 colors.text_dim,
-                scrolled
-                    * Affine::translate((
+                scrolled.pre_translate(
+                    (
                         heading.rect.x0,
                         heading.rect.center().y - f64::from(h) / 2.0,
-                    )),
+                    )
+                        .into(),
+                ),
                 None,
                 &style,
             );
@@ -1332,23 +1398,9 @@ impl CollaboratorsOverlay {
             .iter()
             .enumerate()
             .map(|(index, row)| {
-                let mut details = Vec::new();
-                if row.is_agent {
-                    details.push(t("a11y-shell-people-agent"));
-                }
-                if let Some(activity) = &row.activity {
-                    details.push(t_args(
-                        "a11y-shell-people-now",
-                        &[("activity", activity.into())],
-                    ));
-                }
-                if let Some(doing) = doing_line(row) {
-                    details.push(doing);
-                }
-
                 AccessNode::new(Role::ListItem)
                     .with_name(row.label.clone())
-                    .with_description(details.join("; "))
+                    .with_description(spoken_details(row))
                     .with_position(index.saturating_add(1), present.len())
             })
             .collect();
@@ -1681,6 +1733,37 @@ fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
         .map(|tab| tab.title.trim())
         .filter(|title| !title.is_empty())
         .map(ToString::to_string)
+}
+
+/// What a screen reader says about a present row beyond its name: an
+/// agent, what they are on now, what they are doing.
+fn spoken_details(row: &RosterRow) -> String {
+    let mut details = Vec::new();
+    if row.is_agent {
+        details.push(t("a11y-shell-people-agent"));
+    }
+    if let Some(activity) = &row.activity {
+        details.push(t_args(
+            "a11y-shell-people-now",
+            &[("activity", activity.into())],
+        ));
+    }
+    if let Some(doing) = doing_line(row) {
+        details.push(doing);
+    }
+    details.join("; ")
+}
+
+/// What [`CollaboratorsOverlay::place_rows`] places: the groups' row indices
+/// and the open row's details as the layout measured them.
+#[derive(Clone, Copy)]
+struct RowsPlan<'p> {
+    people: &'p [usize],
+    agents: &'p [usize],
+    open_index: Option<usize>,
+    shown_changes: usize,
+    revealed: f64,
+    exposure_h: f64,
 }
 
 #[cfg(test)]

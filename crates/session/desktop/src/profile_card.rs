@@ -300,7 +300,7 @@ impl ProfileCard {
         let Some(current) = model.sharing else {
             return body;
         };
-        let modes = [
+        let sharings = [
             ui::StatusSharing::Automatic,
             ui::StatusSharing::ManualOnly,
             ui::StatusSharing::Off,
@@ -308,11 +308,11 @@ impl ProfileCard {
         let chosen = Rc::clone(&self.chosen);
         let toggle = Box::new(
             ToggleGroup::new(
-                modes
+                sharings
                     .iter()
                     .map(|mode| Segment::new(t(sharing_key(*mode))))
                     .collect(),
-                modes
+                sharings
                     .iter()
                     .position(|mode| *mode == current)
                     .unwrap_or(0),
@@ -320,7 +320,7 @@ impl ProfileCard {
             .with_id("profile-sharing")
             .with_accessible_name(t("a11y-shell-sharing-change"))
             .on_change(move |index| {
-                if let Some(mode) = modes.get(index) {
+                if let Some(mode) = sharings.get(index) {
                     *chosen.borrow_mut() = Some(ProfileChoice::Sharing(*mode));
                 }
             }),
@@ -405,52 +405,58 @@ impl ProfileCard {
             .push(heading("profile-section-colour"))
             .push(Box::new(colours));
 
-        // What the people in this workspace see.
-        if let Some(sight) = &model.sight {
-            let choices = [
-                ui::PresenceVisibility::WhereIAm,
-                ui::PresenceVisibility::ThatImHere,
-                ui::PresenceVisibility::Nothing,
-            ];
-            let chosen = Rc::clone(&self.chosen);
-            let selected = choices
+        self.push_visibility(body, model)
+    }
+
+    /// What the people in this workspace see of the person, when the
+    /// host keeps that choice.
+    fn push_visibility(&self, mut body: Column, model: &ProfileModel) -> Column {
+        let Some(sight) = &model.sight else {
+            return body;
+        };
+        let choices = [
+            ui::PresenceVisibility::WhereIAm,
+            ui::PresenceVisibility::ThatImHere,
+            ui::PresenceVisibility::Nothing,
+        ];
+        let chosen = Rc::clone(&self.chosen);
+        let selected = choices
+            .iter()
+            .position(|choice| *choice == sight.visibility)
+            .unwrap_or(0);
+        let what = ToggleGroup::new(
+            choices
                 .iter()
-                .position(|choice| *choice == sight.visibility)
-                .unwrap_or(0);
-            let what = ToggleGroup::new(
-                choices
-                    .iter()
-                    .map(|choice| Segment::new(t(visibility_key(*choice))))
-                    .collect(),
-                selected,
-            )
-            .with_id("profile-visibility")
-            .with_accessible_name(t_args(
-                "profile-section-visibility",
-                &[("workspace", sight.workspace.clone().into())],
+                .map(|choice| Segment::new(t(visibility_key(*choice))))
+                .collect(),
+            selected,
+        )
+        .with_id("profile-visibility")
+        .with_accessible_name(t_args(
+            "profile-section-visibility",
+            &[("workspace", sight.workspace.clone().into())],
+        ))
+        .on_change(move |index| {
+            if let Some(choice) = choices.get(index) {
+                *chosen.borrow_mut() = Some(ProfileChoice::Visibility(*choice));
+            }
+        });
+        body = body
+            .push(Box::new(Divider::horizontal()))
+            .push(Box::new(
+                Text::new(&t_args(
+                    "profile-section-visibility",
+                    &[("workspace", sight.workspace.clone().into())],
+                ))
+                .with_role(TextRole::Caption)
+                .dimmed(),
             ))
-            .on_change(move |index| {
-                if let Some(choice) = choices.get(index) {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Visibility(*choice));
-                }
-            });
-            body = body
-                .push(Box::new(Divider::horizontal()))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "profile-section-visibility",
-                        &[("workspace", sight.workspace.clone().into())],
-                    ))
+            .push(Box::new(what))
+            .push(Box::new(
+                Text::new(&t(visibility_detail_key(sight.visibility)))
                     .with_role(TextRole::Caption)
                     .dimmed(),
-                ))
-                .push(Box::new(what))
-                .push(Box::new(
-                    Text::new(&t(visibility_detail_key(sight.visibility)))
-                        .with_role(TextRole::Caption)
-                        .dimmed(),
-                ));
-        }
+            ));
         body
     }
 
