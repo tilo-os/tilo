@@ -72,7 +72,8 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
 
         let realtime: RealtimeContinuityBridge =
             Rc::new(|_| Ok(RealtimeContinuityUiView::default()));
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.set_realtime_continuity_bridge(Rc::clone(&realtime));
         assert_eq!(
             host.search_registry
@@ -128,7 +129,8 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
         );
 
         let (view, _) = fixture();
-        let mut reverse = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut reverse = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         reverse.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
         reverse.set_realtime_continuity_bridge(realtime);
         assert_eq!(
@@ -166,7 +168,8 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
             .map(|device| device.id.clone())
             .collect();
         view.local_media[0].title = "Paging proof".into();
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         let state = chrome.borrow();
@@ -195,7 +198,8 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
     fn exact_session_action_ignores_temporary_active_app_search_scope() {
         use crate::shell::search::action_api::{AllVisible, ResourceRef};
 
-        let host = ShellOverlayHost::new(Box::new(Container::new()));
+        let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::ActiveApp;
         let state = chrome.borrow();
@@ -228,8 +232,9 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
                 local_can_control: false,
             })
             .collect();
+        let total = device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len();
         assert_eq!(
-            device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len(),
+            total,
             // One extra row offers speaker setup once two devices can play.
             view.local_media.len() + view.local_outputs.len() + view.devices.len() + 1,
             "the pane model must not truncate media, outputs, or devices"
@@ -240,16 +245,12 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
             .with_chrome(chrome.clone());
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
-        chrome
-            .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
-        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::End)));
-        assert!(
-            host.qs_device_fabric_start > 0,
-            "End must reveal destinations below the first page"
-        );
-        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::Home)));
-        assert_eq!(host.qs_device_fabric_start, 0);
+        host.open_devices_for_tests();
+        // In place, the section lists every row; the page scrolls to them.
+        let rows = chrome.borrow().quick_settings.device_rows.len();
+        assert_eq!(rows, total, "every destination is a row of the section");
+        let last = host.qs_devices_row_rect(rows - 1);
+        assert!(last.height() > 0.0, "and each has its place on the page");
     }
 
     continuity_providers_register_in_either_order_and_replace_stale_bridges();
@@ -280,17 +281,18 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         }));
         chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
+            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Devices);
         assert_eq!(
-            chrome.borrow().quick_settings.current_level(),
-            &crate::shell::quick_settings::QsLevel::Devices
+            chrome.borrow().quick_settings.section,
+            Some(crate::shell::quick_settings::QsSection::Devices)
         );
+        host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        let device_row = host.qs_device_row_rect(2);
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        let device_row = host.qs_devices_row_rect(2);
         host.handle_qs_device_fabric_click(Point::new(device_row.x0 + 44.0, device_row.center().y));
         let (placements, control) =
-            ShellOverlayHost::qs_device_row_actions(host.qs_device_row_rect(2));
+            ShellOverlayHost::qs_device_row_actions(host.qs_devices_row_rect(2));
         host.handle_qs_device_fabric_click(placements[1].center());
         host.handle_qs_device_fabric_click(control.center());
         let actions = actions.borrow();
@@ -324,14 +326,16 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         ];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
-        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(allow.center());
         assert!(
             actions
@@ -361,18 +365,20 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         };
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
 
         let actions = actions.borrow();
         assert!(
@@ -393,13 +399,15 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
         let host_view = view.clone();
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(host_view.clone())
         }));
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        host.open_devices_for_tests();
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
         assert!(
             !actions
                 .borrow()
@@ -429,15 +437,17 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
         assert!(
             actions
@@ -472,15 +482,17 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         ];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
         let actions = actions.borrow();
         assert!(
             actions.contains(&DeviceFabricUiAction::CancelBluetoothHandoff {
@@ -503,7 +515,8 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
@@ -511,7 +524,8 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         }));
 
         assert!(actions.borrow().is_empty());
-        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.open_devices_for_tests();
+        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(allow.center());
         assert!(
             actions
@@ -541,7 +555,9 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
                 crate::shell::quick_settings::QsLevel::BluetoothDetails("AA:BB:CC:DD:EE:FF".into()),
             );
         }
-        let mut host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()))
+            .with_chrome(chrome);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
@@ -599,7 +615,8 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         view.revertible_calibrations = vec![remote.clone()];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
@@ -610,9 +627,10 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
             actions.borrow().is_empty(),
             "proposals must never auto-apply"
         );
-        let (apply, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.open_devices_for_tests();
+        let (apply, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(apply.center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::ApplyCalibration {
             device: remote.clone(),
@@ -630,15 +648,17 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
         assert!(
             actions
@@ -661,15 +681,17 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
 
         assert!(
             actions
@@ -698,28 +720,27 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         };
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
         host.set_realtime_continuity_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(realtime_view.clone())
         }));
+        host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        // The consent and source rows leave the destination just below the
-        // bounded pane on compact displays. Scrolling must preserve the call
-        // selection so that choosing the now-visible device proposes it.
-        host.qs_device_fabric_start = 1;
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        // Choosing a device after the call's source proposes it there.
         host.handle_qs_device_fabric_click(Point::new(
-            host.qs_device_row_rect(3).x0 + 44.0,
-            host.qs_device_row_rect(3).center().y,
+            host.qs_devices_row_rect(3).x0 + 44.0,
+            host.qs_devices_row_rect(3).center().y,
         ));
-        host.qs_device_fabric_start = 0;
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
-        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::Enter)));
+        // Enter on the request allows it.
+        host.press_qs_device_row(0, None);
 
         let actions = actions.borrow();
         assert!(actions.contains(&RealtimeContinuityUiAction::Propose {
@@ -759,14 +780,16 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         view.devices[0].kind = DeviceKind::Phone;
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
         assert!(
             actions
                 .borrow()
@@ -793,15 +816,17 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         let recorded = Rc::clone(&actions);
         let shared = Rc::new(RefCell::new(view));
         let bridge_view = Rc::clone(&shared);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(bridge_view.borrow().clone())
         }));
+        host.open_devices_for_tests();
 
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
         assert!(
             actions
@@ -814,7 +839,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
 
         shared.borrow_mut().tethering[0].phase =
             crate::shell::personal_tethering_runtime::TetheringPhase::Active;
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
         assert!(
             actions
                 .borrow()
@@ -844,18 +869,20 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         ];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(view.clone())
         }));
+        host.open_devices_for_tests();
 
         let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
 
         let actions = actions.borrow();
         assert!(
@@ -920,16 +947,18 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
 
     let actions = Rc::new(RefCell::new(Vec::new()));
     let recorded = Rc::clone(&actions);
-    let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+    let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
     host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     host.set_device_fabric_bridge(Rc::new(move |action| {
         recorded.borrow_mut().push(action);
         Ok(view.clone())
     }));
-    let (lower, raise) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+    host.open_devices_for_tests();
+    let (lower, raise) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
     host.handle_qs_device_fabric_click(raise.center());
     host.handle_qs_device_fabric_click(lower.center());
-    host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+    host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
     let actions = actions.borrow();
     assert!(actions.contains(&DeviceFabricUiAction::StepInputLevel {
         node_id: 70,
@@ -948,7 +977,8 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
 
 #[test]
 fn display_move_requires_settings_owner_and_an_unlocked_session() {
-    let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+    let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
     let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
     host.chrome = Some(chrome.clone());
     let calls = Rc::new(RefCell::new(Vec::new()));

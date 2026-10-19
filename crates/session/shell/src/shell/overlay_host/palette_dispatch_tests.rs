@@ -1049,7 +1049,7 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
             state.overlays.quick_settings = true;
             state
                 .quick_settings
-                .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
         }
 
         let mut handled = false;

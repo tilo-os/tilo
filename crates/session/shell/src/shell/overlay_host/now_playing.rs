@@ -430,7 +430,7 @@ mod tests {
         chrome
             .borrow_mut()
             .quick_settings
-            .push_level(QsLevel::Clipboard);
+            .push_level(QsLevel::Notifications);
         assert!(
             host.now_playing_view().is_none(),
             "drill-ins replace the card"

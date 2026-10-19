@@ -45,10 +45,10 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
 
         chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
         assert_eq!(
-            chrome.borrow().quick_settings.current_level(),
-            &crate::shell::quick_settings::QsLevel::Clipboard
+            chrome.borrow().quick_settings.section,
+            Some(crate::shell::quick_settings::QsSection::Clipboard)
         );
         let history = host.clipboard_manager_call(ClipboardManagerAction::Snapshot);
         assert_eq!(history.len(), 2);
@@ -86,7 +86,7 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
         host.set_clipboard_manager_bridge(bridge(store.clone()));
         chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -123,7 +123,7 @@ fn clipboard_history_is_bridged_searched_and_activated_only_explicitly() {
         host.set_clipboard_manager_bridge(bridge(store.clone()));
         chrome
             .borrow_mut()
-            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+            .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
         let matches = host.filtered_clipboard_history();
@@ -163,7 +163,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     // Browsed from Quick Settings: under the tray, top right.
     chrome
         .borrow_mut()
-        .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        .open_quick_settings_section(crate::shell::quick_settings::QsSection::Clipboard);
     let tray = host.quick_settings_rect_for_tests();
     assert!(tray.x1 > 1400.0 && tray.y0 < 100.0, "{tray:?}");
     assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -177,8 +177,8 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     host.set_text_caret(Some(caret));
     assert!(host.run_shortcut_action(settings_store::hardware::ShortcutAction::ClipboardHistory));
     assert_eq!(
-        chrome.borrow().quick_settings.current_level(),
-        &crate::shell::quick_settings::QsLevel::Clipboard
+        chrome.borrow().quick_settings.section,
+        Some(crate::shell::quick_settings::QsSection::Clipboard)
     );
     let at = host.quick_settings_rect_for_tests();
     assert!(
@@ -230,7 +230,7 @@ fn super_v_opens_history_at_the_caret_and_pastes_the_choice() {
     chrome
         .borrow_mut()
         .quick_settings
-        .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
+        .open_section(crate::shell::quick_settings::QsSection::Clipboard);
     assert_eq!(chrome.borrow().quick_settings.paste_origin, None);
     assert!(host.quick_settings_rect_for_tests().x1 > 1400.0);
 }

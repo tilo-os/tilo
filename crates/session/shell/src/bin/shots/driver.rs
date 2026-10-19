@@ -136,6 +136,9 @@ impl ShellDriver {
             }
         };
         fb.with_chrome(|st| st.act_as(owner));
+        // A capture shows the state it seeds, never the rendering machine's
+        // networks or accessories (a section opening reads them).
+        fb.host_mut().disable_quick_settings_os_reads();
         // Binding a tab never creates its document: the action that opens
         // an app does. This driver opens every tab of the tree it is handed
         // into its own fresh record store, so it is that action here —
@@ -1848,6 +1851,9 @@ impl ShellDriver {
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
             "qs-battery" => self.scene_qs_battery(),
             "qs-sound" => self.scene_qs_sound(),
+            "qs-devices" => self.scene_qs_devices(),
+            "qs-clipboard" => self.scene_qs_clipboard(false),
+            "qs-clipboard-paste" => self.scene_qs_clipboard(true),
             "power-menu" => self.scene_power_menu(false),
             "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
@@ -2418,6 +2424,116 @@ impl ShellDriver {
     fn scene_qs_battery(&mut self) {
         self.scene_qs_section(shell::shell::quick_settings::QsSection::Battery, |st| {
             st.quick_settings.awake_holders = vec!["Videos".into()];
+        });
+    }
+
+    fn scene_qs_devices(&mut self) {
+        use shell::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Devices, |st| {
+            st.quick_settings.personal_devices = Some(2);
+            st.quick_settings.device_rows = vec![
+                HostedRow {
+                    title: "Speakers".into(),
+                    detail: "Playing here".into(),
+                    icon: ui::icons::Icon::Speaker,
+                    selected: true,
+                    enabled: true,
+                    actions: HostedActions::None,
+                },
+                HostedRow {
+                    title: "Microphone".into(),
+                    detail: "In use, level 40%".into(),
+                    icon: ui::icons::Icon::Mic,
+                    selected: false,
+                    enabled: true,
+                    actions: HostedActions::Pair {
+                        first: (ui::icons::Icon::ArrowDown, "Lower".into()),
+                        second: (ui::icons::Icon::ArrowUp, "Raise".into()),
+                    },
+                },
+                HostedRow {
+                    title: "Studio desktop".into(),
+                    detail: "Online, to the right".into(),
+                    icon: ui::icons::Icon::Monitor,
+                    selected: false,
+                    enabled: true,
+                    actions: HostedActions::Placement {
+                        names: [
+                            "Place it to the left".into(),
+                            "Place it to the right".into(),
+                            "Place it above".into(),
+                            "Place it below".into(),
+                        ],
+                        control: "Use its pointer".into(),
+                        controlling: false,
+                        placeable: true,
+                        controllable: true,
+                    },
+                },
+                HostedRow {
+                    title: "Phone".into(),
+                    detail: "Asks to share its camera".into(),
+                    icon: ui::icons::Icon::Phone,
+                    selected: false,
+                    enabled: true,
+                    actions: HostedActions::Pair {
+                        first: (ui::icons::Icon::Check, "Allow".into()),
+                        second: (ui::icons::Icon::X, "Decline".into()),
+                    },
+                },
+            ];
+        });
+    }
+
+    fn scene_qs_clipboard(&mut self, paste: bool) {
+        use shell::shell::quick_settings::hosted::{HostedActions, HostedRow};
+        let copy = |title: &str, detail: &str, pinned: bool, selected: bool| HostedRow {
+            title: title.into(),
+            detail: detail.into(),
+            icon: ui::icons::Icon::FileText,
+            selected,
+            enabled: true,
+            actions: HostedActions::Clipboard {
+                pinned,
+                pin: if pinned { "Unpin" } else { "Pin" }.into(),
+                remove: "Remove".into(),
+            },
+        };
+        self.scene_qs_section(shell::shell::quick_settings::QsSection::Clipboard, |st| {
+            st.quick_settings.clipboard_items = 4;
+            st.quick_settings.clipboard_caption = "4 copies".into();
+            st.quick_settings.clipboard_rows = vec![
+                copy(
+                    "Meet at the station at 6",
+                    "2 min ago, from this device",
+                    false,
+                    true,
+                ),
+                copy(
+                    "https://tilo.coffee/menu",
+                    "10 min ago, from Phone",
+                    true,
+                    false,
+                ),
+                copy(
+                    "Invoice 2026-114, due Friday",
+                    "1 h ago, from this device",
+                    false,
+                    false,
+                ),
+                copy(
+                    "ssh studio.local",
+                    "Yesterday, from Studio desktop",
+                    false,
+                    false,
+                ),
+            ];
+            if paste {
+                st.quick_settings.paste_origin = Some(shell::shell::chrome_state::PasteOrigin {
+                    caret: Some(Rect::new(420.0, 300.0, 421.0, 318.0)),
+                    window: None,
+                });
+            }
         });
     }
 
@@ -3435,6 +3551,9 @@ impl ShellDriver {
         "qs-vpn-long-labels",
         "qs-battery",
         "qs-sound",
+        "qs-devices",
+        "qs-clipboard",
+        "qs-clipboard-paste",
         "power-menu",
         "power-menu-keyboard",
         "ws-settings-general",

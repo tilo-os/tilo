@@ -1539,10 +1539,10 @@ fn super_v_and_super_a_open_clipboard_history_and_notifications() {
     {
         let st = h.chrome.borrow();
         assert!(st.overlays.quick_settings);
-        assert!(matches!(
-            st.quick_settings.current_level(),
-            shell::shell::quick_settings::QsLevel::Clipboard
-        ));
+        assert_eq!(
+            st.quick_settings.section,
+            Some(shell::shell::quick_settings::QsSection::Clipboard)
+        );
     }
     // Quick Settings is modal and owns every key while open.
     h.chrome.borrow_mut().overlays.quick_settings = false;

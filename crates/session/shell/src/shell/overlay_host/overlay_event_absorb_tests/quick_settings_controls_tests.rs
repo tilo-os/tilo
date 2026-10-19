@@ -203,10 +203,10 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
         }
         "quick_settings_do_not_disturb" => assert!(st.dnd()),
         "quick_settings_devices" => {
-            assert_eq!(st.quick_settings.current_level(), &QsLevel::Devices);
+            assert_eq!(st.quick_settings.section, Some(QsSection::Devices));
         }
         "quick_settings_clipboard" => {
-            assert_eq!(st.quick_settings.current_level(), &QsLevel::Clipboard);
+            assert_eq!(st.quick_settings.section, Some(QsSection::Clipboard));
         }
         "quick_settings_power_mode" => {
             assert!(wrote(actions, "power=power-saver"), "{:?}", actions.calls());

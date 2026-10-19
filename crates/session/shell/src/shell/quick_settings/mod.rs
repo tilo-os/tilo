@@ -1,17 +1,18 @@
 //! `QuickSettings` — the top-right status-area popover: sliders, a grid of
-//! tiles whose sections (Wi-Fi, Bluetooth, VPN, the battery) open in place
-//! on the root page, and drill-in pages (devices, clipboard, notification
-//! history) through `nav_stack`.
+//! tiles and rows whose sections (Wi-Fi, Bluetooth, VPN, sound, the
+//! battery, devices, the clipboard) open in place on the root page, and the
+//! drill-in pages that stay pages (notification history, one accessory's
+//! handoff) through `nav_stack`.
 
 pub mod actions;
+pub mod hosted;
 pub mod now_playing;
 pub mod refresh;
 pub(crate) mod root;
 pub(crate) mod sections;
 
-/// A single frame in the `QuickSettings` navigation stack. Wi-Fi,
-/// Bluetooth, VPN and the battery are not pages: they open in place on the
-/// root page ([`QsSection`]).
+/// A single frame in the `QuickSettings` navigation stack. Everything else
+/// opens in place on the root page ([`QsSection`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QsLevel {
     Root,
@@ -19,10 +20,6 @@ pub enum QsLevel {
     BluetoothDetails(String),
     /// Session-local notification history owned by shell chrome.
     Notifications,
-    /// Private clipboard history, including authenticated same-person copies.
-    Clipboard,
-    /// Certified personal devices, local audio outputs, and media routes.
-    Devices,
 }
 
 /// A part of Quick Settings that opens in place on the root page, below
@@ -40,16 +37,26 @@ pub enum QsSection {
     Battery,
     /// Where sound plays: this machine's outputs.
     Sound,
+    /// Certified personal devices, local audio outputs and media routes.
+    /// The overlay host paints its rows ([`QuickSettingsState::device_rows`]).
+    ///
+    /// [`QuickSettingsState::device_rows`]: crate::shell::chrome_state::QuickSettingsState::device_rows
+    Devices,
+    /// Private clipboard history, including authenticated same-person
+    /// copies. The overlay host paints its rows.
+    Clipboard,
 }
 
 impl QsSection {
     /// Every section, in the order the page is laid out.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Sound,
         Self::Wifi,
         Self::Bluetooth,
         Self::Vpn,
         Self::Battery,
+        Self::Devices,
+        Self::Clipboard,
     ];
 }
 
