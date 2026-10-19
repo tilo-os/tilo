@@ -632,7 +632,7 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     reason = "the relay and its room stay live for the whole test"
 )]
 async fn a_bot_step_reads_through_a_records_registered_read() {
-    use tilo_automation::{ActorFilter, Binding, Selector, Shortcut, Step, StepKind, TriggerSpec};
+    use tilo_automation::{ActorFilter, Selector, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
