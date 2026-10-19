@@ -1487,15 +1487,23 @@ impl crate::widget::controls::ActionControls for EmptyState {
         })
     }
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        if self.action_label.is_none() {
-            return Vec::new();
+        let mut bindings = if self.action_label.is_none() {
+            Vec::new()
+        } else if let Some(engine) = &self.engine {
+            crate::widget::controls::ActionControls::control_action_bindings(engine)
+        } else {
+            vec![crate::widget::ControlBindingMetadata::semantic(
+                self.action_control_id(),
+            )]
+        };
+        // The "Details" disclosure only shows what the state already holds:
+        // a view-local control, never an effect on the app's resources.
+        if self.details.is_some() {
+            bindings.push(crate::widget::ControlBindingMetadata::semantic(
+                self.details_control_id(),
+            ));
         }
-        if let Some(engine) = &self.engine {
-            return crate::widget::controls::ActionControls::control_action_bindings(engine);
-        }
-        vec![crate::widget::ControlBindingMetadata::semantic(
-            self.action_control_id(),
-        )]
+        bindings
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -1956,6 +1964,40 @@ mod tests {
         action_path_is_shared_by_pointer_and_accessibility_activation();
         canonical_action_binding_replaces_the_legacy_document_channel();
         without_action_paints_no_pill_and_has_no_hit_target();
+    }
+
+    /// The "Details" disclosure is a control the native audit sees, so it
+    /// carries a binding of its own: a view-local one, whatever the action.
+    #[test]
+    fn the_details_disclosure_is_an_inventoried_view_control() {
+        let es = EmptyState::new("Unavailable")
+            .with_details("os error 2")
+            .on_effect(|| {})
+            .with_action("Try again");
+        let target = es
+            .accessibility()
+            .unwrap()
+            .children
+            .iter()
+            .find(|child| child.description.as_deref() == Some("os error 2"))
+            .and_then(|child| child.action_target.clone())
+            .expect("the disclosure names its control");
+        let bindings = crate::widget::controls::control_action_bindings(&es);
+        assert!(
+            bindings.iter().any(|binding| binding.control_id == target
+                && matches!(
+                    binding.kind,
+                    crate::widget::ControlBindingKind::SemanticAction(_)
+                )),
+            "{bindings:?}"
+        );
+        assert!(
+            crate::widget::controls::control_action_bindings(
+                &EmptyState::new("Empty").with_details("why")
+            )
+            .iter()
+            .any(|binding| binding.control_id.ends_with(":details"))
+        );
     }
 
     #[test]
