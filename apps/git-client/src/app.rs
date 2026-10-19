@@ -178,6 +178,8 @@ enum Hit {
     Commit(usize),
     Panel(PanelHit),
     OpenPath,
+    /// Choose the repository's folder with the system's file chooser.
+    ChooseRepository,
     OpenRepository,
 }
 
@@ -922,14 +924,21 @@ impl GitClientApp {
 
     /// Open the repository at the empty-state path field, binding it if valid.
     fn open_repo_from_input(&mut self) {
-        if self.repository_busy() {
-            return;
-        }
         let raw = self.open_input.value().trim().to_string();
-        if raw.is_empty() {
-            return;
+        let _ = self.open_repository_at(&raw);
+    }
+
+    /// Open the repository at `raw`, typed, chosen in the file chooser or
+    /// named by an action. Answers why not when there is none.
+    fn open_repository_at(&mut self, raw: &str) -> Result<(), String> {
+        if self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
         }
-        if self.bind_repository(std::path::Path::new(&raw)) {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err("no repository path was given".into());
+        }
+        if self.bind_repository(std::path::Path::new(raw)) {
             self.last_error = None;
             self.set_focus(None);
             self.screen = Screen::Changes;
@@ -942,8 +951,11 @@ impl GitClientApp {
                 let repository = crate::resource::GitClient::paths().repository;
                 self.submit(Invoke::edit(&repository.set(ui::tilo_resource::Atom(path))));
             }
+            Ok(())
         } else {
-            self.last_error = Some(format!("No git repository at {raw}"));
+            let error = format!("No git repository at {raw}");
+            self.last_error = Some(error.clone());
+            Err(error)
         }
     }
 
@@ -1796,7 +1808,15 @@ impl GitClientApp {
         let label = t("git-open");
         let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
         let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
-        let field = Rect::new(lane.x0, y, button.x0 - f64::from(s.s2), y + h);
+        // Beside the path, the system's file chooser: most people pick the
+        // folder rather than type where it is.
+        let choose_label = t("git-choose");
+        let choose_face =
+            || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
+        let choose_w = choose_face().intrinsic_width(ctx.text, theme);
+        let choose_x1 = button.x0 - f64::from(s.s2);
+        let choose = Rect::new(choose_x1 - choose_w, y, choose_x1, y + h);
+        let field = Rect::new(lane.x0, y, choose.x0 - f64::from(s.s2), y + h);
         self.open_input.apply_layout_external(field);
         self.open_input
             .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
@@ -1807,6 +1827,23 @@ impl GitClientApp {
         self.targets.push(Target {
             rect: field,
             hit: Hit::OpenPath,
+        });
+        ui::widget::Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &ButtonFace::new(choose, &choose_label)
+                .icon(ui::icons::Icon::FolderOpen)
+                .hovered(self.pointer.is_some_and(|p| choose.contains(p))),
+        );
+        self.semantic.push(Target {
+            rect: choose,
+            hit: Hit::ChooseRepository,
+        });
+        self.targets.push(Target {
+            rect: choose,
+            hit: Hit::ChooseRepository,
         });
         let enabled = !self.open_input.value().trim().is_empty();
         ui::widget::Button::paint(
@@ -1953,6 +1990,9 @@ impl GitClientApp {
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
+            // Dispatched as its effect (`effect_for_hit`); a direct press
+            // without the published action does nothing.
+            Hit::ChooseRepository => {}
         }
     }
 
@@ -2540,6 +2580,9 @@ impl GitClientApp {
                     &self.open_input,
                     &t("git-repository-path"),
                 ),
+                Hit::ChooseRepository => {
+                    button("git.choose-repository".into(), rect, t("git-choose-name"))
+                }
                 Hit::OpenRepository => {
                     let (target, rect, node) =
                         button("git.open-repository".into(), rect, t("git-open-name"));
@@ -3315,6 +3358,7 @@ impl GitClientApp {
 
     fn effect_for_hit(&self, hit: &Hit) -> Option<(Option<String>, GitClientEffect)> {
         let effect = match hit {
+            Hit::ChooseRepository => GitClientEffect::ChooseRepository,
             Hit::Screen(Screen::Changes) => GitClientEffect::ShowChanges,
             Hit::Screen(Screen::History) => GitClientEffect::ShowHistory,
             Hit::Screen(Screen::Panels) => GitClientEffect::ShowBranches,
@@ -3622,6 +3666,8 @@ impl GitClientApp {
             return Err(ui::i18n!("git-remote-busy"));
         }
         match effect {
+            GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
+            GitClientEffect::ChooseRepository => return Ok(self.choose_repository(cx)),
             GitClientEffect::RunApprovedCheck { check_id } => {
                 let checked = cx.approved_check_reported(&check_id)?;
                 return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
@@ -3707,6 +3753,37 @@ impl GitClientApp {
 }
 
 impl GitClientApp {
+    /// Ask the system's file chooser for the repository's folder, then
+    /// open it; cancelling leaves the window as it was.
+    fn choose_repository(
+        &mut self,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> Effected {
+        let picker =
+            ui::portal::PickRequest::writable_directory(&t("git-choose-title"), &t("git-open"))
+                .thread_name("git-repository-picker")
+                .send();
+        cx.thread(
+            move |_| {
+                picker.recv().unwrap_or_else(|_| {
+                    ui::portal::PortalOutcome::Failed(
+                        "The folder chooser stopped responding".into(),
+                    )
+                })
+            },
+            |app: &mut Self, outcome, _cx| match outcome {
+                ui::portal::PortalOutcome::Opened(path) => app
+                    .open_repository_at(&path.to_string_lossy())
+                    .map(|()| Effected::done()),
+                ui::portal::PortalOutcome::Cancelled => Ok(Effected::done()),
+                ui::portal::PortalOutcome::Failed(message) => {
+                    app.last_error = Some(message.clone());
+                    Err(message)
+                }
+            },
+        )
+    }
+
     fn commit_from_effect(&mut self, message: &str) -> Result<(), String> {
         if self.model.staged.is_empty() {
             return Err("there are no staged changes to commit".into());

@@ -52,6 +52,19 @@ use crate::model::{ChangeArea, FileChange, RepoModel};
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "git_client.effect", device_only)]
 pub enum GitClientEffect {
+    /// Open repository
+    ///
+    /// Open the git repository at a path on this device.
+    OpenRepository {
+        #[param("Path of the repository's folder on this device")]
+        path: String,
+    },
+    /// Choose repository
+    ///
+    /// Pick the repository's folder with the system's file chooser, then
+    /// open it.
+    #[effect(job)]
+    ChooseRepository,
     /// Run approved project check
     #[effect(job, cancellable, returns, untrusted, device_only = false)]
     RunApprovedCheck {
