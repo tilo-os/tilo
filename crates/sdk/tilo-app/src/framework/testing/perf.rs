@@ -243,6 +243,11 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// # Panics
 /// When a launch fails or prints no startup line.
 #[must_use]
+#[allow(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a measurement fails loudly when the app binary cannot run or says nothing"
+)]
 pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdStart {
     let scratch = tempfile::tempdir().expect("a scratch directory");
     let root = scratch.path();
