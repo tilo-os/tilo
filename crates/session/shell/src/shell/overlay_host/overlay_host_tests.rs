@@ -1751,13 +1751,27 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
 
 #[test]
 fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
-    fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
-        use crate::shell::chrome_state::{OpenTarget, SearchScope};
-        use crate::shell::search::ResourceKind;
-
+    /// Super+T is the system's "new tab of this app": it works where the
+    /// app keeps Ctrl+T for itself. In a focused group it opens another tab
+    /// of the focused app in that same group, without a picker.
+    fn super_t_opens_a_new_tab_of_the_focused_app_in_the_focused_group() {
         let mut h = build_harness();
         let group = crate::shell::window_actions::focused_group(&h.chrome.borrow())
             .expect("demo workspace has a focused group");
+        let tabs_in = |h: &Harness| {
+            h.chrome
+                .borrow()
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|ws| &ws.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|candidate| candidate.id == group)
+                .map(|candidate| candidate.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>())
+                .expect("the focused group stays")
+        };
+        let before = tabs_in(&h);
         let super_key = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(
             &mut h,
@@ -1765,21 +1779,19 @@ fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
             super_key
         ));
 
-        let state = h.chrome.borrow();
-        assert_eq!(state.open_target, OpenTarget::Here(group));
+        let after = tabs_in(&h);
         assert_eq!(
-            state.search_scope,
-            SearchScope::Workspace,
-            "the keyboard twin of a group + must not reopen generic global search"
+            after.len(),
+            before.len() + 1,
+            "Super+T adds exactly one tab to the focused group: {before:?} -> {after:?}"
         );
-        assert_eq!(
-            h.host.active_kind_filter,
-            vec![ResourceKind::Application, ResourceKind::HostApplication]
+        assert!(
+            !h.host.palette_visible(),
+            "a new tab of the focused app needs no picker"
         );
-        assert!(h.host.palette_visible());
     }
 
-    fn super_t_from_a_fresh_empty_workspace_opens_a_new_group_picker() {
+    fn super_t_from_a_fresh_empty_workspace_opens_the_app_launcher() {
         use crate::shell::chrome_state::{OpenTarget, SearchScope};
 
         let tree = WorkspaceTree::bootstrap_default();
@@ -1800,12 +1812,16 @@ fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
             OpenTarget::Beside,
             "with no focused group, the first app must be placed as a new group"
         );
-        assert_eq!(state.search_scope, SearchScope::Workspace);
+        assert_eq!(
+            state.search_scope,
+            SearchScope::All,
+            "with no window yet, Super+T opens the app launcher, as Super+N does"
+        );
         assert!(h.host.palette_visible());
     }
 
-    super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group();
-    super_t_from_a_fresh_empty_workspace_opens_a_new_group_picker();
+    super_t_opens_a_new_tab_of_the_focused_app_in_the_focused_group();
+    super_t_from_a_fresh_empty_workspace_opens_the_app_launcher();
 }
 
 fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
