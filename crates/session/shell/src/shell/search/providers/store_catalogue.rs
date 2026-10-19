@@ -858,13 +858,10 @@ impl SearchProvider for StoreCatalogueProvider {
     }
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
-        #[cfg(test)]
-        let injected = self.source.is_some();
+        // Flathub's metadata and the block list are looked at again when
+        // that is due, on a worker; a test reads only its injected source.
         #[cfg(not(test))]
-        let injected = false;
-        if !injected {
-            catalogue::refresh_shared();
-        }
+        catalogue::refresh_shared();
         self.index
             .refresh(|| self.source_generation(), self.builder());
     }

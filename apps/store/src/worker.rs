@@ -330,6 +330,10 @@ struct State {
     /// The catalogue's names and descriptions, indexed while they stay the
     /// same.
     item_index: ui::search::ListIndex,
+    /// Apps blocked by the person or the device's administrator: listed
+    /// nowhere, the same list desktop search hides them by
+    /// (`app_catalogue::BlockList`). Read again with each catalogue rebuild.
+    blocks: app_catalogue::BlockList,
 }
 
 fn initial_state(
@@ -357,6 +361,7 @@ fn initial_state(
         unanswered_repositories: Vec::new(),
         searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
+        blocks: app_catalogue::BlockList::load(),
         directory,
         item_index: ui::search::ListIndex::default(),
     }
@@ -1190,6 +1195,9 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
                 items.push(item);
             }
         }
+        // A blocked app is found nowhere; one already installed stays, so
+        // it can still be managed and removed.
+        items.retain(|item| item.installed.is_installed() || !state.blocks.is_blocked(&item.id));
         if operation_error.is_none() {
             state.searches.put(query.clone(), items.clone());
         }
@@ -1505,6 +1513,7 @@ mod tests {
             details: LruCache::new(CACHE_CAP),
             directory,
             item_index: ui::search::ListIndex::default(),
+            blocks: app_catalogue::BlockList::empty(),
         }
     }
 

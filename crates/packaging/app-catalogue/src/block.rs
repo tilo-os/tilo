@@ -3,7 +3,9 @@
 //! nor the Store's lists; its Store page says who blocked it, and only that
 //! blocker can unblock it.
 //!
-//! The person's list is `<config>/tilo-store/blocked.json`
+//! The person's list is a record of the person's own, kept by the Store in
+//! its person directory: `$TILO_PERSON_DIR/blocked.json` inside the Store,
+//! `<data home>/tilo-person/so.tilo.store/blocked.json` from outside it
 //! (`{"blocked": ["com.example.App"]}`). The device's policy is
 //! [`DEVICE_POLICY_PATH`] (`{"admin": "IT", "blocked": [...]}`), written by
 //! whoever administers the device and only readable here. A workspace's
@@ -77,10 +79,25 @@ pub struct BlockList {
     blocks: Vec<Block>,
 }
 
-/// The person's list, `<config>/tilo-store/blocked.json`.
+/// The Store, whose person directory keeps the person's list.
+pub const STORE_PACKAGE_ID: &str = "so.tilo.store";
+
+/// The person's list's file name in the Store's person directory.
+pub const PERSON_LIST_FILE: &str = "blocked.json";
+
+/// The person's list: in the Store's person directory, which the launcher
+/// names `TILO_PERSON_DIR` inside the Store and keeps at
+/// `<data home>/tilo-person/so.tilo.store` for everyone else (the shell).
 #[must_use]
 pub fn person_list_path() -> Option<PathBuf> {
-    tilo_paths::config_dir().map(|dir| dir.join("tilo-store").join("blocked.json"))
+    if let Some(dir) = std::env::var_os("TILO_PERSON_DIR").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir).join(PERSON_LIST_FILE));
+    }
+    tilo_paths::data_dir().map(|dir| {
+        dir.join("tilo-person")
+            .join(STORE_PACKAGE_ID)
+            .join(PERSON_LIST_FILE)
+    })
 }
 
 impl BlockList {
