@@ -15792,6 +15792,18 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Super+/: say something beside the pointer, whatever has the
+        // keyboard; a bare "/" opens it only where nothing takes text.
+        if shortcut_pressed(ShortcutAction::SaySomething) {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::SaySomething),
+            );
+            if !repeat {
+                self.open_cursor_chat_on_request();
+            }
+            *handled = true;
+            return true;
+        }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
             crate::compositor::key_latency::note_key_handler(
                 crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::QuickSettings),

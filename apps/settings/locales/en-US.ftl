@@ -250,6 +250,7 @@ shortcut-name-magnifier-zoom-out = Magnifier zoom out
 shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-say-something = Say something here
 shortcut-name-ask-agent = Ask agent about selection
 shortcut-category-system = System
 shortcut-category-navigation = Navigation

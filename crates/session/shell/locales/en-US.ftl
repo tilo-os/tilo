@@ -177,6 +177,7 @@ shortcut-name-magnifier-zoom-out = Magnifier zoom out
 shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-say-something = Say something here
 shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
@@ -3183,6 +3184,10 @@ presence-arrival-intro-where = People here see your name, your colour and where 
 presence-arrival-intro-here = People here see your name and your colour, never where you are
 presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
 presence-arrival-change = Change
+profile-action-say-something = Say something here
+cursor-chat-no-window = Point at a shared window to say something
+cursor-chat-no-window-body = What you say shows beside your pointer to the people in that window
+presence-guest-name = Guest
 people-join-call-failed = Couldn’t join the call
 people-join-call-not-taken = Join it from Chat
 presence-wave-notice = { $person } waves

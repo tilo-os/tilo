@@ -118,6 +118,9 @@ impl NativeWorkspaceAction {
 /// except pairing, which opens its own sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeProfileAction {
+    /// Say something beside the pointer to the people in the window under
+    /// it (cursor chat), whatever has the keyboard.
+    SaySomething,
     /// Their identities on this device and how each is protected.
     Identities,
     /// An encrypted backup of their identity, to recover it elsewhere.
@@ -127,10 +130,16 @@ enum NativeProfileAction {
 }
 
 impl NativeProfileAction {
-    const ALL: [Self; 3] = [Self::Identities, Self::Backup, Self::PairDevice];
+    const ALL: [Self; 4] = [
+        Self::SaySomething,
+        Self::Identities,
+        Self::Backup,
+        Self::PairDevice,
+    ];
 
     fn id(self) -> &'static str {
         match self {
+            Self::SaySomething => "say-something",
             Self::Identities => "identities",
             Self::Backup => "identity-backup",
             Self::PairDevice => "pair-device",
@@ -146,12 +155,17 @@ impl NativeProfileAction {
         match self {
             Self::Identities => Some("settings://users"),
             Self::Backup => Some("settings://about"),
-            Self::PairDevice => None,
+            Self::PairDevice | Self::SaySomething => None,
         }
     }
 
     fn profile_action(self) -> ProfileAction {
         let (title, group, icon) = match self {
+            Self::SaySomething => (
+                "profile-action-say-something",
+                ProfileGroup::Together,
+                ui::icons::Icon::MessageCircle,
+            ),
             Self::Identities => (
                 "profile-action-identities",
                 ProfileGroup::Identity,
@@ -478,6 +492,10 @@ impl ShellOverlayHost {
         let Some(action) = NativeProfileAction::from_id(id) else {
             return;
         };
+        if action == NativeProfileAction::SaySomething {
+            self.open_cursor_chat_on_request();
+            return;
+        }
         let Some(link) = action.settings_link() else {
             // Pairing opens its guided sheet right here.
             self.open_pairing();

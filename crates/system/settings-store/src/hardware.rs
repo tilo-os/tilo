@@ -1903,6 +1903,9 @@ pub enum ShortcutAction {
     /// Ask an agent about what is selected in the focused window, in the
     /// quick composer seeded with that selection.
     AskAgent,
+    /// Say something beside the pointer, to the people in the window
+    /// under it (cursor chat), wherever the keyboard is.
+    SaySomething,
     DictationToggle,
     DictationFinish,
     DictationCancel,
@@ -2418,6 +2421,9 @@ impl Default for ShortcutConfig {
             // plus Shift. Keep the stored/default chord identical to that
             // live event rather than accepting the unshifted slash instead.
             (ShortcutAction::ShortcutHelp, super_shift_chord("/")),
+            // Cursor chat from anywhere: a bare "/" opens it only where the
+            // focused widget takes no text.
+            (ShortcutAction::SaySomething, super_chord("/")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
@@ -3161,6 +3167,7 @@ mod tests {
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(shown(ShortcutAction::EmojiPicker), "Super+.");
         assert_eq!(shown(ShortcutAction::AskAgent), "Super+c");
+        assert_eq!(shown(ShortcutAction::SaySomething), "Super+/");
         assert_eq!(shown(ShortcutAction::TabMenu), "Super+F10");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
