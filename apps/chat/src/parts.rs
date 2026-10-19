@@ -2,7 +2,7 @@
 //!
 //! One record cannot hold a chat that runs for months: a record's snapshot
 //! has a size limit, and a newcomer would be sent all of it. So the room's
-//! chat record ([`crate::record::Chat`]) keeps workspaces, channels, people,
+//! chat record ([`crate::record::Chat`]) keeps categories, channels, people,
 //! drafts and moderation, and its messages live in numbered part records
 //! ([`ChatPart`]), each a record of its own ([`part`]).
 //!

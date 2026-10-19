@@ -43,6 +43,8 @@ fn seed_pages() -> Vec<PageEntry> {
 
 #[test]
 fn link_popover_filters_and_commits_page_links() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `link_popover_filters_by_typed_filter`.
     {
         let mut p = tilo_ui::widget::link_popover::LinkPopover::new();

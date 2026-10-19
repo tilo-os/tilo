@@ -1,5 +1,6 @@
 use super::*;
 use automerge::{ObjType, ROOT, transaction::Transactable};
+use tilo_actions::EncodedAction;
 use ui::feedback::{Destination, Receipt, ReviewedFeedback, Submission};
 
 fn submitted() -> (automerge::AutoCommit, Submission, Resource) {
@@ -15,7 +16,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            room: channel.workspace,
+            room: "room".into(),
             provider: "fixture-chat".into(),
             channel: channel.id,
         },
@@ -43,7 +44,9 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
 fn encoded(resource: &Resource) -> EncodedAction {
     tilo_actions::door::encode_json(
         std::slice::from_ref(resource),
-        &tilo_actions::ActionAddress::new(resource.id.as_str(), "read-feedback-receipt"),
+        &resource
+            .action_address(ui::feedback::destination::READ_RECEIPT)
+            .expect("a report publishes its receipt read"),
         &serde_json::Map::new(),
     )
     .unwrap()
@@ -76,7 +79,9 @@ fn projection_uses_the_committed_basis_and_its_declared_result_contract() {
     let operation = encoded(&resource);
     let heads = doc.base_heads();
     // A later replacement cannot change what the earlier committed basis says.
-    doc.put_object(ROOT, "feedback", ObjType::Map).unwrap();
+    let feedback = ui::tilo_resource::Slot::Key(&ROOT, "feedback");
+    feedback.remove(&mut doc).unwrap();
+    feedback.object(&mut doc, ObjType::Map).unwrap();
     doc.commit();
     let page = project(&doc, &heads, &operation.payload).unwrap();
     let receipt: Receipt = serde_json::from_value(page.content.clone()).unwrap();
@@ -151,19 +156,16 @@ fn mounted_fixture(author: &str) -> MountedFixture {
                 doc,
                 "visitor",
                 crate::resource::Chat::BEGIN_CHAT.with(crate::record::chat::BeginChat {
-                    workspace: Some(room.into()),
-                    workspace_name: Some("Fixture".into()),
                     name: "Visitor".into(),
                     initials: "V".into(),
                     color: 0,
                 }),
             )
             .map_err(|error| error.to_string())?;
-            crate::testing::insert_category(doc, "feedback-category", room, "Feedback");
+            crate::testing::insert_category(doc, "feedback-category", "Feedback");
             crate::testing::insert_channel(
                 doc,
                 "feedback",
-                room,
                 "feedback-category",
                 "Feedback",
                 crate::model::ChannelKind::Text,
@@ -223,15 +225,10 @@ fn mounted_chat_reader_returns_the_actual_primary_route_stamp() {
     let submission = &fixture.submission;
     let started = fixture
         .frame
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: 42,
-                address: tilo_actions::ActionAddress::new(
-                    crate::testing::item("feedback", &submission.id),
-                    "read-feedback-receipt",
-                ),
-            },
-            &serde_json::Map::new(),
+        .call_on(
+            &crate::testing::item("feedback", &submission.id),
+            ui::feedback::destination::READ_RECEIPT,
+            serde_json::json!({}),
         )
         .unwrap();
     let output = started
@@ -254,23 +251,15 @@ fn maintainer_role(fixture: &MountedFixture, role: ui::permissions::Role) {
 #[test]
 fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_reference() {
     let mut fixture = mounted_fixture("maintainer");
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id: 42,
-        address: tilo_actions::ActionAddress::new(
-            crate::testing::item("feedback", &fixture.submission.id),
-            "triage",
-        ),
-    };
-    let arguments = serde_json::json!({"update": {"status": "investigating"}})
-        .as_object()
-        .unwrap()
-        .clone();
+    let investigating = serde_json::json!({"status": "investigating"});
     maintainer_role(&fixture, ui::permissions::Role::Commenter);
     assert!(
-        fixture
-            .frame
-            .invoke_bound_action(&address, &arguments)
-            .is_err()
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            investigating.clone()
+        )
+        .is_err()
     );
     let record = fixture.frame.component_record().unwrap().id.clone();
     assert!(
@@ -287,25 +276,20 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
     );
     maintainer_role(&fixture, ui::permissions::Role::Editor);
     assert!(
-        fixture
-            .frame
-            .invoke_bound_action(&address, &arguments)
-            .unwrap()
-            .completed()
-            .is_some()
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            investigating.clone()
+        )
+        .unwrap()
+        .is_some()
     );
     let reference =
         tilo_reference::ResourceRef::whole("tasks.task", "fixture-task", "Fixture task");
-    let arguments = serde_json::json!({"update": {"status": "task", "reference": reference}})
-        .as_object()
-        .unwrap()
-        .clone();
+    let task = serde_json::json!({"status": "task", "reference": reference});
     assert!(
-        fixture
-            .frame
-            .invoke_bound_action(&address, &arguments)
+        triage(&mut fixture.frame, &fixture.submission.id, task.clone())
             .unwrap()
-            .completed()
             .is_some()
     );
     fixture.frame.flush_component_records().unwrap();
@@ -331,12 +315,7 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
         crate::feedback::TriageUpdate::Task { reference }
     );
     maintainer_role(&fixture, ui::permissions::Role::Commenter);
-    assert!(
-        fixture
-            .frame
-            .invoke_bound_action(&address, &arguments)
-            .is_err()
-    );
+    assert!(triage(&mut fixture.frame, &fixture.submission.id, task).is_err());
     assert_eq!(
         fixture
             .records
@@ -354,24 +333,13 @@ fn mounted_triage_observes_live_write_permission_and_keeps_attributed_task_refer
 fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
     let mut fixture = mounted_fixture("maintainer");
     for status in ["investigating", "resolved"] {
-        let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id: 42,
-            address: tilo_actions::ActionAddress::new(
-                crate::testing::item("feedback", &fixture.submission.id),
-                "triage",
-            ),
-        };
-        fixture
-            .frame
-            .invoke_bound_action(
-                &address,
-                serde_json::json!({"update":{"status":status}})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap()
-            .completed()
-            .unwrap();
+        triage(
+            &mut fixture.frame,
+            &fixture.submission.id,
+            serde_json::json!({"status": status}),
+        )
+        .unwrap()
+        .unwrap();
     }
     let reference = tilo_reference::ResourceRef::ranged(
         "tasks.task",
@@ -379,35 +347,22 @@ fn mounted_feedback_status_reads_attributed_triage_with_view_permission() {
         "Fixture task",
         tilo_reference::Span::chars(1, 4),
     );
-    fixture
-        .frame
-        .invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: 42,
-                address: tilo_actions::ActionAddress::new(
-                    crate::testing::item("feedback", &fixture.submission.id),
-                    "triage",
-                ),
-            },
-            serde_json::json!({"update":{"status":"task","reference":reference}})
-                .as_object()
-                .unwrap(),
-        )
-        .unwrap()
-        .completed()
-        .unwrap();
+    triage(
+        &mut fixture.frame,
+        &fixture.submission.id,
+        serde_json::json!({"status": "task", "reference": reference}),
+    )
+    .unwrap()
+    .unwrap();
     fixture.frame.flush_component_records().unwrap();
     maintainer_role(&fixture, ui::permissions::Role::Viewer);
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id: 42,
-        address: tilo_actions::ActionAddress::new(
-            crate::testing::item("feedback", &fixture.submission.id),
-            "read-feedback-status",
-        ),
-    };
     let output = fixture
         .frame
-        .invoke_bound_action(&address, &serde_json::Map::new())
+        .call_on(
+            &crate::testing::item("feedback", &fixture.submission.id),
+            "read-feedback-status",
+            serde_json::json!({}),
+        )
         .expect("a returning viewer must be able to read triage through the public door")
         .completed()
         .unwrap();
@@ -453,4 +408,20 @@ fn canonical_read_requires_the_exact_attributed_reporter_when_requested() {
         validate(&resource, &request("visitor")),
         Err(SemanticReadError::InvalidRequest)
     );
+}
+
+/// Triage the report of `submission` through the public door, as a
+/// maintainer's agent does: what it answered.
+fn triage(
+    frame: &mut ui::headless::FrameHarness,
+    submission: &str,
+    update: serde_json::Value,
+) -> Result<Option<tilo_actions::ActionOutput>, tilo_actions::DoorError> {
+    frame
+        .call_on(
+            &crate::testing::item("feedback", submission),
+            crate::resource::Chat::TRIAGE.id,
+            serde_json::json!({ "update": update }),
+        )
+        .map(|started| started.completed())
 }

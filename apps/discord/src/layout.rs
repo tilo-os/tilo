@@ -15,7 +15,7 @@ use ui::tilo_resource::{self, Id, JsonSchema};
 
 use crate::record::{DChannel, Guild, MappedKind, Mapping, Origin, Ownership};
 use crate::slug;
-use crate::tilo::{Channel, Workspace};
+use crate::tilo::{Channel, RoomChat};
 
 /// Create or correct one Discord channel, then map the result as `kind`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,9 +59,9 @@ fn observed<'g>(guild: &'g Guild, id: &str) -> Option<&'g DChannel> {
     guild.channels.find(&Id::from_raw(id))
 }
 
-/// The plan for an adopted server, given `workspace`.
+/// The plan for an adopted server, given `room`.
 #[must_use]
-pub fn plan(guild: &Guild, workspace: &Workspace) -> LayoutPlan {
+pub fn plan(guild: &Guild, room: &RoomChat) -> LayoutPlan {
     let mut plan = LayoutPlan::default();
     if guild.ownership != Ownership::Adopted {
         return plan;
@@ -70,10 +70,10 @@ pub fn plan(guild: &Guild, workspace: &Workspace) -> LayoutPlan {
         plan_one(&mut plan, guild, only);
         return plan;
     }
-    plan_parted(&mut plan, guild, workspace);
+    plan_parted(&mut plan, guild, room);
     plan_webhooks(&mut plan, guild);
     if guild.mirror_channels {
-        plan_mirror(&mut plan, guild, workspace);
+        plan_mirror(&mut plan, guild, room);
     }
     plan
 }
@@ -84,7 +84,7 @@ fn plan_one(plan: &mut LayoutPlan, guild: &Guild, only: &str) {
     let Some(mapping) = guild.by_discord(MappedKind::Channel, only) else {
         return;
     };
-    let text = observed(guild, only).is_some_and(|c| c.kind.0 == ChannelKind::Text);
+    let text = observed(guild, only).is_some_and(|c| c.kind == ChannelKind::Text);
     if text && guild.mapping(MappedKind::Webhook, &mapping.tilo).is_none() {
         plan.webhooks.push(CreateWebhookOp {
             channel: only.to_owned(),
@@ -96,7 +96,7 @@ fn plan_one(plan: &mut LayoutPlan, guild: &Guild, only: &str) {
 /// Every bridged text channel Discord shows gets the bridge's webhook.
 fn plan_webhooks(plan: &mut LayoutPlan, guild: &Guild) {
     for mapping in guild.map.iter().filter(|m| m.kind == MappedKind::Channel) {
-        let text = observed(guild, &mapping.discord).is_some_and(|c| c.kind.0 == ChannelKind::Text);
+        let text = observed(guild, &mapping.discord).is_some_and(|c| c.kind == ChannelKind::Text);
         if text && guild.mapping(MappedKind::Webhook, &mapping.tilo).is_none() {
             plan.webhooks.push(CreateWebhookOp {
                 channel: mapping.discord.clone(),
@@ -109,11 +109,11 @@ fn plan_webhooks(plan: &mut LayoutPlan, guild: &Guild) {
 /// Pairs one side of which was deleted: the bridge lets go of them and
 /// keeps the side left over to itself. Only a channel the bridge made in
 /// Discord goes with its Tilo side.
-fn plan_parted(plan: &mut LayoutPlan, guild: &Guild, workspace: &Workspace) {
+fn plan_parted(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
     for mapping in &guild.map {
         let tilo_gone = match mapping.kind {
-            MappedKind::Category => !workspace.categories.iter().any(|c| c.id == mapping.tilo),
-            MappedKind::Channel => workspace.channel(&mapping.tilo).is_none(),
+            MappedKind::Category => !room.categories.iter().any(|c| c.id == mapping.tilo),
+            MappedKind::Channel => room.channel(&mapping.tilo).is_none(),
             _ => continue,
         };
         let discord_gone = guild.vanished.contains(&mapping.discord);
@@ -155,13 +155,13 @@ fn ours(mapping: &Mapping) -> bool {
 /// What Tilo made after the adoption is made in Discord, and what the
 /// bridge made there follows Tilo's names and categories. Positions are
 /// left to Discord: a new channel goes last among its siblings.
-fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &Workspace) {
+fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, room: &RoomChat) {
     let mut categories = guild
         .channels
         .iter()
-        .filter(|c| c.kind.0 == ChannelKind::Category)
+        .filter(|c| c.kind == ChannelKind::Category)
         .count();
-    for category in &workspace.categories {
+    for category in &room.categories {
         if guild.tilo_only.contains(&category.id) || queued(guild, &category.id) {
             continue;
         }
@@ -196,7 +196,7 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &Workspace) {
             Some(_) => {}
         }
     }
-    for channel in workspace.channels.iter().filter(|c| !c.archived) {
+    for channel in room.channels.iter().filter(|c| !c.archived) {
         if guild.tilo_only.contains(&channel.id) || queued(guild, &channel.id) {
             continue;
         }
@@ -228,7 +228,7 @@ fn plan_mirror(plan: &mut LayoutPlan, guild: &Guild, workspace: &Workspace) {
                 let siblings = guild
                     .channels
                     .iter()
-                    .filter(|c| c.kind.0 == kind_of(channel) && c.parent == parent)
+                    .filter(|c| c.kind == kind_of(channel) && c.parent == parent)
                     .count();
                 plan.apply.push(ApplyItem {
                     op: want(None, position(siblings)),

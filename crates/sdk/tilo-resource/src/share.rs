@@ -30,6 +30,13 @@ pub fn share_link_target(
     }
 }
 
+/// `share-link` as the published resource `resource` offers it: what a
+/// caller holding the resource's id invokes for its link.
+#[must_use]
+pub fn share_link_address(resource: impl Into<String>) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(resource, SHARE_LINK)
+}
+
 /// The operation type the framework answers `share-link` with.
 pub const SHARE_TYPE: &str = "tilo.resource.share-link";
 /// The operation type the framework answers `share-invite-link` with.

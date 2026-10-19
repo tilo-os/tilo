@@ -485,6 +485,11 @@ impl ShellDriver {
     /// crossfades, palette/QS/WS-settings open animations, etc. Sleeps
     /// real time because the host reads `Instant::now()` directly —
     /// there's no virtual clock hook (yet).
+    /// Run the hosted apps' update once, as a frame does before it paints.
+    pub fn pump_apps(&mut self) {
+        self.fb.pump_apps(&mut self.state, &self.root_obj);
+    }
+
     pub fn step_frames(&mut self, frames: u32) {
         for _ in 0..frames {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
@@ -3647,5 +3652,6 @@ fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::Site
         room,
         site: Some("tilo.coffee".into()),
         community: true,
+        public: false,
     }
 }

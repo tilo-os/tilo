@@ -527,8 +527,8 @@ impl FileExplorer {
     ) -> Result<(), Refusal> {
         if text.len() > MAX_WRITE_BYTES {
             return Err(Refusal::new(format!(
-                "a file written here holds at most {} KiB of text",
-                MAX_WRITE_BYTES / 1024
+                "a file written here holds at most {} of text",
+                ui::format::memory(MAX_WRITE_BYTES as u64)
             )));
         }
         let name = file_name(&name)?;
@@ -1565,15 +1565,8 @@ mod tests {
     /// through the door, as an agent does, and let the device carry out
     /// what it queued.
     fn act_on(app: &mut TestApp<FileExplorerShell>, on: &str, id: &str, args: &serde_json::Value) {
-        let instance = app.harness().component_instance_id().unwrap();
         app.harness()
-            .invoke_bound_action_confirmed(
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id: instance,
-                    address: ui::tilo_actions::ActionAddress::new(on, id),
-                },
-                args.as_object().unwrap(),
-            )
+            .call_on_confirmed(on, id, args.clone())
             .unwrap();
         app.settle();
     }
@@ -1797,17 +1790,11 @@ mod tests {
     /// Invoke the resource's action `id` with `args` through the door, as
     /// an agent does, and let the device carry out what it queued.
     fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value) {
-        let instance = app.harness().component_instance_id().unwrap();
         app.harness()
-            .invoke_bound_action(
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id: instance,
-                    address: ui::tilo_actions::ActionAddress::new(
-                        <FileExplorer as ui::tilo_resource::Resource>::KIND,
-                        id,
-                    ),
-                },
-                args.as_object().unwrap(),
+            .call_on(
+                <FileExplorer as ui::tilo_resource::Resource>::KIND,
+                id,
+                args.clone(),
             )
             .unwrap();
         app.settle();
@@ -1891,18 +1878,10 @@ mod tests {
         app.settle();
         assert!(folder.path().join("final.txt").exists(), "renamed again");
 
-        let instance = app.harness().component_instance_id().unwrap();
-        let refused = app.harness().invoke_bound_action(
-            &ui::bound_dispatch::BoundActionAddress {
-                instance_id: instance,
-                address: ui::tilo_actions::ActionAddress::new(
-                    <FileExplorer as ui::tilo_resource::Resource>::KIND,
-                    "trash-here",
-                ),
-            },
-            serde_json::json!({"entries": ["missing.txt"]})
-                .as_object()
-                .unwrap(),
+        let refused = app.harness().call_on(
+            <FileExplorer as ui::tilo_resource::Resource>::KIND,
+            "trash-here",
+            serde_json::json!({"entries": ["missing.txt"]}),
         );
         assert!(refused.is_err(), "a misspelt entry changes nothing");
     }

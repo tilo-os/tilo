@@ -81,15 +81,18 @@
 //!
 //! ## Custom resource types
 //!
-//! A type with its own layout and merge semantics — a timeline whose clips
-//! patch field by field, a rich-text document, a sheet — implements
-//! [`Resource`] by hand: [`read`](Resource::read) its state from a document,
-//! name its replayable [`Action`](Resource::Action) type, and optionally
-//! [`declarations`](Resource::declarations) for named, typed palette entries.
-//! It then gets exactly the same services. Edits without a named declaration
-//! travel as the generic [`APPLY`] action, so nothing a custom surface does
-//! has to bypass permissions, history or undo. `APPLY` is for surfaces,
-//! agents and scripts, never a palette row; each value's own
+//! A type with its own layout and merge semantics — a rich-text document, a
+//! sheet — implements [`Resource`] by hand: [`read`](Resource::read) its
+//! state from a document, name its replayable [`Action`](Resource::Action)
+//! type, and optionally [`declarations`](Resource::declarations) for named,
+//! typed palette entries. The SDK ships those types (`RichText`, plain text,
+//! `Grid`); an app derives its record with `#[derive(Model)]` and
+//! `#[resource]` and holds them as fields, never implementing `Resource`
+//! itself (docs/architecture/resources.md §8). Such a type gets exactly the
+//! same services. Edits without a named declaration travel as the generic
+//! [`APPLY`] action, so nothing a custom surface does has to bypass
+//! permissions, history or undo. `APPLY` is for surfaces, agents and
+//! scripts, never a palette row; each value's own
 //! [`risk`](tilo_actions::Action::risk) decides whether it needs
 //! confirmation, so a destructive typed edit is confirmed exactly as a
 //! declared destructive action is.
@@ -144,7 +147,7 @@ pub use action::{
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
-pub use collection::{Collection, Id, Membership};
+pub use collection::{Collection, Id, Membership, Quarantined};
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, EffectOffload, NoEffect};
@@ -154,8 +157,8 @@ pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};
 pub use map::Map;
 pub use model::{
-    Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, edit_whole, load_slot,
-    read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
+    Atom, Doc, Fields, Json, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
+    load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};

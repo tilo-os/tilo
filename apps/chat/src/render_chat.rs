@@ -1,5 +1,5 @@
 //! Rendering for the persistent chat surface: the navigation drawer (the
-//! workspace's channel list), the conversation header, the grouped
+//! room's channel list), the conversation header, the grouped
 //! message timeline, the composer, and the detail drawer (people or a
 //! thread). All geometry is computed from `self.rect` and the drawers; every
 //! clickable area is recorded into `hits`.
@@ -20,7 +20,7 @@ use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height, nav_row_height,
     nav_row_layout, nav_section_height, nav_section_layout,
 };
-use ui::format::bytes as format_bytes;
+use ui::format::size as format_bytes;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -569,8 +569,8 @@ fn square(centre: Point, side: f64) -> Rect {
 impl ChatApp {
     // ------------------------------------------------------- navigation header
     /// The navigation drawer's part of the window's header row: the sidebar
-    /// toggle at its top-leading corner, the workspace (or Inbox) title and
-    /// the "create" action. Who is here is the desktop's to show, not
+    /// toggle at its top-leading corner, the "Channels" title and the
+    /// "create" action. Who is here is the desktop's to show, not
     /// the chat's.
     pub(crate) fn draw_nav_header(
         &self,
@@ -594,7 +594,7 @@ impl ChatApp {
         };
         let mut right = band.x1 - f64::from(sp.s3);
         let task_mode = self.direct_agent.is_some() || self.task_goal.is_some();
-        if !self.inbox_open && !task_mode && self.can_participate() {
+        if !task_mode && self.can_participate() {
             let add = Rect::new(
                 right - target,
                 band.center().y - target / 2.0,
@@ -609,20 +609,14 @@ impl ChatApp {
                 &ButtonFace::icon_only(add, Icon::Plus, "Create channel or category")
                     .hovered(self.hovered(add)),
             );
-            ChatApp::push_hit(hits, add, Hit::AddCategory(self.active_ws.clone()));
+            ChatApp::push_hit(hits, add, Hit::AddCategory);
             right = add.x0 - f64::from(sp.s1);
         }
 
         let title = if task_mode {
             crate::i18n::t("chat-agents-section")
-        } else if self.inbox_open {
-            "Inbox".to_owned()
         } else {
-            self.workspaces
-                .iter()
-                .find(|w| w.id == self.active_ws)
-                .map(|w| w.name.clone())
-                .unwrap_or_default()
+            crate::i18n::t("chat-channels-title")
         };
         let style = theme.text(TextRole::Heading);
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
@@ -638,10 +632,8 @@ impl ChatApp {
     }
 
     // -------------------------------------------------------- destinations
-    /// The sidebar's top rows: Tasks, Inbox while there are other workspaces,
-    /// and the way back to this workspace's channels from either destination.
-    /// One workspace is one place; there is no list of servers beside it.
-    /// Returns the cursor `y` under them.
+    /// The sidebar's destination rows: the task list, which stays above the
+    /// channel tree. Returns the cursor `y` under them.
     fn draw_destinations(
         &self,
         paint: PaintCtx<'_>,
@@ -655,32 +647,9 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let elsewhere = self.workspaces.iter().any(|ws| {
-            ws.id != self.context_ws
-                && self
-                    .channels
-                    .iter()
-                    .any(|c| c.workspace == ws.id && c.kind == ChannelKind::Text && !c.archived)
-        });
         let task_mode = self.task_goal.is_some() || self.direct_agent.is_some();
         let row_h = nav_row_height(theme);
         y += f64::from(theme.tokens.spacing.s1);
-        if (self.inbox_open || task_mode)
-            && self.workspaces.iter().any(|ws| ws.id == self.context_ws)
-        {
-            let name = self
-                .workspaces
-                .iter()
-                .find(|ws| ws.id == self.context_ws)
-                .map_or_else(String::new, |ws| ws.name.clone());
-            let row = Rect::new(side.x0, y, side.x1, y + row_h);
-            let face = NavRowFace::new(row, &name)
-                .icon(Icon::Hash)
-                .state(SelectionState::new(false, self.hovered(row), false));
-            chrome::paint_nav_row(scene, tf, tr, theme, &face);
-            ChatApp::push_hit(hits, row, Hit::CurrentContext);
-            y += row_h;
-        }
         let row = Rect::new(side.x0, y, side.x1, y + row_h);
         chrome::paint_nav_row(
             scene,
@@ -692,34 +661,6 @@ impl ChatApp {
                 .state(SelectionState::new(task_mode, self.hovered(row), false)),
         );
         ChatApp::push_hit(hits, row, Hit::Tasks);
-        y += row_h;
-        if !elsewhere && !self.inbox_open {
-            return y;
-        }
-        let mentions: u32 = self
-            .channels
-            .iter()
-            .filter(|c| c.workspace != self.context_ws)
-            .map(|c| c.mentions)
-            .sum();
-        let unread = self
-            .channels
-            .iter()
-            .any(|c| c.workspace != self.context_ws && c.unread > 0);
-        let row = Rect::new(side.x0, y, side.x1, y + row_h);
-        let mut face = NavRowFace::new(row, "Inbox")
-            .icon(Icon::Inbox)
-            .unread(unread)
-            .state(SelectionState::new(
-                self.inbox_open,
-                self.hovered(row),
-                false,
-            ));
-        if mentions > 0 {
-            face = face.count(NavCount::Live(mentions));
-        }
-        chrome::paint_nav_row(scene, tf, tr, theme, &face);
-        ChatApp::push_hit(hits, row, Hit::Inbox);
         y + row_h
     }
 
@@ -742,10 +683,6 @@ impl ChatApp {
             return;
         }
         self.task_search.apply_layout_external(Rect::ZERO);
-        if self.inbox_open {
-            self.draw_inbox_sidebar(scene, tf, tr, theme, side, hits);
-            return;
-        }
         // While in a call, the microphone control stays at hand here.
         let bottom = if self.call.active {
             self.draw_voice_bar(scene, tf, tr, theme, side, hits)
@@ -820,77 +757,6 @@ impl ChatApp {
         nav_item_height(theme, true, false) * visible as f64
     }
 
-    /// Cross-workspace conversations: one section per workspace, its text
-    /// channels with the most unread first.
-    fn draw_inbox_sidebar(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        side: Rect,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let row_h = nav_row_height(theme);
-        let mut y =
-            self.draw_destinations(PaintCtx::new(scene, tf, tr, theme), side, side.y0, hits);
-        y = self.draw_person_navigation(PaintCtx::new(scene, tf, tr, theme), side, y, hits);
-        let mut first = y <= side.y0;
-        let mut workspaces = self.workspaces.clone();
-        workspaces.sort_by(|left, right| left.name.cmp(&right.name));
-        for workspace in workspaces {
-            let mut channels: Vec<_> = self
-                .channels
-                .iter()
-                .filter(|channel| {
-                    channel.workspace == workspace.id
-                        && channel.kind == ChannelKind::Text
-                        && !channel.archived
-                })
-                .collect();
-            if channels.is_empty() {
-                continue;
-            }
-            channels.sort_by(|left, right| {
-                right
-                    .unread
-                    .cmp(&left.unread)
-                    .then_with(|| left.order.cmp(&right.order))
-            });
-            let section_h = nav_section_height(theme, first);
-            let header = Rect::new(side.x0, y, side.x1, y + section_h);
-            chrome::paint_nav_section(
-                scene,
-                tf,
-                tr,
-                theme,
-                &NavSectionFace::new(header, &workspace.name),
-            );
-            y += section_h;
-            first = false;
-            for channel in channels {
-                if y > side.y1 {
-                    return;
-                }
-                let row = Rect::new(side.x0, y, side.x1, y + row_h);
-                let mut face = NavRowFace::new(row, &channel.name)
-                    .icon(Icon::Hash)
-                    .unread(channel.unread > 0)
-                    .state(SelectionState::new(
-                        channel.id == self.active_channel,
-                        self.hovered(row),
-                        false,
-                    ));
-                if channel.mentions > 0 {
-                    face = face.count(NavCount::Live(channel.mentions));
-                }
-                chrome::paint_nav_row(scene, tf, tr, theme, &face);
-                ChatApp::push_hit(hits, row, Hit::Channel(channel.id.clone()));
-                y += row_h;
-            }
-        }
-    }
-
     /// The channel tree: the uncategorised channels first, then each category
     /// as a collapsible section with a "new channel" action.
     fn draw_sidebar_tree(
@@ -960,7 +826,6 @@ impl ChatApp {
                     hits,
                     plus,
                     Hit::AddChannel {
-                        workspace: self.active_ws.clone(),
                         category: cat.id.clone(),
                     },
                 );
@@ -979,8 +844,8 @@ impl ChatApp {
         }
     }
 
-    /// Keep private history reachable in both the global Inbox and workspace tree,
-    /// before a long channel list can consume the navigation's visible area.
+    /// Keep private history reachable in the channel tree, before a long
+    /// channel list can consume the navigation's visible area.
     fn draw_person_navigation(
         &self,
         paint: PaintCtx<'_>,
@@ -1585,17 +1450,7 @@ impl ChatApp {
 
         let (name, topic) = self.channel(&self.active_channel).map_or_else(
             || (String::new(), String::new()),
-            |channel| {
-                let topic = if self.inbox_open {
-                    self.workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == channel.workspace)
-                        .map_or_else(String::new, |workspace| workspace.name.clone())
-                } else {
-                    channel.topic.clone()
-                };
-                (channel.name.clone(), topic)
-            },
+            |channel| (channel.name.clone(), channel.topic.clone()),
         );
         HeaderIdentityText {
             name,
@@ -5321,7 +5176,7 @@ mod tests {
             h: 0,
             size: 1024,
         };
-        assert_eq!(media_meta(&unknown_video), vec!["1.0 KiB".to_owned()]);
+        assert_eq!(media_meta(&unknown_video), vec!["1 kB".to_owned()]);
         let (vw, _) = media_face(&unknown_video, MediaArt::Placeholder, &[], 1000.0, &theme);
         assert!(
             (vw - max_h * 16.0 / 9.0).abs() < 1e-6,
@@ -5337,7 +5192,7 @@ mod tests {
             size: 18_944,
         };
         assert!(media_meta(&file).is_empty());
-        assert_eq!(ui::format::bytes(18_944), "18.5 KiB");
+        assert_eq!(ui::format::size(18_944), "18.9 kB");
     }
 
     #[test]

@@ -92,8 +92,6 @@ pub struct DescriptorAuthority<'a> {
     pub workspace: u64,
     /// Existing owner-persisted generation expectation.
     pub generation: GenerationExpectation,
-    /// Current native policy ceiling for delivery features.
-    pub allowed_delivery_capabilities: u64,
     /// Current trusted owner time.
     pub now: SystemTime,
 }
@@ -103,8 +101,6 @@ pub struct DescriptorAuthority<'a> {
 pub struct DescriptorSettings {
     /// Exact configured HTTPS origin; TLS still requires separate verification.
     pub origin: String,
-    /// Configured delivery bits, within the current owner's allowed policy.
-    pub delivery_capabilities: u64,
     /// Absolute issue time in nanoseconds.
     pub issued_at_ns: u64,
     /// Expiry within 15 minutes and both current certificate validity windows.
@@ -129,7 +125,6 @@ struct DescriptorPayload {
     https_base_path: String,
     #[serde(deserialize_with = "bounded_endpoint")]
     native_endpoint: String,
-    delivery_capabilities: u64,
     media_capabilities: u64,
     issued_at_ns: u64,
     expires_at_ns: u64,
@@ -182,7 +177,6 @@ pub fn issue_transport_hint_with_media(
         webtransport_path: WEBTRANSPORT_PATH.into(),
         https_base_path: HTTPS_BASE_PATH.into(),
         native_endpoint: format!("{}{WEBTRANSPORT_PATH}", settings.origin),
-        delivery_capabilities: settings.delivery_capabilities,
         media_capabilities,
         issued_at_ns: settings.issued_at_ns,
         expires_at_ns: settings.expires_at_ns,
@@ -381,10 +375,6 @@ impl VerifiedDescriptor {
     pub fn host_certificate(&self) -> &DeviceCert {
         &self.hint.host
     }
-    /// Signed allowed delivery bits, separate from media service advertisement.
-    pub fn delivery_capabilities(&self) -> u64 {
-        self.payload.delivery_capabilities
-    }
     /// Authenticated known media service bits; this does not grant participation.
     pub fn media_capabilities(&self) -> u64 {
         self.payload.media_capabilities
@@ -415,15 +405,10 @@ impl VerifiedDescriptor {
         current: &DescriptorAuthority<'_>,
         device: &DeviceCert,
         carrier: auth::Carrier,
-        requested: u64,
-        mandatory: u64,
     ) -> Result<auth::ClientScope, DescriptorError> {
         self.revalidate(current)?;
         let revocations = current_revocations(current.peer)?;
         validate_device(current, device, &revocations)?;
-        if mandatory & !requested != 0 || mandatory & !self.payload.delivery_capabilities != 0 {
-            return Err(DescriptorError::Capabilities);
-        }
         Ok(auth::ClientScope {
             workspace: self.payload.workspace,
             workspace_root: self.payload.workspace_root,
@@ -435,8 +420,6 @@ impl VerifiedDescriptor {
             descriptor_generation: self.payload.generation,
             descriptor_digest: self.digest,
             carrier,
-            requested_capabilities: requested,
-            mandatory_capabilities: mandatory,
         })
     }
     /// Derive server scope using only that server's own nonzero current boot.
@@ -449,14 +432,12 @@ impl VerifiedDescriptor {
         current: &DescriptorAuthority<'_>,
         device: &DeviceCert,
         carrier: auth::Carrier,
-        requested: u64,
-        mandatory: u64,
         own_boot: [u8; 16],
     ) -> Result<auth::Binding, DescriptorError> {
         if own_boot == [0; 16] {
             return Err(DescriptorError::Scope);
         }
-        let scope = self.client_scope(current, device, carrier, requested, mandatory)?;
+        let scope = self.client_scope(current, device, carrier)?;
         Ok(auth::Binding {
             workspace: scope.workspace,
             workspace_root: scope.workspace_root,
@@ -469,8 +450,6 @@ impl VerifiedDescriptor {
             descriptor_digest: scope.descriptor_digest,
             server_boot_id: own_boot,
             carrier: scope.carrier,
-            requested_capabilities: scope.requested_capabilities,
-            mandatory_capabilities: scope.mandatory_capabilities,
         })
     }
 }
@@ -581,9 +560,7 @@ fn validate_payload(
     {
         return Err(DescriptorError::Endpoint);
     }
-    if payload.media_capabilities & !MEDIA_CAPABILITIES != 0
-        || payload.delivery_capabilities & !current.allowed_delivery_capabilities != 0
-    {
+    if payload.media_capabilities & !MEDIA_CAPABILITIES != 0 {
         return Err(DescriptorError::Capabilities);
     }
     let now = now_ns(current.now)?;

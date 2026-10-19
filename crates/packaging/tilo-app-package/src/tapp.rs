@@ -3,7 +3,7 @@
 //! A `.tapp` is a tar archive:
 //!
 //! ```text
-//! tapp.toml          # header: package_id = "tapp:<hex>", format = 1
+//! tapp.toml          # header: package_id = "tapp:<hex>", format = 2
 //! signed-root        # the 173-byte signed root (its hash is the package id)
 //! manifest.toml      # the manifest the root commits to
 //! collection.qcl     # the payload collection the root commits to
@@ -43,7 +43,7 @@ use crate::signed::SIGNED_ROOT_LEN;
 /// policy fails a change to it that keeps the number. The binary layouts
 /// (signed root, chunk list) are not in that schema: a change to them bumps
 /// this by hand.
-pub const TAPP_FORMAT_VERSION: u32 = 1;
+pub const TAPP_FORMAT_VERSION: u32 = registry_types::PACKAGE_FORMAT_VERSION;
 
 const HEADER: &str = "tapp.toml";
 const SIGNED_ROOT: &str = "signed-root";
@@ -460,14 +460,14 @@ type = "gui"
         {
             let (_dir, packed) = packed();
             let mut bytes = to_bytes(&packed.meta, None).unwrap();
-            let marker = b"format = 1\n";
+            let marker = b"format = 2\n";
             let at = bytes
                 .windows(marker.len())
                 .position(|window| window == marker)
                 .unwrap();
-            bytes[at + marker.len() - 2] = b'2';
+            bytes[at + marker.len() - 2] = b'1';
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::UnsupportedFormat(2)), "{error}");
+            assert!(matches!(error, TappError::UnsupportedFormat(1)), "{error}");
         }
     }
 }

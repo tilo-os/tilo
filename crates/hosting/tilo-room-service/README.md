@@ -176,7 +176,13 @@ person with their own identity, `POST /join` pre-admits it (per-IP join
 windows, an online cap, a cooldown for addresses of removed members) and
 the browser redeems the bound invitation. A read-only embed joins as the
 room's spectator through `POST /spectate`. `GET /presence` answers
-`{online, watching}`. The owner root comes from a mounted secret; without
+`{online, watching}`. `GET`/`POST /directory` lists the room as the site's
+own public workspace (`tilo_relay_protocol::directory`): its name, its
+description (`TILO_ROOMS_DESCRIPTION`), the role a visitor gets, who is
+online (the members' faces the relay reports with its online count) and how
+many belong, and its door (this service's `/join`). The web entry names it
+as the site's `directory`, so a Tilo computer's "Join a workspace…" sheet
+lists it first. The owner root comes from a mounted secret; without
 it the service refuses to start. The full design is in
 `docs/architecture/discord-bridge.md` §9.
 
@@ -197,6 +203,7 @@ accepts them, and they may frame the service's pages.
 |---|---|---|
 | `TILO_ROOMS_PERSISTENT` | unset | the room's name; turns persistent mode on |
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
+| `TILO_ROOMS_DESCRIPTION` | unset: none | what the directory of public workspaces says the room is (at most 280 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: `general` | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
 | `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |

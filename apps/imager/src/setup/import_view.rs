@@ -1872,7 +1872,7 @@ impl ImportApp {
                         operation.apply_progress(&progress);
                         self.status = format!(
                             "Verified {} in {} {}.",
-                            ui::format::bytes_si(progress.verified_bytes),
+                            ui::format::size(progress.verified_bytes),
                             progress.verified_files,
                             if progress.verified_files == 1 {
                                 "file"
@@ -2276,7 +2276,7 @@ impl ImportApp {
         let mut row = ListRow::new(format!("import.operation.{index}.summary"), folder)
             .icon(Icon::Folder)
             .secondary(state_summary(state))
-            .meta(ui::format::bytes_si(operation.verified_bytes()));
+            .meta(ui::format::size(operation.verified_bytes()));
         row = match state {
             OperationState::Running => row.active(),
             OperationState::Failed => row.error(),
@@ -2307,7 +2307,7 @@ impl ImportApp {
                 "Checked",
                 format!(
                     "{} in {} {}",
-                    ui::format::bytes_si(operation.verified_bytes()),
+                    ui::format::size(operation.verified_bytes()),
                     operation.verified_file_count(),
                     if operation.verified_file_count() == 1 {
                         "file"

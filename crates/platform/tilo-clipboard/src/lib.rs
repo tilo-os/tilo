@@ -13,7 +13,7 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the app's own Wayland connection once the runner attaches it ([`attach_wayland_display`]), `arboard` on X11 |
+//! | Linux | the app's own Wayland connection once the runner attaches it ([`attach_wayland_display`]), `arboard` on X11 with the `x11` feature |
 //! | macOS | `NSPasteboard` through `arboard` |
 //! | Web | the trusted clipboard event being dispatched ([`events`]), else a synchronous copy inside the user's click |
 //!

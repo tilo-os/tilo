@@ -7,13 +7,13 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionError, Doc};
 use ui::feedback::{Destination, Receipt};
-use ui::tilo_resource::Id;
+use ui::tilo_resource::{self, Id};
 
 pub(crate) mod destination_read;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TriageUpdate {
     Investigating,
@@ -58,7 +58,6 @@ pub fn message_id(report: &str) -> String {
 fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, ActionError> {
     let submission = report
         .submission
-        .0
         .clone()
         .ok_or_else(|| refused("invalid feedback report"))?;
     submission
@@ -74,7 +73,7 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
             Some(TriageEntry {
                 author: entry.author.0.clone(),
                 ts: entry.ts,
-                update: entry.update.0.clone()?,
+                update: entry.update.clone()?,
             })
         })
         .collect();
@@ -225,7 +224,7 @@ mod tests {
     use crate::record::chat;
     use crate::resource::Chat;
     use crate::testing::apply_as;
-    use automerge::{ROOT, transaction::Transactable as _};
+    use automerge::ROOT;
     use tilo_automerge::ApplyIncoming as _;
     use ui::feedback::{ReviewedFeedback, Submission};
     use ui::tilo_resource::Invoke;
@@ -248,7 +247,7 @@ mod tests {
             Submission {
                 id: "0123456789abcdef0123456789abcdef".into(),
                 destination: Destination {
-                    room: channel.workspace,
+                    room: "room".into(),
                     provider: "demo-chat".into(),
                     channel: channel.id,
                 },
@@ -457,7 +456,13 @@ mod tests {
         );
         store
             .with(&checkout.id, |doc| {
-                doc.put(ROOT, "newer_edit", "not yet stored").unwrap();
+                ui::tilo_resource::write_key(
+                    doc,
+                    &ROOT,
+                    "newer_edit",
+                    &ui::tilo_resource::Atom("not yet stored".into()),
+                )
+                .unwrap();
             })
             .unwrap();
         assert!(
@@ -533,7 +538,13 @@ mod tests {
         assert!(receipt_from_record(&store, &primary.id, &submission.id, &elsewhere).is_err());
         store
             .with(&primary.id, |doc| {
-                doc.put(ROOT, "later", "unsaved").unwrap();
+                ui::tilo_resource::write_key(
+                    doc,
+                    &ROOT,
+                    "later",
+                    &ui::tilo_resource::Atom("unsaved".into()),
+                )
+                .unwrap();
             })
             .unwrap();
         assert!(

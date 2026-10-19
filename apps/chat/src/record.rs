@@ -1,6 +1,7 @@
-//! The chat record: workspaces, their categories and channels, the people
-//! in the room, each person's read marks, reviewed feedback and
-//! moderation. The channels' messages are kept in parts beside it
+//! The chat record: the room's categories and channels, the people in the
+//! room, each person's read marks, reviewed feedback and moderation. Chat
+//! runs in a Tilo workspace (its room) and holds no workspaces of its own:
+//! every channel of the record is the room's. The channels' messages are kept in parts beside it
 //! ([`crate::parts`], [`crate::messages`]), so the record stays small
 //! however long the chat runs. What someone is writing and has not sent
 //! is theirs, not the room's: it is kept in their own record
@@ -19,8 +20,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
+use ui::automerge::ObjId;
+use ui::tilo_resource::evolution::{collection_items, map_at, map_values, retype_json};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Collection, Id, Identified, Json, JsonSchema, Keyed, Model, Refusal,
+    self, ActionCx, Atom, Collection, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal,
 };
 
 use crate::model::{ChannelKind, Presence};
@@ -34,6 +37,11 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 
+/// The id of the room's text channel every chat opens with, `#chat`.
+pub const CHAT_CHANNEL: &str = "c_chat";
+/// The id of the room's voice channel every chat opens with, `#voice`.
+pub const VOICE_CHANNEL: &str = "c_voice";
+
 /// Bring a chat record of version `from` up to this one. Version 1 kept
 /// everyone's unsent drafts in the room, where every member edited one
 /// shared draft per channel; drafts are each writer's own now
@@ -41,38 +49,168 @@ const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 /// kept the messages in the record and read marks as counts; the messages
 /// are kept in parts beside it now ([`crate::parts`]) and a read mark is a
 /// position in them, so both are dropped: a record outgrown by its messages
-/// is what parts replace, and nothing carries them over.
+/// is what parts replace, and nothing carries them over. Versions 1 to 3
+/// kept workspaces of the chat's own; Chat runs in its room now, so that
+/// structure is dropped and every channel and category stays
+/// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
+/// a triage step's update and a moderation decision's reports and
+/// take-backs as one JSON string each; they are model values now, rewritten
+/// in place.
 ///
 /// # Errors
-/// When `from` is not a version this chat was.
+/// When `from` is not a version this chat was, or a stored value does not
+/// read as its new type.
 fn migrate(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if !(1..=2).contains(&from) {
+    if !(1..=4).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
     }
-    for dropped in ["drafts", "messages"] {
-        if doc.get(ROOT, dropped)?.is_some() {
-            doc.delete(ROOT, dropped)?;
+    if from <= 2 {
+        for dropped in ["drafts", "messages"] {
+            if doc.get(ROOT, dropped)?.is_some() {
+                doc.delete(ROOT, dropped)?;
+            }
+        }
+        // Read marks start over as positions in the parts.
+        let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
+        read.remove(doc)?;
+        read.object(doc, ui::automerge::ObjType::Map)?;
+    }
+    if from <= 3 {
+        drop_workspaces(doc)?;
+    }
+    for report in collection_items(doc, &ROOT, "feedback")? {
+        retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
+        for step in collection_items(doc, &report, "triage")? {
+            retype_json::<Option<crate::feedback::TriageUpdate>>(doc, &step, "update")?;
         }
     }
-    doc.put_object(ROOT, "read", ui::automerge::ObjType::Map)?;
+    if let Some(moderation) = map_at(doc, &ROOT, "moderation")? {
+        moderation_model::record::upgrade_decisions(doc, &moderation)?;
+    }
     Ok(())
+}
+
+/// Drop the workspaces a chat of version 3 or older kept: they were the
+/// chat's own structure, not anything a person wrote. Every channel and
+/// every category stays, as the room's, without the workspace it named;
+/// nothing else is added or removed. A category that two devices' starters
+/// left without its workspace (the field whose absence made the user's chat
+/// unopenable, `categories.cat_home_text.v.workspace: required value is
+/// missing`) reads again once the field is no longer the model's.
+///
+/// # Errors
+/// The document's read or write error.
+fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value, transaction::Transactable as _};
+    if doc.get(ROOT, "workspaces")?.is_some() {
+        doc.delete(ROOT, "workspaces")?;
+    }
+    for collection in ["channels", "categories"] {
+        let Some((Value::Object(ObjType::Map), map)) = doc.get(ROOT, collection)? else {
+            continue;
+        };
+        let entries: Vec<ui::automerge::ObjId> = doc
+            .map_range(&map, ..)
+            .filter(|entry| entry.value == ui::automerge::ValueRef::Object(ObjType::Map))
+            .map(|entry| entry.id())
+            .collect();
+        for entry in entries {
+            // Every copy of the entry's value: two devices that made the
+            // same item each made one, and the document keeps both.
+            let values: Vec<ui::automerge::ObjId> = doc
+                .get_all(&entry, "v")?
+                .into_iter()
+                .filter(|(value, _)| matches!(value, Value::Object(ObjType::Map)))
+                .map(|(_, id)| id)
+                .collect();
+            for value in values {
+                if doc.get(&value, "workspace")?.is_some() {
+                    doc.delete(&value, "workspace")?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Bring a part of the chat's messages of version 1 up to this one. Version
+/// 1 kept a message's paragraphs, earlier texts, mentions, reference,
+/// attachment and shown name, and an agent's record of its work, as one
+/// JSON string each; they are model values now, rewritten in place.
+///
+/// # Errors
+/// When `from` is not a version a part was, or a stored value does not read
+/// as its new type.
+pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no chat part migration from {from}"
+        )));
+    }
+    for message in collection_items(doc, &ui::automerge::ROOT, "messages")? {
+        upgrade_message(doc, &message)?;
+    }
+    Ok(())
+}
+
+/// [`upgrade_part`] of one message stored at `message`.
+fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
+    use crate::model::{AgentReasoning, AgentStepOutcome, Attachment};
+    retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
+    retype_json::<Vec<Revision>>(doc, message, "history")?;
+    retype_json::<Vec<crate::mention::Mention>>(doc, message, "mentions")?;
+    retype_json::<Option<tilo_reference::ResourceRef>>(doc, message, "reference")?;
+    retype_json::<Option<Attachment>>(doc, message, "attachment")?;
+    retype_json::<Option<ShownAs>>(doc, message, "appearance")?;
+    if let Some(work) = map_at(doc, message, "work")? {
+        retype_json::<Option<Transition>>(doc, &work, "state")?;
+        retype_json::<Option<AgentReasoning>>(doc, &work, "reasoning")?;
+        if let Some(stream) = map_at(doc, &work, "stream")? {
+            retype_json::<Option<crate::agent_stream::AgentFinish>>(doc, &stream, "finish")?;
+        }
+        for (_, step) in map_values(doc, &work, "trace")? {
+            retype_json::<Option<AgentStepOutcome>>(doc, &step, "outcome")?;
+        }
+    }
+    Ok(())
+}
+
+/// Give a room opened for the first time, with no channels at all, its
+/// first two: `#chat` to talk in and `#voice` to call in, under fixed ids
+/// and with the same values, so every device that opens the room first
+/// makes the very same two, and their copies are one item each. A room
+/// with any channel, even one that does not read, gets nothing.
+fn open_room(channels: &mut Collection<Channel>) {
+    if !channels.is_empty() || !channels.quarantined().is_empty() {
+        return;
+    }
+    for (id, name, kind) in [
+        (CHAT_CHANNEL, "chat", ChannelKind::Text),
+        (VOICE_CHANNEL, "voice", ChannelKind::Voice),
+    ] {
+        channels.push(
+            Id::from_raw(id),
+            Channel {
+                name: name.into(),
+                kind,
+                ..Channel::default()
+            },
+        );
+    }
 }
 
 /// The room's chat. See the module docs.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Chat {
-    /// The workspaces, in the order the rail shows them.
-    pub workspaces: Collection<Workspace>,
-    /// The channel categories of every workspace, in sidebar order.
+    /// The room's channel categories, in sidebar order.
     pub categories: Collection<Category>,
-    /// The channels of every workspace, in sidebar order within their
-    /// category.
+    /// The room's channels, in sidebar order within their category.
     pub channels: Collection<Channel>,
     /// The people and agents in the room, by their participant id.
     pub people: Keyed<Person>,
@@ -89,35 +227,17 @@ pub struct Chat {
     pub moderation: moderation_model::Moderation,
 }
 
-/// A workspace: the left rail's entry.
+/// A collapsible group of the room's channels.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Workspace {
-    /// The workspace's name.
-    #[model(label)]
-    pub name: String,
-    /// The monogram the rail shows.
-    pub glyph: String,
-    /// Its colour in the rail.
-    pub color: u32,
-}
-
-/// A collapsible group of channels within a workspace.
-#[derive(Model, Debug, Clone, PartialEq)]
 pub struct Category {
-    /// The workspace it belongs to.
-    #[model(readonly)]
-    pub workspace: Id,
     /// The category's name.
     #[model(label)]
     pub name: String,
 }
 
-/// A text or voice channel.
-#[derive(Model, Debug, Clone, PartialEq)]
+/// A text or voice channel of the room.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Channel {
-    /// The workspace it belongs to.
-    #[model(readonly)]
-    pub workspace: Id,
     /// The category it is listed under; none for uncategorised.
     pub category: Option<Id>,
     /// The channel's name.
@@ -153,13 +273,13 @@ pub struct Message {
     pub text: String,
     /// Its paragraphs as written, with their formatting; empty for plain text.
     #[model(readonly)]
-    pub body: Json<Vec<ClipBlock>>,
+    pub body: Vec<ClipBlock>,
     /// Whether it was changed after it was posted.
     #[model(readonly)]
     pub edited: bool,
     /// Its earlier texts, oldest first.
     #[model(readonly)]
-    pub history: Json<Vec<Revision>>,
+    pub history: Vec<Revision>,
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
@@ -169,16 +289,16 @@ pub struct Message {
     pub reactions: ui::tilo_resource::Set<Reacted>,
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
-    pub mentions: Json<Vec<crate::mention::Mention>>,
+    pub mentions: Vec<crate::mention::Mention>,
     /// The thing it is about, when it was written by sharing something.
     #[model(readonly)]
-    pub reference: Json<Option<tilo_reference::ResourceRef>>,
+    pub reference: Option<tilo_reference::ResourceRef>,
     /// The record the reference lives in, when the host resolved one.
     #[model(readonly)]
     pub source_provider: Option<Atom>,
     /// A file, an image or a video, by its content address.
     #[model(readonly)]
-    pub attachment: Json<Option<crate::model::Attachment>>,
+    pub attachment: Option<crate::model::Attachment>,
     /// Pinned messages are listed for everyone (`pin`).
     #[model(readonly)]
     pub pinned: bool,
@@ -189,28 +309,55 @@ pub struct Message {
     /// The name and avatar a bot showed for it instead of its own (a bridge
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
-    pub appearance: Json<Option<tilo_actions::Appearance>>,
+    pub appearance: Option<ShownAs>,
 }
 
-impl Default for Category {
-    fn default() -> Self {
+/// The name and avatar a bot showed for a message instead of its own, as the
+/// message keeps it: [`tilo_actions::Appearance`] as stored values.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownAs {
+    /// The shown name.
+    #[model(atom)]
+    pub name: String,
+    /// BLAKE3 hex of an image in the room's content store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    /// The outside account this stands for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<ShownPersona>,
+}
+
+/// An account on another service a message was shown as coming from.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShownPersona {
+    #[model(atom)]
+    pub service: String,
+    #[model(atom)]
+    pub account: String,
+}
+
+impl From<tilo_actions::Appearance> for ShownAs {
+    fn from(appearance: tilo_actions::Appearance) -> Self {
         Self {
-            workspace: Id::from_raw(""),
-            name: String::new(),
+            name: appearance.name,
+            avatar: appearance.avatar,
+            persona: appearance.persona.map(|persona| ShownPersona {
+                service: persona.service,
+                account: persona.account,
+            }),
         }
     }
 }
 
-impl Default for Channel {
-    fn default() -> Self {
+impl From<ShownAs> for tilo_actions::Appearance {
+    fn from(shown: ShownAs) -> Self {
         Self {
-            workspace: Id::from_raw(""),
-            category: None,
-            name: String::new(),
-            topic: String::new(),
-            kind: ChannelKind::default(),
-            archived: false,
-            conversation_with: None,
+            name: shown.name,
+            avatar: shown.avatar,
+            persona: shown.persona.map(|persona| tilo_actions::Persona {
+                service: persona.service,
+                account: persona.account,
+            }),
         }
     }
 }
@@ -222,18 +369,18 @@ impl Default for Message {
             author: Atom::default(),
             ts: 0,
             text: String::new(),
-            body: Json::default(),
+            body: Vec::new(),
             edited: false,
-            history: Json::default(),
+            history: Vec::new(),
             parent: None,
             reactions: ui::tilo_resource::Set::new(),
-            mentions: Json::default(),
-            reference: Json::default(),
+            mentions: Vec::new(),
+            reference: None,
             source_provider: None,
-            attachment: Json::default(),
+            attachment: None,
             pinned: false,
             work: None,
-            appearance: Json::default(),
+            appearance: None,
         }
     }
 }
@@ -248,7 +395,7 @@ pub struct Reacted {
 ui::tilo_resource::json_model!(Reacted);
 
 /// An earlier text of a message.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
     pub ts: i64,
     pub text: String,
@@ -287,9 +434,9 @@ pub struct Work {
     pub stream: Option<ProviderStream>,
     /// Where it is, and since when: one authored claim, never mixed with
     /// another's time.
-    pub state: Json<Option<Transition>>,
+    pub state: Option<Transition>,
     /// How it decided, in the decider's words.
-    pub reasoning: Json<Option<crate::model::AgentReasoning>>,
+    pub reasoning: Option<crate::model::AgentReasoning>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
 }
@@ -301,7 +448,7 @@ pub struct ProviderStream {
     pub sequence: u64,
     pub reasoning: String,
     pub progress: String,
-    pub finish: Json<Option<crate::agent_stream::AgentFinish>>,
+    pub finish: Option<crate::agent_stream::AgentFinish>,
     pub detail: String,
 }
 
@@ -312,14 +459,14 @@ impl ProviderStream {
             sequence: self.sequence,
             reasoning: self.reasoning.clone(),
             progress: self.progress.clone(),
-            finish: self.finish.0,
+            finish: self.finish,
             detail: self.detail.clone(),
         }
     }
 }
 
 /// One state of an agent's work and when it entered it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transition {
     pub state: crate::model::AgentWorkState,
     pub since: i64,
@@ -333,7 +480,7 @@ pub struct Step {
     pub resource: Atom,
     #[model(label)]
     pub label: String,
-    pub outcome: Json<Option<crate::model::AgentStepOutcome>>,
+    pub outcome: Option<crate::model::AgentStepOutcome>,
 }
 
 impl Identified for Step {
@@ -351,7 +498,7 @@ impl Identified for Step {
 pub struct FeedbackReport {
     /// What was submitted, as the person reviewed it.
     #[model(readonly)]
-    pub submission: Json<Option<ui::feedback::Submission>>,
+    pub submission: Option<ui::feedback::Submission>,
     /// Who filed it.
     #[model(readonly)]
     pub author: Atom,
@@ -371,7 +518,7 @@ pub struct Triage {
     #[model(readonly)]
     pub ts: i64,
     #[model(readonly)]
-    pub update: Json<Option<crate::feedback::TriageUpdate>>,
+    pub update: Option<crate::feedback::TriageUpdate>,
 }
 
 /// What an agent records of its work, as a verb takes it.
@@ -668,21 +815,6 @@ pub(crate) fn valid_source_provider(provider: &str) -> bool {
         && !provider.contains('\\')
 }
 
-/// A monogram for a workspace glyph: the initials of its first two words,
-/// as written.
-pub fn monogram(name: &str) -> String {
-    let letters: String = name
-        .split_whitespace()
-        .filter_map(|word| word.chars().next())
-        .take(2)
-        .collect();
-    if letters.is_empty() {
-        "WS".to_owned()
-    } else {
-        letters
-    }
-}
-
 /// The id of `agent`'s reply to the message `summons`: the same on every
 /// replica and for every record of its work, so the agent never needs to be
 /// told the id of what it wrote.
@@ -696,14 +828,14 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 
-/// Stable hidden conversation shared by every replica for this workspace and
+/// Stable hidden conversation the room's replicas share with an
 /// authenticated Agent. The id is an address only; admission still comes
 /// from the live room roster.
 #[must_use]
-pub fn agent_conversation_channel_id(workspace: &str, agent: &str) -> Id {
+pub fn agent_conversation_channel_id(agent: &str) -> Id {
     use std::hash::Hasher as _;
     let mut hash = fnv::FnvHasher::default();
-    hash.write(workspace.as_bytes());
+    hash.write(b"room");
     hash.write(&[0]);
     hash.write(agent.as_bytes());
     Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
@@ -768,84 +900,20 @@ impl Chat {
             .ok_or_else(|| Refusal::new("there is no such person"))
     }
 
-    /// Start a fresh record: its creator, a workspace and, without one named
-    /// by the host, two channels to start in.
+    /// Start a fresh record: its creator, and the room's first channels
+    /// when it has none yet ([`open_room`]).
     pub(crate) fn begin(
         &mut self,
         creator: &str,
-        workspace: Option<(&str, &str)>,
         (name, initials, color): (&str, &str, u32),
     ) -> Result<(), Refusal> {
-        if let Some((id, _)) = workspace
-            && !self.workspaces.is_empty()
-        {
-            return if self.workspaces.contains(&Id::from_raw(id)) {
-                Ok(())
-            } else {
-                Err(Refusal::new("chat is already set up for another workspace"))
-            };
-        }
-        if !self.workspaces.is_empty() {
-            return Ok(());
-        }
         let person = self.person(creator)?;
         name.clone_into(&mut person.name);
         initials.clone_into(&mut person.initials);
         person.color = color;
         person.status = Presence::Online;
-        match workspace {
-            Some((id, label)) => {
-                let label = if label.trim().is_empty() { id } else { label };
-                self.workspaces.push(
-                    Id::from_raw(id),
-                    Workspace {
-                        name: label.to_owned(),
-                        glyph: monogram(label),
-                        color: 0,
-                    },
-                );
-            }
-            None => self.starter(),
-        }
+        open_room(&mut self.channels);
         Ok(())
-    }
-
-    /// The first workspace of a record no host named one for: `#general` to
-    /// talk in and `Lounge` to call in.
-    fn starter(&mut self) {
-        let home = Id::from_raw("ws_home");
-        self.workspaces.push(
-            home.clone(),
-            Workspace {
-                name: "My Workspace".into(),
-                glyph: "MW".into(),
-                color: 0,
-            },
-        );
-        for (id, name) in [("cat_home_text", "Channels"), ("cat_home_voice", "Voice")] {
-            self.categories.push(
-                Id::from_raw(id),
-                Category {
-                    workspace: home.clone(),
-                    name: name.into(),
-                },
-            );
-        }
-        for (id, category, name, kind) in [
-            ("c_general", "cat_home_text", "general", ChannelKind::Text),
-            ("c_lounge", "cat_home_voice", "Lounge", ChannelKind::Voice),
-        ] {
-            self.open_channel(
-                Id::from_raw(id),
-                Channel {
-                    workspace: home.clone(),
-                    category: Some(Id::from_raw(category)),
-                    name: name.into(),
-                    kind,
-                    ..Channel::default()
-                },
-            );
-        }
     }
 }
 
@@ -857,22 +925,17 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 3,
+    version = 5,
     migrate = migrate,
 )]
 impl Chat {
     /// Start the chat.
     ///
-    /// Its creator and their first workspace: the one the host names, or a
-    /// starter workspace with `#general` and a voice lounge.
+    /// Its creator, and the room's first channels when it has none yet.
     #[action(housekeeping)]
     pub fn begin_chat(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The workspace the host admitted; none for a starter workspace")] workspace: Option<
-            String,
-        >,
-        #[param("The workspace's name")] workspace_name: Option<String>,
         #[param("Your name")] name: String,
         #[param("Your initials")] initials: String,
         #[param("Your colour")] color: u32,
@@ -881,12 +944,7 @@ impl Chat {
         if name.len() > 128 || initials.len() > 8 {
             return Err(Refusal::new("the creator's name is too long"));
         }
-        let workspace_name = workspace_name.unwrap_or_default();
-        self.begin(
-            &creator,
-            workspace.as_deref().map(|id| (id, workspace_name.as_str())),
-            (&name, &initials, color),
-        )
+        self.begin(&creator, (&name, &initials, color))
     }
 
     /// Introduce yourself.
@@ -930,65 +988,13 @@ impl Chat {
         Ok(())
     }
 
-    /// Create a workspace.
-    ///
-    /// With `#general` to talk in and `Lounge` to call in.
-    #[action]
-    pub fn create_workspace(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Workspace name")] name: String,
-    ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a workspace needs a name"));
-        }
-        let workspace = cx.id();
-        self.workspaces.push(
-            workspace.clone(),
-            Workspace {
-                name: name.to_owned(),
-                glyph: monogram(name),
-                color: u32::try_from(self.workspaces.len() % 8).unwrap_or_default(),
-            },
-        );
-        for (category, channel, kind) in [
-            ("Channels", "general", ChannelKind::Text),
-            ("Voice", "Lounge", ChannelKind::Voice),
-        ] {
-            let category_id = cx.id();
-            self.categories.push(
-                category_id.clone(),
-                Category {
-                    workspace: workspace.clone(),
-                    name: category.into(),
-                },
-            );
-            self.open_channel(
-                cx.id(),
-                Channel {
-                    workspace: workspace.clone(),
-                    category: Some(category_id),
-                    name: channel.into(),
-                    kind,
-                    ..Channel::default()
-                },
-            );
-        }
-        Ok(())
-    }
-
     /// New category.
-    #[action(item = workspaces)]
+    #[action]
     pub fn create_category(
         &mut self,
         cx: &mut ActionCx,
-        workspace: &Id,
         #[param("Category name")] name: String,
     ) -> Result<(), Refusal> {
-        if !self.workspaces.contains(workspace) {
-            return Err(Refusal::new("there is no such workspace"));
-        }
         let name = name.trim();
         if name.is_empty() {
             return Err(Refusal::new("a category needs a name"));
@@ -996,7 +1002,6 @@ impl Chat {
         self.categories.push(
             cx.id(),
             Category {
-                workspace: workspace.clone(),
                 name: name.to_owned(),
             },
         );
@@ -1004,11 +1009,10 @@ impl Chat {
     }
 
     /// New channel.
-    #[action(item = workspaces)]
+    #[action]
     pub fn create_channel(
         &mut self,
         cx: &mut ActionCx,
-        workspace: &Id,
         #[param("Channel name")] name: String,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
         #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
@@ -1016,17 +1020,10 @@ impl Chat {
         >,
         #[param("What the channel is about")] topic: Option<String>,
     ) -> Result<(), Refusal> {
-        if !self.workspaces.contains(workspace) {
-            return Err(Refusal::new("there is no such workspace"));
-        }
-        if let Some(category) = &category {
-            let category = self
-                .categories
-                .get(category)
-                .ok_or_else(|| Refusal::new("there is no such category"))?;
-            if category.workspace != *workspace {
-                return Err(Refusal::new("the category belongs to another workspace"));
-            }
+        if let Some(category) = &category
+            && !self.categories.contains(category)
+        {
+            return Err(Refusal::new("there is no such category"));
         }
         let name = name.trim().trim_start_matches('#');
         if name.is_empty() {
@@ -1037,7 +1034,6 @@ impl Chat {
         self.open_channel(
             id,
             Channel {
-                workspace: workspace.clone(),
                 category,
                 name: name.to_owned(),
                 topic: topic
@@ -1052,12 +1048,13 @@ impl Chat {
 
     /// Delete category.
     ///
-    /// Its channels stay, uncategorised.
+    /// Its channels stay, uncategorised. A category that no longer reads
+    /// (held out of the chat, [`Collection::quarantined`]) is deleted too.
     #[action(item = categories, destructive)]
     pub fn delete_category(&mut self, category: &Id) -> Result<(), Refusal> {
-        self.categories
-            .remove(category)
-            .ok_or_else(|| Refusal::new("there is no such category"))?;
+        if self.categories.remove(category).is_none() && !self.categories.discard(category) {
+            return Err(Refusal::new("there is no such category"));
+        }
         for (_, channel) in self.channels.iter_mut() {
             if channel.category.as_ref() == Some(category) {
                 channel.category = None;
@@ -1078,9 +1075,7 @@ impl Chat {
         let siblings: Vec<Id> = self
             .channels
             .iter()
-            .filter(|(_, other)| {
-                other.workspace == moving.workspace && other.category == moving.category
-            })
+            .filter(|(_, other)| other.category == moving.category)
             .map(|(id, _)| id.clone())
             .collect();
         let at = siblings
@@ -1102,27 +1097,20 @@ impl Chat {
 
     /// File a channel.
     ///
-    /// Lists it under another category of its workspace, or under none.
+    /// Lists it under another category, or under none.
     #[action(item = channels)]
     pub fn set_channel_category(
         &mut self,
         channel: &Id,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
     ) -> Result<(), Refusal> {
-        let workspace = self
-            .channels
-            .get(channel)
-            .ok_or_else(|| Refusal::new("there is no such channel"))?
-            .workspace
-            .clone();
-        if let Some(category) = &category {
-            let category = self
-                .categories
-                .get(category)
-                .ok_or_else(|| Refusal::new("there is no such category"))?;
-            if category.workspace != workspace {
-                return Err(Refusal::new("the category belongs to another workspace"));
-            }
+        if !self.channels.contains(channel) {
+            return Err(Refusal::new("there is no such channel"));
+        }
+        if let Some(category) = &category
+            && !self.categories.contains(category)
+        {
+            return Err(Refusal::new("there is no such category"));
         }
         if let Some(filed) = self.channels.get_mut(channel) {
             filed.category = category;
@@ -1133,12 +1121,13 @@ impl Chat {
     /// Delete channel.
     ///
     /// With its read marks. Its messages stay in the parts that
-    /// hold them, shown nowhere.
+    /// hold them, shown nowhere. A channel that no longer reads (held out of
+    /// the chat, [`Collection::quarantined`]) is deleted too.
     #[action(item = channels, destructive)]
     pub fn delete_channel(&mut self, channel: &Id) -> Result<(), Refusal> {
-        self.channels
-            .remove(channel)
-            .ok_or_else(|| Refusal::new("there is no such channel"))?;
+        if self.channels.remove(channel).is_none() && !self.channels.discard(channel) {
+            return Err(Refusal::new("there is no such channel"));
+        }
         let key = channel.to_string();
         for marks in self.read.values_mut() {
             marks.remove(&key);
@@ -1272,7 +1261,7 @@ impl Chat {
         let ts = seconds(cx);
         let key = Id::from_raw(submission.id.clone());
         if let Some(known) = self.feedback.get(&key) {
-            return if known.submission.0.as_ref() == Some(&submission) && known.author.0 == me {
+            return if known.submission.as_ref() == Some(&submission) && known.author.0 == me {
                 Ok(())
             } else {
                 Err(Refusal::new("feedback id conflict"))
@@ -1284,7 +1273,7 @@ impl Chat {
         self.feedback.push(
             key,
             FeedbackReport {
-                submission: Json(Some(submission)),
+                submission: Some(submission),
                 author: Atom(me),
                 ts,
                 triage: Collection::new(),
@@ -1318,13 +1307,15 @@ impl Chat {
                 Triage {
                     author: Atom(me),
                     ts,
-                    update: Json(Some(update)),
+                    update: Some(update),
                 },
             );
         Ok(())
     }
 }
 
+#[cfg(test)]
+mod migration_tests;
 #[cfg(test)]
 mod terminal_tests;
 #[cfg(test)]

@@ -123,23 +123,18 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     chat::demo::apply_as(
         &mut doc,
         "ada",
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Native shared space".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();
-    let workspace = chat::projection::read(&doc)
-        .workspace_rows()
-        .into_iter()
-        .find(|workspace| workspace.name == "Native shared space")
-        .unwrap()
-        .id;
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()
-        .find(|channel| {
-            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
-        })
+        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
@@ -172,10 +167,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         .find(|(message, _)| message.as_str() == shared)
         .map(|(_, message)| message.clone())
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(&shared.reference.0).unwrap(),
-        reference
-    );
+    assert_eq!(serde_json::to_value(&shared.reference).unwrap(), reference);
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),

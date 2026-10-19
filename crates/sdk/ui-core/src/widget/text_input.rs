@@ -6303,16 +6303,16 @@ impl Widget for TextInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        if self.context_menu.is_open() {
-            Widget::draw_overlay(
-                &mut self.context_menu,
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
+        // Drawn while it is open and while it leaves (`motion::Appear`);
+        // a closed menu draws nothing.
+        Widget::draw_overlay(
+            &mut self.context_menu,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
     }
 }
 

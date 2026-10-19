@@ -30,6 +30,7 @@ run 'Source blobs are text and LF or explicitly pinned assets' \
 run 'Tracked files reference no internal tracker' \
   python3 tools/policy/check_public_references.py
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
+run 'Package graph is acyclic' python3 tools/policy/check_dependency_cycles.py
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
   python3 tools/policy/check_integration_test_modules.py
@@ -37,6 +38,8 @@ run 'Checked-in capnp bindings match their schemas' \
   python3 tools/policy/check_capnp_bindings.py
 run 'Interface schemas match the code and their versions' \
   python3 tools/policy/check_interfaces.py check
+run 'Versioned on-disk formats name the oldest version they bring up' \
+  python3 tools/policy/check_format_migrations.py check
 run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
@@ -78,6 +81,8 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'Animations are composed from the motion library' python3 tools/policy/check_motion_library.py
+run 'Dates, times, numbers and sizes go through ui::format' python3 tools/policy/check_formats.py
 run 'Settings are written through typed keys' python3 tools/policy/check_settings_writes.py
 run 'Widgets never write the document' python3 tools/policy/check_widget_document_writes.py
 run 'App content store contract' python3 tools/policy/check_app_content_store.py

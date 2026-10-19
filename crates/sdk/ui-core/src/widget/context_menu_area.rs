@@ -423,6 +423,8 @@ mod tests {
 
     #[test]
     fn movement_during_opening_keeps_the_pointer_row_for_enter() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let (mut area, chosen, _) = opening_menu();
         let Some(row) = area.menu().item_rect(1) else {
             panic!("the second action must have a hit target");
@@ -436,6 +438,8 @@ mod tests {
 
     #[test]
     fn keyboard_choice_before_opening_release_survives_stationary_replay() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let (mut area, chosen, at) = opening_menu();
         crate::testing::dispatch(&mut area, &named_key(NamedKey::ArrowDown));
         assert_eq!(area.menu().hovered(), Some(1));
@@ -448,6 +452,8 @@ mod tests {
 
     #[test]
     fn entries_are_built_when_it_opens_and_choosing_runs_one() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let chosen = Rc::new(Cell::new(0));
         let offered = Rc::new(Cell::new(1));
         let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), {
@@ -600,6 +606,8 @@ mod tests {
     /// keyboard row one off lands on another entry.
     #[test]
     fn a_right_click_menu_runs_the_entry_the_keyboard_chooses() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let (mut harness, chosen) = four_entries();
         right_click(&mut harness);
         assert_eq!(
@@ -617,6 +625,8 @@ mod tests {
 
     #[test]
     fn a_right_click_menu_runs_the_entry_the_pointer_clicks() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let (mut harness, chosen) = four_entries();
         right_click(&mut harness);
         let second = harness
@@ -640,6 +650,8 @@ mod tests {
 
     #[test]
     fn nothing_to_offer_opens_nothing() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
             vec![MenuEntry::separator()]
         });

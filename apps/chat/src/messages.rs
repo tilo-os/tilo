@@ -16,9 +16,10 @@
 
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, Json, Refusal};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
@@ -122,18 +123,43 @@ impl ChatPart {
                 author: Atom(author),
                 ts,
                 text: posting.text,
-                body: Json(posting.body),
+                body: posting.body,
                 parent: posting.parent,
-                mentions: Json(posting.mentions),
-                reference: Json(posting.reference),
+                mentions: posting.mentions,
+                reference: posting.reference,
                 source_provider: posting.source_provider.map(Atom),
-                attachment: Json(posting.attachment),
-                appearance: Json(posting.appearance),
+                attachment: posting.attachment,
+                appearance: posting.appearance.map(Into::into),
                 ..Message::default()
             },
         );
         Ok(id)
     }
+}
+
+/// A message to post: the parameters of [`ChatPart::post`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NewMessage {
+    /// The channel
+    pub channel: Id,
+    /// The message; @Name mentions a member
+    pub text: String,
+    /// The message it answers in a thread
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Id>,
+    /// Its paragraphs as written, with their formatting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Vec<ClipBlock>>,
+    /// A file, image or video another action put in the store
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<AttachmentUpdate>,
+    /// Filled in where it is posted; leave it out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<crate::mention::Mention>>,
+    /// When it was written, in Unix seconds, for a message a bot brings over
+    /// from elsewhere; leave it out
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<i64>,
 }
 
 // The window's effects on a message (reveal it, read it) are offered on
@@ -144,6 +170,8 @@ impl ChatPart {
     params = chat_part,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
+    version = 2,
+    migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
     /// Post a message.
@@ -153,21 +181,17 @@ impl ChatPart {
     pub fn post(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The channel")] channel: Id,
-        #[param("The message; @Name mentions a member")] text: String,
-        #[param("The message it answers in a thread")] parent: Option<Id>,
-        #[param("Its paragraphs as written, with their formatting")] body: Option<Vec<ClipBlock>>,
-        #[param("A file, image or video another action put in the store")] attachment: Option<
-            AttachmentUpdate,
-        >,
-        #[param("Filled in where it is posted; leave it out")] mentions: Option<
-            Vec<crate::mention::Mention>,
-        >,
-        #[param(
-            "When it was written, in Unix seconds, for a message a bot brings over from elsewhere; leave it out"
-        )]
-        written: Option<i64>,
+        #[param(flatten)] message: NewMessage,
     ) -> Result<(), Refusal> {
+        let NewMessage {
+            channel,
+            text,
+            parent,
+            body,
+            attachment,
+            mentions,
+            written,
+        } = message;
         let attachment = match attachment {
             Some(update) => Some(
                 update
@@ -312,18 +336,18 @@ impl ChatPart {
             .get_mut(message)
             .ok_or_else(|| Refusal::new("there is no such message"))?;
         own(cx, row)?;
-        if row.text == text && row.body.0 == body {
+        if row.text == text && row.body == body {
             return Ok(());
         }
         if row.text != text {
-            row.history.0.push(Revision {
+            row.history.push(Revision {
                 ts,
                 text: std::mem::take(&mut row.text),
             });
-            row.mentions = Json(mentions.unwrap_or_default());
+            row.mentions = mentions.unwrap_or_default();
             row.text = text;
         }
-        row.body = Json(body);
+        row.body = body;
         row.edited = true;
         Ok(())
     }
@@ -454,14 +478,13 @@ impl ChatPart {
         let record = row.work.get_or_insert_with(Work::default);
         let unchanged = record
             .state
-            .0
             .as_ref()
             .is_some_and(|transition| transition.state == state);
         if !unchanged {
-            record.state = Json(Some(Transition { state, since }));
+            record.state = Some(Transition { state, since });
         }
         // Each update says why, or that no reason is on record now.
-        record.reasoning = Json(reasoning);
+        record.reasoning = reasoning;
         for step in trace {
             let id = Id::from_raw(step.id.clone());
             let row = Step {
@@ -469,7 +492,7 @@ impl ChatPart {
                 sequence: step.sequence,
                 resource: Atom(step.resource),
                 label: step.label,
-                outcome: Json(Some(step.outcome)),
+                outcome: Some(step.outcome),
             };
             if let Some(known) = record.trace.find_mut(&id) {
                 *known = row;
@@ -549,11 +572,11 @@ impl ChatPart {
             .get_mut(&id)
             .ok_or_else(|| Refusal::new("there is no such reply"))?;
         let work = row.work.get_or_insert_with(Work::default);
-        if work.state.0.is_none() {
-            work.state = Json(Some(Transition {
+        if work.state.is_none() {
+            work.state = Some(Transition {
                 state: crate::model::AgentWorkState::Taken,
                 since: seconds(cx),
-            }));
+            });
         }
         let record = work.stream.get_or_insert_with(|| ProviderStream {
             run: event.run.clone(),
@@ -564,12 +587,12 @@ impl ChatPart {
             AgentOutput::ReasoningDelta { text } => record.reasoning.push_str(text),
             AgentOutput::Progress { label } => record.progress.clone_from(label),
             AgentOutput::Finished { outcome, detail } => {
-                record.finish = Json(Some(*outcome));
+                record.finish = Some(*outcome);
                 record.detail.clone_from(detail);
-                work.state = Json(Some(Transition {
+                work.state = Some(Transition {
                     state: crate::model::AgentWorkState::ProviderFinished { outcome: *outcome },
                     since: seconds(cx),
-                }));
+                });
             }
         }
         record.sequence = event.sequence;
@@ -615,8 +638,11 @@ impl Chained for ChatPart {
             // A reply goes to its parent's part, beside the message it
             // answers.
             ChatPartAction::Post(Post {
-                parent: Some(parent),
-                ..
+                message:
+                    NewMessage {
+                        parent: Some(parent),
+                        ..
+                    },
             }) => holding(parent),
             ChatPartAction::Post(_)
             | ChatPartAction::PostFile(_)
@@ -639,9 +665,10 @@ impl Chained for ChatPart {
     fn prepare(action: &mut Self::Action, chat: &Chat) -> Result<(), String> {
         match &mut action.operation {
             ChatPartAction::Post(post) => {
-                takes_posts(chat, &post.channel)?;
-                let body = post.body.clone().unwrap_or_default();
-                post.mentions = Some(chat.mentions(&post.text, &body));
+                let message = &mut post.message;
+                takes_posts(chat, &message.channel)?;
+                let body = message.body.clone().unwrap_or_default();
+                message.mentions = Some(chat.mentions(&message.text, &body));
             }
             ChatPartAction::PostFile(post) => {
                 takes_posts(chat, &post.channel)?;

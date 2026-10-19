@@ -713,6 +713,18 @@ pub struct FullscreenDisplay {
     pub primary: bool,
 }
 
+/// Whether a workspace is public, as the shell knows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublicationState {
+    /// Its host is being asked.
+    Asking,
+    /// What its host answered.
+    Known(crate::shell::network::Publication),
+    /// It cannot be public (no host lists it), or its host did not answer;
+    /// why, in the person's words.
+    Unavailable(String),
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -921,6 +933,9 @@ pub struct ChromeState {
     records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    /// Whether each workspace is public, as its host last answered, for
+    /// its settings' Public card.
+    publications: BTreeMap<crate::shell::state::RoomId, PublicationState>,
     presence_requests: Vec<PresenceRequest>,
     /// "Send…" requests for the last screenshot from the action door,
     /// drained into the capture studio by the overlay host.
@@ -991,6 +1006,9 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// Notices of an app that ran out of memory, by toast id: the closed-tab
+    /// serials of its windows, which Reopen puts back where they were.
+    memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
     /// Banners pointing at a task whose run waits for the person's answer,
     /// by banner, to the task they open.
     task_confirmation_toasts: BTreeMap<u64, String>,
@@ -1136,6 +1154,7 @@ impl ChromeState {
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
+            publications: BTreeMap::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
@@ -1165,6 +1184,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            memory_reopen_toasts: BTreeMap::new(),
             task_confirmation_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
@@ -1264,6 +1284,68 @@ impl ChromeState {
 
     pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    /// Whether the workspace in `room` is public, as its host last
+    /// answered; `None` before anyone asked.
+    pub fn publication(&self, room: crate::shell::state::RoomId) -> Option<&PublicationState> {
+        self.publications.get(&room)
+    }
+
+    /// What the host answered about `room`'s publication.
+    pub fn set_publication(
+        &mut self,
+        room: crate::shell::state::RoomId,
+        answer: Result<crate::shell::network::Publication, String>,
+    ) {
+        self.publications.insert(
+            room,
+            match answer {
+                Ok(publication) => PublicationState::Known(publication),
+                Err(error) => PublicationState::Unavailable(error),
+            },
+        );
+    }
+
+    /// Ask the host of the active workspace whether it is public, unless
+    /// that is being asked already.
+    pub fn ask_active_publication(&mut self) {
+        let Some(room) = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
+            return;
+        };
+        if matches!(self.publications.get(&room), Some(PublicationState::Asking)) {
+            return;
+        }
+        self.publications.insert(room, PublicationState::Asking);
+        self.push_peer_sync_request(
+            crate::shell::overlay_host::PeerSyncAction::ReadPublication { room },
+        );
+    }
+
+    /// Make the active workspace public with `listing`, or private again
+    /// with `None`, on its host; its settings show the host's answer.
+    pub fn publish_active_workspace(
+        &mut self,
+        listing: Option<tilo_relay_protocol::directory::Listing>,
+    ) {
+        let Some(room) = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+        else {
+            return;
+        };
+        self.publications.insert(room, PublicationState::Asking);
+        self.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::Publish {
+            room,
+            listing,
+        });
     }
 
     pub(crate) fn complete_peer_sync_request(
@@ -2038,6 +2120,7 @@ impl ChromeState {
         self.ws_settings_tab = tab;
         self.overlays.ws_settings = true;
         self.overlays.quick_settings = false;
+        self.ask_active_publication();
     }
 
     /// The top-bar workspace capsule is both the context indicator and the
@@ -2049,6 +2132,7 @@ impl ChromeState {
         self.overlays.ws_settings = opening;
         if opening {
             self.overlays.quick_settings = false;
+            self.ask_active_publication();
         }
         self.bump();
     }
@@ -2259,6 +2343,48 @@ impl ChromeState {
         self.push_notification_full(toast);
         self.bump();
         true
+    }
+
+    /// Tell the person memory ended an app or one of its jobs (`notice`
+    /// says which and why). The app's windows that went with it (`lost`)
+    /// are remembered as closed tabs, so Reopen Closed Tab brings them back
+    /// too, and the notice's Reopen puts them all back where they were.
+    /// Returns the notice's id.
+    pub(crate) fn push_out_of_memory_notice(
+        &mut self,
+        notice: crate::shell::launcher::LaunchFailureNotice,
+        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
+    ) -> u64 {
+        let serials: Vec<u64> = lost
+            .into_iter()
+            .map(|entry| self.closed_tabs.push(entry))
+            .collect();
+        let mut toast = Notification::new(notice.title, notice.body)
+            .with_severity(NotificationSeverity::Error)
+            .with_app_name(crate::shell::i18n::t("host-source-applications"));
+        toast.dismiss_after = crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME;
+        if !serials.is_empty() {
+            toast.actions = vec![("default".into(), crate::shell::i18n::t("memory-app-reopen"))];
+            self.memory_reopen_toasts.insert(toast.id, serials);
+        }
+        self.push_notification_full(toast)
+    }
+
+    /// The out-of-memory notice's Reopen: the app's windows back where they
+    /// were, relaunched. Returns how many came back.
+    pub(crate) fn reopen_after_memory(&mut self, toast: u64) -> usize {
+        let Some(serials) = self.memory_reopen_toasts.remove(&toast) else {
+            return 0;
+        };
+        let mut reopened = 0_usize;
+        for serial in serials {
+            if let Some(entry) = self.closed_tabs.take(serial)
+                && self.restore_closed_tab(entry).is_some()
+            {
+                reopened = reopened.saturating_add(1);
+            }
+        }
+        reopened
     }
 
     /// Tell the person a task's run paused at an action that asks them
@@ -2584,9 +2710,6 @@ impl ChromeState {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
-            // Every workspace has its Lounge; the person's own strip keeps
-            // focus, so what they open goes there.
-            tree.desktop.ensure_lounges();
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
@@ -2809,11 +2932,7 @@ impl ChromeState {
             let free = ws
                 .strips
                 .iter()
-                .find(|s| {
-                    s.window_groups.is_empty()
-                        && !claimed(s.id)
-                        && s.kind() == tilo_desktop_model::StripKind::Regular
-                })
+                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
                 .map(|s| s.id);
             if let Some(free) = free {
                 return Some(free);
@@ -2840,15 +2959,14 @@ impl ChromeState {
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return false;
             };
-            let Some(index) = ws.strips.iter().position(|s| {
-                s.id == strip
-                    && s.window_groups.is_empty()
-                    && s.kind() == tilo_desktop_model::StripKind::Regular
-            }) else {
+            let Some(index) = ws
+                .strips
+                .iter()
+                .position(|s| s.id == strip && s.window_groups.is_empty())
+            else {
                 return false;
             };
-            // The Lounge aside, a workspace keeps a strip of its own.
-            if ws.regular_strip_count() < 2 {
+            if ws.strips.len() < 2 {
                 return false;
             }
             let ws_id = ws.id;
@@ -3093,6 +3211,8 @@ impl ChromeState {
         }
         self.task_confirmation_toasts.remove(&n.id);
         self.device_asking_toasts.remove(&n.id);
+        // The windows stay among the closed tabs; only the notice's offer lapses.
+        self.memory_reopen_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -3169,6 +3289,25 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if self.memory_reopen_toasts.contains_key(&id) {
+            self.reopen_after_memory(id);
+            self.record_history(removed);
+            self.bump();
+            return true;
+        }
+        // The desktop's own request to restart into a staged system update:
+        // never an app's notification, which always has a sender or a route.
+        if removed.sender_id.is_none()
+            && removed.remote_route.is_none()
+            && removed.app_id.is_none()
+            && removed.default_action_key().as_deref()
+                == Some(crate::shell::system_update::RESTART_ACTION)
+        {
+            self.request_session_action(os_actions::SessionAction::Restart);
+            self.record_history(removed);
+            self.bump();
             return true;
         }
         if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
@@ -4495,6 +4634,55 @@ mod active_tab_tests {
         (tree, strip_id, group_id, tab_id)
     }
 
+    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
+    // crashing or blocking login is a bug to fix, never normal". An app that
+    // runs out of memory is closed cleanly, the person is told ("Mail ran out
+    // of memory and was closed"), and Reopen puts it back where it was.
+    #[test]
+    fn an_app_ended_for_memory_is_named_and_reopens_where_it_was() {
+        let (tree, _strip_id, group_id, tab_id) = tree_with_single_tab(TileContent::Foreign {
+            app_id: "so.tilo.mail".into(),
+            surface_id: 77,
+        });
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle);
+        let lost = crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 77)
+            .expect("the window's tab, before it goes");
+        assert!(crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 78).is_none());
+        {
+            // The window goes away with the app.
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            assert!(
+                crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                    &mut tree, 77
+                )
+            );
+        }
+        let notice = crate::shell::launcher::memory_notice(
+            "Mail",
+            &crate::shell::launcher::MemoryEnd {
+                cause: ::launcher::memory_pressure::Cause::Kernel,
+                job: None,
+            },
+        );
+        assert_eq!(notice.title, "Mail ran out of memory and was closed");
+        let id = chrome
+            .borrow_mut()
+            .push_out_of_memory_notice(notice, vec![lost]);
+        assert!(chrome.borrow_mut().activate_notification(id), "Reopen");
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.id, group_id, "in its own group, where it was");
+        assert_eq!(group.tabs[0].id, tab_id, "the same tab, with its document");
+        assert!(
+            matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.mail"),
+            "relaunched as the same app: {:?}",
+            group.tabs[0].tile
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4712,5 +4900,34 @@ mod task_confirmation_toast_tests {
             Some("task:rename")
         );
         assert_eq!(state.take_task_draft_request(), None);
+    }
+}
+
+#[cfg(test)]
+mod new_workspace_tests {
+    use super::*;
+
+    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
+    /// A workspace the person makes holds nothing but its first empty strip,
+    /// so it shows the empty-workspace launchpad.
+    #[test]
+    fn a_new_workspace_is_empty_and_shows_its_launchpad() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let id = chrome.borrow_mut().add_workspace("Fresh");
+        let state = chrome.borrow();
+        let tree = state.tree();
+        assert_eq!(tree.desktop.active, id);
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .expect("the workspace was added");
+        assert_eq!(workspace.strips.len(), 1, "only its first strip");
+        assert!(
+            workspace.strips[0].window_groups.is_empty(),
+            "and nothing in it"
+        );
+        assert!(!workspace.has_windows(), "so the launchpad shows");
     }
 }

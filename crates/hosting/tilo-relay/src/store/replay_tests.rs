@@ -829,7 +829,7 @@ fn replay_budget_includes_v2_wire_encoding_overlap() {
         envelope.clone(),
     ))
     .unwrap();
-    let wire = tilo_delivery_protocol::transport_v2::encode_state(envelope, true).unwrap();
+    let wire = tilo_delivery_protocol::transport_v2::encode_state(envelope).unwrap();
     let overlap = heap_bytes(envelope)
         + std::mem::size_of::<Envelope>()
         + payload.capacity()

@@ -1,6 +1,6 @@
 //! One authenticated connection per peer for the whole metadata plane.
 //!
-//! `tilo-fs-session/1` replaces a connection and certified-device handshake
+//! `tilo-fs-session/3` replaces a connection and certified-device handshake
 //! per request (namespace exchange, authority, every record-stream pull,
 //! every replica receipt) with one connection per peer, authenticated once,
 //! carrying each request on its own QUIC stream:
@@ -19,10 +19,8 @@
 //!   pull at once instead of at their next reconciliation tick.
 //!
 //! Every request is authorised on its own against the live policy and the
-//! peer's live certification, exactly as the per-request protocols decide;
-//! only the handshake is shared. Peers that do not speak this protocol are
-//! served and reached through the per-request protocols, which stay
-//! registered unchanged.
+//! peer's live certification; only the handshake is shared. A peer that does
+//! not speak this protocol is not reconciled with: it is at another version.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -61,8 +59,8 @@ use crate::store::ContentStore;
 use crate::workspace_authority::{AuthorityRequest, AuthorityResponse, WorkspaceAuthority};
 use tilo_lock::MutexRecover as _;
 
-pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/2";
-pub const SESSION_PROTOCOL_VERSION: u16 = 2;
+pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/3";
+pub const SESSION_PROTOCOL_VERSION: u16 = 3;
 
 /// Largest request or response frame, except Automerge sync messages
 /// between writers, which carry whole changes like the per-request sync
@@ -91,9 +89,6 @@ const MAX_STREAMS_PER_CONNECTION: usize = 16;
 const MAX_SYNC_ROUNDS: usize = 200;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long a peer that does not speak this protocol is reached through
-/// the per-request protocols before trying again.
-const LEGACY_RETRY: Duration = Duration::from_secs(300);
 /// A session quiet for longer than this is pinged before use.
 const PING_AFTER: Duration = Duration::from_secs(2);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
@@ -113,12 +108,6 @@ pub enum SessionOperationV1 {
     Reconcile {
         ranges: Vec<ReconcileRangeV1>,
     },
-    /// The envelopes after each cursor, and the bytes of files up to
-    /// `inline_content_bytes` that the returned envelopes make current.
-    Pull {
-        streams: Vec<SessionPullV1>,
-        inline_content_bytes: u32,
-    },
     /// Automerge sync rounds between two workspace writers follow on the
     /// stream as [`SessionFrameV1::Sync`] frames, requester first.
     NamespaceSync,
@@ -135,11 +124,12 @@ pub enum SessionOperationV1 {
     Announce,
     /// Answered with `Done`: the connection still reaches the peer.
     Ping,
-    /// As `Pull`, except that envelopes belonging to a signed changeset
-    /// come as that whole changeset (`ChangesetBegin`, its leaves and
-    /// envelopes, `ChangesetEnd`), which the requester applies atomically.
-    /// Units come in the order they entered the server's log. Peers that do
-    /// not know this request fail it, and are pulled from with `Pull`.
+    /// The envelopes after each cursor, and the bytes of files up to
+    /// `inline_content_bytes` that the returned envelopes make current.
+    /// Envelopes belonging to a signed changeset come as that whole
+    /// changeset (`ChangesetBegin`, its leaves and envelopes,
+    /// `ChangesetEnd`), which the requester applies atomically. Units come
+    /// in the order they entered the server's log.
     PullChangesets {
         streams: Vec<SessionPullV1>,
         inline_content_bytes: u32,
@@ -353,13 +343,6 @@ impl SessionProtocol {
             SessionOperationV1::Reconcile { ranges } => {
                 self.serve_reconcile(peer, &ranges, &mut send).await?;
             }
-            SessionOperationV1::Pull {
-                streams,
-                inline_content_bytes,
-            } => {
-                self.serve_pull(peer, &streams, inline_content_bytes, &mut send)
-                    .await?;
-            }
             SessionOperationV1::NamespaceSync => {
                 self.serve_namespace_sync(peer, remote, &mut send, &mut recv)
                     .await?;
@@ -474,163 +457,6 @@ impl SessionProtocol {
         }
         write_frame(send, &SessionFrameV1::Reconciled { answers: frame }).await?;
         write_frame(send, &SessionFrameV1::Done).await
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pull validates, batches and inlines in a single pass over the requested streams"
-    )]
-    async fn serve_pull(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        streams: &[SessionPullV1],
-        inline_content_bytes: u32,
-        send: &mut SendStream,
-    ) -> Result<()> {
-        let Some(records) = self.readable_records(peer) else {
-            return write_frame(send, &SessionFrameV1::Denied).await;
-        };
-        if streams.is_empty() || streams.len() > MAX_PULL_STREAMS {
-            return write_frame(
-                send,
-                &SessionFrameV1::Error(RecordMeshErrorCodeV1::RequestTooLarge),
-            )
-            .await;
-        }
-        let inline_limit = u64::from(inline_content_bytes.min(INLINE_CONTENT_BYTES));
-        let mut batches = Vec::new();
-        let mut size = 0_usize;
-        // The content each pulled record ends at, per record.
-        let mut current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]> = BTreeMap::new();
-        for pull in streams {
-            let stream = pull.stream;
-            let key = RecordRepositoryKey {
-                workspace_id: records.workspace_id,
-                record_id: stream.record_id,
-            };
-            let failed = |code| SessionFrameV1::StreamFailed { stream, code };
-            if pull.after.as_ref().is_some_and(|cursor| {
-                cursor.record_id != stream.record_id || cursor.actor != stream.actor
-            }) {
-                write_frame(send, &failed(RecordMeshErrorCodeV1::InvalidRequest)).await?;
-                continue;
-            }
-            let mut after = pull.after.as_ref().map_or(0, |c| c.contiguous_sequence);
-            if let Some(cursor) = &pull.after {
-                match records.repository.stream_cursor(
-                    key,
-                    &stream.actor,
-                    cursor.contiguous_sequence,
-                ) {
-                    Ok(local) if local == *cursor => {}
-                    Ok(_) => {
-                        write_frame(send, &failed(RecordMeshErrorCodeV1::PrefixMismatch)).await?;
-                        continue;
-                    }
-                    Err(_) => {
-                        write_frame(send, &failed(RecordMeshErrorCodeV1::InvalidRequest)).await?;
-                        continue;
-                    }
-                }
-            }
-            loop {
-                let Ok(envelopes) = records.repository.envelopes_after(
-                    key,
-                    &stream.actor,
-                    after,
-                    MAX_RECORD_BATCH_OPERATIONS,
-                ) else {
-                    write_frame(send, &failed(RecordMeshErrorCodeV1::InvalidRequest)).await?;
-                    break;
-                };
-                let Some(last) = envelopes.last() else {
-                    break;
-                };
-                let next_after = last.sequence;
-                for envelope in &envelopes {
-                    size = size.saturating_add(
-                        envelope
-                            .canonical_bytes()
-                            .map_or(TARGET_FRAME_BYTES, |bytes| bytes.len()),
-                    );
-                    if let RecordOperationV1::SetContentRevision(revision) = &envelope.operation {
-                        match revision.content_hash {
-                            Some(hash) if revision.byte_len <= inline_limit => {
-                                current.insert(revision.record_id, hash.0);
-                            }
-                            _ => {
-                                current.remove(&revision.record_id);
-                            }
-                        }
-                    }
-                }
-                let full = envelopes.len() == MAX_RECORD_BATCH_OPERATIONS;
-                batches.push(SessionEnvelopesV1 {
-                    stream,
-                    after_sequence: after,
-                    envelopes,
-                });
-                after = next_after;
-                if size >= TARGET_FRAME_BYTES {
-                    write_frame(
-                        send,
-                        &SessionFrameV1::Envelopes {
-                            batches: std::mem::take(&mut batches),
-                        },
-                    )
-                    .await?;
-                    size = 0;
-                }
-                if !full {
-                    break;
-                }
-            }
-        }
-        if !batches.is_empty() {
-            write_frame(send, &SessionFrameV1::Envelopes { batches }).await?;
-        }
-        // Inline content: the requester may read every record it was just
-        // sent (whole-workspace read), so it may read their current bytes.
-        self.send_inline(current, inline_limit, send).await?;
-        write_frame(send, &SessionFrameV1::Done).await
-    }
-
-    /// The bytes of the small files `current` names, in frames.
-    async fn send_inline(
-        &self,
-        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
-        inline_limit: u64,
-        send: &mut SendStream,
-    ) -> Result<()> {
-        let mut blobs = Vec::new();
-        let mut size = 0_usize;
-        let mut inlined = HashSet::new();
-        for hash in current.into_values() {
-            for blob in self
-                .inline_blobs(iroh_blobs::Hash::from(hash), inline_limit)
-                .await
-            {
-                if !inlined.insert(blob.hash) {
-                    continue;
-                }
-                size = size.saturating_add(blob.bytes.len());
-                blobs.push(blob);
-                if size >= TARGET_FRAME_BYTES {
-                    write_frame(
-                        send,
-                        &SessionFrameV1::Blobs {
-                            blobs: std::mem::take(&mut blobs),
-                        },
-                    )
-                    .await?;
-                    size = 0;
-                }
-            }
-        }
-        if !blobs.is_empty() {
-            write_frame(send, &SessionFrameV1::Blobs { blobs }).await?;
-        }
-        Ok(())
     }
 
     /// `PullChangesets`: what the requester misses on each stream, as whole
@@ -831,6 +657,44 @@ impl SessionProtocol {
         // sent (whole-workspace read), so it may read their current bytes.
         self.send_inline(current, inline_limit, send).await?;
         write_frame(send, &SessionFrameV1::Done).await
+    }
+
+    /// The current bytes of small records the requester was just sent, inline.
+    async fn send_inline(
+        &self,
+        current: BTreeMap<fs_protocol::FileRecordId, [u8; 32]>,
+        inline_limit: u64,
+        send: &mut SendStream,
+    ) -> Result<()> {
+        let mut blobs = Vec::new();
+        let mut size = 0_usize;
+        let mut inlined = HashSet::new();
+        for hash in current.into_values() {
+            for blob in self
+                .inline_blobs(iroh_blobs::Hash::from(hash), inline_limit)
+                .await
+            {
+                if !inlined.insert(blob.hash) {
+                    continue;
+                }
+                size = size.saturating_add(blob.bytes.len());
+                blobs.push(blob);
+                if size >= TARGET_FRAME_BYTES {
+                    write_frame(
+                        send,
+                        &SessionFrameV1::Blobs {
+                            blobs: std::mem::take(&mut blobs),
+                        },
+                    )
+                    .await?;
+                    size = 0;
+                }
+            }
+        }
+        if !blobs.is_empty() {
+            write_frame(send, &SessionFrameV1::Blobs { blobs }).await?;
+        }
+        Ok(())
     }
 
     /// The manifest and chunks of a small file, when all are local.
@@ -1072,8 +936,6 @@ pub(super) struct Session {
     pub addr: EndpointAddr,
     /// When a response last arrived on this session.
     last_heard: Mutex<Instant>,
-    /// Whether the peer answers `PullChangesets` (until it fails one).
-    changesets: std::sync::atomic::AtomicBool,
 }
 
 /// Sessions to every peer this device reconciles with, opened on first use.
@@ -1082,18 +944,8 @@ pub(super) struct SessionPool {
     identity: FsTransportIdentity,
     workspace_id: uuid::Uuid,
     sessions: tokio::sync::Mutex<HashMap<iroh_base::PublicKey, Arc<Session>>>,
-    legacy: Mutex<HashMap<iroh_base::PublicKey, Instant>>,
     /// Serves the requests peers send on sessions this device opened.
     server: std::sync::OnceLock<SessionProtocol>,
-}
-
-/// Whether a connection attempt failed because the peer does not offer the
-/// protocol (TLS `no_application_protocol`), as opposed to being away.
-fn protocol_unsupported(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}");
-    text.contains("peer doesn't support any known protocol")
-        || text.contains("no_application_protocol")
-        || text.contains("no application protocol")
 }
 
 impl SessionPool {
@@ -1107,7 +959,6 @@ impl SessionPool {
             identity,
             workspace_id,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
-            legacy: Mutex::new(HashMap::new()),
             server: std::sync::OnceLock::new(),
         }
     }
@@ -1155,14 +1006,12 @@ impl SessionPool {
                 peer: peer.clone(),
                 addr: EndpointAddr::new(id),
                 last_heard: Mutex::new(Instant::now()),
-                changesets: std::sync::atomic::AtomicBool::new(true),
             }),
         );
     }
 
-    /// The live session to `addr`, opening one if needed. `Ok(None)` means
-    /// the peer only speaks the per-request protocols.
-    pub(super) async fn get(&self, addr: &EndpointAddr) -> Result<Option<Arc<Session>>> {
+    /// The live session to `addr`, opening one if needed.
+    pub(super) async fn get(&self, addr: &EndpointAddr) -> Result<Arc<Session>> {
         if self.identity.partitioned() {
             anyhow::bail!("transport partition gate is closed");
         }
@@ -1170,20 +1019,12 @@ impl SessionPool {
             // A peer that restarted leaves a connection that looks open until
             // QUIC's idle timeout; a quiet session proves itself first.
             if session.heard_within(PING_AFTER) || self.ping(&session).await {
-                return Ok(Some(session));
+                return Ok(session);
             }
             session.connection.close(0u32.into(), b"unresponsive");
             self.forget(&session).await;
         }
-        if self
-            .legacy
-            .lock_recover()
-            .get(&addr.id)
-            .is_some_and(|until| Instant::now() < *until)
-        {
-            return Ok(None);
-        }
-        let opened = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let (connection, peer) = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
             let connection = self
                 .endpoint
                 .connect(addr.clone(), TILO_FS_SESSION_ALPN)
@@ -1201,48 +1042,36 @@ impl SessionPool {
             Ok::<_, anyhow::Error>((connection, peer))
         })
         .await
-        .map_err(|_| anyhow!("opening a session to {} timed out", addr.id))?;
-        match opened {
-            Ok((connection, peer)) => {
-                let session = Arc::new(Session {
-                    connection,
-                    peer,
-                    addr: addr.clone(),
-                    last_heard: Mutex::new(Instant::now()),
-                    changesets: std::sync::atomic::AtomicBool::new(true),
-                });
-                // Another caller may have opened one meanwhile; keep one.
-                let mut sessions = self.sessions.lock().await;
-                let kept = match sessions.get(&addr.id) {
-                    Some(existing) if existing.connection.close_reason().is_none() => {
-                        session.connection.close(0u32.into(), b"duplicate");
-                        Arc::clone(existing)
-                    }
-                    _ => {
-                        sessions.insert(addr.id, Arc::clone(&session));
-                        if let Some(server) = self.server.get() {
-                            let server = server.clone();
-                            let session = Arc::clone(&session);
-                            tokio::spawn(async move {
-                                server
-                                    .serve_connection(&session.connection, &session.peer)
-                                    .await;
-                            });
-                        }
-                        session
-                    }
-                };
-                drop(sessions);
-                Ok(Some(kept))
+        .map_err(|_| anyhow!("opening a session to {} timed out", addr.id))??;
+        let session = Arc::new(Session {
+            connection,
+            peer,
+            addr: addr.clone(),
+            last_heard: Mutex::new(Instant::now()),
+        });
+        // Another caller may have opened one meanwhile; keep one.
+        let mut sessions = self.sessions.lock().await;
+        let kept = match sessions.get(&addr.id) {
+            Some(existing) if existing.connection.close_reason().is_none() => {
+                session.connection.close(0u32.into(), b"duplicate");
+                Arc::clone(existing)
             }
-            Err(error) if protocol_unsupported(&error) => {
-                if let Some(until) = Instant::now().checked_add(LEGACY_RETRY) {
-                    self.legacy.lock_recover().insert(addr.id, until);
+            _ => {
+                sessions.insert(addr.id, Arc::clone(&session));
+                if let Some(server) = self.server.get() {
+                    let server = server.clone();
+                    let session = Arc::clone(&session);
+                    tokio::spawn(async move {
+                        server
+                            .serve_connection(&session.connection, &session.peer)
+                            .await;
+                    });
                 }
-                Ok(None)
+                session
             }
-            Err(error) => Err(error),
-        }
+        };
+        drop(sessions);
+        Ok(kept)
     }
 
     /// The pooled session to `id` if its connection is open and the peer's
@@ -1609,18 +1438,6 @@ struct Pulled {
     applying: Duration,
 }
 
-/// The peer does not answer `PullChangesets`.
-#[derive(Debug)]
-struct ChangesetsUnsupported;
-
-impl std::fmt::Display for ChangesetsUnsupported {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("peer does not serve changesets")
-    }
-}
-
-impl std::error::Error for ChangesetsUnsupported {}
-
 /// The requests for `wanted` streams this device is still behind on, from
 /// where each stream ends here now.
 fn behind(records: &RecordPlane, wanted: &[WantedStream]) -> Result<Vec<SessionPullV1>> {
@@ -1727,22 +1544,7 @@ pub(super) async fn pull_records(
         if pulls.is_empty() {
             continue;
         }
-        let part = if session
-            .changesets
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            match pull_changesets(pool, session, records, &authorizer, pulls.clone()).await {
-                Err(error) if error.is::<ChangesetsUnsupported>() => {
-                    session
-                        .changesets
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                    pull_streams(pool, session, records, &authorizer, pulls).await?
-                }
-                other => other?,
-            }
-        } else {
-            pull_streams(pool, session, records, &authorizer, pulls).await?
-        };
+        let part = pull_changesets(pool, session, records, &authorizer, pulls).await?;
         pulled.changed |= part.changed;
         pulled.touched.extend(part.touched);
         pulled.inline.extend(part.inline);
@@ -1815,7 +1617,6 @@ async fn pull_changesets(
         .await?;
     let _ = send.finish();
     let mut pulled = Pulled::default();
-    let mut first = true;
     // The changeset being received: header, leaves, envelopes, and how
     // many envelopes its leaves name.
     let mut open: Option<(
@@ -1825,17 +1626,7 @@ async fn pull_changesets(
         u64,
     )> = None;
     loop {
-        let frame = match session.frames(&mut recv, MAX_FRAME_BYTES).await {
-            Ok(frame) => frame,
-            // A peer that does not know the request drops it unanswered.
-            Err(error) if first && !format!("{error:#}").contains("denied") => {
-                let _ = error;
-                return Err(ChangesetsUnsupported.into());
-            }
-            Err(error) => return Err(error),
-        };
-        first = false;
-        let Some(frame) = frame else {
+        let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? else {
             break;
         };
         match frame {
@@ -1986,51 +1777,43 @@ fn apply_stream_batches(
     Ok(staged.into_iter().map(|(key, _)| key).collect())
 }
 
-/// One `Pull` request, for peers without changesets.
-async fn pull_streams(
+/// The peer's verified receipts for `requests` (at most [`MAX_REPLICA_ACKS`]):
+/// one entry per request, `None` where the peer holds no exact durable copy
+/// or its receipt does not verify.
+pub(super) async fn replica_acks(
     pool: &SessionPool,
     session: &Session,
-    records: &RecordPlane,
-    authorizer: &DirectMeshAuthorizer<'_>,
-    pulls: Vec<SessionPullV1>,
-) -> Result<Pulled> {
+    identity: &FsTransportIdentity,
+    requests: &[ReplicaAckRequestV1],
+) -> Result<Vec<Option<crate::availability::ReplicaObservation>>> {
     let (mut send, mut recv) = session
-        .open(&pool.request(SessionOperationV1::Pull {
-            streams: pulls,
-            inline_content_bytes: INLINE_CONTENT_BYTES,
+        .open(&pool.request(SessionOperationV1::ReplicaAcks {
+            requests: requests.to_vec(),
         }))
         .await?;
     let _ = send.finish();
-    let mut pulled = Pulled::default();
+    let mut responses = Vec::new();
     while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-        match frame {
-            SessionFrameV1::Envelopes { batches } => {
-                let part = apply_stream_batches(records, authorizer, batches)?;
-                pulled.changed |= !part.is_empty();
-                pulled.touched.extend(part);
-            }
-            SessionFrameV1::StreamFailed { stream, code } => {
-                eprintln!(
-                    "record stream {:?} from {} failed: {code:?}",
-                    stream.record_id, session.addr.id
-                );
-            }
-            SessionFrameV1::Blobs { blobs } => {
-                pulled.inline.extend(
-                    blobs
-                        .into_iter()
-                        .map(|b| (iroh_blobs::Hash::from(b.hash), Bytes::from(b.bytes))),
-                );
-            }
-            _ => anyhow::bail!("unexpected pull frame"),
+        if let SessionFrameV1::ReplicaAcks { responses: part } = frame {
+            responses.extend(part);
         }
     }
-    Ok(pulled)
+    let local = collab_types::Ed25519PublicKey(identity.device_public_key());
+    let observed_at = unix_now_ms();
+    Ok(requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| match responses.get(index) {
+            Some(ReplicaAckResponseV1::Acknowledged(receipt)) => receipt
+                .verify_for(request, &session.peer, local, observed_at)
+                .ok(),
+            _ => None,
+        })
+        .collect())
 }
 
-/// Fresh receipts from the peer for every current revision it has not
-/// acknowledged recently, many per request, committed to the availability
-/// registry in one write.
+/// Ask the peer for receipts of the revisions this device still awaits one
+/// for from it, and record the verified ones.
 pub(super) async fn collect_replica_acks(
     pool: &SessionPool,
     session: &Session,
@@ -2046,31 +1829,16 @@ pub(super) async fn collect_replica_acks(
             .into_iter()
             .filter_map(|revision| ReplicaAckRequestV1::new(records.workspace_id, revision).ok())
             .collect();
+    let local = collab_types::Ed25519PublicKey(identity.device_public_key());
     for chunk in requests.chunks(MAX_REPLICA_ACKS) {
-        let (mut send, mut recv) = session
-            .open(&pool.request(SessionOperationV1::ReplicaAcks {
-                requests: chunk.to_vec(),
-            }))
-            .await?;
-        let _ = send.finish();
-        let mut responses = Vec::new();
-        while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-            if let SessionFrameV1::ReplicaAcks { responses: part } = frame {
-                responses.extend(part);
-            }
-        }
-        let local = collab_types::Ed25519PublicKey(identity.device_public_key());
-        let observed_at = unix_now_ms();
-        let mut observations = Vec::new();
-        for (request, response) in chunk.iter().zip(responses) {
-            let ReplicaAckResponseV1::Acknowledged(receipt) = response else {
-                continue;
-            };
-            if let Ok(observation) = receipt.verify_for(request, &session.peer, local, observed_at)
-            {
-                observations.push((request.revision, observation));
-            }
-        }
+        let observations: Vec<_> = replica_acks(pool, session, identity, chunk)
+            .await?
+            .into_iter()
+            .zip(chunk)
+            .filter_map(|(observation, request)| {
+                observation.map(|observation| (request.revision, observation))
+            })
+            .collect();
         if observations.is_empty() {
             continue;
         }

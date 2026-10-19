@@ -110,6 +110,53 @@ fn installable_versions_on<'a>(
     })
 }
 
+/// Whether `entry` is waiting for an update from its developer on `channel`:
+/// it publishes builds for this machine, none of them fits the interface
+/// versions this OS serves, and the newest is behind them (built against
+/// older versions), so only a new build from its developer can fit
+/// (docs/architecture/compatibility.md).
+pub fn awaiting_developer(
+    entry: &registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+) -> bool {
+    awaiting_developer_on(entry, channel, os_interfaces())
+}
+
+/// [`awaiting_developer`] on an OS serving `provided`. A host that declares
+/// no interfaces (a development machine) judges nothing, so nothing waits.
+fn awaiting_developer_on(
+    entry: &registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+    provided: Option<&registry_types::ProvidedInterfaces>,
+) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    if installable_versions_on(entry, channel, Some(provided))
+        .next()
+        .is_some()
+    {
+        return false;
+    }
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    entry
+        .versions
+        .iter()
+        .filter(|version| channel.accepts(&version.version))
+        .filter_map(|version| version.tapp().map(|tapp| (version, tapp)))
+        .filter(|(_, tapp)| {
+            !tapp.tapp_url.trim().is_empty()
+                && target_supported(tapp)
+                && (runtime_package || runtime_named(tapp))
+        })
+        .max_by(|(a, _), (b, _)| tilo_app_package::version::compare(&a.version, &b.version))
+        .is_some_and(|(_, tapp)| {
+            registry_types::interfaces::package_is_behind(
+                &provided.unmet_wire(&tapp.target.interfaces),
+            )
+        })
+}
+
 /// Whether an app version says which runtime build it needs, when it needs
 /// one. A thin app links the runtime's Rust dylibs, which have no stable
 /// ABI, so a version that names only a release (`tilo-runtime/2026.07`)
@@ -438,6 +485,19 @@ pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
         .ok_or_else(|| format!("could not read the installed manifest for {package_id}"))
 }
 
+/// Whether the installed `package_id` is recorded at the package format this
+/// build reads. One installed before the format changed is behind whatever
+/// its version, and the next update replaces it
+/// ([`package_store::integrity::record_current`]). A package that is not
+/// installed, or a registry that cannot be read, is not judged here.
+#[must_use]
+pub fn installed_record_current(package_id: &str) -> bool {
+    package_store::find_installed(package_id)
+        .ok()
+        .flatten()
+        .is_none_or(|entry| package_store::integrity::record_current(&entry))
+}
+
 /// Installed package versions, parsed once for bulk update checks.
 ///
 /// # Errors
@@ -660,7 +720,7 @@ mod tests {
     fn verified(e: RegistryEntry) -> VerifiedEntry {
         let owner = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
         let mut snapshot = registry_types::SignedRegistrySnapshot {
-            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            protocol: registry_types::PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: 10,
             expires_at_unix: 20,
@@ -673,7 +733,6 @@ mod tests {
             entries: vec![e.clone()],
             owner_signature_hex: String::new(),
             channel_authorization: None,
-            bots_signature_hex: String::new(),
         };
         registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
         client::classify_snapshot(
@@ -705,14 +764,45 @@ mod tests {
                 .map(|version| version.version.clone())
                 .collect::<Vec<_>>()
         };
-        let old_os = registry_types::ProvidedInterfaces::new([("system", &[1][..])]);
-        let new_os = registry_types::ProvidedInterfaces::new([("system", &[1, 2][..])]);
-        let elsewhere = registry_types::ProvidedInterfaces::new([("collab", &[1][..])]);
+        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+        let elsewhere = registry_types::ProvidedInterfaces::new([("runtime", 1)], ["collab"]);
         assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
-        assert_eq!(offered(Some(&new_os)), ["2.0.0", "3.0.0"]);
+        assert_eq!(
+            offered(Some(&new_os)),
+            ["3.0.0"],
+            "a build for an older version is not offered either"
+        );
         assert!(offered(Some(&elsewhere)).is_empty());
         // A host that declares no interfaces judges none.
         assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
+    }
+
+    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
+    #[test]
+    fn an_app_whose_newest_build_is_behind_waits_for_its_developer() {
+        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+        e.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
+        let stable = tilo_app_package::version::ReleaseChannel::Stable;
+        let old_os = registry_types::ProvidedInterfaces::new([("system", 1)], []);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", 2)], []);
+        let newer_os = registry_types::ProvidedInterfaces::new([("system", 0)], []);
+        assert!(
+            !awaiting_developer_on(&e, stable, Some(&old_os)),
+            "a build that fits is offered"
+        );
+        assert!(
+            awaiting_developer_on(&e, stable, Some(&new_os)),
+            "only the developer's next build can fit a newer system"
+        );
+        assert!(
+            !awaiting_developer_on(&e, stable, Some(&newer_os)),
+            "a build ahead of this system waits for the system, not the developer"
+        );
+        assert!(
+            !awaiting_developer_on(&e, stable, None),
+            "a host that declares no interfaces judges none"
+        );
     }
 
     #[test]

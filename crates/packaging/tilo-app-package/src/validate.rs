@@ -53,6 +53,15 @@ pub enum ManifestError {
     BadCapabilityName { list: &'static str, name: String },
     #[error("capabilities lists {0:?} more than once")]
     DuplicateCapability(String),
+    #[error(
+        "capabilities declares {0:?}, which lowers the app sandbox, and needs a one-line \
+         reason under [capabilities.reasons], for example {0} = \"Batches disk reads.\""
+    )]
+    MissingCapabilityReason(String),
+    #[error("capabilities.reasons explains {0:?}, which capabilities does not declare")]
+    UndeclaredCapabilityReason(String),
+    #[error("capabilities.reasons.{0} must be one non-empty line")]
+    BadCapabilityReason(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
     #[error("runtime entrypoint {0:?} must name a safe relative payload file")]
@@ -517,6 +526,19 @@ fn validate_capabilities(m: &Manifest) -> Result<(), ManifestError> {
             if !seen.insert(name.as_str()) {
                 return Err(ManifestError::DuplicateCapability(name.clone()));
             }
+        }
+    }
+    for (name, reason) in &m.capabilities.reasons {
+        if !seen.contains(name.as_str()) {
+            return Err(ManifestError::UndeclaredCapabilityReason(name.clone()));
+        }
+        if reason.trim().is_empty() || reason.contains('\n') {
+            return Err(ManifestError::BadCapabilityReason(name.clone()));
+        }
+    }
+    for name in crate::manifest::REASONED_CAPABILITIES {
+        if seen.contains(name) && !m.capabilities.reasons.contains_key(*name) {
+            return Err(ManifestError::MissingCapabilityReason((*name).to_string()));
         }
     }
     Ok(())

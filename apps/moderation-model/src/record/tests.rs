@@ -53,7 +53,7 @@ fn a_person_reports_someone_and_it_stays_open_until_decided() {
     assert_eq!(state.open_reports().count(), 0);
     let decision = state.decisions.find(&Id::from_raw("d1")).unwrap();
     assert_eq!(decision.by, MOD);
-    assert_eq!(decision.reports.0, vec![id]);
+    assert_eq!(decision.reports, vec![id]);
 }
 
 #[test]
@@ -154,4 +154,53 @@ fn deciding_and_overturning_sit_under_the_moderation_node() {
     assert_eq!(field("decide").as_deref(), Some("moderation"));
     assert_eq!(field("overturn").as_deref(), Some("moderation"));
     assert_eq!(field("report"), None);
+}
+
+/// A moderation record from before a decision's reports and take-backs were
+/// model values: each was one JSON string. Opened now, it reads as the record
+/// with both as lists, and nothing of the decision is lost.
+#[test]
+fn a_decision_kept_as_json_strings_migrates_to_lists() {
+    use ui::tilo_resource::evolution;
+    let mut doc = ui::tilo_resource::Doc::new();
+    evolution::fixture(
+        &mut doc,
+        &ui::automerge::ROOT,
+        &ui::serde_json::json!({
+            "reports": {},
+            "decisions": {
+                "d1": {
+                    "id": "d1",
+                    "person": "bob",
+                    "reports": r#"["r1","r2"]"#,
+                    "outcome": "ban",
+                    "reasoning": "spam in every channel",
+                    "model": "",
+                    "reverted": r#"[{"app":"so.tilo.chat","record":"","run":"run-1","changes":3}]"#,
+                    "by": MOD,
+                    "at_ms": 5,
+                },
+            },
+        }),
+    )
+    .unwrap();
+    assert!(
+        evolution::read_checked::<Moderation>(&doc).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Moderation>(&mut doc).unwrap());
+    let moderation = evolution::read_checked::<Moderation>(&doc).unwrap();
+    let decision = moderation.decisions.iter().next().unwrap();
+    assert_eq!(decision.reports, ["r1", "r2"]);
+    assert_eq!(
+        decision.reverted,
+        [Reverted {
+            app: "so.tilo.chat".into(),
+            record: String::new(),
+            run: "run-1".into(),
+            changes: 3,
+        }]
+    );
+    assert_eq!(decision.outcome, Outcome::Ban);
+    assert_eq!(decision.reasoning, "spam in every channel");
 }

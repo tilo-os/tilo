@@ -178,6 +178,16 @@ grep -Fq '(RELR)' <<<"$(dynamic_section "$TARGET_DIR/$PROFILE/libruntime_dylib.s
     echo "libruntime_dylib.so was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
     exit 1
 }
+# The runtime and its engines bind their own data symbols at link time
+# (-Bsymbolic). A copy relocation would give the object holding it a second
+# copy of such a static that the library's own code never sees; Rust reaches
+# another object's data through the GOT, so one means a changed toolchain.
+no_copy_relocations() {
+    if grep -Eq 'R_[A-Z0-9_]+_COPY' <<<"$(readelf -rW "$1")"; then
+        echo "$1 has copy relocations; the shared runtime's -Bsymbolic link needs none" >&2
+        exit 1
+    fi
+}
 for index in "${!binaries[@]}"; do
     binary=${binaries[$index]}
     crate=${selected_crates[$index]}
@@ -199,6 +209,7 @@ for index in "${!binaries[@]}"; do
         echo "thin app was not compiled through rustc-thin-app-wrapper.sh: $binary" >&2
         exit 1
     }
+    no_copy_relocations "$TARGET_DIR/$PROFILE/$binary"
     loader_arguments=(--help)
     [ "$binary" != tilo-home-export ] || loader_arguments=(--protocol)
     set +e
@@ -240,6 +251,7 @@ for engine in ${engines[@]+"${engines[@]}"}; do
         echo "runtime engine $library was not linked through rustc-thin-app-wrapper.sh (no RELR)" >&2
         exit 1
     }
+    no_copy_relocations "$TARGET_DIR/$PROFILE/$library"
     LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" "$TARGET_DIR/$PROFILE/$engine-check" || {
         echo "runtime engine $library does not run against this runtime ($engine-check failed)" >&2
         exit 1

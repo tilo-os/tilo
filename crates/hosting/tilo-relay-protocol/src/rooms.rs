@@ -158,9 +158,11 @@ pub struct PreAdmission {
     pub label: String,
     /// It stops admitting here, at most 30 days ahead.
     pub expires_at_ns: u64,
-    /// The owner's user root, which signs it.
+    /// The key that signs it: the owner's user root, or, for a public
+    /// workspace's door, the device key of the host that answers it under
+    /// the owner's listing (`crate::directory`).
     pub owner_user_public_key: [u8; 32],
-    /// The owner's signature over [`PreAdmission::digest`].
+    /// The signature of that key over [`PreAdmission::digest`].
     #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
@@ -197,7 +199,19 @@ impl PreAdmission {
         Ok(*hasher.finalize().as_bytes())
     }
 
-    /// Whether the owner's root signed it and its label is printable.
+    /// Sign it with `key`, which it names as its signer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the fields cannot be encoded.
+    pub fn sign(&mut self, key: &ed25519_dalek::SigningKey) -> Result<(), postcard::Error> {
+        use ed25519_dalek::Signer as _;
+        self.owner_user_public_key = key.verifying_key().to_bytes();
+        self.signature = key.sign(&self.digest()?).to_bytes();
+        Ok(())
+    }
+
+    /// Whether the key it names signed it and its label is printable.
     ///
     /// # Errors
     ///
@@ -237,6 +251,16 @@ pub enum RoomNotice {
         label: String,
         /// Their role.
         role: RoomRole,
+        /// When.
+        at_ns: u64,
+    },
+    /// Someone reported the public workspace through its door
+    /// ([`crate::directory::DoorReport`]).
+    Reported {
+        /// Who reported it.
+        user_public_key: [u8; 32],
+        /// What they said is wrong.
+        reason: String,
         /// When.
         at_ns: u64,
     },

@@ -1,4 +1,4 @@
-//! The chat record as the window and the agents read it: workspaces,
+//! The chat record as the window and the agents read it: the room's
 //! channels and messages in the shapes [`crate::model`] draws, and the
 //! composers' drafts, which are rich text in the document.
 
@@ -7,9 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
-use crate::model::{
-    AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User, Workspace,
-};
+use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, Reaction, User};
 use crate::record::Chat;
 
 /// The published id of the item `id` of the record's `field`
@@ -19,10 +17,10 @@ pub fn item_id(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
 
-/// Whether `doc` holds a started chat: a record with a workspace.
+/// Whether `doc` holds a started chat: a record with a channel or a person.
 #[must_use]
 pub fn is_started(doc: &AutoCommit) -> bool {
-    Chat::read(doc).is_ok_and(|chat| !chat.workspaces.is_empty())
+    Chat::read(doc).is_ok_and(|chat| !chat.channels.is_empty() || !chat.people.is_empty())
 }
 
 /// The chat record in `doc`; an empty one when `doc` holds none.
@@ -32,22 +30,6 @@ pub fn read(doc: &AutoCommit) -> Chat {
 }
 
 impl Chat {
-    /// The workspaces, in rail order.
-    #[must_use]
-    pub fn workspace_rows(&self) -> Vec<Workspace> {
-        self.workspaces
-            .iter()
-            .enumerate()
-            .map(|(order, (id, workspace))| Workspace {
-                id: id.to_string(),
-                name: workspace.name.clone(),
-                glyph: workspace.glyph.clone(),
-                color_idx: usize::try_from(workspace.color).unwrap_or_default(),
-                order: u32::try_from(order).unwrap_or(u32::MAX),
-            })
-            .collect()
-    }
-
     /// The categories, in sidebar order.
     #[must_use]
     pub fn category_rows(&self) -> Vec<Category> {
@@ -56,7 +38,6 @@ impl Chat {
             .enumerate()
             .map(|(order, (id, category))| Category {
                 id: id.to_string(),
-                workspace: category.workspace.to_string(),
                 name: category.name.clone(),
                 order: u32::try_from(order).unwrap_or(u32::MAX),
                 collapsed: false,
@@ -73,7 +54,6 @@ impl Chat {
             .enumerate()
             .map(|(order, (id, channel))| Channel {
                 id: id.to_string(),
-                workspace: channel.workspace.to_string(),
                 category: channel
                     .category
                     .as_ref()
@@ -152,7 +132,7 @@ impl Chat {
         self.feedback
             .iter()
             .filter_map(|(id, report)| {
-                let submission = report.submission.0.as_ref()?;
+                let submission = report.submission.as_ref()?;
                 (submission.destination.channel == channel).then(|| {
                     message_row(
                         &Id::from_raw(crate::feedback::message_id(id.as_str())),
@@ -179,7 +159,7 @@ impl Chat {
             .map(|message| message_row(&key, message))
             .or_else(|| {
                 self.feedback.iter().find_map(|(report, filed)| {
-                    let submission = filed.submission.0.as_ref()?;
+                    let submission = filed.submission.as_ref()?;
                     (crate::feedback::message_id(report.as_str()) == id)
                         .then(|| self.feedback_rows(&submission.destination.channel))?
                         .into_iter()
@@ -236,14 +216,12 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         text: message.text.clone(),
         body: message
             .body
-            .0
             .iter()
             .map(tilo_rich_text::content_of_clip)
             .collect(),
         edited: message.edited,
         history: message
             .history
-            .0
             .iter()
             .map(|revision| EditRecord {
                 ts: revision.ts,
@@ -252,22 +230,22 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
             .collect(),
         parent: message.parent.as_ref().map(ToString::to_string),
         reactions,
-        mentions: message.mentions.0.clone(),
-        reference: message.reference.0.clone(),
+        mentions: message.mentions.clone(),
+        reference: message.reference.clone(),
         source_provider: message
             .source_provider
             .as_ref()
             .map(|provider| provider.0.clone()),
-        attachment: message.attachment.0.clone(),
+        attachment: message.attachment.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
-        appearance: message.appearance.0.clone(),
+        appearance: message.appearance.clone().map(Into::into),
     }
 }
 
 /// An agent's record of its work, as the reply card draws it.
 fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
-    let transition = work.state.0.as_ref()?;
+    let transition = work.state.as_ref()?;
     let mut trace: Vec<AgentStep> = work
         .trace
         .iter()
@@ -277,7 +255,7 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
                 sequence: step.sequence,
                 resource: step.resource.0.clone(),
                 label: step.label.clone(),
-                outcome: step.outcome.0.clone()?,
+                outcome: step.outcome.clone()?,
             })
         })
         .collect();
@@ -292,13 +270,13 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
         state: work
             .stream
             .as_ref()
-            .and_then(|stream| stream.finish.0)
+            .and_then(|stream| stream.finish)
             .map_or_else(
                 || transition.state.clone(),
                 |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
             ),
         since: transition.since,
-        reasoning: work.reasoning.0.clone(),
+        reasoning: work.reasoning.clone(),
         trace,
     })
 }

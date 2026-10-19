@@ -31,9 +31,9 @@ const MAX_TOPIC_CHARS: usize = 1024;
 /// What the sheet makes or changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SheetMode {
-    /// A new channel in a workspace.
+    /// A new channel of the room.
     NewChannel,
-    /// A new category in a workspace.
+    /// A new category of the room.
     NewCategory,
     /// An existing channel: its name, category and topic.
     EditChannel(Id),
@@ -43,7 +43,6 @@ pub(crate) enum SheetMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SheetAnswer {
     pub mode: SheetMode,
-    pub workspace: Id,
     pub kind: ChannelKind,
     /// The name as it will be kept: a text channel's normalised.
     pub name: String,
@@ -81,7 +80,6 @@ enum BodyHit {
 /// The sheet's state while it is open.
 pub(crate) struct ChannelSheet {
     mode: SheetMode,
-    workspace: Id,
     kind: ChannelKind,
     category: Option<Id>,
     name: TextInput,
@@ -116,10 +114,9 @@ pub(crate) fn channel_slug(name: &str, typing: bool) -> String {
 }
 
 impl ChannelSheet {
-    fn new(mode: SheetMode, workspace: &str) -> Self {
+    fn new(mode: SheetMode) -> Self {
         let mut sheet = Self {
             mode,
-            workspace: workspace.to_owned(),
             kind: ChannelKind::Text,
             category: None,
             name: TextInput::local(),
@@ -133,27 +130,23 @@ impl ChannelSheet {
         sheet
     }
 
-    /// A new channel of `kind` in `workspace`, under `category` (`""` for
-    /// none).
-    pub(crate) fn new_channel(workspace: &str, category: &str, kind: ChannelKind) -> Self {
-        let mut sheet = Self::new(SheetMode::NewChannel, workspace);
+    /// A new channel of `kind`, under `category` (`""` for none).
+    pub(crate) fn new_channel(category: &str, kind: ChannelKind) -> Self {
+        let mut sheet = Self::new(SheetMode::NewChannel);
         sheet.kind = kind;
         sheet.category = (!category.is_empty()).then(|| category.to_owned());
         sheet.retitle();
         sheet
     }
 
-    /// A new category in `workspace`.
-    pub(crate) fn new_category(workspace: &str) -> Self {
-        Self::new(SheetMode::NewCategory, workspace)
+    /// A new category.
+    pub(crate) fn new_category() -> Self {
+        Self::new(SheetMode::NewCategory)
     }
 
     /// Change `channel`.
     pub(crate) fn edit_channel(channel: &crate::model::Channel) -> Self {
-        let mut sheet = Self::new(
-            SheetMode::EditChannel(channel.id.clone()),
-            &channel.workspace,
-        );
+        let mut sheet = Self::new(SheetMode::EditChannel(channel.id.clone()));
         sheet.kind = channel.kind;
         sheet.category = (!channel.category.is_empty()).then(|| channel.category.clone());
         sheet.name.set_text(&channel.name);
@@ -227,7 +220,6 @@ impl ChannelSheet {
         }
         Some(SheetAnswer {
             mode: self.mode.clone(),
-            workspace: self.workspace.clone(),
             kind: self.kind,
             name,
             category: self.category.clone(),
@@ -270,7 +262,7 @@ impl ChannelSheet {
         Widget::set_focus(&mut self.topic, host_focused && field == Field::Topic);
     }
 
-    /// Paint the sheet over `window`; `categories` are the workspace's, in
+    /// Paint the sheet over `window`; `categories` are the room's, in
     /// sidebar order.
     #[allow(
         clippy::too_many_lines,
@@ -621,7 +613,7 @@ mod tests {
 
     #[test]
     fn a_sheet_needs_a_name_and_keeps_where_it_was_opened() {
-        let mut sheet = ChannelSheet::new_channel("ws", "cat_design", ChannelKind::Voice);
+        let mut sheet = ChannelSheet::new_channel("cat_design", ChannelKind::Voice);
         assert_eq!(sheet.answer(), None, "no name yet");
         sheet.name.set_text("Stand Up");
         let answer = sheet.answer().expect("named");

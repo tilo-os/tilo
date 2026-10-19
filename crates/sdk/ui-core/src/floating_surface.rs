@@ -21,8 +21,25 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-const HANDOFF_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(180);
-const SNAP_SETTLE: crate::time::Duration = crate::time::Duration::from_millis(170);
+/// A surface let go settles on its place (`motion::Snap`); the stretch a
+/// change of owner gives it relaxes on the same motion.
+fn settle_progress(elapsed: crate::time::Duration) -> f64 {
+    crate::motion::Snap::SPEC.progress_after(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Gesture,
+        elapsed,
+    )
+}
+
+/// How long [`settle_progress`] runs.
+fn settle_time() -> crate::time::Duration {
+    crate::motion::Snap::SPEC.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Gesture,
+    )
+}
 
 /// Stable identity of content that can survive an app → desktop hand-off.
 #[derive(Clone, Debug, PartialEq)]
@@ -151,12 +168,21 @@ pub fn paint_app_owned_content(
     drawn
 }
 
-/// Version of the app ↔ shell wire contract on the shell-ui channel:
-/// floating-surface lifecycle and the window's appearance. Geometry is
-/// encoded as plain logical-pixel arrays rather than renderer types so
-/// sandbox services, Wayland protocol shims, and test transports can all
-/// carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 5;
+/// The app ↔ shell interface's one version: everything an app and the
+/// session shell say on the shell-ui connection (floating-surface
+/// lifecycle, the window's appearance, tabs, selection). The app's first
+/// frame is [`FloatingSurfaceClientMessage::Hello`] with this number; a shell
+/// at another number answers [`FloatingSurfaceHostMessage::VersionMismatch`]
+/// and closes, and updates whichever side is behind
+/// (docs/architecture/compatibility.md). There is no negotiation and nothing
+/// kept for an older number. `interface.toml` beside this crate holds the
+/// schema, and the repository policy fails a change to it that keeps the
+/// number.
+///
+/// Geometry is encoded as plain logical-pixel arrays rather than renderer
+/// types so sandbox services, Wayland protocol shims, and test transports
+/// can all carry the same messages.
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 6;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
@@ -211,7 +237,6 @@ pub enum CaptureStudioProtocolMode {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FloatingSurfaceProtocolRequest {
-    pub version: u16,
     pub id: String,
     pub title: String,
     pub role: FloatingSurfaceProtocolRole,
@@ -234,6 +259,12 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// The first frame on every connection: the shell-ui version this app
+    /// speaks ([`FLOATING_SURFACE_PROTOCOL_VERSION`]). Its shape never
+    /// changes, so a shell of any version reads it.
+    Hello {
+        version: u16,
+    },
     /// Complete primary-surface marker inventory from a successfully presented
     /// SDK frame. The host resolves surface and room from launch custody.
     ActionMarkers {
@@ -393,6 +424,13 @@ pub struct HostNetworkStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// The shell speaks shell-ui version `shell`, not the app's: its answer to
+    /// a [`FloatingSurfaceClientMessage::Hello`] at another version, after
+    /// which it closes the connection and updates whichever side is behind.
+    /// Its shape never changes, so an app of any version reads it.
+    VersionMismatch {
+        shell: u16,
+    },
     /// Admission/delivery result. The owner's published topology confirms application.
     DeviceDisplayMoveResult {
         request: u64,
@@ -659,10 +697,12 @@ impl FloatingSurfaceServiceClient {
         Self::from_stream(stream)
     }
 
+    /// The client of `stream`, which says the app's shell-ui version
+    /// ([`FloatingSurfaceClientMessage::Hello`]) before anything else.
     #[cfg(any(test, feature = "local-daemons", feature = "test-support"))]
     pub(crate) fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
-        Ok(Self {
+        let mut client = Self {
             stream,
             incoming: Vec::new(),
             outgoing: VecDeque::new(),
@@ -670,7 +710,13 @@ impl FloatingSurfaceServiceClient {
             outgoing_bytes: 0,
             #[cfg(any(test, feature = "local-daemons"))]
             rearm_wake: None,
-        })
+        };
+        client
+            .send(&FloatingSurfaceClientMessage::Hello {
+                version: FLOATING_SURFACE_PROTOCOL_VERSION,
+            })
+            .map_err(std::io::Error::other)?;
+        Ok(client)
     }
 
     fn enqueue_frame(&mut self, frame: Vec<u8>) -> Result<(), String> {
@@ -743,10 +789,15 @@ impl FloatingSurfaceServiceClient {
             if payload.is_empty() {
                 continue;
             }
-            messages.push(
-                serde_json::from_slice(payload)
-                    .map_err(|error| format!("decode floating-surface host message: {error}"))?,
-            );
+            let message = serde_json::from_slice(payload)
+                .map_err(|error| format!("decode floating-surface host message: {error}"))?;
+            if let FloatingSurfaceHostMessage::VersionMismatch { shell } = message {
+                return Err(format!(
+                    "the shell speaks shell-ui version {shell}, this app \
+                     {FLOATING_SURFACE_PROTOCOL_VERSION}; the shell updates the one behind"
+                ));
+            }
+            messages.push(message);
         }
         Ok(messages)
     }
@@ -840,7 +891,6 @@ pub struct FloatingSurfacePresentation {
 impl From<&FloatingSurfaceRequest> for FloatingSurfaceProtocolRequest {
     fn from(request: &FloatingSurfaceRequest) -> Self {
         Self {
-            version: FLOATING_SURFACE_PROTOCOL_VERSION,
             id: request.id.clone(),
             title: request.title.clone(),
             role: request.role.into(),
@@ -857,12 +907,6 @@ impl TryFrom<FloatingSurfaceProtocolRequest> for FloatingSurfaceRequest {
     type Error = String;
 
     fn try_from(request: FloatingSurfaceProtocolRequest) -> Result<Self, Self::Error> {
-        if request.version != FLOATING_SURFACE_PROTOCOL_VERSION {
-            return Err(format!(
-                "unsupported floating-surface protocol version {}",
-                request.version
-            ));
-        }
         if request.id.trim().is_empty() {
             return Err("floating-surface id is empty".into());
         }
@@ -1387,12 +1431,12 @@ impl FloatingPlacement {
         (self.handoff_progress_override.is_none()
             && self
                 .handoff_motion
-                .is_some_and(|motion| motion.started.elapsed() < HANDOFF_SETTLE))
+                .is_some_and(|motion| motion.started.elapsed() < settle_time()))
             || self.settle_motion.as_ref().is_some_and(|motion| {
                 motion
                     .started
                     .get()
-                    .is_none_or(|started| started.elapsed() < SNAP_SETTLE)
+                    .is_none_or(|started| started.elapsed() < settle_time())
             })
     }
 
@@ -1422,7 +1466,7 @@ impl FloatingPlacement {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
-            (motion.started.elapsed().as_secs_f64() / HANDOFF_SETTLE.as_secs_f64()).clamp(0.0, 1.0)
+            settle_progress(crate::time::now().saturating_duration_since(motion.started))
         });
         let amount = (1.0 - progress).powi(2) * motion.strength;
         if amount <= f64::EPSILON {
@@ -1456,8 +1500,7 @@ impl FloatingPlacement {
                 motion.started.set(Some(crate::time::now()));
                 return motion.from;
             };
-            let t = (started.elapsed().as_secs_f64() / SNAP_SETTLE.as_secs_f64()).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
+            let eased = settle_progress(crate::time::now().saturating_duration_since(started));
             Rect::new(
                 motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
                 motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,
@@ -1869,7 +1912,7 @@ mod tests {
                 .unwrap()
                 .started
                 .set(Some(instant_ago(
-                    SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
+                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), target);
         }
@@ -1905,7 +1948,7 @@ mod tests {
             let desktop_transform = p.presentation_transform(Affine::IDENTITY, rect, false);
 
             p.handoff_motion.as_mut().unwrap().started =
-                instant_ago(HANDOFF_SETTLE.saturating_add(crate::time::Duration::from_secs(1)));
+                instant_ago(settle_time().saturating_add(crate::time::Duration::from_secs(1)));
             assert_eq!(
                 p.presentation_transform(Affine::IDENTITY, rect, false),
                 desktop_transform,
@@ -2079,7 +2122,7 @@ mod tests {
                 .unwrap()
                 .started
                 .set(Some(instant_ago(
-                    SNAP_SETTLE.saturating_add(crate::time::Duration::from_millis(1)),
+                    settle_time().saturating_add(crate::time::Duration::from_millis(1)),
                 )));
             assert_eq!(p.rect(app, desk), p.attached_home_rect(app));
         }
@@ -2222,10 +2265,9 @@ mod tests {
             );
         }
 
-        // Case `protocol_rejects_stale_versions_and_invalid_geometry`.
+        // Case `protocol_rejects_invalid_geometry`.
         {
             let base = FloatingSurfaceProtocolRequest {
-                version: FLOATING_SURFACE_PROTOCOL_VERSION,
                 id: "call".into(),
                 title: "Call".into(),
                 role: FloatingSurfaceProtocolRole::ActiveCall,
@@ -2238,10 +2280,6 @@ mod tests {
                 initial_rect: Some([900.0, 40.0, 1_260.0, 260.0]),
                 presentation_rect: Some([892.0, 32.0, 1_268.0, 268.0]),
             };
-            let mut stale = base.clone();
-            stale.version = FLOATING_SURFACE_PROTOCOL_VERSION + 1;
-            assert!(FloatingSurfaceRequest::try_from(stale).is_err());
-
             let mut inverted = base;
             inverted.source = FloatingSurfaceProtocolSource::AppRegion {
                 app_id: "so.tilo.chat".into(),
@@ -2429,14 +2467,20 @@ mod tests {
             let outbound = FloatingSurfaceClientMessage::Dismiss { id: "call".into() };
             client.send(&outbound).unwrap();
 
-            let mut line = String::new();
-            BufReader::new(shell_side.try_clone().unwrap())
-                .read_line(&mut line)
-                .unwrap();
+            let mut reader = BufReader::new(shell_side.try_clone().unwrap());
+            let mut read = || {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                serde_json::from_str::<FloatingSurfaceClientMessage>(line.trim()).unwrap()
+            };
             assert_eq!(
-                serde_json::from_str::<FloatingSurfaceClientMessage>(line.trim()).unwrap(),
-                outbound
+                read(),
+                FloatingSurfaceClientMessage::Hello {
+                    version: FLOATING_SURFACE_PROTOCOL_VERSION
+                },
+                "the app says its version before anything else"
             );
+            assert_eq!(read(), outbound);
 
             let inbound = FloatingSurfaceHostMessage::DesktopBounds {
                 bounds: [0.0, 0.0, 2560.0, 1440.0],
@@ -2450,6 +2494,26 @@ mod tests {
                 !received.is_empty()
             });
             assert_eq!(received, vec![inbound]);
+
+            // A shell at another version says so, and the connection is over.
+            let mut bytes = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
+                shell: FLOATING_SURFACE_PROTOCOL_VERSION + 1,
+            })
+            .unwrap();
+            bytes.push(b'\n');
+            shell_side.write_all(&bytes).unwrap();
+            let mut ended = None;
+            tilo_test_env::wait_until("the shell's version mismatch", || {
+                match client.pump() {
+                    Ok(messages) => assert!(messages.is_empty(), "{messages:?}"),
+                    Err(error) => ended = Some(error),
+                }
+                ended.is_some()
+            });
+            assert!(
+                ended.is_some_and(|error| error.contains("shell-ui version")),
+                "a mismatch ends the client"
+            );
         }
     }
 

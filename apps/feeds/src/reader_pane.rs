@@ -117,12 +117,9 @@ impl Styles {
     }
 }
 
-/// The date an article was published, spelled out ("June 20, 2026").
+/// The date an article was published, in the person's date style.
 fn published_date(published: i64) -> Option<String> {
-    (published > 0)
-        .then(|| chrono::DateTime::from_timestamp(published, 0))
-        .flatten()
-        .map(|dt| dt.format("%B %-d, %Y").to_string())
+    (published > 0).then(|| ui::format::date_of(&ui::format::UnixSecs(published)))
 }
 
 impl Core {
@@ -250,7 +247,7 @@ impl Core {
         ui::surface::separator(scene, t, x, x + width, y, 0.0, palette.ground);
         y += f64::from(spacing.s6) * scale;
 
-        for (index, block) in article.blocks.0.iter().enumerate() {
+        for (index, block) in article.blocks.iter().enumerate() {
             y = self.paint_block(
                 PaintCtx::new(scene, t, text, theme),
                 &BlockFrame {
@@ -521,7 +518,7 @@ impl Core {
                     .with_action_target(format!("feeds.reader-tag:{key}")),
             )
         }));
-        children.extend(article.blocks.0.iter().enumerate().map(|(index, block)| {
+        children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
             let role = match block.kind {
                 BlockKind::Heading1 => Role::Heading { level: 2 },
                 BlockKind::Heading2 => Role::Heading { level: 3 },

@@ -61,6 +61,23 @@ upstream `cdylib` dropped the hash from the library filenames, so two builds
 in one Cargo run overwrote each other's outputs (E0460/E0463).
 Remove a copy once its upstream release carries the change.
 
+## Tables without relocations
+
+`pulldown-cmark` 0.12.2 is the checksum-verified MIT registry release with one
+change: its HTML5 entity table is offsets into two string literals rather
+than 2125 pairs of pointers, so the shared app runtime (which carries it
+through the Markdown codec) no longer relocates 68 KB of it in every app
+process before `main`. Same entities, same order, same lookup; see its
+`TILO-PATCH.md` and `PROVENANCE.md`. Remove the copy once upstream generates
+the same layout.
+
+`regex-syntax` 0.8.11 is the checksum-verified MIT/Apache-2.0 registry
+release with its Unicode name tables (`BY_NAME`, `PROPERTY_NAMES`,
+`PROPERTY_VALUES`) and simple case folding table rewritten as string
+literals and integer offsets by `tools/regex-syntax-tables.py`: about 121 KB
+the shared runtime no longer relocates in every app process. Every set,
+name and fold is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -610,6 +627,21 @@ title case, a password's hidden and sensitive hints) instead of the three
 that `ImePurpose` stands for. It replaces the earlier multiline-only setter:
 multiline is one of the hints. Other platforms keep `set_ime_purpose`, and
 `None` returns Wayland to the purpose's own mapping.
+
+## `vendor/winit`: buffers another process drew
+
+A Tilo app's frames are drawn by its room's render service
+(`docs/architecture/app-rendering.md`), and the app attaches the service's
+buffers to its own window. `types/client_buffers.rs` binds
+`zwp_linux_dmabuf_v1` at version 3 and keeps the (format, modifier) pairs
+its `modifier` events announce; `WindowExtWayland::create_client_buffer`
+makes a `wl_buffer` of a dma-buf (only a pair the compositor announced, so
+asking is never a protocol error) or of `wl_shm` memory, calling its owner
+back on every `release`; `attach_client_buffer` attaches, damages and
+commits under the window state's lock, so no configure or input-method
+commit falls between attach and commit, with optional `wp_presentation`
+feedback, and flushes from the calling thread. `client_buffer_formats`
+reports the announced pairs. X11 windows report none and make no buffers.
 
 ## Build-script-generated protobuf descriptors
 

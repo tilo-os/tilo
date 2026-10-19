@@ -305,8 +305,7 @@ pub const FEATURE_VOICE: u64 = 4;
 pub const FEATURE_ROOMS: u64 = 8;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
-/// host's feature bits. A device that predates the features reads the grant
-/// and ignores the rest.
+/// host's feature bits.
 ///
 /// # Errors
 ///
@@ -318,14 +317,14 @@ pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, post
 }
 
 /// Decode a `/session/finish` answer into the grant and the host's feature
-/// bits, which are `0` from a host that predates them.
+/// bits.
 ///
 /// # Errors
 ///
-/// Returns an error if the grant does not decode.
+/// Returns an error if the grant or the feature bits do not decode.
 pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
     let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
-    Ok((grant, postcard::from_bytes(rest).unwrap_or(0)))
+    Ok((grant, postcard::from_bytes(rest)?))
 }
 
 /// Host-signed position in one session's event stream.

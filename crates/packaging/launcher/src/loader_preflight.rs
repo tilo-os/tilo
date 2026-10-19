@@ -89,8 +89,17 @@ pub struct DynamicSection {
 /// Returns the I/O error of opening or reading the file. A file shorter than
 /// its headers claim is `Ok(None)`, not an error.
 pub fn read_dynamic_section(path: &Path) -> std::io::Result<Option<DynamicSection>> {
-    let file = File::open(path)?;
-    match parse_dynamic(&file) {
+    read_dynamic_section_of(&File::open(path)?)
+}
+
+/// [`read_dynamic_section`] of a file already open: the object read is the
+/// one this descriptor holds, whatever its path names by then.
+///
+/// # Errors
+///
+/// Returns the I/O error of reading the file.
+pub fn read_dynamic_section_of(file: &File) -> std::io::Result<Option<DynamicSection>> {
+    match parse_dynamic(file) {
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
         other => other,
     }

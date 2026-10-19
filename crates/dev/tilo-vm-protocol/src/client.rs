@@ -150,24 +150,16 @@ impl<R: BufRead, W: Write> Client<R, W> {
         }
     }
 
-    /// Prefer the optional bounded binary stream, falling back only when an old
-    /// daemon rejects the method before any archive bytes are written.
+    /// Upload as a bounded binary stream on a byte-transparent transport,
+    /// and in JSON-line chunks ([`Self::upload_json_lines`]) on any other.
     /// # Errors
     /// Source, transport, integrity or daemon failures.
     pub fn upload(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         if !self.binary_uploads {
-            return self.upload_legacy(bytes);
+            return self.upload_json_lines(bytes);
         }
         let id = self.next_id;
-        let upload = match self.call(crate::LayerUploadBinary {}) {
-            Ok(upload) => upload.upload,
-            Err(ClientError::Rpc(error))
-                if matches!(error.code, crate::code::INVALID_PARAMS | -32601) =>
-            {
-                return self.upload_legacy(bytes);
-            }
-            Err(error) => return Err(error),
-        };
+        let upload = self.call(crate::LayerUploadBinary {})?.upload;
         let mut encoder = crate::binary::Encoder::new(&mut self.writer);
         let mut buffer = vec![0; crate::binary::CHUNK_BYTES];
         loop {
@@ -219,7 +211,7 @@ impl<R: BufRead, W: Write> Client<R, W> {
     ///
     /// # Errors
     /// Read failures on `bytes`, call failures, and incorrect byte acknowledgments.
-    pub fn upload_legacy(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
+    pub fn upload_json_lines(&mut self, mut bytes: impl Read) -> Result<String, ClientError> {
         let upload = self.call(LayerUploadBegin {})?.upload;
         let mut buffer = vec![0_u8; UPLOAD_CHUNK_BYTES];
         let mut sent = 0_u64;

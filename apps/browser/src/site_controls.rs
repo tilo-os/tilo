@@ -452,7 +452,7 @@ impl SiteControls {
                     .push(line(&self.filters.message));
                 if let Some(updated) = self.filters.updated {
                     column = column.push(note(&format!(
-                        "Filters last updated {} UTC",
+                        "Filters last updated {}",
                         unix_date(updated)
                     )));
                 }
@@ -505,15 +505,12 @@ fn permission_state(state: &str) -> String {
     }
     .to_owned()
 }
-// Calendar conversion without a timezone or page-controlled formatter.
+/// A Unix time in the toolkit's timestamp style, on the local clock; never a
+/// page-controlled formatter.
 fn unix_date(seconds: u64) -> String {
-    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
-    let (y, m, d) = ui::date::civil_from_days(days);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
-        (seconds % 86400) / 3600,
-        (seconds % 3600) / 60
-    )
+    ui::format::timestamp(&ui::format::UnixSecs(
+        i64::try_from(seconds).unwrap_or(i64::MAX),
+    ))
 }
 fn tls_version(version: u32) -> &'static str {
     match version {
@@ -528,7 +525,7 @@ fn tls_version(version: u32) -> &'static str {
 fn certificate_date(base_micros: f64) -> String {
     let unix = base_micros / 1_000_000.0 - 11_644_473_600.0;
     if unix.is_finite() && unix > 0.0 {
-        format!("{} UTC", unix_date(unix as u64))
+        unix_date(unix as u64)
     } else {
         "unavailable".into()
     }
@@ -615,11 +612,11 @@ mod tests {
 
         // Phase `certificate_dates_and_protocol_versions_are_human_readable`.
         {
-            assert_eq!(unix_date(0), "1970-01-01 00:00");
             assert_eq!(
                 certificate_date(11_644_473_600.0 * 1_000_000.0 + 86400.0 * 1_000_000.0),
-                "1970-01-02 00:00 UTC"
+                ui::format::timestamp(&ui::format::UnixSecs(86_400))
             );
+            assert_eq!(certificate_date(0.0), "unavailable");
             assert_eq!(tls_version(6), "TLS 1.3");
         }
     }

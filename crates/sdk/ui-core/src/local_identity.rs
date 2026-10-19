@@ -67,6 +67,25 @@ fn photo_from(
     (identity == canonical).then_some(photo)
 }
 
+/// The local person's own public photo, ready to paint, if they set one:
+/// for apps that show the person beside what they wrote (their own mail).
+#[must_use]
+pub fn own_photo() -> Option<crate::peniko::ImageData> {
+    #[cfg(feature = "local-daemons")]
+    {
+        let source = SOURCE.read_recover().clone();
+        let (_, photo) = match source {
+            Some(source) => source.public_photo(),
+            None => RuntimeIdentity.public_photo(),
+        }?;
+        Some(crate::widget::avatar::profile_image(&photo))
+    }
+    #[cfg(not(feature = "local-daemons"))]
+    {
+        None
+    }
+}
+
 static SOURCE: RwLock<Option<Arc<dyn LocalIdentitySource>>> = RwLock::new(None);
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

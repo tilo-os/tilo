@@ -11,7 +11,7 @@ use discord_wire::op::{
     Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use ui::tilo_resource::{
-    self, ActionCx, Id, Identified, Json, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
     resource,
 };
 
@@ -25,9 +25,6 @@ pub struct Guild {
     pub guild_id: String,
     #[model(label)]
     pub name: String,
-    /// The Chat workspace the server mirrors.
-    #[model(readonly)]
-    pub workspace: String,
     /// The one Discord channel bridged, when the bridge is confined to it:
     /// nothing else in the server is imported, reconciled or changed.
     #[model(readonly)]
@@ -161,12 +158,12 @@ pub enum Origin {
 pub struct DChannel {
     #[model(readonly)]
     pub id: String,
-    pub kind: Json<ChannelKind>,
+    pub kind: ChannelKind,
     pub name: String,
     pub parent: Option<String>,
     pub position: i64,
     pub topic: String,
-    pub overwrites: Json<Vec<OverwriteInfo>>,
+    pub overwrites: Vec<OverwriteInfo>,
 }
 
 impl Identified for DChannel {
@@ -365,7 +362,7 @@ impl Guild {
                 let before = self
                     .channels
                     .find(&Id::from_raw(op.channel.as_str()))
-                    .map(|c| &c.overwrites.0);
+                    .map(|c| &c.overwrites);
                 let after = channels
                     .iter()
                     .find(|c| c.id == op.channel)
@@ -381,12 +378,12 @@ impl Guild {
             .into_iter()
             .map(|c| DChannel {
                 id: c.id,
-                kind: Json(c.kind),
+                kind: c.kind,
                 name: c.name,
                 parent: c.parent,
                 position: c.position,
                 topic: c.topic,
-                overwrites: Json(c.overwrites),
+                overwrites: c.overwrites,
             })
             .collect();
         self.roles = roles
@@ -435,11 +432,40 @@ fn overwrite_for<'a>(
     overwrites?.iter().find(|o| o.id == target)
 }
 
-#[resource(kind = "discord.guild", label = "Discord server", params = guild)]
+/// Bring a guild record of version `from` up to this one. Version 1 named
+/// the Chat workspace the server mirrored; Chat runs in its room and keeps
+/// no workspaces now, so the server mirrors the room's chat and the name is
+/// dropped.
+///
+/// # Errors
+/// When `from` is not a version this record was.
+fn migrate(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no Discord server migration from {from}"
+        )));
+    }
+    if doc.get(ROOT, "workspace")?.is_some() {
+        doc.delete(ROOT, "workspace")?;
+    }
+    Ok(())
+}
+
+#[resource(
+    kind = "discord.guild",
+    label = "Discord server",
+    params = guild,
+    version = 2,
+    migrate = migrate,
+)]
 impl Guild {
     /// Connect a Discord server.
     ///
-    /// Binds this record to one server and the Chat workspace it mirrors.
+    /// Binds this record to one server, mirrored in the room's chat.
     /// The server's layout stays the truth until the import has run.
     #[action(housekeeping)]
     pub fn connect(
@@ -447,7 +473,6 @@ impl Guild {
         cx: &mut ActionCx,
         #[param("The server's id")] guild_id: String,
         #[param("The server's name")] name: String,
-        #[param("The Chat workspace it mirrors")] workspace: String,
         #[param("Bridge only this channel of the server, by its id")] only_channel: Option<String>,
         #[param("Make channels created in Tilo later in Discord too")] mirror_channels: Option<
             bool,
@@ -467,7 +492,6 @@ impl Guild {
         self.mirror_channels = mirror_channels.unwrap_or(false);
         self.map_roles = map_roles.unwrap_or(false);
         self.name = name;
-        self.workspace = workspace;
         self.ownership = Ownership::Importing;
         Ok(())
     }

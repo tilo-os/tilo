@@ -220,7 +220,7 @@ fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
             "{} {} snapshot containing {}.",
             taken_label(snapshot),
             snapshot.kind.label(),
-            ui::format::bytes(snapshot.size_bytes)
+            ui::format::size(snapshot.size_bytes)
         ),
     )
     .operation(offer(
@@ -285,15 +285,7 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
 }
 
 pub(crate) fn taken_label(snapshot: &Snapshot) -> String {
-    use chrono::Datelike;
-    let at = snapshot.taken;
-    format!(
-        "{} {} {} at {}",
-        at.day(),
-        ui::format::month_name(at.month0() as usize),
-        at.year(),
-        ui::clock::time_of_day(&at)
-    )
+    ui::format::Formats::current().timestamp(snapshot.taken)
 }
 
 #[cfg(test)]

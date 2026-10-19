@@ -186,12 +186,13 @@ impl ExportSettings {
     ) -> String {
         let with_audio = crate::audio::has_audio(project);
         if video.bitrate_is_predictive() {
+            // The range, not the timeline: quoting the whole project's size
+            // for a marked ten-second render would bill for footage the file
+            // never carries.
+            let megabytes = self.estimated_mb(project.export_duration(), with_audio);
             return format!(
-                "≈ {:.0} MB",
-                // The range, not the timeline: quoting the whole project's
-                // size for a marked ten-second render would bill for footage
-                // the file never carries.
-                self.estimated_mb(project.export_duration(), with_audio)
+                "≈ {}",
+                ui::format::size((megabytes.max(0.0) * 1_000_000.0).round() as u64)
             );
         }
         let audio = if with_audio {

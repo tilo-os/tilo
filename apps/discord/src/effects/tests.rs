@@ -12,7 +12,6 @@ fn connected() -> TestApp<Discord> {
     app.invoke(Guild::CONNECT.with(guild::Connect {
         guild_id: "1".into(),
         name: "Tilo".into(),
-        workspace: "w1".into(),
         only_channel: None,
         mirror_channels: None,
         map_roles: None,
@@ -49,10 +48,7 @@ fn plans_answer_what_the_program_loops_over() {
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(
-        route,
-        json!({"message": "m1", "channel": "", "workspace": "w1"})
-    );
+    assert_eq!(route, json!({"message": "m1", "channel": ""}));
     let plan = app
         .effect(&DiscordEffect::PlanEvent {
             event: json!({

@@ -419,6 +419,11 @@ pub fn run() -> std::process::ExitCode {
         return std::process::ExitCode::from(code);
     }
     let early_args: Vec<String> = std::env::args().collect();
+    // A room's render service is this binary too, holding only its broker
+    // socket (`compositor::render_broker`).
+    if let Some(code) = tilo_render_service::dispatch(&early_args) {
+        return code;
+    }
     if let Some(code) = shell::shader_seed::dispatch(&early_args) {
         return code;
     }
@@ -476,7 +481,11 @@ pub fn run() -> std::process::ExitCode {
             .filter(|tree| !tree.is_empty())
             .map(std::path::PathBuf::from);
         match shell::shell::launcher::resolve_launcher_bin() {
-            Ok(launcher_bin) => ::launcher::spawner::enable(launcher_bin, tree),
+            Ok(launcher_bin) => ::launcher::spawner::enable(
+                launcher_bin,
+                tree,
+                shell::shell::launcher::note_spawner_event,
+            ),
             Err(error) => eprintln!("tilo-spawner: not started: {error}"),
         }
         // Input is dispatched on this thread's main loop, not its own thread.

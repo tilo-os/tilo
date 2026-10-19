@@ -7,7 +7,7 @@
 //! actions report it, and stale state is never shown as current.
 
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_automerge::ApplyIncoming;
 
 use crate::model::{Doc, ModelError};
@@ -125,6 +125,178 @@ fn migrate_with(
     let changes = migrated.get_changes(&heads);
     doc.apply_incoming(changes)?;
     Ok(true)
+}
+
+/// The value stored under `key` of the map `obj` as one JSON string (an old
+/// whole-value field), read with `T`'s serde form: `None` when the key holds
+/// no JSON string (absent, or already an object), `Some(None)` for JSON
+/// `null`. What a migration reads an old field with when its new type is not
+/// the old one's serde form.
+///
+/// # Errors
+/// Returns why the text does not read as `T`, or the document's error.
+pub fn read_json<T>(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<Option<T>>, ModelError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let text = match doc.get(obj, key)? {
+        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+            ScalarValue::Str(text) => text.to_string(),
+            ScalarValue::Null => return Ok(Some(None)),
+            _ => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    if text == "null" {
+        return Ok(Some(None));
+    }
+    serde_json::from_str(&text)
+        .map(|value| Some(Some(value)))
+        .map_err(|error| ModelError::invalid(error.to_string()).at(key))
+}
+
+/// Rewrite the value stored under `key` of the map `obj` as one JSON string
+/// (an old whole-value field, last writer wins) as the model type `T` stores
+/// it: the migration of a field whose type became a real model type. `T`
+/// reads the old text with its serde form, which is the form the text was
+/// written with, so `T` keeps that form (its serde attributes) unchanged.
+/// A key holding no JSON string (absent, or already an object) is left as
+/// it is; JSON `null` stores `T`'s empty value. Returns whether it rewrote
+/// the key.
+///
+/// # Errors
+/// Returns why the text does not read as `T`, or the document's error.
+pub fn retype_json<T>(doc: &mut Doc, obj: &ObjId, key: &str) -> Result<bool, ModelError>
+where
+    T: crate::Model + serde::de::DeserializeOwned,
+{
+    let Some(read) = read_json::<T>(doc, obj, key)? else {
+        return Ok(false);
+    };
+    let value = match read {
+        Some(value) => value,
+        None => T::missing().map_err(|error| error.at(key))?,
+    };
+    // A scalar is replaced in place; the value's own store writes the shape.
+    doc.delete(obj, key)?;
+    crate::model::write_key(doc, obj, key, &value)?;
+    Ok(true)
+}
+
+/// Write the keys of the JSON object `shape` into the map `obj` as an older
+/// version of an app stored them: what a migration's test builds the
+/// document it migrates from. An object is a map, an array a list, a string,
+/// a boolean and a number are scalars (an integer as `Int`), `null` is a
+/// null scalar, and `{"$text": "…"}` is a text object holding the string.
+///
+/// # Errors
+/// Returns the document's write error, or that `shape` is no object.
+pub fn fixture(doc: &mut Doc, obj: &ObjId, shape: &serde_json::Value) -> Result<(), ModelError> {
+    let serde_json::Value::Object(fields) = shape else {
+        return Err(ModelError::shape("an object of fields"));
+    };
+    for (key, value) in fields {
+        fixture_value(doc, crate::Slot::Key(obj, key), value)?;
+    }
+    Ok(())
+}
+
+fn fixture_value(
+    doc: &mut Doc,
+    slot: crate::Slot<'_>,
+    value: &serde_json::Value,
+) -> Result<(), ModelError> {
+    use automerge::ObjType;
+    use serde_json::Value as Json;
+    match value {
+        Json::Object(fields) if fields.len() == 1 && fields.contains_key("$text") => {
+            let Some(Json::String(text)) = fields.get("$text") else {
+                return Err(ModelError::shape("a text's string"));
+            };
+            let obj = slot.object(doc, ObjType::Text)?;
+            crate::TextEdit::ReplaceText { text: text.clone() }
+                .apply_under(doc, &obj)
+                .map_err(|error| ModelError::invalid(error.to_string()))
+        }
+        Json::Object(_) => {
+            let obj = slot.object(doc, ObjType::Map)?;
+            fixture(doc, &obj, value)
+        }
+        Json::Array(items) => {
+            let obj = slot.object(doc, ObjType::List)?;
+            for (index, item) in items.iter().enumerate() {
+                fixture_value(doc, crate::Slot::Insert(&obj, index), item)?;
+            }
+            Ok(())
+        }
+        Json::String(text) => slot.put_scalar(doc, ScalarValue::Str(text.as_str().into())),
+        Json::Bool(flag) => slot.put_scalar(doc, ScalarValue::Boolean(*flag)),
+        Json::Number(number) => slot.put_scalar(
+            doc,
+            match (number.as_i64(), number.as_u64(), number.as_f64()) {
+                (Some(int), _, _) => ScalarValue::Int(int),
+                (None, Some(uint), _) => ScalarValue::Uint(uint),
+                (None, None, Some(float)) => ScalarValue::F64(float),
+                (None, None, None) => return Err(ModelError::shape("a number")),
+            },
+        ),
+        Json::Null => slot.put_scalar(doc, ScalarValue::Null),
+    }
+}
+
+/// The map stored under `key` of `obj`, when it holds one: a nested record
+/// or a present `Option` of one, which a migration rewrites inside.
+///
+/// # Errors
+/// Returns the document's read error.
+pub fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Result<Option<ObjId>, ModelError> {
+    Ok(match doc.get(obj, key)? {
+        Some((Value::Object(automerge::ObjType::Map), map)) => Some(map),
+        _ => None,
+    })
+}
+
+/// The value maps of the items of the [`Collection`](crate::Collection)
+/// stored under `key` of the map `obj`, in no particular order: what a
+/// migration walks to rewrite a field of every item.
+///
+/// # Errors
+/// Returns the document's read error.
+pub fn collection_items(doc: &Doc, obj: &ObjId, key: &str) -> Result<Vec<ObjId>, ModelError> {
+    let Some((Value::Object(automerge::ObjType::Map), items)) = doc.get(obj, key)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for id in doc.keys(&items).collect::<Vec<_>>() {
+        if let Some((Value::Object(automerge::ObjType::Map), item)) =
+            doc.get(&items, id.as_str())?
+            && let Some((Value::Object(automerge::ObjType::Map), value)) =
+                doc.get(&item, crate::collection::VALUE)?
+        {
+            out.push(value);
+        }
+    }
+    Ok(out)
+}
+
+/// The maps stored as the values of the map under `key` of `obj` (a
+/// `BTreeMap<String, T>` or [`Map`](crate::Map) of records), by key.
+///
+/// # Errors
+/// Returns the document's read error.
+pub fn map_values(doc: &Doc, obj: &ObjId, key: &str) -> Result<Vec<(String, ObjId)>, ModelError> {
+    let Some((Value::Object(automerge::ObjType::Map), map)) = doc.get(obj, key)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in doc.keys(&map).collect::<Vec<_>>() {
+        if let Some((Value::Object(automerge::ObjType::Map), value)) =
+            doc.get(&map, entry.as_str())?
+        {
+            out.push((entry, value));
+        }
+    }
+    Ok(out)
 }
 
 /// A document that does not read as its resource: what a view shows in

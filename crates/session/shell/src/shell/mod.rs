@@ -14,6 +14,7 @@ pub mod app_action_consent;
 pub mod app_close;
 pub mod app_notice_card;
 pub mod app_tabs;
+pub(crate) mod app_versions;
 pub(crate) mod audio_output;
 pub(crate) mod audio_writer;
 pub mod automation_folders;
@@ -39,8 +40,8 @@ pub mod collab_core;
 pub mod collab_history;
 pub mod collab_outbound;
 pub mod collab_presence;
+pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
-pub(crate) mod community_steps;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
 pub mod desk_widgets;
@@ -56,6 +57,7 @@ pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
 pub mod device_wake;
+pub mod directory_sheet;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) mod disk_sync_guard;
@@ -178,6 +180,7 @@ pub mod state;
 pub mod status;
 pub mod storage_notice;
 pub mod system_sounds;
+pub(crate) mod system_update;
 pub mod tab_binding;
 pub mod tab_documents;
 pub(crate) mod task_review;
@@ -587,16 +590,20 @@ fn try_to_ui_tile_for_tab(
         }
         // Asked for (a launch, a restore) and not yet arrived: the place
         // it will open in, moving until it does.
-        ShellTile::LocalApp { label, note, .. }
-            if note.is_empty() || note == peer_windows::OPENING =>
-        {
+        ShellTile::LocalApp {
+            app_id,
+            label,
+            note,
+        } if note.is_empty() || note == peer_windows::OPENING => {
             let wait = if note.is_empty() {
                 opening_card::Wait::Restoring
             } else {
                 opening_card::Wait::Opening
             };
             UiTile::App(Box::new(
-                opening_card::OpeningCard::new(label, wait).for_tab(tab),
+                opening_card::OpeningCard::new(label, wait)
+                    .for_tab(tab)
+                    .for_package(app_id),
             ))
         }
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
@@ -1084,15 +1091,6 @@ pub fn mount_in_process(
                 |_| {},
             )
         }
-        // The room's own chat: the record every member's Chat opens first,
-        // so the Lounge's Chat is one conversation for everyone in it.
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Chat") => apps.borrow_mut().mount(
-            chat::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::package_primary(),
-            |_| {},
-        ),
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

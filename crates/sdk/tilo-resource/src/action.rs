@@ -1292,6 +1292,16 @@ impl<R, A: Serialize> ActionRef<R, A> {
         ActionKey::new(app, R::KIND, self.id)
     }
 
+    /// This action as the published resource `resource` offers it (the
+    /// record, one of its items, or a resource a view or search hit derives
+    /// from it, by its published id): what a search hit invokes or a test
+    /// addresses through the host's door. The action's id comes from the
+    /// typed reference, so it cannot name one the app does not declare.
+    #[must_use]
+    pub fn on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(resource, self.id)
+    }
+
     /// The JSON arguments this input binds to: a verb's parameter struct
     /// as its fields, or positional inputs under the declared names.
     ///
@@ -1528,9 +1538,22 @@ impl<R> Invoke<R> {
     pub fn is_effect(&self) -> bool {
         self.effect
     }
+
+    /// This invocation's action as the published resource `resource` (an
+    /// item of the record, a child, a live row) offers it.
+    #[must_use]
+    pub fn address_on(&self, resource: impl Into<String>) -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(resource, self.id)
+    }
 }
 
 impl<R: Resource> Invoke<R> {
+    /// This invocation's action as the record's own resource publishes it.
+    #[must_use]
+    pub fn address(&self) -> tilo_actions::ActionAddress {
+        self.address_on(R::KIND)
+    }
+
     /// An invocation of the generic [`APPLY`](crate::APPLY) action for one
     /// typed action value — the path for edits without a named declaration.
     ///

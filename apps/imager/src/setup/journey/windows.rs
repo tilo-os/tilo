@@ -531,15 +531,15 @@ impl InstallerPreview {
             content = content.push(Box::new(Text::new(&t_args(
                 "installer-windows-budget",
                 &[
-                    ("copy", ui::format::bytes(budget.copy_bytes).into()),
-                    ("retain", ui::format::bytes(budget.retained_bytes).into()),
+                    ("copy", ui::format::memory(budget.copy_bytes).into()),
+                    ("retain", ui::format::memory(budget.retained_bytes).into()),
                     (
                         "excluded",
-                        ui::format::bytes(budget.explicitly_excluded_bytes).into(),
+                        ui::format::memory(budget.explicitly_excluded_bytes).into(),
                     ),
                     (
                         "unavailable",
-                        ui::format::bytes(budget.unavailable_bytes).into(),
+                        ui::format::memory(budget.unavailable_bytes).into(),
                     ),
                 ],
             ))));
@@ -641,7 +641,7 @@ impl InstallerPreview {
                                 "decision",
                                 t(&format!("installer-windows-{decision_id}")).into(),
                             ),
-                            ("size", ui::format::bytes(group.known_bytes).into()),
+                            ("size", ui::format::memory(group.known_bytes).into()),
                             ("unknown", group.unknown_sizes.to_string().into()),
                             ("unavailable", group.unavailable.to_string().into()),
                         ],
@@ -689,7 +689,7 @@ impl InstallerPreview {
                                             .bytes
                                             .map_or_else(
                                                 || t("installer-windows-size-unknown"),
-                                                ui::format::bytes,
+                                                ui::format::memory,
                                             )
                                             .into(),
                                     ),

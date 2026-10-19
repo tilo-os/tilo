@@ -33,6 +33,7 @@ mod content;
 pub use content::RoomContent;
 mod desktop_writes;
 pub(crate) use desktop_writes::writes_desktop;
+mod listing;
 mod member_records;
 pub use member_records::PreparedRecord;
 mod native_task;
@@ -695,6 +696,8 @@ struct RoomsInner {
     /// Those waiting for their room's next write of the changes it staged,
     /// by room.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
+    /// The rooms listed as public workspaces, and how lively each is.
+    listings: listing::Listings,
 }
 
 /// What a member sent a room's channel steward.
@@ -802,6 +805,7 @@ impl Rooms {
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             rooms.insert(room.room().to_owned(), Arc::new(AsyncMutex::new(room)));
         }
+        let listings = listing::Listings::open(&dir);
         let this = Self {
             inner: Arc::new(RoomsInner {
                 host,
@@ -815,6 +819,7 @@ impl Rooms {
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
+                listings,
             }),
         };
         let rooms = this
@@ -833,6 +838,7 @@ impl Rooms {
             this.recall(&mut room).await?;
         }
         this.watch_calls();
+        this.follow_activity();
         Ok(this)
     }
 

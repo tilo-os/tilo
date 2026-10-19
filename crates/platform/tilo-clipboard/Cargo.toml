@@ -12,6 +12,12 @@ homepage.workspace = true
 name = "tilo_clipboard"
 path = "src/lib.rs"
 
+[features]
+# The X11 clipboard (`arboard`) for a Linux process that is not a Wayland
+# client: development builds on an X11 host. Every Tilo app runs as a Wayland
+# client in its sandbox, so the shared runtime leaves X11 out.
+x11 = ["dep:arboard"]
+
 [dependencies]
 # Attaching to the runner's display, on every target so the call compiles
 # everywhere; only a Wayland display attaches.
@@ -21,13 +27,14 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tracing.workspace = true
 
-# X11 and macOS (`NSPasteboard`). Wayland goes through the app's own
-# connection below: `arboard`'s Wayland path needs the data-control manager
-# protocol Tilo withholds from sandboxed apps.
-[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+# macOS (`NSPasteboard`) and Windows, and X11 with `x11`. Wayland goes
+# through the app's own connection below: `arboard`'s Wayland path needs the
+# data-control manager protocol Tilo withholds from sandboxed apps.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
 arboard = { workspace = true, features = ["image-data"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+arboard = { workspace = true, features = ["image-data"], optional = true }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
 # `smithay-clipboard` reads over the app's own `wl_display`; the image and

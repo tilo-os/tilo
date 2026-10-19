@@ -119,6 +119,7 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod author;
+pub mod motion;
 #[cfg(test)]
 extern crate self as tilo_ui;
 #[cfg(test)]
@@ -188,6 +189,7 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
+pub mod held_images;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
@@ -311,7 +313,7 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, env, host, location, models, mpris, notify, png, portal,
+    background, capture, clipboard, env, host, jpeg, location, models, mpris, notify, png, portal,
     secrets, time, wake,
 };
 
@@ -514,7 +516,7 @@ pub use text_selection::{
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
 
-pub use animation::{Animated, Curve, Lerp, Spring, Transition, ease_out};
+pub use animation::Lerp;
 
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};

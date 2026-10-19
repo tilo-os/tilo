@@ -2757,13 +2757,13 @@ impl VideoEditorApp {
             self.inspector_flap.snap(inspector_open);
             return;
         }
-        // The panels slide over the theme's own base duration, each on its
-        // own clock: the first frame after idle covers the time since the
-        // toggle, not the idle gap.
+        // The panels slide on the standard panel slide, each from when it
+        // was asked for: the first frame after idle covers the time since
+        // the toggle, not the idle gap.
         let now = ui::time::now();
-        let duration = self.chrome_theme.tokens.motion.durations.base();
-        self.bin_flap.advance(layout, now, duration);
-        self.inspector_flap.advance(insp, now, duration);
+        let motion = self.chrome_theme.motion();
+        self.bin_flap.advance(layout, now, motion);
+        self.inspector_flap.advance(insp, now, motion);
     }
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
@@ -5160,8 +5160,8 @@ impl VideoEditorApp {
     fn try_import_contents(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         if bytes.len() > crate::files::KEEP_LIMIT {
             return Err(format!(
-                "is larger than {} MB, the most a browser page imports",
-                crate::files::KEEP_LIMIT / (1024 * 1024)
+                "is larger than {}, the most a browser page imports",
+                ui::format::memory(crate::files::KEEP_LIMIT as u64)
             ));
         }
         let probed = probe::probe_bytes(&bytes, Path::new(name)).map_err(|e| e.to_string())?;

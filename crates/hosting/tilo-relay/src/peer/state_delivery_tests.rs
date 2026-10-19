@@ -24,10 +24,7 @@ async fn writer_boundary(
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(meta["authority"].clone()).unwrap();
     let source_peer = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [0; 32],
-        },
+        &crate::auth::Hello::new(cert.clone(), [0; 32]),
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
@@ -119,9 +116,7 @@ async fn writer_boundary(
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
@@ -322,10 +317,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(meta["authority"].clone()).unwrap();
     let source_peer = crate::auth::accept_hello(
-        &crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [0; 32],
-        },
+        &crate::auth::Hello::new(cert.clone(), [0; 32]),
         &cert.user_public_key,
         &crate::policy::TrustPolicy::AllowMatchingUser,
         &RevocationList::new(),
@@ -419,9 +411,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,
@@ -500,8 +490,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
     ))
     .await
     .unwrap();
-    let mut reader =
-        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice());
     let mut frames = Vec::new();
     let ready = loop {
         match reader.read_next().await.unwrap() {
@@ -670,9 +659,7 @@ async fn a_fanned_delivery_skips_the_rooms_lock_until_authority_moves() {
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::V1,
         presence: None,
-        signed_actions: false,
         private_tx: &private,
         revocations: &revocations,
         live_bridge: None,

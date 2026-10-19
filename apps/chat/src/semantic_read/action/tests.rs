@@ -1,5 +1,6 @@
 use super::*;
 use automerge::transaction::Transactable;
+use tilo_actions::ActionContract;
 
 #[test]
 fn semantic_read_action_continuation_stays_with_its_real_channel() {
@@ -124,8 +125,9 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
             .validate_declaration()
             .is_empty()
     );
-    let address =
-        tilo_actions::ActionAddress::new(crate::testing::item("channels", "one"), "read-messages");
+    let address = resource
+        .action_address("read-messages")
+        .expect("a channel publishes its read");
     let encoded = tilo_actions::door::encode_json(
         std::slice::from_ref(&resource),
         &address,

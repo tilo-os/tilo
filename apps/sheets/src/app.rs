@@ -69,14 +69,18 @@ const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::Delete,
 ];
 /// Options of the document-settings sheet, in display order.
-const DATE_STYLES: [(&str, DateStyle); 4] = [
+const DATE_STYLES: [(&str, DateStyle); 5] = [
+    ("Language", DateStyle::Language),
     ("ISO", DateStyle::Iso),
     ("US", DateStyle::Us),
     ("EU", DateStyle::Eu),
     ("Long", DateStyle::Long),
 ];
-const TIME_STYLES: [(&str, TimeStyle); 2] =
-    [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
+const TIME_STYLES: [(&str, TimeStyle); 3] = [
+    ("Language", TimeStyle::Language),
+    ("24-hour", TimeStyle::H24),
+    ("12-hour", TimeStyle::H12),
+];
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
@@ -1695,9 +1699,9 @@ impl SheetsApp {
                     };
                     if u64::try_from(file.bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
                         return app.failed(format!(
-                            "{} is larger than the {} MiB import limit",
+                            "{} is larger than the {} import limit",
                             file.name,
-                            MAX_IMPORT_FILE_BYTES / (1024 * 1024)
+                            ui::format::memory(MAX_IMPORT_FILE_BYTES)
                         ));
                     }
                     // The same file chosen again is shown, not imported twice.
@@ -1942,9 +1946,9 @@ impl SheetsApp {
         }
         if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
-                "{} is larger than the {} MiB import limit",
+                "{} is larger than the {} import limit",
                 file_label(path),
-                MAX_IMPORT_FILE_BYTES / (1024 * 1024)
+                ui::format::memory(MAX_IMPORT_FILE_BYTES)
             ));
         }
         Ok(())
@@ -2503,6 +2507,7 @@ struct SelectionSummary {
 
 fn date_label(d: DateStyle) -> &'static str {
     match d {
+        DateStyle::Language => "Language",
         DateStyle::Iso => "ISO",
         DateStyle::Us => "US",
         DateStyle::Eu => "EU",
@@ -2511,6 +2516,7 @@ fn date_label(d: DateStyle) -> &'static str {
 }
 fn time_label(t: TimeStyle) -> &'static str {
     match t {
+        TimeStyle::Language => "Language",
         TimeStyle::H24 => "24-hour",
         TimeStyle::H12 => "12-hour",
     }

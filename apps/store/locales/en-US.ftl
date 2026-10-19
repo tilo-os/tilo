@@ -15,6 +15,7 @@ store-remote-loading = Loading apps from { $name }…
 store-remote-results = { $count } apps from { $name }.
 store-remote-error = Could not browse repository: { $error }
 store-device-version-unavailable = No version from this repository can run on this device and release channel.
+store-waiting-for-developer = Waiting for an update from the developer
 store-device-provided-version = Provided by this device · version { $version }
 store-device-repository-refresh = { $name } needs a repository refresh by this device’s administrator. Other repositories remain available.
 store-repository-read-error = Could not read { $name }: { $error }

@@ -605,11 +605,11 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
 fn assert_archived_file_layout(path: &std::path::Path) {
     let storage: crate::NativeAuthorityStorage =
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert!(crate::publication::validate_file_layout(3, &storage).is_ok());
-    assert!(crate::publication::validate_file_layout(2, &storage).is_err());
+    assert!(crate::publication::validate_file_layout(4, &storage).is_ok());
+    assert!(crate::publication::validate_file_layout(3, &storage).is_err());
     let mut mismatched = storage.clone();
     mismatched.rooms.values_mut().next().unwrap().version = 2;
-    assert!(crate::publication::validate_file_layout(3, &mismatched).is_err());
+    assert!(crate::publication::validate_file_layout(4, &mismatched).is_err());
     let mut missing = storage;
     missing
         .rooms
@@ -617,7 +617,7 @@ fn assert_archived_file_layout(path: &std::path::Path) {
         .next()
         .unwrap()
         .effect_history_root = None;
-    assert!(crate::publication::validate_file_layout(3, &missing).is_err());
+    assert!(crate::publication::validate_file_layout(4, &missing).is_err());
 }
 
 #[test]

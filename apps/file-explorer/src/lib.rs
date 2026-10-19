@@ -27,6 +27,7 @@ pub mod favorites;
 pub mod file_ops;
 pub mod fileops;
 pub mod files_app;
+pub mod folder_counts;
 pub mod framework_history;
 pub mod history_control;
 pub mod i18n;

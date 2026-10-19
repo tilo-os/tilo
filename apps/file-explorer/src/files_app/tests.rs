@@ -521,11 +521,8 @@ mod open_with_tests {
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
-        let spec = ui::tilo_actions::door::resolve(
-            &resources,
-            &ui::tilo_actions::ActionAddress::new(&entry_id, "open-with"),
-        )
-        .expect("file resources publish open-with");
+        let spec = ui::tilo_actions::door::spec_of(&resources, &entry_id, "open-with")
+            .expect("file resources publish open-with");
         let app = spec
             .params()
             .iter()
@@ -567,11 +564,8 @@ mod open_with_tests {
         );
         let folder = crate::search_provider::entry_resource_id(Path::new("/docs/notes.txt"));
         assert!(
-            ui::tilo_actions::door::resolve(
-                &resources,
-                &ui::tilo_actions::ActionAddress::new(&folder, "open-with:so.tilo.pdf-viewer"),
-            )
-            .is_none(),
+            ui::tilo_actions::door::spec_of(&resources, &folder, "open-with:so.tilo.pdf-viewer")
+                .is_none(),
             "per-app rows are only published for the chooser's file"
         );
     }
@@ -609,12 +603,10 @@ mod open_with_tests {
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
-        let spec = ui::tilo_actions::door::resolve(
+        let spec = ui::tilo_actions::door::spec_of(
             &resources,
-            &ui::tilo_actions::ActionAddress::new(
-                &entry_id,
-                "always-open-with:org.gnome.Evince.desktop",
-            ),
+            &entry_id,
+            "always-open-with:org.gnome.Evince.desktop",
         )
         .expect("the chooser's rows are real actions");
         let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
@@ -865,11 +857,7 @@ mod open_with_tests {
             let doc = automerge::AutoCommit::new();
             let resource = FileExplorerWidget::entry_resource_id(&files.entries[0]);
             let resources = crate::files_app::published::tree(&files, &doc);
-            let spec = ui::tilo_actions::door::resolve(
-                &resources,
-                &ui::tilo_actions::ActionAddress::new(&resource, "open-with"),
-            )
-            .unwrap();
+            let spec = ui::tilo_actions::door::spec_of(&resources, &resource, "open-with").unwrap();
             let access = spec
                 .params()
                 .iter()
@@ -2302,7 +2290,7 @@ mod command_path_tests {
     /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
     #[test]
     fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
-        use ui::tilo_actions::{ActionAddress, door};
+        use ui::tilo_actions::door;
         let root = tempfile::tempdir().unwrap();
         let downloads = root.path().join("in/downloads");
         let images = root.path().join("out/images");
@@ -2324,12 +2312,8 @@ mod command_path_tests {
                 arg.0.to_string(),
                 serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
             )]);
-            let encoded = door::encode_json(
-                &resources,
-                &ActionAddress::new(resource, action),
-                &arguments,
-            )
-            .unwrap();
+            let address = door::published(&resources, &resource, action).unwrap();
+            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
             let kind = if action == "go-to" {
                 OperationKind::View
             } else {
@@ -2390,7 +2374,7 @@ mod command_path_tests {
     /// new resource id and entries, so the caller needs no query to act.
     #[test]
     fn showing_a_folder_answers_with_its_resource_and_entries() {
-        use ui::tilo_actions::{ActionAddress, door};
+        use ui::tilo_actions::door;
         let root = tempfile::tempdir().unwrap();
         let downloads = root.path().join("in/downloads");
         std::fs::create_dir_all(downloads.join("old")).unwrap();
@@ -2403,9 +2387,10 @@ mod command_path_tests {
         let mut show = |action: &str, path: &Path| {
             let resources = crate::files_app::published::tree(&files, &doc);
             let folder = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND;
+            let address = door::published(&resources, folder, action).unwrap();
             let encoded = door::encode_json(
                 &resources,
-                &ActionAddress::new(folder, action),
+                &address,
                 serde_json::json!({"path": path}).as_object().unwrap(),
             )
             .unwrap();
@@ -2536,7 +2521,9 @@ mod command_path_tests {
             })
             .expect("a collaborative file uses its record UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
-        let address = ActionAddress::new(entry.id.as_str(), "copy");
+        let address = entry
+            .action_address("copy")
+            .expect("a collaborative file publishes copy");
         assert_eq!(
             ActionAddress::parse(&address.encode()),
             Some(address.clone())
@@ -2693,19 +2680,17 @@ mod command_path_tests {
         source: Option<&Path>,
         action: &str,
     ) -> Result<bool, String> {
-        use ui::tilo_actions::{ActionAddress, door};
+        use ui::tilo_actions::door;
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(files, &doc);
         let resource = source.map_or_else(
             || resources.first().unwrap().id.as_str().to_owned(),
             crate::search_provider::entry_resource_id,
         );
-        let encoded = door::encode_json(
-            &resources,
-            &ActionAddress::new(resource, action),
-            &serde_json::Map::new(),
-        )
-        .expect("the current resource must export the transfer action");
+        let address = door::published(&resources, &resource, action)
+            .expect("the current resource must export the transfer action");
+        let encoded = door::encode_json(&resources, &address, &serde_json::Map::new())
+            .expect("the current resource must export the transfer action");
         crate::files_app::published::start(
             files,
             OperationKind::Effect,
@@ -2841,12 +2826,9 @@ mod command_path_tests {
         std::fs::write(&source, b"approved source").unwrap();
         widget.navigate(config.path().to_path_buf());
         let mut document = automerge::AutoCommit::new();
-        let address = ui::tilo_actions::ActionAddress::new(
-            crate::search_provider::entry_resource_id(&source),
-            "send-airdrop",
-        );
+        let entry = crate::search_provider::entry_resource_id(&source);
         let resources = crate::files_app::published::tree(&widget, &document);
-        assert!(ui::tilo_actions::door::resolve(&resources, &address).is_none());
+        assert!(ui::tilo_actions::door::spec_of(&resources, &entry, "send-airdrop").is_none());
         widget
             .nearby_send
             .handle_event(&CollabEvent::NearbyTransferChanged);
@@ -2870,7 +2852,7 @@ mod command_path_tests {
                 result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
             });
         let resources = crate::files_app::published::tree(&widget, &document);
-        let action = ui::tilo_actions::door::resolve(&resources, &address)
+        let action = ui::tilo_actions::door::spec_of(&resources, &entry, "send-airdrop")
             .expect("lab host publishes file action");
         assert_eq!(
             action
@@ -4285,21 +4267,14 @@ mod command_path_tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
         xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
-        let projection = serde_json::json!({
-            "schema_version": 1,
-            "truncated": false,
-            "records": [{
+        crate::model::sync_state_tests::set_record_index(
+            dir.path(),
+            &[serde_json::json!({
                 "record_id": record_id,
                 "path": "/nested/renamed.txt",
                 "is_dir": false
-            }]
-        });
-        xattr::set(
-            dir.path(),
-            fs_protocol::projection::RECORD_INDEX_XATTR,
-            &serde_json::to_vec(&projection).unwrap(),
-        )
-        .unwrap();
+            })],
+        );
         let mut widget = FileExplorerWidget::new();
         widget.current_path = dir.path().to_path_buf();
         widget.entries.clear();
@@ -6920,15 +6895,8 @@ mod recent_resource_tests {
     }
 
     fn invoke(app: &mut TestApp<FileExplorerShell>, row: &str, action: &str) {
-        let instance = app.harness().component_instance_id().unwrap();
         app.harness()
-            .invoke_bound_action(
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id: instance,
-                    address: ui::tilo_actions::ActionAddress::new(row, action),
-                },
-                &serde_json::Map::new(),
-            )
+            .call_on(row, action, serde_json::json!({}))
             .unwrap();
         app.settle();
     }

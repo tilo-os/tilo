@@ -221,7 +221,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
         );
 
         // The agent enumerates its own session and squares the picture there.
-        let address = ActionAddress::new(agent.published_id(), "crop");
+        let address = PhotoLibrary::CROP.on(agent.published_id());
         agent
             .perform(&address, SQUARE_900X600)
             .expect("the agent's own session performs it");
@@ -252,7 +252,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
 
         // And the other way round, since neither session is privileged.
         let mut third = Session::handed_the_content("qlvq-", &bytes);
-        let from_the_watcher = ActionAddress::new(watcher.published_id(), "crop");
+        let from_the_watcher = PhotoLibrary::CROP.on(watcher.published_id());
         third
             .perform(&from_the_watcher, SQUARE_900X600)
             .expect("an address minted in the watcher's session reaches the third");

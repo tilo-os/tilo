@@ -140,65 +140,8 @@ at low volume.
 
 ## Routine delivery workflow
 
-Changes reach users in two steps: everyone pushes to `main`, and a stabilizer
-moves `stable` forward from `main`. Releases are cut from `stable`. The rules are
-the same for people and agents.
-
-### Landing on `main`
-
-Push your commits straight to `main`; a pull request is not needed. Before you
-push:
-
-1. Run the checks your change affects with [`t`](docs/t.md): `t` in your
-   checkout runs the default checks on your files, uncommitted changes included,
-   on the shared t server. Fix what fails because of you. Exit code `3` means
-   everything that failed also fails on `main` already; that is not yours to fix
-   before pushing.
-2. Rebase on the current `main` (`git pull --rebase`) and push. A push that is
-   not a fast-forward is refused; rebase again and push. `.githooks/pre-push`
-   refuses a push that leaves `crates/workspace-hack` stale.
-
-Keep each push a small, coherent, tested increment. Open a pull request only when
-you want discussion or a review before landing; once it is settled, push the
-result to `main` yourself. Review is optional and informational for every change.
-
-### CI on `main`
-
-The t server follows `main` and runs every check on each new commit. CI on `main`
-informs; it does not gate. Nothing on `main` is reverted automatically, and a red
-check does not stop anyone from pushing.
-
-`t main` lists what fails on `main`, since which commit, and who is on it. If a
-failure is yours, fix it forward. If you start fixing someone else's failure,
-`t claim <check>` it so nobody duplicates the work, and `t release <check>` when
-you stop. `t` tells you when a failure you see is already on the board, so you
-do not chase what was broken before you started.
-
-### `stable`
-
-A dedicated stabilizer, usually an agent, keeps `stable` releasable. From time
-to time it picks a recent `main` commit with few failures, one that contains the
-current `stable`, and runs every required check on it. For each failure it makes
-one of two kinds of commit:
-
-- a **fix**, a real repair, which it then brings back to `main`;
-- an **exclusion**, which reverts or disables unfinished work for this release
-  only. Exclusions stay on `stable`, and each gets an issue saying what was
-  excluded, why, and which check it broke.
-
-It never weakens a check to make it pass: no deleted or ignored tests and no
-loosened budgets. When every required check passes, it fast-forwards `stable` to
-its branch, then merges `stable` back into `main` with the exclusions undone.
-Only the stabilizer pushes to `stable`.
-
-### Why
-
-Many people and agents change Tilo at once. Gating every change on a full CI
-round trip serialized them, and automatic reverts fought the fixes that followed.
-This way landing is fast for everyone, and releasability is one place's actual
-job instead of a property every push has to prove. The cost is that `main` is
-sometimes red; `t main` makes that visible, and `t` keeps it from being
-confusing.
+How changes reach `main`, `stable` and releases, and how to test them, is in
+[docs/t.md](docs/t.md).
 
 ### Packaging and publication
 

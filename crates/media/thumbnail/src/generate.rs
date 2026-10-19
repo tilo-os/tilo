@@ -126,6 +126,26 @@ pub fn read_bounded(reader: impl Read, limit: usize) -> Option<Vec<u8>> {
     (bytes.len() <= limit).then_some(bytes)
 }
 
+/// Rasterises the first page of a PDF (`pdf`) into straight-alpha RGBA that
+/// fits `width` x `height`: `(pixels, width, height)`, or `None` for a
+/// document it cannot read.
+pub type PdfRasteriser = fn(pdf: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, u32, u32)>;
+
+static PDF_RASTERISER: std::sync::OnceLock<PdfRasteriser> = std::sync::OnceLock::new();
+
+/// Give PDF files a first-page preview from now on. An app that links Tilo's
+/// PDF engine (`tilo-pdf`) hands its rasteriser over once at start; until
+/// then, and in every other app, a PDF gets a type badge. The first call
+/// wins.
+pub fn set_pdf_rasteriser(rasterise: PdfRasteriser) {
+    let _ = PDF_RASTERISER.set(rasterise);
+}
+
+/// Whether PDFs get previews in this process ([`set_pdf_rasteriser`]).
+pub fn pdf_previews() -> bool {
+    PDF_RASTERISER.get().is_some()
+}
+
 /// Generate a preview for `source`, dispatching on `category`. Returns `None`
 /// for a badge-only category, an unreadable source, or a decode failure — the
 /// caller then falls back to a type badge.
@@ -139,14 +159,9 @@ pub fn generate(
         FileCategory::Image => image_thumb(&source.read()?, size),
         FileCategory::Ebook => epub_cover_thumb(&source.read()?, size),
         FileCategory::Pdf => {
-            #[cfg(feature = "pdf")]
-            {
-                crate::pdf::pdf_thumb(&source.read()?, size)
-            }
-            #[cfg(not(feature = "pdf"))]
-            {
-                None
-            }
+            let rasterise = PDF_RASTERISER.get()?;
+            let (rgba, width, height) = rasterise(&source.read()?, size.width, size.height)?;
+            rgba_to_thumb(rgba, width, height, size)
         }
         FileCategory::Video => {
             #[cfg(feature = "video")]

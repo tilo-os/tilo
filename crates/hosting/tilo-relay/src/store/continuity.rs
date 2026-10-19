@@ -441,10 +441,7 @@ mod tests {
             };
             sign_device_cert(&mut cert, &root).unwrap();
             let peer = crate::auth::accept_hello(
-                &crate::auth::Hello {
-                    cert,
-                    client_nonce: [2; 32],
-                },
+                &crate::auth::Hello::new(cert, [2; 32]),
                 &user.public_key,
                 &crate::policy::TrustPolicy::AllowMatchingUser,
                 &RevocationList::new(),

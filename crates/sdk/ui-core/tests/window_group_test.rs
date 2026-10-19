@@ -1,6 +1,6 @@
 use tilo_ui::widget::{
-    AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowEdge, WindowGroup,
-    WindowWidth, max_group_px, min_group_px,
+    AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowEdge, WindowGroup, WindowWidth,
+    max_group_px, min_group_px,
 };
 
 /// Display widths this suite pins the width model against. The bug being

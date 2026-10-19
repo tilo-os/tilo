@@ -4,6 +4,9 @@
 //! sandbox starts. Only after that handshake is accepted do client lifecycle
 //! messages enter the compositor. This prevents a sandboxed app from naming a
 //! different app id and turning `PiP` into a cross-app capture primitive.
+//! The app's own first frame says the shell-ui version it speaks; an app at
+//! another version is answered with the shell's and the connection closes
+//! (docs/architecture/compatibility.md).
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -16,8 +19,8 @@ use std::time::Duration;
 
 use launcher::services::SHELL_UI_LAUNCH_PROTOCOL;
 use ui::floating_surface::{
-    FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
-    HostNetworkStatus,
+    FLOATING_SURFACE_PROTOCOL_VERSION, FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage,
+    FloatingSurfaceHostMessage, HostNetworkStatus,
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -43,6 +46,32 @@ pub enum FloatingServiceEvent {
         connection: u64,
         app_id: String,
     },
+    /// The app said another shell-ui version than this shell's (`None`: it
+    /// said none, so it predates the version check). The shell answered
+    /// with its own and closed the connection; the app is updated or the
+    /// system is, whichever is behind (docs/architecture/compatibility.md).
+    VersionMismatch {
+        app_id: String,
+        app_version: Option<u16>,
+    },
+}
+
+/// The app's first frame as every shell-ui version reads it:
+/// `{"type": "hello", "version": N}`, whatever else a later version adds.
+#[derive(Deserialize)]
+struct Hello {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    version: Option<u16>,
+}
+
+/// The shell-ui version `frame` says, when it is a hello.
+fn hello_version(frame: &[u8]) -> Option<u16> {
+    serde_json::from_slice::<Hello>(frame)
+        .ok()
+        .filter(|hello| hello.kind == "hello")
+        .and_then(|hello| hello.version)
 }
 
 /// Opaque authenticated launch custody for event observation.
@@ -264,6 +293,31 @@ fn serve_connection(
     {
         return;
     }
+    // The app's first frame says the version it speaks; nothing else is read
+    // from an app at another one.
+    let Ok(Some(hello)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) else {
+        return;
+    };
+    let app_version = hello_version(&hello);
+    if app_version != Some(FLOATING_SURFACE_PROTOCOL_VERSION) {
+        if let Ok(mut answer) = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
+            shell: FLOATING_SURFACE_PROTOCOL_VERSION,
+        }) {
+            answer.push(b'\n');
+            let _ = writer.write_all(&answer).and_then(|()| writer.flush());
+        }
+        tracing::info!(
+            app_id = %handshake.app_id,
+            ?app_version,
+            shell = FLOATING_SURFACE_PROTOCOL_VERSION,
+            "shell-ui version mismatch"
+        );
+        let _ = events.send(FloatingServiceEvent::VersionMismatch {
+            app_id: handshake.app_id,
+            app_version,
+        });
+        return;
+    }
     let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
     if let Ok(mut open) = writers.lock() {
         if stop.load(Ordering::Acquire) {
@@ -416,8 +470,25 @@ impl AppearanceDelivery {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::io::BufRead as _;
     use std::os::fd::BorrowedFd;
     use std::time::Instant;
+
+    /// What an app writes first: the shell-ui version it speaks.
+    fn say_hello(app: &mut UnixStream, version: u16) {
+        let mut frame =
+            serde_json::to_vec(&FloatingSurfaceClientMessage::Hello { version }).unwrap();
+        frame.push(b'\n');
+        app.write_all(&frame).unwrap();
+    }
+
+    /// The descriptor the launcher hands the app, cloned out of `resolved`.
+    fn child_of(resolved: &[launcher::services::ResolvedService]) -> UnixStream {
+        // SAFETY: resolved owns this host descriptor throughout; the borrow
+        // only clones it into a separately owned descriptor.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(resolved[0].host_fd()) };
+        UnixStream::from(borrowed.try_clone_to_owned().expect("child descriptor"))
+    }
 
     #[test]
     fn each_app_is_told_its_window_appearance_once_per_change() {
@@ -543,6 +614,7 @@ mod tests {
         .unwrap();
         handshake.push(b'\n');
         app.write_all(&handshake).unwrap();
+        say_hello(&mut app, FLOATING_SURFACE_PROTOCOL_VERSION);
         let mut connected = None;
         tilo_test_env::wait_until("the authenticated app connects", || {
             connected = service.drain().into_iter().find_map(|event| match event {
@@ -657,6 +729,8 @@ mod tests {
             &launcher::netgate::EgressDecision::Blocked,
         )
         .unwrap();
+        let mut child = child_of(&resolved);
+        say_hello(&mut child, FLOATING_SURFACE_PROTOCOL_VERSION);
         let FloatingServiceEvent::Connected {
             connection, app_id, ..
         } = service.events.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -664,9 +738,6 @@ mod tests {
             panic!("expected authenticated Terminal connection");
         };
         assert_eq!(app_id, crate::shell::host_shell_allow::TERMINAL_APP_ID);
-        // SAFETY: resolved owns the descriptor throughout this temporary clone.
-        let borrowed = unsafe { BorrowedFd::borrow_raw(resolved[0].host_fd()) };
-        let child = UnixStream::from(borrowed.try_clone_to_owned().unwrap());
         child
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
@@ -719,17 +790,13 @@ mod tests {
             &launcher::netgate::EgressDecision::Unrestricted,
         )
         .expect("write the production launcher handshake");
+        let mut child = child_of(&resolved);
+        say_hello(&mut child, FLOATING_SURFACE_PROTOCOL_VERSION);
         assert!(matches!(
             service.events.recv_timeout(Duration::from_secs(2)),
             Ok(FloatingServiceEvent::Connected { app_id, network_status_allowed: true, .. }) if app_id == "so.tilo.chat"
         ));
-        // SAFETY: resolved owns this host descriptor until its explicit drop
-        // below. The temporary borrow only clones it into a separately owned
-        // child descriptor; it never closes or outlives the original.
-        let borrowed = unsafe { BorrowedFd::borrow_raw(resolved[0].host_fd()) };
-        let mut child = UnixStream::from(borrowed.try_clone_to_owned().expect("child descriptor"));
         let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
-            version: ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
             id: "conversation".into(),
             title: "Agent conversation".into(),
             role: ui::floating_surface::FloatingSurfaceProtocolRole::LiveActivity,
@@ -764,6 +831,81 @@ mod tests {
             service.events.recv_timeout(Duration::from_secs(2)),
             Ok(FloatingServiceEvent::Disconnected { app_id, .. }) if app_id == "so.tilo.chat"
         ));
+    }
+
+    /// An app at another shell-ui version is told the shell's and closed
+    /// before anything it says reaches the compositor; the shell hears which
+    /// version it spoke, to update the side that is behind.
+    #[test]
+    fn an_app_at_another_version_is_answered_with_the_shells_and_closed() {
+        let older = FLOATING_SURFACE_PROTOCOL_VERSION - 1;
+        let first_frames: [(Vec<u8>, Option<u16>); 3] = [
+            (
+                serde_json::to_vec(&FloatingSurfaceClientMessage::Hello { version: older })
+                    .unwrap(),
+                Some(older),
+            ),
+            (
+                serde_json::to_vec(&serde_json::json!({
+                    "type": "hello",
+                    "version": FLOATING_SURFACE_PROTOCOL_VERSION + 1,
+                    "something_later": true,
+                }))
+                .unwrap(),
+                Some(FLOATING_SURFACE_PROTOCOL_VERSION + 1),
+            ),
+            (
+                serde_json::to_vec(&FloatingSurfaceClientMessage::Dismiss { id: "call".into() })
+                    .unwrap(),
+                None,
+            ),
+        ];
+        for (first, said) in first_frames {
+            let (mut app, shell) = UnixStream::pair().expect("connected socket pair");
+            let (tx, rx) = mpsc::channel();
+            let writers = Arc::new(Mutex::new(HashMap::new()));
+            let observed = Arc::clone(&writers);
+            let worker = std::thread::spawn(move || {
+                serve_connection(
+                    1,
+                    shell,
+                    tx,
+                    writers,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+            });
+            let mut handshake = serde_json::to_vec(&serde_json::json!({
+                "protocol": SHELL_UI_LAUNCH_PROTOCOL,
+                "app_id": "so.tilo.mail",
+            }))
+            .unwrap();
+            handshake.push(b'\n');
+            app.write_all(&handshake).unwrap();
+            let mut frame = first;
+            frame.push(b'\n');
+            app.write_all(&frame).unwrap();
+            worker.join().expect("service worker exits");
+
+            let mut answer = String::new();
+            BufReader::new(app).read_line(&mut answer).unwrap();
+            assert_eq!(
+                serde_json::from_str::<FloatingSurfaceHostMessage>(answer.trim()).unwrap(),
+                FloatingSurfaceHostMessage::VersionMismatch {
+                    shell: FLOATING_SURFACE_PROTOCOL_VERSION
+                }
+            );
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), 1, "{events:?}");
+            assert!(
+                matches!(
+                    &events[0],
+                    FloatingServiceEvent::VersionMismatch { app_id, app_version }
+                        if app_id == "so.tilo.mail" && *app_version == said
+                ),
+                "{events:?}"
+            );
+            assert!(observed.lock().expect("writers").is_empty());
+        }
     }
 
     #[test]

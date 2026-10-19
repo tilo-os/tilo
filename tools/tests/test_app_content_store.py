@@ -27,21 +27,31 @@ class AppContentStoreTests(unittest.TestCase):
         return root
 
     def test_only_the_hosts_that_lend_the_store_open_it(self):
-        call = "fn f() { let _ = tilo_content::ContentStore::for_app(); }\n"
+        call = "fn f() { let _ = tilo_content_device::for_app(); }\n"
+        local = "fn f() { let _ = tilo_content::ContentStore::local_for_app(); }\n"
         root = self.fixture(
             {
                 "apps/paint/src/lib.rs": call,
-                "apps/paint/src/doc.rs": "// ContentStore::for_app() is not used\n",
+                "apps/paint/src/doc.rs": "// tilo_content_device::for_app() is not used\n",
+                "apps/paint/src/local.rs": local,
                 "apps/paint/src/state.rs": "fn g() {}\n#[cfg(test)]\nmod tests {\n" + call + "}\n",
                 "apps/paint/tests/app.rs": call,
-                "crates/system/content/src/lib.rs": call,
+                "crates/system/content/src/lib.rs": local,
+                "crates/system/content-device/src/lib.rs": call,
                 "crates/sdk/tilo-app/src/framework/app.rs": call,
                 "crates/system/fs/src/main.rs": call,
                 "crates/sdk/ui-core/src/lib.rs": "\n" + call,
             }
         )
         found = sorted((Path(v.path).as_posix(), v.line) for v in contract.audit(root))
-        self.assertEqual(found, [("apps/paint/src/lib.rs", 1), ("crates/sdk/ui-core/src/lib.rs", 2)])
+        self.assertEqual(
+            found,
+            [
+                ("apps/paint/src/lib.rs", 1),
+                ("apps/paint/src/local.rs", 1),
+                ("crates/sdk/ui-core/src/lib.rs", 2),
+            ],
+        )
 
 
     def test_no_app_keeps_a_store_for_the_whole_process(self):

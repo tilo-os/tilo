@@ -125,11 +125,36 @@ pub struct Capabilities {
     pub required: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub optional: Vec<String>,
+    /// `[capabilities.reasons]` — one line per capability on why the app
+    /// needs it, shown to the person who is asked. Required for every
+    /// capability in [`REASONED_CAPABILITIES`], allowed for any declared one.
+    ///
+    /// ```toml
+    /// [capabilities]
+    /// optional = ["io-uring"]
+    ///
+    /// [capabilities.reasons]
+    /// io-uring = "Its storage engine batches disk reads through io_uring."
+    /// ```
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub reasons: std::collections::BTreeMap<String, String>,
 }
+
+/// Capabilities that lower the sandbox itself rather than reach a brokered
+/// service, so a manifest must say why it declares one
+/// ([`Capabilities::reasons`]). `io-uring` opens the kernel's `io_uring`
+/// interface, which the app sandbox's syscall filter otherwise refuses.
+pub const REASONED_CAPABILITIES: &[&str] = &["io-uring"];
 
 impl Capabilities {
     fn is_empty(&self) -> bool {
-        self.required.is_empty() && self.optional.is_empty()
+        self.required.is_empty() && self.optional.is_empty() && self.reasons.is_empty()
+    }
+
+    /// Why the app declares `name`, if the manifest says.
+    #[must_use]
+    pub fn reason(&self, name: &str) -> Option<&str> {
+        self.reasons.get(name).map(String::as_str)
     }
 }
 
@@ -1299,6 +1324,24 @@ impl Manifest {
             .services
             .iter()
             .filter(|(_, req)| req.requirement == Requirement::Required)
+            .map(|(name, req)| registry_types::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
+            })
+            .collect()
+    }
+
+    /// Every interface version this package speaks: each service it names,
+    /// required or optional, sorted by name. An optional service may be
+    /// absent where the package runs, but where it is present the package
+    /// speaks only this version of it, so a device runs the package only
+    /// when it serves every one of these exactly
+    /// (docs/architecture/compatibility.md).
+    #[must_use]
+    pub fn interface_versions(&self) -> Vec<registry_types::InterfaceRequirement> {
+        self.sandbox
+            .services
+            .iter()
             .map(|(name, req)| registry_types::InterfaceRequirement {
                 name: name.clone(),
                 version: req.version,

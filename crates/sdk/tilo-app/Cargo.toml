@@ -34,6 +34,9 @@ test-support = ["ui-core/test-support", "tilo-resource/test-support"]
 chrono = ["tilo-resource/chrono"]
 # Backend features of the native runner; on wasm32 they have no effect.
 webview-adblock = ["tilo-runner-native?/webview-adblock"]
+# X11 windows and clipboard for development builds on an X11 host; see
+# `tilo-ui`'s `x11`. The release runtime is Wayland only.
+x11 = ["tilo-runner-native?/x11"]
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 mpris = ["tilo-runner-native?/mpris"]
@@ -85,6 +88,8 @@ required-features = ["test-support"]
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `render` stores the picture it answers with.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
+# The native process host lends the window the device content store.
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [lints]

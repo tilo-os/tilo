@@ -53,12 +53,13 @@ want, not only for the value you hold.
 | `Vec<T>` | list, by position | for short lists that are replaced whole |
 | `BTreeMap<String, T>` | map | per key; copied whole when a view holds the state, so for small maps |
 | `Map<T>` | map, as `BTreeMap<String, T>` | per key; a change copies only its chunk of a held state, and saving it visits only the chunks changes copied |
-| `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity |
+| `Collection<T>` | items with stable `Id`s and order keys | per item; moves keep identity; one id made on two replicas reads as one item, field by field |
 | `Grid<T>` | rows and columns with stable ids, sparse cells | per cell; inserting a row keeps every cell's identity; saving and comparing a copy visit only the rows of cells changes copied |
 | `Bytes` | content-addressed blob reference; small values inline | last writer wins |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| `Json<T>` | one JSON string | last writer wins; an escape hatch, not a default |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
+| `Json<T>` | one JSON string | last writer wins; only for a payload opaque to the app's model: another party's JSON (a binding's literal value, a parameter's JSON Schema, a provider's settings) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
 is the only place storage code is written by hand, and the framework ships the
@@ -79,6 +80,10 @@ shared ones (`RichText`, `Grid`). An app does not implement `Resource` by hand.
 - `#[model(whole)]` reads all of a value that is otherwise read as views ask
   for it (a `RichText`'s paragraphs), so verbs, search and `read_content` see
   every word: for short texts such as a note's body or a slide's text box.
+- `#[model(default = expr)]` is what the field reads as when the document holds
+  none: a required field with a sensible derivation (`#[model(default =
+  Id::from_raw("home"))]`), so an item written without it still reads. The
+  next whole write of the item stores it.
 - `#[model(rename = "key")]`, `#[model(skip)]` as before.
 - `#[model(check = path)]` on a type names an invariant,
   `fn(&Self) -> Result<(), Refusal>`. It runs after every change that touched a
@@ -474,9 +479,28 @@ actions that queued an outside consequence undo through their inverse action.
   versions, so two devices migrating concurrently produce the same change.
   `tilo-app check` fails when the schema in `surface.toml` changed
   incompatibly without a version bump.
-- **An unreadable document fails loudly.** A document that does not read as the
-  model shows an error state in the view and its actions report why they are
-  unavailable; stale state is never shown as current.
+- **An unreadable item is quarantined; only an unreadable record fails.** One
+  item of a `Collection` that does not read as its type (a required field
+  absent, a value of another shape) never makes the whole app unopenable: it
+  is left out of the collection, which reads and shows the rest, and
+  `Collection::quarantined()` lists it with why. It stays in the document as
+  it is, through every write, until it is repaired: pushing a whole item under
+  its id stores every field, `Collection::discard` (or the remove-item edit)
+  deletes it, and a migration may rewrite it. A record that does not read
+  outside its collections (a field of the record itself, a newer storage
+  version) shows an error state in the view and its actions report why they
+  are unavailable; stale state is never shown as current.
+- **The same item made twice is one item.** Two replicas pushing one fixed id
+  concurrently each make an entry map, and the document keeps both under the
+  key. A read that finds the winning copy incomplete reads the copies as one
+  item, each field from the first copy holding it, and the next write stores
+  it whole over the winning copy. A compared write never stores half an item:
+  an item whose entry or value is gone from the document is written whole, and
+  a field edit into an item holding no value is refused. An app that creates
+  the same items on every replica (a starter) makes them under fixed ids with
+  the same values, idempotently, so every replica's copy is the same item; or
+  in its genesis (`ResourceApp::genesis`), one identical change on every
+  device.
 - **Old history keeps rendering.** An entry naming a field or verb that no
   longer exists renders through the framework fallback.
 
@@ -489,22 +513,42 @@ actions that queued an outside consequence undo through their inverse action.
   structured history entries.
 - `tilo-app check` runs the surface, binding, Fluent and lint checks.
 
-## 8. Leaving the old APIs
+## 8. The old APIs are gone
 
-Apps and examples still hold code written against the APIs this model
-replaced: hand-written `impl Resource for`, `ActionDecl::new`,
-`ActionAddress::new`, untyped argument parsing (`args.text(..)`,
-`args.get(..)`), `ActionSpec::` descriptors and direct Automerge writes
-(`put`, `put_object`, `insert_object`, `splice_text`, `update_text`,
-`increment`). `tools/policy/check_app_resource_action_contract.py` counts each
-per source file, comments and literals excluded, tests included, and holds
-every count at its audited ceiling in
-`tools/policy/app_resource_action_baseline/<app>.toml` (`example-<name>.toml`
-for `examples/apps/<name>`), under `[ratchets.<rule>]`. A file with no entry
-allows none.
+Apps and examples once held code written against the APIs this model
+replaced: hand-written `impl Resource for`, `ActionDecl::new`, `ActionAddress::new`,
+untyped argument parsing (`args.text(..)`, `args.get(..)`), `ActionSpec::`
+descriptors, direct Automerge writes (`put`, `put_object`, `insert_object`,
+`splice_text`, `update_text`, `increment`) and `Json<T>` fields holding data
+they shape themselves. None is left,
+and `tools/policy/check_app_resource_action_contract.py` refuses each one in
+every source file of an app crate (`src`, `tests`, `examples`, `benches`) and
+of an example: there is no ceiling to raise. What to write instead:
 
-A count that rises fails the check, naming the file and the first use past the
-ceiling: write it with the model instead. A count that falls fails too, as a
-stale ceiling: lower the number the message gives in the same commit, delete
-the entry once it reaches zero, and delete the file once it holds no entries.
-Raising a ceiling is an exception that needs review.
+- **A resource** is a `#[derive(Model)]` record with `#[resource]`; a layout
+  the storage table does not cover is a `Model` written by hand in the SDK
+  (`RichText`, `Grid`), never an app's `impl Resource`.
+- **An action an app addresses** is named through its typed reference:
+  `R::VERB.on(resource)`, `effect.address_on(resource)`, `invoke.address()`.
+  One a caller holds a published resource or tree for comes from it:
+  `resource.action_address(id)`, `door::published(&tree, resource, id)`. A test
+  invokes through the door the way an agent does (`call_on`).
+- **Arguments** are a verb's typed params, an effect's fields, or a serde
+  struct the bound arguments are read into; a registered read publishes a
+  typed `JsonSchema` parameter struct (`semantic_document_read::read_action`).
+- **A stored value** is a model type chosen for its merge (§1): a struct, an
+  enum (a data enum is a map naming its variant), `Collection`, `Map`, `Set`,
+  `RichText`. A value that is genuinely opaque — written whole, never merged,
+  such as a retained import tree compared whole on retry — implements `Model`
+  through `json_model!` with a comment saying why.
+- **A document change** is a field edit or a verb. A migration
+  (`#[resource(version, migrate)]`) and a test's fixture of an older shape
+  write through the model's storage helpers: `write_key`, `Slot`,
+  `evolution::retype_json` (an old JSON-string field rewritten as its model
+  type), `evolution::collection_items` and `evolution::fixture`.
+
+Three apps act on other apps' published actions as data rather than through a
+resource of their own: the agent (it plans and invokes what the broker's
+catalogue offers), Shortcuts (its steps name other apps' actions) and the web
+search service (it publishes its actions straight to the broker). They build
+action addresses; every other rule holds for them as for any app.

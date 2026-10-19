@@ -367,19 +367,26 @@ impl PresenceCtx {
             .filter(|origin| squared_distance(*origin, target).sqrt() <= max_travel)
             .unwrap_or_else(|| nearest_viewport_edge(viewport, target));
 
-        let durations = paint.theme.tokens.motion.durations;
-        let travel = durations.slow().saturating_add(durations.base());
-        let approach = if paint.theme.reduce_motion || travel.is_zero() {
-            1.0
-        } else {
-            duration_fraction(now.saturating_duration_since(first_received_at), travel)
-        };
-        let eased = 1.0 - (1.0 - approach).powi(3);
-        let tip = point_lerp(origin, target, eased);
-        let pulse = if paint.theme.reduce_motion || durations.base().is_zero() {
+        // The agent's pointer travels to what it acts on, and its arrival
+        // flashes (`motion::Follow::APPROACH`, `motion::Attention::FLASH`).
+        let motion = paint.theme.motion();
+        let source = crate::tokens::MotionSource::Pointer;
+        let approach = crate::motion::Follow::APPROACH.progress_after(
+            crate::motion::Direction::Enter,
+            motion,
+            source,
+            now.saturating_duration_since(first_received_at),
+        );
+        let tip = point_lerp(origin, target, approach);
+        let pulse = if paint.theme.reduce_motion {
             0.0
         } else {
-            1.0 - duration_fraction(now.saturating_duration_since(received_at), durations.base())
+            1.0 - crate::motion::Attention::FLASH.progress_after(
+                crate::motion::Direction::Exit,
+                motion,
+                source,
+                now.saturating_duration_since(received_at),
+            )
         };
         let marker = AgentActionMarker {
             invocation: interaction.invocation,
@@ -736,10 +743,20 @@ impl InteractionPresenceEntry {
     }
 
     fn animating_at(&self, now: Instant, theme: &Theme) -> bool {
-        let durations = theme.tokens.motion.durations;
-        now.saturating_duration_since(self.first_received_at)
-            < durations.slow().saturating_add(durations.base())
-            || now.saturating_duration_since(self.received_at) < durations.base()
+        let motion = theme.motion();
+        let source = crate::tokens::MotionSource::Pointer;
+        let approach = crate::motion::Follow::APPROACH.settle_time(
+            crate::motion::Direction::Enter,
+            motion,
+            source,
+        );
+        let flash = crate::motion::Attention::FLASH.settle_time(
+            crate::motion::Direction::Exit,
+            motion,
+            source,
+        );
+        now.saturating_duration_since(self.first_received_at) < approach
+            || now.saturating_duration_since(self.received_at) < flash
     }
 }
 
@@ -788,10 +805,6 @@ fn nearest_viewport_edge(viewport: Rect, target: Point) -> Point {
 
 fn squared_distance(left: Point, right: Point) -> f64 {
     (left.x - right.x).powi(2) + (left.y - right.y).powi(2)
-}
-
-fn duration_fraction(elapsed: Duration, total: Duration) -> f64 {
-    (elapsed.as_secs_f64() / total.as_secs_f64()).clamp(0.0, 1.0)
 }
 
 fn point_lerp(from: Point, to: Point, progress: f64) -> Point {
@@ -1271,7 +1284,11 @@ mod tests {
             &theme,
         )
         .unwrap();
-        assert!(advanced.approach > 0.45 && advanced.approach < 0.55);
+        assert!(
+            advanced.approach > 0.9 && advanced.approach < 1.0,
+            "still on its way from the first observation, not restarted: {}",
+            advanced.approach
+        );
         assert!(advanced.tip.x < first.tip.x);
         assert!(advanced.pulse > 0.99, "the new phase gets one short pulse");
 

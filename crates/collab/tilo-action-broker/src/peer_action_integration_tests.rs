@@ -649,10 +649,7 @@ impl RawSession {
             .unwrap();
         let connection = endpoint.connect(relay.node_addr(), alpn).await.unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let hello = tilo_relay::auth::Hello {
-            cert,
-            client_nonce: [seed; 32],
-        };
+        let hello = tilo_relay::auth::Hello::new(cert, [seed; 32]);
         tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();
@@ -670,7 +667,7 @@ impl RawSession {
             _endpoint: endpoint,
             _connection: connection,
             send,
-            reader: tilo_delivery_protocol::transport_v2::SessionReader::new(recv, true),
+            reader: tilo_delivery_protocol::transport_v2::SessionReader::new(recv),
         };
         let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
         session
@@ -753,7 +750,6 @@ fn rejected(code: &str) -> ActionMessage {
 #[tokio::test(flavor = "current_thread")]
 async fn native_peer_facade_admits_effects_only_on_their_source_device_signature() {
     use tilo_clock::unix_now_ns as now_ns;
-    use tilo_delivery_protocol::transport_v2::{ALPN_AGENT_READS_V1, ALPN_SIGNED_ACTIONS_V1};
     tokio::task::LocalSet::new().run_until(async {
         let root = tempfile::tempdir().unwrap();
         let relay_root = tempfile::tempdir().unwrap();
@@ -773,16 +769,16 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
-        let mut current = RawSession::open(&relay, 52, room, ALPN_SIGNED_ACTIONS_V1).await;
-        let mut older = RawSession::open(&relay, 53, room, ALPN_AGENT_READS_V1).await;
+        let mut current = RawSession::open(&relay, 52, room, tilo_relay::ALPN).await;
+        let mut older = RawSession::open(&relay, 53, room, tilo_relay::ALPN).await;
         tilo_test_env::within("the attached broker to serve reads", async { loop {
             let read = directed(room, 52, ActionMessage::CatalogueRefresh { scope: None });
             current.write(EnvelopeV2::SignedDirected(signed_by(&read, 52, now_ns()))).await;
             if matches!(tokio::time::timeout(Duration::from_millis(250), current.answer(read.request_id)).await, Ok(Ok(ActionMessage::BrokerCatalogue { .. }))) { break; }
         }}).await;
 
-        // An older device, or a host vouching for a device it never heard
-        // from: the broker sees an unsigned delivery under a valid member
+        // A device that does not sign, or a host vouching for a device it
+        // never heard from: the broker sees an unsigned delivery under a valid member
         // certificate. Reads are still served; effects are refused before any
         // admission, with a code that says why.
         let read = directed(room, 53, ActionMessage::CatalogueRefresh { scope: None });

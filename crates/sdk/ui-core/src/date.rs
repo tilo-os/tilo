@@ -65,7 +65,7 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// Day of the week for a count of days since 1970-01-01, `0` = Sunday …
-/// `6` = Saturday — the index [`crate::format::weekday_abbrev`] takes.
+/// `6` = Saturday.
 ///
 /// ```
 /// use tilo_ui::date::weekday;

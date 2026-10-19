@@ -19,7 +19,7 @@ use std::str::FromStr;
 
 use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 pub use tilo_app_package::PackageId;
-use tilo_resource::{Json, JsonSchema, Model, ModelError, resource};
+use tilo_resource::{JsonSchema, Model, ModelError, resource};
 
 /// The app id every environment grant is written against — an app in the
 /// capability vocabulary, because that is what the permissions panel renders
@@ -47,7 +47,7 @@ pub struct Environment {
     /// Tools built for [`Self::runtime`], topmost last.
     pub tools: Vec<ToolRef>,
     /// `FsPath` and `NetHost` grants, subject [`RUNTIME_APP_ID`].
-    pub grants: Json<Vec<CapOverride>>,
+    pub grants: Vec<CapOverride>,
     /// Whether the home survives the session.
     pub home: HomePolicy,
 }
@@ -86,7 +86,23 @@ pub enum HomePolicy {
     Ephemeral,
 }
 
-#[resource(kind = "environment", label = "Environment")]
+/// Bring an environment of version 1 up to this one: its grants were one
+/// JSON string, and are a list of capabilities now.
+fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no environment migration from {from}"
+        )));
+    }
+    tilo_resource::evolution::retype_json::<Vec<CapOverride>>(
+        doc,
+        &tilo_resource::__private::ROOT,
+        "grants",
+    )?;
+    Ok(())
+}
+
+#[resource(kind = "environment", label = "Environment", version = 2, migrate = upgrade)]
 impl Environment {
     /// Add tool.
     ///
@@ -153,8 +169,8 @@ impl Environment {
         #[param("Writable")] write: bool,
     ) -> Result<(), String> {
         let grant = dir_grant(Path::new(&path), write)?;
-        self.grants.0.retain(|c| c.id != grant.id);
-        self.grants.0.push(grant);
+        self.grants.retain(|c| c.id != grant.id);
+        self.grants.push(grant);
         Ok(())
     }
 
@@ -166,17 +182,17 @@ impl Environment {
     #[action]
     pub fn allow_host(&mut self, #[param("Host")] host: String) -> Result<(), String> {
         let grant = host_grant(&host)?;
-        self.grants.0.retain(|c| c.id != grant.id);
-        self.grants.0.push(grant);
+        self.grants.retain(|c| c.id != grant.id);
+        self.grants.push(grant);
         Ok(())
     }
 
     /// Revoke grant.
     #[action(destructive)]
     pub fn revoke_grant(&mut self, #[param("Grant id")] id: String) -> Result<(), String> {
-        let before = self.grants.0.len();
-        self.grants.0.retain(|c| c.id != id);
-        if self.grants.0.len() == before {
+        let before = self.grants.len();
+        self.grants.retain(|c| c.id != id);
+        if self.grants.len() == before {
             return Err(format!("no grant with id {id}"));
         }
         Ok(())
@@ -659,6 +675,43 @@ mod tests {
         assert_eq!(r.state().unwrap().tools.len(), 1);
     }
 
+    /// An environment from before its grants were stored values: one JSON
+    /// string. Opened now, it holds the same capabilities.
+    #[test]
+    fn grants_kept_as_a_json_string_migrate_to_capabilities() {
+        use tilo_resource::{Slot, evolution};
+        let mut r = replica();
+        r.apply(Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)))
+            .unwrap();
+        let expected = r.state().unwrap();
+        let root = tilo_resource::__private::ROOT;
+        let doc = r.doc_mut();
+        let grants = Slot::Key(&root, "grants");
+        grants.remove(doc).unwrap();
+        grants
+            .put_scalar(
+                doc,
+                automerge::ScalarValue::Str(
+                    serde_json::to_string(&expected.grants).unwrap().into(),
+                ),
+            )
+            .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .remove(doc)
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<Environment>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Environment>(&mut old).unwrap());
+        assert_eq!(
+            evolution::read_checked::<Environment>(&old).unwrap(),
+            expected
+        );
+    }
+
     #[test]
     fn directory_grants_are_capabilities_and_refuse_guest_paths() {
         let mut r = replica();
@@ -667,8 +720,8 @@ mod tests {
         r.apply(Environment::GRANT_DIR.with(("/var/home/you/src".into(), false)))
             .unwrap();
         let env = r.state().unwrap();
-        assert_eq!(env.grants.0.len(), 1, "granting again replaces the grant");
-        let cap = &env.grants.0[0];
+        assert_eq!(env.grants.len(), 1, "granting again replaces the grant");
+        let cap = &env.grants[0];
         assert!(is_runtime_grant(cap));
         assert_eq!(cap.access, Access::Read);
         assert_eq!(cap.scope, Scope::FsPath("/var/home/you/src".into()));
@@ -702,7 +755,7 @@ mod tests {
         }
         r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
             .unwrap();
-        assert!(r.state().unwrap().grants.0.is_empty());
+        assert!(r.state().unwrap().grants.is_empty());
         assert!(
             r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
                 .is_err()
@@ -718,8 +771,8 @@ mod tests {
             .unwrap();
         r.apply(Environment::ALLOW_HOST.with("github.com")).unwrap();
         let env = r.state().unwrap();
-        assert_eq!(env.grants.0.len(), 2, "allowing again replaces the grant");
-        let scopes: Vec<&Scope> = env.grants.0.iter().map(|c| &c.scope).collect();
+        assert_eq!(env.grants.len(), 2, "allowing again replaces the grant");
+        let scopes: Vec<&Scope> = env.grants.iter().map(|c| &c.scope).collect();
         assert_eq!(
             scopes,
             [
@@ -727,7 +780,7 @@ mod tests {
                 &Scope::NetHost("github.com".into())
             ]
         );
-        assert!(env.grants.0.iter().all(is_runtime_grant));
+        assert!(env.grants.iter().all(is_runtime_grant));
         // The record's spelling is the evaluator's: a leading dot covers
         // the domain and everything under it.
         assert!(collab_types::caps::host_covers(
@@ -745,7 +798,7 @@ mod tests {
         let id = host_grant_id("github.com");
         r.apply_confirmed(Environment::REVOKE_GRANT.with(id))
             .unwrap();
-        assert_eq!(r.state().unwrap().grants.0.len(), 1);
+        assert_eq!(r.state().unwrap().grants.len(), 1);
     }
 
     #[test]

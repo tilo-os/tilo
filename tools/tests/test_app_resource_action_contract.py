@@ -728,29 +728,27 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertTrue(any("production app launch" in item.reason for item in violations))
 
 
-    def test_old_app_apis_are_ratcheted_per_file_in_apps_and_examples(self):
-        def ratchet(root: Path, relative: str, source: str, baseline: str = ""):
-            path = root / relative
+    def test_old_app_apis_are_refused_in_apps_and_examples(self):
+        def banned(source: str, *, endpoint: bool = False) -> list[str]:
+            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            path = root / "apps" / "notes" / "src" / "lib.rs"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source, encoding="utf-8")
-            if baseline:
-                file = root / contract.baseline_file(relative)
-                file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_text(baseline, encoding="utf-8")
             violations: list = []
-            contract.audit_ratchets(
-                root,
-                [(path, source)],
-                contract.load_ratchet_baseline(root),
-                violations,
-                workspace=True,
-                legacy_only=True,
-            )
+            contract.audit_legacy_apis([(path, source)], violations, endpoint=endpoint)
             return [item.reason for item in violations]
+
+        def rules(source: str, *, endpoint: bool = False) -> dict[str, int]:
+            found: dict[str, int] = {}
+            for reason in banned(source, endpoint=endpoint):
+                for rule, (_, text) in contract.LEGACY_API_BANS.items():
+                    if reason == text:
+                        found[rule] = found.get(rule, 0) + 1
+            return found
 
         old = (
             "impl tilo_resource::Resource for Notes { }\n"
-            "fn f(args: &Args, doc: &mut AutoCommit) {\n"
+            "fn f(args: &ActionArgs, doc: &mut AutoCommit) {\n"
             " let a = ActionAddress::new(\"notes\", \"rename\");\n"
             " let d = ActionDecl::new(\"rename\", \"Rename\");\n"
             " let s = ActionSpec::immediate(\"go\");\n"
@@ -758,39 +756,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             " doc.put(automerge::ROOT, \"title\", t);\n"
             "}\n"
         )
-        rules = [
-            "hand_resource_impl",
-            "action_address_new",
-            "action_decl_new",
-            "action_spec",
-            "untyped_action_args",
-            "direct_automerge_write",
-        ]
-        with self.subTest(phase="each old API is refused without a ceiling"):
-            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-            reasons = ratchet(root, "examples/apps/notes/src/lib.rs", old)
-            self.assertEqual(len(reasons), len(rules), reasons)
-            self.assertTrue(all("example-notes.toml" in reason for reason in reasons))
-        with self.subTest(phase="today's counts are the ceiling"):
-            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-            baseline = "".join(f'[ratchets.{rule}]\n"apps/notes/src/lib.rs" = 1\n' for rule in rules)
-            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", old, baseline), [])
-            reasons = ratchet(root, "apps/notes/src/lib.rs", old + "fn g() { ActionDecl::new(); }\n")
-            self.assertEqual(len(reasons), 1, reasons)
-            self.assertIn("audited ceiling 1", reasons[0])
-            reasons = ratchet(root, "apps/notes/src/lib.rs", "fn g() {}\n")
-            self.assertEqual(len(reasons), len(rules), reasons)
-            self.assertTrue(all("lower 1 to 0" in reason for reason in reasons))
-        def counts(source: str) -> dict[str, int]:
-            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-            reasons = ratchet(root, "apps/notes/src/lib.rs", source)
-            found = {}
-            for rule, (_, reason) in contract.LEGACY_API_RATCHETS.items():
-                for line in reasons:
-                    if line.startswith(reason):
-                        found[rule] = int(line.split("(")[-1].split(" found")[0])
-            return found
-
+        with self.subTest(phase="each old API is refused, with no ceiling to raise"):
+            self.assertEqual(
+                rules(old),
+                {rule: 1 for rule in contract.LEGACY_API_BANS},
+                banned(old),
+            )
+        with self.subTest(phase="an endpoint's addresses are its data, nothing else is"):
+            found = rules(old, endpoint=True)
+            self.assertNotIn("action_address_new", found)
+            self.assertEqual(len(found), len(contract.LEGACY_API_BANS) - 1, found)
         document_writes = [
             "fn f(doc: &mut AutoCommit) { doc.put(&obj, \"k\", 1); }\n",
             "fn f(state: &mut automerge::AutoCommit) { state.put(&obj, \"k\", 1); }\n",
@@ -799,49 +774,53 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn f() { let mut source = AutoCommit::new(); source.put(&obj, \"k\", 1); }\n",
             "fn f(d: &Doc) { let mut copy = d.clone();\n copy\n .put(automerge::ROOT, \"k\", 1); }\n",
             "fn f() { apply(|doc| doc.put(ROOT, \"k\", 1)); }\n",
-            "fn f(dm: &mut Fixture) { use automerge::ObjId; dm.splice_text(&id, 0, 0, \"a\"); }\n",
-            "fn f(x: &mut Fixture) { use automerge::ObjType; x.put_object(&id, \"k\", ObjType::Map); }\n",
+            "fn f(doc: &mut AutoCommit) { doc.splice_text(&id, 0, 0, \"a\"); }\n",
+            "fn f(doc: &mut Doc) { use automerge::ObjType; doc.put_object(&id, \"k\", ObjType::Map); }\n",
         ]
         for source in document_writes:
-            with self.subTest(phase="a document write is counted", source=source):
-                self.assertEqual(counts(source).get("direct_automerge_write"), 1, source)
-        other_puts = [
+            with self.subTest(phase="a document write is refused", source=source):
+                self.assertEqual(rules(source).get("direct_automerge_write"), 1, source)
+        other_writes = [
             "use automerge::ROOT;\nfn f(content: &ContentStore) { content.put(&bytes); }\n",
             "use automerge::ROOT;\nfn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n",
             "use automerge::ROOT;\nfn f(&self) { self.inner.content_store().put(PNG); }\n",
             "use automerge::ROOT;\nfn f(cache: &mut Lru) { cache.put(key, tile); }\n",
             "fn f(store: &mut Vault) { store.put(\"account\", secret); }\n",
+            "fn f(dm: &mut tilo_doc::DocMut) { use automerge::ObjId; dm.splice_text(&id, 0, 0, \"a\"); }\n",
+            "fn f(slot: Slot) { use automerge::ROOT; slot.put_scalar(&mut d, v); }\n",
         ]
-        for source in other_puts:
-            with self.subTest(phase="a store's or a cache's put is not a document write", source=source):
-                self.assertNotIn("direct_automerge_write", counts(source), source)
+        for source in other_writes:
+            with self.subTest(phase="a store's put or a model edit is no document write", source=source):
+                self.assertNotIn("direct_automerge_write", rules(source), source)
         action_args = [
             "fn f(args: &ActionArgs) { args.text(\"title\"); }\n",
             "fn f(args: &tilo_actions::ActionArgs) { args.get(name); }\n",
             "fn f(args: &serde_json::Value) { args.get(\"title\"); }\n",
-            "fn f() { on(|args| args.get(\"title\")); }\n",
+            "fn f() { on(|args: &ActionArgs| args.get(\"title\")); }\n",
             "fn f() { on(|args| args.boolean(\"on\")); }\n",
         ]
         for source in action_args:
-            with self.subTest(phase="untyped action arguments are counted", source=source):
-                self.assertEqual(counts(source).get("untyped_action_args"), 1, source)
+            with self.subTest(phase="untyped action arguments are refused", source=source):
+                self.assertEqual(rules(source).get("untyped_action_args"), 1, source)
         command_lines = [
             "fn main() { let args: Vec<String> = std::env::args().collect(); args.get(1); }\n",
             "fn run(args: &[String]) { let mode = args.get(2); }\n",
             "fn call(args: &[Expr]) { let (a, b) = (args.first(), args.get(1)); }\n",
             "fn step(args: &BTreeMap<String, Value>) { args.get(param.name.as_ref()); }\n",
+            "fn flags(args: &Args) { args.get(\"--out-dir\"); }\n",
+            "fn saved(step: &Step) { let Kind::Action { args, .. } = &step.kind; args.get(\"title\"); }\n",
         ]
         for source in command_lines:
-            with self.subTest(phase="a command line or a list read by index is not action arguments", source=source):
-                self.assertNotIn("untyped_action_args", counts(source), source)
-        with self.subTest(phase="the model's own APIs and other puts are not counted"):
-            root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            with self.subTest(phase="a command line, a list or a step's bindings are no action arguments", source=source):
+                self.assertNotIn("untyped_action_args", rules(source), source)
+        with self.subTest(phase="the model's own APIs are not refused"):
             new = (
                 "#[resource(kind = \"notes\")] impl Notes { #[action] fn rename(&mut self) {} }\n"
                 "impl ResourceSurface<Notes, NotesView> for NotesApp {}\n"
                 "fn f(seeds: &mut Seeds) { seeds.put(id, secret); }\n"
+                "fn g() { let a = Notes::RENAME.on(\"notes\"); let b = resource.action_address(\"open\"); }\n"
             )
-            self.assertEqual(ratchet(root, "apps/notes/src/lib.rs", new), [])
+            self.assertEqual(banned(new), [])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,8 @@
 //!   restriction inside the completed bwrap mount namespace.
 //! - [`loader_preflight`] — whether the sandboxed loader will find every
 //!   library the app links against, checked before `bwrap` runs.
+//! - [`runtime_resident`] — the shared runtime's libraries mapped and locked
+//!   once per boot, so no app start pages them in from disk.
 //! - [`seccomp`] — baseline BPF policy.
 //! - [`services`] — well-known service socket resolution.
 //! - [`capabilities`] — workspace grants resolved into binds; the
@@ -44,6 +46,8 @@ mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
+pub mod job_door;
+#[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
@@ -53,6 +57,9 @@ pub mod lease;
 pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
+#[cfg(target_os = "linux")]
+pub mod memory_monitor;
+pub mod memory_pressure;
 pub mod mesa_seed;
 pub mod netgate;
 #[cfg(target_os = "linux")]
@@ -72,6 +79,7 @@ pub mod registration_gate;
 pub mod retained_view;
 #[cfg(target_os = "linux")]
 pub mod run;
+pub mod runtime_resident;
 #[cfg(target_os = "linux")]
 pub mod sandbox;
 #[cfg(target_os = "linux")]

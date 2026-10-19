@@ -14,6 +14,9 @@ workspace = true
 
 [features]
 native-editor = ["dep:runtime-portal"]
+# Independent jobs (`job`): a child process in a cgroup of its own below its
+# app's, through the session's app spawner.
+jobs = ["dep:runtime-portal"]
 
 [dependencies]
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }

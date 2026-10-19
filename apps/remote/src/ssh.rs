@@ -394,8 +394,8 @@ impl SshSession {
         }
         if message.bytes.len() > MAX_SSH_INPUT_BYTES {
             return Err(format!(
-                "SSH input exceeds the {} KiB per-operation limit",
-                MAX_SSH_INPUT_BYTES / 1024
+                "SSH input exceeds the {} per-operation limit",
+                ui::format::memory(MAX_SSH_INPUT_BYTES as u64)
             ));
         }
         self.input_tx

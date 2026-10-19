@@ -1,6 +1,6 @@
 //! Root widget for the chat app.
 //!
-//! [`ChatApp`] owns the CRDT-derived snapshot (workspaces / channels /
+//! [`ChatApp`] owns the CRDT-derived snapshot (channels / categories /
 //! users / messages / drafts), the per-peer view state (active channel,
 //! open thread, call state, composer caret), and one real
 //! [`ui::widget::VideoPlayer`] used as the host call tile. It does its own
@@ -42,7 +42,7 @@ use crate::agent_tasks::{AgentComposerIntent, AgentTaskClient, AgentTaskView};
 use crate::call::CallState;
 use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
-use crate::model::{self, Channel, Id, Message, User, Workspace};
+use crate::model::{self, Channel, Id, Message, User};
 use crate::permissions::ChatPermissions;
 
 // --- Floating call huddle home placement (fractions of the window) --------
@@ -52,6 +52,12 @@ use crate::permissions::ChatPermissions;
 // (The expanded overlay instead tiles the host into a responsive grid — see
 // `overlay_tiles` — so it has no fixed fraction.)
 pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.230);
+
+/// What the room's private conversations and drafts are keyed by. Chat runs
+/// in one Tilo workspace, its room, and holds no workspaces of its own: an
+/// agent conversation, a private draft and a call continuation name the
+/// room they belong to by this one scope.
+pub(crate) const ROOM_SCOPE: &str = "room";
 
 /// Which composer currently owns keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,8 +131,8 @@ pub(crate) enum MenuTarget {
     Category(Id),
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
-    /// The workspace background / the sidebar's "+" — create affordances.
-    Workspace(Id),
+    /// The sidebar's background and its "+" — create affordances.
+    Room,
 }
 
 /// The structural actions reachable from a context menu. A left-swipe on a
@@ -199,9 +205,9 @@ impl MenuAction {
             MenuAction::Delete,
         ]
     }
-    /// Menu items for the workspace: the sidebar header's "+" and its
+    /// Menu items for the room: the sidebar header's "+" and its
     /// background.
-    pub fn for_workspace() -> [MenuAction; 2] {
+    pub fn for_room() -> [MenuAction; 2] {
         [MenuAction::NewChannelHere, MenuAction::NewCategory]
     }
     /// Menu items for a category row.
@@ -297,12 +303,7 @@ impl RowSwipe {
 /// next mouse-press.
 #[derive(Clone, Debug)]
 pub(crate) enum Hit {
-    /// Open the cross-workspace conversation inbox. This is navigation, not a
-    /// second kind of Tilo workspace.
-    Inbox,
     HostModel(String),
-    /// Return from Inbox to channels belonging to the active Tilo workspace.
-    CurrentContext,
     Channel(Id),
     DirectPerson(String),
     AgentWindow,
@@ -326,11 +327,10 @@ pub(crate) enum Hit {
     CategoryToggle(Id),
     /// The "+" create-channel button on a category header.
     AddChannel {
-        workspace: Id,
         category: Id,
     },
     /// The "+" create-category button in the sidebar header.
-    AddCategory(Id),
+    AddCategory,
     /// Focus/place the caret in the inline structural rename field.
     FocusRename,
     Reaction {
@@ -405,8 +405,6 @@ pub(crate) enum Hit {
 impl Hit {
     pub(crate) fn semantic_id(&self) -> String {
         match self {
-            Self::Inbox => "chat.inbox".into(),
-            Self::CurrentContext => "chat.current-context".into(),
             Self::Channel(id) => format!("chat.channel:{id}"),
             Self::DirectPerson(key) => format!("chat.person:{key}"),
             Self::AgentWindow => "chat.agent-window".into(),
@@ -434,11 +432,8 @@ impl Hit {
             Self::AgentStop => "chat.agent-stop".into(),
             Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
             Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
-            Self::AddChannel {
-                workspace,
-                category,
-            } => format!("chat.add-channel:{workspace}:{category}"),
-            Self::AddCategory(id) => format!("chat.add-category:{id}"),
+            Self::AddChannel { category } => format!("chat.add-channel:{category}"),
+            Self::AddCategory => "chat.add-category".into(),
             Self::TogglePins => "chat.pins".into(),
             Self::RevealMessage(id) => format!("chat.reveal-message:{id}"),
             Self::FocusMain => "chat.composer".into(),
@@ -486,7 +481,8 @@ impl Hit {
 /// never leave those layers a frame apart.
 #[derive(Debug)]
 pub(crate) struct CallChromeMotion {
-    transition: ui::Transition,
+    /// The participants disclosing (`ui::motion::Disclose`).
+    transition: ui::motion::Presence,
     target_open: bool,
     initialized: bool,
     pub(crate) sampled: f32,
@@ -498,7 +494,7 @@ pub(crate) struct CallChromeMotion {
 impl Default for CallChromeMotion {
     fn default() -> Self {
         Self {
-            transition: ui::Transition::open(),
+            transition: ui::motion::Presence::opened(),
             target_open: true,
             initialized: false,
             sampled: 1.0,
@@ -517,32 +513,25 @@ impl CallChromeMotion {
         }
         if !self.initialized {
             self.transition = if open {
-                ui::Transition::open()
+                ui::motion::Presence::opened()
             } else {
-                ui::Transition::closed()
+                ui::motion::Presence::closed()
             };
             self.target_open = open;
             self.initialized = true;
         } else if open != self.target_open {
-            let spring = theme.tokens.motion.springs.subtle;
-            self.transition.set_open(
+            self.transition.show(
                 open,
-                if theme.reduce_motion {
-                    ui::time::Duration::ZERO
-                } else {
-                    theme.tokens.motion.durations.base()
-                },
-                ui::Curve::Spring {
-                    stiffness: spring.stiffness,
-                    damping: spring.damping,
-                    mass: spring.mass,
-                },
+                ui::motion::Disclose::SPEC,
+                theme.motion(),
+                ui::tokens::MotionSource::Pointer,
+                ui::time::now(),
             );
             self.target_open = open;
         }
         let now = ui::time::now();
-        self.sampled = self.transition.value(now);
-        self.animating = self.transition.is_animating(now);
+        self.sampled = ui::motion::unit_opacity(self.transition.progress(now));
+        self.animating = self.transition.is_moving(now);
     }
 
     pub(crate) fn reset(&mut self) {
@@ -615,18 +604,14 @@ pub struct ChatApp {
     pub(crate) host_model: crate::host_model::HostModel,
     pub(crate) expanded_reasoning: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
-    pub(crate) workspaces: Vec<Workspace>,
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
-    /// People evidenced in the active chat workspace: the local person plus
-    /// authors, reactors, mentioned people, and voice participants in that
-    /// workspace's channels. The backing document's `users` map is a global
-    /// directory, so exposing it directly here would make people from another
-    /// workspace appear in this workspace's People/call chrome.
+    /// People evidenced in the room's chat: the local person plus authors,
+    /// reactors, mentioned people, and voice participants in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
     /// Whole-document snapshots used by global search. The visible `messages`
-    /// and `users` remain workspace-scoped projections for rendering.
+    /// are the open channel's.
     pub(crate) search_messages: Vec<Message>,
     pub(crate) search_users: Vec<User>,
     /// The reviewed feedback reports filed here: each one's id and text.
@@ -634,7 +619,7 @@ pub struct ChatApp {
     /// The items a search hit or an agent's `open` asked to show, by their
     /// published ids, shown on the next sync.
     pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-    /// Voice membership per channel in the active workspace (cached from the
+    /// Voice membership per channel of the room (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
     /// Cached plain text of the focused drafts, mirrored from the composers.
@@ -661,14 +646,6 @@ pub struct ChatApp {
     pub(crate) composer_thread: crate::composer::DraftComposer,
 
     // Per-peer view state.
-    pub(crate) active_ws: Id,
-    /// The Tilo workspace Chat was opened in. Inbox may temporarily display a
-    /// conversation sourced from another workspace; this anchor lets the
-    /// person return to their contextual channels without changing OS state.
-    pub(crate) context_ws: Id,
-    /// Inbox is a cross-workspace navigation surface, deliberately distinct
-    /// from the contextual channel list and from the CRDT's legacy grouping.
-    pub(crate) inbox_open: bool,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
     /// Offset from the newest edge of the timeline. Zero means the reader is
@@ -810,6 +787,9 @@ pub struct ChatApp {
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated room roster.
     pub(crate) room_agents: Vec<Id>,
+    /// The direct conversation the record holds with each agent, by the
+    /// agent: under whatever id it was made with, which never changes.
+    pub(crate) agent_channels: HashMap<Id, Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// Agent navigation entry; the task client pins the conversation's exact run.
@@ -817,7 +797,6 @@ pub struct ChatApp {
     pub(crate) task_goal: Option<crate::task_onboarding::TaskGoalDraft>,
     pub(crate) direct_person: Option<String>,
     pub(crate) person_subscription: Option<uuid::Uuid>,
-    pub(crate) person_workspace: Option<String>,
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
@@ -1001,8 +980,6 @@ impl ChatApp {
         let mut app = Self::bare(content);
         app.external_services = runtime == ChatRuntime::Native;
         app.me = identity;
-        app.active_ws.clear();
-        app.context_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
         app.media_error =
@@ -1068,7 +1045,6 @@ impl ChatApp {
         let (attachment_picker_result_tx, attachment_picker_result_rx) =
             std::sync::mpsc::sync_channel(1);
         Self {
-            workspaces: Vec::new(),
             channels: Vec::new(),
             categories: Vec::new(),
             users: Vec::new(),
@@ -1086,9 +1062,6 @@ impl ChatApp {
             channel_sheet: None,
             pins_open: false,
             composer_thread: crate::composer::DraftComposer::shared(),
-            active_ws: "ws_acme".into(),
-            context_ws: "ws_acme".into(),
-            inbox_open: false,
             active_channel: "c_crit".into(),
             focus: Focus::Main,
             scroll: 0.0,
@@ -1160,12 +1133,12 @@ impl ChatApp {
             own_label: None,
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
+            agent_channels: HashMap::new(),
             capture_agent_presence: None,
             direct_agent: None,
             task_goal: None,
             direct_person: None,
             person_subscription: None,
-            person_workspace: None,
             person_contacts: Vec::new(),
             person_messages: Vec::new(),
             person_error: None,
@@ -1568,8 +1541,6 @@ impl ChatApp {
     /// floating call as Chat's resting state.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         if scenario != "starter" {
-            self.active_ws = "ws_acme".into();
-            self.context_ws = "ws_acme".into();
             self.active_channel = "c_crit".into();
             // The demo conversation is read by its own person: what they
             // wrote is the reader's.
@@ -1681,16 +1652,17 @@ impl ChatApp {
                 self.room_names.insert("scribe".into(), "Scribe".into());
                 if scenario.starts_with("agent-task-queued") || scenario == "QueuedTask" {
                     self.agent_tasks
-                        .stage_queued_capture(&self.active_ws, "scribe");
+                        .stage_queued_capture(crate::app::ROOM_SCOPE, "scribe");
                 } else if matches!(scenario, "TaskAnswer" | "TaskAnswerFloating") {
                     self.agent_tasks
-                        .stage_answer_capture(&self.active_ws, "scribe");
+                        .stage_answer_capture(crate::app::ROOM_SCOPE, "scribe");
                 } else if matches!(scenario, "Subtask" | "TaskTreeCompact") {
                     self.agent_tasks
-                        .stage_subtask_capture(&self.active_ws, "scribe");
+                        .stage_subtask_capture(crate::app::ROOM_SCOPE, "scribe");
                     self.expanded_tasks.insert("task:review".into());
                 } else {
-                    self.agent_tasks.stage_capture(&self.active_ws, "scribe");
+                    self.agent_tasks
+                        .stage_capture(crate::app::ROOM_SCOPE, "scribe");
                 }
                 self.open_agent_conversation("scribe");
                 self.set_direct_agent_intent(AgentComposerIntent::Steer);
@@ -1731,7 +1703,7 @@ impl ChatApp {
                 self.refresh_native_streams();
             }
             "starter" => {
-                // The real first-run empty workspace (no demo content).
+                // The real first-run room: `#chat` and `#voice`, no demo content.
                 self.thread_open = None;
                 self.call = CallState::default();
             }
@@ -1869,7 +1841,6 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call = CallState::default();
                 let mut sheet = crate::channel_sheet::ChannelSheet::new_channel(
-                    &self.active_ws,
                     "cat_acme_main",
                     model::ChannelKind::Text,
                 );
@@ -1885,13 +1856,6 @@ impl ChatApp {
                 self.call = CallState::default();
                 self.focus = Focus::Main;
                 // The draft itself is the scenario's (`ChatShell::scenario`).
-            }
-            "inbox" => {
-                // Every workspace's conversations, unread first.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.inbox_open = true;
             }
             "emoji" => {
                 // The reaction picker over your own last message.
@@ -2223,7 +2187,7 @@ impl ChatApp {
             && !self.room_agents.iter().any(|known| known == agent)
             && self
                 .agent_tasks
-                .eligible_compute(&self.active_ws)
+                .eligible_compute(crate::app::ROOM_SCOPE)
                 .is_none_or(|worker| worker.agent_id != agent)
         {
             return false;
@@ -2231,12 +2195,16 @@ impl ChatApp {
         self.close_person_conversation();
         self.task_goal = None;
         self.direct_agent = Some(agent.to_owned());
-        self.active_channel =
-            crate::record::agent_conversation_channel_id(&self.active_ws, agent).to_string();
-        self.inbox_open = false;
+        // The conversation the record already holds keeps its id; only a
+        // new one is addressed by the room and the agent.
+        self.active_channel = self
+            .agent_channels
+            .get(agent)
+            .cloned()
+            .unwrap_or_else(|| crate::record::agent_conversation_channel_id(agent).to_string());
         self.thread_open = None;
         self.focus = Focus::Main;
-        self.agent_tasks.observe(&self.active_ws, agent);
+        self.agent_tasks.observe(crate::app::ROOM_SCOPE, agent);
         self.sync_task_channel();
         self.sync_agent_route();
         self.scroll = 0.0;
@@ -2248,7 +2216,6 @@ impl ChatApp {
 
     pub(crate) fn conversation_instance(parent: &Self, agent: &str) -> Self {
         let mut view = Self::bare(parent.content.clone());
-        view.workspaces.clone_from(&parent.workspaces);
         view.channels.clone_from(&parent.channels);
         view.categories.clone_from(&parent.categories);
         view.users.clone_from(&parent.users);
@@ -2263,12 +2230,11 @@ impl ChatApp {
         view.own_label.clone_from(&parent.own_label);
         view.room_colors.clone_from(&parent.room_colors);
         view.room_agents.clone_from(&parent.room_agents);
+        view.agent_channels.clone_from(&parent.agent_channels);
         view.capture_agent_presence
             .clone_from(&parent.capture_agent_presence);
         view.agent_authors.clone_from(&parent.agent_authors);
         view.former_ids.clone_from(&parent.former_ids);
-        view.context_ws.clone_from(&parent.context_ws);
-        view.active_ws.clone_from(&parent.active_ws);
         view.direct_agent.clone_from(&parent.direct_agent);
         view.task_goal.clone_from(&parent.task_goal);
         view.person_subscription = parent.person_subscription;
@@ -2281,14 +2247,13 @@ impl ChatApp {
                     .is_some_and(|token| ui::person_chat::retain_current(peer, token))
             })
             .cloned();
-        view.person_workspace.clone_from(&parent.person_workspace);
         view.person_contacts.clone_from(&parent.person_contacts);
         view.person_messages.clone_from(&parent.person_messages);
         view.person_error.clone_from(&parent.person_error);
         view.active_channel.clone_from(&parent.active_channel);
         view.agent_intents = parent.agent_intents.clone();
         if view.direct_agent.is_some() {
-            view.agent_tasks.observe(&view.active_ws.clone(), agent);
+            view.agent_tasks.observe(crate::app::ROOM_SCOPE, agent);
         }
         view.conversation_surface = true;
         view.thread_open = None;
@@ -2352,8 +2317,7 @@ impl ChatApp {
             .channels
             .iter()
             .filter(|channel| {
-                channel.workspace == self.active_ws
-                    && !channel.archived
+                !channel.archived
                     && channel.kind == model::ChannelKind::Text
                     && channel.conversation_with.is_none()
             })
@@ -2469,7 +2433,6 @@ impl ChatApp {
         let Some(surface) = self.agent_surfaces.get(channel) else {
             return;
         };
-        self.active_ws.clone_from(&surface.view.active_ws);
         channel.clone_into(&mut self.active_channel);
         self.direct_agent.clone_from(&surface.view.direct_agent);
         self.task_goal.clone_from(&surface.view.task_goal);
@@ -2485,13 +2448,10 @@ impl ChatApp {
                     .is_some_and(|token| ui::person_chat::retain_current(peer, token))
             })
             .cloned();
-        self.person_workspace
-            .clone_from(&surface.view.person_workspace);
         self.person_contacts
             .clone_from(&surface.view.person_contacts);
         self.person_messages
             .clone_from(&surface.view.person_messages);
-        self.inbox_open = false;
         self.thread_open = None;
         self.focus = Focus::Main;
         self.scroll = 0.0;
@@ -2552,7 +2512,7 @@ impl ChatApp {
                 || self.room_agents.contains(agent)
                 || self
                     .agent_tasks
-                    .eligible_compute(&self.active_ws)
+                    .eligible_compute(crate::app::ROOM_SCOPE)
                     .is_some_and(|worker| &worker.agent_id == agent)
         })
     }
@@ -2573,7 +2533,7 @@ impl ChatApp {
         }
         self.agent_intents.with(|intents| {
             intents
-                .get(&(self.active_ws.clone(), agent.clone()))
+                .get(&(crate::app::ROOM_SCOPE.to_owned(), agent.clone()))
                 .copied()
                 .unwrap_or_else(|| {
                     if self
@@ -2592,7 +2552,7 @@ impl ChatApp {
     pub(crate) fn agent_draft_route(&self) -> Option<String> {
         let agent = self.direct_agent.as_ref()?;
         let retained_task_draft = self.agent_intents.with(|intents| {
-            intents.get(&(self.active_ws.clone(), agent.clone()))
+            intents.get(&(crate::app::ROOM_SCOPE.to_owned(), agent.clone()))
                 == Some(&AgentComposerIntent::Steer)
         });
         if self.direct_agent_intent() == AgentComposerIntent::Steer || retained_task_draft {
@@ -2605,7 +2565,8 @@ impl ChatApp {
 
     pub(crate) fn sync_agent_route(&mut self) {
         if let Some(route) = self.agent_draft_route() {
-            self.composer_main.set_agent_draft(&self.active_ws, &route);
+            self.composer_main
+                .set_agent_draft(crate::app::ROOM_SCOPE, &route);
             self.draft_main = self.composer_main.private_plain().unwrap_or_default();
         }
     }
@@ -2613,12 +2574,15 @@ impl ChatApp {
     fn settle_agent_drafts(&mut self) {
         for (route, revision) in self.agent_tasks.take_cleared_drafts() {
             self.composer_main
-                .clear_private_for_revision(&self.active_ws, &route, revision);
+                .clear_private_for_revision(crate::app::ROOM_SCOPE, &route, revision);
             if self.agent_tasks.view(&route).is_some_and(|view| {
                 matches!(view.receipt, crate::agent_tasks::AgentTaskReceipt::Queued)
             }) {
                 self.agent_intents.update(|intents| {
-                    _ = intents.insert((self.active_ws.clone(), route), AgentComposerIntent::Steer);
+                    _ = intents.insert(
+                        (crate::app::ROOM_SCOPE.to_owned(), route),
+                        AgentComposerIntent::Steer,
+                    );
                 });
             }
         }
@@ -2630,8 +2594,9 @@ impl ChatApp {
             return;
         };
         if self.direct_agent_intent_allowed(intent) {
-            self.agent_intents
-                .update(|intents| _ = intents.insert((self.active_ws.clone(), agent), intent));
+            self.agent_intents.update(|intents| {
+                _ = intents.insert((crate::app::ROOM_SCOPE.to_owned(), agent), intent)
+            });
             self.sync_agent_route();
         }
     }
@@ -2645,7 +2610,10 @@ impl ChatApp {
             .direct_agent_tasks()
             .and_then(AgentTaskView::selected_identity)
         {
-            self.active_channel = format!("task-conversation:{}:{task}:{epoch}", self.active_ws);
+            self.active_channel = format!(
+                "task-conversation:{}:{task}:{epoch}",
+                crate::app::ROOM_SCOPE
+            );
         }
     }
 
@@ -2663,7 +2631,7 @@ impl ChatApp {
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
         if let Some(goal) = &self.task_goal {
-            return goal.workspace == self.active_ws && !goal.saving;
+            return goal.workspace == crate::app::ROOM_SCOPE && !goal.saving;
         }
         if let Some(peer) = &self.direct_person {
             return self
@@ -2886,25 +2854,17 @@ impl ChatApp {
         self.messages.iter().find(|m| m.id == id)
     }
 
-    /// Channels in the active workspace, ordered. Archived channels are hidden
-    /// from the sidebar (they stay in the document and are reachable via Ctrl+K).
+    /// The room's channels, ordered. Archived channels are hidden from the
+    /// sidebar (they stay in the document and are reachable via Ctrl+K).
     pub(crate) fn ws_channels(&self) -> Vec<&Channel> {
-        let mut v: Vec<&Channel> = self
-            .channels
-            .iter()
-            .filter(|c| c.workspace == self.active_ws && !c.archived)
-            .collect();
+        let mut v: Vec<&Channel> = self.channels.iter().filter(|c| !c.archived).collect();
         v.sort_by_key(|c| c.order);
         v
     }
 
-    /// Categories in the active workspace, ordered.
+    /// The room's categories, ordered.
     pub(crate) fn ws_categories(&self) -> Vec<&crate::model::Category> {
-        let mut v: Vec<&crate::model::Category> = self
-            .categories
-            .iter()
-            .filter(|c| c.workspace == self.active_ws)
-            .collect();
+        let mut v: Vec<&crate::model::Category> = self.categories.iter().collect();
         v.sort_by_key(|c| c.order);
         v
     }
@@ -2920,13 +2880,13 @@ impl ChatApp {
             .map_or(&[], std::vec::Vec::as_slice)
     }
 
-    /// Channels in `category` within the active workspace, ordered. Archived
-    /// channels are hidden from the sidebar.
+    /// Channels in `category`, ordered. Archived channels are hidden from the
+    /// sidebar.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
         let mut v: Vec<&Channel> = self
             .channels
             .iter()
-            .filter(|c| c.workspace == self.active_ws && c.category == category && !c.archived)
+            .filter(|c| c.category == category && !c.archived)
             .collect();
         v.sort_by_key(|c| c.order);
         v
@@ -3138,29 +3098,24 @@ impl ChatApp {
         }
         let held = self.held_messages();
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.workspaces = chat.workspace_rows();
         self.channels = chat.channel_rows();
+        self.agent_channels.clear();
+        for (id, channel) in chat.channels.iter() {
+            if let Some(agent) = &channel.conversation_with {
+                self.agent_channels
+                    .entry(agent.0.clone())
+                    .or_insert_with(|| id.to_string());
+            }
+        }
         self.categories = chat.category_rows();
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);
         }
-        if !self.workspaces.iter().any(|w| w.id == self.context_ws)
-            && let Some(context) = self
-                .workspaces
-                .iter()
-                .find(|w| w.id == self.active_ws)
-                .or_else(|| self.workspaces.first())
-        {
-            self.context_ws = context.id.clone();
-        }
-        // Keep the active channel valid (e.g. after a workspace switch).
+        // Keep the active channel valid (e.g. after it was deleted).
         if self.direct_agent.is_none()
             && self.direct_person.is_none()
             && self.task_goal.is_none()
-            && self
-                .channel(&self.active_channel)
-                .map(|c| c.workspace.clone())
-                != Some(self.active_ws.clone())
+            && self.channel(&self.active_channel).is_none()
             && let Some(first) = self
                 .ws_channels()
                 .into_iter()
@@ -3181,7 +3136,7 @@ impl ChatApp {
             };
         }
         // Read every channel's messages once per reload: the open channel,
-        // search and the workspace people directory all project from them
+        // search and the room's people directory all project from them
         // (reading them three times dominated typing with a long history).
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
@@ -3205,7 +3160,7 @@ impl ChatApp {
             .feedback
             .iter()
             .filter_map(|(id, report)| {
-                let submission = report.submission.0.as_ref()?;
+                let submission = report.submission.as_ref()?;
                 Some((id.to_string(), submission.feedback.text.clone()))
             })
             .collect();
@@ -3218,7 +3173,7 @@ impl ChatApp {
         // Who is in a call is projected only from the authenticated local
         // voice service's response.
         self.refresh_native_streams();
-        self.users = self.workspace_people_from(&chat, &per_channel);
+        self.users = self.room_people_from(&chat, &per_channel);
         self.sync_reload_composers(doc);
     }
 
@@ -3289,13 +3244,11 @@ impl ChatApp {
         self.draft_thread = self.composer_thread.value();
     }
 
-    /// Project the document-global identity directory onto evidence local to
-    /// the active chat workspace. Membership is not stored separately in this
-    /// document, so claiming every known identity is "in" the selected
-    /// workspace would be dishonest. Channel activity and voice membership
-    /// are durable, workspace-owned evidence; the local identity is included
-    /// so a brand-new workspace remains a valid one-person surface.
-    fn workspace_people_from(
+    /// Project the document's identity directory onto evidence in the room's
+    /// channels. Channel activity and voice membership are durable evidence;
+    /// the local identity is included so a brand-new room remains a valid
+    /// one-person surface.
+    fn room_people_from(
         &self,
         chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
@@ -3303,11 +3256,7 @@ impl ChatApp {
         let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
         ids.extend(self.former_ids.iter().cloned());
 
-        for channel in self
-            .channels
-            .iter()
-            .filter(|channel| channel.workspace == self.active_ws)
-        {
+        for channel in &self.channels {
             let messages = per_channel
                 .iter()
                 .find(|(id, _)| *id == channel.id)
@@ -3353,7 +3302,7 @@ impl ChatApp {
         };
         let chat = crate::projection::read(doc);
         let color = u32::try_from(me.color_idx).unwrap_or_default();
-        if chat.workspaces.is_empty()
+        if (chat.channels.is_empty() && chat.people.is_empty())
             || chat.people.iter().any(|person| {
                 person.id.0 == me.id
                     && person.name == me.name
@@ -3415,47 +3364,23 @@ impl ChatApp {
         }
     }
 
-    pub(crate) fn reveal_workspace_resource(&mut self, workspace: String) -> Result<(), String> {
-        if !self.workspaces.iter().any(|item| item.id == workspace) {
-            return Err("workspace no longer exists".into());
-        }
-        self.active_ws = workspace;
-        self.active_channel.clear();
-        self.inbox_open = false;
-        self.thread_open = None;
-        self.revealed_message = None;
-        self.reveal_scroll_pending = false;
-        self.revealed_person = None;
-        self.reset_timeline_to_latest();
-        self.focus = Focus::Main;
-        Ok(())
-    }
-
-    pub(crate) fn reveal_category_resource(
-        &mut self,
-        workspace: String,
-        category: &str,
-    ) -> Result<(), String> {
+    pub(crate) fn reveal_category_resource(&mut self, category: &str) -> Result<(), String> {
         let Some(category_id) = self
             .categories
             .iter()
-            .find(|item| item.id == category && item.workspace == workspace)
+            .find(|item| item.id == category)
             .map(|item| item.id.clone())
         else {
             return Err("category no longer exists".into());
         };
-        self.active_ws = workspace;
         self.active_channel = self
             .channels
             .iter()
             .filter(|channel| {
-                channel.workspace == self.active_ws
-                    && channel.category == category_id
-                    && channel.kind == model::ChannelKind::Text
+                channel.category == category_id && channel.kind == model::ChannelKind::Text
             })
             .min_by_key(|channel| channel.order)
             .map_or_else(String::new, |channel| channel.id.clone());
-        self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
         self.reveal_scroll_pending = false;
@@ -3466,7 +3391,7 @@ impl ChatApp {
     }
 
     /// The members roster shown in the right flap when no thread is open: every
-    /// user in the workspace paired with the voice channel they're currently in
+    /// user in the room paired with the voice channel they're currently in
     /// (if any). Sorted in-call first, then by presence, then by name. Real
     /// projection of the shared user list + voice membership — no placeholders.
     pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
@@ -3519,7 +3444,7 @@ impl ChatApp {
         rows
     }
 
-    /// Whether this workspace has somebody besides the local participant. An
+    /// Whether this room has somebody besides the local participant. An
     /// agent is still a collaborator (and should surface collaboration
     /// controls), but it is never counted or labelled as a person.
     pub(crate) fn has_other_collaborator(&self) -> bool {
@@ -3540,15 +3465,15 @@ impl ChatApp {
     // --- window geometry ---------------------------------------------------
     //
     // Two drawers frame the conversation: the navigation drawer (the
-    // workspace's channel list) at the leading edge, and the detail
+    // room's channel list) at the leading edge, and the detail
     // drawer (people, or the open thread) at the trailing edge. The toolkit's
     // `SidebarDrawer` decides, from the window width, whether each docks
     // beside the conversation or floats over it behind a scrim, eases the
     // reveal and remembers the person's show/hide choice per size class.
 
-    /// The leading navigation drawer: the workspace's channel list, at the
-    /// shell's sidebar metrics. One workspace is one place, so there is no
-    /// rail of other places beside it. It docks while the conversation keeps
+    /// The leading navigation drawer: the room's channel list, at the
+    /// shell's sidebar metrics. One room is one place, so there is no rail
+    /// of other places beside it. It docks while the conversation keeps
     /// a reading column's minimum; below that the channel list and the
     /// conversation take turns filling the window.
     fn navigation_drawer() -> SidebarDrawer {
@@ -3792,23 +3717,20 @@ impl ChatApp {
         ContextMenu::labelled(target, anchor, items, self.rect, label)
     }
 
-    /// Keep the active workspace / channel / thread pointing at something that
-    /// exists — used after seeding a fresh (real) starter whose ids differ
-    /// from the demo defaults, and after any structural delete. Returns true
-    /// when the active workspace changed (the caller must reload so the
-    /// channel + message lists refresh).
+    /// Keep the active channel and thread pointing at something that exists
+    /// — used after seeding a fresh (real) room whose ids differ from the
+    /// demo defaults, and after any structural delete. Returns true when the
+    /// active channel changed (the caller must reload so the message list
+    /// refreshes).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let ws_changed = if !self.workspaces.iter().any(|w| w.id == self.active_ws)
-            && let Some(first) = self.workspaces.first()
-        {
-            self.active_ws = first.id.clone();
-            self.context_ws = first.id.clone();
+        let channel_changed = self.direct_agent.is_none()
+            && self.direct_person.is_none()
+            && !self.active_channel.is_empty()
+            && self.channel(&self.active_channel).is_none();
+        if channel_changed {
             self.active_channel.clear();
-            true
-        } else {
-            false
-        };
-        // Drop a stale open thread whose parent isn't in this workspace.
+        }
+        // Drop a stale open thread whose parent isn't loaded.
         if let Some(t) = self.thread_open.clone()
             && self.message(&t).is_none()
         {
@@ -3817,7 +3739,7 @@ impl ChatApp {
                 self.focus = Focus::Main;
             }
         }
-        ws_changed
+        channel_changed
     }
 
     /// The decoded avatar `m`'s bot showed for it, requesting it from the
@@ -3902,46 +3824,15 @@ impl ChatApp {
         hits.iter()
             .filter_map(|(rect, hit)| {
                 let (name, role, selected) = match hit {
-                    Hit::Inbox => {
-                        let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
-                        let suffix = if unread == 0 {
-                            String::new()
-                        } else {
-                            format!(", {unread} unread")
-                        };
-                        (format!("Inbox{suffix}"), Role::Tab, self.inbox_open)
-                    }
-                    Hit::CurrentContext => {
-                        let name = self
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.id == self.context_ws)
-                            .map_or("Current workspace", |workspace| workspace.name.as_str());
-                        (
-                            format!("{name} channels, current workspace"),
-                            Role::Tab,
-                            !self.inbox_open,
-                        )
-                    }
                     Hit::Channel(id) | Hit::VoiceChannel(id) => {
                         let channel = self.channel(id)?;
-                        let source = self
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.id == channel.workspace)
-                            .map_or("Tilo workspace", |workspace| workspace.name.as_str());
                         let unread = if channel.unread == 0 {
                             String::new()
                         } else {
                             format!(", {} unread", channel.unread)
                         };
-                        let context = if self.inbox_open {
-                            format!(", from {source}")
-                        } else {
-                            String::new()
-                        };
                         (
-                            format!("{}{context}{unread}", channel.kind.label(&channel.name)),
+                            format!("{}{unread}", channel.kind.label(&channel.name)),
                             Role::ListItem,
                             channel.id == self.active_channel,
                         )
@@ -4020,9 +3911,7 @@ impl ChatApp {
                         )
                     }
                     Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
-                    Hit::AddCategory(_) => {
-                        ("Create channel or category".into(), Role::Button, false)
-                    }
+                    Hit::AddCategory => ("Create channel or category".into(), Role::Button, false),
                     Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
                     Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
                     Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
@@ -4214,9 +4103,7 @@ impl ChatApp {
             rect.contains(point)
                 && matches!(
                     hit,
-                    Hit::Inbox
-                        | Hit::CurrentContext
-                        | Hit::Search
+                    Hit::Search
                         | Hit::ToggleLeftFlap
                         | Hit::ToggleRightFlap
                         | Hit::TogglePins
@@ -4506,7 +4393,7 @@ impl FloatingSurfaceProvider for ChatApp {
                 surface
                     .view
                     .agent_tasks
-                    .observe(&surface.view.active_ws.clone(), &agent);
+                    .observe(crate::app::ROOM_SCOPE, &agent);
             }
             if matches!(
                 surface.placement.attachment(),
@@ -4578,7 +4465,7 @@ impl FloatingSurfaceProvider for ChatApp {
                 surface
                     .view
                     .agent_tasks
-                    .observe(&surface.view.active_ws.clone(), &agent);
+                    .observe(crate::app::ROOM_SCOPE, &agent);
             }
             let content = surface.placement.rect(surface.source, desktop);
             surface.view.rect = content;
@@ -4917,12 +4804,12 @@ impl Widget for ChatApp {
         self.settle_task_goal();
         self.settle_agent_drafts();
         self.refresh_person_conversation();
-        self.agent_tasks.observe_tasks(&self.active_ws);
+        self.agent_tasks.observe_tasks(crate::app::ROOM_SCOPE);
         for agent in self.room_agents.clone() {
-            self.agent_tasks.observe(&self.active_ws, &agent);
+            self.agent_tasks.observe(crate::app::ROOM_SCOPE, &agent);
         }
         if let Some(agent) = self.direct_agent.clone() {
-            self.agent_tasks.observe(&self.active_ws, &agent);
+            self.agent_tasks.observe(crate::app::ROOM_SCOPE, &agent);
             self.sync_task_channel();
             self.sync_agent_route();
         }
@@ -4954,7 +4841,7 @@ impl Widget for ChatApp {
             }
         }
         if self.ensure_selection() {
-            // Re-picking the workspace changes which channels/messages apply.
+            // Re-picking the channel changes which messages apply.
             self.canonical_dirty = true;
             self.reload(doc);
         }
@@ -5422,11 +5309,7 @@ impl Widget for ChatApp {
             AccessNode::new(Role::Group)
                 .with_semantic_key("chat-surface")
                 .with_name("Chat")
-                .with_description(if self.inbox_open {
-                    "Inbox: conversations across Tilo workspaces"
-                } else {
-                    "Channels in the current Tilo workspace"
-                })
+                .with_description("Channels in the current Tilo workspace")
                 .with_children(children),
         )
     }
@@ -5895,7 +5778,7 @@ impl ChatApp {
             }
         }
 
-        // The navigation drawer: the workspace's channel list.
+        // The navigation drawer: the room's channel list.
         // A thread pushed over a narrow window is the whole page.
         if self.thread_is_page() {
             return;
@@ -6104,7 +5987,7 @@ mod identity_on_screen {
         let stranger = "peer@9007495404254172154";
         let mut room = crate::testing::Room::default();
         crate::testing::starter(&mut room, stranger, "You", "Y");
-        crate::testing::say(&mut room, stranger, "c_general", "Retained foreign message");
+        crate::testing::say(&mut room, stranger, "c_chat", "Retained foreign message");
         state.doc = room.chat.clone();
         app.attach_room(&room);
         app.sync(&state.doc, &state.root);
@@ -6233,7 +6116,6 @@ mod live_draft_presence {
         app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
         app.channels = vec![crate::model::Channel {
             id: app.active_channel.clone(),
-            workspace: String::new(),
             category: String::new(),
             name: "general".into(),
             topic: String::new(),

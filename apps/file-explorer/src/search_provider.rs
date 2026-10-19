@@ -489,17 +489,15 @@ mod tests {
 
         // --- phase: place_resource_ids_are_wire_safe ---
         {
-            let address = ActionAddress::new(
-                place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()),
-                OPEN_ACTION,
-            );
+            let address = crate::effects::FilesEffect::OPEN_ITEM
+                .on(place_resource_id(PathBuf::from("/tmp/a\u{1f}b").as_path()));
             assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         }
 
         // --- phase: entry_resource_ids_are_wire_safe ---
         {
             let path = PathBuf::from("/tmp/a\u{1f}b");
-            let entry = ActionAddress::new(entry_resource_id(&path), "open");
+            let entry = crate::effects::FilesEffect::OPEN_ITEM.on(entry_resource_id(&path));
             assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
             for id in [place_resource_id(&path), entry_resource_id(&path)] {
                 assert!(

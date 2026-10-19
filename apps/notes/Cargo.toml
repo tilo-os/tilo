@@ -44,7 +44,7 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Images live in the device content store; the notebook keeps references.
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+tilo-content = { path = "../../crates/system/content", features = ["dir"] }
 automerge.workspace = true
 base64.workspace = true
 tilo-automerge.workspace = true

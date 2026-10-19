@@ -22,7 +22,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["open-uri", "clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications"]
+optional = ["open-uri", "clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications", "gpu"]
 
 [resources]
 kinds = ["chat.workspace", "tilo.moderation", "tilo.rich-text"]
@@ -58,11 +58,11 @@ mode = "off"
 screencast = "via-host"
 
 [sandbox.services]
-collab = "optional@1"
-tilo-fs = "optional@1"
-shell-ui = "optional@1"
+collab = "optional@2"
+tilo-fs = "optional@2"
+shell-ui = "optional@6"
 # Conversation inference uses the launcher-authenticated gateway, never provider keys.
-model-gateway = "optional@1"
+model-gateway = "optional@2"
 
 [actions]
 query = true

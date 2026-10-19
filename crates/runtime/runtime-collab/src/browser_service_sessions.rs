@@ -1,5 +1,5 @@
 //! Request-scoped Browser credentials; never a collaboration event or document.
-use browser_continuity::sessions::{Service, SessionCookies};
+use browser_continuity_core::sessions::{Service, SessionCookies};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -63,7 +63,7 @@ fn binding(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
 }
 fn id(value: &str) -> bool {
-    browser_continuity::sessions::valid_id(value)
+    browser_continuity_core::sessions::valid_id(value)
 }
 
 impl BrowserServiceSessionCommand {
@@ -262,7 +262,7 @@ mod tests {
     }
     #[test]
     fn selected_private_reply_roundtrips_and_binds_exact_request() {
-        use browser_continuity::sessions::{Cookie, SameSite};
+        use browser_continuity_core::sessions::{Cookie, SameSite};
         let session = SessionCookies {
             schema: 1,
             session_id: "selected-session".into(),

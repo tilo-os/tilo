@@ -75,11 +75,14 @@ if [ "$crate_name" = "runtime_dylib" ]; then
     # Every app process applies this library's dynamic relocations before
     # main (#4000; tools/perf/runtime-size-budget/). Packed relative
     # relocations shrink its ~360k R_*_RELATIVE entries from 24 bytes each to
-    # a bitmap, as for the apps above. -Bsymbolic-functions binds the
-    # library's calls and function pointers to its own functions at link
-    # time: Rust never interposes them, apps are PIE (no canonical PLT
-    # addresses), and it turns ~60k symbol lookups per app start into
-    # relative relocations or direct calls. Data symbols stay preemptible.
+    # a bitmap, as for the apps above. -Bsymbolic binds the library's
+    # references to its own functions and data at link time: Rust never
+    # interposes a symbol, and apps are PIE that reach the runtime's data
+    # through the GOT, never by a copy relocation (build-thin-apps.sh fails
+    # an app or engine with one), so nothing else can define them. With
+    # functions alone (-Bsymbolic-functions) the loader still looked up
+    # ~3.8k of the library's own data symbols (vtables, statics, Wayland
+    # interface tables) in every app process before main.
     #
     # GLib and GStreamer load on first use, not at every app's exec:
     # runtime-dylib-lazy-link.py links them out of DT_NEEDED and in
@@ -104,7 +107,7 @@ if [ "$crate_name" = "runtime_dylib" ]; then
     fi
     exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
         -C link-arg=-Wl,-z,pack-relative-relocs \
-        -C link-arg=-Wl,-Bsymbolic-functions \
+        -C link-arg=-Wl,-Bsymbolic \
         ${lazy_link[@]+"${lazy_link[@]}"}
 fi
 
@@ -117,7 +120,7 @@ case "$crate_name" in
     tilo_*_engine)
         exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            -C link-arg=-Wl,-Bsymbolic-functions
+            -C link-arg=-Wl,-Bsymbolic
         ;;
 esac
 exec "${compiler_command[@]}" "$@"

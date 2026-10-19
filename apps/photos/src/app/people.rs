@@ -6,11 +6,9 @@ use crate::model::PhotoLibrary;
 use crate::strings::{tr, tr_args, tr_count, tr_with};
 use std::rc::Rc;
 use ui::ArgValue;
-use ui::animation::{Curve, Transition};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::Duration;
 use ui::widget::MediaCardFace;
 use ui::widget::{Button, ButtonRole, ScrollMetrics, Widget};
 use vello::Scene;
@@ -342,8 +340,14 @@ impl PhotosApp {
                 .unwrap_or_default(),
         };
         self.people_selection = Some(selection);
-        self.people_detail_transition
-            .set_open(true, Duration::from_millis(190), Curve::EaseOut);
+        // Into a person's detail: a drill in (`ui::motion::Drill`).
+        self.people_detail_transition.show(
+            true,
+            ui::motion::Drill::SPEC,
+            ui::tokens::EffectiveMotion::default(),
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
         self.people_merge_mode = false;
         self.people_delete_confirm = false;
         self.people_name_input.set_text(&initial);
@@ -361,10 +365,12 @@ impl PhotosApp {
                 if self.people_selection.is_some() {
                     self.people_selection = None;
                     self.people_merge_mode = false;
-                    self.people_detail_transition.set_open(
+                    self.people_detail_transition.show(
                         false,
-                        Duration::from_millis(160),
-                        Curve::EaseOut,
+                        ui::motion::Drill::SPEC,
+                        ui::tokens::EffectiveMotion::default(),
+                        ui::tokens::MotionSource::Pointer,
+                        ui::time::now(),
                     );
                 } else {
                     self.library_destination = LibraryDestination::Timeline;
@@ -511,7 +517,7 @@ impl PhotosApp {
             self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
             // Acceptance shots exercise the settled visual state. Live entry
             // still starts the shared transition in `select_people_item`.
-            self.people_detail_transition = Transition::open();
+            self.people_detail_transition = ui::motion::Presence::opened();
         }
     }
 
@@ -812,7 +818,7 @@ impl PhotosApp {
             let reveal = if theme.reduce_motion {
                 1.0_f32
             } else {
-                self.people_detail_transition.value(ui::time::now())
+                ui::motion::unit_opacity(self.people_detail_transition.progress(ui::time::now()))
             };
             ctx.scene.push_layer(
                 vello::peniko::Fill::NonZero,

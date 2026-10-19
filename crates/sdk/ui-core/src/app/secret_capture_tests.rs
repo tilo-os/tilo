@@ -95,6 +95,15 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
     );
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
+    assert!(
+        matches!(
+            serde_json::from_str::<FloatingSurfaceClientMessage>(&line).unwrap(),
+            FloatingSurfaceClientMessage::Hello { .. }
+        ),
+        "the connection opens with the app's version"
+    );
+    line.clear();
+    reader.read_line(&mut line).unwrap();
     let generation = match serde_json::from_str::<FloatingSurfaceClientMessage>(&line).unwrap() {
         FloatingSurfaceClientMessage::SetCaptureProtection {
             protected: true,

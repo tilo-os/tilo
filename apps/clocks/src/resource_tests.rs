@@ -373,7 +373,7 @@ fn every_scenario_stages_its_scene_through_actions_and_view_state() {
     );
     let shown = world.harness().inspection_json().unwrap();
     assert!(
-        shown.contains("17:00 on Tue 30 Jun (JST, UTC+09:00)"),
+        shown.contains("17:00 on Tue, Jun 30 (JST, UTC+09:00)"),
         "the cities read the capture's pinned moment, not the device clock: {shown}"
     );
     let alarms = TestApp::<ClocksShell>::capture(Some("alarms")).unwrap();

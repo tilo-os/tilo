@@ -358,6 +358,7 @@ fn a_revoked_author_renews_nothing() {
         .receive_from(
             TransportOrigin::UntrustedPresence(fixture.governor_key.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(fixture.governor.authority().clone()),
                 revocations: vec![revocation],
             },

@@ -109,6 +109,7 @@ can change without editing its callers.
 | The shared app runtime carries no OS internals and no unused crates. | Check: [`check_runtime_dylib_surface.py`](../tools/policy/check_runtime_dylib_surface.py) |
 | Crates the browser builds for wasm32 name `workspace-hack` only for native targets. | Check: [`check_wasm_workspace_hack.py`](../tools/policy/check_wasm_workspace_hack.py) |
 | Each interface between separately updated parts (app ↔ shell, app ↔ runtime, device ↔ device, store package formats) has one version number and a committed schema (`interface.toml`); an incompatible change bumps the number, and the two sides talk only at equal numbers ([compatibility](architecture/compatibility.md)). | Check: [`check_interfaces.py`](../tools/policy/check_interfaces.py): `check` in the policy suite (schema matches the code), `against` in t's `changes` check (an incompatible change since main bumps the version) |
+| A program's own on-disk format is a `tilo_files::native::migration::Format`: a version, the oldest version it still brings up, and a forward-only step per version, each tested against a file the previous version wrote; a file is kept as a snapshot before it is migrated, and the chain of steps never shrinks ([compatibility](architecture/compatibility.md)). | Check: [`check_format_migrations.py`](../tools/policy/check_format_migrations.py): `check` in the policy suite, `against` in t's `changes` check |
 | `os/components.toml` is the single list of binaries in the image; image builders copy exactly what they compile. | Check: [`check_component_manifest.py`](../tools/policy/check_component_manifest.py), [`check_image_builder_inputs.py`](../tools/policy/check_image_builder_inputs.py) |
 
 ## Dependencies and runtime
@@ -136,7 +137,7 @@ The product reasoning behind these is in `AGENTS.md` ("Project Scope") and the
 
 | Rule | Enforced by |
 |---|---|
-| Every capability is an action on a resource: what a click can do, a screen reader, a script and an agent can do through `tilo-actions`. | Partly: [`check_app_resource_action_contract.py`](../tools/policy/check_app_resource_action_contract.py) (every graphical app publishes resources and `ActionSpec`s; ratchet) and [`check_atspi_endpoint_contract.py`](../tools/policy/check_atspi_endpoint_contract.py) (every app uses the production AT-SPI endpoint). That a given feature has its action is review. |
+| Every capability is an action on a resource: what a click can do, a screen reader, a script and an agent can do through `tilo-actions`. | Partly: [`check_app_resource_action_contract.py`](../tools/policy/check_app_resource_action_contract.py) (every graphical app publishes resources and actions; the APIs the resource model replaced are banned in apps and examples, [resources.md §8](architecture/resources.md)) and [`check_atspi_endpoint_contract.py`](../tools/policy/check_atspi_endpoint_contract.py) (every app uses the production AT-SPI endpoint). That a given feature has its action is review. |
 | Colours, spacing, radii and type come from the `Theme`; nothing is hard-coded. | Check: the ratchets in `crates/sdk/ui-core/tests/` (`design_token_audit.rs`, `spacing_token_audit.rs`, `typography_token_audit.rs`; HIG §9.13) |
 | User-visible strings are Fluent keys, and every key a crate uses exists in each catalogue it ships. | Check: [`check_app_copy.py`](../tools/policy/check_app_copy.py); copy style ratchet `copy_audit.rs`. That no literal reaches the screen is review. |
 | Copy says state, outcome or next step in the person's words: no narration, implementation words, machine ids, `{:?}` output, all caps or " · " chains; buttons named by outcome; one name per thing (HIG §4). | Check: [`check_copy_language.py`](../tools/policy/check_copy_language.py) over every catalogue, with the glossary [`copy_glossary.toml`](../tools/policy/copy_glossary.toml) and a shrink-only per-catalogue baseline; `tilo_copy_lint` rejects `{:?}` handed to a copy builder. |
@@ -168,6 +169,14 @@ Transitions carry their source (`ui::tokens::MotionSource`) from where the
 operation runs, and `tokens.motion` picks the duration per source; the
 specification is [window-management.md § Motion](architecture/window-management.md#motion)
 with the durations in HIG §9.7.
+
+**Animations are composed from the motion library.** Every animation in the
+toolkit, the shell and the apps uses a named motion from `ui::motion` (HIG
+§9.7), which decides its spring, its duration, its reduced-motion variant and
+what a shortcut gets; a motion that is genuinely new goes into the library.
+Check: [`check_motion_library.py`](../tools/policy/check_motion_library.py)
+fails on easing math, ad-hoc springs and lerp-over-time outside the library;
+content curves (video keyframes, paint physics) are its short exception list.
 
 Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
 `crates/session/shell/tests/strip_navigation.rs` (the first frame after a

@@ -283,6 +283,7 @@ impl LegacyWindows {
             let mut messages = Vec::with_capacity(2);
             if hello.is_none() {
                 messages.push(NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(identity.clone()),
                     revocations: Vec::new(),
                 });
@@ -700,6 +701,7 @@ impl LegacyWindows {
                     messages.insert(
                         0,
                         NeighbourMsg::IdentityHello {
+                            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                             cert: Box::new(identity.clone()),
                             revocations: Vec::new(),
                         },
@@ -891,6 +893,7 @@ impl LegacyWindows {
         {
             publisher.hello = Some(now);
             messages.push(NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(identity.clone()),
                 revocations: Vec::new(),
             });

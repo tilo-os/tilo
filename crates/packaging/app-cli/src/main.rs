@@ -67,7 +67,13 @@ enum Cmd {
     },
     /// Update one app, or every installed app when no name is given.
     #[command(visible_aliases = ["u", "upgrade"])]
-    Update { app: Option<String> },
+    Update {
+        app: Option<String>,
+        /// As `install --progress-lines`, for one app; `progress up-to-date`
+        /// when the store has no newer build of it this system can run.
+        #[arg(long, requires = "app")]
+        progress_lines: bool,
+    },
     /// Go back to an older version of an installed app, keeping its saved
     /// state. An app the system image ships goes back to the image's version
     /// when that is the next older one.
@@ -169,7 +175,13 @@ fn main() -> ExitCode {
             }
         }
         Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
-        Cmd::Update { app } => update(app.as_deref()),
+        Cmd::Update {
+            app,
+            progress_lines,
+        } => {
+            PROGRESS_LINES.store(progress_lines, Ordering::Relaxed);
+            update(app.as_deref())
+        }
         Cmd::Remove { app } => remove(&app),
         Cmd::Repo { cmd } => repo(cmd),
         Cmd::Runtime {
@@ -314,8 +326,11 @@ fn announce(message: &str) {
     eprintln!("{message}");
 }
 
-/// Set by `install --progress-lines`.
+/// Set by `install --progress-lines` and `update --progress-lines`.
 static PROGRESS_LINES: AtomicBool = AtomicBool::new(false);
+
+/// What `update --progress-lines` says when there is no newer build to take.
+const UP_TO_DATE_LINE: &str = "progress up-to-date";
 
 /// How much of a download of unknown size arrives between two lines.
 const PROGRESS_LINE_STEP_BYTES: u64 = 256 * 1024;
@@ -513,6 +528,17 @@ fn change_one(query: &str, update: bool) -> ExitCode {
     report_unreachable(&listing.unreachable);
     let app = match app_cli::resolve_offer(&listing.apps, query) {
         Ok(app) => app,
+        // Every repository answered and none offers a build of it this
+        // system can run: nothing to update to, which is not a failure.
+        Err(_)
+            if update
+                && listing.unreachable.is_empty()
+                && PROGRESS_LINES.load(Ordering::Relaxed)
+                && matches!(app_cli::installed_version(query), Ok(Some(_))) =>
+        {
+            eprintln!("{UP_TO_DATE_LINE}");
+            return ExitCode::SUCCESS;
+        }
         Err(error) => {
             eprintln!("app: {error}");
             if !listing.unreachable.is_empty() {
@@ -555,8 +581,12 @@ fn change_app(app: &CatalogueApp, update: bool, installed: Option<&str>) -> Exit
             return ExitCode::FAILURE;
         }
         (true, Some(installed))
-            if tilo_app_package::version::compare(&app.version, installed).is_le() =>
+            if tilo_app_package::version::compare(&app.version, installed).is_le()
+                && app_cli::installed_record_current(&app.package_id) =>
         {
+            if PROGRESS_LINES.load(Ordering::Relaxed) {
+                eprintln!("{UP_TO_DATE_LINE}");
+            }
             println!("up to date {} {}", app.package_id, installed);
             return ExitCode::SUCCESS;
         }
@@ -831,7 +861,9 @@ fn outdated<'a>(
             continue;
         };
         checked = checked.saturating_add(1);
-        if tilo_app_package::version::compare(&app.version, version).is_gt() {
+        if tilo_app_package::version::compare(&app.version, version).is_gt()
+            || !app_cli::installed_record_current(&app.package_id)
+        {
             outdated.push((app, version.as_str()));
         }
     }
@@ -1165,7 +1197,7 @@ mod tests {
         // Phase `concise_update_parses`.
         {
             let cli = Cli::try_parse_from(["app", "u", "browser"]).expect("short update parses");
-            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app) } if app == "browser"));
+            assert!(matches!(cli.cmd, Cmd::Update { app: Some(ref app), .. } if app == "browser"));
         }
     }
 

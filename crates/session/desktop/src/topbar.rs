@@ -234,6 +234,9 @@ struct CacheFingerprint {
     focused_control: Option<String>,
 
     clock_activity: Option<(String, u64, bool, bool)>,
+    /// How far the centre's cross-fade between the time and a live activity
+    /// has come, in thousandths; `None` at rest.
+    center_fade: Option<u16>,
     app_tray_revision: u64,
     continuity: Option<String>,
     strips: strips::StripsKey,
@@ -633,6 +636,9 @@ pub struct TopBarChrome {
     activity_unread: usize,
     activity_pulse: u64,
     activity_started: Option<Instant>,
+    /// The centre swapping the time for a live activity and back: a
+    /// cross-fade (`ui::motion::CrossFade`, `true` is the activity).
+    center_fade: ui::motion::CrossFade<bool>,
     /// The centre selector as painted and hit-tested: as wide as its
     /// content needs, never wider than [`Self::center_lane`].
     center_rect: Rect,
@@ -910,6 +916,7 @@ impl TopBarChrome {
             activity_unread: 0,
             activity_pulse: 0,
             activity_started: None,
+            center_fade: ui::motion::CrossFade::new(false),
             center_rect: Rect::ZERO,
             center_lane: Rect::ZERO,
             last_cursor: None,
@@ -967,6 +974,7 @@ impl TopBarChrome {
                     .clock_activity
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
+            center_fade: self.center_fade_key(),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
             strips: self.strips_key(),
@@ -2073,11 +2081,22 @@ impl TopBarChrome {
             band_cx + lane_w / 2.0,
             band.y1,
         );
-        if !self.center_is_plain_text() {
+        // The quiet selector pill comes and goes with the activity.
+        let pill = self.center_activity_opacity(ui::time::now());
+        if pill > 0.0 {
             let band_rr = RoundedRect::from_rect(
                 band,
                 ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
             );
+            if pill < 1.0 {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    pill,
+                    transform,
+                    &band.inflate(2.0, 2.0),
+                );
+            }
             paint_bar_selector(
                 scene,
                 transform,
@@ -2085,14 +2104,30 @@ impl TopBarChrome {
                 ui::chrome::SelectionState::active(true),
                 theme,
             );
+            if pill < 1.0 {
+                scene.pop_layer();
+            }
         }
         let (content_x0, content_x1) = Self::center_content_lane(band);
         f64::midpoint(content_x0, content_x1)
     }
 
     /// The clock with nothing live over it: drawn as bare text.
+    #[cfg(test)]
     fn center_is_plain_text(&self) -> bool {
         !self.activity_is_visible()
+    }
+
+    /// How strongly the live activity (and its pill) shows at `now`, as it
+    /// cross-fades with the time.
+    fn center_activity_opacity(&self, now: Instant) -> f32 {
+        if *self.center_fade.shown() {
+            return self.center_fade.incoming(now);
+        }
+        self.center_fade
+            .outgoing(now)
+            .filter(|(activity, _)| **activity)
+            .map_or(0.0, |(_, opacity)| opacity)
     }
 
     /// The lane the active centre widget draws into: the same inset in from
@@ -2121,12 +2156,11 @@ impl TopBarChrome {
             .map_or_else(
                 || self.current_clock_string(),
                 |activity| {
-                    let mins = activity.remaining_secs / 60;
-                    let secs = activity.remaining_secs % 60;
+                    let reading = ui::format::timecode(activity.remaining_secs);
                     if activity.label.is_empty() {
-                        format!("{mins:02}:{secs:02}")
+                        reading
                     } else {
-                        format!("{}  {mins:02}:{secs:02}", activity.label)
+                        format!("{}  {reading}", activity.label)
                     }
                 },
             )
@@ -3223,11 +3257,65 @@ impl TopBarChrome {
         center_y: f64,
     ) {
         let content_cx = self.draw_center_band(scene, transform, theme, text_renderer, center_y);
-        if self.activity_is_visible() {
-            self.draw_activity_widget(scene, transform, theme, text_renderer, center_y, content_cx);
-            return;
+        // The time and a live activity cross-fade in place.
+        let now = ui::time::now();
+        let mut layers = Vec::with_capacity(2);
+        if let Some((activity, opacity)) = self.center_fade.outgoing(now) {
+            layers.push((*activity, opacity));
         }
-        self.draw_clock_widget(scene, transform, theme, text_renderer, center_y, content_cx);
+        layers.push((*self.center_fade.shown(), self.center_fade.incoming(now)));
+        for (activity, opacity) in layers {
+            let layered = opacity < 1.0;
+            if layered {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    opacity,
+                    transform,
+                    &self.center_lane,
+                );
+            }
+            if activity {
+                self.draw_activity_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            } else {
+                self.draw_clock_widget(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    content_cx,
+                );
+            }
+            if layered {
+                scene.pop_layer();
+            }
+        }
+    }
+
+    /// The centre's cross-fade as the cache sees it: its progress in
+    /// thousandths while it runs, so each of its frames draws anew.
+    fn center_fade_key(&self) -> Option<u16> {
+        let now = ui::time::now();
+        self.center_fade.is_moving(now).then(|| {
+            let permille = (self.center_fade.incoming(now) * 1000.0)
+                .round()
+                .clamp(0.0, 1000.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0..=1000 just above"
+            )]
+            let permille = permille as u16;
+            permille
+        })
     }
 
     fn activity_is_visible(&self) -> bool {
@@ -3771,11 +3859,7 @@ impl TopBarChrome {
             None,
             &theme.text(TextRole::Label),
         );
-        let elapsed = format!(
-            "{:02}:{:02}",
-            activity.remaining_secs / 60,
-            activity.remaining_secs % 60
-        );
+        let elapsed = ui::format::timecode(activity.remaining_secs);
         text_renderer.draw_style(
             scene,
             &elapsed,
@@ -3971,9 +4055,7 @@ impl TopBarChrome {
         let activity = snapshot.clock_activity.as_ref()?;
         let stopwatch = activity.stopwatch;
         let paused = activity.paused;
-        let minutes = activity.remaining_secs / 60;
-        let seconds = activity.remaining_secs % 60;
-        let reading = format!("{minutes:02}:{seconds:02}");
+        let reading = ui::format::timecode(activity.remaining_secs);
         Some(
             AccessNode::new(Role::Group)
                 .with_name(t(if stopwatch {
@@ -4273,6 +4355,13 @@ impl Widget for TopBarChrome {
         // percent is drawn and counted as a change in the same pass.
         self.refresh_status_and_media_state();
         self.schedule_time_wake();
+        let showing_activity = self.activity_is_visible();
+        self.center_fade.show(
+            showing_activity,
+            theme.motion(),
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
             out_scene.append(&self.cached, Some(out_transform));
@@ -4659,7 +4748,14 @@ impl Widget for TopBarChrome {
 
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
+    fn needs_animation_frame(&self) -> bool {
+        self.center_fade.is_moving(ui::time::now())
+    }
+
     fn needs_redraw(&self) -> bool {
+        if self.center_fade.is_moving(ui::time::now()) {
+            return true;
+        }
         if self.presence() != self.cache_fp.presence {
             return true;
         }
@@ -4947,7 +5043,7 @@ mod tests {
                 .is_some_and(|text| text.contains("Alt"))
         );
         assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
-        assert_eq!(node.children[0].value.as_deref(), Some("02:05"));
+        assert_eq!(node.children[0].value.as_deref(), Some("2:05"));
         assert!(node.children[2].state.focused);
     }
 
@@ -6004,6 +6100,32 @@ mod tests {
         bar.refresh_status_and_media_state();
         assert!(!bar.activity_is_visible());
         assert!(bar.center_is_plain_text(), "the time again");
+    }
+
+    /// The time and a live activity swap with the standard cross-fade
+    /// (`ui::motion::CrossFade`), which settles and then asks for nothing.
+    #[test]
+    fn the_time_and_a_live_activity_cross_fade_and_settle() {
+        let motion = Theme::dark().motion();
+        let now = ui::time::now();
+        let mut fade = ui::motion::CrossFade::new(false);
+        let mut bar = TopBarChrome::from_tree(&DesktopTree::default());
+        bar.center_fade
+            .show(true, motion, ui::tokens::MotionSource::Pointer, now);
+        assert!(bar.needs_animation_frame(), "the swap animates");
+        assert!(
+            bar.center_fade_key().is_some(),
+            "and redraws on each of its frames"
+        );
+        fade.show(true, motion, ui::tokens::MotionSource::Pointer, now);
+        let settled = fade.settles_at().expect("cross-fading");
+        assert!(fade.outgoing(settled).is_none());
+        assert_eq!(fade.incoming(settled), 1.0);
+        assert_eq!(
+            bar.center_activity_opacity(settled),
+            1.0,
+            "the pill shows with it"
+        );
     }
 
     #[test]

@@ -27,6 +27,9 @@ native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
 # `tilo-location`), selected per target without a feature.
 portal = ["native", "dep:ashpd"]
+# The X11 clipboard, for development builds on an X11 host (see the
+# toolkit's `x11`).
+x11 = ["tilo-clipboard/x11"]
 # Desktop media integration: the system's now-playing controls on macOS,
 # MPRIS (`org.mpris.MediaPlayer2`) on the Unix session bus elsewhere. zbus
 # runs on the workspace's tokio backend; the server lives on its own thread
@@ -43,7 +46,10 @@ tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-featur
 # Bounded reads of the host-selected read-only policy projection.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 hex.workspace = true
-image = { workspace = true, features = ["png"] }
+# PNG and JPEG encoding for every app (`png`, `jpeg`): written here, in the
+# shared runtime, so an app that encodes an image does not instantiate the
+# encoders' generic code into its own binary.
+image = { workspace = true, features = ["png", "jpeg"] }
 tilo-rt.workspace = true
 # Only the native backends run futures on tokio.
 tokio = { workspace = true, optional = true, features = ["full"] }

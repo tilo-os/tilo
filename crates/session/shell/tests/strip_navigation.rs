@@ -570,8 +570,8 @@ fn super_up_maximizes_and_super_down_restores_on_any_strip() {
     }
 }
 
-/// Super+1…9 go straight to the Nth strip from the top (the shared Lounge
-/// strip is 1); a number past the last strip does nothing. Ctrl+Super+1…9
+/// Super+1…9 go straight to the Nth strip from the top (the top one is 1);
+/// a number past the last strip does nothing. Ctrl+Super+1…9
 /// focus the Nth window of the focused strip.
 #[test]
 fn super_number_goes_to_a_strip_and_ctrl_super_number_to_a_window() {

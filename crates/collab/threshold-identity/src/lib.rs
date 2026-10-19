@@ -38,6 +38,7 @@
 //! Tilo header (sender's share index) so the broker can route them
 //! without parsing the FROST payload.
 
+mod bip39;
 pub mod dkg;
 pub mod errors;
 pub mod identity;

@@ -17,15 +17,15 @@ mod tests {
     }
 
     fn assert_native_import(batch: &ImportBatch) {
-        use tilo_actions::Action;
-        let mut library = tilo_actions::Doc::new();
+        let mut library =
+            ui::tilo_resource::Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
         let mut personal = ui::tilo_resource::Replica::<crate::history::BrowsingHistory>::new();
-        batch.bookmark_action().apply(&mut library).unwrap();
+        library.apply(batch.bookmark_action().unwrap()).unwrap();
         personal.apply(batch.history_action().unwrap()).unwrap();
-        batch.bookmark_action().apply(&mut library).unwrap();
+        library.apply(batch.bookmark_action().unwrap()).unwrap();
         personal.apply(batch.history_action().unwrap()).unwrap();
         if !batch.bookmarks.is_empty() {
-            let projected = crate::continuity_bookmarks::bookmarks_from_doc(&library).unwrap();
+            let projected = library.state().unwrap().bookmarks();
             assert_eq!(projected.entries().len(), batch.bookmarks.len());
         }
         let projected = personal.state().unwrap().entries();
@@ -84,7 +84,6 @@ mod tests {
 
     #[test]
     fn chromium_complete_bundle_preserves_roots_nested_order_and_repeated_url_placements() {
-        use tilo_actions::Action;
         let source = tempfile::tempdir().unwrap();
         let json = br#"{"roots":{"bookmark_bar":{"id":"1","name":"Bookmarks bar","type":"folder","children":[{"id":"2","name":"Work","type":"folder","children":[{"id":"3","type":"url","url":"https://example.org/","name":"Work example"}]},{"id":"4","name":"Personal","type":"folder","children":[{"id":"5","type":"url","url":"https://example.org/","name":"Personal example"}]}]},"other":{"id":"6","name":"Other bookmarks","type":"folder","children":[]}}}"#;
         std::fs::write(source.path().join("Bookmarks"), json).unwrap();
@@ -113,10 +112,11 @@ mod tests {
         );
         let encoded = serde_json::to_string(&bundle).unwrap();
         assert_eq!(ImportBundle::decode(&encoded).unwrap(), bundle);
-        let mut doc = tilo_actions::Doc::new();
-        bundle.bookmark_action().apply(&mut doc).unwrap();
+        let mut library =
+            ui::tilo_resource::Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
+        library.apply(bundle.bookmark_action().unwrap()).unwrap();
         assert_eq!(
-            crate::imported_folders::from_doc(&doc).unwrap(),
+            library.state().unwrap().imported_trees(),
             vec![tree.clone()]
         );
         assert_eq!(before, source_bytes(&source, "Bookmarks"));
@@ -128,7 +128,6 @@ mod tests {
 
     #[test]
     fn firefox_wal_complete_tree_preserves_folder_parents_position_and_duplicate_placements() {
-        use tilo_actions::Action;
         let source = tempfile::tempdir().unwrap();
         let writer = Connection::open(source.path().join("places.sqlite")).unwrap();
         writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT,title TEXT,last_visit_date INTEGER,visit_count INTEGER); CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY,fk INTEGER,title TEXT,type INTEGER,parent INTEGER,position INTEGER); INSERT INTO moz_places VALUES(1,'https://example.org/','Web title',9000000,3); INSERT INTO moz_bookmarks VALUES(1,NULL,'Root',2,0,0),(2,NULL,'Toolbar',2,1,0),(3,NULL,'Nested',2,2,0),(4,1,'Nested example',1,3,0),(5,1,'Toolbar example',1,2,1),(6,NULL,'',3,2,2);").unwrap();
@@ -152,10 +151,11 @@ mod tests {
                 .kind,
             NodeKind::Separator
         ));
-        let mut doc = tilo_actions::Doc::new();
-        bundle.bookmark_action().apply(&mut doc).unwrap();
+        let mut library =
+            ui::tilo_resource::Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
+        library.apply(bundle.bookmark_action().unwrap()).unwrap();
         assert_eq!(
-            crate::imported_folders::from_doc(&doc).unwrap(),
+            library.state().unwrap().imported_trees(),
             vec![tree.clone()]
         );
         assert!(
@@ -236,21 +236,23 @@ mod tests {
 
     #[test]
     fn firefox_bookmark_selection_never_queries_missing_history_metadata() {
-        use tilo_actions::Action;
-        use ui::tilo_resource::Resource as _;
         let source = tempfile::tempdir().unwrap();
         let writer = Connection::open(source.path().join("places.sqlite")).unwrap();
         writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE moz_places(id INTEGER PRIMARY KEY,url TEXT,title TEXT); CREATE TABLE moz_bookmarks(id INTEGER PRIMARY KEY,parent INTEGER,position INTEGER,fk INTEGER,title TEXT,type INTEGER); INSERT INTO moz_places VALUES(1,'https://example.org/','Page title'); INSERT INTO moz_bookmarks VALUES(1,0,0,NULL,'Research',2); INSERT INTO moz_bookmarks VALUES(2,1,0,1,'My bookmark',1);").unwrap();
         let before = source_bytes(&source, "places.sqlite");
         let bundle = parse_firefox_places_selected_bundle(&granted(&source), true, false).unwrap();
         assert!(bundle.chunks.iter().all(|chunk| chunk.history.is_empty()));
-        let mut personal = tilo_actions::Doc::new();
-        crate::personal_bookmarks::PersonalBookmarkAction::Import { bundle }
-            .apply(&mut personal)
+        let mut personal =
+            ui::tilo_resource::Replica::<crate::personal_bookmarks::PersonalBookmarks>::new();
+        personal
+            .apply(
+                crate::personal_bookmarks::PersonalBookmarks::IMPORT_BOOKMARKS
+                    .with(serde_json::to_string(&bundle).unwrap()),
+            )
             .unwrap();
-        let state = crate::personal_bookmarks::PersonalBookmarks::read(&personal).unwrap();
-        assert_eq!(state.bookmarks.entries().len(), 1);
-        assert_eq!(state.imported_trees.first().unwrap().nodes.len(), 2);
+        let state = personal.state().unwrap();
+        assert_eq!(state.bookmarks().entries().len(), 1);
+        assert_eq!(state.imported_trees().first().unwrap().nodes.len(), 2);
         assert!(parse_firefox_places_selected_bundle(&granted(&source), false, true).is_err());
         assert!(parse_firefox_places_bundle(&granted(&source)).is_err());
         assert_eq!(before, source_bytes(&source, "places.sqlite"));

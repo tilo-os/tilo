@@ -74,6 +74,7 @@ fn book() -> Shared {
                 name: format!("Person {index} Example"),
                 secondary: format!("Organisation {}", index % 7),
                 favorite: index % 5 == 0,
+                photo: String::new(),
             })
             .collect();
         bridge.selected = Some(ContactId::from_u128(4));

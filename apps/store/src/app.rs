@@ -141,7 +141,7 @@ fn format_size(bytes: u64) -> String {
     if bytes == 0 {
         return "Size not published".into();
     }
-    ui::format::bytes_si(bytes)
+    ui::format::size(bytes)
 }
 
 /// A compact, printable status detail for the visible progress/error surface.
@@ -2516,10 +2516,8 @@ impl StoreApp {
                 if let Some(effect) = self.moderation_effect(&app, true) {
                     row = row.effect(&effect);
                 }
-            } else {
-                if let Some(effect) = self.moderation_effect(&app, false) {
-                    row = row.effect(&effect);
-                }
+            } else if let Some(effect) = self.moderation_effect(&app, false) {
+                row = row.effect(&effect);
             }
         }
         row
@@ -3122,9 +3120,9 @@ mod tests {
             app.harness().set_theme(theme);
             let current = app.harness().scene().encoding().draw_data.clone();
             assert_ne!(current, previous, "the Store must paint the new theme");
-            assert_eq!(
-                app.harness().targets()["store.remote.name"].height(),
-                input_height,
+            let height = app.harness().targets()["store.remote.name"].height();
+            assert!(
+                (height - input_height).abs() < f64::EPSILON,
                 "changing colours alone must not enlarge the form"
             );
             previous = current;
@@ -3157,9 +3155,9 @@ mod tests {
             "reapplying the same resolved text setting must not accumulate scaling"
         );
         app.harness().set_theme(Theme::light());
-        assert_eq!(
-            app.harness().targets()["store.remote.name"].height(),
-            input_height,
+        let height = app.harness().targets()["store.remote.name"].height();
+        assert!(
+            (height - input_height).abs() < f64::EPSILON,
             "returning to normal text must restore the form's original height"
         );
         assert_eq!(
@@ -3778,6 +3776,7 @@ mod tests {
         };
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),

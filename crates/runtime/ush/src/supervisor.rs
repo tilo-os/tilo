@@ -289,7 +289,7 @@ impl Session {
         broker_socket: PathBuf,
         seccomp_blob: PathBuf,
     ) -> std::io::Result<GuestPlan> {
-        let policy = Policy::new(resolved.environment.grants.0.clone());
+        let policy = Policy::new(resolved.environment.grants.clone());
         let now = Some(unix_now());
         let session_dir = self.store.session_dir(&self.session_id);
         let guest_home = match resolved.environment.home {
@@ -349,7 +349,7 @@ impl Session {
     pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
         let netns = Netns::create()
             .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
-        let policy = Policy::new(resolved.environment.grants.0.clone()).egress(Some(unix_now()));
+        let policy = Policy::new(resolved.environment.grants.clone()).egress(Some(unix_now()));
         if self.opts.verbose {
             eprintln!("ush: network: {}", describe_policy(&policy));
         }
@@ -606,7 +606,7 @@ pub struct EnvironmentEntry {
 
 impl EnvironmentEntry {
     fn of(key: &str, env: &Environment) -> Self {
-        let policy = Policy::new(env.grants.0.clone());
+        let policy = Policy::new(env.grants.clone());
         let now = Some(unix_now());
         let writable = policy.trusted_dirs(now);
         let mut grants: Vec<(String, bool)> = writable
@@ -1030,7 +1030,11 @@ fn open_environment(
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let child = spawn_attached(&launch, &slave)?;
+    let label = command.first().map_or_else(
+        || "Shell".to_owned(),
+        |program| runtime_portal::jobs::program_label(program.as_ref()),
+    );
+    let child = spawn_attached(&launch, &slave, session_job(transport, &label))?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
@@ -1395,6 +1399,10 @@ fn serve_host(
             std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
             Some((key, rc))
         });
+    let label = command.first().map_or_else(
+        || runtime_portal::jobs::program_label(account.shell.as_os_str()),
+        |program| runtime_portal::jobs::program_label(program.as_ref()),
+    );
     let child = spawn_on_pty(
         crate::host::host_command(
             &account,
@@ -1403,6 +1411,7 @@ fn serve_host(
             runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
         ),
         &slave,
+        session_job(transport, &label),
     )?;
     drop(slave);
     hand_off_session(
@@ -1514,7 +1523,8 @@ fn serve_relay(
         identity_root: &identity_root,
         term: term.as_deref().unwrap_or("xterm-256color"),
     };
-    let (child, status, session_id) = match start_relay_bridge(&launch, &slave)? {
+    let job = session_job(transport, "Shell");
+    let (child, status, session_id) = match start_relay_bridge(&launch, &slave, job)? {
         Ok(started) => started,
         Err(reason) => return denied(writer, reason),
     };
@@ -1589,6 +1599,7 @@ type StartedBridge = (std::process::Child, crate::relay::StatusReader, String);
 fn start_relay_bridge(
     launch: &RelayLaunch<'_>,
     slave: &std::fs::File,
+    job: Option<runtime_portal::jobs::Slot>,
 ) -> std::io::Result<Result<StartedBridge, String>> {
     let (status_read, status_write) = crate::relay::status_pipe()?;
     let mut cmd = crate::relay::bridge_command(
@@ -1605,7 +1616,7 @@ fn start_relay_bridge(
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(move || crate::relay::install_status_fd(write_fd));
     }
-    let mut child = spawn_on_pty(cmd, slave)?;
+    let mut child = spawn_on_pty(cmd, slave, job)?;
     drop(status_write);
     let mut status = crate::relay::StatusReader::new(status_read);
     match status.next(Some(crate::relay::OPEN_PATIENCE)) {
@@ -1768,6 +1779,7 @@ struct Launch<'a> {
 fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
+    job: Option<runtime_portal::jobs::Slot>,
 ) -> std::io::Result<std::process::Child> {
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
@@ -1803,18 +1815,37 @@ fn spawn_attached(
         Some(key) => cmd.env(crate::runs::KEY_ENV, key),
         None => cmd.env_remove(crate::runs::KEY_ENV),
     };
-    spawn_on_pty(cmd, slave)
+    spawn_on_pty(cmd, slave, job)
+}
+
+/// Every session is an independent job of the app that asked for it (the
+/// Terminal, for the person or an agent's tool run): it starts in a cgroup of
+/// its own below the app's (`runtime_portal::jobs`), so a session that runs
+/// out of memory, a runaway build in one tab, ends alone and the Terminal and
+/// its other tabs keep running. The app is the one whose launcher opened this
+/// connection. `None` (the session runs here, as before) outside a session's
+/// delegated app tree.
+fn session_job(
+    transport: &SessionTransport<'_>,
+    label: &str,
+) -> Option<runtime_portal::jobs::Slot> {
+    runtime_portal::jobs::slot_for_peer(transport.stream, label)
 }
 
 /// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
-/// its controlling terminal.
+/// its controlling terminal; in `job` when it has one.
 fn spawn_on_pty(
     mut cmd: std::process::Command,
     slave: &std::fs::File,
+    job: Option<runtime_portal::jobs::Slot>,
 ) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
+
+    if let Some(job) = job {
+        job.place(&mut cmd);
+    }
 
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
@@ -1917,6 +1948,7 @@ mod tests {
             let child = spawn_on_pty(
                 std::process::Command::new(if fails { "cat" } else { "true" }),
                 &slave,
+                None,
             )
             .unwrap();
             let pid = child.id();
@@ -1992,7 +2024,7 @@ mod tests {
         for index in 0..13 {
             let environment = if index % 2 == 0 { "default" } else { "host" };
             let (master, slave) = open_pty(80, 24).unwrap();
-            let child = spawn_on_pty(std::process::Command::new("cat"), &slave).unwrap();
+            let child = spawn_on_pty(std::process::Command::new("cat"), &slave, None).unwrap();
             let pid = child.id();
             drop(slave);
             let id = uuid::Uuid::new_v4().simple().to_string();

@@ -10,8 +10,13 @@ impl ChatApp {
     ) -> EffectAnswer {
         let token = uuid::Uuid::parse_str(token).map_err(|_| "invalid private draft token")?;
         let draft = ui::private_draft::fetch(token, invocation)?;
-        if draft.workspace != self.active_ws || self.rect.area() <= 0.0 {
-            return Err("private draft workspace or Chat view unavailable".into());
+        // A draft is taken only by the Chat of the room it was written in.
+        let room = ui::collaboration::local_cluster_id();
+        if room.is_nil()
+            || uuid::Uuid::parse_str(&draft.workspace).ok() != Some(room)
+            || self.rect.area() <= 0.0
+        {
+            return Err("private draft room or Chat view unavailable".into());
         }
         let conversation = match &draft.target {
             ui::private_draft::Target::Person { public_key } => {
@@ -23,12 +28,12 @@ impl ChatApp {
                 task,
                 run_epoch,
             } => {
-                self.open_task_conversation_effect(&draft.workspace, agent, task, *run_epoch)?;
+                self.open_task_conversation_effect(agent, task, *run_epoch)?;
                 let route = self
                     .agent_draft_route()
                     .ok_or("exact task editor route unavailable")?;
                 crate::composer::ConversationKey::Agent {
-                    workspace: draft.workspace.clone(),
+                    workspace: crate::app::ROOM_SCOPE.to_owned(),
                     route,
                 }
             }

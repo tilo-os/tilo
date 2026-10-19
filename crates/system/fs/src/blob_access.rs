@@ -14,10 +14,9 @@
 //!   request: a revocation applies to the next request.
 //! - A chunk is authorised through a manifest named in the same request
 //!   (the batch client sends the manifests of its chunks with empty
-//!   ranges), so one lookup covers a whole batch. Requests without that
-//!   context, from older peers, fall back to searching the readable
-//!   manifests, whose decoded chunk sets are cached.
-//! - No namespace lock is held while decoding or searching, and requests
+//!   ranges), so one lookup covers a whole batch. A chunk asked for
+//!   without its manifest is refused; decoded chunk sets are cached.
+//! - No namespace lock is held while decoding, and requests
 //!   are checked concurrently.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -248,23 +247,8 @@ impl BlobAccessIndex {
                 }
             }
         }
-        // No context named the remaining chunks: search every readable
-        // manifest, as a request from a peer without batch context needs.
-        let mut searched = HashSet::new();
-        for (hash, owners) in &snapshot.roots {
-            if pending.is_empty() {
-                break;
-            }
-            if searched.insert(*hash)
-                && owners
-                    .iter()
-                    .any(|owner| owner.manifest && requester.may_read(owner))
-                && let Some(chunks) = self.manifest_chunks(store, *hash).await
-            {
-                pending.retain(|chunk| !chunks.contains(chunk));
-            }
-        }
-        pending.is_empty()
+        // A chunk no readable manifest in the request names is refused.
+        false
     }
 }
 

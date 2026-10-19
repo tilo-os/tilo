@@ -12,7 +12,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_document::action::{TableEdit, TocTarget};
 use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState, TextAnchor};
 use ui::tilo_resource::{
-    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Json, Model, ModelError, Place, Refusal,
+    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Model, ModelError, Place, Refusal,
     Resource, resource,
 };
 
@@ -65,7 +65,24 @@ pub struct Reply {
     /// Its paragraphs as written, with their formatting; empty when it is
     /// plain text.
     #[model(readonly)]
-    pub body: Json<Vec<ClipBlock>>,
+    pub body: Vec<ClipBlock>,
+}
+
+/// Bring a document of version 1 up to this one: a reply's formatted
+/// paragraphs were one JSON string, and are a list of paragraphs now.
+fn upgrade(doc: &mut Doc, from: u32) -> Result<(), ModelError> {
+    use ui::tilo_resource::evolution::{collection_items, retype_json};
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no document migration from {from}"
+        )));
+    }
+    for comment in collection_items(doc, &ROOT, "comments")? {
+        for reply in collection_items(doc, &comment, "replies")? {
+            retype_json::<Vec<ClipBlock>>(doc, &reply, "body")?;
+        }
+    }
+    Ok(())
 }
 
 #[resource(
@@ -76,6 +93,8 @@ pub struct Reply {
     locate = Document::locate,
     lands = Document::lands,
     answer = Document::answer,
+    version = 2,
+    migrate = upgrade,
 )]
 impl Document {
     /// Add a paragraph.
@@ -237,7 +256,7 @@ impl Document {
                 author,
                 date,
                 text,
-                body: Json(body.unwrap_or_default()),
+                body: body.unwrap_or_default(),
             },
         );
         Ok(())
@@ -283,7 +302,7 @@ impl Document {
                         author: reply.author.clone(),
                         date: reply.date.clone(),
                         text: joined(&reply.blocks),
-                        body: Json(reply.blocks.iter().map(clip_block).collect()),
+                        body: reply.blocks.iter().map(clip_block).collect(),
                     },
                 );
             }
@@ -586,6 +605,7 @@ fn iso_time(ms: i64) -> String {
         month_index - 9
     };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
+    // format: machine (an RFC 3339 timestamp the document stores)
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
         second_of_day / 3600,
@@ -680,11 +700,10 @@ pub fn export_copy(doc: &AutoCommit) -> Result<tilo_doc::Document, String> {
 /// # Errors
 /// Returns the document's write error.
 pub fn init(doc: &mut AutoCommit) -> Result<tilo_doc::Containers, String> {
-    use automerge::transaction::Transactable;
     let body = match body(doc) {
         Some(body) => body,
-        None => doc
-            .put_object(ROOT, BODY, ObjType::Map)
+        None => ui::tilo_resource::Slot::Key(&ROOT, BODY)
+            .object(doc, ObjType::Map)
             .map_err(|error| error.to_string())?,
     };
     Ok(tilo_doc::model::init(doc, &body))
@@ -764,12 +783,11 @@ fn paragraph(id: String, text: &str) -> tilo_doc::snapshot::BlockView {
 
 /// A reply's paragraphs as written, or its text as one paragraph.
 fn reply_blocks(id: &Id, reply: &Reply) -> Vec<tilo_doc::snapshot::BlockView> {
-    if reply.body.0.is_empty() {
+    if reply.body.is_empty() {
         return vec![paragraph(format!("{id}.0"), &reply.text)];
     }
     reply
         .body
-        .0
         .iter()
         .enumerate()
         .map(|(index, block)| {
@@ -868,7 +886,7 @@ pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: 
             author: author.to_owned(),
             date: date.to_owned(),
             text: text.to_owned(),
-            body: Json(Vec::new()),
+            body: Vec::new(),
         },
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the reply is written");
@@ -923,6 +941,76 @@ mod tests {
         };
         replica.apply(Invoke::edit(&edit(&typed)).unwrap()).unwrap();
         (replica, block)
+    }
+
+    /// A document from before a reply's formatted paragraphs were a list:
+    /// they were one JSON string. Opened now, the reply reads with its
+    /// paragraphs, formatting included.
+    #[test]
+    fn a_reply_kept_as_a_json_string_migrates_to_its_paragraphs() {
+        use ui::tilo_resource::evolution::{self, collection_items};
+        let (mut replica, block) = written("The budget doubled this year.", "ada");
+        replica
+            .apply(Document::ADD_COMMENT.with(document::AddComment {
+                block: block.clone(),
+                start: 4,
+                end: 10,
+                text: "By how much exactly?".into(),
+            }))
+            .unwrap();
+        let comment = replica
+            .state()
+            .unwrap()
+            .comments
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+        let paragraphs = vec![ClipBlock {
+            kind: "paragraph".into(),
+            text: "Twice, see the sheet.".into(),
+            marks: vec![tilo_doc::document::MarkSpan {
+                start: 0,
+                end: 5,
+                name: "strong".into(),
+                value: tilo_doc::document::MarkValue::Bool(true),
+            }],
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::new(),
+        }];
+        replica
+            .apply(Document::REPLY_TO_COMMENT.with(document::ReplyToComment {
+                comment,
+                text: "Twice, see the sheet.".into(),
+                body: Some(paragraphs.clone()),
+            }))
+            .unwrap();
+        // Back to the old shape: the paragraphs as one JSON string, version 1.
+        let doc = replica.doc_mut();
+        let comment = collection_items(doc, &ROOT, "comments").unwrap()[0].clone();
+        let reply = collection_items(doc, &comment, "replies").unwrap()[0].clone();
+        let body = ui::tilo_resource::Slot::Key(&reply, "body");
+        body.remove(doc).unwrap();
+        body.put_scalar(
+            doc,
+            automerge::ScalarValue::Str(serde_json::to_string(&paragraphs).unwrap().into()),
+        )
+        .unwrap();
+        ui::tilo_resource::Slot::Key(&ROOT, evolution::VERSION_KEY)
+            .remove(doc)
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<Document>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Document>(&mut old).unwrap());
+        let migrated = evolution::read_checked::<Document>(&old).unwrap();
+        let thread = migrated.comments.values().next().unwrap();
+        assert_eq!(thread.replies.values().next().unwrap().body, paragraphs);
     }
 
     #[test]

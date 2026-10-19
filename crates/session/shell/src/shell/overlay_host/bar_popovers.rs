@@ -51,14 +51,24 @@ impl BarPopovers {
 pub(crate) enum NativeWorkspaceAction {
     /// The workspace's members, permissions, apps and devices.
     Settings,
+    /// "Join a workspace…": the directory of public workspaces.
+    Join,
+    /// Report this public workspace to the people who run it.
+    Report,
+    /// Leave this workspace, held through the web: it goes from this
+    /// computer and is not joined again unasked.
+    Leave,
 }
 
 impl NativeWorkspaceAction {
-    const ALL: [Self; 1] = [Self::Settings];
+    const ALL: [Self; 4] = [Self::Settings, Self::Join, Self::Report, Self::Leave];
 
     fn id(self) -> &'static str {
         match self {
             Self::Settings => "workspace-settings",
+            Self::Join => "join-workspace",
+            Self::Report => "report-workspace",
+            Self::Leave => "leave-workspace",
         }
     }
 
@@ -67,12 +77,28 @@ impl NativeWorkspaceAction {
     }
 
     fn menu_action(self) -> WorkspaceAction {
+        let (title, destructive) = match self {
+            Self::Settings => ("workspace-menu-settings", false),
+            Self::Join => ("workspace-menu-join", false),
+            Self::Report => ("workspace-menu-report", false),
+            Self::Leave => ("workspace-menu-leave", true),
+        };
+        WorkspaceAction {
+            id: self.id().to_owned(),
+            title: t(title),
+            destructive,
+        }
+    }
+
+    /// Whether the menu offers it for the workspace shown, given the site
+    /// it is held through (`None`: on this computer, or shared directly).
+    fn offered(self, site: Option<&crate::shell::network::SiteRoom>) -> bool {
         match self {
-            Self::Settings => WorkspaceAction {
-                id: self.id().to_owned(),
-                title: t("workspace-menu-settings"),
-                destructive: false,
-            },
+            Self::Settings | Self::Join => true,
+            Self::Leave => site.is_some(),
+            // Only a workspace joined from a directory has a door to
+            // report it at.
+            Self::Report => site.is_some_and(|site| site.public),
         }
     }
 }
@@ -205,9 +231,10 @@ impl ShellOverlayHost {
             return WorkspaceMenuModel::default();
         };
         let state = chrome.borrow();
-        let workspaces = {
+        let (workspaces, active_room) = {
             let tree = state.tree();
-            tree.desktop
+            let workspaces = tree
+                .desktop
                 .workspaces
                 .iter()
                 .map(|workspace| WorkspaceChoice {
@@ -215,14 +242,23 @@ impl ShellOverlayHost {
                     name: workspace.name.clone(),
                     current: workspace.id == tree.desktop.active,
                 })
-                .collect()
+                .collect();
+            let active_room = tree
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room);
+            (workspaces, active_room)
         };
+        let site_rooms = self.site_rooms();
+        let site = active_room.and_then(|room| site_rooms.iter().find(|site| site.room == room));
         WorkspaceMenuModel {
             workspaces,
-            // Workspaces here are on the person's own computer.
-            host: None,
+            // A workspace held through the web is hosted by its site; the
+            // rest are on the person's own computer.
+            host: site.and_then(|site| site.site.clone()),
             actions: NativeWorkspaceAction::ALL
                 .into_iter()
+                .filter(|action| action.offered(site))
                 .map(NativeWorkspaceAction::menu_action)
                 .collect(),
             can_rename: state.may_rename_active_workspace(),
@@ -322,17 +358,39 @@ impl ShellOverlayHost {
         }
     }
 
-    pub(crate) fn run_native_workspace_action(&self, action: NativeWorkspaceAction) {
-        let Some(chrome) = self.chrome.as_ref() else {
+    pub(crate) fn run_native_workspace_action(&mut self, action: NativeWorkspaceAction) {
+        let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let mut state = chrome.borrow_mut();
+        let active_room = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room);
         match action {
             NativeWorkspaceAction::Settings => {
-                let mut state = chrome.borrow_mut();
                 state.open_workspace_settings(WsTab::General);
-                state.bump();
+            }
+            NativeWorkspaceAction::Join => {
+                state.push_peer_sync_request(super::PeerSyncAction::BrowseDirectory);
+            }
+            NativeWorkspaceAction::Leave => {
+                if let Some(room) = active_room {
+                    state.push_peer_sync_request(super::PeerSyncAction::LeaveSite { room });
+                }
+            }
+            NativeWorkspaceAction::Report => {
+                // The reason is typed in the palette, where the report
+                // action takes it like any parameter.
+                drop(state);
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.palette.set_query(&t("search-action-workspace-report"));
+                self.last_search_query = "\0workspace-report\0".to_string();
+                return;
             }
         }
+        state.bump();
     }
 
     fn apply_profile_choice(&mut self, choice: &ProfileChoice) {

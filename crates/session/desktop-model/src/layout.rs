@@ -173,28 +173,7 @@ pub struct Strip {
     pub window_groups: Vec<WindowGroup>,
 }
 
-/// What a strip is for. Read from its id ([`Strip::kind`]), never stored
-/// beside it: every member derives the same Lounge id from the room, so a
-/// stored kind could only ever disagree with it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StripKind {
-    /// A strip a person or an agent made: its device's to name and remove.
-    Regular,
-    /// The workspace's shared place (chat, tasks and notes): in every
-    /// workspace, first, owned by nobody, never renamed or removed.
-    Lounge,
-}
-
 impl Strip {
-    /// Whether this is a regular strip or the workspace's Lounge.
-    pub fn kind(&self) -> StripKind {
-        if crate::ids::is_shared(self.id.raw()) {
-            StripKind::Lounge
-        } else {
-            StripKind::Regular
-        }
-    }
-
     pub fn new(id: StripId, name: impl Into<String>) -> Self {
         Self {
             id,

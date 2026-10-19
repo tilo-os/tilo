@@ -14,8 +14,8 @@
 //! host's await and is answered `Denied`. The recipient bounds its own
 //! await by the credential's expiry and stops once it has passed.
 //!
-//! A host that predates the await answers `InvalidRequest`, and the
-//! refresher polls it the old way, every [`SHARE_POLL_INTERVAL`].
+//! A host that holds all the awaits it may answers `InvalidRequest`, and
+//! the refresher polls it instead, every [`SHARE_POLL_INTERVAL`].
 
 use std::time::Duration;
 
@@ -262,7 +262,7 @@ pub enum ShareRefresh {
 pub enum ShareRefreshMode {
     /// The host holds an await on one long-lived stream.
     Await,
-    /// The host predates the await (or declined it): poll with `Read`.
+    /// The host declined the await: poll with `Read`.
     Poll,
 }
 
@@ -371,8 +371,8 @@ impl ShareRefresher {
                 }
                 Ok(Answer::Unchanged) => ShareRefresh::Unchanged,
                 Ok(Answer::Unsupported) => {
-                    // An old host, or one holding all the awaits it may:
-                    // poll it, starting one interval from now as before.
+                    // A host holding all the awaits it may: poll it,
+                    // starting one interval from now.
                     self.stream = None;
                     self.mode = ShareRefreshMode::Poll;
                     tokio::time::sleep(self.poll_interval).await;

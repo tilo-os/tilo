@@ -21,9 +21,11 @@ use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
 use tilo_lock::MutexRecover as _;
 
-/// A resource type. Implement it by hand for a type with its own storage
-/// layout and merge semantics (a timeline, a rich-text document, a photo edit
-/// stack); `#[resource]` implements it for a `#[derive(Model)]` record.
+/// A resource type. `#[resource]` implements it for a `#[derive(Model)]`
+/// record, which is how every app declares its own. The SDK implements it by
+/// hand for the shared types with a storage layout of their own (a rich-text
+/// document, plain text), which apps hold as fields; an app never does
+/// (docs/architecture/resources.md §8).
 ///
 /// The contract is deliberately small:
 ///

@@ -98,6 +98,23 @@ pub(super) struct HeldRoom {
     host: iroh::EndpointId,
 }
 
+impl HeldRoom {
+    /// The room.
+    pub(super) const fn room(&self) -> RoomId {
+        self.room
+    }
+}
+
+/// What moving a workspace onto the person's home relay made.
+pub(super) struct MovedRoom {
+    /// The room the relay governs now.
+    pub room: RoomId,
+    /// The first invitation, when one was asked for.
+    pub issued: Option<IssuedInvitation>,
+    /// This device's enrollment into the room, while it is installed.
+    pub enrollment: Option<u64>,
+}
+
 /// What an invitation a relay issues is for.
 pub(super) struct RelayInvitation<'a> {
     /// The role it grants.
@@ -137,22 +154,20 @@ fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serd
         arguments.insert("invitee_name".into(), invitee.into());
     }
     arguments.insert("expires_in_seconds".into(), terms.lifetime.into());
-    // A relay that predates seconds reads hours: never shorter than asked.
-    arguments.insert(
-        "expires_in_hours".into(),
-        terms.lifetime.div_ceil(3_600).into(),
-    );
     arguments
 }
 
-/// The arguments of creating a room named `name` whose first invitation is
-/// `first`.
+/// The arguments of creating a room named `name`, with `first` as its first
+/// invitation when there is one.
 fn create_arguments(
     name: &str,
-    first: &RelayInvitation<'_>,
+    first: Option<&RelayInvitation<'_>>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), name.into());
+    let Some(first) = first else {
+        return arguments;
+    };
     arguments.insert("invite_role".into(), role_name(first.role).into());
     if let Some(recipient) = first.recipient {
         arguments.insert("invite_recipient".into(), hex::encode(recipient).into());
@@ -301,7 +316,7 @@ impl ShellNetwork {
 
     /// Invoke `action` of `target`'s governance with `arguments`, as this
     /// device, and answer what it produced.
-    fn govern(
+    pub(super) fn govern(
         &self,
         target: &HeldRoom,
         action: &str,
@@ -694,6 +709,35 @@ impl ShellNetwork {
         name: &str,
         first: &RelayInvitation<'_>,
     ) -> Result<Option<String>, String> {
+        let Some(moved) = self.move_to_home_relay(local, room, name, Some(first))? else {
+            return Ok(None);
+        };
+        if let Some(id) = moved.enrollment {
+            self.relay_rooms
+                .shared
+                .lock()
+                .map_err(|_| "shared room enrollments are unavailable")?
+                .push(id);
+        }
+        let issued = moved
+            .issued
+            .ok_or("the relay did not issue the invitation")?;
+        self.remember_relay_invitation(moved.room, &issued, first)
+            .map(Some)
+    }
+
+    /// Move the workspace `local`, showing `room` and called `name`, onto
+    /// this person's home relay, which governs it from then on: the relay
+    /// creates its room (issuing `first` with it, when given) and this
+    /// device enters it in the same slot. `None` when the person has no home
+    /// relay. The caller finishes the returned enrollment.
+    pub(super) fn move_to_home_relay(
+        &self,
+        local: WorkspaceId,
+        room: RoomId,
+        name: &str,
+        first: Option<&RelayInvitation<'_>>,
+    ) -> Result<Option<MovedRoom>, String> {
         let Some(identity) = self.host_identity.as_ref() else {
             return Ok(None);
         };
@@ -710,22 +754,25 @@ impl ShellNetwork {
             create_arguments(&room_name(name), first),
         )?)?;
         let shared = RoomId::parse(&created.room.room).ok_or("the relay named an invalid room")?;
-        let issued = created
-            .invitation
-            .ok_or("the relay did not issue the invitation")?
-            .decode()?;
+        let issued = match first {
+            Some(_) => Some(
+                created
+                    .invitation
+                    .ok_or("the relay did not issue the invitation")?
+                    .decode()?,
+            ),
+            None => None,
+        };
         let own = self.enter_host_room(home.addr.id, user, &created.room.room)?;
-        if let PeerSyncResponse::EnrollmentPending { id } =
-            self.accept_peer_invitation(local, &own)?
-        {
-            self.relay_rooms
-                .shared
-                .lock()
-                .map_err(|_| "shared room enrollments are unavailable")?
-                .push(id);
-        }
-        self.remember_relay_invitation(shared, &issued, first)
-            .map(Some)
+        let enrollment = match self.accept_peer_invitation(local, &own)? {
+            PeerSyncResponse::EnrollmentPending { id } => Some(id),
+            _ => None,
+        };
+        Ok(Some(MovedRoom {
+            room: shared,
+            issued,
+            enrollment,
+        }))
     }
 
     /// Enter `room` at the host at `relay` as this device of `user`, and
@@ -1023,7 +1070,6 @@ mod tests {
                 "recipient": hex::encode([7; 32]),
                 "invitee_name": "Grace",
                 "expires_in_seconds": 600,
-                "expires_in_hours": 1,
             })
         );
         let open = invite_arguments(&RelayInvitation {
@@ -1033,7 +1079,15 @@ mod tests {
             lifetime: 3_601,
         });
         assert!(!open.contains_key("recipient") && !open.contains_key("invitee_name"));
-        assert_eq!(open["expires_in_hours"], 2, "never shorter than asked");
+        assert_eq!(open["expires_in_seconds"], 3_601);
+    }
+
+    #[test]
+    fn moving_a_workspace_to_publish_it_creates_its_room_without_an_invitation() {
+        assert_eq!(
+            serde_json::Value::Object(create_arguments(&room_name("Coffee"), None)),
+            serde_json::json!({ "name": "Coffee" })
+        );
     }
 
     #[test]
@@ -1045,7 +1099,7 @@ mod tests {
             lifetime: 3_600,
         };
         assert_eq!(
-            serde_json::Value::Object(create_arguments(&room_name(" Plans\u{7} "), &grace)),
+            serde_json::Value::Object(create_arguments(&room_name(" Plans\u{7} "), Some(&grace))),
             serde_json::json!({
                 "name": "Plans",
                 "invite_role": "editor",

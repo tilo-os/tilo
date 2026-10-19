@@ -28,7 +28,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
 
 [resources]
 kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]
@@ -66,8 +66,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@1"
-tilo-fs = "optional@1"
+collab = "optional@2"
+tilo-fs = "optional@2"
 
 [entrypoint]
 bin             = "bin/mail"

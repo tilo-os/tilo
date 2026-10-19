@@ -358,6 +358,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
+        // Who may walk in is the room's business on its host; a report
+        // reaches the people who run a workspace.
+        WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID => {
+            contract.kind = ActionKind::Outside;
+            contract.risk = RiskLevel::Privileged;
+        }
         // Ends the agent's access at once; undone only by admitting it again.
         "agent.remove" => {
             contract.kind = ActionKind::Outside;
@@ -850,6 +856,74 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
 
 /// What `peer.invite.named` must be told. Both required — an invite to
 /// nobody in particular is [`peer.invite`].
+/// Making the active workspace public, with its description and the role
+/// people who join from the directory get.
+pub(crate) const WORKSPACE_PUBLISH_ID: &str = "workspace.publish";
+/// Making it private again.
+pub(crate) const WORKSPACE_UNPUBLISH_ID: &str = "workspace.unpublish";
+/// Reporting the public workspace shown to the people who run it.
+pub(crate) const WORKSPACE_REPORT_ID: &str = "workspace.report";
+
+const WORKSPACE_PUBLISH_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "description",
+        ParamType::Text,
+        "What the workspace is, in a sentence or two (at most 280 characters).",
+    ),
+    ActionParam::optional(
+        "default_role",
+        ParamType::Text,
+        "What people who join get: viewer, commenter (when omitted) or editor.",
+    ),
+];
+
+const WORKSPACE_REPORT_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "reason",
+    ParamType::Text,
+    "What is wrong with this workspace.",
+)];
+
+/// The listing `args` publish the active workspace with: their description
+/// and role, else the role it is public with now (a fresh one: commenter).
+fn publish_listing(
+    state: &ChromeState,
+    args: &ActionArgs,
+) -> Result<tilo_relay_protocol::directory::Listing, ActionError> {
+    use tilo_relay_protocol::rooms::RoomRole;
+    let current = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .map(|workspace| workspace.room)
+        .and_then(|room| match state.publication(room) {
+            Some(crate::shell::chrome_state::PublicationState::Known(known)) => {
+                Some(known.default_role)
+            }
+            _ => None,
+        });
+    let default_role = match args.text("default_role").unwrap_or_default().trim() {
+        "" => current.unwrap_or(RoomRole::Commenter),
+        "viewer" => RoomRole::Viewer,
+        "commenter" => RoomRole::Commenter,
+        "editor" => RoomRole::Editor,
+        other => {
+            return Err(ActionError::Refused(format!(
+                "people who join become viewers, commenters or editors, not {other}"
+            )));
+        }
+    };
+    tilo_relay_protocol::directory::Listing {
+        description: args
+            .text("description")
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
+        default_role,
+    }
+    .checked()
+    .map_err(|error| ActionError::Refused(error.to_string()))
+}
+
 const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
     ActionParam::required("peer", ParamType::Text, "The invitee's device identity."),
     ActionParam::required(
@@ -1924,13 +1998,15 @@ impl Action {
                 Ok(())
             },
         ),
+        // "Join a workspace…" opens the directory of public workspaces,
+        // where a link or a code joins too.
         chrome(
             "peer.connect",
             "search-action-peer-connect",
             "search-action-peer-connect-subtitle",
             |st, _| {
                 st.push_peer_sync_request(
-                    crate::shell::overlay_host::PeerSyncAction::PromptConnect,
+                    crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
                 );
                 Ok(())
             },
@@ -1964,6 +2040,54 @@ impl Action {
                         name,
                         copy: false,
                     },
+                );
+                Ok(())
+            },
+        },
+        // Public workspaces: the active one listed by its host with a
+        // description and a default role, or private again; one joined
+        // from a directory reported to whoever runs it.
+        Action {
+            id: WORKSPACE_PUBLISH_ID,
+            label: "search-action-workspace-publish",
+            subtitle: "search-action-workspace-publish-subtitle",
+            params: WORKSPACE_PUBLISH_PARAMS,
+            apply: |st, args| {
+                let listing = publish_listing(st, args)?;
+                st.publish_active_workspace(Some(listing));
+                st.bump();
+                Ok(())
+            },
+        },
+        Action {
+            id: WORKSPACE_UNPUBLISH_ID,
+            label: "search-action-workspace-unpublish",
+            subtitle: "search-action-workspace-unpublish-subtitle",
+            params: &[],
+            apply: |st, _| {
+                st.publish_active_workspace(None);
+                st.bump();
+                Ok(())
+            },
+        },
+        Action {
+            id: WORKSPACE_REPORT_ID,
+            label: "search-action-workspace-report",
+            subtitle: "search-action-workspace-report-subtitle",
+            params: WORKSPACE_REPORT_PARAMS,
+            apply: |st, args| {
+                let reason = args.text("reason").unwrap_or_default().trim().to_owned();
+                if reason.is_empty() {
+                    return Err(ActionError::Refused("a report says what is wrong".into()));
+                }
+                let room = st
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room)
+                    .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+                st.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::ReportWorkspace { room, reason },
                 );
                 Ok(())
             },
@@ -3823,7 +3947,7 @@ impl ActionsProvider {
                                     crate::shell::overlay_host::PeerSyncAction::PromptInvite
                                 }
                                 "peer.connect" => {
-                                    crate::shell::overlay_host::PeerSyncAction::PromptConnect
+                                    crate::shell::overlay_host::PeerSyncAction::BrowseDirectory
                                 }
                                 "peer.pair-device" => {
                                     crate::shell::overlay_host::PeerSyncAction::PairDevice
@@ -5226,6 +5350,14 @@ impl ActionCandidates {
                 .into_iter()
                 .map(|word| (word, FieldWeight::KEYWORD)),
         );
+        // "Join a workspace…" is also found by the community site's name
+        // ("tilo.coffee"), which is the image's configuration, not a word.
+        if id == "peer.connect"
+            && let Some(site) = crate::shell::network::configured_community_site()
+            && let Some(host) = site.host_str()
+        {
+            row.push((host.to_owned(), FieldWeight::KEYWORD));
+        }
         self.0.push(row);
     }
 }
@@ -5926,7 +6058,7 @@ mod tests {
                 actions,
                 vec![
                     crate::shell::overlay_host::PeerSyncAction::PromptInvite,
-                    crate::shell::overlay_host::PeerSyncAction::PromptConnect,
+                    crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
                 ]
             );
         }

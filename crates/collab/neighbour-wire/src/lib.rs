@@ -29,6 +29,43 @@ pub use retention::{
 
 use serde::{Deserialize, Serialize};
 
+/// The device ↔ device interface's one version: the certified handshake
+/// (`tilo_relay_protocol::auth`), the relay session's frames and the
+/// peer-sync messages they carry. Two devices sync only when theirs are
+/// equal; there is no negotiation and nothing kept for an older version
+/// (docs/architecture/compatibility.md). `interface.toml` beside this crate
+/// holds the schema, and the repository policy fails a change to it that
+/// keeps the number.
+///
+/// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
+/// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
+/// device's number before anything else it says.
+pub const PEER_PROTOCOL_VERSION: u32 = 5;
+
+/// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
+/// message every version decodes far enough to learn the sender's
+/// [`PEER_PROTOCOL_VERSION`].
+pub const IDENTITY_HELLO_INDEX: u8 = 11;
+
+/// The [`PEER_PROTOCOL_VERSION`] an encoded [`NeighbourMsg`] says it is
+/// from, when it is an identity announcement: read from its frozen prefix,
+/// whatever the rest of a message from another version looks like.
+#[must_use]
+pub fn identity_hello_version(bytes: &[u8]) -> Option<u32> {
+    let (&index, rest) = bytes.split_first()?;
+    if index != IDENTITY_HELLO_INDEX {
+        return None;
+    }
+    let mut version: u32 = 0;
+    for (shift, byte) in rest.iter().take(5).enumerate() {
+        version |= u32::from(byte & 0x7f) << (7 * shift);
+        if byte & 0x80 == 0 {
+            return Some(version);
+        }
+    }
+    None
+}
+
 /// Peer identifier — opaque numeric handle assigned per session.
 pub type PeerId = u64;
 
@@ -213,20 +250,21 @@ pub enum NeighbourMsg {
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
-    /// Liveness beacon of builds that evict a direct peer after 15 s without
-    /// traffic and beat every 5 s on every joined workspace; `ts` is their
-    /// unix-millis. Current builds keep liveness on the transport and send
-    /// one only to a neighbour of such a build, numbering it with a `ts`
-    /// below [`Self::COMPAT_HEARTBEAT_TS_LIMIT`] so that it is not mistaken
-    /// for one (see [`Self::is_timed_heartbeat`]). `peer` is the hashed Iroh
-    /// `PeerId`.
+    /// A liveness beacon. Liveness is the transport's, so no build sends one
+    /// on its own; a receiver reads one only as a sign that its sender is
+    /// here. `peer` is the hashed Iroh `PeerId`.
     Heartbeat { peer: PeerId, ts: u64 },
     /// Authenticated identity chain for the transport peer on this workspace.
     ///
     /// The certificate binds the Iroh endpoint/device key to a user root. The
     /// additive, root-signed revocations let receivers reject a lost device
     /// before any of its collaboration payload reaches an app or replica.
+    ///
+    /// `protocol` is the sender's [`PEER_PROTOCOL_VERSION`], first, at the
+    /// frozen [`IDENTITY_HELLO_INDEX`]: a receiver at another version admits
+    /// nothing from the sender and knows which of the two is behind.
     IdentityHello {
+        protocol: u32,
         cert: Box<tilo_user_identity::DeviceCert>,
         #[serde(default)]
         revocations: Vec<tilo_user_identity::RevocationEntry>,
@@ -446,9 +484,9 @@ pub enum NeighbourMsg {
     /// carries, so a steward can decide Read on that record, a Deny over its
     /// app or any pattern covering it included. The route proves itself: the
     /// steward refuses it unless it hashes, with `room`, to the request's
-    /// channel ([`collab_types::ChannelRoute::proves`]). A device sends both
-    /// forms while a steward may predate this one. Appended to preserve every
-    /// existing Postcard discriminant.
+    /// channel ([`collab_types::ChannelRoute::proves`]). A device that knows
+    /// the route sends this form only. Appended to preserve every existing
+    /// Postcard discriminant.
     MlsRoutedAccessRequest {
         room: String,
         request: Box<collab_types::MlsAccessRequestV1>,
@@ -538,19 +576,6 @@ impl NeighbourMsg {
         }
     }
 
-    /// A [`Self::Heartbeat`] `ts` below this (September 2001 in unix
-    /// milliseconds) is no time: it numbers a heartbeat a transport-liveness
-    /// build sends only for an older neighbour's sake. No build ever sent a
-    /// real time this early, and none read the field.
-    pub const COMPAT_HEARTBEAT_TS_LIMIT: u64 = 1_000_000_000_000;
-
-    /// Whether this is the timed heartbeat of a build that keeps liveness by
-    /// heartbeat and evicts a peer that stops beating: the sign that its
-    /// neighbours must keep beating too.
-    pub fn is_timed_heartbeat(&self) -> bool {
-        matches!(self, Self::Heartbeat { ts, .. } if *ts >= Self::COMPAT_HEARTBEAT_TS_LIMIT)
-    }
-
     /// The variant's name, for diagnostics and traffic tallies. Never a
     /// wire value: the postcard discriminant is.
     pub fn kind(&self) -> &'static str {
@@ -635,6 +660,25 @@ mod tests {
             expires_at_ns: None,
             signature: [3; 64],
         })
+    }
+
+    /// Every version reads another device's version from its identity
+    /// announcement: the variant index and the leading field never move.
+    #[test]
+    fn an_identity_hello_says_its_version_first_at_a_frozen_index() {
+        for protocol in [PEER_PROTOCOL_VERSION, PEER_PROTOCOL_VERSION + 1, 300] {
+            let bytes = postcard::to_allocvec(&NeighbourMsg::IdentityHello {
+                protocol,
+                cert: device_cert(),
+                revocations: Vec::new(),
+            })
+            .unwrap();
+            assert_eq!(bytes[0], IDENTITY_HELLO_INDEX);
+            assert_eq!(identity_hello_version(&bytes), Some(protocol));
+        }
+        let beat = postcard::to_allocvec(&NeighbourMsg::Heartbeat { peer: 1, ts: 2 }).unwrap();
+        assert_eq!(identity_hello_version(&beat), None);
+        assert_eq!(identity_hello_version(&[]), None);
     }
 
     /// Every [`NeighbourMsg`] variant, split into thematic groups so no one
@@ -862,6 +906,7 @@ mod tests {
             (
                 "identity hello",
                 NeighbourMsg::IdentityHello {
+                    protocol: crate::PEER_PROTOCOL_VERSION,
                     cert: device_cert(),
                     revocations: Vec::new(),
                 },
@@ -1064,23 +1109,6 @@ mod tests {
         message.kind()
     }
 
-    #[test]
-    fn only_a_wall_clock_heartbeat_asks_its_neighbours_to_keep_beating() {
-        let beat = |ts| NeighbourMsg::Heartbeat { peer: 9, ts };
-        // What a heartbeat-keeping build sends: unix milliseconds, October 2026.
-        assert!(beat(1_791_500_000_000).is_timed_heartbeat());
-        // What a transport-liveness build sends such a neighbour: a number.
-        assert!(!beat(1).is_timed_heartbeat());
-        assert!(!beat(NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1).is_timed_heartbeat());
-        assert!(
-            !NeighbourMsg::PresenceCleared {
-                peer: 9,
-                key: String::new()
-            }
-            .is_timed_heartbeat()
-        );
-    }
-
     const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
@@ -1134,7 +1162,9 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "0b01010101010101010101010101010101010101010101010101010101010101",
+                // The variant index and the sender's peer protocol version.
+                "0b03",
+                "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",

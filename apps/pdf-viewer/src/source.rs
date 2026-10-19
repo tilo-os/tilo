@@ -70,7 +70,12 @@ fn read_file_bounded(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
         tilo_files::file_at(path).with_context(|| format!("reading {}", path.display()))?;
     tilo_files::blocking::read_bounded(&dir, &name, limit)
         .with_context(|| format!("reading {}", path.display()))?
-        .ok_or_else(|| anyhow!("PDF Viewer opens files up to {} MiB", limit / (1024 * 1024)))
+        .ok_or_else(|| {
+            anyhow!(
+                "PDF Viewer opens files up to {}",
+                ui::format::memory(limit as u64)
+            )
+        })
 }
 
 type ImportInspection = (String, String, Vec<(f64, f64)>);

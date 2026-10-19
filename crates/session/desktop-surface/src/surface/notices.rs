@@ -867,6 +867,8 @@ mod tests {
 
     #[test]
     fn portable_banner_clicks_complete_cancel_and_yield_to_history() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         for interrupted in [false, true] {
             let (mut layer, notifications) = layer_with(1);
             let theme = ui::Theme::dark().with_reduce_motion(true);

@@ -29,12 +29,21 @@ video-editor = ["decode", "gst"]
 typst-editor = ["runtime-engine"]
 # The painting engines from their engine library beside the runtime.
 canvas = ["runtime-engine"]
-# Account custody and the IMAP client from their engine library beside the
-# runtime.
+# Account custody, the IMAP and the WebDAV client from their engine library
+# beside the runtime.
 settings = ["runtime-engine"]
-# The time-zone database from its engine library beside the runtime.
+# The time-zone database, and the CalDAV client with the account custody its
+# sign-in reaches, from their engine libraries beside the runtime.
 calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
 # The contact directory from its engine library beside the runtime.
 contacts = ["runtime-engine"]
 messages = ["runtime-engine"]
+# The PDF engine from its engine library beside the runtime.
+pdf-viewer = ["runtime-engine"]
+file-explorer = ["runtime-engine"]
+word-processor = ["runtime-engine"]
+print-centre = ["runtime-engine"]
+# Account custody with the WebDAV client, and the projection worker's FUSE
+# presentation, from their engine libraries beside the runtime.
+imager = ["runtime-engine"]

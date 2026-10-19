@@ -142,6 +142,8 @@ fn assert_rects_aligned(label: &str, rects: &[(&'static str, Rect)]) {
 
 #[test]
 fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `mixed_controls_in_one_row_share_a_centre_line_in_every_theme`.
     {
         for (name, theme) in [
@@ -230,6 +232,8 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
 
 #[test]
 fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `fixed_controls_keep_their_size_beside_a_fluid_field`.
     // Fixed controls beside a fluid field laid directly in the row: the field
     // takes the remaining width and every fixed control keeps its target size

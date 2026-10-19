@@ -45,12 +45,15 @@ pub(crate) struct Frame {
 
 pub type Kind<'a> = Shape;
 
-#[derive(Serialize, Deserialize)]
-pub enum Shape { Round, SemanticV1 }
 
 impl Frame {
     pub fn new() -> Self { todo!("{ not a type }") }
 }
+
+pub const fn ahead(theirs: u32) -> bool { theirs > PROTOCOL }
+
+#[derive(Serialize, Deserialize)]
+pub enum Shape { Round, SemanticV1 }
 
 #[cfg(test)]
 mod tests {
@@ -132,7 +135,8 @@ class SchemaTests(unittest.TestCase):
             '''))
             schema = interfaces.capnp_schema("s.capnp", Path(root))
         self.assertEqual(schema["capnp:s.capnp:Store.get"], "@0 (key:Text)->(value:Data)")
-        self.assertEqual(schema["capnp:s.capnp:Entry.size"], "@2 :UInt64")
+        self.assertEqual(schema["capnp:s.capnp:Entry.size"], "@2 :UInt64 union")
+        self.assertEqual(schema["capnp:s.capnp:Entry.key"], "@0 :Text")
         self.assertEqual(schema["capnp:s.capnp:Entry.Kind.dir"], "@1")
 
 
@@ -168,11 +172,13 @@ class CompatibilityTests(unittest.TestCase):
         self.assertTrue(interfaces.incompatible(
             self.BEFORE, dict(self.BEFORE, **{"S.b": "#1 Option<u8>"}), "postcard"))
 
-    def test_capnp_fields_may_be_added_and_methods_may_not(self):
+    def test_capnp_fields_may_be_added_and_methods_and_union_members_may_not(self):
         before = {"capnp:s.capnp:Entry": "struct", "capnp:s.capnp:Store": "interface"}
         field = dict(before, **{"capnp:s.capnp:Entry.size": "@1 :UInt64"})
+        member = dict(before, **{"capnp:s.capnp:Entry.size": "@1 :UInt64 union"})
         method = dict(before, **{"capnp:s.capnp:Store.put": "@1 (key:Text)->()"})
         self.assertEqual(interfaces.incompatible(before, field, "postcard"), [])
+        self.assertTrue(interfaces.incompatible(before, member, "postcard"))
         self.assertTrue(interfaces.incompatible(before, method, "postcard"))
 
 
@@ -181,12 +187,13 @@ class AgainstMainTests(unittest.TestCase):
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
                        env=isolated_git_environment())
 
-    def file(self, version, schema):
-        lines = "".join(f'"{key}" = "{value}"\n' for key, value in schema.items())
-        return (
-            f'name = "demo"\nversion = {version}\nversion_const = "x.rs:V"\n'
-            f'encoding = "json"\n\n[schema]\n{lines}'
-        )
+    SPEC = (
+        'name = "demo"\nversion = 0\nversion_const = "crates/demo/wire/src/lib.rs:V"\n'
+        'encoding = "json"\nsources = ["crates/demo/wire/src/lib.rs"]\nroots = ["S"]\n'
+    )
+
+    def source(self, version, fields):
+        return f"pub const V: u32 = {version};\npub struct S {{ {fields} }}\n"
 
     def test_an_incompatible_change_needs_a_new_version(self):
         with tempfile.TemporaryDirectory() as root:
@@ -194,22 +201,33 @@ class AgainstMainTests(unittest.TestCase):
             self.git(root, "init", "-q", "-b", "main")
             self.git(root, "config", "user.email", "t@example.com")
             self.git(root, "config", "user.name", "t")
-            path = root / "crates/domain/crate/interface.toml"
-            path.parent.mkdir(parents=True)
-            path.write_text(self.file(1, {"S": "struct", "S.a": "u32"}))
+            spec = root / "crates/demo/wire/interface.toml"
+            code = root / "crates/demo/wire/src/lib.rs"
+            code.parent.mkdir(parents=True)
+            spec.write_text(self.SPEC)
+            code.write_text(self.source(1, "a: u32"))
             self.git(root, "add", ".")
             self.git(root, "commit", "-qm", "base")
 
-            path.write_text(self.file(1, {"S": "struct", "S.a": "u32", "S.b": "u8"}))
+            code.write_text(self.source(1, "a: u32, b: u8"))
             problems = interfaces.against("main", root)
             self.assertEqual(len(problems), 1)
             self.assertIn("`S.b` is new", problems[0])
 
-            path.write_text(self.file(2, {"S": "struct", "S.a": "u32", "S.b": "u8"}))
+            code.write_text(self.source(2, "a: u32, b: u8"))
             self.assertEqual(interfaces.against("main", root), [])
 
-            path.write_text(self.file(1, {"S": "struct", "S.a": "u32", "S.b": "Option<u8> optional"}))
+            code.write_text(self.source(1, "a: u32, b: Option<u8>"))
             self.assertEqual(interfaces.against("main", root), [])
+
+            # Its number moved to another crate: still compared, by name.
+            moved = root / "crates/demo/other/interface.toml"
+            moved_code = root / "crates/demo/other/src/lib.rs"
+            moved_code.parent.mkdir(parents=True)
+            moved.write_text(self.SPEC.replace("demo/wire", "demo/other"))
+            moved_code.write_text(self.source(1, "a: u64"))
+            spec.unlink()
+            self.assertIn("`S.a` is now `u64`", interfaces.against("main", root)[0])
 
 
 class RepositoryTests(unittest.TestCase):

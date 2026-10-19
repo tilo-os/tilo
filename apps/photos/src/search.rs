@@ -76,19 +76,39 @@ impl RowKind {
     /// window's opener runs for a hit anchored at it. A photograph or an
     /// album is opened as the item it is.
     fn opened_by(self) -> &'static str {
+        use crate::actions::PhotosEffect as E;
         match self {
-            Self::Library => "view-library",
-            Self::Timeline => "view-timeline",
-            Self::Places => "view-places",
-            Self::Albums => "view-albums",
-            Self::Photo => "view",
-            Self::Album => "view-album",
-            Self::Folder => "view-folder",
-            Self::Person => "view-person",
-            Self::Tag => "view-tag",
-            Self::Object => "view-object",
-            Self::Pet => "view-pet",
-            Self::Place => "view-place",
+            Self::Library => E::VIEW_LIBRARY.id,
+            Self::Timeline => E::VIEW_TIMELINE.id,
+            Self::Places => E::VIEW_PLACES.id,
+            Self::Albums => E::VIEW_ALBUMS.id,
+            Self::Photo => E::VIEW.id,
+            Self::Album => E::VIEW_ALBUM.id,
+            Self::Folder => E::VIEW_FOLDER.id,
+            Self::Person => E::VIEW_PERSON.id,
+            Self::Tag => E::VIEW_TAG.id,
+            Self::Object => E::VIEW_OBJECT.id,
+            Self::Pet => E::VIEW_PET.id,
+            Self::Place => E::VIEW_PLACE.id,
+        }
+    }
+
+    /// That view as the row's resource `id` offers it: what its hit invokes.
+    fn opened_on(self, id: &str) -> ActionAddress {
+        use crate::actions::PhotosEffect as E;
+        match self {
+            Self::Library => E::VIEW_LIBRARY.on(id),
+            Self::Timeline => E::VIEW_TIMELINE.on(id),
+            Self::Places => E::VIEW_PLACES.on(id),
+            Self::Albums => E::VIEW_ALBUMS.on(id),
+            Self::Photo => E::VIEW.on(id),
+            Self::Album => E::VIEW_ALBUM.on(id),
+            Self::Folder => E::VIEW_FOLDER.on(id),
+            Self::Person => E::VIEW_PERSON.on(id),
+            Self::Tag => E::VIEW_TAG.on(id),
+            Self::Object => E::VIEW_OBJECT.on(id),
+            Self::Pet => E::VIEW_PET.on(id),
+            Self::Place => E::VIEW_PLACE.on(id),
         }
     }
 
@@ -141,7 +161,7 @@ impl LibraryRow {
         SearchResult::for_action(
             PHOTO_SEARCH_KIND,
             &self.title,
-            ActionAddress::new(&self.id, self.kind.opened_by()),
+            self.kind.opened_on(&self.id),
         )
         .with_subtitle(&self.subtitle)
         .with_icon(Icon::from_name(self.icon).unwrap_or(Icon::Image))

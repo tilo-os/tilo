@@ -1,4 +1,4 @@
-//! The demo workspace a screenshot or a test shows: its people, rooms and
+//! The demo room a screenshot or a test shows: its people, channels and
 //! conversation, read by `me`. Never a real record's content.
 //!
 //! The chat record ([`demo`]) holds the people and rooms; the conversation
@@ -7,21 +7,20 @@
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
-use ui::tilo_resource::{Atom, Edit, Id, Invoke, Json, ModelError, Replica, Set};
+use ui::tilo_resource::{Atom, Edit, Id, Invoke, ModelError, Replica, Set};
 
 use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
 use crate::parts::ChatPart;
-use crate::record::{Category, Channel, Chat, Message, Person, Revision, Workspace, chat};
+use crate::record::{Category, Channel, Chat, Message, Person, Revision, chat};
 
 /// Deterministic "now" for the demo so a screenshot is stable: 2026-06-30
 /// 10:40 UTC, just before the capture clock's 10:42.
 pub const NOW: i64 = 1_782_470_400;
 
-/// One row of the demo channel roster: (id, workspace, category, name,
-/// topic, kind, sort order within its category).
+/// One row of the demo channel roster: (id, category, name, topic, kind,
+/// sort order within its category).
 type DemoChannelSeed = (
-    &'static str,
     &'static str,
     &'static str,
     &'static str,
@@ -60,7 +59,6 @@ impl Demo {
         &[
             (
                 "c_general",
-                "ws_acme",
                 "cat_acme_main",
                 "general",
                 "Company-wide announcements",
@@ -69,7 +67,6 @@ impl Demo {
             ),
             (
                 "c_crit",
-                "ws_acme",
                 "cat_acme_main",
                 "design-crit",
                 "Share work, get sharp feedback",
@@ -78,7 +75,6 @@ impl Demo {
             ),
             (
                 "c_frontend",
-                "ws_acme",
                 "cat_acme_main",
                 "frontend",
                 "ui toolkit + app shells",
@@ -87,7 +83,6 @@ impl Demo {
             ),
             (
                 "c_random",
-                "ws_acme",
                 "cat_acme_main",
                 "random",
                 "Off-topic & watercooler",
@@ -96,7 +91,6 @@ impl Demo {
             ),
             (
                 "c_standup",
-                "ws_acme",
                 "cat_acme_voice",
                 "Daily Standup",
                 "",
@@ -105,7 +99,6 @@ impl Demo {
             ),
             (
                 "c_huddle",
-                "ws_acme",
                 "cat_acme_voice",
                 "Design Huddle",
                 "",
@@ -119,7 +112,6 @@ impl Demo {
         &[
             (
                 "c_kernel",
-                "ws_tilo",
                 "cat_tilo_eng",
                 "kernel",
                 "bootc + immutable base",
@@ -128,7 +120,6 @@ impl Demo {
             ),
             (
                 "c_compositor",
-                "ws_tilo",
                 "cat_tilo_eng",
                 "compositor",
                 "2D clusters & sandboxing",
@@ -137,7 +128,6 @@ impl Demo {
             ),
             (
                 "c_fssync",
-                "ws_tilo",
                 "cat_tilo_eng",
                 "fs-sync",
                 "iroh projection & hydration",
@@ -146,7 +136,6 @@ impl Demo {
             ),
             (
                 "c_releases",
-                "ws_tilo",
                 "cat_tilo_eng",
                 "releases",
                 "ship logs",
@@ -155,8 +144,7 @@ impl Demo {
             ),
             (
                 "c_warroom",
-                "ws_tilo",
-                "cat_tilo_voice",
+                "cat_acme_voice",
                 "War Room",
                 "",
                 ChannelKind::Voice,
@@ -164,7 +152,6 @@ impl Demo {
             ),
             (
                 "c_ideas",
-                "ws_jam",
                 "cat_jam_main",
                 "ideas",
                 "weekend hacks",
@@ -173,7 +160,6 @@ impl Demo {
             ),
             (
                 "c_music",
-                "ws_jam",
                 "cat_jam_main",
                 "music",
                 "now playing",
@@ -350,8 +336,8 @@ impl Demo {
     }
 }
 
-/// The demo workspace, with `me` as the person reading it: its people and
-/// rooms. Its conversation is [`demo_part`].
+/// The demo room, with `me` as the person reading it: its people and
+/// channels. Its conversation is [`demo_part`].
 #[must_use]
 pub fn demo(me: &str) -> Chat {
     let mut chat = Chat::default();
@@ -372,43 +358,26 @@ pub fn demo(me: &str) -> Chat {
             agent: false,
         });
     }
-    for (id, name, glyph, color) in [
-        ("ws_acme", "Acme Design", "AD", 0u32),
-        ("ws_tilo", "Tilo Core", "QC", 1),
-        ("ws_jam", "Weekend Jam", "WJ", 3),
-    ] {
-        chat.workspaces.push(
-            Id::from_raw(id),
-            Workspace {
-                name: name.to_owned(),
-                glyph: glyph.to_owned(),
-                color,
-            },
-        );
-    }
-    for (id, workspace, name) in [
-        ("cat_acme_main", "ws_acme", "Channels"),
-        ("cat_acme_voice", "ws_acme", "Voice"),
-        ("cat_tilo_eng", "ws_tilo", "Engineering"),
-        ("cat_tilo_voice", "ws_tilo", "Voice"),
-        ("cat_jam_main", "ws_jam", "Hangout"),
+    for (id, name) in [
+        ("cat_acme_main", "Channels"),
+        ("cat_acme_voice", "Voice"),
+        ("cat_tilo_eng", "Engineering"),
+        ("cat_jam_main", "Hangout"),
     ] {
         chat.categories.push(
             Id::from_raw(id),
             Category {
-                workspace: Id::from_raw(workspace),
                 name: name.to_owned(),
             },
         );
     }
-    for (id, workspace, category, name, topic, kind, _) in Demo::channels_acme()
+    for (id, category, name, topic, kind, _) in Demo::channels_acme()
         .iter()
         .chain(Demo::channels_tilo_and_jam())
     {
         chat.open_channel(
             Id::from_raw(*id),
             Channel {
-                workspace: Id::from_raw(*workspace),
                 category: Some(Id::from_raw(*category)),
                 name: (*name).to_owned(),
                 topic: (*topic).to_owned(),
@@ -450,22 +419,20 @@ pub fn demo_part(me: &str) -> ChatPart {
                 channel: Id::from_raw(channel),
                 author: Atom(mine(&message.author)),
                 ts: message.ts,
-                mentions: Json(crate::mention::resolve(&message.text, &participants)),
+                mentions: crate::mention::resolve(&message.text, &participants),
                 text: message.text,
                 edited: message.edited,
-                history: Json(
-                    message
-                        .history
-                        .into_iter()
-                        .map(|record| Revision {
-                            ts: record.ts,
-                            text: record.text,
-                        })
-                        .collect(),
-                ),
+                history: message
+                    .history
+                    .into_iter()
+                    .map(|record| Revision {
+                        ts: record.ts,
+                        text: record.text,
+                    })
+                    .collect(),
                 parent: message.parent.map(Id::from_raw),
                 reactions,
-                attachment: Json(message.attachment),
+                attachment: message.attachment,
                 ..Message::default()
             },
         );
@@ -503,9 +470,6 @@ pub fn part_edits(part: &ChatPart) -> Vec<Edit<ChatPart>> {
 pub fn edits(chat: &Chat) -> Vec<Edit<Chat>> {
     let paths = Chat::paths();
     let mut edits = Vec::new();
-    for (at, (id, item)) in chat.workspaces.iter().enumerate() {
-        edits.push(paths.workspaces.insert_as(id, at, item));
-    }
     for (at, (id, item)) in chat.categories.iter().enumerate() {
         edits.push(paths.categories.insert_as(id, at, item));
     }
@@ -566,15 +530,15 @@ fn commit_genesis(doc: &mut AutoCommit) {
 /// `doc` with the record's genesis, when it holds no chat yet.
 fn initialized(doc: &mut AutoCommit) -> Result<(), ModelError> {
     use automerge::ReadDoc as _;
-    if doc.get(automerge::ROOT, "workspaces")?.is_none() {
+    if doc.get(automerge::ROOT, "channels")?.is_none() {
         <Chat as ui::tilo_resource::Resource>::initialize(doc)?;
         commit_genesis(doc);
     }
     Ok(())
 }
 
-/// The demo workspace's chat record in `doc`, read by
-/// [`crate::model::ME`]: its people and rooms, without the conversation.
+/// The demo room's chat record in `doc`, read by [`crate::model::ME`]: its
+/// people and channels, without the conversation.
 ///
 /// # Errors
 /// When `doc` already holds a chat the demo does not fit into.
@@ -582,8 +546,8 @@ pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
     write(doc, &demo(crate::model::ME))
 }
 
-/// The demo workspace in `room`, read by [`crate::model::ME`]: its chat
-/// record, and its conversation as the first part of its messages.
+/// The demo room in `room`, read by [`crate::model::ME`]: its chat record,
+/// and its conversation as the first part of its messages.
 ///
 /// # Errors
 /// When `room` already holds a chat the demo does not fit into.
@@ -652,7 +616,7 @@ impl Room {
         }
     }
 
-    /// The demo workspace, read by [`crate::model::ME`].
+    /// The demo room, read by [`crate::model::ME`].
     ///
     /// # Errors
     /// Never for an empty room: the demo fits it.
@@ -818,7 +782,8 @@ pub fn apply_at(
     applied
 }
 
-/// Start the chat in `doc` as `me` would: their starter workspace.
+/// Start the chat in `doc` as `me` would: the room's `#chat` and `#voice`
+/// when it has no channels yet, and `me` in it.
 ///
 /// # Errors
 /// As [`apply_as`].
@@ -827,8 +792,6 @@ pub fn start(doc: &mut AutoCommit, me: &str, name: &str, initials: &str) -> Resu
         doc,
         me,
         Chat::BEGIN_CHAT.with(chat::BeginChat {
-            workspace: None,
-            workspace_name: None,
             name: name.into(),
             initials: initials.into(),
             color: 0,
@@ -861,13 +824,15 @@ pub fn introduce(
 #[must_use]
 pub fn post(channel: &str, text: &str, parent: Option<&str>) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
-        channel: Id::from_raw(channel),
-        text: text.into(),
-        parent: parent.map(Id::from_raw),
-        body: None,
-        attachment: None,
-        mentions: None,
-        written: None,
+        message: crate::messages::NewMessage {
+            channel: Id::from_raw(channel),
+            text: text.into(),
+            parent: parent.map(Id::from_raw),
+            body: None,
+            attachment: None,
+            mentions: None,
+            written: None,
+        },
     })
 }
 
@@ -948,32 +913,7 @@ pub fn say(room: &mut Room, author: &str, channel: &str, text: &str) -> Result<S
     room.say(author, channel, text)
 }
 
-/// Start the chat in `doc` in the workspace `workspace` named `label` a
-/// host admitted it for, as `me` named `name`.
-///
-/// # Errors
-/// As [`apply_as`].
-pub fn start_in(
-    doc: &mut AutoCommit,
-    me: &str,
-    (workspace, label): (&str, &str),
-    name: &str,
-    initials: &str,
-) -> Result<(), DoorError> {
-    apply_as(
-        doc,
-        me,
-        Chat::BEGIN_CHAT.with(chat::BeginChat {
-            workspace: Some(workspace.into()),
-            workspace_name: Some(label.into()),
-            name: name.into(),
-            initials: initials.into(),
-            color: 0,
-        }),
-    )
-}
-
-/// Add the category `id` named `name` to `workspace` of `doc`, as `author`.
+/// Add the category `id` named `name` to `doc`, as `author`.
 ///
 /// # Errors
 /// As [`apply_as`].
@@ -981,14 +921,10 @@ pub fn insert_category(
     doc: &mut AutoCommit,
     author: &str,
     id: &str,
-    workspace: &str,
     name: &str,
 ) -> Result<(), DoorError> {
     let at = crate::projection::read(doc).categories.len();
-    let category = Category {
-        workspace: Id::from_raw(workspace),
-        name: name.into(),
-    };
+    let category = Category { name: name.into() };
     let insert = Chat::paths()
         .categories
         .insert_as(&Id::from_raw(id), at, &category);
@@ -997,8 +933,8 @@ pub fn insert_category(
     apply_as(doc, author, insert)
 }
 
-/// Add the channel `id` named `name` to `(workspace, category)` of `doc`,
-/// as `author`; a text channel with its draft.
+/// Add the channel `id` named `name` under `category` (none when empty) of
+/// `doc`, as `author`.
 ///
 /// # Errors
 /// As [`apply_as`].
@@ -1006,13 +942,12 @@ pub fn insert_channel(
     doc: &mut AutoCommit,
     author: &str,
     id: &str,
-    (workspace, category): (&str, &str),
+    category: &str,
     name: &str,
     kind: ChannelKind,
 ) -> Result<(), DoorError> {
     let at = crate::projection::read(doc).channels.len();
     let channel = Channel {
-        workspace: Id::from_raw(workspace),
         category: (!category.is_empty()).then(|| Id::from_raw(category)),
         name: name.into(),
         kind,

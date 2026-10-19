@@ -26,7 +26,11 @@ fn krate() -> Tokens {
 /// * a struct with named fields is a map, one key per field;
 /// * a newtype struct is its inner value;
 /// * an enum of unit variants is a string naming the variant; the variant
-///   marked `#[default]` is the value of an absent slot.
+///   marked `#[default]` is the value of an absent slot;
+/// * an enum whose variants carry fields is a map: the variant's name under
+///   `$variant` and each field under its own key (a tuple variant's as `0`,
+///   `1`, …), so edits of one variant merge field by field and a change of
+///   variant is last writer wins.
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
@@ -36,7 +40,10 @@ fn krate() -> Tokens {
 /// resource with its own operations (rich text: published beneath the
 /// record's resource, an item's or the record's own, at `<record>/<key>`,
 /// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
-/// remove (removing one by field edit asks no confirmation).
+/// remove (removing one by field edit asks no confirmation),
+/// `#[model(default = expr)]` (what the field reads as when the document
+/// holds none: a required field with a sensible derivation, so an item
+/// missing it still reads; the next whole write stores it).
 ///
 /// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
 /// (History restore) reconcile it field by field.
@@ -89,6 +96,7 @@ pub fn derive_json_schema(input: TokenStream) -> TokenStream {
     }
 }
 
+mod data_enum;
 mod schema;
 
 /// Derive `Effect`: an enum's variants become the app's published effects —
@@ -132,6 +140,8 @@ struct FieldOptions {
     quiet_remove: bool,
     whole: bool,
     resource: bool,
+    /// `default = expr`: what an absent field reads as.
+    default: Option<Expr>,
 }
 
 fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
@@ -155,6 +165,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.whole = true;
             } else if meta.path.is_ident("resource") {
                 options.resource = true;
+            } else if meta.path.is_ident("default") {
+                options.default = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("remove") {
                 let how: syn::LitStr = meta.value()?.parse()?;
                 if how.value() != "quiet" {
@@ -164,7 +176,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource` or `remove = \"quiet\"`",
+                     `whole`, `resource`, `default = ..` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -343,17 +355,19 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 "Model derives for structs with named fields or one unnamed field",
             )),
         },
+        Data::Enum(data)
+            if data
+                .variants
+                .iter()
+                .any(|variant| !matches!(variant.fields, Fields::Unit)) =>
+        {
+            data_enum::derive(input, data)
+        }
         Data::Enum(data) => {
             let mut names = Vec::new();
             let mut idents = Vec::new();
             let mut default = None;
             for variant in &data.variants {
-                if !matches!(variant.fields, Fields::Unit) {
-                    return Err(syn::Error::new(
-                        variant.span(),
-                        "Model derives for enums of unit variants; store data enums with `Json<T>`",
-                    ));
-                }
                 let options = field_options(&variant.attrs)?;
                 let key = options
                     .rename
@@ -591,7 +605,10 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             whole: #whole,
             items: #items,
         }));
-        builds.push(quote!(#ident: #table::take::<#ty>(source)?));
+        builds.push(match &options.default {
+            Some(default) => quote!(#ident: #table::take_or::<#ty>(source, || #default)?),
+            None => quote!(#ident: #table::take::<#ty>(source)?),
+        });
         reach.push(quote!(#index => ::core::option::Option::Some(&value.#ident),));
         reach_mut.push(quote!(#index => ::core::option::Option::Some(&mut value.#ident),));
         checks_const.push(quote!(<#ty as #krate::Model>::CHECKS));

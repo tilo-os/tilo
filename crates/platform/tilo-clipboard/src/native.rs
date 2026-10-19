@@ -1,10 +1,9 @@
 //! The desktop clipboard on Linux, macOS and Windows, resolved per operation.
 //!
 //! Order: the app's Wayland connection once attached (Linux), else `arboard`
-//! when this process is not a Wayland client (X11, `NSPasteboard`, the Windows
-//! clipboard), else a process-local buffer that announces itself in the log.
-
-use std::sync::{Mutex, OnceLock};
+//! when this process is not a Wayland client (X11 with the `x11` feature,
+//! `NSPasteboard`, the Windows clipboard), else a process-local buffer that
+//! announces itself in the log.
 
 use crate::{ClipboardBackend, ClipboardTarget, InProcessClipboard, warn_fallback_once};
 
@@ -16,7 +15,8 @@ pub(crate) struct NativeClipboard {
 /// Keep a closed session as a tombstone: late calls must not fall through to
 /// another clipboard after the runner closes its focused connection.
 #[cfg(target_os = "linux")]
-static WAYLAND: Mutex<Option<std::sync::Arc<crate::lifecycle::Session>>> = Mutex::new(None);
+static WAYLAND: std::sync::Mutex<Option<std::sync::Arc<crate::lifecycle::Session>>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(target_os = "linux")]
 pub(crate) fn attach_wayland(
@@ -118,84 +118,8 @@ impl NativeClipboard {
         if local_only(target) {
             return false;
         }
-        let Some(cb) = arboard_clipboard() else {
-            return false;
-        };
-        let Ok(mut handle) = cb.lock() else {
-            return false;
-        };
-        set_arboard_text(&mut handle, target, text)
+        system::set_text(target, text)
     }
-}
-
-#[cfg(target_os = "linux")]
-fn set_arboard_text(handle: &mut arboard::Clipboard, target: ClipboardTarget, text: &str) -> bool {
-    use arboard::{LinuxClipboardKind, SetExtLinux};
-    match target {
-        ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
-        ClipboardTarget::Primary => handle
-            .set()
-            .clipboard(LinuxClipboardKind::Primary)
-            .text(text.to_string())
-            .is_ok(),
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn set_arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget, text: &str) -> bool {
-    handle.set_text(text.to_string()).is_ok()
-}
-
-/// A copy clipboard managers are asked to leave out of their histories:
-/// `x-kde-passwordManagerHint` on X11, the `nspasteboard.org` marker on
-/// macOS, and Windows' history and cloud-sync exclusion formats.
-#[cfg(target_os = "linux")]
-fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
-    use arboard::SetExtLinux;
-    handle
-        .set()
-        .exclude_from_history()
-        .text(text.to_string())
-        .is_ok()
-}
-
-#[cfg(target_os = "macos")]
-fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
-    use arboard::SetExtApple;
-    handle
-        .set()
-        .exclude_from_history()
-        .text(text.to_string())
-        .is_ok()
-}
-
-#[cfg(windows)]
-fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
-    use arboard::SetExtWindows;
-    handle
-        .set()
-        .exclude_from_history()
-        .exclude_from_cloud()
-        .text(text.to_string())
-        .is_ok()
-}
-
-#[cfg(target_os = "linux")]
-fn arboard_text(handle: &mut arboard::Clipboard, target: ClipboardTarget) -> Option<String> {
-    use arboard::{GetExtLinux, LinuxClipboardKind};
-    match target {
-        ClipboardTarget::Clipboard => handle.get_text().ok(),
-        ClipboardTarget::Primary => handle
-            .get()
-            .clipboard(LinuxClipboardKind::Primary)
-            .text()
-            .ok(),
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget) -> Option<String> {
-    handle.get_text().ok()
 }
 
 impl ClipboardBackend for NativeClipboard {
@@ -237,13 +161,7 @@ impl ClipboardBackend for NativeClipboard {
         if let Some(wayland) = wayland() {
             return wayland.set_secret_text(text);
         }
-        let Some(cb) = arboard_clipboard() else {
-            return false;
-        };
-        let Ok(mut handle) = cb.lock() else {
-            return false;
-        };
-        set_arboard_secret_text(&mut handle, text)
+        system::set_secret_text(text)
     }
 
     #[cfg(target_os = "linux")]
@@ -263,10 +181,8 @@ impl ClipboardBackend for NativeClipboard {
         if local_only(target) {
             return self.local.text(target);
         }
-        if let Some(cb) = arboard_clipboard()
-            && let Ok(mut handle) = cb.lock()
-        {
-            return arboard_text(&mut handle, target);
+        if let Some(text) = system::text(target) {
+            return text;
         }
         warn_fallback_once("paste");
         self.local.text(target)
@@ -286,18 +202,7 @@ impl ClipboardBackend for NativeClipboard {
         if !well_formed {
             return false;
         }
-        let Some(cb) = arboard_clipboard() else {
-            return false;
-        };
-        let Ok(mut handle) = cb.lock() else {
-            return false;
-        };
-        let img = arboard::ImageData {
-            width,
-            height,
-            bytes: std::borrow::Cow::Borrowed(rgba),
-        };
-        handle.set_image(img).is_ok()
+        system::set_image(width, height, rgba)
     }
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
@@ -312,7 +217,7 @@ impl ClipboardBackend for NativeClipboard {
         if let Some(wayland) = wayland() {
             return wayland.image();
         }
-        arboard_image()
+        system::image()
     }
 
     fn name(&self) -> &'static str {
@@ -320,44 +225,205 @@ impl ClipboardBackend for NativeClipboard {
     }
 }
 
-/// The X11 clipboard's image, as a PNG.
-#[cfg(target_os = "linux")]
-fn arboard_image() -> Option<crate::ClipboardImage> {
-    let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
-    let bytes = crate::wayland::encode_png(image.width, image.height, &image.bytes)?;
-    Some(crate::ClipboardImage {
-        mime: "image/png",
-        bytes,
-    })
-}
+/// The system clipboard of a process that is not a Wayland client, through
+/// `arboard`: X11 (with the `x11` feature), `NSPasteboard`, the Windows
+/// clipboard.
+#[cfg(any(not(target_os = "linux"), feature = "x11"))]
+mod system {
+    use std::sync::{Mutex, OnceLock};
 
-/// Reading an image needs an encoder this target does not carry.
-#[cfg(not(target_os = "linux"))]
-fn arboard_image() -> Option<crate::ClipboardImage> {
-    None
-}
+    use crate::ClipboardTarget;
 
-/// Lazy global `arboard` handle, used **only off Wayland**.
-///
-/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
-/// not offer to sandboxed apps; an app there goes through the Wayland backend
-/// and `wl_data_device` instead. Construction is skipped rather than attempted
-/// on Wayland because arboard's probe there is slow, and a handle that fails
-/// on every call is worse than no handle.
-fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
-    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| {
-        if running_on_wayland() {
-            return None;
+    pub(super) fn set_text(target: ClipboardTarget, text: &str) -> bool {
+        let Some(cb) = arboard_clipboard() else {
+            return false;
+        };
+        let Ok(mut handle) = cb.lock() else {
+            return false;
+        };
+        set_arboard_text(&mut handle, target, text)
+    }
+
+    pub(super) fn set_secret_text(text: &str) -> bool {
+        let Some(cb) = arboard_clipboard() else {
+            return false;
+        };
+        let Ok(mut handle) = cb.lock() else {
+            return false;
+        };
+        set_arboard_secret_text(&mut handle, text)
+    }
+
+    /// `None` when there is no system clipboard to read; else what it holds.
+    pub(super) fn text(target: ClipboardTarget) -> Option<Option<String>> {
+        let mut handle = arboard_clipboard()?.lock().ok()?;
+        Some(arboard_text(&mut handle, target))
+    }
+
+    /// `rgba` is already checked against the dimensions.
+    pub(super) fn set_image(width: usize, height: usize, rgba: &[u8]) -> bool {
+        let Some(cb) = arboard_clipboard() else {
+            return false;
+        };
+        let Ok(mut handle) = cb.lock() else {
+            return false;
+        };
+        let img = arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Borrowed(rgba),
+        };
+        handle.set_image(img).is_ok()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_arboard_text(
+        handle: &mut arboard::Clipboard,
+        target: ClipboardTarget,
+        text: &str,
+    ) -> bool {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+        match target {
+            ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
+            ClipboardTarget::Primary => handle
+                .set()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text(text.to_string())
+                .is_ok(),
         }
-        arboard::Clipboard::new().ok().map(Mutex::new)
-    })
-    .as_ref()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_arboard_text(
+        handle: &mut arboard::Clipboard,
+        _target: ClipboardTarget,
+        text: &str,
+    ) -> bool {
+        handle.set_text(text.to_string()).is_ok()
+    }
+
+    /// A copy clipboard managers are asked to leave out of their histories:
+    /// `x-kde-passwordManagerHint` on X11, the `nspasteboard.org` marker on
+    /// macOS, and Windows' history and cloud-sync exclusion formats.
+    #[cfg(target_os = "linux")]
+    fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+        use arboard::SetExtLinux;
+        handle
+            .set()
+            .exclude_from_history()
+            .text(text.to_string())
+            .is_ok()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+        use arboard::SetExtApple;
+        handle
+            .set()
+            .exclude_from_history()
+            .text(text.to_string())
+            .is_ok()
+    }
+
+    #[cfg(windows)]
+    fn set_arboard_secret_text(handle: &mut arboard::Clipboard, text: &str) -> bool {
+        use arboard::SetExtWindows;
+        handle
+            .set()
+            .exclude_from_history()
+            .exclude_from_cloud()
+            .text(text.to_string())
+            .is_ok()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn arboard_text(handle: &mut arboard::Clipboard, target: ClipboardTarget) -> Option<String> {
+        use arboard::{GetExtLinux, LinuxClipboardKind};
+        match target {
+            ClipboardTarget::Clipboard => handle.get_text().ok(),
+            ClipboardTarget::Primary => handle
+                .get()
+                .clipboard(LinuxClipboardKind::Primary)
+                .text()
+                .ok(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget) -> Option<String> {
+        handle.get_text().ok()
+    }
+
+    /// The X11 clipboard's image, as a PNG.
+    #[cfg(target_os = "linux")]
+    pub(super) fn image() -> Option<crate::ClipboardImage> {
+        let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
+        let bytes = crate::wayland::encode_png(image.width, image.height, &image.bytes)?;
+        Some(crate::ClipboardImage {
+            mime: "image/png",
+            bytes,
+        })
+    }
+
+    /// Reading an image needs an encoder this target does not carry.
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn image() -> Option<crate::ClipboardImage> {
+        None
+    }
+
+    /// Lazy global `arboard` handle, used **only off Wayland**.
+    ///
+    /// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
+    /// not offer to sandboxed apps; an app there goes through the Wayland backend
+    /// and `wl_data_device` instead. Construction is skipped rather than attempted
+    /// on Wayland because arboard's probe there is slow, and a handle that fails
+    /// on every call is worse than no handle.
+    fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
+        static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
+        CB.get_or_init(|| {
+            if running_on_wayland() {
+                return None;
+            }
+            arboard::Clipboard::new().ok().map(Mutex::new)
+        })
+        .as_ref()
+    }
+
+    /// Whether this process is a Wayland client.
+    fn running_on_wayland() -> bool {
+        cfg!(target_os = "linux")
+            && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+    }
 }
 
-/// Whether this process is a Wayland client.
-fn running_on_wayland() -> bool {
-    cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+/// A Linux build without `x11` is a Wayland client only, as every app in
+/// Tilo's sandbox is: there is no X11 clipboard to fall back to, and the
+/// shared runtime carries no X11 client library. Development builds on an
+/// X11 host turn `x11` on (`tilo-app`'s and the toolkit's `x11` feature).
+#[cfg(all(target_os = "linux", not(feature = "x11")))]
+mod system {
+    use crate::ClipboardTarget;
+
+    pub(super) fn set_text(_target: ClipboardTarget, _text: &str) -> bool {
+        false
+    }
+
+    pub(super) fn set_secret_text(_text: &str) -> bool {
+        false
+    }
+
+    /// No system clipboard to read.
+    pub(super) fn text(_target: ClipboardTarget) -> Option<Option<String>> {
+        None
+    }
+
+    pub(super) fn set_image(_width: usize, _height: usize, _rgba: &[u8]) -> bool {
+        false
+    }
+
+    pub(super) fn image() -> Option<crate::ClipboardImage> {
+        None
+    }
 }
 
 #[cfg(test)]

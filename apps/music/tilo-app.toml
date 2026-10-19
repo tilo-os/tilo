@@ -67,9 +67,9 @@ mode = "host"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@1"
-tilo-fs = "optional@1"
-shell-ui = "optional@1"
+collab = "optional@2"
+tilo-fs = "optional@2"
+shell-ui = "optional@6"
 
 [entrypoint]
 bin             = "bin/music"

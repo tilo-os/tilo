@@ -1,7 +1,7 @@
 //! tilo-launcher binary entry.
 
 use std::os::fd::{FromRawFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -250,6 +250,32 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Map and lock the shared runtime's libraries of every runtime bundle
+    /// the system registry names, then sleep until stopped
+    /// (`launcher::runtime_resident`). Run by
+    /// `tilo-runtime-resident.service`; it never runs app code.
+    RuntimeResident {
+        /// The registry whose entries name the runtimes to keep.
+        #[arg(long, default_value_t = default_system_registry())]
+        registry: String,
+        /// Where the runtime bundles are installed.
+        #[arg(long, default_value = launcher::runtime_resident::SYSTEM_RUNTIME_ROOT)]
+        runtime_root: PathBuf,
+        /// Keep the runtimes of this person's own store instead: those their
+        /// registry names and the system does not hold, verified as a launch
+        /// verifies them, each library only when its signed fs-verity digest
+        /// is measured on the open file. Run by the user unit
+        /// `tilo-runtime-resident.service`.
+        #[arg(long, conflicts_with_all = ["registry", "runtime_root"])]
+        user: bool,
+    },
+}
+
+fn default_system_registry() -> String {
+    package_store::Layout::new(package_store::layout::SYSTEM_DATA_DIR)
+        .registry()
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[derive(Debug, Subcommand)]
@@ -378,6 +404,19 @@ fn dispatch_command(
     command: Cmd,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
 ) -> ExitCode {
+    // Whatever runs an app, or is about to start one, leaves the session's
+    // protection from the OOM killer, which it may have inherited from the
+    // compositor: an app is always a candidate.
+    if matches!(
+        command,
+        Cmd::Run { .. }
+            | Cmd::RunInstalled { .. }
+            | Cmd::Exec { .. }
+            | Cmd::AdmitShare { .. }
+            | Cmd::RunHost(_)
+    ) {
+        launcher::priority::leave_session_protection();
+    }
     match command {
         Cmd::Run {
             manifest,
@@ -473,6 +512,122 @@ fn dispatch_command(
         Cmd::SandboxView(command) => sandbox_view(command),
         Cmd::AppSpawner { tree } => run_app_spawner(tree),
         Cmd::Apps { json } => list_apps(json),
+        Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
+        Cmd::RuntimeResident {
+            registry,
+            runtime_root,
+            user: false,
+        } => runtime_resident(Path::new(&registry), &runtime_root),
+    }
+}
+
+/// Keep the libraries of this person's own runtimes resident until SIGTERM
+/// (`launcher::runtime_resident`, "A runtime a person installed").
+fn runtime_resident_user() -> ExitCode {
+    use launcher::runtime_resident as resident;
+    let (Some(registry), Some(user_root)) =
+        (resident::user_registry(), resident::user_runtime_root())
+    else {
+        eprintln!("tilo-launcher: this session has no data directory to find its runtimes in");
+        return ExitCode::FAILURE;
+    };
+    let registry = match package_store::Registry::load(&registry) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("tilo-launcher: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let versions = resident::user_kept_versions(
+        &resident::registered_versions(&registry),
+        Path::new(resident::SYSTEM_RUNTIME_ROOT),
+    );
+    let (files, problems) = resident::user_resident_files(
+        &versions,
+        &user_root,
+        |bundle| launcher::run::verified_user_bundle(bundle).map_err(|error| error.to_string()),
+        resident::verity_vouches,
+    );
+    for problem in &problems {
+        eprintln!("tilo-launcher: {problem}");
+    }
+    let mut mapped = Vec::new();
+    for file in &files {
+        match resident::map_open(&file.path, &file.file, resident::Lock::IfAllowed) {
+            Ok(resident_file) => mapped.push(resident_file),
+            Err(error) => eprintln!(
+                "tilo-launcher: keeping {} resident: {error}",
+                file.path.display()
+            ),
+        }
+    }
+    // The mappings hold the files; the descriptors are no longer needed.
+    drop(files);
+    let bytes: usize = mapped.iter().map(resident::ResidentFile::len).sum();
+    let locked: usize = mapped
+        .iter()
+        .filter(|file| file.is_locked())
+        .map(resident::ResidentFile::len)
+        .sum();
+    println!(
+        "{} libraries of your runtimes resident, {} MiB ({} MiB locked)",
+        mapped.len(),
+        bytes / (1024 * 1024),
+        locked / (1024 * 1024)
+    );
+    if mapped.is_empty() {
+        // Nothing of this person's to keep; the path unit starts this again
+        // when their registry changes.
+        return ExitCode::SUCCESS;
+    }
+    loop {
+        // SAFETY: pause has no preconditions; it returns only after a
+        // handled signal, and this process handles none.
+        unsafe { libc::pause() };
+    }
+}
+
+/// Keep the registered runtimes' libraries resident until SIGTERM.
+fn runtime_resident(registry: &Path, runtime_root: &Path) -> ExitCode {
+    use launcher::runtime_resident as resident;
+    let registry = match package_store::Registry::load(registry) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("tilo-launcher: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let versions = resident::registered_versions(&registry);
+    let files = match resident::resident_files(&versions, runtime_root) {
+        Ok(files) => files,
+        Err(error) => {
+            eprintln!("tilo-launcher: reading the runtime libraries: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (mapped, failed) = resident::map_all(&files);
+    for (path, error) in &failed {
+        eprintln!(
+            "tilo-launcher: keeping {} resident: {error}",
+            path.display()
+        );
+    }
+    let bytes: usize = mapped.iter().map(resident::ResidentFile::len).sum();
+    println!(
+        "{} runtime libraries of {} runtime(s) resident, {} MiB",
+        mapped.len(),
+        versions.len(),
+        bytes / (1024 * 1024)
+    );
+    if mapped.is_empty() && !failed.is_empty() {
+        return ExitCode::FAILURE;
+    }
+    // The mappings are the whole job: hold them until systemd stops us,
+    // whose SIGTERM ends the process with its default action.
+    loop {
+        // SAFETY: pause has no preconditions; it returns only after a
+        // handled signal, and this process handles none.
+        unsafe { libc::pause() };
     }
 }
 
@@ -529,14 +684,35 @@ fn run_app_spawner(tree: Option<PathBuf>) -> ExitCode {
     }
     // SAFETY: the descriptor was just created and is owned here alone.
     let socket = unsafe { OwnedFd::from_raw_fd(socket) };
+    // fd 1, when it is a socket, is where the compositor hears of what the
+    // spawner reports on its own (a job that ended for memory). It moves off
+    // stdout the same way.
+    let events = {
+        // SAFETY: fstat into a zeroed stat buffer on fd 1.
+        let is_socket = unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            libc::fstat(1, &raw mut stat) == 0 && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
+        };
+        // SAFETY: duplicating fd 1 to a fresh close-on-exec descriptor.
+        let events = if is_socket {
+            unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) }
+        } else {
+            -1
+        };
+        // SAFETY: a descriptor just created and owned here alone.
+        (events >= 0).then(|| unsafe { OwnedFd::from_raw_fd(events) })
+    };
     match std::fs::File::open("/dev/null") {
         // SAFETY: both are descriptors this process owns.
         Ok(null) => unsafe {
             libc::dup2(null.as_raw_fd(), 0);
+            if events.is_some() {
+                libc::dup2(null.as_raw_fd(), 1);
+            }
         },
         Err(error) => eprintln!("tilo-spawner: /dev/null: {error}"),
     }
-    match launcher::spawner::serve(&socket, tree) {
+    match launcher::spawner::serve(&socket, events, tree) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tilo-spawner: {error}");
@@ -993,22 +1169,133 @@ struct ExecArgs {
 /// is the same sandboxed launch, built from the same manifest by the
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
-fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
-    // Held from the lookup until the app exits, so an update meanwhile
-    // leaves the build this launch runs alone (`launcher::lease`).
-    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
-        Ok(Some(e)) => e,
+/// Exit status of a launch that cannot run yet: an update it needs is under
+/// way or has not been published (`EX_TEMPFAIL`).
+const LAUNCH_LATER: u8 = 75;
+
+/// The installed `package`, held for the launch, at a build this system runs.
+///
+/// A build made for older interface versions, or recorded at an older
+/// package format, is updated first, exactly as the shell does before it
+/// opens one (`shell::app_versions`), and the launch runs the new build. One
+/// that needs a newer system starts the system's update. Either way the
+/// person is told what happens; a launch is never just refused for being
+/// behind (docs/architecture/compatibility.md).
+fn find_current(
+    package: &str,
+) -> Result<
+    (
+        package_store::InstalledPackage,
+        Option<advisory_lock::FileLock>,
+    ),
+    ExitCode,
+> {
+    let found = find_held(package)?;
+    let provided = package_store::interfaces::system_interfaces();
+    let unmet = package_store::interfaces::unmet_at(provided.as_ref(), &found.0.manifest_path);
+    if unmet.is_empty() {
+        return Ok(found);
+    }
+    let describe = tilo_app_package::interfaces::describe_unmet(&unmet);
+    if unmet
+        .iter()
+        .any(|unmet| unmet.behind() != tilo_app_package::interfaces::Behind::Package)
+    {
+        eprintln!(
+            "tilo-launcher: {package} needs a newer Tilo ({describe}). \
+             Tilo is updating now; run it again once the update has applied."
+        );
+        start_system_update();
+        return Err(ExitCode::from(LAUNCH_LATER));
+    }
+    eprintln!("tilo-launcher: updating {package} to a build for this Tilo ({describe})…");
+    drop(found);
+    if !update_package(package) {
+        eprintln!(
+            "tilo-launcher: {package} could not be updated now; run it again once Tilo can reach the store."
+        );
+        return Err(ExitCode::from(LAUNCH_LATER));
+    }
+    let found = find_held(package)?;
+    let unmet = package_store::interfaces::unmet_at(provided.as_ref(), &found.0.manifest_path);
+    if unmet.is_empty() {
+        return Ok(found);
+    }
+    eprintln!(
+        "tilo-launcher: waiting for an update from {package}'s developer: no build fits this Tilo yet ({}).",
+        tilo_app_package::interfaces::describe_unmet(&unmet)
+    );
+    Err(ExitCode::from(LAUNCH_LATER))
+}
+
+/// The installed `package`, held for the launch.
+fn find_held(
+    package: &str,
+) -> Result<
+    (
+        package_store::InstalledPackage,
+        Option<advisory_lock::FileLock>,
+    ),
+    ExitCode,
+> {
+    match launcher::lease::find_installed_held(package) {
+        Ok(Some(found)) => Ok(found),
         Ok(None) => {
             eprintln!(
                 "tilo-launcher: package {package} is not installed. \
                  Run `tilo-install list` to see what is."
             );
-            return ExitCode::from(2);
+            Err(ExitCode::from(2))
         }
         Err(e) => {
             eprintln!("tilo-launcher: {e}");
-            return ExitCode::from(2);
+            Err(ExitCode::from(2))
         }
+    }
+}
+
+/// `app update <package>`, as the shell runs it; whether it succeeded.
+fn update_package(package: &str) -> bool {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("app")));
+    let Some(app) = beside
+        .into_iter()
+        .chain([
+            PathBuf::from("/usr/libexec/app"),
+            PathBuf::from("/usr/bin/app"),
+        ])
+        .find(|path| path.exists())
+    else {
+        return false;
+    };
+    std::process::Command::new(app)
+        .args(["update", package])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Start the system's update without waiting for it, as the shell does when
+/// an app needs a newer system (`tilo-deployment-update.service`).
+fn start_system_update() {
+    let _ = std::process::Command::new("systemctl")
+        .args([
+            "start",
+            "--no-block",
+            "--no-ask-password",
+            "tilo-deployment-update.service",
+        ])
+        .stdin(std::process::Stdio::null())
+        .status();
+}
+
+fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
+    // Held from the lookup until the app exits, so an update meanwhile
+    // leaves the build this launch runs alone (`launcher::lease`).
+    let (entry, _payload_held) = match find_current(package) {
+        Ok(found) => found,
+        Err(code) => return code,
     };
     let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
         Ok(m) => m,
@@ -1121,18 +1408,9 @@ fn run_installed(
     rest: Vec<String>,
 ) -> ExitCode {
     // As in `exec_installed`.
-    let (entry, _payload_held) = match launcher::lease::find_installed_held(package) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            eprintln!(
-                "tilo-launcher: package {package} is not installed. Run `tilo-install list` to see what is."
-            );
-            return ExitCode::from(2);
-        }
-        Err(e) => {
-            eprintln!("tilo-launcher: {e}");
-            return ExitCode::from(2);
-        }
+    let (entry, _payload_held) = match find_current(package) {
+        Ok(found) => found,
+        Err(code) => return code,
     };
 
     // Read the manifest to check `[cli].commands` contains the requested

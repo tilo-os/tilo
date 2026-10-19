@@ -154,7 +154,7 @@ fn migrate_document(
     store: &SecretStore,
     migration: &mut Migration,
 ) -> Result<(), &'static str> {
-    use automerge::{ReadDoc, Value, transaction::Transactable};
+    use automerge::{ReadDoc, Value};
     fn redact(
         value: &mut serde_json::Value,
         store: &SecretStore,
@@ -251,7 +251,11 @@ fn migrate_document(
         replacements.push((object, key, replacement));
     }
     for (object, key, replacement) in replacements {
-        doc.put(&object, key, replacement)
+        // Removing the key first collapses its conflicting values, even when
+        // the winner already reads as the replacement.
+        let slot = ui::tilo_resource::Slot::Key(&object, &key);
+        slot.remove(doc).map_err(|_| UNAVAILABLE)?;
+        slot.put_scalar(doc, automerge::ScalarValue::Str(replacement.into()))
             .map_err(|_| UNAVAILABLE)?;
     }
     Ok(())
@@ -300,14 +304,16 @@ mod tests {
 
     #[test]
     fn migration_clears_current_fields_preserves_capability_and_is_idempotent() {
-        use automerge::{ROOT, ReadDoc, transaction::Transactable};
+        use automerge::{ROOT, ReadDoc};
         let mut doc = automerge::AutoCommit::new();
         let legacy = r#"{"Bearer":{"token":"historical-plaintext"}}"#;
-        doc.put(ROOT, "auth", legacy).unwrap();
-        doc.put(
-            ROOT,
-            "legacy-record",
-            format!(r#"{{"request":{{"auth":{legacy}}}}}"#),
+        ui::tilo_resource::evolution::fixture(
+            &mut doc,
+            &ROOT,
+            &serde_json::json!({
+                "auth": legacy,
+                "legacy-record": format!(r#"{{"request":{{"auth":{legacy}}}}}"#),
+            }),
         )
         .unwrap();
         let legacy_heads = doc.get_heads();
@@ -343,7 +349,7 @@ mod tests {
 
     #[test]
     fn failed_protected_write_preserves_legacy_document_for_retry() {
-        use automerge::{ROOT, transaction::Transactable};
+        use automerge::ROOT;
         use ui::secrets::{Protection, Secret, SecretBackend, SecretError};
         struct Locked;
         impl SecretBackend for Locked {
@@ -362,8 +368,12 @@ mod tests {
         }
         let store = SecretStore::with_backend("test", std::sync::Arc::new(Locked));
         let mut doc = automerge::AutoCommit::new();
-        doc.put(ROOT, "auth", r#"{"Bearer":{"token":"retry-secret"}}"#)
-            .unwrap();
+        ui::tilo_resource::evolution::fixture(
+            &mut doc,
+            &ROOT,
+            &serde_json::json!({"auth": r#"{"Bearer":{"token":"retry-secret"}}"#}),
+        )
+        .unwrap();
         let heads = doc.get_heads();
         let error = migrate_document(&mut doc, &ROOT, &store).unwrap_err();
         assert!(!error.contains("retry-secret"));
@@ -373,7 +383,7 @@ mod tests {
 
     #[test]
     fn multi_field_migration_retries_do_not_reseal_acknowledged_credentials() {
-        use automerge::{ROOT, ReadDoc, transaction::Transactable};
+        use automerge::{ROOT, ReadDoc};
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -415,10 +425,12 @@ mod tests {
         let store = SecretStore::with_backend("migration", backend.clone());
         let mut doc = automerge::AutoCommit::new();
         for (key, token) in [("a", "first"), ("b", "second")] {
-            doc.put(
-                ROOT,
-                key,
-                format!(r#"{{"auth":{{"Bearer":{{"token":"{token}"}}}}}}"#),
+            ui::tilo_resource::evolution::fixture(
+                &mut doc,
+                &ROOT,
+                &serde_json::json!({
+                    key: format!(r#"{{"auth":{{"Bearer":{{"token":"{token}"}}}}}}"#),
+                }),
             )
             .unwrap();
         }

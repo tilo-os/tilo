@@ -62,10 +62,8 @@ pub fn photo_png() -> Vec<u8> {
         let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
         *px = Rgb([red, green, blue]);
     }
-    let mut bytes = std::io::Cursor::new(Vec::new());
     // Encoding an in-memory RGB image as PNG cannot fail.
-    let _ = img.write_to(&mut bytes, image::ImageFormat::Png);
-    bytes.into_inner()
+    ui::png::encode_image(&image::DynamicImage::ImageRgb8(img)).unwrap_or_default()
 }
 
 /// The content id [`photo_png`] is stored under, in any store.

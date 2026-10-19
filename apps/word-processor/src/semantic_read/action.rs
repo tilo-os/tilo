@@ -2,14 +2,13 @@
 //! body-text projection the SDK runs over the committed canonical document.
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-    ResultSpec,
-};
+use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
     ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
     encode_cursor,
 };
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource;
 
 pub const OPERATION_TYPE: &str = "word-processor.read";
 pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::new(
@@ -29,7 +28,9 @@ struct Request {
 }
 
 /// What a page reads as: Markdown by default, or the raw segments.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 enum Format {
     #[default]
@@ -54,61 +55,38 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     Ok(())
 }
 
+/// What `read-text` is invoked with.
+#[derive(Deserialize, ui::tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct Params {
+    /// Maximum blocks in this page (default 64)
+    #[schema(range(min = 1, max = 64))]
+    page_size: Option<u8>,
+    /// Opaque nextCursor from the preceding page
+    #[schema(range(max = 1024))]
+    cursor: Option<String>,
+    /// markdown (default) or segments: each block's raw text, kind and id, cells too
+    format: Option<Format>,
+}
+
 pub fn spec() -> ActionSpec {
-    let spec = ActionSpec::typed_operation(
-        "read-text",
-        "Read document text",
-        "optional pageSize, cursor and format",
-        OperationKind::Effect,
+    let spec = ui::semantic_document_read::read_action(
+        ui::semantic_document_read::ReadName {
+            id: "read-text",
+            label: "Read document text",
+            description: "optional pageSize, cursor and format",
+        },
         OPERATION_TYPE,
-        vec![
-            ActionParam::optional(
-                "pageSize",
-                ParamType::Integer,
-                "Maximum blocks in this page (default 64)",
-            )
-            .with_schema(serde_json::json!({"type":"integer","minimum":1,"maximum":64})),
-            ActionParam::optional(
-                "cursor",
-                ParamType::Text,
-                "Opaque nextCursor from the preceding page",
-            )
-            .with_schema(serde_json::json!({"type":"string","maxLength":1024})),
-            ActionParam::optional(
-                "format",
-                ParamType::Text,
-                "markdown (default) or segments: each block's raw text, kind and id, cells too",
-            )
-            .with_schema(serde_json::json!({"type":"string","enum":["markdown","segments"]})),
-        ],
-        move |args| {
-            let request = Request {
-                page_size: args.integer("pageSize").map_or(DEFAULT_PAGE_SIZE, |n| {
-                    u8::try_from(n).unwrap_or(0)
-                }),
-                cursor: args.text("cursor").map(str::to_owned),
-                format: match args.text("format") {
-                    Some("segments") => Format::Segments,
-                    _ => Format::Markdown,
-                },
-            };
-            EncodedAction::encode_operation(OPERATION_TYPE, &request).unwrap_or_else(|_| {
-                EncodedAction {
-                    type_id: OPERATION_TYPE.into(),
-                    payload: Vec::new(),
-                }
-            })
+        result_schema,
+        |params: Params| Request {
+            page_size: params.page_size.unwrap_or(DEFAULT_PAGE_SIZE),
+            cursor: params.cursor,
+            format: params.format.unwrap_or_default(),
         },
     )
     .with_description(
         "The document as Markdown, one block per line ending in its {#block id}; **bold**, *italic*, ~~struck~~, `code` and [links](url) show inline, their delimiters not counted in character offsets; tables are Markdown tables tagged {#table id}, each cell ending in its {#block id}. Pages of up to 64 blocks: pass nextCursor for the next",
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: result_schema().clone(),
-        },
-        ..ActionContract::view()
-    })
     .reads_document();
     crate::actions::continuation::pure(
         spec,

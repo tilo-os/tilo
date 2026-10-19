@@ -1763,6 +1763,7 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        crate::motion::note_input(event);
         self.invalidate_local();
         self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
@@ -2498,6 +2499,7 @@ impl FrameHarness {
                 .is_some_and(|wake| wake.dirty.get());
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || crate::motion::frames_wanted(crate::time::now())
                 || self
                     .presence
                     .interaction_animation_demand(crate::time::now(), &self.theme),
@@ -4855,6 +4857,8 @@ impl FrameHarness {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        // An action performed for someone lands at once (`motion`).
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
         self.invalidate_local();
         self.settle_replayed_draws();
         use crate::accesskit_bridge::A11yTarget;
@@ -5155,6 +5159,8 @@ impl FrameHarness {
         semantic_target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
+        // An action performed for someone lands at once (`motion`).
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
         self.invalidate_local();
         use crate::a11y::Action as SemanticAction;
         use automerge::transaction::Transactable;
@@ -5871,6 +5877,7 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        crate::motion::note_input(event);
         // A wheel whose frame the host takes is judged once dispatched
         // (`dispatch_with_host_navigation`): only one the root declares
         // view-only leaves the next frame quiet. Every other event counts.
@@ -5985,6 +5992,7 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        crate::motion::note_input(event);
         self.invalidate_local();
         if self.pump_component_wakes_checked().is_err() {
             return;
@@ -6508,6 +6516,124 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+
+    /// Invoke the action `action` that the hosted component publishes on its
+    /// resource `resource` (its own, an item, a child or a live row, by the
+    /// id it publishes), with JSON `arguments`, the way an agent's call
+    /// reaches it, then lay out again.
+    ///
+    /// # Errors
+    /// Refuses when no component is hosted or `arguments` is no object, and
+    /// as [`Self::invoke_bound_action`].
+    pub fn call_on(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_as(resource, action, arguments, false)
+    }
+
+    /// [`Self::call_on`] after the caller confirmed this invocation, as the
+    /// host's confirmation prompt does for a destructive action.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`], except that no confirmation is required.
+    pub fn call_on_confirmed(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_as(resource, action, arguments, true)
+    }
+
+    fn call_on_as(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let instance = self.component_instance_id().ok_or_else(|| {
+            tilo_actions::DoorError::Failed("no application component is hosted".into())
+        })?;
+        self.call_on_instance_as(instance, resource, action, arguments, confirmed)
+    }
+
+    /// [`Self::call_on`] on the hosted component instance `instance`, such
+    /// as one window of several.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`].
+    pub fn call_on_instance(
+        &mut self,
+        instance: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_instance_as(instance, resource, action, arguments, false)
+    }
+
+    /// [`Self::call_on_instance`] after the caller confirmed this invocation.
+    ///
+    /// # Errors
+    /// As [`Self::call_on`], except that no confirmation is required.
+    pub fn call_on_instance_confirmed(
+        &mut self,
+        instance: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.call_on_instance_as(instance, resource, action, arguments, true)
+    }
+
+    fn call_on_instance_as(
+        &mut self,
+        instance_id: crate::application::InstanceId,
+        resource: &str,
+        action: &str,
+        arguments: serde_json::Value,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        let address = crate::bound_dispatch::BoundActionAddress {
+            instance_id,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let started = if confirmed {
+            self.invoke_bound_action_confirmed(&address, &arguments)
+        } else {
+            self.invoke_bound_action(&address, &arguments)
+        }?;
+        self.relayout();
+        Ok(started)
+    }
+
+    /// Invoke one published action of the tree the app publishes now (see
+    /// [`Self::invoke_action`]) by its resource id and action id, unconfirmed.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_action`].
+    pub fn invoke_published(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invoke_action(
+            &tilo_actions::ActionAddress::new(resource, action),
+            arguments,
+            false,
+            None,
+        )
     }
 
     /// [`Self::invoke_bound_action`] (confirmed when `confirmed`) for an

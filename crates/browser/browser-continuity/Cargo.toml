@@ -19,17 +19,16 @@ ed25519-dalek = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["fs", "process"], optional = true }
 uuid = { workspace = true, optional = true }
 blake3.workspace = true
-automerge.workspace = true
 url.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+# A retained imported tree is a stored value of the personal library.
+tilo-resource = { path = "../../sdk/tilo-resource" }
+browser-continuity-core = { path = "../browser-continuity-core" }
 tempfile = { workspace = true, optional = true }
 rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 cap-primitives = { version = "3.4.6", optional = true }
 cap-fs-ext = { version = "3.4.6", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
 
 [dev-dependencies]
 tempfile.workspace = true

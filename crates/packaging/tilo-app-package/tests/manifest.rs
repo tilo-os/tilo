@@ -483,3 +483,43 @@ fn capabilities_roundtrip_and_reject_blank_or_repeated_names() {
         assert_eq!(validate_manifest(&m), Err(expected), "{body}");
     }
 }
+
+/// A capability that lowers the sandbox (`io-uring`) carries a reason the
+/// permission prompt can show; a reason never explains an undeclared one.
+#[test]
+fn io_uring_is_declared_with_a_one_line_reason() {
+    let declared = |body: &str| {
+        Manifest::from_toml_str(&format!(
+            "{}\n[capabilities]\noptional = [\"io-uring\"]\n{body}\n",
+            render_with_dummy_key()
+        ))
+        .expect("decode")
+    };
+    let m = declared("[capabilities.reasons]\nio-uring = \"Batches disk reads.\"");
+    validate_manifest(&m).expect("io-uring with a reason is valid");
+    assert_eq!(
+        m.capabilities.reason("io-uring"),
+        Some("Batches disk reads.")
+    );
+    let again = Manifest::from_toml_str(&m.to_toml_string().expect("encode")).expect("decode-2");
+    assert_eq!(m, again, "reasons round-trip");
+
+    assert_eq!(
+        validate_manifest(&declared("")),
+        Err(ManifestError::MissingCapabilityReason(
+            "io-uring".to_owned()
+        ))
+    );
+    assert_eq!(
+        validate_manifest(&declared("[capabilities.reasons]\nio-uring = \"  \"")),
+        Err(ManifestError::BadCapabilityReason("io-uring".to_owned()))
+    );
+    assert_eq!(
+        validate_manifest(&declared(
+            "[capabilities.reasons]\nio-uring = \"Batches.\"\ncamera = \"Scans codes.\""
+        )),
+        Err(ManifestError::UndeclaredCapabilityReason(
+            "camera".to_owned()
+        ))
+    );
+}

@@ -34,7 +34,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Previous/next workspace | Super+Page Up/Page Down | Strip switcher, Workspaces section |
 | Maximize/restore the focused window | Super+Up/Down (Super+M toggles) | Double-click the tab bar |
 | Strip above/below | Ctrl+Super+Up/Down | Strip navigation, three-finger vertical swipe |
-| Go to strip N, counting from the top (the Lounge strip is 1) | Super+1 … Super+9 | Strip navigation |
+| Go to strip N, counting from the top | Super+1 … Super+9 | Strip navigation |
 | Carry the focused group to the strip above/below | Shift+Ctrl+Super+Up/Down | Drag onto another strip |
 | Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
@@ -107,9 +107,8 @@ adjacent-window chord, so notifications take Super+A (the Windows Action
 Center key). Super+Up/Down maximize and restore the focused window group on
 any strip, as on Windows and GNOME; pressed again they do nothing, and
 Super+M toggles. Strips are one level out, on Ctrl+Super+Up/Down, and
-Super+1 … 9 go straight to a strip, counting from the top, so the shared
-Lounge strip is Super+1 where a workspace has one; a number past the last
-strip does nothing. Shift carries the focused group in the direction
+Super+1 … 9 go straight to a strip, counting from the top; a number past
+the last strip does nothing. Shift carries the focused group in the direction
 Ctrl+Super+Up/Down moves focus; carrying past the first or last strip does
 nothing, and the group lands after the destination strip's focused group.
 Before 2026-10-17 Super+Up/Down switched strips (maximizing only on the top

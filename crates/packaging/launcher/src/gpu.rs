@@ -52,6 +52,32 @@
 use std::path::{Path, PathBuf};
 use tilo_lock::MutexRecover as _;
 
+/// The capability an app declares to reach the GPU itself
+/// (`[capabilities]` in its manifest).
+pub const CAPABILITY: &str = "gpu";
+
+/// Whether `manifest`'s app opens the GPU itself.
+///
+/// A toolkit app does not: the render service of its room draws its frames
+/// (`tilo-render-service`), so its sandbox has no GPU node, no loader pin and
+/// no shader-cache seed, and the launcher spends nothing preparing them.
+/// Apps that do (a web engine, video, games, 3D, ML) declare `gpu`.
+///
+/// A permission, decided like `io-uring` (`crate::seccomp::syscall_grants`):
+/// the signed manifest is the ceiling (an app that does not declare `gpu`
+/// never gets it); an app the image ships (`image_shipped`) is granted what
+/// it declares; any other app only what the room's capabilities name
+/// (`Scope::Device("gpu")`), which the person gives through the permission
+/// prompt.
+pub fn granted(
+    manifest: &crate::manifest::ManifestView,
+    plan: &crate::capabilities::CapabilityPlan,
+    image_shipped: bool,
+) -> bool {
+    manifest.declares_capability(CAPABILITY)
+        && (image_shipped || plan.devices.iter().any(|device| device == CAPABILITY))
+}
+
 /// GLVND's EGL vendor selection: a colon-separated list of vendor ICD
 /// JSONs; when set, GLVND loads only these and skips the directory scan.
 pub const EGL_VENDOR_ENV: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";

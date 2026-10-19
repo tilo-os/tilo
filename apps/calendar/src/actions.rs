@@ -360,6 +360,7 @@ impl OccurrenceOverrideData {
             original_date: value.original_date.to_string(),
             original_time: value
                 .original_time
+                // format: machine (the override's stored time of day)
                 .map_or_else(String::new, |time| time.format("%H:%M:%S").to_string()),
             cancelled: value.cancelled,
             start: value

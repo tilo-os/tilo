@@ -1,202 +1,88 @@
-//! The toolkit's grammar-backed [`Highlighter`]: Sublime syntax definitions
-//! run through `syntect`, used purely as a tokenizer. Each span's scope stack
-//! (`source.rust → meta.function → entity.name.function`) maps to one
-//! [`TokenKind`]; colours stay with the renderer and the OS [`Theme`], never
-//! with a syntect colour theme.
+//! The toolkit's grammar-backed [`Highlighter`]: a [`tilo_highlight`]
+//! grammar set (syntect over two-face's grammars), each span's scope mapped
+//! to one [`TokenKind`]; colours stay with the renderer and the OS
+//! [`Theme`], never with a syntect colour theme.
 //!
-//! One process-wide [`SyntaxSet`] backs every caller: the extended set curated
-//! by the `bat` project (the defaults plus TOML, TypeScript, Dockerfile and
-//! more). It is the same packed set Typst loads for raw blocks, so a runtime
-//! carrying both stores those bytes once.
+//! The grammar set is not part of the shared runtime every app maps: with
+//! `lazy-highlight` (the runtime's build, turned on by the engine library's
+//! own build) it comes from `libtilo_highlight_engine.so`, opened the first
+//! time code is highlighted; otherwise it is linked
+//! (`tilo-highlight-grammars`). If the library does not open, code
+//! highlights as plain text.
 //!
 //! [`Theme`]: crate::theme::Theme
 
 use std::cell::RefCell;
-use std::sync::OnceLock;
 
-use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use tilo_highlight::{Grammar, Grammars, LineState};
 
 use super::{Highlighter, HlState, LineSpans, Span, TokenKind};
 
-/// Grammars match lines without their trailing `\n`, which is how every
-/// caller already splits its text.
-/// Without `syntax-definitions` (the browser toolkit core) the set holds only
-/// the plain-text grammar, so every language highlights as plain text. It
-/// cannot be empty: syntect expects every set to have a plain-text grammar.
-fn syntax_set() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    #[cfg(feature = "syntax-definitions")]
-    return SET.get_or_init(two_face::syntax::extra_no_newlines);
-    #[cfg(not(feature = "syntax-definitions"))]
-    return SET.get_or_init(plain_text_only);
+/// The grammar set: linked.
+#[cfg(not(feature = "lazy-highlight"))]
+fn grammars() -> Option<&'static dyn Grammars> {
+    Some(tilo_highlight_grammars::grammars())
 }
 
-/// A set holding only syntect's plain-text grammar (no rules, scope
-/// `text.plain`), built without the YAML loader the browser core leaves out.
-#[cfg(any(test, not(feature = "syntax-definitions")))]
-fn plain_text_only() -> SyntaxSet {
-    use syntect::parsing::syntax_definition::{Context, SyntaxDefinition};
-    #[allow(
-        clippy::expect_used,
-        reason = "a fixed, valid scope name always parses"
-    )]
-    let scope = syntect::parsing::Scope::new("text.plain").expect("valid scope");
-    let entry = |name: &str| {
-        let mut context = Context::new(false);
-        context.meta_content_scope = vec![scope];
-        (name.to_owned(), context)
-    };
-    let mut builder = syntect::parsing::SyntaxSetBuilder::new();
-    builder.add(SyntaxDefinition {
-        name: "Plain Text".into(),
-        file_extensions: vec!["txt".into()],
-        scope,
-        first_line_match: None,
-        hidden: false,
-        variables: std::collections::HashMap::new(),
-        contexts: [
-            entry("__start"),
-            entry("__main"),
-            ("main".to_owned(), Context::new(true)),
-        ]
-        .into_iter()
-        .collect(),
-    });
-    builder.build()
-}
-
-/// Map a scope stack to the kind of its innermost classified scope, or `None`
-/// for body text.
-fn scope_kind(scopes: &ScopeStack) -> Option<TokenKind> {
-    scopes.as_slice().iter().rev().find_map(|scope| {
-        let name = scope.build_string();
-        let is = |prefix: &str| name.starts_with(prefix);
-        if is("comment") {
-            Some(TokenKind::Comment)
-        } else if is("string") {
-            Some(TokenKind::StringLit)
-        } else if is("constant.character") {
-            Some(TokenKind::CharLit)
-        } else if is("constant.numeric") {
-            Some(TokenKind::Number)
-        } else if is("constant.language") {
-            Some(TokenKind::Constant)
-        } else if is("entity.name.function")
-            || is("support.function")
-            || is("meta.function-call")
-            || is("variable.function")
-        {
-            Some(TokenKind::Function)
-        } else if is("entity.name.type")
-            || is("entity.name.class")
-            || is("entity.name.struct")
-            || is("entity.name.enum")
-            || is("entity.name.trait")
-            || is("support.type")
-            || is("support.class")
-        {
-            Some(TokenKind::Type)
-        } else if is("keyword.operator") || is("punctuation.accessor") {
-            Some(TokenKind::Operator)
-        } else if is("keyword") || is("storage.type") || is("storage.modifier") {
-            // `storage.type` names storage keywords (`let`, `fn`, `struct`) in
-            // most grammars; genuine type names carry the scopes above.
-            Some(TokenKind::Keyword)
-        } else if is("entity.name.tag") || is("punctuation.definition.tag") {
-            Some(TokenKind::Tag)
-        } else if is("entity.name.macro")
-            || is("support.macro")
-            || is("meta.attribute")
-            || is("meta.annotation")
-            || is("entity.other.attribute-name")
-            || is("punctuation.definition.annotation")
-        {
-            Some(TokenKind::Attribute)
-        } else {
-            None
+/// The grammar set, from its engine library: opened the first time, kept.
+#[cfg(feature = "lazy-highlight")]
+fn grammars() -> Option<&'static dyn Grammars> {
+    static GRAMMARS: std::sync::OnceLock<Option<&'static dyn Grammars>> =
+        std::sync::OnceLock::new();
+    *GRAMMARS.get_or_init(|| {
+        // SAFETY: the engine's entry is checked against `GrammarsEntry`
+        // where it is defined (crates/runtime/engines/highlight), in the
+        // same build.
+        let entry = unsafe {
+            tilo_engine_loader::entry::<tilo_highlight::GrammarsEntry>(
+                tilo_highlight::ENGINE_LIBRARY,
+                tilo_highlight::ENGINE_ENTRY,
+            )
+        };
+        match entry {
+            Ok(entry) => Some(entry()),
+            Err(error) => {
+                tracing::error!(%error, "code highlights as plain text");
+                None
+            }
         }
     })
 }
 
 /// A grammar's parse position between two lines: everything multi-line
 /// constructs (block comments, strings, heredocs) need to continue.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SyntaxState {
-    parse: ParseState,
-    scopes: ScopeStack,
+#[derive(Debug)]
+pub struct SyntaxState(Option<Box<dyn LineState>>);
+
+impl Clone for SyntaxState {
+    fn clone(&self) -> Self {
+        Self(self.0.as_ref().map(|state| state.boxed_clone()))
+    }
 }
 
-impl SyntaxState {
-    fn new(syntax: &SyntaxReference) -> Self {
-        Self {
-            parse: ParseState::new(syntax),
-            scopes: ScopeStack::new(),
+impl PartialEq for SyntaxState {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(state), Some(other)) => state.same(other.as_ref()),
+            (None, None) => true,
+            _ => false,
         }
     }
+}
 
+impl Eq for SyntaxState {}
+
+impl SyntaxState {
     /// Tokenize one line (no `\n`) and advance to the next. The returned spans
     /// cover the whole line in order; unclassified runs are
     /// [`TokenKind::Text`] and adjacent runs of one kind are merged.
     pub fn highlight_line(&mut self, line: &str) -> Vec<Span> {
-        let mut spans = Vec::new();
-        let Ok(ops) = self.parse.parse_line(line, syntax_set()) else {
-            if !line.is_empty() {
-                spans.push(Span::new(0..line.len(), TokenKind::Text));
-            }
-            return spans;
-        };
-        let mut start = 0usize;
-        let mut kind = scope_kind(&self.scopes).unwrap_or(TokenKind::Text);
-        for (offset, op) in ops {
-            let offset = offset.min(line.len());
-            push_run(
-                &mut spans,
-                start,
-                offset,
-                word_operator(kind, line, start, offset),
-            );
-            start = start.max(offset);
-            if self.scopes.apply(&op).is_err() {
-                continue;
-            }
-            kind = scope_kind(&self.scopes).unwrap_or(TokenKind::Text);
+        match &mut self.0 {
+            Some(state) => state.highlight_line(line),
+            None if line.is_empty() => Vec::new(),
+            None => vec![Span::new(0..line.len(), TokenKind::Text)],
         }
-        push_run(
-            &mut spans,
-            start,
-            line.len(),
-            word_operator(kind, line, start, line.len()),
-        );
-        spans
     }
-}
-
-/// An operator spelled as a word (Dockerfile's `AS`, SQL's `AND`, Python's
-/// `not`) reads as a keyword, and is coloured as one.
-fn word_operator(kind: TokenKind, line: &str, start: usize, end: usize) -> TokenKind {
-    if kind != TokenKind::Operator {
-        return kind;
-    }
-    let word = line.get(start..end).unwrap_or("").trim();
-    if !word.is_empty() && word.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        TokenKind::Keyword
-    } else {
-        kind
-    }
-}
-
-fn push_run(spans: &mut Vec<Span>, start: usize, end: usize, kind: TokenKind) {
-    if start >= end {
-        return;
-    }
-    if let Some(last) = spans.last_mut()
-        && last.kind == kind
-        && last.range.end == start
-    {
-        last.range.end = end;
-        return;
-    }
-    spans.push(Span::new(start..end, kind));
 }
 
 /// A grammar-backed [`Highlighter`] for one language.
@@ -206,7 +92,8 @@ fn push_run(spans: &mut Vec<Span>, start: usize, end: usize, kind: TokenKind) {
 /// parse states recorded since the last carry-`0` call. Callers keeping their
 /// own caches use [`SyntaxHighlighter::start`] and [`SyntaxState`] directly.
 pub struct SyntaxHighlighter {
-    syntax: &'static SyntaxReference,
+    /// `None` when no grammar set is available: plain text.
+    grammar: Option<Grammar>,
     pass: RefCell<Vec<SyntaxState>>,
 }
 
@@ -215,16 +102,13 @@ impl SyntaxHighlighter {
     /// case-insensitive name (`Rust`, `Dockerfile`), the way a Markdown fence
     /// tag names its language. `None` when no grammar matches.
     pub fn for_token(token: &str) -> Option<Self> {
-        let set = syntax_set();
-        let syntax = set
-            .find_syntax_by_token(token)
-            .or_else(|| set.find_syntax_by_extension(token))?;
-        Some(Self::with_syntax(syntax))
+        let grammar = grammars()?.find(token)?;
+        Some(Self::with_grammar(Some(grammar)))
     }
 
     /// Plain text: every line is a single [`TokenKind::Text`] run.
     pub fn plain_text() -> Self {
-        Self::with_syntax(syntax_set().find_syntax_plain_text())
+        Self::with_grammar(grammars().map(|grammars| grammars.plain_text()))
     }
 
     /// [`SyntaxHighlighter::for_token`], falling back to plain text.
@@ -232,21 +116,27 @@ impl SyntaxHighlighter {
         Self::for_token(token).unwrap_or_else(Self::plain_text)
     }
 
-    fn with_syntax(syntax: &'static SyntaxReference) -> Self {
+    fn with_grammar(grammar: Option<Grammar>) -> Self {
         Self {
-            syntax,
+            grammar,
             pass: RefCell::new(Vec::new()),
         }
     }
 
     /// The grammar's display name (`Rust`, `Plain Text`).
     pub fn name(&self) -> &'static str {
-        &self.syntax.name
+        match (grammars(), self.grammar) {
+            (Some(grammars), Some(grammar)) => grammars.name(grammar),
+            _ => "Plain Text",
+        }
     }
 
     /// The parse state at the start of a document.
     pub fn start(&self) -> SyntaxState {
-        SyntaxState::new(self.syntax)
+        SyntaxState(match (grammars(), self.grammar) {
+            (Some(grammars), Some(grammar)) => Some(grammars.start(grammar)),
+            _ => None,
+        })
     }
 }
 
@@ -281,16 +171,6 @@ impl Highlighter for SyntaxHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The browser core's set, without grammars, still parses plain text.
-    #[test]
-    fn the_set_without_grammars_has_plain_text() {
-        let set = plain_text_only();
-        let plain = set.find_syntax_plain_text();
-        assert_eq!(plain.scope.build_string(), "text.plain");
-        let mut parse = ParseState::new(plain);
-        assert!(parse.parse_line("any text at all", &set).is_ok());
-    }
 
     fn text_of(line: &str, kind: TokenKind, spans: &[Span]) -> Vec<String> {
         spans

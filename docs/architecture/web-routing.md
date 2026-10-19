@@ -579,6 +579,31 @@ replaces the address with the workspace's full link. The home is listed
 first among the person's workspaces; the runtime lists no workspace of its
 own.
 
+A web host may also name a **directory** of public workspaces in
+`entry.json` (`{directory: "<https address>"}`, `tilo_relay_protocol::directory`).
+A workspace is public when its owner (or anyone the room lets change its
+settings) made it so in its settings: a short description and the **default
+role** everyone who joins gets (viewer, commenter or editor; moderators are
+chosen). A workspace that lives only on the owner's computer moves onto
+their home relay when they make it public, in the same place on their
+desktop. The host the workspace lives on lists it (`POST
+<api>/directory`: name, description, default role, who is in it now, how many
+belong to it, when it was last active) and answers its door (`POST
+<api>/directory/<room>/join`): an invitation only that person can redeem and
+the token of a pre-admission at the default role, so the ordinary redemption
+admits them at once; nobody decides each join. The host signs that grant
+with its own device key, and a redemption is admitted only under a grant
+the room's owner or this host's door signed while the room is public. A banned person is refused at
+the door, the room's moderators remove and ban as in any room, `…/report`
+files a report its owner sees, and a host with a moderation model key runs
+the moderation agent in every public room. A site's room service lists its
+own community workspace the same way (`/directory`, with the faces of the
+members online its relay reports, its door the site's `/join`). On a Tilo computer, "Join a workspace…" (the workspace overview,
+the strip switcher, the workspace menu and search) lists the directories of
+the community site first, then those of the hosts of the workspaces it holds
+through the web and any site the person types; joining adds the workspace and
+switches to it. Leaving is in the workspace's own menu.
+
 A person invited to several workspaces, on one host or several, returns
 to them from any of them. The page remembers each room it entered as a
 member (an invitation redeemed, an account it holds, a device it paired;
@@ -603,7 +628,9 @@ written from the environment when the container starts:
 `TILO_WEB_HOME_HOST` (the workspace host's name), `TILO_WEB_HOME_NAME`
 (required with a host) and `TILO_WEB_HOME_APP` (optional) make that host's
 workspace the home; without them a bare visit opens the person's own
-desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
+desktop. The home host's `/directory` is named as the site's `directory`
+unless `TILO_WEB_DIRECTORY` (an https address) names another.
+`TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
 `TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
 About sheet behind the top bar's Tilo mark offers; an unset one is not
 offered. `TILO_WEB_EMBEDDER` (an https origin, optional) names the one

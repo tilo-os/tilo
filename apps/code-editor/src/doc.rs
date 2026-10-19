@@ -97,17 +97,14 @@ impl EditorDoc {
     /// A text keyed `key`, holding `seed` unless it already holds text.
     #[cfg(test)]
     pub fn ensure_buffer_key(doc: &mut AutoCommit, key: &str, seed: &str) -> Option<ObjId> {
-        use automerge::transaction::Transactable;
         if let Some(text) = Self::buffer_text_key(doc, key) {
             return Some(text);
         }
-        let buffers = match doc.get(&ROOT, "buffers") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc.put_object(&ROOT, "buffers", ObjType::Map).ok()?,
-        };
-        let text = doc.put_object(&buffers, key, ObjType::Text).ok()?;
-        doc.splice_text(&text, 0, 0, seed).ok()?;
-        Some(text)
+        let buffers = ui::tilo_resource::Slot::Key(&ROOT, "buffers")
+            .object(doc, ObjType::Map)
+            .ok()?;
+        ui::tilo_resource::write_key(doc, &buffers, key, &seed.to_owned()).ok()?;
+        Self::buffer_text_key(doc, key)
     }
 
     /// The whole text of the file `key`.
@@ -126,7 +123,11 @@ impl EditorDoc {
         delete: usize,
         insert: &str,
     ) {
-        use automerge::transaction::Transactable;
-        let _ = doc.splice_text(text, char_pos, delete as isize, insert);
+        let _ = ui::tilo_resource::TextEdit::Splice {
+            at: char_pos,
+            delete,
+            insert: insert.to_owned(),
+        }
+        .apply_under(doc, text);
     }
 }

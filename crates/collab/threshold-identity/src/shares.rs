@@ -117,9 +117,9 @@ impl RecoveryShare {
                     "signing share serialise produced non-32-byte output".to_string(),
                 )
             })?;
-        let mnemonic = bip39::Mnemonic::from_entropy(&scalar_bytes)
-            .map_err(|e| ThresholdError::FrostInternal(format!("bip39 encode: {e}")))?
-            .to_string();
+        let mnemonic = crate::bip39::encode(&scalar_bytes).ok_or_else(|| {
+            ThresholdError::FrostInternal("bip39 encode: 32 bytes did not encode".to_string())
+        })?;
         let verifying_share_bytes = kp.verifying_share().serialize()?;
         let gpk_bytes_vec = kp.verifying_key().serialize()?;
         let gpk_bytes: [u8; 32] = gpk_bytes_vec.as_slice().try_into().map_err(|_| {
@@ -150,19 +150,16 @@ impl RecoveryShare {
     /// entropy, or a FROST-internal error if the resulting scalar
     /// does not form a valid key package.
     pub fn into_secret_share(self) -> Result<SecretShare, ThresholdError> {
-        // Decode the mnemonic into 32 bytes of entropy. `parse_normalized`
-        // (not `parse`) avoids the unicode-normalization feature flag — our
-        // BIP39 English wordlist is ASCII, so normalisation is a no-op.
-        let mnemonic = bip39::Mnemonic::parse_normalized(&self.mnemonic)
+        // Decode the mnemonic into 32 bytes of entropy. The BIP39 English
+        // wordlist is ASCII, so the phrase is read as written, without
+        // Unicode normalisation.
+        let entropy = crate::bip39::decode(&self.mnemonic)
             .map_err(|e| ThresholdError::BadRecoveryMnemonic(e.to_string()))?;
-        let (entropy_buf, entropy_len) = mnemonic.to_entropy_array();
-        if entropy_len != 32 {
-            return Err(ThresholdError::BadRecoveryMnemonic(format!(
+        let entropy_len = entropy.len();
+        let scalar_bytes: [u8; 32] = entropy.as_slice().try_into().map_err(|_| {
+            ThresholdError::BadRecoveryMnemonic(format!(
                 "expected 32 bytes of entropy, got {entropy_len}"
-            )));
-        }
-        let scalar_bytes: [u8; 32] = entropy_buf[..32].try_into().map_err(|_| {
-            ThresholdError::BadRecoveryMnemonic("entropy slice not 32 bytes".to_string())
+            ))
         })?;
         let signing_share = SigningShare::deserialize(&scalar_bytes)?;
         let verifying_share = VerifyingShare::deserialize(&self.verifying_share_bytes)?;

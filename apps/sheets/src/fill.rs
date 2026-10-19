@@ -211,9 +211,12 @@ fn date_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
 /// single list; the sequence continues cycling with the detected step
 /// (default +1).
 fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
+    // format: machine (the names a cell holds and the series continues; never
+    // the viewer's language, so every collaborator fills the same cells)
     const MONTHS_SHORT: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
+    // format: machine (as above)
     const MONTHS_LONG: [&str; 12] = [
         "January",
         "February",
@@ -228,7 +231,9 @@ fn name_series(pattern: &[FillCell], count: usize) -> Option<Vec<FillOut>> {
         "November",
         "December",
     ];
+    // format: machine (as above)
     const DAYS_SHORT: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    // format: machine (as above)
     const DAYS_LONG: [&str; 7] = [
         "Sunday",
         "Monday",

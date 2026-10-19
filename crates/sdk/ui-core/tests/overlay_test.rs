@@ -29,6 +29,8 @@ use vello::peniko::Color;
 
 #[test]
 fn focus_trap_cycles_only_within_members() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     let trap = FocusTrap::new(vec![1, 2, 3]);
     assert_eq!(trap.next_from(1), Some(2));
     assert_eq!(trap.next_from(3), Some(1));
@@ -182,6 +184,8 @@ fn lay_out(widget: &mut dyn Widget, theme: &Theme) {
 
 #[test]
 fn overlay_panels_register_their_edge_in_both_themes() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = tilo_ui::motion::testing::settled();
     // Case `modal_dialog_panel_edge_registers_in_both_themes`.
     {
         let viewport = Rect::new(0.0, 0.0, f64::from(CANVAS_W), f64::from(CANVAS_H));

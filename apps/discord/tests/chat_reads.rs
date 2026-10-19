@@ -6,43 +6,34 @@
 )]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
-//! back in its answer, and Chat's `read-workspace` is the JSON the planners
+//! back in its answer, and Chat's `read-room` is the JSON the planners
 //! read.
 
 use chat::effects::ChatEffect;
 use chat::record::Chat;
 use chat::resource::ChatShell;
-use discord::tilo::{self, Workspace};
+use discord::tilo::{self, RoomChat};
 use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionOutput;
 use ui::tilo_resource::Id;
-use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::Resource as _;
 
-fn begun() -> (TestApp<ChatShell>, String, String) {
+fn begun() -> (TestApp<ChatShell>, String) {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     app.call(
         "begin-chat",
-        json!({"workspace_name": "Tilo", "name": "Ada", "initials": "A", "color": 1}),
+        json!({"name": "Ada", "initials": "A", "color": 1}),
     )
     .unwrap();
     let state = app.state();
-    let (workspace, _) = state.workspaces.iter().next().unwrap();
-    let (channel, _) = state
-        .channels
-        .iter()
-        .find(|(_, c)| c.workspace == *workspace)
-        .unwrap();
-    (app, workspace.to_string(), channel.to_string())
+    let (channel, _) = state.channels.iter().next().unwrap();
+    (app, channel.to_string())
 }
 
 /// The chat's messages, as the window publishes them.
 fn chain() -> String {
     ui::framework::chain_resource_id(&chat::parts::chain())
-}
-
-fn on(field: &str, id: &str) -> String {
-    item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
 
 /// The id of the one item a call created, from the resources it answered.
@@ -56,19 +47,15 @@ fn created(output: Option<ActionOutput>) -> String {
 
 #[test]
 fn a_verb_answers_the_ids_it_created() {
-    let (mut app, workspace, _) = begun();
+    let (mut app, _) = begun();
     let category = created(
-        app.call_on_output(
-            &on("workspaces", &workspace),
-            "create-category",
-            json!({"name": "chat"}),
-        )
-        .unwrap(),
+        app.call_on_output(Chat::KIND, "create-category", json!({"name": "chat"}))
+            .unwrap(),
     );
     assert!(app.state().categories.contains(&Id::from_raw(&category)));
     let channel = created(
         app.call_on_output(
-            &on("workspaces", &workspace),
+            Chat::KIND,
             "create-channel",
             json!({"name": "general", "category": category}),
         )
@@ -89,8 +76,8 @@ fn a_verb_answers_the_ids_it_created() {
 }
 
 #[test]
-fn read_workspace_is_what_the_planners_read() {
-    let (mut app, workspace, channel) = begun();
+fn read_room_is_what_the_planners_read() {
+    let (mut app, channel) = begun();
     let root = created(
         app.call_on_output(
             &chain(),
@@ -108,17 +95,19 @@ fn read_workspace_is_what_the_planners_read() {
         .unwrap(),
     );
     let read = app
-        .effect(&ChatEffect::ReadWorkspace {
-            workspace: workspace.clone(),
+        .effect(&ChatEffect::ReadRoom {
             message: Some(reply.clone()),
             channel: None,
         })
         .unwrap()
         .value
         .unwrap();
-    let layout = Workspace::from_chat(&read, &workspace);
+    let layout = RoomChat::from_chat(&read);
     assert!(layout.channels.iter().any(|c| c.id == channel), "{read}");
-    assert!(!layout.categories.is_empty());
+    assert!(
+        layout.categories.is_empty(),
+        "a room opens with no categories"
+    );
     let message = tilo::message(&read, &reply).expect("the asked message");
     assert_eq!(message.text, "answer");
     assert_eq!(message.parent.as_deref(), Some(root.as_str()));

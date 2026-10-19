@@ -99,7 +99,7 @@ fn run(archive: &Path, builder_binary: bool, guest_binary: bool) -> serde_json::
     let upload = if guest_binary {
         client.upload(stream)
     } else {
-        client.upload_legacy(stream)
+        client.upload_json_lines(stream)
     }
     .unwrap();
     builder.join().unwrap();

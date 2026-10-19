@@ -460,12 +460,9 @@ impl CalendarApp {
 
     fn build() -> Self {
         let today = ui::clock::today();
-        let model = Calendar::default();
-        let selection = None;
         let accounts = AccountStore::default();
-        let detail_open = false;
         Self {
-            model,
+            model: Calendar::default(),
             today,
             anchor: today,
             pinned_now: None,
@@ -477,8 +474,8 @@ impl CalendarApp {
             view: View::Month,
             calendar_filter: None,
             list_sel: None,
-            selection,
-            detail_open,
+            selection: None,
+            detail_open: false,
             accounts: accounts.clone(),
             device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
@@ -4302,15 +4299,7 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // The sidebar's overflow menu owns input while it is open.
-        if self.sidebar_menu.is_open() {
-            Widget::handle_event(&mut self.sidebar_menu, event, ctx);
-            match self.sidebar_menu.take_selection() {
-                Some(0) => self.apply_action(Action::Export, &mut ctx.state),
-                Some(1) => self.apply_action(Action::Import, &mut ctx.state),
-                _ => {}
-            }
-            self.dirty = true;
+        if self.handle_sidebar_menu_event(event, ctx) {
             return;
         }
 
@@ -4635,6 +4624,26 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
+    /// The sidebar's overflow menu owns input while it is open. Returns
+    /// whether it was open.
+    fn handle_sidebar_menu_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.sidebar_menu.is_open() {
+            return false;
+        }
+        Widget::handle_event(&mut self.sidebar_menu, event, ctx);
+        match self.sidebar_menu.take_selection() {
+            Some(0) => self.apply_action(Action::Export, &mut ctx.state),
+            Some(1) => self.apply_action(Action::Import, &mut ctx.state),
+            _ => {}
+        }
+        self.dirty = true;
+        true
+    }
+
     /// Where a search hit or an agent's `open` queues the item to show.
     pub(crate) fn opens(&self) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
         std::rc::Rc::clone(&self.opens)
@@ -4996,7 +5005,7 @@ impl CalendarApp {
         let body = format!(
             "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
             event.display_title(),
-            event.start.format("%A, %d %B %Y"),
+            ui::format::day_heading(event.start.date(), true),
             ui::clock::time_of_day(&event.start),
             event.timezone
         );

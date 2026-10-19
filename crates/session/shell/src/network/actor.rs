@@ -5,6 +5,17 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+
+/// A workspace host connection's error, as the actor reports it. A host at
+/// another peer protocol version is also the person's to know about: one of
+/// the two devices has to update (`crate::shell::collaborator_versions`).
+fn relay_error(host: &iroh::EndpointId, error: tilo_relay_session::ClientError) -> String {
+    if let tilo_relay_session::ClientError::PeerVersion { theirs } = &error {
+        crate::shell::collaborator_versions::note(host.to_string(), String::new(), *theirs);
+    }
+    error.to_string()
+}
+
 #[cfg(test)]
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
@@ -40,9 +51,7 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
 /// How often the actor retries what is missing (a topic subscription, a
 /// direct peer, a workspace host) and re-reads this device's identity
 /// material and codecs, to announce a change the tick it lands. Local work: a
-/// converged, idle desktop sends nothing on it. Also the cadence of the
-/// heartbeat still sent where an older build listens for one
-/// ([`LEGACY_PEER_WINDOW`]). Armed only while there is something to retry
+/// converged, idle desktop sends nothing on it. Armed only while there is something to retry
 /// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
 /// its rooms never wakes for it.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -62,12 +71,6 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// hold with no application message sent while idle; before the transport
 /// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
 const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
-/// How long after an older, heartbeat-keeping build was last heard on a
-/// topic this device keeps sending it heartbeats, identity and codecs every
-/// [`HEARTBEAT_INTERVAL`]: such a build evicts a peer silent for
-/// [`PEER_TIMEOUT`], and beats every 5 s itself, so three missed beats and
-/// one more mean it is gone. A topic of current builds only is silent.
-const LEGACY_PEER_WINDOW: Duration = Duration::from_secs(20);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -196,11 +199,6 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through room history.
     Action(Vec<u8>),
-    /// Retired non-resumable media-handoff lane. It stays so frames from
-    /// devices that predate the unified lane still decode; receivers drop
-    /// them. Media handoffs now travel as [`Self::NearbyTransfer`] objects of
-    /// kind `MediaHandoff`.
-    MediaTransfer(PersonalMediaTransferFrame),
     /// The one lane for file bytes between a person's devices: Nearby sends
     /// and media handoffs alike. Offers and resume checkpoints travel as
     /// authenticated actions; this lane carries bounded bytes only.
@@ -227,39 +225,16 @@ pub enum PersonalFabricPayload {
         offset: u64,
         bytes: Vec<u8>,
     },
-    /// Optional owner-authored screen observation extension. Appended to keep
-    /// every existing payload discriminant and schema-6 checkpoint unchanged.
+    /// Optional owner-authored screen observation, apart from the schema-6
+    /// checkpoint.
     DisplayConnectors {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
     },
     /// Rich output observations follow the same certified, opt-in route.
-    /// Appending preserves existing payload discriminants and checkpoints.
     DisplayOutputs {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
-    },
-}
-
-/// Wire shape of the retired media-handoff lane, decoded only to be dropped.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum PersonalMediaTransferFrame {
-    Start {
-        transfer_id: [u8; 16],
-        file_name: String,
-        total_bytes: u64,
-    },
-    Chunk {
-        transfer_id: [u8; 16],
-        offset: u64,
-        bytes: Vec<u8>,
-    },
-    Finish {
-        transfer_id: [u8; 16],
-        content_hash: [u8; 32],
-    },
-    Abort {
-        transfer_id: [u8; 16],
     },
 }
 
@@ -740,9 +715,6 @@ enum HostEvent {
 struct TopicRuntime {
     sender: GossipSender,
     pump: tokio::task::JoinHandle<()>,
-    /// When a build that keeps liveness by heartbeat was last heard on the
-    /// topic (see [`ActorState::run_heartbeat_tick`]).
-    legacy_heard: Option<Instant>,
     /// Fingerprint of the identity material last announced on the topic, so
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
@@ -758,17 +730,9 @@ impl TopicRuntime {
         Self {
             sender,
             pump,
-            legacy_heard: None,
             identity_sent: None,
             linked: false,
         }
-    }
-
-    /// Whether a heartbeat-keeping build was heard here recently enough
-    /// that it may still be listening for this device's heartbeat.
-    fn hears_legacy(&self, now: Instant) -> bool {
-        self.legacy_heard
-            .is_some_and(|heard| now.saturating_duration_since(heard) < LEGACY_PEER_WINDOW)
     }
 
     /// Broadcast `bytes` to the topic's swarm, once it has had a neighbour.
@@ -1183,9 +1147,6 @@ struct ActorState {
     /// Fingerprint of the codec advert last announced, so a change goes out
     /// and an unchanged advert never does.
     caps_sent: Option<[u8; 32]>,
-    /// Number of the last heartbeat sent for an older build's sake (see
-    /// [`ActorState::legacy_beat`]).
-    compat_beats: u64,
     /// Remote-action requests that found neither a direct nor a relayed
     /// route. Sent when that peer is next seen on the workspace.
     pending_remote_actions: PendingRemoteActions,
@@ -2018,7 +1979,8 @@ impl ActorState {
                 )
                 .await
                 else {
-                    // An older Tilo peer simply does not negotiate this ALPN.
+                    // A device that does not answer in time is skipped; the
+                    // next snapshot tries it again.
                     continue;
                 };
                 self.personal_fabric_connections
@@ -3029,6 +2991,18 @@ impl ActorState {
                 let decoded = postcard::from_bytes::<NeighbourMsg>(&message.content);
                 self.tally
                     .note(decoded.as_ref().map_or("Undecodable", NeighbourMsg::kind));
+                // An identity announcement from another peer protocol version
+                // may not decode at this one; its frozen prefix still says
+                // which, and so which of the two devices has to update.
+                if decoded.is_err()
+                    && let Some(theirs) = neighbour_wire::identity_hello_version(&message.content)
+                {
+                    crate::shell::collaborator_versions::note(
+                        peer.to_string(),
+                        String::new(),
+                        theirs,
+                    );
+                }
                 let fingerprint = message_fingerprint(&message.content);
                 // An advert describes its sender rather than reporting an
                 // event: it is news when it differs from the last one this
@@ -3066,10 +3040,9 @@ impl ActorState {
                     return;
                 }
                 match decoded {
-                    Ok(beat @ NeighbourMsg::Heartbeat { .. }) => {
-                        if beat.is_timed_heartbeat() {
-                            self.note_legacy_peer(ws).await;
-                        }
+                    // Liveness is the transport's: a heartbeat says only that
+                    // its sender is here.
+                    Ok(NeighbourMsg::Heartbeat { .. }) => {
                         rediscovered.then_some(NetEvent::PeerJoined {
                             ws,
                             peer,
@@ -3486,7 +3459,7 @@ impl ActorState {
 
     /// Retry any topic subscription, direct peer or workspace host not yet
     /// connected, and announce this device's identity and codecs where they
-    /// changed (plus a heartbeat where an older build listens for one).
+    /// changed.
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
@@ -3532,61 +3505,10 @@ impl ActorState {
         // (a renewed certificate, a new revocation, an H.264-only viewer
         // opening). A converged, idle desktop says nothing.
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
-        for &ws in &workspaces {
+        for ws in workspaces {
             self.announce_identity_if_changed(ws).await;
         }
         self.announce_media_caps_if_changed().await;
-        let now = Instant::now();
-        for ws in workspaces {
-            if self
-                .topics
-                .get(&ws)
-                .is_some_and(|topic| topic.hears_legacy(now))
-            {
-                self.legacy_beat(ws).await;
-            }
-        }
-    }
-
-    /// What an older build on `ws` needs to keep this device a member and
-    /// know what it is: a heartbeat, its identity and its codecs, every
-    /// [`HEARTBEAT_INTERVAL`], as every build once sent everyone. Neighbour
-    /// scoped, since such a build evicts by the link a message arrives over,
-    /// and numbered so that it neither looks like an older build's own beat
-    /// nor repeats bytes gossip would drop as already seen.
-    async fn legacy_beat(&mut self, ws: WorkspaceId) {
-        self.announce_identity(ws).await;
-        self.announce_media_caps(ws).await;
-        self.compat_beats =
-            if self.compat_beats >= NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT.saturating_sub(1) {
-                1
-            } else {
-                self.compat_beats.saturating_add(1)
-            };
-        let beat = NeighbourMsg::Heartbeat {
-            peer: crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-            ts: self.compat_beats,
-        };
-        if let (Some(topic), Ok(bytes)) = (self.topics.get(&ws), postcard::to_allocvec(&beat)) {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
-        }
-    }
-
-    /// An older, heartbeat-keeping build beat on `ws`. The first such beat
-    /// in a while answers at once rather than at the next tick: that build
-    /// heard this device last when the link came up, and evicts it after
-    /// [`PEER_TIMEOUT`] of silence.
-    async fn note_legacy_peer(&mut self, ws: WorkspaceId) {
-        let now = Instant::now();
-        let Some(topic) = self.topics.get_mut(&ws) else {
-            return;
-        };
-        let answering = topic.hears_legacy(now);
-        topic.legacy_heard = Some(now);
-        if !answering {
-            tracing::debug!(ws, "an older build beats here; heartbeating for it");
-            self.legacy_beat(ws).await;
-        }
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -3594,6 +3516,7 @@ impl ActorState {
     fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
         let (cert, revocations) = self.host_identity.as_ref()?.material_for(ws);
         Some(NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations,
         })
@@ -4091,7 +4014,6 @@ async fn run(
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
         caps_sent: None,
-        compat_beats: 0,
         pending_remote_actions: PendingRemoteActions::default(),
         gossip_pointers: PointerPacer::default(),
     };
@@ -4575,7 +4497,7 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| error.to_string()))
+                .and_then(|result| result.map_err(|error| relay_error(&host, error)))
                 .and_then(|client| {
                     RelayCoeditSession::join(
                         client,
@@ -4624,7 +4546,7 @@ impl HostRouteScheduler<'_> {
             })
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| error.to_string()))
+            .and_then(|result| result.map_err(|error| relay_error(&host, error)))
             .and_then(|client| {
                 RelayCoeditSession::join(
                     client,
@@ -5376,52 +5298,6 @@ mod tests {
             assert_eq!(offset, 99);
             assert_eq!(bytes.len(), PERSONAL_TRANSFER_CHUNK_BYTES);
         }
-    }
-
-    #[test]
-    fn legacy_media_transfer_frame_is_decoded_and_dropped() {
-        // Postcard writes the variant index first: the retired media lane
-        // keeps its slot, so older devices' frames decode and the unified
-        // lane's discriminant never moves.
-        let legacy = PersonalFabricWireFrame {
-            workspace: 42,
-            user_public_key: [3; 32],
-            payload: PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
-                transfer_id: [6; 16],
-                file_name: "song.flac".into(),
-                total_bytes: 9,
-            }),
-        };
-        let encoded = postcard::to_allocvec(&legacy).unwrap();
-        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
-        assert!(matches!(
-            decoded.payload,
-            PersonalFabricPayload::MediaTransfer(PersonalMediaTransferFrame::Start {
-                transfer_id,
-                total_bytes: 9,
-                ..
-            }) if transfer_id == [6; 16]
-        ));
-        let discriminant = |payload: PersonalFabricPayload| {
-            postcard::to_allocvec(&payload).unwrap().first().copied()
-        };
-        assert_eq!(
-            discriminant(PersonalFabricPayload::MediaTransfer(
-                PersonalMediaTransferFrame::Abort {
-                    transfer_id: [1; 16]
-                }
-            )),
-            Some(3)
-        );
-        assert_eq!(
-            discriminant(PersonalFabricPayload::NearbyTransfer(
-                PersonalNearbyTransferFrame::Abort {
-                    transfer_id: [1; 16],
-                    request_id: [2; 16],
-                }
-            )),
-            Some(4)
-        );
     }
 
     use iroh::endpoint::presets;

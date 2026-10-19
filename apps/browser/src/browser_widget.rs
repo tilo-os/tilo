@@ -339,10 +339,10 @@ fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
         DownloadStatus::Downloading => match entry.total_bytes {
             Some(total) => format!(
                 "{} of {}",
-                ui::format::bytes_si(entry.received_bytes),
-                ui::format::bytes_si(total)
+                ui::format::size(entry.received_bytes),
+                ui::format::size(total)
             ),
-            None => format!("{} downloaded", ui::format::bytes_si(entry.received_bytes)),
+            None => format!("{} downloaded", ui::format::size(entry.received_bytes)),
         },
         DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
             || "Download complete".into(),
@@ -1139,7 +1139,7 @@ impl BrowserWidget {
         let revision = record.revision();
         if self.personal_bookmarks_revision != Some(revision) {
             self.personal_bookmarks_revision = Some(revision);
-            self.personal_bookmarks = record.get();
+            self.personal_bookmarks = Rc::new(record.get().projected());
             let mut opened = std::collections::BTreeMap::new();
             for entry in self.personal_bookmarks.bookmarks.entries() {
                 opened.insert(
@@ -4251,7 +4251,7 @@ fn engine_setup_state(
 }
 
 fn megabytes(bytes: u64) -> String {
-    format!("{} MB", bytes.div_ceil(1_000_000))
+    ui::format::size(bytes)
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {

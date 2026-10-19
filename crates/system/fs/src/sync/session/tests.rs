@@ -126,7 +126,6 @@ async fn session_to_rogue(workspace: uuid::Uuid, rogue: Rogue) -> Fixture {
     let session = pool
         .get(&rogue_endpoint.addr())
         .await
-        .unwrap()
         .expect("the rogue speaks the session protocol");
     Fixture {
         _router: router,

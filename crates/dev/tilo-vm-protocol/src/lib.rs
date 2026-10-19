@@ -1371,53 +1371,6 @@ pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
 mod tests {
     use super::*;
 
-    /// The v8 `ApplyResult` wire shape before optional cohort selection receipts.
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct LegacyApplyResult {
-        slot: String,
-        generation: u64,
-        changed: bool,
-        policy: Policy,
-        actions: Vec<Action>,
-        #[serde(default)]
-        warnings: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        boot: Option<BootChange>,
-    }
-
-    #[test]
-    fn cohort_selection_receipts_preserve_protocol_v8_apply_decoding() {
-        let legacy = LegacyApplyResult {
-            slot: "device".into(),
-            generation: 40,
-            changed: true,
-            policy: Policy::SessionRestart,
-            actions: vec![Action::RestartDesktop {
-                user: "owner".into(),
-            }],
-            warnings: vec![],
-            boot: None,
-        };
-        let old_wire = serde_json::to_value(&legacy).unwrap();
-        let mut current: ApplyResult = serde_json::from_value(old_wire.clone()).unwrap();
-        assert!(current.cohort_selection.is_empty());
-        assert_eq!(serde_json::to_value(&current).unwrap(), old_wire);
-        current.cohort_selection.push(CohortSelection {
-            id: "so.tilo.settings".into(),
-            root: "signed-root".into(),
-            runtime: "matched-sdk".into(),
-            preserved: false,
-            pinned: true,
-        });
-        let new_wire = serde_json::to_vec(&current).unwrap();
-        let decoded: LegacyApplyResult = serde_json::from_slice(&new_wire).unwrap();
-        assert_eq!(decoded, legacy);
-        assert_eq!(
-            serde_json::from_slice::<ApplyResult>(&new_wire).unwrap(),
-            current
-        );
-    }
-
     #[test]
     fn package_names_cannot_smuggle_options_or_shell() {
         for good in [

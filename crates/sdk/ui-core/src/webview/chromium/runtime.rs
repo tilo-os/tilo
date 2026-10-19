@@ -121,7 +121,7 @@ impl SearchRoots {
         {
             candidates.push(root.join(RUNTIME_VERSION).join(HOST_IN_BUNDLE));
         }
-        candidates.extend(browser_continuity::engine_host::bundled_host(
+        candidates.extend(browser_continuity_core::engine_host::bundled_host(
             self.executable.as_deref(),
         ));
         candidates

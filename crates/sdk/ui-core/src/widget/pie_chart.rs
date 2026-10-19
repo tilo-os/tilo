@@ -114,9 +114,9 @@ pub struct PieStyle {
     /// Space at the chart's right edge reserved for an external legend or
     /// adjacent controls. The automatic inspector never enters this area.
     pub tooltip_right_inset: f64,
-    /// Smoothly interpolate matching stable slice ids after `set_slices`.
+    /// Move matching stable slice ids to their new values after
+    /// `set_slices`, on the standard list change (`motion::ListChange`).
     pub animate_changes: bool,
-    pub animation_duration: Duration,
 }
 
 impl Default for PieStyle {
@@ -136,7 +136,6 @@ impl Default for PieStyle {
             tooltip_show_percent: true,
             tooltip_right_inset: 0.0,
             animate_changes: true,
-            animation_duration: Duration::from_millis(260),
         }
     }
 }
@@ -363,10 +362,7 @@ impl PieChart {
         }
         let hovered_id = self.hovered().map(|slice| slice.id.clone());
         let previous = std::mem::replace(&mut self.slices, slices);
-        if self.style.animate_changes
-            && !self.reduce_motion
-            && !self.style.animation_duration.is_zero()
-        {
+        if self.style.animate_changes && !self.reduce_motion {
             self.transition_from = Some(previous);
             self.transition_started = crate::time::now();
         } else {
@@ -391,7 +387,8 @@ impl PieChart {
         !self.reduce_motion
             && self.style.animate_changes
             && self.transition_from.is_some()
-            && self.transition_started.elapsed() < self.style.animation_duration
+            && crate::time::now().saturating_duration_since(self.transition_started)
+                < data_change_time()
     }
     pub fn set_center(&mut self, title: impl Into<String>, subtitle: impl Into<String>) {
         self.center_title = title.into();
@@ -425,18 +422,10 @@ impl PieChart {
         self.slices.iter().map(Self::value).sum()
     }
     fn animation_progress_at(&self, now: Instant) -> f64 {
-        if self.reduce_motion
-            || !self.style.animate_changes
-            || self.transition_from.is_none()
-            || self.style.animation_duration.is_zero()
-        {
+        if self.reduce_motion || !self.style.animate_changes || self.transition_from.is_none() {
             return 1.0;
         }
-        let raw = now
-            .saturating_duration_since(self.transition_started)
-            .as_secs_f64()
-            / self.style.animation_duration.as_secs_f64();
-        crate::animation::ease_out(raw.clamp(0.0, 1.0))
+        data_change_progress(now.saturating_duration_since(self.transition_started))
     }
     fn animated_value(&self, index: usize, progress: f64) -> f64 {
         let Some(target) = self.slices.get(index) else {
@@ -1087,7 +1076,6 @@ mod tests {
                 PieSlice::new("a", "A", 3.0, Color::WHITE),
                 PieSlice::new("b", "B", 1.0, Color::BLACK),
             ]);
-            chart.style.animation_duration = Duration::from_millis(200);
             chart.set_slices(vec![
                 PieSlice::new("a", "A", 1.0, Color::WHITE),
                 PieSlice::new("b", "B", 3.0, Color::BLACK),
@@ -1161,4 +1149,24 @@ mod tests {
         assert!(natural > 100.0 && natural < 640.0, "{natural}");
         assert_eq!(share_text(0.2, 100.0), "<1%");
     }
+}
+
+/// How far a chart's data change has come `elapsed` after it, `0..=1`: its
+/// values move to their new places on the standard list change.
+pub(crate) fn data_change_progress(elapsed: Duration) -> f64 {
+    crate::motion::ListChange::MOVE.progress_after(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+        elapsed,
+    )
+}
+
+/// How long a chart's data change runs.
+pub(crate) fn data_change_time() -> Duration {
+    crate::motion::ListChange::MOVE.settle_time(
+        crate::motion::Direction::Enter,
+        crate::tokens::EffectiveMotion::default(),
+        crate::tokens::MotionSource::Pointer,
+    )
 }

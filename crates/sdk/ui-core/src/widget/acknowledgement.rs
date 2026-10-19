@@ -37,8 +37,15 @@ use vello::peniko::{BlendMode, Fill};
 /// after the action, short enough to be gone before the next one.
 pub const ACKNOWLEDGEMENT_HOLD: Duration = Duration::from_millis(1_500);
 
-/// The fade at the end of [`ACKNOWLEDGEMENT_HOLD`].
-pub const ACKNOWLEDGEMENT_FADE: Duration = Duration::from_millis(280);
+/// The fade at the end of [`ACKNOWLEDGEMENT_HOLD`]: the standard
+/// confirmation's exit (`motion::Transient::CONFIRMATION`), the token
+/// `durations.base`.
+pub const ACKNOWLEDGEMENT_FADE: Duration = Duration::from_millis(210);
+
+/// The motion a host allows, from its reduced-motion setting.
+fn motion_for(reduce_motion: bool) -> crate::tokens::EffectiveMotion {
+    crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), reduce_motion)
+}
 
 /// One acknowledgement and when it was raised.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,31 +74,37 @@ impl Acknowledgement {
     /// Its opacity at `now`: whole until the fade, then down to nothing.
     /// With `reduce_motion` it stays whole until it goes.
     pub fn alpha_at(&self, now: Instant, reduce_motion: bool) -> f32 {
-        let elapsed = now.saturating_duration_since(self.raised_at);
-        let Some(remaining) = ACKNOWLEDGEMENT_HOLD.checked_sub(elapsed) else {
-            return 0.0;
-        };
-        if remaining.is_zero() {
-            return 0.0;
-        }
-        if reduce_motion || remaining >= ACKNOWLEDGEMENT_FADE {
-            return 1.0;
-        }
-        remaining.as_secs_f32() / ACKNOWLEDGEMENT_FADE.as_secs_f32()
+        crate::motion::Transient::opacity(
+            crate::motion::Transient::CONFIRMATION,
+            self.span(),
+            now,
+            motion_for(reduce_motion),
+        )
     }
 
     /// Whether it is fading at `now`, so every frame changes.
     pub fn fading_at(&self, now: Instant, reduce_motion: bool) -> bool {
-        let elapsed = now.saturating_duration_since(self.raised_at);
-        !reduce_motion
-            && elapsed >= ACKNOWLEDGEMENT_HOLD.saturating_sub(ACKNOWLEDGEMENT_FADE)
-            && elapsed < ACKNOWLEDGEMENT_HOLD
+        crate::motion::Transient::is_moving(
+            crate::motion::Transient::CONFIRMATION,
+            self.span(),
+            now,
+            motion_for(reduce_motion),
+        )
+    }
+
+    /// When it shows and when it is gone.
+    fn span(&self) -> (Instant, Instant) {
+        (self.raised_at, self.raised_at + ACKNOWLEDGEMENT_HOLD)
     }
 
     /// When the host must next draw without input: the fade's start, or
     /// the moment it goes.
     pub fn next_wake_at(&self, now: Instant, reduce_motion: bool) -> Option<Instant> {
-        let fade_from = self.raised_at + ACKNOWLEDGEMENT_HOLD.saturating_sub(ACKNOWLEDGEMENT_FADE);
+        let fade_from = crate::motion::Transient::exit_starts(
+            crate::motion::Transient::CONFIRMATION,
+            self.raised_at + ACKNOWLEDGEMENT_HOLD,
+            motion_for(reduce_motion),
+        );
         let gone = self.raised_at + ACKNOWLEDGEMENT_HOLD;
         if !reduce_motion && now < fade_from {
             Some(fade_from)

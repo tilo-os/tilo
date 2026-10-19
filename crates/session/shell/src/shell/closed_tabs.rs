@@ -120,6 +120,23 @@ pub fn capture_tab(tree: &WorkspaceTree, tab_id: TabId) -> Option<ClosedTab> {
     None
 }
 
+/// Record the tab of the foreign window `surface_id` before it is removed:
+/// a window whose app ended (out of memory) comes back where it was.
+pub fn capture_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<ClosedTab> {
+    let tab_id = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id: id, .. } if *id == surface_id => Some(tab.id),
+            _ => None,
+        })?;
+    capture_tab(tree, tab_id)
+}
+
 /// Record a whole window group before it is closed.
 pub fn capture_group(tree: &WorkspaceTree, group_id: GroupId) -> Option<ClosedTab> {
     for workspace in &tree.desktop.workspaces {

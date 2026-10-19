@@ -156,11 +156,11 @@ impl ImageViewer {
         self.pan
     }
 
-    /// Bypasses the wheel-event path so tests can stage state directly
-    /// without simulating a chain of `MouseWheel` events.
-    #[cfg(test)]
+    /// Zoom to `z`, within the zoom's limits, about the viewport's centre,
+    /// as the wheel turned with the cursor there does: the screen-to-image
+    /// mapping is the same there at every zoom, so the pan stays.
     pub fn set_zoom(&mut self, z: f32) {
-        self.zoom = z;
+        self.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
     }
 
     #[cfg(test)]

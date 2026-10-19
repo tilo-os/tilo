@@ -821,6 +821,8 @@ impl App {
                     // The window's own concern, not a floating surface's.
                     continue;
                 }
+                // Never delivered: the client's `pump` ends on it.
+                FloatingSurfaceHostMessage::VersionMismatch { .. } => {}
                 FloatingSurfaceHostMessage::PaintKeyframe => {
                     crate::webview::paint::set_share_watched(true);
                 }

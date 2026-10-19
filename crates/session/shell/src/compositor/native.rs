@@ -961,7 +961,7 @@ impl LockClock {
         let now = ui::clock::local_now();
         Self {
             clock: ui::clock::time_of_day(&now),
-            date: now.format("%A, %B %-d").to_string(),
+            date: ui::format::day_heading(now.date_naive(), false),
         }
     }
 
@@ -2353,6 +2353,9 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                // Read by the service before the connection is admitted; a
+                // second one says nothing new.
+                ui::floating_surface::FloatingSurfaceClientMessage::Hello { .. } => {}
                 ui::floating_surface::FloatingSurfaceClientMessage::SelectionCapable => {
                     frame_builder
                         .host_mut()
@@ -2401,6 +2404,12 @@ fn pump_floating_surface_service(
                     }
                 }
             },
+            FloatingServiceEvent::VersionMismatch {
+                app_id,
+                app_version,
+            } => {
+                crate::shell::app_versions::spoke_another_shell_version(&app_id, app_version);
+            }
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 frame_builder
                     .host_mut()
@@ -4557,6 +4566,45 @@ fn post_drive_events(frame_builder: &mut FrameBuilder) -> bool {
         chrome.bump();
     });
     true
+}
+
+/// A staged system update applies live; the desktop finishes it while the
+/// person is away, and asks for a restart of the machine only when part of
+/// it needs one, at most every two days ([`crate::shell::system_update`]).
+fn post_system_update_asks(frame_builder: &mut FrameBuilder, session: &SessionManager) -> bool {
+    crate::shell::system_update::start();
+    crate::shell::system_update::note_presence(
+        session.idle_for(Instant::now()),
+        session.is_locked() || session.is_blanked(),
+    );
+    let asks = crate::shell::system_update::drain();
+    if asks.is_empty() {
+        return false;
+    }
+    frame_builder.with_chrome(|chrome| {
+        for ask in asks {
+            chrome.push_notification_full(ask);
+        }
+        chrome.bump();
+    });
+    true
+}
+
+/// A collaborator's device at another peer protocol version: who has to
+/// update ([`crate::shell::collaborator_versions`]).
+fn post_collaborator_version_notices(frame_builder: &mut FrameBuilder) -> bool {
+    let mut posted = false;
+    frame_builder.with_chrome(|chrome| {
+        let notices = crate::shell::collaborator_versions::drain(&chrome.tree());
+        for notice in notices {
+            chrome.push_notification_full(notice);
+            posted = true;
+        }
+        if posted {
+            chrome.bump();
+        }
+    });
+    posted
 }
 
 fn post_storage_notices(frame_builder: &mut FrameBuilder) -> bool {
@@ -10097,9 +10145,31 @@ pub fn run() {
         Arc::clone(&chooser_attended),
         Arc::clone(&session_wake),
     );
+    // Toolkit apps' frames are drawn by their room's render service; the
+    // broker picks the service and keeps it running.
+    let render_broker =
+        match crate::compositor::render_broker::RenderBroker::start(tree_handle.clone()) {
+            Ok(broker) => Some(broker),
+            Err(error) => {
+                tracing::warn!(%error, "no render broker: apps draw on their own GPU device");
+                None
+            }
+        };
     // Held for the session: apps' system readings, the desk widget's too.
     let _system_stats_service =
         start_system_stats_service(portal_backend.as_ref(), Arc::clone(&session_wake));
+    // Asked on the launch workers, before the launcher writes the filter.
+    if let Some(portal) = portal_backend.as_ref() {
+        let permissions = crate::compositor::launch_permissions::LaunchPermissions {
+            grants: portal.media_grants.clone(),
+            prompts: portal.media_prompts.clone(),
+            wake: Arc::clone(&session_wake),
+            compositor: std::thread::current().id(),
+        };
+        crate::shell::launcher::set_launch_permissions(Box::new(move |app, room, launch| {
+            permissions.ask(app, room, launch)
+        }));
+    }
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -10836,6 +10906,9 @@ pub fn run() {
         }
         if let Some(service) = chooser_service.as_ref() {
             pump_chooser_opens(service, &frame_builder.chrome_handle());
+        }
+        if let Some(broker) = render_broker.as_ref() {
+            broker.sync_rooms();
         }
         // Contextual routes from Personal Settings cross a worker-thread
         // service, then land here because ChromeState intentionally remains
@@ -11758,6 +11831,8 @@ pub fn run() {
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder, &session_wake);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         session_changed |= post_storage_notices(&mut frame_builder);
+        session_changed |= post_system_update_asks(&mut frame_builder, &session);
+        session_changed |= post_collaborator_version_notices(&mut frame_builder);
         session_changed |= post_drive_events(&mut frame_builder);
         run_autostart_once(&frame_builder);
         if let Some(published) = published_room.as_mut() {

@@ -2,7 +2,7 @@
 use super::*;
 use collab_types::{PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
-use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, StateFraming};
+use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
@@ -33,7 +33,7 @@ fn caret(pos: u64) -> NeighbourMsg {
     }
 }
 
-async fn cost(fixture: &Fixture, framing: StateFraming) -> (usize, u64, u64) {
+async fn cost(fixture: &Fixture) -> (usize, u64, u64) {
     let mailbox = Arc::new(crate::presence_mailbox::PresenceMailbox::default());
     fixture
         .workspace
@@ -57,9 +57,7 @@ async fn cost(fixture: &Fixture, framing: StateFraming) -> (usize, u64, u64) {
         metrics: &metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.recipient_disconnect,
-        framing,
         presence: Some(&mailbox),
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -145,7 +143,7 @@ async fn cost(fixture: &Fixture, framing: StateFraming) -> (usize, u64, u64) {
     drop(wire);
     assert_eq!(sent, u64::try_from(bytes.len()).unwrap());
     assert_eq!(metrics.snapshot().bytes_sent_live, sent);
-    let mut reader = SessionReader::framed(bytes.as_slice(), framing);
+    let mut reader = SessionReader::new(bytes.as_slice());
     let mut seen = Vec::new();
     while let Some(frame) = reader.read_next().await.unwrap() {
         let EnvelopeV2::State(Envelope::Presence {
@@ -171,22 +169,14 @@ async fn cost(fixture: &Fixture, framing: StateFraming) -> (usize, u64, u64) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn slot_coded_presence_costs_under_seventy_bytes_and_a_third_of_legacy() {
+async fn slot_coded_presence_costs_under_seventy_bytes() {
     let fixture = Fixture::new();
-    let (old_count, old_bytes, old_writes) = cost(&fixture, StateFraming::Compact).await;
-    let (new_count, new_bytes, new_writes) = cost(&fixture, StateFraming::Presence).await;
-    assert_eq!(old_count, new_count);
-    assert_eq!(old_count, 15);
-    let count = u64::try_from(new_count).unwrap();
+    let (count, bytes, writes) = cost(&fixture).await;
+    assert_eq!(count, 15);
+    let count = u64::try_from(count).unwrap();
     assert!(
-        new_bytes <= 70 * count,
-        "slot coding exceeded 70 bytes per presence: {new_bytes}/{count}"
+        bytes <= 70 * count,
+        "slot coding exceeded 70 bytes per presence: {bytes}/{count}"
     );
-    assert!(
-        old_bytes > 3 * new_bytes,
-        "slot coding must cost under a third: old={old_bytes}, new={new_bytes}"
-    );
-    println!(
-        "PRESENCE_COST presence={count} relay5_bytes={old_bytes} relay6_bytes={new_bytes} relay5_writes={old_writes} relay6_writes={new_writes}"
-    );
+    println!("PRESENCE_COST presence={count} bytes={bytes} writes={writes}");
 }

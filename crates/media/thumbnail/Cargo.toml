@@ -22,10 +22,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# PDF first-page rasterisation through tilo-pdf (the sandboxed PDF engine);
-# falls back to a type badge when unavailable and adds no native build
-# dependency.
-pdf = ["dep:tilo-pdf"]
 # Video keyframe extraction through the shared GStreamer media engine; off by
 # default to keep hermetic builds free of the GStreamer stack.
 video = ["dep:media", "media/decode"]
@@ -50,7 +46,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 # Optional decoders — see [features] above.
-tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf", optional = true }
 media = { version = "0.1.0", package = "tilo-media", path = "../../platform/tilo-media", optional = true }
 
 [dev-dependencies]

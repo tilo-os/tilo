@@ -3959,6 +3959,7 @@ impl FrameBuilder {
         self.appearance_generation = appearance_generation;
         self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
+        ui::format::region::refresh();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
@@ -4347,10 +4348,13 @@ impl FrameBuilder {
                 .floating_overlays
                 .iter()
                 .any(|(_, surface)| surface.needs_animation_frame()),
+            // A toolkit menu or popover a shell surface draws in its own
+            // overlay pass asks through the motion clock.
             transient: self
                 .transient_overlays
                 .iter()
-                .any(|(_, surface)| surface.needs_animation_frame()),
+                .any(|(_, surface)| surface.needs_animation_frame())
+                || ui::motion::frames_wanted(now),
             osk: self
                 .osk_overlay
                 .as_ref()

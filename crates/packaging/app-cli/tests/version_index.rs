@@ -155,7 +155,7 @@ fn publish(
 ) -> Published {
     let now = tilo_clock::unix_now();
     let mut full = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: previous.map_or(1, |previous| previous.sequence.saturating_add(1)),
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(3600),
@@ -170,7 +170,6 @@ fn publish(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).unwrap();
     let (mut compact, indexes) = registry_types::compact_snapshot(&full).unwrap();

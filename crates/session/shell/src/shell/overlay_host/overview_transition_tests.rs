@@ -369,7 +369,6 @@ fn a_full_presenter_does_not_finish_the_transition() {
 
     host.start_workspace_switch_frames(ui::tokens::MotionSource::Pointer);
     // The run has already ended; crediting the presenter's wait brings it back.
-    host.workspace_switch = ui::Transition::open();
     host.workspace_switch_until =
         std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
     assert!(

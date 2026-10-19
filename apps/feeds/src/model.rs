@@ -11,7 +11,7 @@
 use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Collection, Json, JsonSchema, Model, Refusal, Set};
+use ui::tilo_resource::{self, Collection, JsonSchema, Model, ModelError, Refusal, Set};
 
 /// The id of a folder, a subscription or an article: its item in the
 /// library's collections.
@@ -96,7 +96,7 @@ impl FeedKind {
 /// One rendered content block in an article body. Articles store a small
 /// block list rather than raw HTML so the reader pane can lay them out
 /// natively (and so gemtext + HTML converge on one representation).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Model)]
 pub enum BlockKind {
     Heading1,
     Heading2,
@@ -109,9 +109,11 @@ pub enum BlockKind {
     Divider,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Model)]
 pub struct ContentBlock {
     pub kind: BlockKind,
+    /// Written whole by a refresh, never edited: one value, not a text.
+    #[model(atom)]
     pub text: String,
     /// Target URL for `Link` blocks (gemtext `=>` lines, etc.).
     #[serde(default)]
@@ -242,7 +244,7 @@ pub struct Article {
     /// What the feed sent, as blocks the reader lays out. Written whole by
     /// a refresh; nobody edits it.
     #[model(readonly)]
-    pub blocks: Json<Vec<ContentBlock>>,
+    pub blocks: Vec<ContentBlock>,
     /// Read
     pub read: bool,
     /// Starred
@@ -263,7 +265,7 @@ impl Default for Article {
             url: String::new(),
             published: 0,
             summary: String::new(),
-            blocks: Json::default(),
+            blocks: Vec::new(),
             read: false,
             starred: false,
             tags: Set::new(),
@@ -286,7 +288,7 @@ impl Article {
             url: fetched.url,
             published: fetched.published,
             summary: fetched.summary,
-            blocks: Json(fetched.blocks),
+            blocks: fetched.blocks,
             ..Self::default()
         }
     }
@@ -521,6 +523,24 @@ pub struct Library {
     pub articles: Collection<Article>,
 }
 
+/// Bring a library of version 1 up to this one: an article's body was one
+/// JSON string of blocks, and is a list of blocks now.
+///
+/// # Errors
+/// Returns why a stored body does not read as blocks.
+pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    use tilo_resource::evolution::{collection_items, retype_json};
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no feeds migration from {from}"
+        )));
+    }
+    for article in collection_items(doc, &ui::automerge::ROOT, "articles")? {
+        retype_json::<Vec<ContentBlock>>(doc, &article, "blocks")?;
+    }
+    Ok(())
+}
+
 impl Library {
     pub fn new() -> Self {
         Self::default()
@@ -738,23 +758,19 @@ impl Library {
     }
 }
 
-/// Format an epoch-seconds timestamp as a compact relative string
-/// ("3h", "2d", "Mar 14"). `now` is passed so it's testable.
+/// An epoch-seconds timestamp in the toolkit's list style ("16:02",
+/// "Yesterday", "Sun", "Mar 14"), seen from `now` so it's testable.
 pub fn relative_time(published: i64, now: i64) -> String {
-    const WEEK: i64 = 7 * 86_400;
+    use ui::format::Moment as _;
     if published <= 0 {
         return "—".to_string();
     }
-    let delta = (now - published).max(0);
-    if delta < WEEK {
-        ui::format::relative_compact(delta)
-    } else {
-        // Fall back to an absolute month/day.
-        use chrono::{TimeZone, Utc};
-        match Utc.timestamp_opt(published, 0).single() {
-            Some(dt) => dt.format("%b %-d").to_string(),
-            None => "—".to_string(),
-        }
+    match (
+        ui::format::UnixSecs(published).local(),
+        ui::format::UnixSecs(now).local(),
+    ) {
+        (Some(at), Some(now)) => ui::format::Formats::current().list_date(at, now),
+        _ => "—".to_string(),
     }
 }
 
@@ -931,12 +947,22 @@ mod tests {
 
         // --- phase: relative_time_buckets ---
         {
+            use ui::format::Moment as _;
             let now = 2_000_000_000i64;
+            let local = |secs| ui::format::UnixSecs(secs).local().unwrap();
             assert_eq!(relative_time(0, now), "—");
-            assert_eq!(relative_time(now - 30, now), "now");
-            assert_eq!(relative_time(now - 120, now), "2m");
-            assert_eq!(relative_time(now - 3 * 3600, now), "3h");
-            assert_eq!(relative_time(now - 2 * 86400, now), "2d");
+            assert_eq!(
+                relative_time(now - 30, now),
+                ui::format::time(&local(now - 30))
+            );
+            assert_eq!(
+                relative_time(now - 3 * 86400, now),
+                ui::format::weekday_short(chrono::Datelike::weekday(&local(now - 3 * 86400)))
+            );
+            assert_eq!(
+                relative_time(now - 400 * 86400, now),
+                ui::format::Formats::current().month_day_year(local(now - 400 * 86400).date())
+            );
         }
     }
 }

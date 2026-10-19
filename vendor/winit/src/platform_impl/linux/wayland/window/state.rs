@@ -103,6 +103,7 @@ pub struct WindowState {
     /// The state of the compositor to create WlRegions.
     compositor: Arc<CompositorState>,
     presentation: Option<Arc<super::super::types::wp_presentation::PresentationState>>,
+    client_buffers: Option<Arc<super::super::types::client_buffers::ClientBuffers>>,
     private_text_input: Option<super::super::types::tilo_text_input::PrivateTextField>,
 
     /// The current cursor grabbing mode.
@@ -203,6 +204,7 @@ impl WindowState {
             blur_manager: winit_state.kwin_blur_manager.clone(),
             compositor,
             presentation: winit_state.presentation.clone(),
+            client_buffers: winit_state.client_buffers.clone(),
             private_text_input: winit_state
                 .private_text_input
                 .as_ref()
@@ -253,6 +255,54 @@ impl WindowState {
         };
         presentation.observe(self.window.wl_surface(), &self.queue_handle, observer);
         true
+    }
+
+    /// The (fourcc, modifier) pairs the compositor takes as dma-bufs (Tilo).
+    pub fn client_buffer_formats(&self) -> Vec<(u32, u64)> {
+        self.client_buffers
+            .as_ref()
+            .map(|buffers| buffers.formats())
+            .unwrap_or_default()
+    }
+
+    /// A buffer another process drew (Tilo).
+    pub fn create_client_buffer(
+        &self,
+        source: super::super::types::client_buffers::ClientBufferSource<'_>,
+        on_release: Box<dyn Fn() + Send + Sync>,
+    ) -> Option<super::super::types::client_buffers::ClientBuffer> {
+        self.client_buffers.as_ref()?.create(source, on_release)
+    }
+
+    /// Attach `buffer` to the window's surface with `damage` (buffer pixels,
+    /// x, y, width, height; empty damages all of it), observing the commit's
+    /// presentation with `observer`, and commit. Runs under the window
+    /// state's lock, so no configure or input-method commit can come between
+    /// attach and commit (Tilo).
+    pub fn attach_client_buffer(
+        &self,
+        buffer: &super::super::types::client_buffers::ClientBuffer,
+        damage: &[(i32, i32, i32, i32)],
+        observer: Option<crate::platform::wayland::WaylandPresentationObserver>,
+    ) -> bool {
+        let observed = match observer {
+            Some(observer) => self.observe_next_present(observer),
+            None => false,
+        };
+        let surface = self.window.wl_surface();
+        surface.attach(Some(buffer.wl_buffer()), 0, 0);
+        if damage.is_empty() {
+            surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+        } else {
+            for &(x, y, width, height) in damage {
+                surface.damage_buffer(x, y, width, height);
+            }
+        }
+        surface.commit();
+        // Out now, from the attaching thread, rather than at the event loop's
+        // next flush.
+        let _ = self.connection.flush();
+        observed
     }
 
     /// Apply closure on the given pointer.

@@ -838,10 +838,10 @@ mod tests {
         // --- phase: mem_bytes_render_with_iec_binary_units ---
         {
             // Container memory is base-1024, so it must wear IEC binary units.
-            assert_eq!(ui::format::bytes(512), "512 B");
-            assert_eq!(ui::format::bytes(2048), "2.0 KiB");
-            assert_eq!(ui::format::bytes(5 * 1024 * 1024), "5.0 MiB");
-            assert_eq!(ui::format::bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+            assert_eq!(ui::format::memory(512), "512 B");
+            assert_eq!(ui::format::memory(2048), "2 KiB");
+            assert_eq!(ui::format::memory(5 * 1024 * 1024), "5 MiB");
+            assert_eq!(ui::format::memory(3 * 1024 * 1024 * 1024), "3 GiB");
         }
 
         // --- phase: mem_fraction_is_clamped ---

@@ -285,7 +285,7 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
     assert_eq!(decision.model, "fake-model");
     assert_eq!(decision.by, crate::AGENT);
     assert!(decision.reasoning.contains("deleted everyone's cards"));
-    assert_eq!(decision.reverted.0[0].changes, 3);
+    assert_eq!(decision.reverted[0].changes, 3);
 }
 
 #[test]

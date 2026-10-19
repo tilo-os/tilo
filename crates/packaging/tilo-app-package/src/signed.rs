@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! MAGIC  "TLOPKG\0\0"   (8 bytes)
-//! u32 LE format_version = 1
+//! u32 LE format_version = 2
 //! [u8; 32] manifest_hash       (BLAKE3 of the manifest TOML bytes)
 //! [u8; 32] payload_root_hash   (BLAKE3 of the encoded Collection)
 //! u8       has_signature       (0 / 1)
@@ -57,6 +57,18 @@ pub struct SignedRoot {
 }
 
 impl SignedRoot {
+    /// The package format a signed root's bytes name, whether or not this
+    /// build reads it: an installed package recorded at another format is
+    /// behind, and its next install replaces it. `None` for bytes that are
+    /// no signed root at all.
+    #[must_use]
+    pub fn format_of(bytes: &[u8]) -> Option<u32> {
+        if bytes.len() != SIGNED_ROOT_LEN || bytes.get(0..8)? != MAGIC {
+            return None;
+        }
+        Some(u32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?))
+    }
+
     /// Build an unsigned root. Pack uses this to compute the
     /// preimage that sign attaches a signature to.
     pub fn unsigned(

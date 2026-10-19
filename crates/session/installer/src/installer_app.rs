@@ -2851,8 +2851,8 @@ impl InstallerApp {
         crate::i18n::t_args(
             "installer-storage-allocation-summary",
             &[
-                ("capacity", ui::format::bytes(plan.free_size_bytes).into()),
-                ("remaining", ui::format::bytes(remaining).into()),
+                ("capacity", ui::format::memory(plan.free_size_bytes).into()),
+                ("remaining", ui::format::memory(remaining).into()),
                 ("details", Self::alongside_capacity_summary(plan).into()),
             ],
         )
@@ -2862,8 +2862,8 @@ impl InstallerApp {
         crate::i18n::t_args(
             "installer-storage-alongside-capacity",
             &[
-                ("root", ui::format::bytes(plan.root_size_bytes).into()),
-                ("total", ui::format::bytes(plan.free_size_bytes).into()),
+                ("root", ui::format::memory(plan.root_size_bytes).into()),
+                ("total", ui::format::memory(plan.free_size_bytes).into()),
             ],
         )
     }
@@ -2938,12 +2938,14 @@ impl InstallerApp {
             Text::new("Choose the exact unallocated region for Tilo").with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
-            let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
-            let size_gib = plan.free_size_bytes / (1024 * 1024 * 1024);
+            // The installer states its partition sizes in binary units
+            // throughout, so they compare with its GiB minimums.
+            let start = ui::format::memory(plan.free_start_bytes);
+            let size = ui::format::memory(plan.free_size_bytes);
             let label = if self.selected_guided_extent == Some(index) {
-                format!("✓ Selected · {size_gib} GiB free at {start_gib} GiB")
+                format!("✓ Selected · {size} free at {start}")
             } else {
-                format!("Use {size_gib} GiB free at {start_gib} GiB")
+                format!("Use {size} free at {start}")
             };
             children.push(Box::new(
                 ActionButton::new(
@@ -5668,11 +5670,11 @@ mod tests {
             assert_eq!(plan.free_size_bytes, expected_bytes);
             let capacity = app.alongside_allocation_summary(&plan);
             assert!(
-                capacity.contains(&ui::format::bytes(expected_bytes)),
+                capacity.contains(&ui::format::memory(expected_bytes)),
                 "missing selected capacity: {capacity}"
             );
             assert!(
-                capacity.contains(&ui::format::bytes(full.free_size_bytes - expected_bytes)),
+                capacity.contains(&ui::format::memory(full.free_size_bytes - expected_bytes)),
                 "missing unused space: {capacity}"
             );
             assert!(capacity.contains("remains unused"), "{capacity}");

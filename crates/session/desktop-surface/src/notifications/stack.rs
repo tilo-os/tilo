@@ -15,7 +15,7 @@ use ui::a11y::AccessNode;
 use ui::num::f32_of_f64;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::PaintedTargets;
 use ui::widget::toast::ToastCard;
 use ui::widget::top_edge_reveal::AIM_HOLD;
@@ -29,12 +29,28 @@ use super::model::{Addressed, Notification, NotificationSeverity, lock_suppresse
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 
-/// In/out animation duration; matches the desktop's modal entry timing.
-const ANIM_MS: u64 = 220;
+/// How a banner arrives and leaves: from its edge, on the panel slide.
+const BANNER: ui::motion::MotionSpec = ui::motion::PanelSlide::SPEC;
+
+/// A banner's arrival and exit for the motion the person allows: the panel
+/// slide, or under reduced motion a fade in place at `fast` (a change of
+/// what is shown still reads; nothing travels).
+fn banner_motion(reduce_motion: bool) -> (ui::motion::MotionSpec, ui::tokens::EffectiveMotion) {
+    if reduce_motion {
+        (
+            ui::motion::CROSS_FADE,
+            ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), true),
+        )
+    } else {
+        (BANNER, ui::tokens::EffectiveMotion::default())
+    }
+}
 
 pub(super) const TOAST_WIDTH: f64 = 360.0;
 pub(super) const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
+/// A banner's slot is in place within a quarter of a pixel.
+const SLOT_TOLERANCE: f64 = 0.25;
 pub(super) const EDGE_INSET: f64 = 24.0;
 /// Horizontal text inset of the locked card and the "more" card.
 /// Deliberately the shared toast card's own `CARD_PAD_X`
@@ -139,6 +155,11 @@ pub struct NotificationStack {
     aim: ui::widget::EdgeAim,
     /// The last sample that confirmed the pointer was aiming at the stack.
     aimed_at: Option<Instant>,
+    /// Where each banner on screen is drawn, by id: when the banners above
+    /// it change it springs to its new slot (`motion::ListChange`) instead
+    /// of jumping, and while the person holds the stack a slot that would
+    /// close upward waits, so the banner under the pointer stays put.
+    slots: Vec<(u64, ui::motion::MotionValue<f64>)>,
 }
 
 impl NotificationStack {
@@ -443,38 +464,69 @@ impl NotificationStack {
         n.dwell.first_shown().unwrap_or(now)
     }
 
-    /// Enter/exit alpha + horizontal slide: slides in from the right and
-    /// fades over [`ANIM_MS`] when it first comes on screen, fades out
-    /// near expiry over the same window. A held banner does not fade.
+    /// Enter/exit alpha + horizontal slide: a banner comes in from its
+    /// edge (`ui::motion::PanelSlide::sheet_pose`) when it first comes on
+    /// screen, and fades out in place so that it is gone at expiry. A held
+    /// banner does not fade; under reduced motion a banner simply stands.
     fn animation_state(
         n: &Notification,
         now: Instant,
         (reduce_motion, held): (bool, bool),
         travel_width: f64,
     ) -> (f32, f64) {
-        if reduce_motion {
-            return (1.0, 0.0);
-        }
-        let anim_window = Duration::from_millis(ANIM_MS);
+        let (spec, motion) = banner_motion(reduce_motion);
+        let source = ui::tokens::MotionSource::Pointer;
         let age = now.saturating_duration_since(Self::shown_at(n, now));
-        let enter = if age < anim_window {
-            let p = age.as_secs_f32() / anim_window.as_secs_f32();
-            // ease-out cubic
-            1.0 - (1.0 - p).powi(3)
+        let enter = spec.progress_after(ui::motion::Direction::Enter, motion, source, age);
+        // Under reduced motion it fades in where it rests; otherwise it
+        // slides in from its edge.
+        let (arrive, dx) = if reduce_motion {
+            (ui::motion::unit_opacity(enter), 0.0)
         } else {
-            1.0
+            let pose = ui::motion::PanelSlide::sheet_pose(enter, travel_width, true, motion);
+            (pose.opacity, pose.to_drawn(Point::ZERO).x)
         };
         // Exit fades only: the card drops in place rather than retracting.
         let remaining = n.time_left(now);
-        let exit = if !held && remaining < anim_window {
-            let p = remaining.as_secs_f32() / anim_window.as_secs_f32();
-            p.clamp(0.0, 1.0)
+        let leaving = spec.settle_time(ui::motion::Direction::Exit, motion, source);
+        let exit = if !held && remaining < leaving {
+            1.0 - spec.progress_after(
+                ui::motion::Direction::Exit,
+                motion,
+                source,
+                leaving.saturating_sub(remaining),
+            )
         } else {
             1.0
         };
-        let alpha = (enter * exit).clamp(0.0, 1.0);
-        let slide_dx = (1.0 - f64::from(enter)) * travel_width;
-        (alpha, slide_dx)
+        let alpha = arrive * ui::motion::unit_opacity(exit);
+        (alpha.clamp(0.0, 1.0), dx)
+    }
+
+    /// Where banner `id`, laid out at `top`, is drawn at `now`: it springs
+    /// to a new slot (`motion::ListChange`); a new banner starts in its
+    /// slot (its arrival is the slide). While the stack is `held`, a slot
+    /// closing upward waits, so nothing moves under the pointer.
+    fn slot_top(&mut self, id: u64, top: f64, now: Instant, held: bool) -> f64 {
+        let motion = banner_motion(self.reduce_motion).1;
+        let timing = ui::motion::ListChange::MOVE.timing(
+            ui::motion::Direction::Enter,
+            motion,
+            ui::tokens::MotionSource::Pointer,
+        );
+        if let Some((_, slot)) = self.slots.iter_mut().find(|(slot_id, _)| *slot_id == id) {
+            let target = slot.target();
+            let closes_up = top < target;
+            if (top - target).abs() > SLOT_TOLERANCE && !(held && closes_up) {
+                slot.set(top, timing, now);
+            }
+            return slot.get(now);
+        }
+        self.slots.push((
+            id,
+            ui::motion::MotionValue::new(top).with_tolerance(SLOT_TOLERANCE),
+        ));
+        top
     }
 
     /// Cards keep their designed width on ordinary displays and shrink on
@@ -659,7 +711,8 @@ impl NotificationStack {
             let mut card = card;
             card.alpha = alpha;
             let card_x0 = x0_rest + slide_dx;
-            let card_rect = Rect::new(card_x0, y, card_x0 + width, y + height);
+            let top = self.slot_top(n.id, y, now, held);
+            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
             bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
@@ -810,6 +863,10 @@ impl NotificationStack {
             y,
             &mut bounds,
         );
+        // Slots of banners no longer on screen are forgotten: one that comes
+        // back starts in its slot.
+        let on_screen = &self.on_screen;
+        self.slots.retain(|(id, _)| on_screen.contains(id));
         ctx.text_renderer.set_text_scale(renderer_scale);
         if bounds.min_y.is_finite() {
             self.rect = Rect::new(x0_rest, bounds.min_y, x0_rest + width, bounds.max_y);
@@ -917,11 +974,14 @@ impl NotificationStack {
 
     /// Whether a banner on screen is mid-entry or mid-exit.
     pub fn needs_animation_frame(&self, host: &dyn NotificationHost) -> bool {
-        if self.reduce_motion {
-            return false;
-        }
         let now = ui::time::now();
-        let window = Duration::from_millis(ANIM_MS);
+        if self.slots.iter().any(|(_, slot)| slot.is_moving(now)) {
+            return true;
+        }
+        let (spec, motion) = banner_motion(self.reduce_motion);
+        let source = ui::tokens::MotionSource::Pointer;
+        let entry = spec.settle_time(ui::motion::Direction::Enter, motion, source);
+        let window = spec.settle_time(ui::motion::Direction::Exit, motion, source);
         let held = self.held();
         host.log()
             .active()
@@ -931,7 +991,7 @@ impl NotificationStack {
                 let entering = n
                     .dwell
                     .first_shown()
-                    .is_none_or(|shown| now.saturating_duration_since(shown) < window);
+                    .is_none_or(|shown| now.saturating_duration_since(shown) < entry);
                 let remaining = n.time_left(now);
                 let leaving =
                     !held && n.dwell.is_running() && !remaining.is_zero() && remaining <= window;
@@ -943,7 +1003,12 @@ impl NotificationStack {
     /// Nothing wakes for a held banner or one off screen: their time stands
     /// still.
     pub fn next_wake_deadline(&self, host: &dyn NotificationHost) -> Option<Instant> {
-        let window = Duration::from_millis(ANIM_MS);
+        let (spec, motion) = banner_motion(self.reduce_motion);
+        let window = spec.settle_time(
+            ui::motion::Direction::Exit,
+            motion,
+            ui::tokens::MotionSource::Pointer,
+        );
         let now = ui::time::now();
         // The pointer's hold changes with no further input: a pointer that
         // stops on the stack comes to rest, an aim lapses.
@@ -961,9 +1026,6 @@ impl NotificationStack {
             .iter()
             .filter_map(|notification| {
                 let expiry = notification.dwell.ends_at(notification.dismiss_after)?;
-                if self.reduce_motion {
-                    return Some(expiry);
-                }
                 let exit_start = expiry.checked_sub(window).unwrap_or(expiry);
                 // While an animation runs the frame hook drives it; the next
                 // useful sleeping deadline is the next phase edge.
@@ -1043,6 +1105,7 @@ pub(super) mod tests {
     use super::super::{HistoryActivation, NotificationLog};
     use super::*;
     use std::cell::{Cell, RefCell};
+    use ui::time::Duration;
 
     /// A host with no senders: dismissing retains, activating retains.
     #[derive(Default)]
@@ -1124,6 +1187,8 @@ pub(super) mod tests {
 
     #[test]
     fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         let first = host.push(Notification::new("First", ""));
         let second = host.push(Notification::new("Second", ""));
@@ -1159,6 +1224,8 @@ pub(super) mod tests {
 
     #[test]
     fn shared_choice_buttons_route_their_keys_and_retire_stale_geometry() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
             let host = TestHost::default();
@@ -1229,6 +1296,8 @@ pub(super) mod tests {
 
     #[test]
     fn scaled_attributed_banner_reserves_text_above_real_action_controls() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
             let host = TestHost::default();
@@ -1275,6 +1344,8 @@ pub(super) mod tests {
 
     #[test]
     fn persistent_alarm_choices_fit_the_viewport_and_keep_the_newest_alarm_visible() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             let theme = theme.with_reduce_motion(true).with_text_scale(2.0);
             let host = TestHost::default();
@@ -1330,6 +1401,8 @@ pub(super) mod tests {
 
     #[test]
     fn compact_viewport_keeps_notification_inside_both_edges() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let mut stack = NotificationStack::new();
         stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
         let width = stack.toast_width();
@@ -1364,20 +1437,70 @@ pub(super) mod tests {
         assert!(stack.next_wake_deadline(&host).is_some());
     }
 
+    /// Reduced motion is a designed experience, not "off": a banner fades
+    /// in where it rests at `fast` (a change of what is shown still reads),
+    /// nothing slides, and it fades out so it is gone at expiry.
     #[test]
-    fn reduced_motion_notification_is_settled_and_only_wakes_for_expiry() {
+    fn under_reduced_motion_a_banner_fades_in_place() {
         let host = TestHost::default();
         host.push(Notification::new("Saved", "Ready"));
         let mut stack = NotificationStack::new();
         stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
         draw(&mut stack, &host, &Theme::dark().with_reduce_motion(true));
-        assert!(!stack.needs_animation_frame(&host));
+        assert!(stack.needs_animation_frame(&host), "it fades in");
         assert!(stack.next_wake_deadline(&host).is_some());
         let n = host.log().active()[0].clone();
-        assert_eq!(
-            NotificationStack::animation_state(&n, ui::time::now(), (true, false), 272.0),
-            (1.0, 0.0)
+        let shown = n.dwell.first_shown().unwrap();
+        let (alpha, dx) = NotificationStack::animation_state(
+            &n,
+            shown + Duration::from_millis(40),
+            (true, false),
+            272.0,
         );
+        assert!(alpha > 0.0 && alpha < 1.0, "mid-fade: {alpha}");
+        assert!(dx.abs() < f64::EPSILON, "nothing slides");
+        assert_eq!(
+            NotificationStack::animation_state(
+                &n,
+                shown + Duration::from_secs(1),
+                (true, false),
+                272.0
+            ),
+            (1.0, 0.0),
+            "then it stands"
+        );
+    }
+
+    /// A banner below one that leaves springs up to its new slot instead of
+    /// jumping (`motion::ListChange`), and lands there; while the person
+    /// holds the stack, a slot closing upward waits, so nothing moves under
+    /// the pointer.
+    #[test]
+    fn a_banner_springs_to_its_slot_and_waits_while_held() {
+        let mut stack = NotificationStack::new();
+        let t0 = ui::time::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        assert!(
+            (stack.slot_top(7, 100.0, t0, false) - 100.0).abs() < 1e-9,
+            "a new banner starts in its slot"
+        );
+        // The banner above it left: its slot is higher now.
+        assert!(
+            (stack.slot_top(7, 20.0, t0, false) - 100.0).abs() < 1e-9,
+            "no jump"
+        );
+        let mid = stack.slot_top(7, 20.0, at(60), false);
+        assert!(mid < 100.0 && mid > 20.0, "on its way up: {mid}");
+        assert!(stack.slots.iter().any(|(_, slot)| slot.is_moving(at(60))));
+        let landed = stack.slot_top(7, 20.0, at(600), false);
+        assert!((landed - 20.0).abs() < 0.5, "it lands in the freed slot");
+
+        stack.slot_top(8, 200.0, t0, false);
+        let held = stack.slot_top(8, 120.0, at(10), true);
+        assert!((held - 200.0).abs() < 1e-9, "held: it waits");
+        stack.slot_top(8, 120.0, at(20), false);
+        let released = stack.slot_top(8, 120.0, at(80), false);
+        assert!(released < 200.0, "let go: it closes up");
     }
 
     /// Banners that do not fit fold into one "N more" card that opens the
@@ -1385,6 +1508,8 @@ pub(super) mod tests {
     /// banners on screen age.
     #[test]
     fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
             let theme = theme.with_reduce_motion(true);
             let host = TestHost::default();
@@ -1429,6 +1554,8 @@ pub(super) mod tests {
     /// again.
     #[test]
     fn the_pointer_resting_on_the_stack_holds_the_banners() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         host.push(Notification::new("Ada", "Can you look?"));
         let mut stack = NotificationStack::new();
@@ -1467,6 +1594,8 @@ pub(super) mod tests {
     /// hand that stops short lets go after the aim lapses.
     #[test]
     fn only_a_pointer_reaching_for_the_stack_holds_it() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         host.push(Notification::new("Ada", "Can you look?"));
         let mut stack = NotificationStack::new();
@@ -1536,6 +1665,8 @@ pub(super) mod tests {
     /// Escape dismisses the banner; either gives focus back.
     #[test]
     fn keyboard_focus_reaches_banner_actions_and_escape_dismisses() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         host.actions.replace(vec![
             ("dismiss".into(), "Dismiss".into()),
@@ -1589,6 +1720,8 @@ pub(super) mod tests {
     /// paints nothing.
     #[test]
     fn quiet_mode_paints_no_card_of_its_own() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         host.quiet.replace(Some("Do Not Disturb".into()));
         host.log.borrow_mut().retain(Notification::new("Held", ""));
@@ -1602,6 +1735,8 @@ pub(super) mod tests {
     #[test]
     fn accessibility_exposes_a_named_live_region_with_latest_notification() {
         use ui::a11y::{Politeness, Role};
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
         let host = TestHost::default();
         let stack = NotificationStack::new();
         let node = stack

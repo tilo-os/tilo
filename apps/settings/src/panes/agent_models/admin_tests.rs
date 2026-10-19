@@ -31,9 +31,14 @@ fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
 }
 
 fn row_for(effect: &AgentModelsEffect) -> String {
-    let args = effect.arguments();
-    args.get("provider")
-        .and_then(serde_json::Value::as_str)
+    /// The provider an effect acts on, when it names one.
+    #[derive(serde::Deserialize)]
+    struct OnProvider {
+        provider: Option<String>,
+    }
+    serde_json::from_value::<OnProvider>(serde_json::Value::Object(effect.arguments()))
+        .ok()
+        .and_then(|on| on.provider)
         .map_or_else(
             || "settings.root".into(),
             |id| format!("settings.agent-provider:{id}"),
@@ -83,7 +88,7 @@ fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
 fn start(app: &mut TestApp<SettingsShell>, effect: &AgentModelsEffect) {
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
-        address: ui::tilo_actions::ActionAddress::new(row_for(effect), effect.id()),
+        address: effect.address_on(row_for(effect)),
     };
     let mut arguments = effect.arguments();
     arguments.remove("provider");

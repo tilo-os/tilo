@@ -17,6 +17,10 @@ collab-types = { path = "../crates/collab/collab-types" }
 tilo-app-package = { path = "../crates/packaging/tilo-app-package" }
 launcher = { path = "../crates/packaging/launcher" }
 tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }
+tilo-render-protocol = { path = "../crates/platform/tilo-render-protocol" }
+tilo-font-catalog = { path = "../crates/sdk/font-catalog" }
+vello_encoding = { package = "tilo-vello-encoding", path = "../vendor/vello_encoding" }
+peniko = "0.6.1"
 
 [[bin]]
 name = "tapp_ingress"
@@ -35,6 +39,13 @@ bench = false
 [[bin]]
 name = "identity_wire"
 path = "fuzz_targets/identity_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "render_scene"
+path = "fuzz_targets/render_scene.rs"
 test = false
 doc = false
 bench = false

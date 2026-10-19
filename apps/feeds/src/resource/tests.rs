@@ -977,3 +977,47 @@ fn the_catalog_resolves_the_link_messages() {
         assert!(!value.is_empty());
     }
 }
+
+/// A library from before an article's body was a list of blocks: it was one
+/// JSON string. Opened now, every article reads with its blocks.
+#[test]
+fn article_bodies_kept_as_json_strings_migrate_to_blocks() {
+    use ui::tilo_resource::{Slot, evolution, read_key};
+    let mut library = Replica::<Library>::new();
+    let feed = subscribe(&mut library, "https://example.org/feed.xml", None);
+    library
+        .apply(refreshed(&feed, &["First", "Second"]))
+        .unwrap();
+    let expected = library.state().unwrap();
+    let doc = library.doc_mut();
+    let root = ui::automerge::ROOT;
+    for article in evolution::collection_items(doc, &root, "articles").unwrap() {
+        let blocks: Vec<ContentBlock> = read_key(doc, &article, "blocks").unwrap();
+        let slot = Slot::Key(&article, "blocks");
+        slot.remove(doc).unwrap();
+        slot.put_scalar(
+            doc,
+            ui::automerge::ScalarValue::Str(serde_json::to_string(&blocks).unwrap().into()),
+        )
+        .unwrap();
+    }
+    Slot::Key(&root, evolution::VERSION_KEY)
+        .remove(doc)
+        .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<Library>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Library>(&mut old).unwrap());
+    let migrated = evolution::read_checked::<Library>(&old).unwrap();
+    assert_eq!(migrated, expected);
+    assert!(
+        migrated.articles.values().all(|article| article
+            .blocks
+            .iter()
+            .any(|block| block.kind == BlockKind::Paragraph)),
+        "{migrated:?}"
+    );
+}

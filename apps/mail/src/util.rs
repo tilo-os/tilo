@@ -10,60 +10,34 @@ pub fn local_minutes(utc_min: i64) -> i64 {
     utc_min.saturating_add(i64::from(offset) / 60)
 }
 
-/// Gravatar URL for an address. `d=404` makes the CDN return a 404 (not a
-/// generic silhouette) when the address has no avatar, so the store settles
-/// as failed and the initials stay.
-pub fn gravatar_url(email: &str) -> String {
-    let hash = hex::encode(<md5::Md5 as md5::Digest>::digest(
-        email.trim().to_ascii_lowercase().as_bytes(),
-    ));
-    format!("https://www.gravatar.com/avatar/{hash}?s=96&d=404")
-}
-
-/// Compact relative timestamp for the message-list column:
-/// `09:42` (today), `Yesterday`, `Mon` (this week), or `Jun 24`.
+/// The message-list column: the toolkit's list style (`09:42` today,
+/// `Yesterday`, `Mon` this week, `Jun 24`, `Jun 24, 2025`), both arguments
+/// minutes since the epoch on the local clock ([`local_minutes`]).
 pub fn format_relative(ts_min: i64, now_min: i64) -> String {
-    let today = now_min.div_euclid(1440);
-    let that_day = ts_min.div_euclid(1440);
-    let day_diff = today - that_day;
-
-    if day_diff == 0 {
-        // Today → clock time.
-        clock(ts_min)
-    } else if day_diff == 1 {
-        ui::format::near_day(-1).unwrap_or_default()
-    } else if (0..7).contains(&day_diff) {
-        weekday(that_day).to_string()
-    } else {
-        let (_, mo, d) = civil_from_days(that_day);
-        format!("{} {}", month_name(mo), d)
+    match (wall(ts_min), wall(now_min)) {
+        (Some(at), Some(now)) => ui::format::Formats::current().list_date(at, now),
+        _ => String::new(),
     }
 }
 
-/// Full absolute timestamp for the reader header, e.g. `Jun 30, 2026, 13:42`.
+/// The reader header: the toolkit's timestamp style, in the person's date
+/// and clock formats. `ts_min` is minutes since the epoch on the local clock.
 pub fn format_absolute(ts_min: i64) -> String {
-    let day = ts_min.div_euclid(1440);
-    let (y, mo, d) = civil_from_days(day);
-    format!("{} {}, {}, {}", month_name(mo), d, y, clock(ts_min))
+    wall(ts_min).map_or_else(String::new, |at| {
+        ui::format::Formats::current().timestamp(at)
+    })
 }
 
-/// The time of day of a minutes-since-epoch timestamp, as the person reads
-/// clocks.
-fn clock(ts_min: i64) -> String {
-    let mins = ts_min.rem_euclid(1440);
-    ui::clock::hour_minute(
+/// Local minutes since the epoch as a wall-clock date and time.
+fn wall(local_min: i64) -> Option<ui::format::NaiveDateTime> {
+    let day = local_min.div_euclid(1440);
+    let mins = local_min.rem_euclid(1440);
+    let (y, mo, d) = civil_from_days(day);
+    ui::format::NaiveDate::from_ymd_opt(i32::try_from(y).ok()?, mo, d)?.and_hms_opt(
         ui::num::u32_of_i64(mins / 60),
         ui::num::u32_of_i64(mins % 60),
+        0,
     )
-}
-
-fn weekday(day: i64) -> &'static str {
-    ui::format::weekday_abbrev(usize::try_from(ui::date::weekday(day)).unwrap_or(0))
-}
-
-/// Short month name for a 1-based month number.
-fn month_name(month: u32) -> &'static str {
-    ui::format::month_abbrev(usize::try_from(month.saturating_sub(1)).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -81,14 +55,6 @@ mod tests {
 
     #[test]
     fn date_helpers_compute_weekdays_relative_and_absolute_labels() {
-        // Phase `weekday_of_known_dates`.
-        {
-            // 2026-06-30 is a Tuesday.
-            assert_eq!(weekday(days_from_civil(2026, 6, 30)), "Tue");
-            // 1970-01-01 is a Thursday.
-            assert_eq!(weekday(days_from_civil(1970, 1, 1)), "Thu");
-        }
-
         // Phase `relative_labels`.
         {
             let now = minutes_of(2026, 6, 30, 14, 0);
@@ -100,23 +66,21 @@ mod tests {
                 format_relative(minutes_of(2026, 6, 29, 9, 30), now),
                 "Yesterday"
             );
+            assert_eq!(format_relative(minutes_of(2026, 6, 28, 9, 30), now), "Sun");
             assert_eq!(
                 format_relative(minutes_of(2026, 6, 20, 9, 30), now),
                 "Jun 20"
             );
-        }
-
-        // Phase `gravatar_url_lowercases_and_trims`.
-        {
-            // Canonical Gravatar example hash for "MyEmailAddress@example.com".
-            let u = gravatar_url("  MyEmailAddress@example.com ");
-            assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
+            assert_eq!(
+                format_relative(minutes_of(2025, 6, 20, 9, 30), now),
+                "Jun 20, 2025"
+            );
         }
 
         // Phase `absolute_format`.
         {
             let s = format_absolute(minutes_of(2026, 6, 30, 13, 42));
-            assert_eq!(s, "Jun 30, 2026, 13:42");
+            assert_eq!(s, "2026-06-30 13:42");
         }
     }
 }

@@ -191,6 +191,10 @@ pub struct FileView {
     /// view falls back to type glyphs), which keeps the widget usable in
     /// contexts without a thumbnail service.
     thumbs: Option<ThumbCtx>,
+    /// Item counts for folders, counted off the UI thread.
+    folder_counts: Option<Arc<crate::folder_counts::FolderCounts>>,
+    /// Whether hidden entries are listed, so a folder's count matches.
+    show_hidden: bool,
     workspace_roots: Rc<[PathBuf]>,
     /// The list's table, kept by the host across rebuilds.
     list: ListSlot,
@@ -231,6 +235,8 @@ impl FileView {
             drop_targets: None,
             item_rects: None,
             thumbs: None,
+            folder_counts: None,
+            show_hidden: false,
             workspace_roots: Rc::from([]),
             list: ListSlot::default(),
             bottom_inset: 0.0,
@@ -260,6 +266,19 @@ impl FileView {
     #[must_use]
     pub fn with_thumbs(mut self, thumbs: Option<ThumbCtx>) -> Self {
         self.thumbs = thumbs;
+        self
+    }
+
+    /// Show each folder's item count from `counts`, counting hidden entries
+    /// only with `show_hidden`.
+    #[must_use]
+    pub fn with_folder_counts(
+        mut self,
+        counts: Option<Arc<crate::folder_counts::FolderCounts>>,
+        show_hidden: bool,
+    ) -> Self {
+        self.folder_counts = counts;
+        self.show_hidden = show_hidden;
         self
     }
 
@@ -1262,6 +1281,8 @@ impl FileView {
             text_scale: self.text_scale,
             geo: self.geo,
             thumbs: self.thumbs.clone(),
+            folder_counts: self.folder_counts.clone(),
+            show_hidden: self.show_hidden,
             workspace_roots: Rc::clone(&self.workspace_roots),
             renaming: self.renaming,
             rename_rect: self.rename_rect.clone(),

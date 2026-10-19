@@ -86,7 +86,7 @@ fn importing_a_long_note_keeps_actions_usable_before_the_next_frame() {
     .unwrap();
     let address = BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
-        address: tilo_actions::ActionAddress::new("notes.notebook", invoke.id),
+        address: invoke.address(),
     };
     // The control socket may request publication between applying an action
     // and drawing the next frame. Deliberately do not relayout here.

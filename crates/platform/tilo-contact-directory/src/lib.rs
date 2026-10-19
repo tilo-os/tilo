@@ -4,11 +4,17 @@
 //! routing rather than choosing a winner. No credentials or histories live here.
 
 use serde::{Deserialize, Serialize};
-use tilo_resource::{Collection, Id, Json, JsonSchema, Model, Refusal, SharedRecord, resource};
+use tilo_resource::{
+    Collection, Id, JsonSchema, Model, ModelError, Refusal, SharedRecord, resource,
+};
 
 /// How many people one projection may carry: a large imported book in one
 /// change, bounded so one payload stays a reasonable size.
 pub const MAX_PROJECTED: usize = 10_000;
+
+/// How much text one person's picture may take: Contacts keeps a small
+/// portrait, far below this.
+pub const MAX_PHOTO_BYTES: usize = 96 * 1024;
 
 /// One Contacts identity as Contacts projects it: its label and the phone
 /// and mailbox hints it holds.
@@ -19,6 +25,10 @@ pub struct Projected {
     pub label: String,
     pub phones: Vec<String>,
     pub emails: Vec<String>,
+    /// The person's picture as Contacts keeps it (a small JPEG, base64);
+    /// empty for none.
+    #[serde(default)]
+    pub photo: String,
 }
 
 #[cfg(test)]
@@ -37,9 +47,12 @@ pub struct Person {
     pub label: String,
     pub removed: bool,
     /// International phone hints: candidate discovery only, never proof.
-    pub phones: Json<Vec<String>>,
+    pub phones: Vec<String>,
     /// Address-book mailboxes, never identity evidence or a sending grant.
-    pub emails: Json<Vec<String>>,
+    pub emails: Vec<String>,
+    /// The picture Contacts shows for the person (a small JPEG, base64), for
+    /// apps that show them; empty for none. Never fetched from anywhere.
+    pub photo: String,
     pub endpoints: Collection<Endpoint>,
 }
 
@@ -55,7 +68,39 @@ pub struct Endpoint {
     pub removed: bool,
 }
 
-#[resource(kind = "tilo.contacts.identities", label = "Contact identities")]
+/// Bring the person `obj` of a directory of version 1 up to this one: their
+/// phone and mail hints were one JSON string each, and are lists now.
+///
+/// # Errors
+/// Returns why a stored list of hints does not read as one.
+pub fn upgrade_person(
+    doc: &mut tilo_resource::Doc,
+    obj: &automerge::ObjId,
+) -> Result<(), ModelError> {
+    tilo_resource::evolution::retype_json::<Vec<String>>(doc, obj, "phones")?;
+    tilo_resource::evolution::retype_json::<Vec<String>>(doc, obj, "emails")?;
+    Ok(())
+}
+
+/// Bring a directory of version 1 up to this one ([`upgrade_person`]).
+fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    if from != 1 {
+        return Err(ModelError::invalid(format!(
+            "no contact directory migration from {from}"
+        )));
+    }
+    for person in tilo_resource::evolution::collection_items(doc, &automerge::ROOT, "people")? {
+        upgrade_person(doc, &person)?;
+    }
+    Ok(())
+}
+
+#[resource(
+    kind = "tilo.contacts.identities",
+    label = "Contact identities",
+    version = 2,
+    migrate = upgrade
+)]
 impl ContactDirectory {
     /// Update the label of a Contacts identity, without merging similar names
     /// or reviving an identity that was deleted.
@@ -190,7 +235,7 @@ impl ContactDirectory {
             .get_mut(&person)
             .filter(|person| !person.removed)
             .ok_or_else(refused)?;
-        selected.phones = Json(phones);
+        selected.phones = phones;
         Ok(())
     }
 
@@ -203,7 +248,7 @@ impl ContactDirectory {
             .get_mut(&person)
             .filter(|person| !person.removed)
             .ok_or_else(refused)?;
-        selected.emails = Json(emails);
+        selected.emails = emails;
         Ok(())
     }
 
@@ -228,20 +273,27 @@ impl ContactDirectory {
             }
             hints_bounded(&projected.phones)?;
             hints_bounded(&projected.emails)?;
+            if projected.photo.len() > MAX_PHOTO_BYTES {
+                return Err(refused());
+            }
             match self.people.get_mut(&projected.person) {
                 Some(existing) if existing.removed => {}
                 Some(existing) => {
                     existing.label = projected.label;
-                    existing.phones = Json(projected.phones);
-                    existing.emails = Json(projected.emails);
+                    existing.phones = projected.phones;
+                    existing.emails = projected.emails;
+                    if existing.photo != projected.photo {
+                        existing.photo = projected.photo;
+                    }
                 }
                 None => {
                     self.people.push(
                         projected.person,
                         Person {
                             label: projected.label,
-                            phones: Json(projected.phones),
-                            emails: Json(projected.emails),
+                            phones: projected.phones,
+                            emails: projected.emails,
+                            photo: projected.photo,
                             ..Person::default()
                         },
                     );
@@ -272,10 +324,22 @@ impl ContactDirectory {
 }
 
 impl ContactDirectory {
+    /// The picture of the one person in the book with mailbox `email`, if
+    /// they have one. Several people sharing the mailbox show none: a picture
+    /// never guesses between them.
+    pub fn photo_for_email(&self, email: &str) -> Option<&str> {
+        let candidates = self.email_candidates(email);
+        let [person] = candidates.as_slice() else {
+            return None;
+        };
+        let person = self.people.get(person)?;
+        (!person.removed && !person.photo.is_empty()).then_some(person.photo.as_str())
+    }
+
     /// Every matching person remains a candidate, including a unique match.
     /// Local-part case and provider-specific aliases are never guessed.
     pub fn email_candidates(&self, email: &str) -> Vec<Id> {
-        self.candidates(email, |person| &person.emails.0, canonical_email_hint)
+        self.candidates(email, |person| &person.emails, canonical_email_hint)
     }
     fn associate(
         &mut self,
@@ -430,7 +494,7 @@ impl ContactDirectory {
 
     /// Phone matches always remain candidates, including a unique match.
     pub fn phone_candidates(&self, phone: &str) -> Vec<Id> {
-        self.candidates(phone, |person| &person.phones.0, canonical_phone)
+        self.candidates(phone, |person| &person.phones, canonical_phone)
     }
 
     /// Every live person with a value of `values` that canonicalizes like

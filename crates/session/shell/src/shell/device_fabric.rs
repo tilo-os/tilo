@@ -2879,15 +2879,15 @@ mod tests {
     }
 
     #[test]
-    fn rich_display_extension_keeps_existing_payload_bytes() {
+    fn display_connectors_round_trip_as_their_pinned_bytes() {
         let payload = crate::network::actor::PersonalFabricPayload::DisplayConnectors {
             stamp: stamp("peer", 1),
             outputs: Vec::new(),
         };
-        let previous = hex::decode("0801047065657200").unwrap();
-        assert_eq!(postcard::to_allocvec(&payload).unwrap(), previous);
+        let pinned = hex::decode("0701047065657200").unwrap();
+        assert_eq!(postcard::to_allocvec(&payload).unwrap(), pinned);
         let decoded: crate::network::actor::PersonalFabricPayload =
-            postcard::from_bytes(&previous).unwrap();
+            postcard::from_bytes(&pinned).unwrap();
         assert!(matches!(decoded,
             crate::network::actor::PersonalFabricPayload::DisplayConnectors { outputs, .. }
                 if outputs.is_empty()));

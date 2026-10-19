@@ -118,6 +118,8 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
     "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
+    "tools/policy/check_motion_library.py": "tools/tests/test_motion_library.py",
+    "tools/policy/check_formats.py": "tools/tests/test_formats_contract.py",
     "tools/policy/check_settings_writes.py": "tools/tests/test_settings_writes.py",
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
@@ -914,8 +916,10 @@ def make_plan(
         if suite_manifest is not None else ()) if name in packages}
     # A verification recipe change must run its subject, not just contract tests.
     # No client reverse closure: these inputs change CI features, not app code.
-    if "tools/ci/package_features.py" in changes and "tilo-model-gateway" in packages:
-        reader_scopes["tilo-model-gateway"] = None
+    if "tools/ci/package_features.py" in changes:
+        for subject in ("tilo-model-gateway", "imager"):
+            if subject in packages:
+                reader_scopes[subject] = None
     readers = set(reader_scopes)
     # Readers reached only through scoped inputs run just the tests that read them.
     whole_readers = {name for name, scope in reader_scopes.items() if scope is None}

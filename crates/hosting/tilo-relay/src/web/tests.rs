@@ -96,11 +96,7 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
         addr,
         "/session",
         None,
-        postcard::to_allocvec(&crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [9; 32],
-        })
-        .unwrap(),
+        postcard::to_allocvec(&crate::auth::Hello::new(cert.clone(), [9; 32])).unwrap(),
     )
     .await;
     assert_eq!(status, 200);
@@ -248,10 +244,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         (relay, sessions)
     };
     let challenge = sessions
-        .hello(&crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [74; 32],
-        })
+        .hello(&crate::auth::Hello::new(cert.clone(), [74; 32]))
         .unwrap();
     let session = sessions
         .finish(
@@ -391,10 +384,7 @@ async fn live_grants_follow_announced_changes() {
         (relay, sessions)
     };
     let challenge = sessions
-        .hello(&crate::auth::Hello {
-            cert: cert.clone(),
-            client_nonce: [84; 32],
-        })
+        .hello(&crate::auth::Hello::new(cert.clone(), [84; 32]))
         .unwrap();
     let session = sessions
         .finish(
@@ -1321,10 +1311,7 @@ async fn exercise_handshake_refusal_reasons(
     stranger: &DeviceCert,
 ) {
     let sessions = Sessions::new(relay.web_context().clone());
-    let hello = |cert: &DeviceCert| crate::auth::Hello {
-        cert: cert.clone(),
-        client_nonce: [7; 32],
-    };
+    let hello = |cert: &DeviceCert| crate::auth::Hello::new(cert.clone(), [7; 32]);
     let refusal = |error: SessionError| {
         // On the wire the reason is the 403's postcard body.
         let response = session_status(&error);

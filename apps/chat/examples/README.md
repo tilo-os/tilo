@@ -121,11 +121,11 @@ inherit the old conversation's authority.
 
 The authenticated `chat.agent:<agent>` row exports `open-agent-conversation`
 and `open-task-conversation`. The latter asks only for `task` and explicit
-`run_epoch` (including zero for a newly queued task); workspace and agent are
-bound by Chat, never chosen by that caller. It can follow the exact saved task
+`run_epoch` (including zero for a newly queued task); the agent is bound by
+Chat, never chosen by that caller. It can follow the exact saved task
 before Chat has projected it. Once its queued frontier arrives, the separate
 `start-agent-task` effect provides explicit approval. Opening never starts it.
-The root also offers exact navigation with all four source/identity fields.
+The root also offers exact navigation with all three identity fields.
 Backend task actions own `queue`, `approve-run`, `direct`, `stop`, and
 `read-conversation`; Chat is not an ordinary-message authority lane.
 

@@ -91,6 +91,21 @@ fn refusal(error: &LinkError) -> Refusal {
         | LinkError::Malformed(_)
         | LinkError::Sign(_) => Refusal::Reachability,
         LinkError::Refused(_) => Refusal::Unexplained,
+        // Another peer protocol version: whichever side is behind updates
+        // (docs/architecture/compatibility.md). This page is the host's
+        // build, so a newer host means a reload brings it up to date.
+        LinkError::PeerVersion { theirs }
+            if tilo_relay_protocol::auth::this_device_is_behind(*theirs) =>
+        {
+            Refusal::Final(
+                "update-required",
+                "This page is out of date. Reload it to keep working together.",
+            )
+        }
+        LinkError::PeerVersion { .. } => Refusal::Final(
+            "host-update-required",
+            "This workspace’s host needs to update to keep working together.",
+        ),
     }
 }
 /// How long a connected session waits for the host to admit its rooms before
@@ -2805,9 +2820,8 @@ impl SavedPeerChannels {
 }
 
 /// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the steward. An access request goes twice: routed,
-/// so the steward decides Read on the record, and plain, for a steward that
-/// predates routes.
+/// which retains it for the steward. An access request goes routed, so the
+/// steward decides Read on the record.
 async fn sign_governance(
     signer: &dyn DeviceSigner,
     device: [u8; 32],
@@ -2838,17 +2852,12 @@ async fn signed_governance(
                 let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
                 let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
-                    room: room.clone(),
-                    request: Box::new(request.clone()),
+                    room,
+                    request: Box::new(request),
                     route: Box::new(route),
                     delivery: rand::random(),
                 };
-                let plain = neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                    room,
-                    request: Box::new(request),
-                    delivery: rand::random(),
-                };
-                return Some(vec![(workspace_id, routed), (workspace_id, plain)]);
+                return Some(vec![(workspace_id, routed)]);
             }
             crate::channels::Outgoing::Ack {
                 workspace_id,
@@ -2977,6 +2986,7 @@ impl Task {
 /// the host, which authenticates the author and keeps it for later joiners.
 fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     let hello = neighbour_wire::NeighbourMsg::IdentityHello {
+        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(cert.clone()),
         revocations: Vec::new(),
     };
@@ -3133,6 +3143,7 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
         }
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
+        ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the
         // next frame read.

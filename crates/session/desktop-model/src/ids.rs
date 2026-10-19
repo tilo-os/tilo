@@ -139,38 +139,20 @@ pub const fn peer_salt_of(id: u64) -> u16 {
     (id >> PEER_ID_SALT_SHIFT) as u16
 }
 
-/// The namespace no device mints in: the places every member of a room
-/// shares and nobody owns (the Lounge strip and the windows it starts
-/// with). Every member derives the same ids for them from the room, so
-/// nothing about them is published or swept, and no peer's projection or
-/// command may claim them. A device whose key would hash to this salt (or to
-/// `0`, which has no id space) takes another; see [`device_salt`].
-pub const SHARED_SALT: u16 = 0xFFFF;
-
-/// Whether `id` lies in the [`SHARED_SALT`] namespace.
-pub const fn is_shared(id: u64) -> bool {
-    peer_salt_of(id) == SHARED_SALT
-}
-
-/// The id every member derives for the shared place `part` of `scope` (a
-/// room id, or a local workspace's id when it has no room): FNV-1a over both,
-/// folded into the counter bits of the [`SHARED_SALT`] namespace.
-pub fn shared_id(scope: &str, part: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in scope.bytes().chain([0]).chain(part.bytes()) {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-    }
-    // Counter `0` is not an id anything else mints; keep shared ids off it.
-    compose_id(SHARED_SALT, (hash & PEER_ID_COUNTER_MASK).max(1))
-}
+/// The namespace no device mints in. It once held the ids every member of
+/// a room derived for a shared strip; documents and state files may still
+/// carry such ids, so no device's own ids may ever fall among them. A device
+/// whose key would hash to this salt (or to `0`, which has no id space)
+/// takes another; see [`device_salt`].
+pub const RESERVED_SALT: u16 = 0xFFFF;
 
 /// The salt a device with the 16-bit key fold `folded` mints under: the fold
 /// itself, except the two values no device may own (`0` has no id space,
-/// [`SHARED_SALT`] is everyone's).
+/// [`RESERVED_SALT`] is reserved).
 pub const fn device_salt(folded: u16) -> u16 {
     match folded {
         0 => 1,
-        SHARED_SALT => SHARED_SALT - 1,
+        RESERVED_SALT => RESERVED_SALT - 1,
         salt => salt,
     }
 }
@@ -233,7 +215,7 @@ impl IdMinter {
     /// reloaded tree never re-mints an id it already holds. Ids under
     /// another salt belong to another peer and leave the counter alone.
     /// [`Self::mint`] for a durable owner, which must never reuse or wrap
-    /// an id: refuses salt `0` (no namespace), the [`SHARED_SALT`] namespace
+    /// an id: refuses salt `0` (no namespace), the [`RESERVED_SALT`] namespace
     /// nobody mints in, a counter of `0`, and a counter beyond the 48 bits
     /// an id carries. The owner persists
     /// [`Self::next_counter`] before publishing what it minted.
@@ -243,7 +225,7 @@ impl IdMinter {
     /// A description when the namespace is invalid or exhausted.
     pub fn mint_in_namespace(&mut self) -> Result<u64, String> {
         if self.salt == 0
-            || self.salt == SHARED_SALT
+            || self.salt == RESERVED_SALT
             || self.counter == 0
             || self.counter > PEER_ID_COUNTER_MASK
         {

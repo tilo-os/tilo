@@ -259,11 +259,7 @@ impl DesktopSurface {
                 )))
                 .push(Box::new(StripView::new(strips, active_strip)));
         }
-        // The Lounge's windows are there from the start; the launchpad stays
-        // until the person puts a window of their own somewhere.
-        let empty_workspace = tree
-            .active_workspace()
-            .is_some_and(|w| !w.has_windows_outside_lounge());
+        let empty_workspace = tree.active_workspace().is_some_and(|w| !w.has_windows());
         let empty_workspace_visible = chrome.empty_workspace.as_ref().map(|_| empty_workspace);
         let mut row_offset: usize = if external_navigation { 0 } else { 2 };
         if empty_workspace && let Some(empty) = chrome.empty_workspace {
@@ -692,7 +688,7 @@ impl DesktopSurface {
             return ReconcileOutcome::RebuildRequired;
         }
         self.retire_departed_requested_groups(tree);
-        let empty = !workspace.has_windows_outside_lounge();
+        let empty = !workspace.has_windows();
         if self
             .empty_workspace_visible
             .is_some_and(|visible| visible != empty)

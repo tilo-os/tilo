@@ -7,6 +7,8 @@ license.workspace = true
 description = "Shared person-owned contact identities and explicitly confirmed messaging endpoints"
 
 [dependencies]
+# The object a migration rewrites a person's hints in.
+automerge.workspace = true
 serde.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 uuid.workspace = true

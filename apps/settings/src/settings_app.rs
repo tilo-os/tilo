@@ -504,15 +504,14 @@ impl SettingsApp {
         if !self.area_reads.deferred() {
             return false;
         }
-        let area_reading = crate::effects::LIVE_AREAS
+        crate::effects::LIVE_AREAS
             .iter()
             .filter(|area| area.pane == self.selected && !(area.is_open)(self))
             .filter_map(|area| area.background.as_ref())
             .any(|read| {
                 let _ = (read.start)(self);
                 !(read.finished)(self)
-            });
-        area_reading
+            })
     }
 
     /// Read on after the first frame, so the published rows fill in an area

@@ -130,8 +130,11 @@ you package the app.
 ### System libraries
 
 `new`, `check`, `test`, `dev` and `package --platform linux` need no system
-development packages. Wayland, X11 and xkbcommon are loaded when the app
-starts, and fonts are found without fontconfig's C library. The first Cargo
+development packages. Wayland and xkbcommon are loaded when the app
+starts, and fonts are found without fontconfig's C library. Apps are Wayland
+clients: on a host session that is X11 only, build with the SDK's `x11`
+feature (`cargo run --features ui/x11`), which adds winit's X11 backend and
+the X11 clipboard. The shared runtime Tilo ships leaves them out. The first Cargo
 command inside the app installs the compiler its `rust-toolchain.toml` pins,
 through rustup. An app's tests lay out text, so `check` and `test` need one
 installed font; every desktop has several (`check` looks in the XDG font

@@ -237,13 +237,9 @@ impl Model {
     }
 }
 
-/// "12 MB", from a byte count.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "a data total of a few megabytes is exact in f64"
-)]
+/// "12 MB", from a byte count: the toolkit's size style.
 pub(crate) fn data_label(bytes: u64) -> String {
-    format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+    ui::format::size(bytes)
 }
 
 /// How long ago a test finished.

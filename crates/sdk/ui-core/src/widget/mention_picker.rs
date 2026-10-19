@@ -458,6 +458,8 @@ mod tests {
 
     #[test]
     fn an_at_opening_a_word_starts_a_query_and_one_inside_a_word_does_not() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         assert_eq!(
             query_at_caret("hi @ad", 6),
             Some(MentionQuery {
@@ -471,6 +473,8 @@ mod tests {
 
     #[test]
     fn ranking_prefers_a_whole_name_prefix_then_a_word_prefix() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let room = room();
         let names: Vec<_> = rank(&room, "t")
             .into_iter()
@@ -483,6 +487,8 @@ mod tests {
 
     #[test]
     fn the_picker_follows_the_caret_and_stays_closed_after_escape() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let room = room();
         let mut picker = MentionPicker::default();
         assert!(picker.follow(0, "hello @a", |_| false, &room));

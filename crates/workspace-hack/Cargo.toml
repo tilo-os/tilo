@@ -170,7 +170,7 @@ read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", defaul
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
-regex-syntax = { version = "0.8" }
+regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
@@ -211,6 +211,7 @@ syntect = { version = "5", default-features = false, features = ["plist-load", "
 sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
+tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -240,7 +241,7 @@ wasmparser = { version = "0.239", default-features = false, features = ["feature
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
-writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
+writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
@@ -410,7 +411,7 @@ read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", defaul
 read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
-regex-syntax = { version = "0.8" }
+regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
@@ -452,6 +453,7 @@ syntect = { version = "5", default-features = false, features = ["plist-load", "
 sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
+tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
 tiny-skia-path = { version = "0.12" }
@@ -482,7 +484,7 @@ wasmparser = { version = "0.239", default-features = false, features = ["feature
 web-time = { version = "1", default-features = false, features = ["serde"] }
 wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
-writeable = { version = "0.6", default-features = false, features = ["alloc", "either"] }
+writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 yoke = { version = "0.8", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }

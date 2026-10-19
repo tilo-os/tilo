@@ -56,7 +56,7 @@ mode = "host"
 
 [sandbox.services]
 # With no broker there is nobody to publish to.
-collab = "required@1"
+collab = "required@2"
 
 [entrypoint]
 bin  = "bin/tilo-web-search"

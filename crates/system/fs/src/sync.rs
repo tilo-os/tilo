@@ -49,21 +49,10 @@ use crate::namespace_binding::{
 };
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_access::RecordAccessRegistry;
-use crate::record_mesh::{
-    MAX_RECORD_MESH_INVENTORY_PAGE_STREAMS, MAX_RECORD_MESH_PULL_BATCH_ENVELOPES,
-    RECORD_MESH_PROTOCOL_VERSION, RecordMeshEndV1, RecordMeshOperationV1, RecordMeshRequestV1,
-    RecordMeshResultV1, RecordMeshStreamV1, TILO_FS_RECORD_MESH_ALPN, read_record_mesh_request,
-    read_record_mesh_response, serve_authorized_request, write_record_mesh_request,
-    write_record_mesh_response,
-};
 use crate::record_protocol::{RecordProtocol, TILO_FS_RECORD_ALPN};
 use crate::record_replication::{RecordAction, RecordAuthorizer};
 use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-use crate::replica_ack::{
-    REPLICA_ACK_TIMEOUT, ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1,
-    TILO_FS_REPLICA_ACK_ALPN, read_frame as read_replica_ack_frame,
-    write_frame as write_replica_ack_frame,
-};
+use crate::replica_ack::{ReplicaAckRequestV1, ReplicaAckResponseV1, ReplicaAckV1};
 use crate::share_authority::ShareAuthority;
 use crate::share_session::LiveActorCertification;
 use crate::store::ContentStore;
@@ -1068,6 +1057,14 @@ async fn peer_may_read_blob_with_records(
     records: Option<&RecordPlane>,
 ) -> bool {
     let index = BlobAccessIndex::new(Arc::clone(namespace));
+    // A client names the manifest of every chunk it asks for; ask as one
+    // that names every file version the namespace holds.
+    let context: Vec<iroh_blobs::Hash> = namespace
+        .lock_recover()
+        .live_blob_owners()
+        .into_iter()
+        .filter_map(|owner| owner.manifest)
+        .collect();
     authorize_blob_request(
         policy,
         &index,
@@ -1075,7 +1072,7 @@ async fn peer_may_read_blob_with_records(
         records,
         (*peer, certified_person),
         &[hash],
-        &[],
+        &context,
     )
     .await
 }
@@ -1533,7 +1530,6 @@ pub struct RecordServices {
 #[derive(Clone)]
 struct RecordPlane {
     protocol: RecordProtocol,
-    mesh_protocol: RecordMeshProtocol,
     access_registry: Arc<RecordAccessRegistry>,
     repository: Arc<RecordRepository>,
     materializer: Option<Arc<crate::record_materializer::RecordMaterializer>>,
@@ -1616,84 +1612,8 @@ fn authority_response(
     }
 }
 
-#[derive(Clone)]
-struct ReplicaAckProtocol {
-    endpoint: Endpoint,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
-    repository: Arc<RecordRepository>,
-    store: Arc<ContentStore>,
-}
-
-impl std::fmt::Debug for ReplicaAckProtocol {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ReplicaAckProtocol")
-    }
-}
-
-impl ProtocolHandler for ReplicaAckProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self.identity.partitioned() {
-            connection.close(1u32.into(), b"partitioned");
-            return Ok(());
-        }
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let exchange = async {
-            let peer = authenticate_connection(
-                &self.endpoint,
-                &connection,
-                &mut recv,
-                &mut send,
-                &self.identity,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let request: ReplicaAckRequestV1 = read_replica_ack_frame(&mut recv)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let response = self.response(&peer, &request).await;
-            write_replica_ack_frame(&mut send, &response)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            send.finish().map_err(AcceptError::from_err)?;
-            Ok::<(), AcceptError>(())
-        };
-        tokio::time::timeout(REPLICA_ACK_TIMEOUT, exchange)
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "replica acknowledgement request timed out",
-                ))
-            })??;
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-impl ReplicaAckProtocol {
-    async fn response(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        request: &ReplicaAckRequestV1,
-    ) -> ReplicaAckResponseV1 {
-        replica_ack_response(
-            &self.identity,
-            &self.policy,
-            self.workspace_id,
-            &self.repository,
-            &self.store,
-            peer,
-            request,
-        )
-        .await
-    }
-}
-
 /// A signed receipt for `request` if this device durably holds the exact
-/// revision and `peer` may read the record; shared by the per-request
-/// receipt protocol and the session protocol.
+/// revision and `peer` may read the record, as a session answers it.
 async fn replica_ack_response(
     identity: &FsTransportIdentity,
     policy: &PeerPolicy,
@@ -1756,75 +1676,9 @@ async fn replica_ack_response(
     }
 }
 
-#[derive(Clone)]
-struct RecordMeshProtocol {
-    endpoint: Endpoint,
-    identity: FsTransportIdentity,
-    policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
-    repository: Arc<RecordRepository>,
-}
-
-impl std::fmt::Debug for RecordMeshProtocol {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("RecordMeshProtocol")
-    }
-}
-
-impl ProtocolHandler for RecordMeshProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        if self.identity.partitioned() {
-            connection.close(1u32.into(), b"partitioned");
-            return Ok(());
-        }
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let exchange = async {
-            let peer = authenticate_connection(
-                &self.endpoint,
-                &connection,
-                &mut recv,
-                &mut send,
-                &self.identity,
-            )
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let request = read_record_mesh_request(&mut recv)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            let response = if authenticated_peer_may_read_whole_workspace(&self.policy, &peer) {
-                serve_authorized_request(&self.repository, self.workspace_id, &request)
-            } else {
-                crate::record_mesh::RecordMeshResponseV1 {
-                    protocol_version: crate::record_mesh::RECORD_MESH_PROTOCOL_VERSION,
-                    result: crate::record_mesh::RecordMeshResultV1::Denied,
-                }
-            };
-            write_record_mesh_response(&mut send, &response)
-                .await
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-            send.finish().map_err(AcceptError::from_err)?;
-            Ok::<(), AcceptError>(())
-        };
-        tokio::time::timeout(Duration::from_secs(15), exchange)
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "record mesh request timed out",
-                ))
-            })??;
-        // Returning drops the router-owned connection. Wait until the client
-        // has consumed the finished response stream, otherwise QUIC may tear
-        // down buffered response bytes as soon as this handler completes.
-        connection.closed().await;
-        Ok(())
-    }
-}
-
 fn build_record_plane(
     endpoint: &Endpoint,
     identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
     store: Arc<ContentStore>,
     workspace_id: uuid::Uuid,
     records: Option<RecordServices>,
@@ -1849,16 +1703,8 @@ fn build_record_plane(
     if let Some(availability) = records.availability.clone() {
         protocol = protocol.with_availability(availability);
     }
-    let mesh_protocol = RecordMeshProtocol {
-        endpoint: endpoint.clone(),
-        identity: identity.clone(),
-        policy: policy.clone(),
-        workspace_id,
-        repository: Arc::clone(&records.repository),
-    };
     Ok(Some(RecordPlane {
         protocol,
-        mesh_protocol,
         access_registry: records.access_registry,
         repository: records.repository,
         materializer: records.materializer,
@@ -1969,7 +1815,6 @@ impl Workspace {
         let record_plane = build_record_plane(
             &endpoint,
             &identity,
-            &policy,
             Arc::clone(&store),
             ticket.workspace_id(),
             records,
@@ -2063,7 +1908,6 @@ impl Workspace {
         let record_plane = build_record_plane(
             &endpoint,
             &identity,
-            &policy,
             Arc::clone(&store),
             ticket.workspace_id(),
             records,
@@ -2083,7 +1927,6 @@ impl Workspace {
                 Duration::from_secs(10),
                 pull_records_from_peer(
                     &sessions,
-                    &endpoint,
                     ticket.node.clone(),
                     &identity,
                     &policy,
@@ -2099,7 +1942,7 @@ impl Workspace {
             {
                 // Persisted/offline mounts remain available. The periodic
                 // mesh worker below keeps retrying a temporarily unavailable
-                // or older peer after startup.
+                // peer after startup.
                 eprintln!("initial record mesh reconciliation failed: {error}");
             }
         }
@@ -2159,14 +2002,6 @@ impl Workspace {
                 .as_ref()
                 .map(|records| Arc::clone(&records.repository)),
         };
-        let replica_ack_protocol = record_plane.as_ref().map(|records| ReplicaAckProtocol {
-            endpoint: endpoint.clone(),
-            identity: identity.clone(),
-            policy: policy.clone(),
-            workspace_id: records.workspace_id,
-            repository: Arc::clone(&records.repository),
-            store: Arc::clone(&store),
-        });
         let (announce_tx, announce_rx) = mpsc::unbounded_channel();
         let session_proto = SessionProtocol {
             endpoint: endpoint.clone(),
@@ -2193,12 +2028,9 @@ impl Workspace {
                     Some(identity.clone()),
                 )),
             );
-        let builder = match (&record_plane, replica_ack_protocol) {
-            (Some(records), Some(replica_ack)) => builder
-                .accept(TILO_FS_RECORD_ALPN, records.protocol.clone())
-                .accept(TILO_FS_RECORD_MESH_ALPN, records.mesh_protocol.clone())
-                .accept(TILO_FS_REPLICA_ACK_ALPN, replica_ack),
-            _ => builder,
+        let builder = match &record_plane {
+            Some(records) => builder.accept(TILO_FS_RECORD_ALPN, records.protocol.clone()),
+            None => builder,
         };
         let builder = if let Some(records) = &record_plane {
             if let Some(authority) = &records.workspace_authority {
@@ -2269,13 +2101,11 @@ impl Workspace {
         // records with every peer and resolve conflicts, so a missed delta
         // or a mid-join window can't leave a peer permanently diverged.
         tasks.push(AbortOnDrop(tokio::spawn(reconcile_loop(ReconcileLoop {
-            endpoint,
             namespace: namespace.clone(),
             hydrator: hydrator.clone(),
             sender: gossip_sender,
             identity,
             policy,
-            workspace_id,
             records: record_plane,
             local_rx: reconcile_rx,
             announcements: announce_rx,
@@ -2415,64 +2245,6 @@ impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
     }
 }
 
-async fn record_mesh_request(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    request: &RecordMeshRequestV1,
-) -> Result<(
-    AuthenticatedFsPeer,
-    crate::record_mesh::RecordMeshResponseV1,
-)> {
-    if identity.partitioned() {
-        anyhow::bail!("transport partition gate is closed");
-    }
-    let connection = endpoint.connect(remote, TILO_FS_RECORD_MESH_ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    let peer =
-        authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
-    write_record_mesh_request(&mut send, request).await?;
-    send.finish()?;
-    let response = read_record_mesh_response(&mut recv).await?;
-    connection.close(0u32.into(), b"");
-    Ok((peer, response))
-}
-
-async fn pull_workspace_authority_from_peer(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    authority: &WorkspaceAuthority,
-    workspace_id: uuid::Uuid,
-) -> Result<()> {
-    let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    let _peer =
-        authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
-    write_authority_frame(
-        &mut send,
-        &AuthorityRequest {
-            workspace: workspace_id,
-            // The governor is the only identity the remote protocol permits
-            // to publish. Sending its current signed envelope makes ACL
-            // reconciliation bidirectional: a desktop can push a revocation
-            // to an always-on NAS instead of waiting for the NAS to happen to
-            // initiate the next connection. Collaborators remain pull-only.
-            publish: (identity.user_public_key() == authority.governor())
-                .then(|| authority.current())
-                .flatten(),
-        },
-    )
-    .await?;
-    send.finish()?;
-    let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
-    if let Some(envelope) = response.authority {
-        authority.apply(envelope)?;
-    }
-    connection.close(0u32.into(), b"");
-    Ok(())
-}
-
 /// Exchange the current signed workspace authority with one authenticated peer.
 ///
 /// # Errors
@@ -2494,194 +2266,6 @@ pub async fn submit_workspace_authority(
     let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
     connection.close(0u32.into(), b"");
     Ok(response.authority)
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "the record pull is one ordered validation and durable-commit transaction across a single peer response"
-)]
-async fn pull_record_mesh_from_peer(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    records: &RecordPlane,
-) -> Result<bool> {
-    let mut changed = false;
-    let mut after_inventory = None;
-    // One pass is deliberately finite even for a maliciously fragmented
-    // repository. Subsequent anti-entropy passes resume from the beginning;
-    // already-equal prefix cursors are cheap and no state is trusted merely
-    // because it appeared in inventory.
-    for _ in 0..256 {
-        let request = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id: records.workspace_id,
-            operation: RecordMeshOperationV1::Inventory {
-                after: after_inventory,
-                limit: u16::try_from(MAX_RECORD_MESH_INVENTORY_PAGE_STREAMS).unwrap_or(u16::MAX),
-            },
-        };
-        let (inventory_peer, response) =
-            record_mesh_request(endpoint, remote.clone(), identity, &request).await?;
-        let (cursors, next) = match response.result {
-            RecordMeshResultV1::End {
-                workspace_id,
-                operation: RecordMeshEndV1::Inventory,
-            } if workspace_id == records.workspace_id => break,
-            RecordMeshResultV1::InventoryPage {
-                workspace_id,
-                cursors,
-                next,
-            } if workspace_id == records.workspace_id => (cursors, next),
-            RecordMeshResultV1::Denied => return Ok(false),
-            _ => anyhow::bail!("record mesh returned an invalid inventory response"),
-        };
-        let direct_actor = fs_protocol::FileActor {
-            person: collab_types::Ed25519PublicKey(inventory_peer.user_public_key),
-            device: collab_types::Ed25519PublicKey(inventory_peer.device_public_key),
-        };
-        for remote_cursor in cursors
-            .into_iter()
-            .filter(|cursor| cursor.actor.person == direct_actor.person)
-        {
-            let key = RecordRepositoryKey {
-                workspace_id: records.workspace_id,
-                record_id: remote_cursor.record_id,
-            };
-            let mut local_sequence = records
-                .repository
-                .highest_sequence(key, &remote_cursor.actor)
-                .unwrap_or(0);
-            if local_sequence > remote_cursor.contiguous_sequence {
-                continue;
-            }
-            if local_sequence == remote_cursor.contiguous_sequence {
-                if local_sequence > 0
-                    && records.repository.stream_cursor(
-                        key,
-                        &remote_cursor.actor,
-                        local_sequence,
-                    )? != remote_cursor
-                {
-                    anyhow::bail!("record mesh prefix digest diverged");
-                }
-                continue;
-            }
-            while local_sequence < remote_cursor.contiguous_sequence {
-                let after = if local_sequence == 0 {
-                    None
-                } else {
-                    Some(records.repository.stream_cursor(
-                        key,
-                        &remote_cursor.actor,
-                        local_sequence,
-                    )?)
-                };
-                let pull = RecordMeshRequestV1 {
-                    protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-                    workspace_id: records.workspace_id,
-                    operation: RecordMeshOperationV1::Pull {
-                        stream: RecordMeshStreamV1 {
-                            record_id: remote_cursor.record_id,
-                            actor: remote_cursor.actor,
-                        },
-                        after,
-                        limit: u16::try_from(MAX_RECORD_MESH_PULL_BATCH_ENVELOPES)
-                            .unwrap_or(u16::MAX),
-                    },
-                };
-                let (peer, response) =
-                    record_mesh_request(endpoint, remote.clone(), identity, &pull).await?;
-                if peer.user_public_key != inventory_peer.user_public_key
-                    || peer.device_public_key != inventory_peer.device_public_key
-                {
-                    anyhow::bail!("record mesh peer identity changed during pull");
-                }
-                let envelopes = match response.result {
-                    RecordMeshResultV1::EnvelopeBatch {
-                        workspace_id,
-                        stream,
-                        after_sequence,
-                        envelopes,
-                    } if workspace_id == records.workspace_id
-                        && stream.record_id == remote_cursor.record_id
-                        && stream.actor == remote_cursor.actor
-                        && after_sequence == local_sequence =>
-                    {
-                        envelopes
-                    }
-                    _ => anyhow::bail!("record mesh returned an invalid envelope batch"),
-                };
-                records.repository.apply_batch(
-                    key,
-                    &envelopes,
-                    &DirectMeshAuthorizer {
-                        peer: &peer,
-                        identity,
-                        policy,
-                    },
-                )?;
-                changed |= !envelopes.is_empty();
-                local_sequence = records
-                    .repository
-                    .highest_sequence(key, &remote_cursor.actor)
-                    .unwrap_or(local_sequence);
-                if let Some(materializer) = &records.materializer {
-                    materializer.reconcile_record(&records.repository, key)?;
-                }
-            }
-        }
-        after_inventory = Some(next);
-    }
-    // Also heal mesh-first / namespace-later ordering and restart gaps when
-    // every remote cursor was already equal and no new batch was applied.
-    if let Some(materializer) = &records.materializer {
-        materializer.reconcile_repository(&records.repository)?;
-    }
-    Ok(changed)
-}
-
-async fn request_replica_ack(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    request: &ReplicaAckRequestV1,
-) -> Result<crate::availability::ReplicaObservation> {
-    if identity.partitioned() {
-        anyhow::bail!("transport partition gate is closed");
-    }
-    tokio::time::timeout(REPLICA_ACK_TIMEOUT, async {
-        let connection = endpoint.connect(remote, TILO_FS_REPLICA_ACK_ALPN).await?;
-        let (mut send, mut recv) = connection.open_bi().await?;
-        let peer =
-            authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
-        if !crate::share_session::LiveActorCertification::certification_is_current(
-            identity,
-            &peer,
-            unix_now_ns(),
-        ) || !authenticated_peer_may_read_whole_workspace(policy, &peer)
-        {
-            anyhow::bail!("replica peer lacks live workspace read authorization");
-        }
-        write_replica_ack_frame(&mut send, request).await?;
-        send.finish()?;
-        let response: ReplicaAckResponseV1 = read_replica_ack_frame(&mut recv).await?;
-        let ReplicaAckResponseV1::Acknowledged(receipt) = response else {
-            anyhow::bail!("peer did not acknowledge a durable exact replica");
-        };
-        let observed = receipt.verify_for(
-            request,
-            &peer,
-            collab_types::Ed25519PublicKey(identity.device_public_key()),
-            unix_now_ms(),
-        )?;
-        connection.close(0u32.into(), b"");
-        Ok::<_, anyhow::Error>(observed)
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("replica acknowledgement exchange timed out"))?
 }
 
 /// A receipt with less than this left is renewed.
@@ -2713,58 +2297,6 @@ fn revisions_awaiting_receipt(
             })
         })
         .collect()
-}
-
-async fn collect_replica_acks_from_peer(
-    endpoint: &Endpoint,
-    remote: EndpointAddr,
-    identity: &FsTransportIdentity,
-    policy: &PeerPolicy,
-    records: &RecordPlane,
-) {
-    let Some(registry) = &records.availability else {
-        return;
-    };
-    let device = collab_types::Ed25519PublicKey(*remote.id.as_bytes());
-    for revision in revisions_awaiting_receipt(records, registry, device) {
-        let Ok(request) = ReplicaAckRequestV1::new(records.workspace_id, revision) else {
-            continue;
-        };
-        let Ok(observation) =
-            request_replica_ack(endpoint, remote.clone(), identity, policy, &request).await
-        else {
-            continue;
-        };
-        let observed_at = observation.observed_at_ms;
-        let _ = persist_workspace_replica_observation(
-            registry,
-            revision,
-            collab_types::Ed25519PublicKey(identity.device_public_key()),
-            observation,
-            observed_at,
-        );
-    }
-}
-
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the availability lock spans the atomic observation update and its persistence decision"
-)]
-fn persist_workspace_replica_observation(
-    registry: &Arc<Mutex<crate::availability::AvailabilityRegistry>>,
-    revision: fs_protocol::ContentRevisionV1,
-    local_device: collab_types::Ed25519PublicKey,
-    observation: crate::availability::ReplicaObservation,
-    observed_at: u64,
-) -> Result<(), crate::availability::AvailabilityError> {
-    let mut registry = registry.lock_recover();
-    record_replica_observation(
-        &mut registry,
-        revision,
-        local_device,
-        observation,
-        observed_at,
-    )
 }
 
 /// Records a verified receipt for `revision`, tracking the revision first
@@ -2822,14 +2354,11 @@ const PEER_DEADLINE: Duration = Duration::from_secs(20);
 
 /// One peer's share of a reconciliation pass.
 struct PeerPass<'a> {
-    endpoint: &'a Endpoint,
     namespace: &'a Arc<Mutex<Namespace>>,
     hydrator: &'a Hydrator,
     sender: Option<&'a GossipSender>,
     identity: &'a FsTransportIdentity,
     policy: &'a PeerPolicy,
-    /// The workspace every namespace payload must be bound to.
-    workspace_id: uuid::Uuid,
     records: Option<&'a RecordPlane>,
     /// Both sides write the whole workspace: exchange namespace changes.
     exchange_namespace: bool,
@@ -2879,8 +2408,8 @@ impl PeerPass<'_> {
     /// The pass over the peer's session: every exchange on its one
     /// connection.
     async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> PassOutcome {
-        // Each exchange stands on its own, as with the per-request
-        // protocols: one the peer refuses does not hold back the others.
+        // Each exchange stands on its own: one the peer refuses does not
+        // hold back the others.
         let failed = std::sync::atomic::AtomicBool::new(false);
         let report = |what: &str, error: &anyhow::Error| {
             failed.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2977,104 +2506,16 @@ impl PeerPass<'_> {
             failed: failed.into_inner(),
         }
     }
-
-    /// The pass through the per-request protocols, for a peer without the
-    /// session protocol.
-    async fn per_request(&self, peer: EndpointAddr) -> PassOutcome {
-        let mut changed = false;
-        let mut failed = false;
-        if self.exchange_namespace {
-            match sync_with_peer_at_boundaries(
-                self.endpoint,
-                peer.clone(),
-                self.namespace,
-                self.identity,
-                (self.workspace_id, self.policy),
-                self.records.map(|records| &*records.repository),
-            )
-            .await
-            {
-                Ok(received_change) => {
-                    changed |= received_change;
-                    let resolution = self.namespace.lock_recover().post_sync_resolve();
-                    self.broadcast(resolution).await;
-                }
-                Err(error) => {
-                    failed = true;
-                    if !self.identity.partitioned() {
-                        eprintln!("namespace sync with {} failed: {error:#}", peer.id);
-                    }
-                }
-            }
-        }
-        // A read-only device takes namespace changes only over a session,
-        // as the changes beyond its own heads ([`session::pull_namespace`]).
-        // A peer without the session protocol is never asked for its whole
-        // document on every pass; it serves this device records only.
-        let records = self.per_request_records(peer, changed).await;
-        PassOutcome {
-            changed: records.changed,
-            failed: failed || records.failed,
-        }
-    }
-
-    /// The record part of [`Self::per_request`].
-    async fn per_request_records(&self, peer: EndpointAddr, mut changed: bool) -> PassOutcome {
-        let mut failed = false;
-        if let Some(records) = self.records {
-            if let Some(authority) = &records.workspace_authority
-                && let Err(error) = pull_workspace_authority_from_peer(
-                    self.endpoint,
-                    peer.clone(),
-                    self.identity,
-                    authority,
-                    records.workspace_id,
-                )
-                .await
-                && !self.identity.partitioned()
-            {
-                eprintln!("workspace authority reconciliation failed: {error}");
-            }
-            match pull_record_mesh_from_peer(
-                self.endpoint,
-                peer.clone(),
-                self.identity,
-                self.policy,
-                records,
-            )
-            .await
-            {
-                Ok(pulled) => changed |= pulled,
-                Err(error) => {
-                    failed = true;
-                    if !self.identity.partitioned() {
-                        eprintln!("record mesh reconciliation failed: {error}");
-                    }
-                }
-            }
-            collect_replica_acks_from_peer(
-                self.endpoint,
-                peer,
-                self.identity,
-                self.policy,
-                records,
-            )
-            .await;
-        }
-        PassOutcome { changed, failed }
-    }
 }
 
 /// What every peer exchange of the reconciliation loop works on. Owned, so
 /// an exchange can outlive the pass that stopped waiting for it.
 struct PassShared {
-    endpoint: Endpoint,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     sender: Option<GossipSender>,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
     records: Option<RecordPlane>,
     sessions: Arc<SessionPool>,
     /// This device may write the whole workspace.
@@ -3168,8 +2609,7 @@ fn timer_due(interval: Duration) -> tokio::time::Instant {
 
 impl PassShared {
     /// One peer's share of a pass: the announcement if `plan` asks for it,
-    /// then every exchange over the peer's session, or through the
-    /// per-request protocols when it speaks no session.
+    /// then every exchange over the peer's session.
     async fn exchange(&self, peer: EndpointAddr, plan: PassPlan) -> PassOutcome {
         let session = match self.sessions.get(&peer).await {
             Ok(session) => session,
@@ -3191,23 +2631,17 @@ impl PassShared {
                     authenticated_peer_may_write_whole_workspace(&self.policy, &remote)
                 });
         let context = PeerPass {
-            endpoint: &self.endpoint,
             namespace: &self.namespace,
             hydrator: &self.hydrator,
             sender: self.sender.as_ref(),
             identity: &self.identity,
             policy: &self.policy,
-            workspace_id: self.workspace_id,
             records: self.records.as_ref(),
             exchange_namespace: self.may_write && remote_may_write,
             read_only: !self.may_write,
             reconcile: plan.reconcile,
             quiet: plan.quiet,
             namespace_exchanged: &self.namespace_exchanged,
-        };
-        let Some(session) = session else {
-            // The peer speaks only the per-request protocols.
-            return context.per_request(peer).await;
         };
         if plan.announce
             && let Err(error) = session::announce(&self.sessions, &session).await
@@ -3318,46 +2752,38 @@ impl PeerExchanges {
     }
 }
 
-/// The records a peer holds that this device lacks, over a session when the
-/// peer speaks it and through the per-request mesh otherwise.
+/// The records a peer holds that this device lacks, over its session.
 async fn pull_records_from_peer(
     sessions: &SessionPool,
-    endpoint: &Endpoint,
     remote: EndpointAddr,
     identity: &FsTransportIdentity,
     policy: &PeerPolicy,
     records: &RecordPlane,
     hydrator: &Hydrator,
 ) -> Result<bool> {
-    match sessions.get(&remote).await? {
-        Some(session) => {
-            let pulled = session::pull_records(
-                sessions,
-                &session,
-                identity,
-                policy,
-                records,
-                hydrator,
-                crate::record_materializer::ReconcileScope::Everything,
-            )
-            .await;
-            if pulled.is_err() {
-                sessions.forget(&session).await;
-            }
-            pulled
-        }
-        None => pull_record_mesh_from_peer(endpoint, remote, identity, policy, records).await,
+    let session = sessions.get(&remote).await?;
+    let pulled = session::pull_records(
+        sessions,
+        &session,
+        identity,
+        policy,
+        records,
+        hydrator,
+        crate::record_materializer::ReconcileScope::Everything,
+    )
+    .await;
+    if pulled.is_err() {
+        sessions.forget(&session).await;
     }
+    pulled
 }
 
 struct ReconcileLoop {
-    endpoint: Endpoint,
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     sender: Option<GossipSender>,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
-    workspace_id: uuid::Uuid,
     records: Option<RecordPlane>,
     local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
     /// Peers that announced new changes over a session.
@@ -3372,13 +2798,11 @@ struct ReconcileLoop {
 )]
 async fn reconcile_loop(reconcile: ReconcileLoop) {
     let ReconcileLoop {
-        endpoint,
         namespace,
         hydrator,
         sender,
         identity,
         policy,
-        workspace_id,
         records,
         mut local_rx,
         mut announcements,
@@ -3389,13 +2813,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
     let exchanges = PeerExchanges::new(
         PassShared {
-            endpoint,
             namespace: namespace.clone(),
             hydrator: hydrator.clone(),
             sender: sender.clone(),
             identity: identity.clone(),
             policy,
-            workspace_id,
             records: records.clone(),
             sessions,
             may_write,

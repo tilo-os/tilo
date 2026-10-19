@@ -271,20 +271,12 @@ fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     drop(bytes);
     let transparent = image.color().has_alpha();
     for _ in 0..8 {
-        let mut encoded = std::io::Cursor::new(Vec::new());
-        if transparent {
-            image
-                .write_to(&mut encoded, image::ImageFormat::Png)
-                .map_err(|error| error.to_string())?;
+        let encoded = if transparent {
+            ui::png::encode_image(&image)
         } else {
-            image::DynamicImage::ImageRgb8(image.to_rgb8())
-                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
-                    &mut encoded,
-                    85,
-                ))
-                .map_err(|error| error.to_string())?;
+            ui::jpeg::encode_image(&image, 85)
         }
-        let encoded = encoded.into_inner();
+        .map_err(|error| error.to_string())?;
         if encoded.len() <= MAX {
             return Ok(encoded);
         }

@@ -1,62 +1,40 @@
-//! Guards the shared ease-out-cubic curve used by the workspace-settings
-//! modal and the command palette (`ui::Transition::modal_curve`, which both
-//! draw paths call) — keeps the *source* honest so a later refactor
-//! can't silently regress the rest state or the animation's start scale.
+//! The command palette appears and leaves on the standard motion
+//! (`ui::motion::Appear`), and pumps frames only while it moves.
 
 use super::*;
 
-/// A transition that has just begun opening, so `ui::Transition::modal_curve`
-/// can be sampled anywhere across the enter window.
-fn opening() -> ui::Transition {
-    let mut t = ui::Transition::closed();
-    t.set_open(
-        true,
-        Duration::from_millis(MODAL_OPEN_ANIM_MS),
-        ui::Curve::EaseOut,
-    );
-    t
+fn pointer_motion() -> ui::tokens::EffectiveMotion {
+    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false)
 }
 
 #[test]
-fn modal_curve_rests_starts_and_settles_on_schedule() {
-    fn modal_curve_is_at_rest_when_fully_open() {
-        let t = ui::Transition::open();
-        let (alpha, dy, scale) = t.modal_curve(Instant::now(), 0.95);
-        assert_eq!(alpha, 1.0);
-        assert_eq!(dy, 0.0);
-        assert_eq!(scale, 1.0);
-    }
-
-    fn modal_curve_starts_from_initial_values() {
-        // At t=0 the panel must be invisible, 20px low, and at its start
-        // scale — otherwise it pops in rather than animating.
-        let start = Instant::now();
-        let t = opening();
-        let (alpha, dy, scale) = t.modal_curve(start, 0.9);
-        assert!(alpha < 0.05, "alpha at t=0 should be ~0, got {alpha}");
-        assert!(
-            (dy - 20.0).abs() < 0.5,
-            "dy at t=0 should be ~20 px, got {dy}"
-        );
-        assert!(
-            (scale - 0.9).abs() < 0.01,
-            "scale at t=0 should equal start_scale 0.9, got {scale}"
-        );
-    }
-
-    fn modal_curve_settles_at_rest_after_duration() {
-        let start = Instant::now();
-        let t = opening();
-        let past = start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50);
-        let (alpha, dy, scale) = t.modal_curve(past, 0.95);
-        assert_eq!(alpha, 1.0);
-        assert_eq!(dy, 0.0);
-        assert_eq!(scale, 1.0);
-    }
-
-    modal_curve_is_at_rest_when_fully_open();
-    modal_curve_starts_from_initial_values();
-    modal_curve_settles_at_rest_after_duration();
+fn the_palette_appears_on_the_standard_motion_and_settles() {
+    let start = ui::time::now();
+    let mut t = ui::motion::Presence::closed();
+    t.show(
+        true,
+        ui::motion::Appear::SPEC,
+        pointer_motion(),
+        ui::tokens::MotionSource::Pointer,
+        start,
+    );
+    let card = Rect::new(400.0, 96.0, 1000.0, 500.0);
+    let first = ui::motion::Appear::pose(t.progress(start), card.center(), pointer_motion());
+    assert!(!first.is_visible(), "it starts from nothing, not a pop");
+    let settled = t.settles_at().expect("appearing");
+    let rest = ui::motion::Appear::pose(t.progress(settled), card.center(), pointer_motion());
+    assert!(rest.is_rest(), "and rests exactly where it is laid out");
+    // Summoned by a key it is there on the next frame.
+    let mut keyed = ui::motion::Presence::closed();
+    keyed.show(
+        true,
+        ui::motion::Appear::SPEC,
+        pointer_motion(),
+        ui::tokens::MotionSource::Keyboard,
+        start,
+    );
+    assert!(!keyed.is_moving(start));
+    assert_eq!(keyed.progress(start), 1.0);
 }
 
 #[test]
@@ -64,44 +42,41 @@ fn modal_transitions_pump_only_the_frames_they_need() {
     fn palette_exit_interpolates_not_pops() {
         // Deterministic proof (no wall-clock sleep) that the palette fades
         // out rather than popping, by sampling openness at explicit instants.
-        let mut t = ui::Transition::open();
-        let start = Instant::now();
-        t.set_open_at(
+        let mut t = ui::motion::Presence::opened();
+        let start = ui::time::now();
+        t.show(
             false,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
+            ui::motion::Appear::SPEC,
+            pointer_motion(),
+            ui::tokens::MotionSource::Pointer,
             start,
         );
-        let at_start = t.value(start);
-        let at_mid = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS / 3));
-        let at_end = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50));
+        let end = t.settles_at().expect("closing");
+        let at_start = t.progress(start);
+        let at_mid = t.progress(start + (end - start) / 3);
+        let at_end = t.progress(end);
         assert!(at_start > 0.95, "close begins near fully-open: {at_start}");
         assert!(
             at_mid > 0.01 && at_mid < 0.99,
             "mid-close openness must be a partial fade, not a pop: {at_mid}"
         );
         assert!(at_end < 0.01, "close settles fully closed: {at_end}");
-        // And ease-out means it's past the linear midpoint at 1/3 in.
         assert!(at_mid < at_start, "openness decreases while closing");
     }
 
     fn palette_open_transition_pumps_frames_and_is_visible() {
         use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        // One instant for the whole test. Reading the clock afresh per
-        // assertion made this a statement about machine load: the open
-        // runs for MODAL_OPEN_ANIM_MS, so a scheduler stall longer than
-        // that between starting it and asking whether it was running
-        // let it finish first, and the last assertion flipped. That is
-        // an ordinary stall in a loaded parallel run, and it is what
-        // made this test flaky.
-        let now = Instant::now();
+        // One instant for the whole test, so it is a statement about the
+        // motion rather than about the machine's load.
+        let now = ui::time::now();
         assert!(!h.palette_transition.is_visible(now));
         // Drive the open transition the way `draw` does.
-        h.palette_transition.set_open_at(
+        h.palette_transition.show(
             true,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
+            ui::motion::Appear::SPEC,
+            pointer_motion(),
+            ui::tokens::MotionSource::Pointer,
             now,
         );
         assert!(h.palette_transition.is_visible(now));
@@ -109,11 +84,9 @@ fn modal_transitions_pump_only_the_frames_they_need() {
             h.needs_animation_frame_at(now),
             "an in-flight palette open must pump redraws"
         );
-        // The pinned clock has teeth: asked past the animation window
-        // the same host reports settled, so the assertion above is
-        // reading the curve rather than returning true unconditionally.
+        let settled = h.palette_transition.settles_at().expect("opening");
         assert!(
-            !h.needs_animation_frame_at(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50)),
+            !h.needs_animation_frame_at(settled),
             "a settled palette must let the event loop go idle"
         );
     }

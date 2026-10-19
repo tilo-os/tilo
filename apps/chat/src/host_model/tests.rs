@@ -73,7 +73,7 @@ fn backend(text: &str) -> Rc<Backend> {
 fn chat(backend: Rc<Backend>) -> (ChatApp, crate::testing::Room) {
     let mut doc = crate::testing::Room::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
-    crate::testing::say(&mut doc, crate::model::ME, "c_general", "Question");
+    crate::testing::say(&mut doc, crate::model::ME, "c_chat", "Question");
     let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend));
     app.attach_room(&doc);
     app.reload(&doc);
@@ -100,10 +100,10 @@ fn mounted_reply(
         Models::new(backend),
     )
     .unwrap();
-    crate::testing::mounted_post(&mut app, "c_general", "Question");
+    crate::testing::mounted_post(&mut app, "c_chat", "Question");
     let result = app
         .call_on(
-            &crate::testing::item("channels", "c_general"),
+            &crate::testing::item("channels", "c_chat"),
             "model-control",
             serde_json::json!({"command": "ask"}),
         )
@@ -123,7 +123,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
             backend.stop.set(StopReason::EndTurn);
         }
         let (mut app, id) = mounted_reply(backend.clone());
-        let original = crate::testing::mounted_rows(&mut app, "c_general")
+        let original = crate::testing::mounted_rows(&mut app, "c_chat")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -141,13 +141,13 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
             assert!(!surface.host_model.running());
             assert!(!surface.host_model.needs_frame());
             assert_eq!(
-                surface.model_controls("c_general"),
+                surface.model_controls("c_chat"),
                 vec!["ask", "retry", "continue"]
             );
         })
         .unwrap();
         app.call_on(
-            &crate::testing::item("channels", "c_general"),
+            &crate::testing::item("channels", "c_chat"),
             "model-control",
             serde_json::json!({"command": "continue"}),
         )
@@ -160,7 +160,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
         );
         assert!(requests[1].tools.is_empty());
         assert_eq!(requests[1].tool_choice, ToolChoice::None);
-        let retained = crate::testing::mounted_rows(&mut app, "c_general")
+        let retained = crate::testing::mounted_rows(&mut app, "c_chat")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -174,7 +174,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
     let oversized = "🦀".repeat(MAX_REASONING_BYTES);
     *backend.reasoning.borrow_mut() = oversized.clone();
     let (mut app, id) = mounted_reply(backend);
-    let message = crate::testing::mounted_rows(&mut app, "c_general")
+    let message = crate::testing::mounted_rows(&mut app, "c_chat")
         .into_iter()
         .find(|row| row.id == id)
         .unwrap();
@@ -193,7 +193,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
     assert!(work.trace.is_empty());
     app.with_surface::<ChatApp, _>(|surface| {
         assert!(!surface.host_model.running());
-        assert_eq!(surface.model_controls("c_general"), vec!["ask", "retry"]);
+        assert_eq!(surface.model_controls("c_chat"), vec!["ask", "retry"]);
     })
     .unwrap();
 }
@@ -207,7 +207,7 @@ fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
         backend.finish.set(true);
         backend.stop.set(StopReason::EndTurn);
         app.settle();
-        let message = crate::testing::mounted_rows(&mut app, "c_general")
+        let message = crate::testing::mounted_rows(&mut app, "c_chat")
             .into_iter()
             .find(|row| row.id == id)
             .unwrap();
@@ -224,7 +224,7 @@ fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
                 ui::models::ErrorKind::InvalidResponse
             );
             assert!(!surface.host_model.needs_frame());
-            assert_eq!(surface.model_controls("c_general"), vec!["ask", "retry"]);
+            assert_eq!(surface.model_controls("c_chat"), vec!["ask", "retry"]);
         })
         .unwrap();
     }
@@ -241,7 +241,7 @@ fn assert_reply_unchanged(actual: &crate::model::Message, original: &crate::mode
 #[test]
 fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
     let (mut app, mut doc) = chat(backend("Answer"));
-    let start = app.model_command("c_general", "ask").unwrap();
+    let start = app.model_command("c_chat", "ask").unwrap();
     pump(&mut app, &mut doc);
     let mut message = reply(&doc, &start["reply"]);
     message.appearance = Some(tilo_actions::Appearance {
@@ -309,7 +309,7 @@ fn completed_stream_is_not_duplicated_and_model_tool_calls_are_inert() {
     backend.finish.set(true);
     backend.stop.set(StopReason::EndTurn);
     let (mut app, mut doc) = chat(backend.clone());
-    let start = app.model_command("c_general", "ask").unwrap();
+    let start = app.model_command("c_chat", "ask").unwrap();
     pump(&mut app, &mut doc);
     let message = reply(&doc, &start["reply"]);
     assert_eq!(message.text, "Streamed answer");
@@ -355,7 +355,7 @@ fn denial_retains_partial_output_and_retry_uses_a_fresh_reply() {
         .error
         .set(Some(ui::models::ErrorKind::PermissionDenied));
     let (mut app, mut doc) = chat(backend.clone());
-    let first = app.model_command("c_general", "ask").unwrap();
+    let first = app.model_command("c_chat", "ask").unwrap();
     pump(&mut app, &mut doc);
     let original = reply(&doc, &first["reply"]);
     let stream = original.work.as_ref().unwrap().stream.as_ref().unwrap();
@@ -363,7 +363,7 @@ fn denial_retains_partial_output_and_retry_uses_a_fresh_reply() {
     assert!(!stream.detail.is_empty());
     backend.error.set(None);
     backend.stop.set(StopReason::EndTurn);
-    let retry = app.model_command("c_general", "retry").unwrap();
+    let retry = app.model_command("c_chat", "retry").unwrap();
     assert_ne!(retry["reply"], first["reply"]);
     pump(&mut app, &mut doc);
     assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
@@ -375,7 +375,7 @@ fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
     let backend = backend("Partial answer");
     backend.finish.set(true);
     let (mut app, mut doc) = chat(backend.clone());
-    let first = app.model_command("c_general", "ask").unwrap();
+    let first = app.model_command("c_chat", "ask").unwrap();
     pump(&mut app, &mut doc);
     let original = reply(&doc, &first["reply"]);
     assert_eq!(
@@ -389,8 +389,8 @@ fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
             .finish,
         Some(AgentFinish::Truncated)
     );
-    assert!(app.model_controls("c_general").contains(&"continue"));
-    let continuation = app.model_command("c_general", "continue").unwrap();
+    assert!(app.model_controls("c_chat").contains(&"continue"));
+    let continuation = app.model_command("c_chat", "continue").unwrap();
     pump(&mut app, &mut doc);
     assert_ne!(first["reply"], continuation["reply"]);
     assert_reply_unchanged(&reply(&doc, &first["reply"]), &original);
@@ -405,15 +405,15 @@ fn truncation_continue_keeps_the_original_answer_and_sends_explicit_context() {
 fn stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish() {
     let backend = backend("Keep this");
     let (mut app, mut doc) = chat(backend);
-    let first = app.model_command("c_general", "ask").unwrap();
+    let first = app.model_command("c_chat", "ask").unwrap();
     pump(&mut app, &mut doc);
     assert!(app.host_model.running());
-    assert_eq!(app.model_controls("c_general"), vec!["stop"]);
+    assert_eq!(app.model_controls("c_chat"), vec!["stop"]);
     assert_eq!(
-        app.model_command("c_general", "stop").unwrap()["stopped"],
+        app.model_command("c_chat", "stop").unwrap()["stopped"],
         true
     );
-    assert!(app.model_command("c_general", "retry").is_err());
+    assert!(app.model_command("c_chat", "retry").is_err());
     assert!(app.host_model.controls("other-channel").is_empty());
     pump(&mut app, &mut doc);
     let message = reply(&doc, &first["reply"]);
@@ -422,14 +422,14 @@ fn stop_preserves_partial_output_and_blocks_replacement_until_terminal_publish()
         message.work.unwrap().stream.unwrap().finish,
         Some(AgentFinish::Cancelled)
     );
-    assert!(app.model_controls("c_general").contains(&"retry"));
+    assert!(app.model_controls("c_chat").contains(&"retry"));
 }
 
 #[test]
 fn stop_before_first_pump_still_records_cancellation() {
     let (mut app, mut doc) = chat(backend("Never polled"));
-    let first = app.model_command("c_general", "ask").unwrap();
-    app.model_command("c_general", "stop").unwrap();
+    let first = app.model_command("c_chat", "ask").unwrap();
+    app.model_command("c_chat", "stop").unwrap();
     pump(&mut app, &mut doc);
     let message = reply(&doc, &first["reply"]);
     assert!(message.text.is_empty());
@@ -446,7 +446,7 @@ fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
     crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
     let mut app = ChatApp::new_ephemeral().with_models(Models::new(backend.clone()));
     app.reload(&doc);
-    assert!(app.model_controls("c_general").is_empty());
+    assert!(app.model_controls("c_chat").is_empty());
     assert!(!app.activate_model_control("ask"));
     assert!(
         app.attachment_status
@@ -585,8 +585,8 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
             .unwrap();
     let b =
         TestApp::<ChatShell>::for_person_with_lent("other", Models::new(second.clone())).unwrap();
-    crate::testing::mounted_post(&mut a, "c_general", "Question");
-    let channel = crate::testing::item("channels", "c_general");
+    crate::testing::mounted_post(&mut a, "c_chat", "Question");
+    let channel = crate::testing::item("channels", "c_chat");
     let acknowledged = a
         .call_on(
             &channel,
@@ -639,7 +639,7 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
     assert_eq!(first.requests.borrow().len(), 1);
     assert!(second.requests.borrow().is_empty());
     let mut b = b;
-    assert!(crate::testing::mounted_rows(&mut b, "c_general").is_empty());
+    assert!(crate::testing::mounted_rows(&mut b, "c_chat").is_empty());
     assert!(
         a.call_by(
             ui::tilo_actions::ActionInvoker::actor("remote-agent"),

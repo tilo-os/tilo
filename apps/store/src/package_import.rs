@@ -105,6 +105,7 @@ pub fn review_local(
         .map_err(|_| ui::i18n!("store-package-invalid"))?;
     let item = StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: package.id.clone(),
         name: package.name.clone().unwrap_or_else(|| package.id.clone()),
         description: ui::i18n!("store-package-local-description"),
@@ -302,6 +303,7 @@ type = "gui"
         let thin = tilo_app_package::tapp::to_bytes(&packed.meta, None).unwrap();
         let item = StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: manifest.package.id,
             name: "Import fixture".into(),
             description: "A signed test app".into(),

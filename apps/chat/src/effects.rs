@@ -3,7 +3,7 @@
 //! this device, and the call controls of the shell's voice service.
 //!
 //! Each is a [`ChatEffect`], offered bound on the item it acts on (a
-//! workspace, a conversation, a message, a call), so the palette, an agent
+//! conversation, a category, a message, a call), so the palette, an agent
 //! or a script reaches the same handler a click does. What an effect changes
 //! in the document — the message a shared file becomes — it changes through
 //! the record's verbs and field edits. Sharing a file and
@@ -38,12 +38,13 @@ fn agent_semantic_identity(agent: &str) -> Option<ResourceSemanticIdentity> {
 }
 
 /// The views an item of the chat opens in, each opened by the item's own
-/// view effect: a workspace, and a message (to a range of its text). A
-/// conversation's view depends on its kind and is offered by its row.
+/// view effect: a category (its first conversation), and a message (to a
+/// range of its text). A conversation's view depends on its kind and is
+/// offered by its row.
 pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<ResourceViewSpec> {
     match field {
-        "workspaces" => vec![
-            ResourceViewSpec::new("workspace", "Workspace", ChatEffect::OPEN_WORKSPACE.id)
+        "categories" => vec![
+            ResourceViewSpec::new("category", "Category", ChatEffect::OPEN_CATEGORY.id)
                 .with_primary(true),
         ],
         "messages" => vec![
@@ -79,9 +80,6 @@ pub enum ChatEffect {
     /// Show or hide reasoning actually supplied by the provider.
     #[effect(view, row, item = messages)]
     ShowAgentReasoning { message: String, expanded: bool },
-    /// Open workspace
-    #[effect(view, row, item = workspaces)]
-    OpenWorkspace { workspace: String },
     /// Open conversation
     #[effect(view, row, item = channels)]
     OpenChannel { channel: String },
@@ -124,14 +122,13 @@ pub enum ChatEffect {
     ReadDirectConversation { public_key: String },
     /// Open a direct conversation with an Agent authenticated by this room.
     #[effect(view, row)]
-    OpenAgentConversation { workspace: String, agent: String },
+    OpenAgentConversation { agent: String },
     /// Open the conversation for one exact task and run.
     ///
-    /// The Agent row binds its authenticated workspace and agent, asking
-    /// only for task and run epoch; the root also supports exact navigation.
+    /// The Agent row binds its authenticated agent, asking only for task and
+    /// run epoch; the root also supports exact navigation.
     #[effect(view)]
     OpenTaskConversation {
-        workspace: String,
         agent: String,
         task: String,
         run_epoch: u64,
@@ -207,15 +204,14 @@ pub enum ChatEffect {
     /// whole text and the agent's record of its work.
     #[effect(view, row, returns, item = messages)]
     ReadMessage { message: String },
-    /// Read workspace
+    /// Read room
     ///
-    /// A workspace's categories and channels and the room's people as the
-    /// record stores them, and, when asked, one message with the message it
+    /// The room's categories and channels and its people as the record
+    /// stores them, and, when asked, one message with the message it
     /// answers or a channel's latest messages: what a bot mirroring the
-    /// workspace elsewhere works from.
+    /// room elsewhere works from.
     #[effect(kind = "read", returns, programmatic)]
-    ReadWorkspace {
-        workspace: String,
+    ReadRoom {
         #[param("A message to include, with the message it answers")]
         message: Option<String>,
         #[param("A channel whose latest messages to include, each with the message it answers")]
@@ -270,8 +266,8 @@ pub enum ChatEffect {
     CallStatus { channel: String },
     /// Start a call
     ///
-    /// Joins the open workspace's voice channel, making one when the
-    /// workspace has none, or reveals the call already running.
+    /// Joins the room's voice channel, making one when the room has none,
+    /// or reveals the call already running.
     #[effect(idempotent, device_only)]
     StartCall,
     /// Start a video call
@@ -300,13 +296,11 @@ enum TaskGoalEffect {
 /// Typed dispatch for task navigation and execution.
 enum TaskEffect {
     OpenTaskConversation {
-        workspace: String,
         agent: String,
         task: String,
         run_epoch: u64,
     },
     OpenAgentConversation {
-        workspace: String,
         agent: String,
     },
     OpenTaskOutput {
@@ -347,31 +341,25 @@ enum CallEffect {
 impl ChatApp {
     pub(crate) fn open_task_conversation_effect(
         &mut self,
-        workspace: &str,
         agent: &str,
         task: &str,
         run_epoch: u64,
     ) -> Result<(), String> {
-        if workspace != self.active_ws || task.strip_prefix("task:").is_none_or(str::is_empty) {
-            return Err("the exact task is not in this workspace".into());
-        }
         // Reading a historical run must not depend on its executor still being
         // registered. The owner authenticates this exact task/run read; steering
         // and Stop separately require its live assignment and revision.
-        self.leave_floated_agent_route();
-        self.close_person_conversation();
-        self.task_goal = None;
-        self.direct_agent = Some(agent.to_owned());
-        self.inbox_open = false;
-        self.thread_open = None;
-        self.focus = Focus::Main;
-        self.scroll = 0.0;
-        if !self.agent_tasks.follow(workspace, agent, task, run_epoch) {
+        if !self.open_agent_conversation(agent) {
+            return Err("the task's agent is not in this room".into());
+        }
+        if !self
+            .agent_tasks
+            .follow(crate::app::ROOM_SCOPE, agent, task, run_epoch)
+        {
             return Err("the exact task identity is invalid".into());
         }
         self.agent_intents.update(|intents| {
             _ = intents.insert(
-                (workspace.to_owned(), agent.to_owned()),
+                (crate::app::ROOM_SCOPE.to_owned(), agent.to_owned()),
                 crate::agent_tasks::AgentComposerIntent::Steer,
             );
         });
@@ -392,17 +380,16 @@ impl ChatApp {
                 self.show_agent_reasoning(message, expanded)?;
                 Ok(Effected::done())
             }
-            ChatEffect::OpenWorkspace { workspace } => self.open_workspace_effect(workspace),
             ChatEffect::OpenChannel { channel } => {
                 self.open_channel(&channel).map(|()| Effected::done())
             }
             ChatEffect::OpenCategory { category } => {
                 self.reveal_category(&category).map(|()| Effected::done())
             }
-            ChatEffect::ToggleCategory { category } => self.toggle_category_effect(&category),
             ChatEffect::RevealMessage { message } => {
                 self.reveal_message(&message).map(|()| Effected::done())
             }
+            ChatEffect::ToggleCategory { category } => self.toggle_category_effect(&category),
             ChatEffect::RevealMessageRange {
                 message,
                 start,
@@ -431,13 +418,12 @@ impl ChatApp {
             }
             ChatEffect::SaveTaskGoal => self.answer_task_goal_effect(TaskGoalEffect::SaveTaskGoal),
             ChatEffect::OpenTaskConversation {
-                workspace,
                 agent,
                 task,
                 run_epoch,
-            } => self.answer_task_conversation(workspace, agent, task, run_epoch),
-            ChatEffect::OpenAgentConversation { workspace, agent } => {
-                self.answer_task_effect(TaskEffect::OpenAgentConversation { workspace, agent })
+            } => self.answer_task_conversation(agent, task, run_epoch),
+            ChatEffect::OpenAgentConversation { agent } => {
+                self.answer_task_effect(TaskEffect::OpenAgentConversation { agent })
             }
             ChatEffect::OpenTaskOutput {
                 task,
@@ -472,7 +458,7 @@ impl ChatApp {
             ChatEffect::ShareLiveContext => self.share_live_context(),
             ChatEffect::StopSharingLiveContext => Ok(self.set_context_sharing(false)),
             ChatEffect::LiveContextStatus => Ok(self.live_context_status()),
-            ChatEffect::ReadWorkspace { .. } => Err("the record answers this read".into()),
+            ChatEffect::ReadRoom { .. } => Err("the record answers this read".into()),
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
                 Err("Browser navigation requires the owning host".into())
             }
@@ -497,12 +483,6 @@ impl ChatApp {
         }
     }
 
-    fn open_workspace_effect(&mut self, workspace: String) -> EffectAnswer {
-        self.reveal_workspace_resource(workspace)?;
-        self.reselect();
-        Ok(Effected::done())
-    }
-
     fn toggle_category_effect(&mut self, category: &str) -> EffectAnswer {
         if !self.categories.iter().any(|item| item.id == category) {
             return Err("category no longer exists".into());
@@ -513,13 +493,11 @@ impl ChatApp {
 
     fn answer_task_conversation(
         &mut self,
-        workspace: String,
         agent: String,
         task: String,
         run_epoch: u64,
     ) -> EffectAnswer {
         self.answer_task_effect(TaskEffect::OpenTaskConversation {
-            workspace,
             agent,
             task,
             run_epoch,
@@ -595,16 +573,15 @@ impl ChatApp {
     fn answer_task_effect(&mut self, effect: TaskEffect) -> EffectAnswer {
         match effect {
             TaskEffect::OpenTaskConversation {
-                workspace,
                 agent,
                 task,
                 run_epoch,
             } => {
-                self.open_task_conversation_effect(&workspace, &agent, &task, run_epoch)?;
+                self.open_task_conversation_effect(&agent, &task, run_epoch)?;
             }
-            TaskEffect::OpenAgentConversation { workspace, agent } => {
-                if workspace != self.active_ws || !self.open_agent_conversation(&agent) {
-                    return Err("agent is not admitted to this workspace".into());
+            TaskEffect::OpenAgentConversation { agent } => {
+                if !self.open_agent_conversation(&agent) {
+                    return Err("agent is not admitted to this room".into());
                 }
             }
             TaskEffect::OpenTaskOutput {
@@ -778,8 +755,8 @@ impl ChatApp {
         })))
     }
 
-    /// Start a call in the open workspace: join its voice channel, making
-    /// one first when it has none so a text-only workspace can still huddle.
+    /// Start a call in the room: join its voice channel, making one first
+    /// when it has none so a text-only room can still huddle.
     /// A call already running is revealed, never closed. The channel is
     /// made through `doc` at once when the caller holds the document (the
     /// header button), else through the dispatcher, and joined once it is
@@ -795,9 +772,6 @@ impl ChatApp {
             self.call.expanded = true;
             self.request_relayout();
             return Ok(());
-        }
-        if self.active_ws.is_empty() {
-            return Err("No chat workspace is open".into());
         }
         let existing = self
             .ws_channels()
@@ -816,7 +790,6 @@ impl ChatApp {
                 }
                 let id = crate::events::fresh_id("c");
                 let channel = crate::record::Channel {
-                    workspace: tilo_resource::Id::from_raw(self.active_ws.clone()),
                     name: "Voice".into(),
                     kind: ChannelKind::Voice,
                     ..crate::record::Channel::default()
@@ -829,8 +802,7 @@ impl ChatApp {
                 self.pending_call = Some(id);
                 return Ok(());
             };
-            let workspace = self.active_ws.clone();
-            self.create_channel_now(doc, &workspace, "", "Voice", ChannelKind::Voice)
+            self.create_channel_now(doc, "", "Voice", ChannelKind::Voice)
         };
         self.native_voice_command(
             &channel,
@@ -910,13 +882,6 @@ impl ChatApp {
                 crate::i18n::t("chat-agent-start-unavailable"),
             ));
         }
-        if self.workspaces.is_empty() {
-            unavailable.push(EffectStatus::unavailable(
-                ChatEffect::START_CALL,
-                "no_workspace",
-                crate::i18n::t("chat-call-no-workspace"),
-            ));
-        }
         if !self.external_services {
             unavailable.push(EffectStatus::unavailable(
                 ChatEffect::ATTACH_FILE,
@@ -938,17 +903,11 @@ impl ChatApp {
     }
 
     fn open_channel(&mut self, channel: &str) -> Result<(), String> {
-        let workspace = self
-            .channels
-            .iter()
-            .find(|item| item.id == channel)
-            .map(|item| item.workspace.clone())
-            .ok_or("conversation no longer exists")?;
+        if !self.channels.iter().any(|item| item.id == channel) {
+            return Err("conversation no longer exists".into());
+        }
         self.close_person_conversation();
-        self.task_goal = None;
-        self.active_ws = workspace;
         channel.clone_into(&mut self.active_channel);
-        self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
         self.reveal_scroll_pending = false;
@@ -960,13 +919,7 @@ impl ChatApp {
     }
 
     fn reveal_category(&mut self, category: &str) -> Result<(), String> {
-        let workspace = self
-            .categories
-            .iter()
-            .find(|item| item.id == category)
-            .map(|item| item.workspace.clone())
-            .ok_or("category no longer exists")?;
-        self.reveal_category_resource(workspace, category)?;
+        self.reveal_category_resource(category)?;
         self.reselect();
         Ok(())
     }
@@ -1017,16 +970,10 @@ impl ChatApp {
             .find(|item| item.id == message)
             .ok_or("message no longer exists")?;
         let (channel, parent) = (found.channel.clone(), found.parent.clone());
-        let workspace = self
-            .channels
-            .iter()
-            .find(|item| item.id == channel)
-            .map(|item| item.workspace.clone())
-            .ok_or("conversation no longer exists")?;
-        self.task_goal = None;
-        self.active_ws = workspace;
+        if !self.channels.iter().any(|item| item.id == channel) {
+            return Err("conversation no longer exists".into());
+        }
         self.active_channel = channel;
-        self.inbox_open = false;
         self.thread_open = parent;
         self.revealed_range = None;
         self.revealed_message = Some(message.to_owned());
@@ -1050,8 +997,8 @@ impl ChatApp {
         if !self.search_users.iter().any(|item| item.id == user) {
             return Err("person no longer exists".into());
         }
-        // Prefer the current workspace when it already evidences this
-        // person; otherwise open the first conversation where they wrote.
+        // Prefer the room's people when they already evidence this person;
+        // otherwise open the first conversation where they wrote.
         if !self.users.iter().any(|item| item.id == user)
             && let Some(channel) = self
                 .search_messages
@@ -1065,11 +1012,10 @@ impl ChatApp {
                             .any(|reaction| reaction.users.iter().any(|id| id == user))
                 })
                 .and_then(|message| self.channel(&message.channel))
-                .map(|channel| (channel.workspace.clone(), channel.id.clone()))
+                .map(|channel| channel.id.clone())
         {
-            (self.active_ws, self.active_channel) = channel;
+            self.active_channel = channel;
         }
-        self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
         self.revealed_person = Some(user.to_owned());
@@ -1111,34 +1057,21 @@ impl ChatApp {
     }
 }
 
-/// How many of a channel's latest messages [`read_workspace`] includes: a
+/// How many of a channel's latest messages [`read_room`] includes: a
 /// post's change names its channel, not the message it made, so a bot finds
 /// that message among the channel's newest.
 const READ_LATEST: usize = 20;
 
-/// The answer of [`ChatEffect::ReadWorkspace`]: the record's own JSON form
-/// of `workspace`'s categories and channels, every person, and `message`
-/// and the latest messages of `channel`, each with the message it answers.
-pub(crate) fn read_workspace(
+/// The answer of [`ChatEffect::ReadRoom`]: the record's own JSON form of
+/// the room's categories and channels, every person, and `message` and the
+/// latest messages of `channel`, each with the message it answers.
+pub(crate) fn read_room(
     chat: &Chat,
     held: &crate::messages::Messages,
-    workspace: &str,
     message: Option<&str>,
     channel: Option<&str>,
 ) -> serde_json::Value {
     use ui::tilo_resource::Model as _;
-    let of_workspace = |entries: serde_json::Value| -> serde_json::Value {
-        let kept = entries
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|entry| {
-                entry.get("value").unwrap_or(entry)["workspace"].as_str() == Some(workspace)
-            })
-            .cloned()
-            .collect();
-        serde_json::Value::Array(kept)
-    };
     let mut wanted: Vec<tilo_resource::Id> = message
         .map(tilo_resource::Id::from_raw)
         .into_iter()
@@ -1169,23 +1102,19 @@ pub(crate) fn read_workspace(
         }
     }
     serde_json::json!({
-        "categories": of_workspace(chat.categories.to_json()),
-        "channels": of_workspace(chat.channels.to_json()),
+        "categories": chat.categories.to_json(),
+        "channels": chat.channels.to_json(),
         "people": chat.people.to_json(),
         "messages": messages,
     })
 }
 
 impl ChatApp {
-    /// The effects offered on what the window shows: each workspace,
-    /// category and channel (a voice channel with its call), the latest
+    /// The effects offered on what the window shows: each category and
+    /// channel (a voice channel with its call), the latest
     /// messages of every conversation, the reviewed reports and the people.
     /// They are rows merged into the item resources the record publishes.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
-        let workspaces = self
-            .workspaces
-            .iter()
-            .filter_map(|workspace| self.workspace_row(&workspace.id));
         let categories = self
             .categories
             .iter()
@@ -1219,8 +1148,7 @@ impl ChatApp {
         let tasks = self.task_rows();
         let task_list = Self::task_list_row();
         let outputs = self.task_output_rows();
-        workspaces
-            .chain(outputs)
+        outputs
             .chain(std::iter::once(task_list))
             .chain(categories)
             .chain(channels)
@@ -1244,12 +1172,10 @@ impl ChatApp {
                 )
                 .semantic_identity(identity)
                 .effect(&ChatEffect::OpenAgentConversation {
-                    workspace: self.active_ws.clone(),
                     agent: agent.clone(),
                 })
                 .operation(
                     ChatEffect::OpenTaskConversation {
-                        workspace: self.active_ws.clone(),
                         agent: agent.clone(),
                         task: String::new(),
                         run_epoch: 0,
@@ -1270,7 +1196,6 @@ impl ChatApp {
                 LiveRow::new(id, "chat.task", &task.title)
                     .semantic_identity(identity)
                     .effect(&ChatEffect::OpenTaskConversation {
-                        workspace: self.active_ws.clone(),
                         agent: agent.to_owned(),
                         task: task.task_id.clone(),
                         run_epoch: epoch,
@@ -1361,12 +1286,10 @@ impl ChatApp {
                     LiveRow::new(id, "chat.agent", self.agent_display_name(agent))
                         .semantic_identity(identity)
                         .effect(&ChatEffect::OpenAgentConversation {
-                            workspace: self.active_ws.clone(),
                             agent: agent.to_owned(),
                         })
                         .operation(
                             ChatEffect::OpenTaskConversation {
-                                workspace: self.active_ws.clone(),
                                 agent: agent.to_owned(),
                                 task: String::new(),
                                 run_epoch: 0,
@@ -1378,7 +1301,6 @@ impl ChatApp {
         let (field, item) = tilo_resource::items::item_of_resource::<Chat>(id)?;
         let item = item.as_str();
         match field {
-            "workspaces" => self.workspace_row(item),
             "categories" => self.category_row(item),
             "channels" => self.channel_row(item),
             "messages" => self.message_row(item),
@@ -1386,15 +1308,6 @@ impl ChatApp {
             "feedback" => self.report_row(item),
             _ => None,
         }
-    }
-
-    fn workspace_row(&self, id: &str) -> Option<LiveRow> {
-        let workspace = self.workspaces.iter().find(|item| item.id == id)?;
-        Some(LiveRow::new(
-            item_row_id("workspaces", id),
-            "chat.workspace.workspaces",
-            &workspace.name,
-        ))
     }
 
     fn category_row(&self, id: &str) -> Option<LiveRow> {
@@ -1590,7 +1503,6 @@ fn opening(anchor: &str) -> Option<ChatEffect> {
     let (field, item) = tilo_resource::items::item_of_resource::<Chat>(anchor)?;
     let id = item.as_str().to_owned();
     Some(match field {
-        "workspaces" => ChatEffect::OpenWorkspace { workspace: id },
         "channels" => ChatEffect::OpenChannel { channel: id },
         "categories" => ChatEffect::OpenCategory { category: id },
         "messages" => ChatEffect::RevealMessage { message: id },

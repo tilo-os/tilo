@@ -1,12 +1,12 @@
 //! Explicit owner-selected website sessions in canonical encrypted account custody.
 use crate::{Custodian, CustodyError};
 use accounts::{AccountId, Secret, SecretVault};
-use browser_continuity::sessions::SessionCookies;
+use browser_continuity_core::sessions::SessionCookies;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 pub const SERVICE_SESSION_TYPE: &str = "browser-service-session";
-const MAX_SECRET: usize = browser_continuity::sessions::MAX_SESSION_BYTES + 64 * 1024;
+const MAX_SECRET: usize = browser_continuity_core::sessions::MAX_SESSION_BYTES + 64 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -350,7 +350,7 @@ impl Custodian {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use browser_continuity::sessions::{Cookie, SameSite, Service};
+    use browser_continuity_core::sessions::{Cookie, SameSite, Service};
     fn selected() -> SessionCookies {
         SessionCookies {
             schema: 1,
@@ -630,7 +630,7 @@ mod tests {
         session.schema = 2;
         session.service = Service::Discord;
         session.cookies.clear();
-        session.origin_storage = vec![browser_continuity::sessions::OriginStorage {
+        session.origin_storage = vec![browser_continuity_core::sessions::OriginStorage {
             origin: "https://discord.com".into(),
             key: "token".into(),
             value: "\"private-origin-marker\"".into(),

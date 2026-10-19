@@ -931,6 +931,74 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
     reply(status, message.as_bytes().to_vec())
 }
 
+/// `value` as JSON, answered with `code`.
+fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Body> {
+    match serde_json::to_vec(value) {
+        Ok(json) => {
+            let mut response = reply(code, json);
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("application/json"),
+            );
+            response
+        }
+        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+    }
+}
+
+/// `value` as JSON.
+fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
+    json_status(StatusCode::OK, value)
+}
+
+/// A public workspace's door (`/directory/<room>/join` or `…/report`):
+/// JSON in, JSON out, a refusal as `{error}` the person reads.
+#[allow(
+    clippy::result_large_err,
+    reason = "the error is the response the handler sends as it is"
+)]
+async fn directory_door(
+    web: &Web,
+    route: &str,
+    bytes: &[u8],
+) -> Result<Response<Body>, Response<Body>> {
+    use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
+    let (room, step) =
+        door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
+    let rooms = web
+        .rooms
+        .as_ref()
+        .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+    let refused = |error: crate::rooms::CollaborationError| {
+        json_status(
+            StatusCode::FORBIDDEN,
+            &serde_json::json!({ "error": error.to_string() }),
+        )
+    };
+    match step {
+        "join" => {
+            let join: DoorJoin = serde_json::from_slice(bytes)
+                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
+            let (issued, token) = rooms.admit_listed(room, &join).await.map_err(refused)?;
+            Ok(json(&DoorAnswer {
+                invitation: base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    issued.signed_invitation,
+                ),
+                admission_token: token,
+                origin: None,
+            }))
+        }
+        "report" => {
+            let report: DoorReport = serde_json::from_slice(bytes)
+                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
+            rooms.report_listed(room, &report).await.map_err(refused)?;
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
+        _ => Err(status(StatusCode::NOT_FOUND, "not found")),
+    }
+}
+
 fn session_status(error: &SessionError) -> Response<Body> {
     match error {
         SessionError::Gone => status(StatusCode::UNAUTHORIZED, "session ended"),
@@ -1179,7 +1247,24 @@ async fn route(
             ))
         }
         "/session" => {
-            let hello = decode(&bytes)?;
+            // A device at another peer protocol version is told this host's
+            // and reads nothing else.
+            let hello = match crate::auth::decode_handshake(&bytes) {
+                Ok(hello) => hello,
+                Err(crate::auth::HandshakeFrameError::Version { theirs }) => {
+                    tracing::info!(
+                        theirs,
+                        "a browser device at another protocol version was told this host's"
+                    );
+                    return Ok(match crate::auth::version_answer() {
+                        Ok(answer) => reply(StatusCode::CONFLICT, answer),
+                        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+                    });
+                }
+                Err(crate::auth::HandshakeFrameError::Codec(_)) => {
+                    return Err(status(StatusCode::BAD_REQUEST, "malformed body"));
+                }
+            };
             sessions
                 .hello(&hello)
                 .map(|challenge| encoded(&challenge))
@@ -1359,6 +1444,19 @@ async fn route(
             let request = decode(&bytes)?;
             let device = joining_device(&request);
             Ok(encoded(&rooms.join_service().handle(device, request).await))
+        }
+        tilo_relay_protocol::directory::DIRECTORY_PATH => {
+            let rooms = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            let online = sessions.online_users().into_keys().collect();
+            Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
+                workspaces: rooms.directory(&online).await,
+            }))
+        }
+        _ if tilo_relay_protocol::directory::door_route(route).is_some() => {
+            directory_door(web, route, &bytes).await
         }
         "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();

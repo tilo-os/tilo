@@ -84,9 +84,7 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.recipient_disconnect,
-        framing: tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
         presence: Some(&mailbox),
-        signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
@@ -203,10 +201,8 @@ async fn keystroke_presence_and_position_share_the_production_delta_write() {
         );
         tokio::time::advance(crate::presence_mailbox::DELTA_HOLD).await;
     }
-    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::framed(
-        wire.bytes.as_slice(),
-        tilo_delivery_protocol::transport_v2::StateFraming::CodedDelta,
-    );
+    let mut reader =
+        tilo_delivery_protocol::transport_v2::SessionReader::new(wire.bytes.as_slice());
     // Decode with the actual session reader, retaining coding state across
     // keystrokes rather than comparing encoder internals.
     for pos in 1..=200u64 {

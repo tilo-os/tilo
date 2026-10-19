@@ -20,14 +20,13 @@ use ui::tilo_resource::{self, JsonSchema};
 
 use crate::record::{DChannel, Guild, MappedKind, Ownership};
 use crate::slug;
-use crate::tilo::{Channel, Workspace};
+use crate::tilo::{Channel, RoomChat};
 use std::collections::HashSet;
 use ui::tilo_resource::Settled;
 
 /// Chat `create-category`, then `map` (category, origin Discord).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CategoryItem {
-    pub workspace: String,
     pub name: String,
     pub discord: String,
 }
@@ -35,7 +34,6 @@ pub struct CategoryItem {
 /// Chat `create-channel`, then `map` (channel, origin Discord).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelItem {
-    pub workspace: String,
     pub name: String,
     pub category: Option<String>,
     /// Chat's channel kind: `text` or `voice`.
@@ -87,7 +85,7 @@ fn ordered<'g>(guild: &'g Guild, kinds: &[ChannelKind]) -> Vec<&'g DChannel> {
     let mut channels: Vec<&DChannel> = guild
         .channels
         .iter()
-        .filter(|c| kinds.contains(&c.kind.0))
+        .filter(|c| kinds.contains(&c.kind))
         .filter(|c| guild.only_channel.as_ref().is_none_or(|only| *only == c.id))
         .filter(|c| !guild.discord_only.contains(&c.id) && !made_by_bridge(guild, &c.id))
         .collect();
@@ -114,11 +112,11 @@ fn making(guild: &Guild) -> bool {
     })
 }
 
-/// The Discord categories not joined yet, each adopting the workspace's
+/// The Discord categories not joined yet, each adopting the room's
 /// category of its name or made anew; `pending` when there was one.
 fn plan_categories(
     guild: &Guild,
-    (workspace_id, workspace): (&str, &Workspace),
+    room: &RoomChat,
     discord_categories: &[&DChannel],
     plan: &mut ImportPlan,
     pending: &mut bool,
@@ -131,7 +129,7 @@ fn plan_categories(
             continue;
         }
         *pending = true;
-        match workspace.categories.iter().find(|c| {
+        match room.categories.iter().find(|c| {
             guild.mapping(MappedKind::Category, &c.id).is_none()
                 && c.name.eq_ignore_ascii_case(&category.name)
         }) {
@@ -141,7 +139,6 @@ fn plan_categories(
                 discord: category.id.clone(),
             }),
             None => plan.categories.push(CategoryItem {
-                workspace: workspace_id.into(),
                 name: category.name.clone(),
                 discord: category.id.clone(),
             }),
@@ -151,17 +148,12 @@ fn plan_categories(
 
 /// The categories of Tilo's own whose every channel is moving out in
 /// `file`: nothing would be left listed under them.
-fn emptied(
-    workspace: &Workspace,
-    file: &[FileItem],
-    tilo_own: impl Fn(&String) -> bool,
-) -> Vec<String> {
-    workspace
-        .categories
+fn emptied(room: &RoomChat, file: &[FileItem], tilo_own: impl Fn(&String) -> bool) -> Vec<String> {
+    room.categories
         .iter()
         .filter(|category| tilo_own(&category.id))
         .filter(|category| {
-            let mut channels = workspace
+            let mut channels = room
                 .channels
                 .iter()
                 .filter(|c| c.category.as_ref() == Some(&category.id))
@@ -176,19 +168,18 @@ fn emptied(
         .collect()
 }
 
-/// The import done: the workspace's categories and channels no Discord one
+/// The import done: the room's categories and channels no Discord one
 /// joined stay Tilo's own.
-fn finish(guild: &Guild, workspace: &Workspace) -> FinishItem {
+fn finish(guild: &Guild, room: &RoomChat) -> FinishItem {
     let unmatched = |kind, id: &String| guild.mapping(kind, id).is_none();
     FinishItem {
-        tilo_only: workspace
+        tilo_only: room
             .categories
             .iter()
             .map(|c| &c.id)
             .filter(|id| unmatched(MappedKind::Category, id))
             .chain(
-                workspace
-                    .channels
+                room.channels
                     .iter()
                     .map(|c| &c.id)
                     .filter(|id| unmatched(MappedKind::Channel, id)),
@@ -198,9 +189,9 @@ fn finish(guild: &Guild, workspace: &Workspace) -> FinishItem {
     }
 }
 
-/// The next import round for `guild` into `workspace` (id `workspace_id`).
+/// The next import round for `guild` into the room's chat, `room`.
 #[must_use]
-pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportPlan {
+pub fn plan(guild: &Guild, room: &RoomChat) -> ImportPlan {
     let mut plan = ImportPlan::default();
     // Discord's echo of a channel the bridge is making could look like one
     // made there; the next layout event, after it is mapped, tells.
@@ -212,7 +203,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
     // A Tilo category no Discord category is, or will be, joined with.
     let tilo_own = |category: &String| {
         guild.mapping(MappedKind::Category, category).is_none()
-            && workspace
+            && room
                 .categories
                 .iter()
                 .find(|c| c.id == *category)
@@ -224,13 +215,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
                 })
     };
     let mut claimed: HashSet<&str> = HashSet::new();
-    plan_categories(
-        guild,
-        (workspace_id, workspace),
-        &discord_categories,
-        &mut plan,
-        &mut pending,
-    );
+    plan_categories(guild, room, &discord_categories, &mut plan, &mut pending);
     // Text channels before voice, as Discord lists them.
     for channel in ordered(guild, &[ChannelKind::Text])
         .into_iter()
@@ -257,7 +242,7 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
             None => None,
         };
         pending = true;
-        let voice = channel.kind.0 == ChannelKind::Voice;
+        let voice = channel.kind == ChannelKind::Voice;
         let free = |c: &&Channel| {
             guild.mapping(MappedKind::Channel, &c.id).is_none()
                 && !claimed.contains(c.id.as_str())
@@ -267,14 +252,13 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
         // The same name in the same category first; else one in a category
         // the server has no counterpart for (such as the channels a room
         // opened with), which no other Discord channel will claim.
-        let existing = workspace
+        let existing = room
             .channels
             .iter()
             .filter(free)
             .find(|c| c.category == category)
             .or_else(|| {
-                workspace
-                    .channels
+                room.channels
                     .iter()
                     .filter(free)
                     .find(|c| c.category.as_ref().is_none_or(&tilo_own))
@@ -295,7 +279,6 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
                 });
             }
             None => plan.channels.push(ChannelItem {
-                workspace: workspace_id.into(),
                 name: channel.name.clone(),
                 category,
                 kind: if voice { "voice" } else { "text" }.into(),
@@ -303,9 +286,9 @@ pub fn plan(guild: &Guild, workspace_id: &str, workspace: &Workspace) -> ImportP
             }),
         }
     }
-    plan.drop_categories = emptied(workspace, &plan.file, &tilo_own);
+    plan.drop_categories = emptied(room, &plan.file, tilo_own);
     if !pending && guild.ownership == Ownership::Importing {
-        plan.finish.push(finish(guild, workspace));
+        plan.finish.push(finish(guild, room));
     }
     plan
 }
@@ -345,12 +328,11 @@ mod tests {
     #[test]
     fn the_tilo_server_imports_in_two_rounds_then_finishes() {
         let mut guild = tilo_server();
-        let empty = Workspace::default();
-        let first = plan(&guild, "w1", &empty);
+        let empty = RoomChat::default();
+        let first = plan(&guild, &empty);
         assert_eq!(
             first.categories,
             [CategoryItem {
-                workspace: "w1".into(),
                 name: "chat".into(),
                 discord: "d_chat".into()
             }]
@@ -377,7 +359,7 @@ mod tests {
         ] {
             guild.map.push(discord(MappedKind::Channel, tilo, d));
         }
-        let second = plan(&guild, "w1", &empty);
+        let second = plan(&guild, &empty);
         let rest: Vec<_> = second
             .channels
             .iter()
@@ -397,14 +379,14 @@ mod tests {
         guild
             .map
             .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
-        let last = plan(&guild, "w1", &empty);
+        let last = plan(&guild, &empty);
         assert_eq!(last.finish.len(), 1);
         assert!(last.categories.is_empty() && last.channels.is_empty());
     }
 
     #[test]
     fn existing_tilo_channels_are_adopted() {
-        let ws = Workspace {
+        let ws = RoomChat {
             categories: vec![],
             channels: vec![Channel {
                 id: "c_seed".into(),
@@ -412,7 +394,7 @@ mod tests {
                 ..Channel::default()
             }],
         };
-        let p = plan(&tilo_server(), "w1", &ws);
+        let p = plan(&tilo_server(), &ws);
         assert_eq!(
             p.adopt,
             [AdoptItem {
@@ -439,7 +421,7 @@ mod tests {
             guild.map.push(discord(kind, tilo, d));
         }
         assert_eq!(
-            plan(&guild, "w1", &Workspace::default()),
+            plan(&guild, &RoomChat::default()),
             ImportPlan::default(),
             "no second finish"
         );
@@ -450,7 +432,7 @@ mod tests {
             .channels
             .push(dchan("d_gone", ChannelKind::Text, "gone", None, 3));
         guild.discord_only.insert("d_gone".into());
-        let later = plan(&guild, "w1", &Workspace::default());
+        let later = plan(&guild, &RoomChat::default());
         assert_eq!(
             later
                 .channels
@@ -496,14 +478,14 @@ mod tests {
         }
     }
 
-    fn seeded() -> Workspace {
+    fn seeded() -> RoomChat {
         let channel = |id: &str, name: &str| Channel {
             id: id.into(),
             name: name.into(),
             category: Some("k_seeded".into()),
             ..Channel::default()
         };
-        Workspace {
+        RoomChat {
             categories: vec![crate::tilo::Category {
                 id: "k_seeded".into(),
                 name: "Channels".into(),
@@ -520,7 +502,7 @@ mod tests {
     fn an_existing_server_is_adopted_by_name_within_its_categories() {
         let mut guild = existing_server();
         let ws = seeded();
-        let first = plan(&guild, "w1", &ws);
+        let first = plan(&guild, &ws);
         assert_eq!(
             first.adopt,
             [AdoptItem {
@@ -546,7 +528,7 @@ mod tests {
             .map
             .push(discord(MappedKind::Category, "k_chat", "d_chat"));
 
-        let second = plan(&guild, "w1", &ws);
+        let second = plan(&guild, &ws);
         assert_eq!(
             second.adopt,
             [AdoptItem {
@@ -582,7 +564,7 @@ mod tests {
             ));
         }
 
-        let last = plan(&guild, "w1", &ws);
+        let last = plan(&guild, &ws);
         assert_eq!(
             last.finish,
             [FinishItem {
@@ -597,7 +579,7 @@ mod tests {
     #[test]
     fn the_rooms_starting_channel_becomes_the_servers_of_that_name() {
         let mut guild = tilo_server();
-        let ws = Workspace {
+        let ws = RoomChat {
             categories: vec![crate::tilo::Category {
                 id: "k_seeded".into(),
                 name: "Channels".into(),
@@ -609,7 +591,7 @@ mod tests {
                 ..Channel::default()
             }],
         };
-        let first = plan(&guild, "w1", &ws);
+        let first = plan(&guild, &ws);
         assert!(first.adopt.is_empty(), "Channels has no counterpart");
         for c in &first.channels {
             guild.map.push(discord(
@@ -622,7 +604,7 @@ mod tests {
             .map
             .push(discord(MappedKind::Category, "k_chat", "d_chat"));
 
-        let second = plan(&guild, "w1", &ws);
+        let second = plan(&guild, &ws);
         assert_eq!(
             second.adopt,
             [AdoptItem {
@@ -659,7 +641,7 @@ mod tests {
         guild
             .map
             .push(discord(MappedKind::Channel, "c_voice", "d_voice"));
-        let filed = Workspace {
+        let filed = RoomChat {
             categories: vec![crate::tilo::Category {
                 id: "k_chat".into(),
                 name: "chat".into(),
@@ -671,7 +653,7 @@ mod tests {
                 ..Channel::default()
             }],
         };
-        let last = plan(&guild, "w1", &filed);
+        let last = plan(&guild, &filed);
         assert!(last.file.is_empty() && last.drop_categories.is_empty());
         assert_eq!(
             last.finish,
@@ -697,7 +679,7 @@ mod tests {
             0,
         ));
         let ws = seeded();
-        let first = plan(&guild, "w1", &ws);
+        let first = plan(&guild, &ws);
         assert!(
             first.adopt.iter().all(|a| a.kind == MappedKind::Category),
             "Channels is about to be joined, so its #help is not taken: {:?}",
@@ -717,7 +699,7 @@ mod tests {
         guild
             .channels
             .push(dchan("d_help_2", ChannelKind::Text, "help", None, 4));
-        let once = plan(&guild, "w1", &ws);
+        let once = plan(&guild, &ws);
         let helps: Vec<_> = once
             .adopt
             .iter()

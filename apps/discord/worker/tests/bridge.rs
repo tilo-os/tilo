@@ -179,10 +179,7 @@ impl Room {
             }
             let before = ids(&page);
             page.invoke(
-                &ui::tilo_actions::door::ActionAddress::new(
-                    ui::framework::chain_resource_id(&chat::parts::chain()),
-                    invoke.id,
-                ),
+                &invoke.address_on(ui::framework::chain_resource_id(&chat::parts::chain())),
                 &invoke.arguments,
                 true,
             )
@@ -373,8 +370,6 @@ struct Bridge {
     fake: FakeDiscord,
     room: Room,
     blobs: Arc<Blobs>,
-    /// The bridged Chat workspace.
-    workspace: String,
     /// The Chat channel Discord's #general is bridged to.
     general: String,
     ada: String,
@@ -438,47 +433,30 @@ impl Bridge {
             .prepare_application(&room.id, &cert, &room.catalogue, CHAT, "")
             .await
             .unwrap();
-        let workspace = room
-            .chat_as({
-                let (owner, ada) = (owner.clone(), ada.clone());
-                move |doc| {
-                    chat::demo::apply_as(
-                        doc,
-                        &owner,
-                        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                            name: "Bridged".into(),
-                        }),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    chat::demo::introduce(doc, &ada, "Ada", "AD")
-                        .map_err(|error| error.to_string())?;
-                    let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
-                    let workspace = chat
-                        .workspaces
-                        .iter()
-                        .find(|(_, w)| w.name == "Bridged")
-                        .unwrap()
-                        .0
-                        .clone();
-                    if setup.existing {
-                        seed_channels(doc, &owner, &workspace)?;
-                    }
-                    if setup.room_seeded {
-                        seed_as_a_room(doc, &owner, &workspace)?;
-                    }
-                    Ok(workspace.as_str().to_owned())
+        room.chat_as({
+            let (owner, ada) = (owner.clone(), ada.clone());
+            move |doc| {
+                lay_out_with_general_and_lounge(doc, &owner)?;
+                chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
+                if setup.existing {
+                    seed_channels(doc, &owner)?;
                 }
-            })
-            .await;
+                if setup.room_seeded {
+                    seed_as_a_room(doc, &owner)?;
+                }
+                Ok(())
+            }
+        })
+        .await;
 
-        // The guild record, connected to the fake server and that workspace.
+        // The guild record, connected to the fake server and the room's Chat.
         room.rooms
             .prepare_application(&room.id, &cert, &room.catalogue, APP, "")
             .await
             .unwrap();
         room.rooms
             .author_application(&room.id, &cert, &room.catalogue, APP, "", {
-                let (owner, workspace) = (owner.clone(), workspace.clone());
+                let owner = owner.clone();
                 move |doc| {
                     let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
                         .as_invoker(&owner)
@@ -487,7 +465,6 @@ impl Bridge {
                         .apply_confirmed(Guild::CONNECT.with(guild::Connect {
                             guild_id: GUILD.into(),
                             name: "Fake".into(),
-                            workspace,
                             only_channel: only.map(str::to_owned),
                             mirror_channels: Some(setup.mirror),
                             map_roles: Some(setup.roles),
@@ -574,7 +551,6 @@ impl Bridge {
             fake,
             room,
             blobs,
-            workspace,
             general,
             ada,
             _relay: relay,
@@ -750,20 +726,22 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     bridge
         .as_ada_on_messages(
             chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
-                channel: Id::from_raw(&bridge.general),
-                text: "the notes".into(),
-                parent: None,
-                body: None,
-                attachment: Some(chat::record::AttachmentUpdate {
-                    kind: "file".into(),
-                    name: "notes.txt".into(),
-                    blob,
-                    width: 0,
-                    height: 0,
-                    size: bytes.len() as u64,
-                }),
-                mentions: None,
-                written: None,
+                message: chat::messages::NewMessage {
+                    channel: Id::from_raw(&bridge.general),
+                    text: "the notes".into(),
+                    parent: None,
+                    body: None,
+                    attachment: Some(chat::record::AttachmentUpdate {
+                        kind: "file".into(),
+                        name: "notes.txt".into(),
+                        blob,
+                        width: 0,
+                        height: 0,
+                        size: bytes.len() as u64,
+                    }),
+                    mentions: None,
+                    written: None,
+                },
             }),
         )
         .await;
@@ -837,7 +815,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         bridge.chat_message("Bo's notes").await
     })
     .await;
-    let attachment = format!("{:?}", file.attachment.0);
+    let attachment = format!("{:?}", file.attachment);
     assert!(attachment.contains("notes.txt"), "{attachment}");
 
     bridge.fake.delete(&posted, None);
@@ -973,13 +951,7 @@ async fn an_existing_server_is_adopted_as_it_is() {
     // Chat has Discord's layout joined with its own, nothing doubled; its
     // own #help and #show-and-tell stay in Tilo.
     let chat = bridge.room.chat().await;
-    let ours = bridge.workspace.as_str();
-    let mut names: Vec<&str> = chat
-        .channels
-        .values()
-        .filter(|c| c.workspace.as_str() == ours)
-        .map(|c| c.name.as_str())
-        .collect();
+    let mut names: Vec<&str> = chat.channels.values().map(|c| c.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(
         names,
@@ -994,15 +966,10 @@ async fn an_existing_server_is_adopted_as_it_is() {
             "voice"
         ]
     );
-    let mut categories: Vec<&str> = chat
-        .categories
-        .values()
-        .filter(|c| c.workspace.as_str() == ours)
-        .map(|c| c.name.as_str())
-        .collect();
+    let mut categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     categories.sort_unstable();
     assert_eq!(categories, ["Channels", "Voice", "chat"]);
-    // #help, #show-and-tell, and the workspace's own "Voice" with its
+    // #help, #show-and-tell, and the room's own "Voice" with its
     // Lounge voice channel, none of which the server has.
     let guild = bridge.room.guild().await;
     assert_eq!(guild.tilo_only.len(), 4, "{:?}", guild.tilo_only);
@@ -1050,14 +1017,13 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
         "shown when it was written in Discord"
     );
     assert_eq!(
-        hi.1.appearance.0.as_ref().map(|a| a.name.as_str()),
+        hi.1.appearance.as_ref().map(|a| a.name.as_str()),
         Some("Bo")
     );
 
     // Exactly the server's layout: "Channels" is gone, #general is under
     // "chat", and nothing is Tilo's alone.
     let chat = bridge.room.chat().await;
-    let ours = bridge.workspace.as_str();
     let category = |id: &Option<Id>| {
         id.as_ref()
             .and_then(|id| chat.categories.get(id))
@@ -1066,7 +1032,6 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
     let mut layout: Vec<(String, Option<String>)> = chat
         .channels
         .values()
-        .filter(|c| c.workspace.as_str() == ours)
         .map(|c| (c.name.clone(), category(&c.category)))
         .collect();
     layout.sort();
@@ -1078,12 +1043,7 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
             ("voice".to_owned(), Some("chat".to_owned())),
         ]
     );
-    let categories: Vec<&str> = chat
-        .categories
-        .values()
-        .filter(|c| c.workspace.as_str() == ours)
-        .map(|c| c.name.as_str())
-        .collect();
+    let categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     assert_eq!(categories, ["chat"]);
     assert!(bridge.room.guild().await.tilo_only.is_empty());
 }
@@ -1127,13 +1087,12 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
         .await
         .categories
         .iter()
-        .find(|(_, c)| c.workspace.as_str() == bridge.workspace && c.name == "Channels")
+        .find(|(_, c)| c.name == "Channels")
         .map(|(id, _)| id.clone())
         .unwrap();
     bridge
         .as_ada(
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                workspace: Id::from_raw(bridge.workspace.as_str()),
                 name: "ideas".into(),
                 category: Some(channels),
                 kind: None,
@@ -1207,22 +1166,74 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
     assert!(bridge.chat_message("elsewhere").await.is_none());
 }
 
-/// The room's own "Channels" with #general, #help and #show-and-tell, made
-/// by its owner before any bridge ran.
-/// Leave the workspace as a public room's Chat opens: "Channels" with
+/// Lay the room's Chat out as its owner did before any bridge ran:
+/// "Channels" with #general, and "Voice" with the Lounge, in place of the
+/// `#chat` and `#voice` a room opens with.
+fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
+    let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
+    for channel in chat.channels.ids().cloned().collect::<Vec<_>>() {
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel { channel }),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    for category in chat.categories.ids().cloned().collect::<Vec<_>>() {
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::DELETE_CATEGORY.with(chat::record::chat::DeleteCategory { category }),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    for (category, channel, kind) in [
+        ("Channels", "general", chat::model::ChannelKind::Text),
+        ("Voice", "Lounge", chat::model::ChannelKind::Voice),
+    ] {
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
+                name: category.into(),
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+        let made = chat::Chat::read(doc)
+            .map_err(|error| error.to_string())?
+            .categories
+            .iter()
+            .find(|(_, c)| c.name == category)
+            .map(|(id, _)| id.clone());
+        chat::demo::apply_as(
+            doc,
+            owner,
+            chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                name: channel.into(),
+                category: made,
+                kind: Some(kind),
+                topic: None,
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Leave the room's Chat as a public room's opened: "Channels" with
 /// #general, and nothing else.
-fn seed_as_a_room(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<(), String> {
+fn seed_as_a_room(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
     let channels: Vec<Id> = chat
         .channels
         .iter()
-        .filter(|(_, c)| &c.workspace == workspace && c.name != "general")
+        .filter(|(_, c)| c.name != "general")
         .map(|(id, _)| id.clone())
         .collect();
     let categories: Vec<Id> = chat
         .categories
         .iter()
-        .filter(|(_, c)| &c.workspace == workspace && c.name != "Channels")
+        .filter(|(_, c)| c.name != "Channels")
         .map(|(id, _)| id.clone())
         .collect();
     for channel in channels {
@@ -1244,20 +1255,21 @@ fn seed_as_a_room(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<(
     Ok(())
 }
 
-fn seed_channels(doc: &mut AutoCommit, owner: &str, workspace: &Id) -> Result<(), String> {
-    // A new workspace already has "Channels" with #general in it.
+/// The room's own "Channels" with #general, #help and #show-and-tell, made
+/// by its owner before any bridge ran.
+fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
+    // The room already has "Channels" with #general in it.
     let category = chat::Chat::read(doc)
         .map_err(|error| error.to_string())?
         .categories
         .iter()
-        .find(|(_, c)| &c.workspace == workspace && c.name == "Channels")
+        .find(|(_, c)| c.name == "Channels")
         .map(|(id, _)| id.clone());
     for name in ["help", "show-and-tell"] {
         chat::demo::apply_as(
             doc,
             owner,
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                workspace: workspace.clone(),
                 name: name.into(),
                 category: category.clone(),
                 kind: None,

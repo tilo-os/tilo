@@ -374,6 +374,7 @@ pub enum FormatCategory {
 
 fn date_style_code(s: DateStyle) -> &'static str {
     match s {
+        DateStyle::Language => "Language",
         DateStyle::Iso => "ISO",
         DateStyle::Us => "US",
         DateStyle::Eu => "EU",
@@ -382,6 +383,7 @@ fn date_style_code(s: DateStyle) -> &'static str {
 }
 fn date_style_from_code(s: &str) -> Option<DateStyle> {
     Some(match s {
+        "Language" => DateStyle::Language,
         "ISO" => DateStyle::Iso,
         "US" => DateStyle::Us,
         "EU" => DateStyle::Eu,
@@ -391,12 +393,14 @@ fn date_style_from_code(s: &str) -> Option<DateStyle> {
 }
 fn time_style_code(s: TimeStyle) -> &'static str {
     match s {
+        TimeStyle::Language => "Language",
         TimeStyle::H24 => "H24",
         TimeStyle::H12 => "H12",
     }
 }
 fn time_style_from_code(s: &str) -> Option<TimeStyle> {
     Some(match s {
+        "Language" => TimeStyle::Language,
         "H24" => TimeStyle::H24,
         "H12" => TimeStyle::H12,
         _ => return None,
@@ -567,6 +571,13 @@ fn serial_to_unix_days(serial: f64) -> i64 {
 pub fn serial_to_date(serial: f64, style: DateStyle) -> String {
     let (y, m, d) = civil_from_days(serial_to_unix_days(serial));
     match style {
+        DateStyle::Language => i32::try_from(y)
+            .ok()
+            .and_then(|year| ui::format::NaiveDate::from_ymd_opt(year, m, d))
+            .map_or_else(
+                || format!("{y:04}-{m:02}-{d:02}"),
+                |day| ui::format::Formats::current().language_date(day),
+            ),
         DateStyle::Iso => format!("{y:04}-{m:02}-{d:02}"),
         DateStyle::Us => format!("{m:02}/{d:02}/{y:04}"),
         DateStyle::Eu => format!("{d:02}/{m:02}/{y:04}"),
@@ -584,8 +595,11 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
     let total_secs = (frac * 86400.0).round() as i64;
     let h = (total_secs / 3600) % 24;
     let mi = (total_secs % 3600) / 60;
-    match style {
-        TimeStyle::H24 => format!("{h:02}:{mi:02}"),
+    // A cell that follows the language reads each person's own clock.
+    match style.resolved() {
+        // format: machine (a cell's own number format, the same for every
+        // collaborator)
+        TimeStyle::Language | TimeStyle::H24 => format!("{h:02}:{mi:02}"),
         TimeStyle::H12 => {
             let suffix = if h < 12 { "AM" } else { "PM" };
             let h12 = match h % 12 {
@@ -598,6 +612,8 @@ pub fn serial_to_time(serial: f64, style: TimeStyle) -> String {
 }
 
 fn month_abbrev(m: u32) -> &'static str {
+    // format: machine (a cell's own date format, the same for every
+    // collaborator)
     const M: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -816,6 +832,9 @@ mod tests {
             assert_eq!(serial_to_date(serial, DateStyle::Us), "03/15/2023");
             assert_eq!(serial_to_date(serial, DateStyle::Eu), "15/03/2023");
             assert_eq!(serial_to_date(serial, DateStyle::Long), "15 Mar 2023");
+            for style in DateStyle::ALL {
+                assert_eq!(date_style_from_code(date_style_code(style)), Some(style));
+            }
         }
 
         // Case `date_serial_round_trips`.
@@ -837,6 +856,9 @@ mod tests {
             let serial = (14.0 * 3600.0 + 5.0 * 60.0) / 86400.0;
             assert_eq!(serial_to_time(serial, TimeStyle::H24), "14:05");
             assert_eq!(serial_to_time(serial, TimeStyle::H12), "2:05 PM");
+            for style in TimeStyle::ALL {
+                assert_eq!(time_style_from_code(time_style_code(style)), Some(style));
+            }
         }
 
         // Case `format_string_round_trip_all_variants`.

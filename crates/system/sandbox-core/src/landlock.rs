@@ -14,17 +14,87 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
-    PathFd, PathFdError, RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetError,
-    RulesetStatus,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, Erratum, NetPort,
+    PathBeneath, PathFd, PathFdError, RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr,
+    RulesetError, RulesetStatus, Scope,
 };
 
-/// Tilo requires ABI 5 so device-node ioctls are policy-controlled. ABI 6 scope
-/// enforcement remains blocked on kernels that cannot attest the relevant
-/// Landlock errata; accepting a `PartiallyEnforced` result would be ambiguous.
+/// Tilo requires ABI 5 so device-node ioctls are policy-controlled. It is the
+/// minimum: the ABI 6 scopes ([`SCOPE_ABI`]) are added on top only where the
+/// running kernel offers them (see [`kernel_scopes`]).
 pub const TARGET_ABI: ABI = ABI::V5;
 /// The ABI whose filesystem rights an application ruleset handles.
 pub const FS_ABI: ABI = TARGET_ABI;
+/// The ABI that introduced IPC scoping (Linux 6.12): abstract Unix sockets
+/// and signals are confined to the sandbox's own Landlock domain.
+pub const SCOPE_ABI: ABI = ABI::V6;
+/// `LANDLOCK_CREATE_RULESET_VERSION`: ask the kernel for its Landlock ABI.
+const CREATE_RULESET_VERSION: u32 = 1 << 0;
+
+/// The running kernel's Landlock ABI version; 0 without Landlock.
+pub fn kernel_abi() -> i32 {
+    // SAFETY: the version query reads no memory (a null attribute, size 0).
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<u8>(),
+            0_usize,
+            CREATE_RULESET_VERSION,
+        )
+    };
+    i32::try_from(abi).unwrap_or(0).max(0)
+}
+
+/// The scopes a kernel at `abi`, with the `fixed` errata, enforces exactly.
+///
+/// Below ABI 6 there are none: such a kernel keeps today's ABI 5 policy, and
+/// the ruleset's `FullyEnforced` status still means everything requested was
+/// enforced. The signal scope additionally needs erratum 2 fixed: before it,
+/// a restricted thread could not signal sibling threads of its own process
+/// that sit in another domain, which breaks a confined process that restricts
+/// one thread while others run. Every 6.12 stable kernel since the backport,
+/// and every kernel from 6.15, reports it.
+pub fn kernel_scopes(abi: i32, fixed: BitFlags<Erratum>) -> BitFlags<Scope> {
+    if abi < SCOPE_ABI as i32 {
+        return BitFlags::EMPTY;
+    }
+    let mut scopes = Scope::from_all(SCOPE_ABI);
+    if !fixed.contains(Erratum::ScopedSignalHandling) {
+        scopes.remove(Scope::Signal);
+    }
+    scopes
+}
+
+/// The scopes of `spec` the running kernel will enforce.
+pub fn effective_scopes(spec: &RulesetSpec) -> BitFlags<Scope> {
+    spec.scoped & kernel_scopes(kernel_abi(), Erratum::current())
+}
+
+/// One log line saying which of the requested `scoped` scopes are enforced
+/// (`enforced`) and which this kernel cannot provide.
+pub fn describe_scopes(scoped: BitFlags<Scope>, enforced: BitFlags<Scope>) -> String {
+    let name = |scope: Scope| match scope {
+        Scope::AbstractUnixSocket => "abstract-unix-socket",
+        Scope::Signal => "signal",
+        _ => "unknown",
+    };
+    let list = |set: BitFlags<Scope>| set.iter().map(name).collect::<Vec<_>>().join(", ");
+    let missing = scoped & !enforced;
+    match (enforced.is_empty(), missing.is_empty()) {
+        (_, true) if scoped.is_empty() => "landlock scopes: none requested".to_string(),
+        (_, true) => format!("landlock scopes: {} enforced", list(enforced)),
+        (true, false) => format!(
+            "landlock scopes: unavailable on this kernel (Landlock ABI {}, scopes need ABI 6): {} not enforced",
+            kernel_abi(),
+            list(missing)
+        ),
+        (false, false) => format!(
+            "landlock scopes: {} enforced; {} unavailable on this kernel",
+            list(enforced),
+            list(missing)
+        ),
+    }
+}
 
 /// One filesystem rule: a path and the rights granted beneath it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +228,11 @@ pub struct RulesetSpec {
     /// Narrow a rule on a non-directory to the rights a file can carry
     /// (see [`access_for_fd`]) instead of letting the kernel reject it.
     pub trim_file_rights: bool,
+    /// IPC scopes: connecting to an abstract Unix socket, or signalling a
+    /// process, outside this ruleset's Landlock domain is denied. Enforced
+    /// where the kernel offers them ([`kernel_scopes`]) and left out
+    /// otherwise, under the same compatibility level as everything else.
+    pub scoped: BitFlags<Scope>,
 }
 
 impl RulesetSpec {
@@ -178,6 +253,7 @@ impl RulesetSpec {
             connect_ports,
             rules,
             trim_file_rights: true,
+            scoped: Scope::from_all(SCOPE_ABI),
         }
     }
 
@@ -197,6 +273,7 @@ impl RulesetSpec {
             connect_ports: Vec::new(),
             rules: Vec::new(),
             trim_file_rights: true,
+            scoped: Scope::from_all(SCOPE_ABI),
         }
     }
 }
@@ -256,6 +333,10 @@ fn restrict_self_inner(
         .handle_access(spec.handled_fs)?;
     if !spec.handled_net.is_empty() {
         ruleset = ruleset.handle_access(spec.handled_net)?;
+    }
+    let scoped = effective_scopes(spec);
+    if !scoped.is_empty() {
+        ruleset = ruleset.scope(scoped)?;
     }
 
     let mut created = ruleset.create()?;
@@ -538,6 +619,149 @@ mod tests {
             0,
             "10 = write not blocked, 11 = granted read denied, \
              12 = the ruleset was not fully enforced"
+        );
+    }
+
+    #[test]
+    fn abi_6_scopes_are_enforced_exactly_where_the_kernel_offers_them() {
+        let both = Scope::AbstractUnixSocket | Scope::Signal;
+        let all_errata = BitFlags::<Erratum>::all();
+        // ABI 5 is the floor and keeps today's policy: no scope is asked for,
+        // so a hard-requirement ruleset still builds and is fully enforced.
+        for abi in 0..=5 {
+            assert!(kernel_scopes(abi, all_errata).is_empty(), "ABI {abi}");
+        }
+        assert_eq!(kernel_scopes(6, all_errata), both);
+        assert_eq!(kernel_scopes(7, all_errata), both);
+        assert_eq!(kernel_scopes(9, all_errata), both);
+        // A kernel still carrying erratum 2 gets the socket scope only.
+        assert_eq!(
+            kernel_scopes(6, BitFlags::EMPTY),
+            BitFlags::from(Scope::AbstractUnixSocket)
+        );
+
+        // Every confining ruleset asks for both scopes.
+        let app = RulesetSpec::application(Vec::new(), NetRestriction::Unrestricted);
+        assert_eq!(app.scoped, both);
+        assert_eq!(RulesetSpec::deny_all().scoped, both);
+
+        // The launch log says what happened, including on an ABI 5 kernel.
+        assert_eq!(
+            describe_scopes(both, both),
+            "landlock scopes: abstract-unix-socket, signal enforced"
+        );
+        let unavailable = describe_scopes(both, BitFlags::EMPTY);
+        assert!(unavailable.contains("unavailable"), "{unavailable}");
+        assert!(unavailable.contains("abstract-unix-socket, signal"));
+        let partial = describe_scopes(both, Scope::AbstractUnixSocket.into());
+        assert!(partial.contains("abstract-unix-socket enforced; signal unavailable"));
+    }
+
+    /// Live kernel: a forked child installs the application ruleset (what
+    /// the launcher's sandbox shim installs) and then tries to reach
+    /// processes outside its domain. On a kernel with ABI 6 the host's
+    /// abstract socket and a signal to the host process are refused; on an
+    /// ABI 5 kernel both still work as before. Either way a path socket
+    /// bound outside the sandbox (how Wayland, the private D-Bus, the
+    /// brokers and the X11 bridge are reached) still connects, and abstract
+    /// sockets and signals inside the app's own domain keep working.
+    #[test]
+    fn application_scopes_confine_abstract_sockets_and_signals_to_the_sandbox() {
+        use std::os::linux::net::SocketAddrExt as _;
+        use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+
+        let abi = kernel_abi();
+        if abi < FS_ABI as i32 {
+            eprintln!("skipped: kernel Landlock ABI {abi} is below the ABI 5 floor");
+            return;
+        }
+        let spec = RulesetSpec::application(Vec::new(), NetRestriction::Unrestricted);
+        let enforced = effective_scopes(&spec);
+        let id = std::process::id();
+
+        let host_name = format!("tilo-landlock-scope-host-{id}");
+        let host_addr = SocketAddr::from_abstract_name(host_name.as_bytes()).unwrap();
+        let _host = UnixListener::bind_addr(&host_addr).unwrap();
+        // Outside any domain the abstract socket is reachable.
+        UnixStream::connect_addr(&host_addr).expect("unconfined connect");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("display.sock");
+        let _path_listener = UnixListener::bind(&path).unwrap();
+        let path_addr = SocketAddr::from_pathname(&path).unwrap();
+
+        let own_name = format!("tilo-landlock-scope-own-{id}");
+        let own_addr = SocketAddr::from_abstract_name(own_name.as_bytes()).unwrap();
+        let socket_scoped = enforced.contains(Scope::AbstractUnixSocket);
+        let signal_scoped = enforced.contains(Scope::Signal);
+
+        // SAFETY: the child performs Landlock syscalls, socket calls, fork,
+        // kill and `_exit` on pre-built addresses, and never returns into
+        // the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let exit = |code: i32| -> ! {
+                // SAFETY: `_exit` does not unwind or run destructors.
+                unsafe { libc::_exit(code) }
+            };
+            match restrict_self(&spec, |_, _| {}) {
+                Ok(status) if status.ruleset == RulesetStatus::FullyEnforced => {}
+                _ => exit(20),
+            }
+            let eperm = |e: &std::io::Error| e.raw_os_error() == Some(libc::EPERM);
+            match (UnixStream::connect_addr(&host_addr), socket_scoped) {
+                (Err(e), true) if eperm(&e) => {}
+                (Ok(_), false) => {}
+                (Ok(_), true) => exit(21),
+                _ => exit(22),
+            }
+            // SAFETY: plain syscall; SIGCONT to a running process is a no-op.
+            let signalled = unsafe { libc::kill(libc::getppid(), libc::SIGCONT) };
+            match (signalled, signal_scoped) {
+                (-1, true) if eperm(&std::io::Error::last_os_error()) => {}
+                (0, false) => {}
+                (0, true) => exit(23),
+                _ => exit(24),
+            }
+            if UnixStream::connect_addr(&path_addr).is_err() {
+                exit(25);
+            }
+            let Ok(_own) = UnixListener::bind_addr(&own_addr) else {
+                exit(26)
+            };
+            if UnixStream::connect_addr(&own_addr).is_err() {
+                exit(27);
+            }
+            // SAFETY: the grandchild only pauses until it is killed.
+            let child = unsafe { libc::fork() };
+            if child == 0 {
+                loop {
+                    // SAFETY: waits for a signal; never returns normally.
+                    unsafe { libc::pause() };
+                }
+            }
+            // SAFETY: `child` is this process's own child, in its domain.
+            if child < 0 || unsafe { libc::kill(child, libc::SIGKILL) } != 0 {
+                exit(28);
+            }
+            // SAFETY: reaping our own child.
+            unsafe { libc::waitpid(child, std::ptr::null_mut(), 0) };
+            exit(0);
+        }
+
+        let mut status: libc::c_int = 0;
+        // SAFETY: `pid` is our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status), "child did not exit normally");
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "kernel ABI {abi}, enforced {enforced:?}: 20 = not fully enforced, \
+             21 = host abstract socket reachable under the scope, 22 = abstract connect \
+             failed unexpectedly, 23 = host signalled under the scope, 24 = signal failed \
+             unexpectedly, 25 = path socket refused, 26/27 = own abstract socket refused, \
+             28 = own child could not be signalled"
         );
     }
 

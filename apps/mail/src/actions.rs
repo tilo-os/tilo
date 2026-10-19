@@ -585,7 +585,7 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
         format!(
             "{} ({})",
             attachment.filename,
-            ui::format::bytes(attachment.size)
+            ui::format::size(attachment.size)
         ),
     )
     .with_action(if attachment.downloadable {

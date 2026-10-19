@@ -106,12 +106,7 @@ struct Packed {
 /// newest it declares.
 fn unserved_system_version() -> u32 {
     package_store::interfaces::system_interfaces()
-        .and_then(|provided| {
-            provided
-                .versions(tilo_app_package::interfaces::SYSTEM_INTERFACE)
-                .last()
-                .copied()
-        })
+        .and_then(|provided| provided.version(tilo_app_package::interfaces::SYSTEM_INTERFACE))
         .unwrap_or(1)
         .saturating_add(1)
 }
@@ -294,7 +289,7 @@ fn routes(
 ) -> Result<HashMap<String, Vec<u8>>, String> {
     let now = tilo_clock::unix_now();
     let mut full = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: 1,
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(86_400),
@@ -307,7 +302,6 @@ fn routes(
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut full, owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let (mut compact, indexes) =

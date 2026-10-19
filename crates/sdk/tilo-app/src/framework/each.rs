@@ -939,11 +939,11 @@ impl<R: Resource> Widget for Each<R> {
             row.widget
                 .draw_overlay(scene, transform, text, theme, presence);
         });
-        if self.menu.menu.is_open() {
-            self.menu
-                .menu
-                .draw_overlay(scene, transform, text, theme, presence);
-        }
+        // Drawn while it is open and while it leaves (`motion::Appear`);
+        // a closed menu draws nothing.
+        self.menu
+            .menu
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {

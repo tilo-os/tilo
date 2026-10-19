@@ -301,34 +301,31 @@ fn an_unknown_directory_operation_kind_is_refused() {
     }
 }
 
-/// `publishActions` from a client that predates contracts and parameters
-/// keeps its conservative compatibility defaults.
+/// A published action names its operation kind, parameters and contract;
+/// one that leaves any of them empty is refused, never given defaults.
 #[test]
-fn an_older_published_action_decodes_with_compatibility_defaults() {
-    let mut sent = action_row().descriptor.unwrap();
-    sent.semantic_identity = None;
-    sent.view = None;
-    for (kind, expected_kind, expected_contract) in [
-        ("", OperationKind::Document, ActionContract::default()),
-        ("view", OperationKind::View, ActionContract::view()),
-    ] {
+fn a_published_action_without_kind_parameters_or_contract_is_refused() {
+    let sent = action_row().descriptor.unwrap();
+    for empty in ["kind", "params", "contract"] {
         let mut message = capnp::message::Builder::new_default();
         {
             let mut out = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
             write_exported_action(out.reborrow(), &sent).unwrap();
-            out.set_operation_kind(kind);
-            out.set_params_json("");
-            out.set_contract_json("");
+            match empty {
+                "kind" => out.set_operation_kind(""),
+                "params" => out.set_params_json(""),
+                _ => out.set_contract_json(""),
+            }
         }
-        let decoded = decode_exported_action(
-            message
-                .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(decoded.operation_kind, expected_kind);
-        assert!(decoded.params.is_empty());
-        assert_eq!(decoded.contract, expected_contract);
+        assert!(
+            decode_exported_action(
+                message
+                    .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
+                    .unwrap(),
+            )
+            .is_err(),
+            "{empty}"
+        );
     }
 }
 

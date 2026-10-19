@@ -379,10 +379,7 @@ pub fn add_comment_action(
 #[cfg(test)]
 pub fn set_comment_body_action(id: &str, body: &str) -> Invoke<PdfMarkup> {
     let paths = comment(id);
-    group(&[
-        paths.text.replace(body),
-        paths.rich.set(tilo_resource::Json(Vec::new())),
-    ])
+    group(&[paths.text.replace(body), paths.rich.set(Vec::new())])
 }
 
 /// Replace a comment's text with what was written in the editor: its
@@ -392,10 +389,7 @@ pub fn set_comment_text_action(
     clips: Vec<tilo_document::ClipBlock>,
 ) -> Invoke<PdfMarkup> {
     let paths = comment(id);
-    group(&[
-        paths.text.replace(plain_of(&clips)),
-        paths.rich.set(tilo_resource::Json(clips)),
-    ])
+    group(&[paths.text.replace(plain_of(&clips)), paths.rich.set(clips)])
 }
 
 /// Reply to a comment with what was written in the editor.

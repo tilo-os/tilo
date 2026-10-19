@@ -971,8 +971,8 @@ impl DayColumns {
 /// "Today", "Tomorrow", then the weekday.
 fn day_label(i: usize, d: &DayForecast) -> String {
     match i {
-        0 => "Today".to_string(),
-        1 => "Tomorrow".to_string(),
+        0 => ui::format::near_day(0).unwrap_or_default(),
+        1 => ui::format::near_day(1).unwrap_or_default(),
         _ => weekday(&d.date),
     }
 }
@@ -1362,8 +1362,10 @@ fn day_extra_labels(d: &DayForecast, snap: &WeatherSnapshot, units: Units) -> (S
 
 fn weekday(date: &str) -> String {
     use chrono::NaiveDate;
-    NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_or_else(|_| date.to_string(), |d| d.format("%A").to_string())
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").map_or_else(
+        |_| date.to_string(),
+        |d| ui::format::weekday_name(chrono::Datelike::weekday(&d)),
+    )
 }
 
 fn uv_word(uv: f64) -> &'static str {

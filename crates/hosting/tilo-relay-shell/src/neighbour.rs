@@ -64,6 +64,7 @@ impl ShellPayloads for NeighbourPayloads {
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<([u8; 32], Vec<u8>), String> {
         let hello = NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert.clone()),
             revocations: Vec::new(),
         };

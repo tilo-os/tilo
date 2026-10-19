@@ -150,7 +150,7 @@ fn run() -> Result<(), String> {
     let owner = SigningKey::from_bytes(&[24; 32]);
     let now = tilo_clock::unix_now();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: 1,
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(86_400),
@@ -163,7 +163,6 @@ fn run() -> Result<(), String> {
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, &owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let entries_json =

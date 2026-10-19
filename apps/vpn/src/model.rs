@@ -295,17 +295,10 @@ pub fn sample_vault() -> Vault {
 // Formatting helpers (pure).
 // ----------------------------------------------------------------------
 
-/// Compact "time ago" for a seconds delta, e.g. `34s ago`, `4m ago`.
+/// "Time ago" for a seconds delta in the toolkit's relative style, e.g.
+/// `just now`, `4 min ago`.
 pub fn human_ago(secs: u64) -> String {
-    if secs < 60 {
-        format!("{secs}s ago")
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86_400)
-    }
+    ui::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]
@@ -328,11 +321,11 @@ mod tests {
         }
         // Case `byte_and_rate_formatting`.
         {
-            // Transfer counters are base-1024, so they wear IEC binary units.
-            assert_eq!(ui::format::bytes(512), "512 B");
-            assert_eq!(ui::format::rate(6_710_886.0), "6.4 MiB/s");
-            assert_eq!(human_ago(34), "34s ago");
-            assert_eq!(human_ago(240), "4m ago");
+            // Transfer counters are transferred sizes: SI units.
+            assert_eq!(ui::format::size(512), "512 B");
+            assert_eq!(ui::format::rate(6_710_886.0), "6.7 MB/s");
+            assert_eq!(human_ago(34), "just now");
+            assert_eq!(human_ago(240), "4 min ago");
         }
         // Case `kind_status_round_trip`.
         {

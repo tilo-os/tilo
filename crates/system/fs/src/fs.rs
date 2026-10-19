@@ -2925,46 +2925,6 @@ impl QuickFS {
         *retained = Some(index);
     }
 
-    /// Legacy v1 projection retained for older Files clients. New clients use
-    /// the revisioned page protocol below and therefore never lose late rows.
-    fn record_index_projection(&self) -> Option<Vec<u8>> {
-        use fs_protocol::projection::{
-            MAX_RECORD_INDEX_ENTRIES, MAX_RECORD_INDEX_XATTR_BYTES,
-            RECORD_INDEX_PROJECTION_VERSION, RecordIndexProjectionV1,
-        };
-        // v1 is intentionally only the first bounded source window. It never
-        // walks past that window to discover an ACL-visible tail.
-        let candidates = self.ns().indexed_record_page(0, MAX_RECORD_INDEX_ENTRIES);
-
-        let mut projection = RecordIndexProjectionV1 {
-            schema_version: RECORD_INDEX_PROJECTION_VERSION,
-            truncated: self.ns().indexed_record_count() > MAX_RECORD_INDEX_ENTRIES,
-            records: Vec::new(),
-        };
-        for entry in candidates {
-            if !self.in_view(&entry.path) {
-                projection.truncated = true;
-                continue;
-            }
-            projection.records.push(RecordIndexEntryV1 {
-                record_id: entry.record_id,
-                path: entry.path,
-                is_dir: entry.is_dir,
-            });
-            let Ok(bytes) = serde_json::to_vec(&projection) else {
-                return None;
-            };
-            if bytes.len() > MAX_RECORD_INDEX_XATTR_BYTES {
-                projection.records.pop();
-                projection.truncated = true;
-                break;
-            }
-        }
-        projection.validate().ok()?;
-        let bytes = serde_json::to_vec(&projection).ok()?;
-        (bytes.len() <= MAX_RECORD_INDEX_XATTR_BYTES).then_some(bytes)
-    }
-
     fn record_index_manifest_v2(&self) -> Option<Vec<u8>> {
         let revision = self.record_catalog_revision();
         let records = self.ns().indexed_record_count();
@@ -7047,17 +7007,6 @@ impl Filesystem for QuickFS {
             }
             return;
         }
-        if name.to_str() == Some(fs_protocol::projection::RECORD_INDEX_XATTR) {
-            if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_some() {
-                reply.error(to_errno(libc::ENODATA));
-                return;
-            }
-            match self.record_index_projection() {
-                Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
-                None => reply.error(to_errno(libc::ENODATA)),
-            }
-            return;
-        }
         if name.to_str() == Some(fs_protocol::AVAILABILITY_XATTR) {
             match self.availability_for(ino.0) {
                 Some(bytes) => reply_xattr_bytes(reply, &bytes, size),
@@ -7162,8 +7111,6 @@ impl Filesystem for QuickFS {
         }
         if ino.0 == crate::namespace::ROOT_INO {
             buf.extend_from_slice(fs_protocol::projection::RECORD_INDEX_V2_XATTR.as_bytes());
-            buf.push(0);
-            buf.extend_from_slice(fs_protocol::projection::RECORD_INDEX_XATTR.as_bytes());
             buf.push(0);
         }
         if self.availability.is_some() {

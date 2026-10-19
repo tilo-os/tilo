@@ -154,15 +154,7 @@ pub fn encode_jpeg_at(
     height: u32,
     quality: u8,
 ) -> Result<Vec<u8>, String> {
-    let rgb: Vec<u8> = rgba
-        .chunks_exact(4)
-        .flat_map(|pixel| pixel.iter().take(3).copied())
-        .collect();
-    let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
-        .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
-        .map_err(|error| error.to_string())?;
-    Ok(jpeg)
+    ui::jpeg::encode_rgba8_opaque(width, height, rgba, quality).map_err(|error| error.to_string())
 }
 
 /// What `paint` draws of `region`, as RGBA: over a neutral grey, or over

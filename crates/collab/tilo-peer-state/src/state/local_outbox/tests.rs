@@ -139,6 +139,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
         .receive_from_report(
             TransportOrigin::UntrustedPresence(governor_key.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(governor.authority().clone()),
                 revocations: vec![revocation],
             },

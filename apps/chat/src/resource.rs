@@ -25,53 +25,37 @@ pub use crate::record::Chat;
 use crate::record::chat;
 
 impl Chat {
-    /// What search finds in the chat record: its workspaces, channels,
+    /// What search finds in the chat record: the room's channels,
     /// categories, reviewed reports and people, each opening the item it
     /// names. The messages are the window's to offer
     /// (`ResourceSurface::search_entries`): they are kept in parts the record
     /// does not hold.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
-        let workspace_name = |id: &Id| {
-            self.workspaces
-                .get(id)
-                .map_or("", |workspace| workspace.name.as_str())
-        };
         let anchor = |field: &str, id: &Id| item_resource_id::<Self>(field, id);
-        let workspaces = self.workspaces.iter().map(|(id, workspace)| {
-            SearchEntry::new(&workspace.name, "Workspace").anchored(anchor("workspaces", id))
-        });
         let channels = self
             .channels
             .iter()
             .filter(|(_, channel)| channel.conversation_with.is_none())
             .map(|(id, channel)| {
-                SearchEntry::new(
-                    channel.name.clone(),
-                    format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
-                )
-                .anchored(anchor("channels", id))
+                SearchEntry::new(channel.name.clone(), channel.topic.clone())
+                    .anchored(anchor("channels", id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
-            SearchEntry::new(&category.name, workspace_name(&category.workspace))
-                .anchored(anchor("categories", id))
+            SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.0.as_ref()?;
+            let submission = report.submission.as_ref()?;
             Some(
-                SearchEntry::new(
-                    &submission.feedback.text,
-                    workspace_name(&Id::from_raw(submission.destination.room.clone())),
-                )
-                .anchored(anchor("feedback", id)),
+                SearchEntry::new(&submission.feedback.text, "Feedback")
+                    .anchored(anchor("feedback", id)),
             )
         });
         let people = self.people.iter().map(|person| {
             SearchEntry::new(&person.name, "Person")
                 .anchored(anchor("people", &Id::from_raw(person.id.0.clone())))
         });
-        workspaces
-            .chain(channels)
+        channels
             .chain(categories)
             .chain(feedback)
             .chain(people)
@@ -79,32 +63,26 @@ impl Chat {
     }
 
     /// What the chat record holds, for a caller that reads it: with no item,
-    /// its workspaces and their channels; with a channel, what it is about.
-    /// Its messages are kept in parts beside the record: a caller reads them
-    /// from the chain the window publishes, or with `read-workspace`.
+    /// the room's channels; with a channel, what it is about. Its messages
+    /// are kept in parts beside the record: a caller reads them from the
+    /// chain the window publishes, or with `read-room`.
     ///
     /// # Errors
     /// When `item` names nothing in the chat.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
-                "workspaces": self.workspaces.iter().map(|(id, workspace)| serde_json::json!({
-                    "id": id,
-                    "name": workspace.name,
-                    "channels": self.channels.iter()
-                        .filter(|(_, channel)| {
-                            channel.workspace == *id
-                                && !channel.archived
-                                && channel.conversation_with.is_none()
-                        })
-                        .map(|(id, channel)| serde_json::json!({
-                            "id": id,
-                            "name": channel.name,
-                            "topic": channel.topic,
-                            "voice": channel.kind == crate::model::ChannelKind::Voice,
-                        }))
-                        .collect::<Vec<_>>(),
-                })).collect::<Vec<_>>(),
+                "channels": self.channels.iter()
+                    .filter(|(_, channel)| {
+                        !channel.archived && channel.conversation_with.is_none()
+                    })
+                    .map(|(id, channel)| serde_json::json!({
+                        "id": id,
+                        "name": channel.name,
+                        "topic": channel.topic,
+                        "voice": channel.kind == crate::model::ChannelKind::Voice,
+                    }))
+                    .collect::<Vec<_>>(),
             }));
         };
         let (field, id) = item_of_resource::<Self>(item.as_str())
@@ -312,8 +290,6 @@ impl ResourceApp for ChatShell {
             Some("starter") => {
                 let you = LocalIdentity::demo();
                 vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-                    workspace: None,
-                    workspace_name: None,
                     name: you.name,
                     initials: you.initials,
                     color: u32::try_from(you.color_idx).unwrap_or_default(),
@@ -323,22 +299,17 @@ impl ResourceApp for ChatShell {
         }
     }
 
-    /// A new record's first workspace, owned by its creator: the one the
-    /// host admitted it for, or a starter workspace. A capture's record is
-    /// its scenario's instead.
+    /// A new record's creator, and the room's first channels, `#chat` and
+    /// `#voice`, when it has none: under fixed ids and with the same values
+    /// on every device, so concurrent first opens on several devices
+    /// converge on exactly those two. A capture's record is its scenario's
+    /// instead.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Chat>> {
         if cx.host().is_some_and(|host| host.capture().is_some()) {
             return Vec::new();
         }
         let creator = LocalIdentity::for_participant(cx.me());
-        let (workspace, workspace_name) = cx
-            .creation_workspace()
-            .map_or((None, None), |(workspace, name)| {
-                (Some(workspace.to_owned()), Some(name.to_owned()))
-            });
         vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-            workspace,
-            workspace_name,
             name: creator.name,
             initials: creator.initials,
             color: u32::try_from(creator.color_idx).unwrap_or_default(),
@@ -450,12 +421,12 @@ fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
         author: ui::tilo_resource::Atom("u_aria".to_owned()),
         ts: crate::demo::NOW - 30,
         text: text.into(),
-        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+        mentions: vec![crate::mention::Mention {
             user: crate::model::ME.into(),
             start: 0,
             len: "@You".len(),
             is_agent: false,
-        }]),
+        }],
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(crate::model::ME).messages.len();
@@ -475,14 +446,14 @@ fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
         author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
         ts: crate::demo::NOW - 60,
         text: "Joining from Discord: the warmer palette reads much better on my phone.".into(),
-        appearance: ui::tilo_resource::Json(Some(tilo_actions::Appearance {
+        appearance: Some(crate::record::ShownAs {
             name: "Bo".into(),
             avatar: Some("tilo-demo://avatar-bo".into()),
-            persona: Some(tilo_actions::Persona {
+            persona: Some(crate::record::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
             }),
-        })),
+        }),
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(crate::model::ME).messages.len();
@@ -540,12 +511,12 @@ pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
         author: ui::tilo_resource::Atom(me.to_owned()),
         ts: crate::demo::NOW - 120,
         text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
-        mentions: ui::tilo_resource::Json(vec![crate::mention::Mention {
+        mentions: vec![crate::mention::Mention {
             user: DEMO_AGENT.into(),
             start: 0,
             len: "@Tide".len(),
             is_agent: true,
-        }]),
+        }],
         ..crate::record::Message::default()
     };
     let at = crate::demo::demo_part(me).messages.len();
@@ -627,39 +598,14 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
             }
             _ => {}
         }
-        if let ChatEffect::ReadWorkspace {
-            workspace,
-            message,
-            channel,
-        } = &effect
-        {
+        if let ChatEffect::ReadRoom { message, channel } = &effect {
             let chat = cx.live().get();
-            return Ok(ui::framework::Effected::value(
-                crate::effects::read_workspace(
-                    &chat,
-                    &self.held_messages(),
-                    workspace,
-                    message.as_deref(),
-                    channel.as_deref(),
-                ),
-            ));
-        }
-        if let ChatEffect::ReadWorkspace {
-            workspace,
-            message,
-            channel,
-        } = &effect
-        {
-            let chat = cx.live().get();
-            return Ok(ui::framework::Effected::value(
-                crate::effects::read_workspace(
-                    &chat,
-                    &self.held_messages(),
-                    workspace,
-                    message.as_deref(),
-                    channel.as_deref(),
-                ),
-            ));
+            return Ok(ui::framework::Effected::value(crate::effects::read_room(
+                &chat,
+                &self.held_messages(),
+                message.as_deref(),
+                channel.as_deref(),
+            )));
         }
         if let Some(url) = crate::external::browser_destination(&effect)? {
             return Ok(cx.thread(
@@ -674,7 +620,7 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         self.effect_statuses()
     }
 
-    /// The effects offered on the workspaces, channels, categories,
+    /// The effects offered on the channels, categories,
     /// messages, reports and people the window shows: merged into the item
     /// resources the record publishes.
     fn live_rows(&self) -> Vec<LiveRow> {

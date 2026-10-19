@@ -1,5 +1,5 @@
 //! Discord to Tilo (discord-bridge.md §3, §5, §7): what a connector event
-//! becomes in the Chat workspace. Echo suppression lives here: an event from
+//! becomes in the room's Chat. Echo suppression lives here: an event from
 //! one of the bridge's webhooks or from the bot user is the bridge's own
 //! output and plans nothing, and so does anything by a blocked persona.
 

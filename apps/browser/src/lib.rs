@@ -44,7 +44,6 @@ pub mod browser_widget;
 pub mod browser_window;
 pub mod browsing_mode;
 pub mod continuity;
-mod continuity_bookmarks;
 mod continuity_handoff;
 mod continuity_library;
 pub mod continuity_sources;

@@ -615,8 +615,29 @@ fn read_content(address: &str, content: &tilo_content::ContentStore) -> Result<S
         .map_err(|_| failure(code::CONTENT_UNAVAILABLE, "that content is not text", false))
 }
 
-fn respond(args: &ActionArgs) -> Result<Transform, Failure> {
-    let request = args.text("request").unwrap_or_default().trim().to_string();
+/// A transform's arguments, read from the JSON its published parameters
+/// bound: each transform reads the ones it declares.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct Arguments {
+    input: Option<String>,
+    resource: Option<String>,
+    schema: Option<Map<String, Value>>,
+    length: Option<String>,
+    choices: Option<Vec<Value>>,
+    multi: Option<bool>,
+    prompt: Option<String>,
+    request: Option<String>,
+    conversation: Option<Vec<Value>>,
+}
+
+fn respond(args: &Arguments) -> Result<Transform, Failure> {
+    let request = args
+        .request
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if request.is_empty() {
         return Err(invalid("`respond` needs the `request`"));
     }
@@ -629,7 +650,7 @@ fn respond(args: &ActionArgs) -> Result<Transform, Failure> {
     }
     Ok(Transform::Respond {
         request,
-        conversation: conversation_of(args.array("conversation"))?,
+        conversation: conversation_of(args.conversation.as_deref())?,
     })
 }
 
@@ -653,13 +674,14 @@ pub fn bind(
             false,
         ));
     }
-    let args = ActionArgs::bind_json(&params_of(action), arguments)
+    // The published parameters are the contract: their types and bounds are
+    // checked exactly as a caller saw them declared, then read typed.
+    ActionArgs::bind_json(&params_of(action), arguments)
         .map_err(|error| invalid(error.to_string()))?;
-    let resource = match args.get("resource") {
-        Some(tilo_actions::params::ArgValue::Resource(address)) => Some(address.as_str()),
-        _ => None,
-    };
-    let input = match (args.text("input"), resource) {
+    let args: Arguments = serde_json::from_value(Value::Object(arguments.clone()))
+        .map_err(|error| invalid(error.to_string()))?;
+    let resource = args.resource.as_deref();
+    let input = match (args.input.as_deref(), resource) {
         (Some(_), Some(_)) => return Err(invalid("give `input` or `resource`, not both")),
         (Some(text), None) => Some(text.to_string()),
         (None, Some(address)) => Some(read_content(address, content)?),
@@ -675,16 +697,16 @@ pub fn bind(
             false,
         ));
     }
-    let schema = || match args.get("schema") {
-        Some(tilo_actions::params::ArgValue::Object(schema)) => {
+    let schema = || match &args.schema {
+        Some(schema) => {
             let schema = Value::Object(schema.clone());
             check_schema(&schema).map(|()| Some(schema))
         }
-        _ => Ok(None),
+        None => Ok(None),
     };
     let transform = match action {
         AGENT_SUMMARISE_ACTION => {
-            let length = args.text("length").unwrap_or(DEFAULT_LENGTH);
+            let length = args.length.as_deref().unwrap_or(DEFAULT_LENGTH);
             let max_chars = LENGTHS
                 .iter()
                 .find(|(name, _)| *name == length)
@@ -697,7 +719,8 @@ pub fn bind(
         },
         AGENT_CLASSIFY_ACTION => {
             let choices = args
-                .array("choices")
+                .choices
+                .as_deref()
                 .unwrap_or_default()
                 .iter()
                 .map(|choice| choice.as_str().map(str::to_string))
@@ -714,12 +737,17 @@ pub fn bind(
             }
             Transform::Classify {
                 choices,
-                multi: args.boolean("multi").unwrap_or(false),
+                multi: args.multi.unwrap_or(false),
             }
         }
         AGENT_RESPOND_ACTION => respond(&args)?,
         _ => {
-            let prompt = args.text("prompt").unwrap_or_default().trim().to_string();
+            let prompt = args
+                .prompt
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if prompt.is_empty() {
                 return Err(invalid("`freeform` needs a `prompt`"));
             }

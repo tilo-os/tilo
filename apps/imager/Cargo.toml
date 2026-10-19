@@ -14,9 +14,13 @@ path = "src/lib.rs"
 name = "imager"
 path = "src/main.rs"
 
+# The installed target-user setup consumer (/usr/libexec/tilo-prepared-setup,
+# the `prepared-setup` component in os/components.toml): it runs the
+# installation's consumer side, so it needs `installation`.
 [[bin]]
 name = "tilo-prepared-setup"
 path = "src/bin/tilo-prepared-setup.rs"
+required-features = ["installation"]
 
 [[bin]]
 name = "tilo-home-export"
@@ -26,22 +30,41 @@ test = false
 
 [features]
 thin = ["dep:runtime-dylib"]
-capture-worker = ["imager-backend/capture-worker"]
+# The guided installation of Tilo from another operating system and the
+# migration of that system's data: the installer journey (`--installer`), the
+# guided setup (`--setup`), the later folder imports (`--import-folders`), the
+# capture and transfer of the old system's homes, accounts, browsers and
+# applications, the prepared installer medium, and the helpers those start.
+# The host downloads, the capture worker and the installed setup consumer
+# (tilo-prepared-setup) build it. The Tilo app (`.tapp`, the release
+# collection) does not: on Tilo it is the image writer, and the default build
+# is that app. tools/ci/package_features.py tests and lints with it.
+installation = ["dep:launcher"]
+# Reach account custody with the WebDAV client, and the FUSE presentation the
+# projection worker serves, through their engine libraries in the runtime
+# bundle (libtilo_accounts_engine.so and libtilo_fuse_engine.so, under
+# crates/runtime/engines/) instead of carrying them in the tapp. The release
+# collection enables it (dist/apps/app-collections.toml); a `thin` build
+# without it (`tilo-app dev`) links them statically, because an engine library
+# links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-fuse-engine/thin"]
+capture-worker = ["installation", "imager-backend/capture-worker"]
 # Explicit new signed cohort; default capture-worker preserves shipped Home5.
 capture-worker-applications = ["capture-worker", "imager-backend/capture-worker-applications"]
 # Privileged acceptance tests require a disposable, observable native store.
-native-capture-qualification = ["imager-backend/native-capture-qualification"]
-native-current-device-qualification = []
+native-capture-qualification = ["installation", "imager-backend/native-capture-qualification"]
+native-current-device-qualification = ["installation"]
 # Explicit isolated original-owner SecretService + pinned public Slack fixture.
-native-slack-qualification = ["imager-backend/native-slack-qualification"]
+native-slack-qualification = ["installation", "imager-backend/native-slack-qualification"]
 # Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
-host-media-writer = ["imager-backend/host-media-writer"]
+# A host download is the guided installer, so it brings `installation`.
+host-media-writer = ["installation", "imager-backend/host-media-writer"]
 # Flatpak cannot safely elevate a binary from inside its mutable mount
 # namespace.  This backend asks the host's root-owned UDisks2 service for one
 # polkit-authorized, exclusive file descriptor to the reviewed removable
 # drive.  No /dev access or host-command escape is granted to the sandbox.
-flatpak-media-writer = ["imager-backend/flatpak-media-writer"]
+flatpak-media-writer = ["installation", "imager-backend/flatpak-media-writer"]
 
 [dependencies]
 ed25519-dalek.workspace = true
@@ -54,6 +77,8 @@ uuid.workspace = true
 base64.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
+tilo-fuse-engine = { path = "../../crates/runtime/engines/fuse", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
@@ -92,7 +117,9 @@ libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-launcher = { path = "../../crates/packaging/launcher" }
+# Only the installed setup consumer (tilo-prepared-setup) admits the
+# launcher's consuming bootstrap; the app never runs launcher code.
+launcher = { path = "../../crates/packaging/launcher", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -111,6 +138,17 @@ blake3 = { workspace = true, features = ["no_neon"] }
 [package.metadata.cargo-machete]
 # This target dependency only enables a feature on the transitive blake3 crate.
 ignored = ["blake3"]
+
+# Integration tests of the installation's consumer side.
+[[test]]
+name = "prepared_setup_cli"
+path = "tests/prepared_setup_cli.rs"
+required-features = ["installation"]
+
+[[test]]
+name = "profile_transport"
+path = "tests/profile_transport.rs"
+required-features = ["installation"]
 
 [dev-dependencies]
 accounts = { path = "../../crates/system/accounts" }
@@ -133,7 +171,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 fs-native = { path = "../../crates/system/fs-native" }
 tilo-secrets.workspace = true
 rusqlite = { version = "0.37.0", features = ["bundled"] }
-runtime-fs = { path = "../../crates/runtime/runtime-fs", features = ["selected-fuse"] }
+runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Installer transport must reach the canonical storage consumer, not only the vault.
 # Its FUSE backend is a Linux service, not part of hosted Windows tests.
 tilo-fs = { path = "../../crates/system/fs" }

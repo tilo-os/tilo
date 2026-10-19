@@ -19,7 +19,7 @@ use ui::widget::{
 };
 
 use crate::scan::{Entry, ScanCancellation, ScanResult};
-use ui::format::{bytes_si, count};
+use ui::format::{count, size};
 
 /// How many folders the chart names before it groups the rest.
 const NAMED_SLICES: usize = 8;
@@ -83,7 +83,7 @@ struct SliceRow {
 impl SliceRow {
     /// What the chart says about this slice to assistive technology.
     fn detail(&self) -> String {
-        format!("{}, {}", bytes_si(self.bytes), files_text(self.files))
+        format!("{}, {}", size(self.bytes), files_text(self.files))
     }
 }
 
@@ -145,7 +145,7 @@ impl SliceChart {
         let mut this = Self {
             chart,
             rows,
-            total: bytes_si(result.total),
+            total: size(result.total),
             files: files_text(result.files),
             inbox,
         };
@@ -164,7 +164,7 @@ impl SliceChart {
             .hovered()
             .and_then(|slice| self.rows.iter().find(|row| row.id == slice.id));
         let (title, subtitle) = match hovered {
-            Some(row) => (bytes_si(row.bytes), row.label.clone()),
+            Some(row) => (size(row.bytes), row.label.clone()),
             None => (self.total.clone(), self.files.clone()),
         };
         self.chart.set_center(title, subtitle);
@@ -186,7 +186,7 @@ impl SliceChart {
                 };
                 let slice = PieSlice::new(&row.id, &row.label, row.bytes as f64, colour)
                     .with_detail(row.detail())
-                    .with_legend_detail(bytes_si(row.bytes));
+                    .with_legend_detail(size(row.bytes));
                 if row.interactive {
                     slice
                 } else {
@@ -564,7 +564,7 @@ impl DiskUsageApp {
         let list_row = ListRow::new(format!("disk-usage.folder-row:{}", row.id), &row.label)
             .icon(Icon::Folder)
             .secondary(files_text(row.files))
-            .meta(bytes_si(row.bytes));
+            .meta(size(row.bytes));
         if !row.interactive {
             return Box::new(list_row);
         }

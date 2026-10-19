@@ -811,7 +811,10 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
         close_driver(&mut a);
         f.records
             .with(&checkout.id, |doc| {
-                doc.put(&page_map, "body", 42).unwrap();
+                // A body that is no rich text: a peer's damaged write.
+                ui::tilo_resource::Slot::Key(&page_map, "body")
+                    .put_scalar(doc, automerge::ScalarValue::Int(42))
+                    .unwrap();
                 doc.commit();
             })
             .unwrap();

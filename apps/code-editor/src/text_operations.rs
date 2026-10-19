@@ -2,7 +2,10 @@
 //! field edits of the file's text ([`crate::project::SourceEdit`]).
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::Serialize;
-use tilo_actions::{ActionArgs, ActionParam, ActionSpec, Doc, ParamType};
+use tilo_actions::{ActionSpec, Doc};
+
+#[allow(unused_imports, reason = "the `JsonSchema` derive names the crate")]
+use ui::tilo_resource;
 
 use crate::doc::EditorDoc;
 use crate::project::text_digest;
@@ -77,13 +80,6 @@ pub(crate) fn read(
         return Err("text read exceeds the aggregate response bound".into());
     }
     Ok(answer)
-}
-
-fn integer(args: &ActionArgs, name: &str) -> Result<usize, String> {
-    args.integer(name)
-        .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value <= crate::disk::MAX_TEXT_BYTES as usize)
-        .ok_or_else(|| format!("{name} must be a bounded nonnegative integer"))
 }
 
 pub(crate) fn committed_heads(
@@ -210,55 +206,34 @@ fn project_snapshot(
     })
 }
 
+/// What a committed text read is invoked with.
+#[derive(serde::Deserialize, ui::tilo_resource::JsonSchema)]
+struct SnapshotParams {
+    /// Zero-based Unicode scalar position
+    start_chars: usize,
+    /// Maximum Unicode scalars, 1 through 4096
+    #[schema(range(min = 1, max = MAX_READ_CHARS))]
+    max_chars: usize,
+    /// Exact sorted JSON heads array from the first page
+    expected_heads: Option<String>,
+}
+
 pub(crate) fn snapshot_spec(file: String) -> ActionSpec {
-    use tilo_actions::{ActionContract, EncodedAction, OperationKind, ResultSpec};
-    ActionSpec::typed_operation(
-        "read-text-snapshot",
-        "Read committed file text",
-        "A bounded page at one exact committed document revision",
-        OperationKind::Effect,
+    ui::semantic_document_read::read_action(
+        ui::semantic_document_read::ReadName {
+            id: "read-text-snapshot",
+            label: "Read committed file text",
+            description: "A bounded page at one exact committed document revision",
+        },
         SNAPSHOT_OPERATION,
-        vec![
-            ActionParam::required(
-                "start_chars",
-                ParamType::Integer,
-                "Zero-based Unicode scalar position",
-            ),
-            ActionParam::required(
-                "max_chars",
-                ParamType::Integer,
-                "Maximum Unicode scalars, 1 through 4096",
-            ),
-            ActionParam::optional(
-                "expected_heads",
-                ParamType::Text,
-                "Exact sorted JSON heads array from the first page",
-            ),
-        ],
-        move |args| {
-            let request = integer(args, "start_chars").and_then(|start_chars| {
-                Ok(SnapshotRequest {
-                    file: file.clone(),
-                    start_chars,
-                    max_chars: integer(args, "max_chars")?,
-                    expected_heads: args.text("expected_heads").map(str::to_owned),
-                })
-            });
-            match request {
-                Ok(request) => EncodedAction::encode_operation(SNAPSHOT_OPERATION, &request)
-                    .unwrap_or_else(|_| {
-                        crate::actions::invalid_arguments("snapshot encoding failed")
-                    }),
-                Err(error) => crate::actions::invalid_arguments(&error),
-            }
+        snapshot_schema,
+        move |params: SnapshotParams| SnapshotRequest {
+            file: file.clone(),
+            start_chars: params.start_chars,
+            max_chars: params.max_chars,
+            expected_heads: params.expected_heads,
         },
     )
-    .with_contract(ActionContract {
-        result: ResultSpec::Json {
-            schema: snapshot_schema().clone(),
-        },
-        ..ActionContract::view()
-    })
     .reads_document()
 }
 

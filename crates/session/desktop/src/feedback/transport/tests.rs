@@ -151,15 +151,14 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             .initialize(|doc| {
                 let reporter = hex::encode([12; 32]);
                 let failed = |error: ui::tilo_actions::DoorError| error.to_string();
-                chat::demo::start_in(doc, &reporter, (ROOM, "Fixture"), "Reporter", "R")
-                    .map_err(failed)?;
-                chat::demo::insert_category(doc, &reporter, "category", ROOM, "Feedback")
+                chat::demo::start(doc, &reporter, "Reporter", "R").map_err(failed)?;
+                chat::demo::insert_category(doc, &reporter, "category", "Feedback")
                     .map_err(failed)?;
                 chat::demo::insert_channel(
                     doc,
                     &reporter,
                     "feedback",
-                    (ROOM, "category"),
+                    "category",
                     "Feedback",
                     chat::model::ChannelKind::Text,
                 )

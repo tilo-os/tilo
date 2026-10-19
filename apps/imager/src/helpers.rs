@@ -7,7 +7,8 @@
 use ui::framework::Helper;
 
 /// Every helper, in the order they are asked.
-pub(crate) const HELPERS: [Helper; 13] = [
+#[cfg(feature = "installation")]
+pub(crate) const HELPERS: &[Helper] = &[
     Helper { run: native_copy },
     Helper {
         run: |args| crate::setup::staging::capacity_probe::maybe_run(args),
@@ -22,11 +23,9 @@ pub(crate) const HELPERS: [Helper; 13] = [
     Helper {
         run: |args| crate::setup::desktop_worker::maybe_run_desktop_helper(args),
     },
+    Helper { run: write_helper },
     Helper {
-        run: |args| crate::write::maybe_run_write_helper(args).map_err(|error| error.to_string()),
-    },
-    Helper {
-        run: |args| crate::customize_image::maybe_run(args).map_err(|error| error.to_string()),
+        run: customize_image,
     },
     Helper {
         run: |args| crate::setup::staging::helper::maybe_run_staging_helper(args),
@@ -43,33 +42,59 @@ pub(crate) const HELPERS: [Helper; 13] = [
     },
 ];
 
-#[cfg(target_os = "linux")]
+/// Without the installation (the Tilo app) the imager is the image writer:
+/// its privileged writer, the image customization and the packaging probes.
+/// The migration copier, home capture, read-back of a prepared medium, the
+/// desktop installer and the staging steps belong to the installation.
+#[cfg(not(feature = "installation"))]
+pub(crate) const HELPERS: &[Helper] = &[
+    Helper { run: write_helper },
+    Helper {
+        run: customize_image,
+    },
+    Helper { run: package_smoke },
+    Helper {
+        run: flatpak_probe_smoke,
+    },
+];
+
+/// The short-lived privileged image writer.
+fn write_helper(args: &[String]) -> Result<Option<i32>, String> {
+    crate::write::maybe_run_write_helper(args).map_err(|error| error.to_string())
+}
+
+/// Customizing a written Tilo image.
+fn customize_image(args: &[String]) -> Result<Option<i32>, String> {
+    crate::customize_image::maybe_run(args).map_err(|error| error.to_string())
+}
+
+#[cfg(all(target_os = "linux", feature = "installation"))]
 fn home_capture(args: &[String]) -> Result<Option<i32>, String> {
     crate::setup::home_capture_helper::maybe_run(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "installation"))]
 fn home_capture(_args: &[String]) -> Result<Option<i32>, String> {
     Ok(None)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 fn home_capture_host(args: &[String]) -> Result<Option<i32>, String> {
     crate::setup::home_capture::maybe_run_host(args)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "installation"))]
 fn home_capture_host(_args: &[String]) -> Result<Option<i32>, String> {
     Ok(None)
 }
 
 /// The native migration copy and its resumption.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 fn native_copy(args: &[String]) -> Result<Option<i32>, String> {
     crate::setup::migration_native::maybe_run_command(args).map_err(|error| error.to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "installation"))]
 fn native_copy(_args: &[String]) -> Result<Option<i32>, String> {
     Ok(None)
 }
@@ -103,11 +128,11 @@ fn flatpak_probe_smoke(args: &[String]) -> Result<Option<i32>, String> {
     Ok(Some(0))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "installation"))]
 fn read_selected_media(args: &[String]) -> Result<Option<i32>, String> {
     crate::setup::read_media::maybe_run(args)
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "installation"))]
 fn read_selected_media(_args: &[String]) -> Result<Option<i32>, String> {
     Ok(None)
 }
@@ -129,17 +154,24 @@ mod tests {
             Some(0),
             "the packaging probe ends before the app starts"
         );
+        #[cfg(feature = "installation")]
         assert_eq!(
             ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-final-bootnext"])),
             Some(1),
             "a helper's refused command line ends the process with 1"
+        );
+        #[cfg(not(feature = "installation"))]
+        assert_eq!(
+            ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-final-bootnext"])),
+            None,
+            "the Tilo app is no staging helper"
         );
         assert_eq!(
             ui::framework::run_helper::<ImagerShell>(&args(&["--customize-image"])),
             Some(1),
             "an incomplete customization is refused before GUI startup"
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "installation"))]
         assert_eq!(
             ui::framework::run_helper::<ImagerShell>(&args(&[
                 "--tilo-home-capture-host",

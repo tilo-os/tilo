@@ -22,16 +22,28 @@ ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 [features]
 default = ["native", "broker-transport"]
 # The native desktop runner and host services: the winit event loop with its
-# AccessKit adapter, the Wayland/X11 clipboard, the OS URI handler, startup
+# AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the desktop appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content-device", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+# X11 windows (winit's X11 backend) and the X11 clipboard, for development
+# builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
+# `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
+# sandbox, so the shared runtime leaves X11 (x11rb, x11-dl and the X11
+# clipboard) out.
+x11 = ["winit/x11", "tilo-host/x11"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
-syntax-definitions = ["dep:two-face"]
+syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
+# The grammar set is not linked: the code editor's highlighter opens it from
+# libtilo_highlight_engine.so the first time code is highlighted. The engine
+# library's own build (crates/runtime/engines/highlight) turns this on, so the
+# shared runtime every app maps leaves syntect and the grammars out; any
+# other build links them.
+lazy-highlight = ["dep:tilo-engine-loader"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
@@ -74,7 +86,13 @@ dx12-shader-cache = []
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
-webview-adblock = ["dep:adblock"]
+webview-adblock = ["dep:tilo-content-blocker"]
+# The compiler is not linked: `webview::adblock` opens it from
+# libtilo_adblock_engine.so the first time an app compiles lists. The engine
+# library's own build (crates/runtime/engines/adblock) turns this on, so the
+# shared runtime every app maps leaves adblock-rust out; any other build links
+# the compiler.
+lazy-adblock = ["webview-adblock", "dep:tilo-engine-loader"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -103,9 +121,12 @@ portal = ["native", "tilo-host/portal"]
 
 [dependencies]
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
-browser-continuity.workspace = true
+# Only the session vocabulary and the engine launch boundary: this crate is
+# in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
+# never be unified into it.
+browser-continuity-core.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-mime_guess.workspace = true
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 fnv.workspace = true
 # Host services: the clock, background work, clipboard, file choosers,
 # notifications, media sessions, location and screen capture, and their
@@ -126,8 +147,11 @@ tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
-# build; the unix `native` build adds the launcher's device store below.
+# build.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+# The `native` build takes the launcher's content-store capability at launch
+# (`launch.rs`).
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device", optional = true }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog" }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
@@ -146,10 +170,11 @@ form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
-# `webview-adblock`). The `content-blocking` feature provides the
-# EasyList→WebKit-content-blocker conversion; blocking then runs inside
-# WebKit's network process, not in Rust.
-adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
+# `webview-adblock`): adblock-rust's EasyList→WebKit-content-blocker
+# conversion; blocking then runs inside WebKit's network process, not in Rust.
+tilo-content-blocker = { version = "0.1.0", path = "../../browser/content-blocker", optional = true }
+# Opens the engine libraries the toolkit uses on first use (`lazy-*`).
+tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
 # runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.
@@ -164,11 +189,11 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 tilo-spellcheck = { version = "0.1.0", path = "../../text/spellcheck" }
-# Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
-# tokenizer over two-face's extended syntax set, the packed set Typst already
-# links for raw blocks, so the runtime carries those bytes once.
-syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
-two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"], optional = true }
+# Grammar-backed highlighting (`widget::code_editor::syntax`): the token
+# vocabulary, and the grammar set (syntect over two-face's extended syntax
+# set), linked unless `lazy-highlight` opens it from its engine library.
+tilo-highlight = { version = "0.1.0", path = "../../text/highlight" }
+tilo-highlight-grammars = { version = "0.1.0", path = "../../text/highlight-grammars" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
@@ -297,10 +322,13 @@ accesskit_winit = { package = "tilo-accesskit-winit", version = "0.34.0", path =
 tilo-tts = { version = "0.1.0", path = "../../system/tts" }
 
 [target.'cfg(unix)'.dependencies]
-# Takes the launcher's content-store capability at launch (`launch.rs`).
-tilo-content = { version = "0.1.0", path = "../../system/content", optional = true, features = ["device"] }
 # Session-bus client for `priority-contacts`; runs on the workspace's tokio.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Frames drawn by the room's render service instead of a GPU in the app
+# (`render_thread::remote`).
+tilo-render-protocol = { version = "0.1.0", path = "../../platform/tilo-render-protocol" }
 
 [target.'cfg(windows)'.dependencies]
 # The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).

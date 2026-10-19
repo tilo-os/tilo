@@ -3,6 +3,7 @@
 //! These events describe output, never executable actions. A retry must use a new
 //! reply message and run id; replaying this stream cannot dispatch a tool.
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentStreamEvent {
@@ -32,7 +33,7 @@ pub enum AgentOutput {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentFinish {
     Complete,

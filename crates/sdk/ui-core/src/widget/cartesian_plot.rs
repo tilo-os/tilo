@@ -10,7 +10,7 @@
     reason = "plot projection and vector geometry are bounded floating-point arithmetic"
 )]
 
-use crate::time::{Duration, Instant};
+use crate::time::Instant;
 use crate::widget::ModelPath;
 use std::cell::RefCell;
 
@@ -538,17 +538,14 @@ impl Default for CartesianGesturePolicy {
 
 #[derive(Clone, Debug)]
 pub struct CartesianAnimationStyle {
-    /// Smoothly interpolate matching stable datum ids after `set_series`.
+    /// Move matching stable datum ids to their new values after
+    /// `set_series`, on the standard list change (`motion::ListChange`).
     pub enabled: bool,
-    pub duration: Duration,
 }
 
 impl Default for CartesianAnimationStyle {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            duration: Duration::from_millis(240),
-        }
+        Self { enabled: true }
     }
 }
 
@@ -813,10 +810,7 @@ impl CartesianPlot {
             return;
         }
         let previous = std::mem::replace(&mut self.series, series);
-        if self.style.animation.enabled
-            && !self.reduce_motion
-            && !self.style.animation.duration.is_zero()
-        {
+        if self.style.animation.enabled && !self.reduce_motion {
             self.transition_from = Some(previous);
             self.transition_started = crate::time::now();
         } else {
@@ -844,22 +838,17 @@ impl CartesianPlot {
         !self.reduce_motion
             && self.style.animation.enabled
             && self.transition_from.is_some()
-            && self.transition_started.elapsed() < self.style.animation.duration
+            && crate::time::now().saturating_duration_since(self.transition_started)
+                < crate::widget::pie_chart::data_change_time()
     }
 
     fn animation_progress_at(&self, now: Instant) -> f64 {
-        if self.reduce_motion
-            || !self.style.animation.enabled
-            || self.transition_from.is_none()
-            || self.style.animation.duration.is_zero()
-        {
+        if self.reduce_motion || !self.style.animation.enabled || self.transition_from.is_none() {
             return 1.0;
         }
-        let raw = now
-            .saturating_duration_since(self.transition_started)
-            .as_secs_f64()
-            / self.style.animation.duration.as_secs_f64();
-        crate::animation::ease_out(raw.clamp(0.0, 1.0))
+        crate::widget::pie_chart::data_change_progress(
+            now.saturating_duration_since(self.transition_started),
+        )
     }
 
     fn animated_xy(&self, series: usize, datum: usize, now: Instant) -> Option<(f64, f64)> {
@@ -2875,19 +2864,7 @@ fn format_duration(seconds: f64, places: u8) -> String {
 }
 
 fn format_bytes(value: f64, places: u8) -> String {
-    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
-    let mut scaled = value.abs();
-    let mut unit = 0;
-    while scaled >= 1024.0 && unit + 1 < UNITS.len() {
-        scaled /= 1024.0;
-        unit += 1;
-    }
-    let signed = scaled.copysign(value);
-    format!(
-        "{signed:.places$} {}",
-        UNITS.get(unit).copied().unwrap_or("PiB"),
-        places = usize::from(places.min(8))
-    )
+    crate::format::Formats::current().memory_value(value, usize::from(places.min(8)))
 }
 
 impl Widget for CartesianPlot {
@@ -3723,7 +3700,6 @@ mod tests {
                 vec![PlotDatum::new("point", 0.0, 10.0)],
             );
             let mut plot = CartesianPlot::new(vec![old]);
-            plot.style.animation.duration = Duration::from_millis(200);
             plot.set_series(vec![PlotSeries::new(
                 "series",
                 "Series",
@@ -3731,7 +3707,9 @@ mod tests {
                 vec![PlotDatum::new("point", 100.0, 30.0)],
             )]);
             let midpoint = crate::time::now();
-            plot.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
+            plot.transition_started = midpoint
+                .checked_sub(crate::time::Duration::from_millis(100))
+                .unwrap();
             let (x, y) = plot.animated_xy(0, 0, midpoint).unwrap();
             assert!(x > 50.0 && x < 100.0, "ease-out midpoint: {x}");
             assert!(y > 20.0 && y < 30.0, "ease-out midpoint: {y}");

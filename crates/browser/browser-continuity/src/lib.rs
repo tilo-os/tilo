@@ -6,13 +6,11 @@
 //! The host must bind delivery to its existing identity
 //! and setup authority before interpreting this descriptive plan.
 
-pub mod engine_host;
 pub mod handoff;
 pub mod imported_folders;
 pub mod imports;
 pub mod service_profiles;
 pub mod session_engine;
-pub mod sessions;
 
 pub mod sources;
 
@@ -26,9 +24,10 @@ pub mod completion;
 #[cfg(all(unix, feature = "native"))]
 pub mod snapshot;
 
-/// Fixed launcher-owned read-only projection location; no permission is
-/// implied by this name or by metadata referring to it.
-pub const PROJECTION_DIRECTORY: &str = "/run/tilo/browser-continuity";
+// The session vocabulary, the engine launch boundary and the projection
+// location live in browser-continuity-core, which the UI toolkit and the
+// shared app runtime link without this crate's capture code and its SQLite.
+pub use browser_continuity_core::{PROJECTION_DIRECTORY, engine_host, sessions};
 /// Plan child in the projected continuity directory.
 pub const PLAN_FILE: &str = "plan.json";
 /// Directory containing reviewed, per-profile projections.

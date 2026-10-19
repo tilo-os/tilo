@@ -65,6 +65,16 @@ pub(crate) enum HandshakeError {
     /// The peer was refused: its certificate, trust or signature.
     #[error("auth reject: {0}")]
     Auth(#[from] AuthError),
+    /// The peer speaks another peer protocol version, `theirs`. It was told
+    /// this relay's ([`auth::version_answer`]) and nothing else was read.
+    #[error(
+        "peer speaks protocol {theirs}, this relay {}",
+        auth::PEER_PROTOCOL_VERSION
+    )]
+    Version {
+        /// The peer's version.
+        theirs: u32,
+    },
 }
 
 /// The relay's own identity and its live revocation list, shared by every
@@ -208,7 +218,7 @@ where
         let hello = if let Some(hello) = hello {
             hello
         } else {
-            received = decode("decode hello", &read("read hello", recv, max_frame).await?)?;
+            received = decode_hello(&read("read hello", recv, max_frame).await?, send).await?;
             &received
         };
         let (pending, ack) = identity.begin(trust, hello)?;
@@ -244,6 +254,36 @@ async fn read<R: AsyncRead + Unpin + Send>(
     read_frame(recv, max_frame)
         .await
         .map_err(|source| HandshakeError::Io { stage, source })
+}
+
+/// The client's hello; at another version, this relay's version is the
+/// answer and the handshake ends.
+async fn decode_hello<W: AsyncWrite + Unpin + Send>(
+    bytes: &[u8],
+    send: &mut W,
+) -> Result<Hello, HandshakeError> {
+    match auth::decode_handshake::<Hello>(bytes) {
+        Ok(hello) => Ok(hello),
+        Err(auth::HandshakeFrameError::Version { theirs }) => {
+            let answer = auth::version_answer().map_err(|source| HandshakeError::Codec {
+                stage: "encode version answer",
+                source,
+            })?;
+            // The peer learns this relay's version even if the write fails;
+            // there is nothing more to tell it either way.
+            let _ = write_frame(send, &answer).await;
+            tracing::info!(
+                theirs,
+                ours = auth::PEER_PROTOCOL_VERSION,
+                "a peer at another protocol version was told this relay's"
+            );
+            Err(HandshakeError::Version { theirs })
+        }
+        Err(auth::HandshakeFrameError::Codec(source)) => Err(HandshakeError::Codec {
+            stage: "decode hello",
+            source,
+        }),
+    }
 }
 
 fn decode<T: serde::de::DeserializeOwned>(
@@ -286,10 +326,7 @@ mod tests {
     }
 
     fn hello(identity: &LiveIdentity) -> Hello {
-        Hello {
-            cert: identity.cert.clone(),
-            client_nonce: [1; 32],
-        }
+        Hello::new(identity.cert.clone(), [1; 32])
     }
 
     fn trust() -> EndpointTrust<'static> {

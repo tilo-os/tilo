@@ -308,7 +308,7 @@ pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
 /// Format a memory size reported in KiB (as `/proc/meminfo` does) with
 /// binary units, `15.6 GiB`.
 pub(crate) fn format_memory(kb: u64) -> String {
-    ui::format::bytes(kb.saturating_mul(1024))
+    ui::format::memory(kb.saturating_mul(1024))
 }
 
 pub(crate) fn parse_uptime_seconds(contents: &str) -> Option<f64> {
@@ -374,7 +374,7 @@ mod tests {
         );
         assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
         assert_eq!(format_memory(16_330_124), "15.6 GiB");
-        assert_eq!(format_memory(512 * 1024), "512.0 MiB");
+        assert_eq!(format_memory(512 * 1024), "512 MiB");
     }
 
     /// Missing system files fall back to honest placeholders; the device

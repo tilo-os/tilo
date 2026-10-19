@@ -95,7 +95,7 @@ fn invoke(
         .ok_or("missing Browser component")?;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: instance,
-        address: ui::tilo_actions::ActionAddress::new("browser.page", effect.id()),
+        address: effect.address_on("browser.page"),
     };
     let (invocation, started) =
         app.harness()

@@ -18,16 +18,6 @@ use crate::project::{self, EntryKind, Project, ProjectAction, SourceEdit};
 /// authored.
 pub type Action = <Project as Resource>::Action;
 
-/// Build a deliberately-invalid action envelope for resource input or
-/// serialization failures. Resource closures cannot return `Result`; this
-/// keeps failures visible to the shared action host rather than panicking.
-pub(crate) fn invalid_arguments(message: &str) -> EncodedAction {
-    EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: message.as_bytes().to_vec(),
-    }
-}
-
 fn stamped(operation: ProjectAction) -> Action {
     Stamped {
         operation,
@@ -99,12 +89,14 @@ pub fn result_resource_id(result: &SearchResultRef) -> String {
     )
 }
 
+/// What a symbol's search hit invokes: the reveal its live row offers.
 pub fn open_symbol_address(symbol: &SymbolRef) -> ActionAddress {
-    ActionAddress::new(symbol_resource_id(symbol), "reveal")
+    crate::effects::CodeEditorEffect::REVEAL.on(symbol_resource_id(symbol))
 }
 
+/// What a search result's hit invokes: the reveal its live row offers.
 pub fn reveal_result_address(result: &SearchResultRef) -> ActionAddress {
-    ActionAddress::new(result_resource_id(result), "reveal")
+    crate::effects::CodeEditorEffect::REVEAL.on(result_resource_id(result))
 }
 
 /// The edit turning the text of `file` from `base`, as the editor showed

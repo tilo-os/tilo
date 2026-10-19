@@ -72,7 +72,7 @@ pub struct ChunkRef {
 /// How a blob larger than one object is cut into chunks:
 ///
 /// ```json
-/// {"format":1,"blob":"<hex>","len":N,"chunk_bytes":16777216,
+/// {"format":2,"blob":"<hex>","len":N,"chunk_bytes":16777216,
 ///  "chunks":[{"hash":"<hex>","len":n},...]}
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,7 +758,7 @@ type = "gui"
         let list_text =
             String::from_utf8(objects[&chunk_list_name(&BlobHash::of(&big))].clone()).unwrap();
         assert!(list_text.starts_with(&format!(
-            "{{\"format\":1,\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
+            "{{\"format\":2,\"blob\":\"{}\",\"len\":10000,\"chunk_bytes\":1024,\"chunks\":[{{\"hash\":\"",
             BlobHash::of(&big)
         )));
     }

@@ -1,6 +1,7 @@
 use super::*;
-use automerge::{ROOT, ReadDoc, transaction::Transactable};
+use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use tilo_automerge::ApplyIncoming as _;
+use ui::tilo_resource::Slot;
 
 fn fixture(texts: &[&str]) -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -35,7 +36,9 @@ fn semantic_read_pages_requested_capacity_in_literal_tilo_doc_order() {
     let ids = tilo_doc::model::blocks_in_order(&doc, &c);
     for (id, key) in ids.iter().zip([vec![2], vec![1], vec![1, 0]]) {
         let (_, block) = doc.get(&c.blocks, id.as_str()).unwrap().unwrap();
-        doc.put(&block, "order", key).unwrap();
+        Slot::Key(&block, "order")
+            .put_scalar(&mut doc, ScalarValue::Bytes(key))
+            .unwrap();
     }
     doc.commit();
     let before = doc.base_heads();
@@ -88,7 +91,7 @@ fn semantic_read_refuses_pending_stale_and_insufficient_scan() {
     let mut doc = fixture(&["alpha", "beta"]);
     let page = read_text(&doc, &doc.base_heads(), None, limits(1)).unwrap();
     let before = doc.base_heads();
-    doc.put(ROOT, "pending", true).unwrap();
+    ui::tilo_resource::write_key(&mut doc, &ROOT, "pending", &true).unwrap();
     let pending = doc.pending_ops();
     assert_eq!(
         read_text(&doc, &doc.base_heads(), None, limits(1)).unwrap_err(),
@@ -158,15 +161,16 @@ fn semantic_read_refuses_to_emit_an_unusable_oversized_cursor() {
     let mut doc = fixture(&[]);
     let blocks = crate::model::open(&doc).unwrap().blocks;
     let id = "\"".repeat(256);
-    let block = doc
-        .put_object(&blocks, id, automerge::ObjType::Map)
+    let block = Slot::Key(&blocks, &id)
+        .object(&mut doc, automerge::ObjType::Map)
         .unwrap();
-    doc.put(&block, "order", vec![255u8; 256]).unwrap();
-    doc.put(&block, "kind", "paragraph").unwrap();
-    let text = doc
-        .put_object(&block, "text", automerge::ObjType::Text)
+    Slot::Key(&block, "order")
+        .put_scalar(&mut doc, ScalarValue::Bytes(vec![255u8; 256]))
         .unwrap();
-    doc.splice_text(&text, 0, 0, &"x".repeat(6000)).unwrap();
+    Slot::Key(&block, "kind")
+        .put_scalar(&mut doc, ScalarValue::Str("paragraph".into()))
+        .unwrap();
+    ui::tilo_resource::write_key(&mut doc, &block, "text", &"x".repeat(6000)).unwrap();
     doc.commit();
     assert_eq!(
         read_text(&doc, &doc.base_heads(), None, limits(1)).unwrap_err(),
@@ -262,9 +266,13 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
 fn semantic_read_skips_invalid_block_rows_with_oversized_keys() {
     let mut doc = fixture(&["kept"]);
     let blocks = crate::model::open(&doc).unwrap().blocks;
-    doc.put(&blocks, "x".repeat(1024), "invalid scalar row")
+    let scalar_row = "x".repeat(1024);
+    Slot::Key(&blocks, &scalar_row)
+        .put_scalar(&mut doc, ScalarValue::Str("invalid scalar row".into()))
         .unwrap();
-    doc.put_object(&blocks, "y".repeat(1024), automerge::ObjType::Map)
+    let map_row = "y".repeat(1024);
+    Slot::Key(&blocks, &map_row)
+        .object(&mut doc, automerge::ObjType::Map)
         .unwrap();
     doc.commit();
     let page = read_text(&doc, &doc.base_heads(), None, limits(64)).unwrap();

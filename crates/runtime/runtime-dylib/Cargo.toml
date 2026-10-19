@@ -21,9 +21,18 @@ crate-type = ["dylib"]
 # host, the install CLI), light crates only one app uses, and engines a few
 # apps use, which have their own library under crates/runtime/engines/
 # (Typst, Spotify playback, Canvas's painting engines, the YouTube client of
-# Music and Tube, account custody and IMAP for Mail and Settings, the
-# time-zone database for Calendar and Clocks, the contact directory for
-# Contacts, Mail and Messages). Every app process maps this library, so a
+# Music and Tube, account custody, IMAP and WebDAV for Mail, Settings and
+# Calendar, the time-zone database for Calendar and Clocks, the contact
+# directory for Contacts, Mail and Messages, the PDF engine for PDF Viewer,
+# Files, Writer and Print Centre, the FUSE presentation for Imager), and a
+# bundled C library apps call themselves (SQLite: this library exports no C
+# symbols, so an app whose own code calls sqlite3_* could not link). Code the
+# toolkit reaches for every app but only on a particular use is an engine
+# the toolkit opens on first use (the search engine, the syntax grammars, the
+# ad-block compiler; tilo-engine-loader). Nor does it carry a table of
+# pointers where one without is possible (mime_guess, bip39's wordlist,
+# regex-syntax's and pulldown-cmark's tables are laid out as offsets). Every
+# app process maps this library, so a
 # crate here costs every app its relocations and dirty pages; an app that
 # needs one of those links it itself, or loads its engine library, and gets
 # only the code it calls. tools/policy/check_runtime_dylib_surface.py fails
@@ -68,16 +77,18 @@ tilo-rich-text = { path = "../../sdk/tilo-rich-text" }
 # runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
 vte = "0.15.0"
-tilo-pdf = { path = "../../platform/tilo-pdf" }
-# Document codecs (Notes, Files, Mail, the office apps, ...) and the WebDAV
-# client (Calendar, Settings). Apps choose the codec features; the union is
-# built here once.
+# Document codecs (Notes, Files, Mail, the office apps, ...). Apps choose the
+# codec features; the union is built here once. The WebDAV client is not here:
+# its calendar sign-in reaches account custody, so Calendar and Settings load
+# it from the accounts engine.
 tilo-doc-codecs = { path = "../../doc/tilo-doc-codecs", default-features = false }
-tilo-dav = { path = "../../system/tilo-dav", default-features = false }
-tilo-thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
+# Without PDF pages: those come from the PDF engine (crates/runtime/engines/pdf),
+# which the apps that read PDFs hand to the thumbnailer.
+tilo-thumbnail = { path = "../../media/thumbnail" }
 roxmltree.workspace = true
 xattr = "1.6.1"
-mime_guess.workspace = true
+# File types by extension, for the apps that name them (Files, Mail).
+tilo-mime = { path = "../../platform/tilo-mime" }
 registry-types = { path = "../../packaging/registry-types" }
 workspace-hack = { version = "0.1" }
 

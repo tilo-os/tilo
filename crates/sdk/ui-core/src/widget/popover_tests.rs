@@ -86,6 +86,8 @@ impl Widget for Fixed {
 
 #[test]
 fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `arrow_keys_move_highlight_and_are_consumed`.
     {
         let mut p = opened();
@@ -142,6 +144,8 @@ fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
 
 #[test]
 fn menu_pointer_selection_and_dismissal() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut p = opened();
     let row2 = p.item_rect(2).expect("published row geometry");
     assert_eq!(p.item_at(row2.center()), Some(2));
@@ -173,6 +177,8 @@ fn menu_pointer_selection_and_dismissal() {
 #[test]
 fn menu_semantics_focus_and_reopen() {
     use crate::a11y::Role;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let p = opened();
     let node = Widget::accessibility(&p).expect("a menu is semantic");
     assert_eq!(node.role, Role::Menu);
@@ -202,6 +208,8 @@ fn menu_semantics_focus_and_reopen() {
 
 #[test]
 fn text_content_is_laid_out_on_one_line() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::light();
     let mut tr = TextRenderer::new();
     let label = "Shared with Ana, Ben and Chloé";
@@ -221,6 +229,8 @@ fn text_content_is_laid_out_on_one_line() {
 
 #[test]
 fn placement_flips_and_stays_in_the_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
 
@@ -289,6 +299,8 @@ fn placement_flips_and_stays_in_the_window() {
 
 #[test]
 fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     // Case `draw_paints_nothing_draw_overlay_paints_the_panel`.
     {
         let mut p = opened();
@@ -357,6 +369,8 @@ fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
 
 #[test]
 fn a_trailing_popover_hangs_from_its_anchors_trailing_edge() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let anchor = Rect::new(600.0, 10.0, 640.0, 42.0);
@@ -388,6 +402,8 @@ fn a_trailing_popover_hangs_from_its_anchors_trailing_edge() {
 
 #[test]
 fn a_prompt_popover_submits_its_one_field_with_enter() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let mut p = Popover::prompt("Go to offset", "0x0000", "Hex or decimal, up to 0x3fff")
         .with_field_chars(12)
         .with_viewport(WINDOW);
@@ -419,6 +435,8 @@ fn a_prompt_popover_submits_its_one_field_with_enter() {
 fn a_hosted_popover_lays_its_content_out_in_the_window_tree() {
     use crate::headless::Framed;
     use crate::widget::{Column, TextInput};
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let content = Column::new()
         .push(Box::new(TextInput::local().with_placeholder("Label")))
         .push(Box::new(TextInput::local().with_placeholder("Colour")));
@@ -451,6 +469,8 @@ fn a_hosted_popover_lays_its_content_out_in_the_window_tree() {
 #[test]
 fn a_popover_button_opens_its_popover_at_its_own_rect() {
     use crate::headless::Framed;
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
     let button = crate::widget::Button::new("filters", "Filters").with_popover(Fixed {
         rect: Rect::ZERO,
         w: 160.0,
@@ -475,4 +495,131 @@ fn a_popover_button_opens_its_popover_at_its_own_rect() {
         (panel.x0 - rect.x0.max(margin)).abs() < 1.0,
         "leading-aligned with it: {panel:?} vs {rect:?}"
     );
+}
+
+/// The standard Appear motion on a popover, at pinned instants: a click
+/// brings it in from its button over `base` and takes it back over `fast`;
+/// a key opens and closes it at once. Input acts on the new state at once:
+/// a closing popover is drawn until it has gone but no longer contains the
+/// pointer.
+#[test]
+fn a_clicked_popover_arrives_from_its_button_and_a_key_lands_it() {
+    use crate::motion::note_source;
+    use crate::time::testing::with_monotonic_time;
+    use crate::tokens::MotionSource;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+
+    // A click: it arrives.
+    let mut p = with_monotonic_time(t0, || {
+        note_source(MotionSource::Pointer);
+        let mut p = opened();
+        let _ = present(&mut p, &theme);
+        assert!(p.appear.progress() < 0.05, "it starts at its button");
+        assert!(p.needs_animation_frame(), "an arrival asks for frames");
+        assert!(
+            crate::motion::frames_wanted(t0),
+            "and so does the motion clock"
+        );
+        p
+    });
+    with_monotonic_time(at(60), || {
+        let _ = present(&mut p, &theme);
+        let pose = p.drawn;
+        assert!(pose.opacity > 0.0 && pose.opacity <= 1.0);
+        assert_ne!(
+            pose.transform,
+            Affine::IDENTITY,
+            "mid-arrival it is scaled about its origin"
+        );
+        // The origin is the point of the panel nearest the button: it does
+        // not move.
+        let origin =
+            crate::motion::Appear::origin(p.rect(), Rect::new(100.0, 40.0, 180.0, 68.0).center());
+        assert!((pose.to_drawn(origin) - origin).hypot() < 1e-6);
+    });
+    with_monotonic_time(at(400), || {
+        let _ = present(&mut p, &theme);
+        assert!(!p.needs_animation_frame(), "it has arrived and rests");
+        assert!(p.drawn.is_rest());
+    });
+
+    // A click closes it: input passes through at once, the panel fades.
+    let inside = p.rect().center();
+    with_monotonic_time(at(500), || {
+        p.close();
+        assert!(!p.contains(inside), "a closing popover takes no input");
+        let _ = present(&mut p, &theme);
+        assert!(p.appear.is_drawn(), "it is drawn while it leaves");
+    });
+    with_monotonic_time(at(800), || {
+        let _ = present(&mut p, &theme);
+        assert!(!p.appear.is_drawn(), "and then it has gone");
+        assert!(!p.needs_animation_frame());
+    });
+
+    // A key: it is there on the next frame, and gone on the next frame.
+    with_monotonic_time(at(900), || {
+        note_source(MotionSource::Keyboard);
+        p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), Some(1));
+        let _ = present(&mut p, &theme);
+        assert!(p.drawn.is_rest(), "a shortcut lands at once");
+        assert!(!p.needs_animation_frame());
+        p.close();
+        let _ = present(&mut p, &theme);
+        assert!(!p.appear.is_drawn(), "and closes at once");
+    });
+}
+
+/// Reduced motion is a designed experience: the popover fades, never scales.
+#[test]
+fn under_reduced_motion_a_popover_fades_in_place() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark().with_reduce_motion(true);
+    let t0 = crate::time::now();
+    let mut p = with_monotonic_time(t0, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        let mut p = opened();
+        let _ = present(&mut p, &theme);
+        p
+    });
+    with_monotonic_time(t0 + crate::time::Duration::from_millis(40), || {
+        let _ = present(&mut p, &theme);
+        assert_eq!(p.drawn.transform, Affine::IDENTITY, "nothing scales");
+        assert!(p.drawn.opacity > 0.0 && p.drawn.opacity < 1.0, "it fades");
+    });
+}
+
+/// A reopen while it leaves reverses from where it is drawn: no jump, no
+/// queue.
+#[test]
+fn reopening_a_leaving_popover_reverses_from_where_it_is() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let mut p = with_monotonic_time(t0, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        let mut p = opened();
+        let _ = present(&mut p, &theme);
+        p
+    });
+    with_monotonic_time(at(400), || {
+        let _ = present(&mut p, &theme);
+        p.close();
+    });
+    let drawn = with_monotonic_time(at(440), || {
+        let _ = present(&mut p, &theme);
+        p.appear.progress()
+    });
+    assert!(drawn > 0.0 && drawn < 1.0, "mid-exit: {drawn}");
+    with_monotonic_time(at(440), || {
+        p.set_open(true);
+        let _ = present(&mut p, &theme);
+        assert!(
+            (p.appear.progress() - drawn).abs() < 1e-9,
+            "it turns back from where it is drawn"
+        );
+    });
 }

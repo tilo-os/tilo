@@ -47,10 +47,10 @@ serde_bytes.workspace = true
 # Error plumbing.
 thiserror.workspace = true
 
-# BIP39 mnemonic encoder/decoder for the paper recovery share. Default
-# wordlist is English (2048 words, 11 bits/word; 24 words → 256 bits
-# of entropy + 8-bit checksum). Fixed at 2.x to avoid breaking changes.
-bip39.workspace = true
+# The paper recovery share's BIP39 checksum (`src/bip39.rs`: the English
+# wordlist, 11 bits a word; 24 words carry 256 bits of entropy and an 8-bit
+# checksum).
+sha2.workspace = true
 
 # `ed25519-dalek` holds the single-device (1-of-1) key. A frost
 # `SigningKey` stores a signing scalar, not the seed `ed25519-dalek`

@@ -287,6 +287,7 @@ fn remote_folder_availability(account: &crate::remote_accounts::RemoteAccount) -
 fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     #[cfg(test)]
     crate::model::fixture_io_guard::ambient_io("build_thumb_service");
+    enable_pdf_previews();
     let dir = config_dir.map_or_else(
         || std::env::temp_dir().join("tilo-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
@@ -295,6 +296,12 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
         let fallback = std::env::temp_dir().join("tilo-file-explorer-thumbnails");
         ThumbnailService::open(&fallback, 4).ok()
     })
+}
+
+/// PDFs get first-page previews: Files links the PDF engine, which the
+/// thumbnailer every app shares leaves out (`thumbnail::set_pdf_rasteriser`).
+pub(crate) fn enable_pdf_previews() {
+    thumbnail::set_pdf_rasteriser(tilo_pdf::first_page_preview);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -687,6 +694,9 @@ pub struct FileExplorerWidget {
     next_metadata_refresh: Option<Instant>,
     /// Reports changes to the open directory's entries and wakes the window.
     directory_watch: crate::directory_watch::DirectoryWatch,
+    /// How many items each listed folder holds, counted off the UI thread;
+    /// an arrival wakes the window.
+    folder_counts: Arc<crate::folder_counts::FolderCounts>,
     /// Reports changes to the trusted-identity projection's directory, or,
     /// while it does not exist, its creation.
     identity_watch: crate::directory_watch::AwaitedDirectoryWatch,
@@ -1682,6 +1692,7 @@ impl FileExplorerWidget {
     /// previews cached in the scene, and nothing read from the machine the
     /// capture is taken on.
     pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
+        enable_pdf_previews();
         let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)
             .ok()
             .map(Arc::new);
@@ -1816,6 +1827,10 @@ impl FileExplorerWidget {
             // Scheduled by the first sync, once the watches exist.
             next_metadata_refresh: None,
             directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            folder_counts: {
+                let wake = ui::WakeHandle::new();
+                Arc::new(crate::folder_counts::FolderCounts::new(move || wake.wake()))
+            },
             identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
                 ui::WakeHandle::new(),
             ),
@@ -2926,6 +2941,7 @@ impl FileExplorerWidget {
             .with_drop_targets(self.drop_targets.clone())
             .with_item_rects(self.item_rects.clone())
             .with_thumbs(self.thumb_ctx())
+            .with_folder_counts(Some(Arc::clone(&self.folder_counts)), self.show_hidden)
             .with_list(self.list_slot.clone())
             .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
         // A plain (percent-height) column: this pane is the content column of
@@ -3567,8 +3583,7 @@ impl FileExplorerWidget {
                                 mime: if entry.is_dir {
                                     "inode/directory".into()
                                 } else {
-                                    mime_guess::from_path(&synthetic_path)
-                                        .first_or_octet_stream()
+                                    tilo_mime::from_path_or_octet_stream(&synthetic_path)
                                         .to_string()
                                 },
                                 sync_state: None,
@@ -5962,6 +5977,15 @@ impl FileExplorerWidget {
             }
             _ => {}
         }
+        // A capture is one frame: it shows the folders' item counts as a
+        // settled window does, counted here rather than on the worker.
+        let folders: Vec<_> = self
+            .displayed_entries()
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| (entry.path.clone(), entry.modified))
+            .collect();
+        self.folder_counts.settle(&folders, self.show_hidden);
     }
 
     fn stage_sort_selection(&mut self, name: &str) {
@@ -10039,13 +10063,16 @@ impl Widget for FileExplorerWidget {
         let previewed = self.preview.as_mut().is_some_and(Preview::poll);
         let notice_expired = self.notice.expire(ui::time::now());
         let sprang = self.spring_open_if_due(ui::time::now());
-        self.structure_dirty |= notice_expired;
+        // A folder's item count came in: the list shows it.
+        let counted = self.folder_counts.take_arrived();
+        self.structure_dirty |= notice_expired | counted;
         self.poll_share_result()
             | received
             | notice_expired
             | transfers
             | previewed
             | sprang
+            | counted
             | self.poll_cloud()
             | self.poll_mounted_cloud()
             | self.poll_drives(ui::time::now())
@@ -10866,8 +10893,9 @@ pub(crate) mod published {
         action: &str,
         args: &serde_json::Value,
     ) -> Result<Option<Started>, String> {
-        let address = ui::tilo_actions::ActionAddress::new(resource, action);
         let tree = tree(files, doc);
+        let address = ui::tilo_actions::door::published(&tree, resource, action)
+            .ok_or_else(|| format!("{resource} offers no {action}"))?;
         let spec = ui::tilo_actions::door::resolve(&tree, &address)
             .ok_or_else(|| format!("{resource} offers no {action}"))?;
         let kind = spec.kind;

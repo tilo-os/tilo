@@ -37,8 +37,7 @@ Every input device says the same three things:
 2. **The level is a modifier, or a finger count.** Plain Super+← / → walks the
    windows of the strip, and plain Super+↑ / ↓ maximize and restore the focused
    group, as on Windows and GNOME; Ctrl+Super+↑ / ↓ is strips, and Super+1…9
-   goes straight to a strip (1 is the top one, the shared Lounge strip where a
-   workspace has one); Super+Page Up / Page Down is workspaces; Alt+Super is
+   goes straight to a strip (1 is the top one); Super+Page Up / Page Down is workspaces; Alt+Super is
    displays. On a touchpad or a touchscreen three fingers work the plane
    (vertically, strips), four go one level out, and a pinch is the overview.
 3. **Shift carries.** Every "go" has a Shift twin that takes the focused group to

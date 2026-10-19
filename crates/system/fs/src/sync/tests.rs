@@ -302,12 +302,12 @@ async fn signed_authority_and_blob_acls_scope_access_to_live_certified_readers()
         )
         .unwrap();
         owner_authority.apply(grant).unwrap();
-        pull_workspace_authority_from_peer(
+        submit_workspace_authority(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
-            &owner_authority,
             workspace,
+            owner_authority.current(),
         )
         .await
         .unwrap();
@@ -320,12 +320,12 @@ async fn signed_authority_and_blob_acls_scope_access_to_live_certified_readers()
 
         let revoked = signed_read_authority(workspace, 2, owner, collaborator, true, &owner_root);
         owner_authority.apply(revoked.clone()).unwrap();
-        pull_workspace_authority_from_peer(
+        submit_workspace_authority(
             &owner_endpoint,
             nas_endpoint.addr(),
             &owner_identity,
-            &owner_authority,
             workspace,
+            owner_authority.current(),
         )
         .await
         .unwrap();
@@ -878,41 +878,35 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
         .unwrap();
         assert_eq!(ticket.workspace_id(), workspace_id);
 
-        let denied_request = RecordMeshRequestV1 {
-            protocol_version: RECORD_MESH_PROTOCOL_VERSION,
-            workspace_id,
-            operation: RecordMeshOperationV1::Inventory {
-                after: None,
-                limit: 16,
-            },
-        };
-        let (_, denied) = record_mesh_request(
-            &client_ep,
-            server_ep.addr(),
-            &client_identity,
-            &denied_request,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(denied.result, RecordMeshResultV1::Denied));
-
-        let mut root_acl = WorkspaceAcl::new();
-        root_acl.grant_read(identity(&client_ep), "/");
-        server_acl.replace(root_acl);
         let client_policy = Some(policy_read_write(&[identity(&server_ep)], &[]));
         let client_services = record_services(client_temp.path());
         let client_store = Arc::new(ContentStore::memory());
         let client_records = build_record_plane(
             &client_ep,
             &client_identity,
-            &client_policy,
             client_store,
             workspace_id,
             Some(client_services.clone()),
         )
         .unwrap()
         .unwrap();
-        pull_record_mesh_from_peer(
+        assert!(
+            pull_over_session(
+                &client_ep,
+                server_ep.addr(),
+                &client_identity,
+                &client_policy,
+                &client_records,
+            )
+            .await
+            .is_err(),
+            "a reader of a subtree is denied the whole record plane"
+        );
+
+        let mut root_acl = WorkspaceAcl::new();
+        root_acl.grant_read(identity(&client_ep), "/");
+        server_acl.replace(root_acl);
+        pull_over_session(
             &client_ep,
             server_ep.addr(),
             &client_identity,
@@ -993,7 +987,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
         let records = build_record_plane(
             &server_ep,
             &server_identity,
-            &None,
             Arc::clone(&store),
             workspace_id,
             Some(services),
@@ -1583,35 +1576,32 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             .content_revision
             .unwrap();
 
-        let protocol = ReplicaAckProtocol {
-            endpoint: server_ep.clone(),
-            identity: server_identity,
-            policy: None,
+        let protocol = replica_session_host(
+            &server_ep,
+            &server_identity,
+            None,
             workspace_id,
+            &temp.path().join("server-share-authority.json"),
             repository,
             store,
-        };
+        );
         let _router = Router::builder(server_ep.clone())
-            .accept(TILO_FS_REPLICA_ACK_ALPN, protocol)
+            .accept(TILO_FS_SESSION_ALPN, protocol)
             .spawn();
 
         let request = ReplicaAckRequestV1::new(workspace_id, revision).unwrap();
-        let observation = request_replica_ack(
-            &client_ep,
-            server_ep.addr(),
-            &client_identity,
-            &None,
-            &request,
-        )
-        .await
-        .unwrap();
+        let observation =
+            replica_ack_over_session(&client_ep, server_ep.addr(), &client_identity, &request)
+                .await
+                .expect("the host durably holds the exact version");
 
         let path = temp.path().join("availability.json");
         let registry = Arc::new(Mutex::new(
             crate::availability::AvailabilityRegistry::open(&path).unwrap(),
         ));
-        persist_workspace_replica_observation(
-            &registry,
+        // As a session's receipt collection records it.
+        record_replica_observation(
+            &mut registry.lock().unwrap(),
             revision,
             Ed25519PublicKey(client_identity.device_public_key()),
             observation.clone(),
@@ -1646,22 +1636,16 @@ async fn structure_content_and_transactions_propagate_between_peers() {
         wrong_revision.version_id = FileVersionId::new();
         let wrong = ReplicaAckRequestV1::new(workspace_id, wrong_revision).unwrap();
         assert!(
-            request_replica_ack(
-                &client_ep,
-                server_ep.addr(),
-                &client_identity,
-                &None,
-                &wrong,
-            )
-            .await
-            .is_err()
+            replica_ack_over_session(&client_ep, server_ep.addr(), &client_identity, &wrong)
+                .await
+                .is_none()
         );
     }
     // Phase `live_record_mesh_replacement_transaction_survives_staging_restart_in_both_orders`.
     // Exercise replacement transactions through two real authenticated Iroh
     // endpoints. The receiver never reads or mutates the sender repository
-    // directly: each asserted boundary follows a completed inventory/pull
-    // exchange over the record-mesh ALPN.
+    // directly: each asserted boundary follows a completed reconcile/pull
+    // exchange over a session.
     {
         for source_first in [true, false] {
             let server_temp = tempfile::tempdir().unwrap();
@@ -1914,7 +1898,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             let client_records = build_record_plane(
                 &client_ep,
                 &client_identity,
-                &client_policy,
                 Arc::clone(&client_store),
                 workspace_id,
                 Some(client_services.clone()),
@@ -1924,7 +1907,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
 
             // Awaited pull completion is the baseline barrier; no timing loop
             // or arbitrary sleep decides whether both initial streams arrived.
-            pull_record_mesh_from_peer(
+            pull_over_session(
                 &client_ep,
                 server_ep.addr(),
                 &client_identity,
@@ -1990,7 +1973,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             };
 
             publish_participant(delivery_order[0]);
-            pull_record_mesh_from_peer(
+            pull_over_session(
                 &client_ep,
                 server_ep.addr(),
                 &client_identity,
@@ -2083,7 +2066,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             let restarted_records = build_record_plane(
                 &client_ep,
                 &client_identity,
-                &client_policy,
                 Arc::clone(&client_store),
                 workspace_id,
                 Some(restarted_services),
@@ -2092,7 +2074,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             .unwrap();
 
             publish_participant(delivery_order[1]);
-            pull_record_mesh_from_peer(
+            pull_over_session(
                 &client_ep,
                 server_ep.addr(),
                 &client_identity,
@@ -2334,22 +2316,24 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
 
     let durable_policy = policy_granting(&[identity(&owner_ep)]);
     let stale_policy = policy_granting(&[identity(&owner_ep)]);
-    let durable_ack = ReplicaAckProtocol {
-        endpoint: durable_ep.clone(),
-        identity: durable_identity.clone(),
-        policy: Some(durable_policy.clone()),
+    let durable_ack = replica_session_host(
+        &durable_ep,
+        &durable_identity,
+        Some(durable_policy.clone()),
         workspace_id,
-        repository: Arc::clone(&durable_repository),
-        store: Arc::clone(&durable_store),
-    };
-    let stale_ack = ReplicaAckProtocol {
-        endpoint: stale_ep.clone(),
-        identity: stale_identity.clone(),
-        policy: Some(stale_policy),
+        &temp.path().join("durable-share-authority.json"),
+        Arc::clone(&durable_repository),
+        Arc::clone(&durable_store),
+    );
+    let stale_ack = replica_session_host(
+        &stale_ep,
+        &stale_identity,
+        Some(stale_policy),
         workspace_id,
-        repository: Arc::clone(&stale_repository),
-        store: Arc::clone(&stale_store),
-    };
+        &temp.path().join("stale-share-authority.json"),
+        Arc::clone(&stale_repository),
+        Arc::clone(&stale_store),
+    );
     let _durable_router = Router::builder(durable_ep.clone())
         .accept(
             iroh_blobs::ALPN,
@@ -2361,40 +2345,30 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
                 None,
             )),
         )
-        .accept(TILO_FS_REPLICA_ACK_ALPN, durable_ack)
+        .accept(TILO_FS_SESSION_ALPN, durable_ack)
         .spawn();
     let _stale_router = Router::builder(stale_ep.clone())
         .accept(iroh_blobs::ALPN, stale_store.blobs_protocol(None))
-        .accept(TILO_FS_REPLICA_ACK_ALPN, stale_ack)
+        .accept(TILO_FS_SESSION_ALPN, stale_ack)
         .spawn();
-    let owner_policy = Some(policy_read_write(
-        &[identity(&durable_ep), identity(&stale_ep)],
-        &[],
-    ));
 
     let current_request = ReplicaAckRequestV1::new(workspace_id, current_revision).unwrap();
     assert!(
-        request_replica_ack(
+        replica_ack_over_session(
             &owner_ep,
             stale_ep.addr(),
             &owner_identity,
-            &owner_policy,
-            &current_request,
+            &current_request
         )
         .await
-        .is_err(),
+        .is_none(),
         "a peer holding only an obsolete version must not acknowledge the current revision"
     );
     let stale_request = ReplicaAckRequestV1::new(workspace_id, stale_revision).unwrap();
-    let stale_observation = request_replica_ack(
-        &owner_ep,
-        stale_ep.addr(),
-        &owner_identity,
-        &owner_policy,
-        &stale_request,
-    )
-    .await
-    .unwrap();
+    let stale_observation =
+        replica_ack_over_session(&owner_ep, stale_ep.addr(), &owner_identity, &stale_request)
+            .await
+            .expect("the stale peer durably holds its own version");
 
     let availability_path = temp.path().join("owner-availability.json");
     let mut availability = AvailabilityRegistry::open(&availability_path).unwrap();
@@ -2435,15 +2409,14 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
         Err(PlanError::Denied(_))
     ));
 
-    let fresh_observation = request_replica_ack(
+    let fresh_observation = replica_ack_over_session(
         &owner_ep,
         durable_ep.addr(),
         &owner_identity,
-        &owner_policy,
         &current_request,
     )
     .await
-    .unwrap();
+    .expect("the durable peer holds the current version");
     availability
         .observe_replica(
             record_id,
@@ -2635,8 +2608,8 @@ async fn a_long_lived_blob_index_follows_every_namespace_change() {
         "a chunk rides on its readable manifest named in the same request"
     );
     assert!(
-        may(vec![first_chunk], vec![]).await,
-        "without context the readable manifests are searched"
+        !may(vec![first_chunk], vec![]).await,
+        "a chunk asked for without its manifest is refused"
     );
     assert!(
         !may(vec![private_chunk], vec![first]).await,
@@ -3124,7 +3097,6 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
     let record_plane = build_record_plane(
         &client_ep,
         &client_identity,
-        &client_policy,
         Arc::clone(&client_store),
         workspace_id,
         Some(client_services),
@@ -3135,7 +3107,6 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
     let session = sessions
         .get(&ticket.node)
         .await
-        .unwrap()
         .expect("the host speaks the session protocol");
 
     assert!(
@@ -3215,10 +3186,10 @@ fn assert_pulled(records: &RecordPlane, key: RecordRepositoryKey, actor: &FileAc
 }
 
 #[tokio::test]
-async fn a_peer_without_the_session_protocol_is_reached_per_request() {
+async fn a_peer_without_the_session_protocol_is_not_reconciled_with() {
     let (server_ep, _server_lookup, _server_identity) = bind_certified_test_endpoint().await;
     let (client_ep, _client_lookup, client_identity) = bind_certified_test_endpoint().await;
-    // An older peer: it serves content, but no session protocol.
+    // A peer at another version: it serves content, but no session.
     let store = ContentStore::memory();
     let _router = Router::builder(server_ep.clone())
         .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
@@ -3229,12 +3200,8 @@ async fn a_peer_without_the_session_protocol_is_reached_per_request() {
         Ticket::workspace_id_for_topic(*server_ep.id().as_bytes()),
     );
     assert!(
-        sessions.get(&server_ep.addr()).await.unwrap().is_none(),
-        "a peer that does not offer the protocol is reported as per-request only"
-    );
-    assert!(
-        sessions.get(&server_ep.addr()).await.unwrap().is_none(),
-        "and remembered as such"
+        sessions.get(&server_ep.addr()).await.is_err(),
+        "a peer that does not offer the session protocol is an error, not a fallback"
     );
 }
 
@@ -3599,7 +3566,6 @@ fn exchanges_for(
         || peer_may_write_whole_workspace(&policy, &identity.device_public_key());
     PeerExchanges::new(
         PassShared {
-            endpoint: endpoint.clone(),
             namespace: Arc::clone(namespace),
             hydrator: Arc::new(Hydrator::new(
                 endpoint.clone(),
@@ -3608,7 +3574,6 @@ fn exchanges_for(
             sender: None,
             identity: identity.clone(),
             policy,
-            workspace_id: workspace,
             records: None,
             sessions: Arc::new(SessionPool::new(
                 endpoint.clone(),
@@ -3818,7 +3783,6 @@ async fn idle_namespace_pass_sends_no_history_bloom() {
     let session = sessions
         .get(&addr)
         .await
-        .unwrap()
         .expect("the host speaks the session protocol");
     let pass = (&sessions, &*session);
 
@@ -3887,7 +3851,6 @@ async fn revoked_writer_is_cut_off_with_persisted_state() {
     let session = sessions
         .get(&addr)
         .await
-        .unwrap()
         .expect("the host speaks the session protocol");
     let pass = (&sessions, &*session);
     for _ in 0..2 {
@@ -4004,7 +3967,7 @@ async fn idle_namespace_exchange_reports_no_change() {
         Namespace::from_bytes("device", &history).unwrap(),
     ));
     let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions.get(&addr).await.unwrap().unwrap();
+    let session = sessions.get(&addr).await.unwrap();
     let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
     for pass in 0..3 {
         assert!(
@@ -4060,7 +4023,7 @@ async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
         Namespace::from_bytes("device", &host.lock().unwrap().save()).unwrap(),
     ));
     let sessions = SessionPool::new(device_endpoint, device_identity, workspace);
-    let session = sessions.get(&endpoint.addr()).await.unwrap().unwrap();
+    let session = sessions.get(&endpoint.addr()).await.unwrap();
     let sync = || session::sync_namespace(&sessions, &session, &device, None, &None);
 
     sync().await.unwrap();
@@ -4190,7 +4153,7 @@ async fn persisted_sync_progress_resumes_a_session_exchange_after_restart() {
         Namespace::from_bytes("device", &history).unwrap(),
     ));
     let sessions = SessionPool::new(endpoint, identity, workspace);
-    let session = sessions.get(&addr).await.unwrap().unwrap();
+    let session = sessions.get(&addr).await.unwrap();
     let pass = (&sessions, &*session);
     let first = namespace_session_pass(pass, &device, &host, &None)
         .await
@@ -4629,4 +4592,90 @@ async fn idle_workspace_cost_measurement() {
         per_device_minute(sent),
         per_device_minute(floor)
     );
+}
+
+/// One reconciliation of `records` with the session host at `remote`, on a
+/// session of its own, as a pass makes it.
+async fn pull_over_session(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    policy: &PeerPolicy,
+    records: &RecordPlane,
+) -> Result<bool> {
+    let sessions = SessionPool::new(endpoint.clone(), identity.clone(), records.workspace_id);
+    let session = sessions.get(&remote).await?;
+    // Whatever content arrives inline lands in a store of its own: these
+    // tests read records, not bytes.
+    let hydrator = Hydrator::new(endpoint.clone(), Arc::new(ContentStore::memory()));
+    session::pull_records(
+        &sessions,
+        &session,
+        identity,
+        policy,
+        records,
+        &hydrator,
+        crate::record_materializer::ReconcileScope::Everything,
+    )
+    .await
+}
+
+/// A member serving `repository` and `store` on the session protocol, as a
+/// device of the workspace does, for the replica receipts it signs.
+fn replica_session_host(
+    endpoint: &Endpoint,
+    identity: &FsTransportIdentity,
+    policy: PeerPolicy,
+    workspace_id: uuid::Uuid,
+    share_authority: &std::path::Path,
+    repository: Arc<RecordRepository>,
+    store: Arc<ContentStore>,
+) -> SessionProtocol {
+    let services = RecordServices {
+        authority: Arc::new(ShareAuthority::open(share_authority).unwrap()),
+        repository,
+        access_registry: Arc::new(RecordAccessRegistry::new(32, 60_000).unwrap()),
+        mutation_sink: None,
+        materializer: None,
+        availability: None,
+        workspace_authority: None,
+    };
+    let records = build_record_plane(
+        endpoint,
+        identity,
+        Arc::clone(&store),
+        workspace_id,
+        Some(services),
+    )
+    .unwrap()
+    .unwrap();
+    let (announcements, _) = mpsc::unbounded_channel();
+    SessionProtocol {
+        endpoint: endpoint.clone(),
+        identity: identity.clone(),
+        policy,
+        namespace: Arc::new(Mutex::new(Namespace::new("replica-host").unwrap())),
+        store,
+        records: Some(records),
+        workspace_id,
+        announcements,
+        pool: std::sync::Weak::new(),
+    }
+}
+
+/// The peer at `remote`'s verified receipt for `request` over a session, or
+/// `None` when it holds no exact durable copy.
+async fn replica_ack_over_session(
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    request: &ReplicaAckRequestV1,
+) -> Option<crate::availability::ReplicaObservation> {
+    let sessions = SessionPool::new(endpoint.clone(), identity.clone(), request.workspace_id);
+    let session = sessions.get(&remote).await.unwrap();
+    session::replica_acks(&sessions, &session, identity, std::slice::from_ref(request))
+        .await
+        .unwrap()
+        .pop()
+        .flatten()
 }

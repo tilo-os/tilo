@@ -289,7 +289,5 @@ impl UploadSession for Upload {
 /// `upload/web` insists on a content type; by extension, with a generic
 /// fallback.
 fn mime_for(name: &str) -> &'static str {
-    mime_guess::from_path(name)
-        .first_raw()
-        .unwrap_or("application/octet-stream")
+    tilo_mime::from_path_or_octet_stream(name)
 }

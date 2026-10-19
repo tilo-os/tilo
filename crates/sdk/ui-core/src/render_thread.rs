@@ -30,6 +30,8 @@ mod cpu_raster;
 #[cfg(test)]
 mod deferred_pipelines_tests;
 mod native_gpu_trace;
+#[cfg(target_os = "linux")]
+pub mod remote;
 #[cfg(test)]
 mod surface_lifecycle_tests;
 
@@ -113,7 +115,7 @@ static FIRST_FRAME_BACKDROP_RECORDED: AtomicBool = AtomicBool::new(false);
 /// Whether a window on this adapter rasterizes its frames on the CPU
 /// (`cpu_raster`) and uploads the pixels, instead of running vello's compute
 /// pipelines on an emulated GPU. Vello then draws only backdrop blurs.
-pub(crate) fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
+pub fn rasterizes_on_cpu(adapter: &vello::wgpu::AdapterInfo) -> bool {
     adapter.device_type == vello::wgpu::DeviceType::Cpu
 }
 
@@ -310,6 +312,132 @@ struct DamageCache {
     copy_scratch: crate::scroll_copy::CopyScratch,
 }
 
+/// What a host keeps between frames to rasterize them into one retained
+/// target: the damage scratch, the backdrop blur and, on a software adapter,
+/// the CPU canvas. The app's own render worker draws with it, and so does the
+/// room's render service for each surface it draws for an app
+/// (`tilo-render-service`), so both produce the same pixels from the same
+/// frame.
+pub struct RetainedRaster {
+    damage_cache: DamageCache,
+    /// Built with the first frame that draws a floating surface over the
+    /// blurred material.
+    backdrop_blur: Option<crate::backdrop::BackdropBlur>,
+    cpu: Option<cpu_raster::CpuCanvas>,
+}
+
+impl RetainedRaster {
+    /// Scratch for one target; `on_cpu` rasterizes on the CPU and uploads the
+    /// pixels (a software adapter, see [`rasterizes_on_cpu`]).
+    pub fn new(on_cpu: bool) -> Self {
+        Self {
+            damage_cache: DamageCache {
+                geometric_capacity: damage_geometric_capacity_enabled(),
+                ..DamageCache::default()
+            },
+            backdrop_blur: None,
+            cpu: on_cpu.then(cpu_raster::CpuCanvas::new),
+        }
+    }
+
+    /// Whether frames are rasterized on the CPU.
+    pub fn on_cpu(&self) -> bool {
+        self.cpu.is_some()
+    }
+
+    /// The target was replaced (a resize): nothing retained is current.
+    pub fn invalidate(&mut self) {
+        self.damage_cache = DamageCache {
+            geometric_capacity: self.damage_cache.geometric_capacity,
+            ..DamageCache::default()
+        };
+        if let Some(canvas) = self.cpu.as_mut() {
+            canvas.invalidate();
+        }
+    }
+
+    /// Bring `target` up to date with `frame`: its backdrops blurred and
+    /// substituted, its scroll copies made, its damage (or all of it)
+    /// repainted. Returns the pixels rasterized, and the backdrop pass's
+    /// statistics when the frame had backdrops.
+    pub fn rasterize(
+        &mut self,
+        (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
+        renderer: &mut Renderer,
+        target: RetainedTarget<'_>,
+        frame: FrameContent<'_>,
+    ) -> (Result<u64, String>, Option<crate::backdrop::BackdropStats>) {
+        // Floating surfaces over the blurred material: render, blur and
+        // substitute each one's backdrop before the frame that draws it.
+        let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
+            self.backdrop_blur
+                .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(device))
+                .prepare(
+                    device,
+                    queue,
+                    renderer,
+                    frame.backdrop,
+                    (frame.width, frame.height),
+                    frame.base_color,
+                )
+        });
+        let raster_frame = FrameContent {
+            backdrop: &crate::backdrop::BackdropFrame::default(),
+            ..frame
+        };
+        let rasterized =
+            if let Some(canvas) = self.cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
+                canvas.rasterize(&raster_frame).inspect(|_| {
+                    canvas.upload(queue, target.texture);
+                })
+            } else {
+                // Backdrop substitutions currently belong to Vello's GPU renderer.
+                // Invalidate retained CPU pixels when that path writes the target.
+                if let Some(canvas) = self.cpu.as_mut() {
+                    canvas.invalidate();
+                }
+                rasterize_damage(
+                    (device, queue),
+                    target,
+                    renderer,
+                    &mut self.damage_cache,
+                    &raster_frame,
+                )
+                .map_err(|error| error.to_string())
+            };
+        if let Some(blur) = self.backdrop_blur.as_mut() {
+            blur.release(renderer);
+        }
+        (rasterized, backdrop_stats)
+    }
+
+    /// The CPU canvas after [`Self::rasterize_cpu`]: premultiplied RGBA8
+    /// rows of `width * 4` bytes, or `None` on a GPU raster.
+    pub fn cpu_pixels(&self) -> Option<&[u8]> {
+        self.cpu.as_ref().map(cpu_raster::CpuCanvas::pixels)
+    }
+
+    /// [`Self::rasterize`] for a host without a GPU, on a raster made
+    /// [`on_cpu`](Self::on_cpu): the canvas itself is the target, returned as
+    /// premultiplied RGBA8 rows of `width * 4` bytes. Backdrops are not
+    /// blurred; their placeholders show the opaque material.
+    ///
+    /// # Errors
+    ///
+    /// When the raster is not on the CPU or the frame cannot be rasterized.
+    pub fn rasterize_cpu(&mut self, frame: FrameContent<'_>) -> Result<&[u8], String> {
+        let canvas = self
+            .cpu
+            .as_mut()
+            .ok_or_else(|| "this raster draws on a GPU".to_owned())?;
+        canvas.rasterize(&FrameContent {
+            backdrop: &crate::backdrop::BackdropFrame::default(),
+            ..frame
+        })?;
+        Ok(canvas.pixels())
+    }
+}
+
 impl RenderThreadHandle {
     /// Whether the worker asked for a whole-surface repaint since the last
     /// call. It wakes the window when it asks, so the request does not wait
@@ -414,24 +542,16 @@ pub(crate) fn spawn_render_thread_deferred(
             }
             let mut first_present_recorded = false;
             let mut present_hooks: Vec<PresentHook> = Vec::new();
-            let geometric_capacity = damage_geometric_capacity_enabled();
-            let mut damage_cache = DamageCache {
-                geometric_capacity,
-                ..DamageCache::default()
-            };
-            let mut cpu_raster =
-                rasterizes_on_cpu(&render_cx.devices[surface.dev_id].adapter.get_info())
-                    .then(cpu_raster::CpuCanvas::new);
-            if cpu_raster.is_some() {
+            let mut raster = RetainedRaster::new(rasterizes_on_cpu(
+                &render_cx.devices[surface.dev_id].adapter.get_info(),
+            ));
+            if raster.on_cpu() {
                 tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
             }
             let mut target_valid = false;
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
-            // Built with the first frame that draws a floating surface over
-            // the blurred material.
-            let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
             let mut had_backdrop = false;
             loop {
                 let gpu_poll = gpu_trace
@@ -539,7 +659,7 @@ pub(crate) fn spawn_render_thread_deferred(
                 // reads to decide when to build
                 // (`pipeline_cache::first_frame_backdrop`).
                 if frame_ix == 0
-                    && cpu_raster.is_some()
+                    && raster.on_cpu()
                     && !FIRST_FRAME_BACKDROP_RECORDED.swap(true, Ordering::AcqRel)
                 {
                     crate::pipeline_cache::first_frame_backdrop::record(!backdrop.is_empty());
@@ -594,10 +714,7 @@ pub(crate) fn spawn_render_thread_deferred(
                         break;
                     }
                     target_valid = false;
-                    damage_cache = DamageCache {
-                        geometric_capacity,
-                        ..DamageCache::default()
-                    };
+                    raster.invalidate();
                     renderer.trim_pooled_buffers();
                     if let Some(observer) = native_timing {
                         observer.log_native_config(&surface);
@@ -619,9 +736,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     &surface,
                     FrameRasterizers {
                         renderer: &mut renderer,
-                        damage_cache: &mut damage_cache,
-                        backdrop_blur: &mut backdrop_blur,
-                        cpu: cpu_raster.as_mut(),
+                        raster: &mut raster,
                     },
                     FrameContent {
                         scene: &scene,
@@ -742,7 +857,7 @@ pub(crate) fn spawn_render_thread_deferred(
             // The surface goes first: it releases its swapchain on the
             // instance `render_cx` owns.
             let device_id = surface.dev_id;
-            drop(damage_cache);
+            drop(raster);
             drop(surface);
             if keep_renderer {
                 Some(PreparedRenderer {
@@ -924,11 +1039,12 @@ fn resize_surface_checked(
 
 /// The retained frame the native host rasterizes into and presents from.
 /// Pixels outside a frame's damage are whatever the previous frame left, so
-/// it must only ever be written through [`rasterize_damage`].
+/// it must only ever be written through [`RetainedRaster::rasterize`].
+/// `Rgba8Unorm` with storage, copy-source and copy-destination usage.
 #[derive(Clone, Copy)]
-struct RetainedTarget<'a> {
-    texture: &'a vello::wgpu::Texture,
-    view: &'a vello::wgpu::TextureView,
+pub struct RetainedTarget<'a> {
+    pub texture: &'a vello::wgpu::Texture,
+    pub view: &'a vello::wgpu::TextureView,
 }
 
 #[allow(
@@ -1279,15 +1395,18 @@ fn acquire_surface_texture(
 
 /// One frame's scene, surface size and damage, as the worker received it.
 #[derive(Clone, Copy)]
-struct FrameContent<'a> {
-    scene: &'a Scene,
-    width: u32,
-    height: u32,
-    base_color: Color,
-    damage_regions: &'a [Rect],
-    scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
-    full_redraw: bool,
-    backdrop: &'a crate::backdrop::BackdropFrame,
+pub struct FrameContent<'a> {
+    pub scene: &'a Scene,
+    pub width: u32,
+    pub height: u32,
+    pub base_color: Color,
+    /// Physical-pixel rectangles that changed.
+    pub damage_regions: &'a [Rect],
+    /// Copies within the target before the damage is repainted.
+    pub scroll_copies: &'a [crate::scroll_copy::DeviceCopy],
+    /// Repaint everything: the target is not current, or the frame says so.
+    pub full_redraw: bool,
+    pub backdrop: &'a crate::backdrop::BackdropFrame,
 }
 
 /// How a presented frame is identified and observed.
@@ -1301,9 +1420,7 @@ struct FramePresentation<'a> {
 
 struct FrameRasterizers<'a> {
     renderer: &'a mut Renderer,
-    damage_cache: &'a mut DamageCache,
-    backdrop_blur: &'a mut Option<crate::backdrop::BackdropBlur>,
-    cpu: Option<&'a mut cpu_raster::CpuCanvas>,
+    raster: &'a mut RetainedRaster,
 }
 
 #[allow(
@@ -1317,12 +1434,7 @@ fn render_one_frame(
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
-    let FrameRasterizers {
-        renderer,
-        damage_cache,
-        backdrop_blur,
-        mut cpu,
-    } = rasterizers;
+    let FrameRasterizers { renderer, raster } = rasterizers;
     let FrameContent {
         scene,
         width,
@@ -1389,50 +1501,15 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    // Floating surfaces over the blurred material: render, blur and
-    // substitute each one's backdrop before the frame that draws it.
-    let backdrop_stats = (!frame.backdrop.is_empty()).then(|| {
-        backdrop_blur
-            .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device_handle.device))
-            .prepare(
-                &device_handle.device,
-                &device_handle.queue,
-                renderer,
-                frame.backdrop,
-                (width, height),
-                frame.base_color,
-            )
-    });
-    let raster_frame = FrameContent {
-        backdrop: &crate::backdrop::BackdropFrame::default(),
-        full_redraw: frame.full_redraw,
-        ..frame
-    };
-    let rasterized = if let Some(canvas) = cpu.as_mut().filter(|_| frame.backdrop.is_empty()) {
-        canvas.rasterize(&raster_frame).inspect(|_| {
-            canvas.upload(&device_handle.queue, &surface.target_texture);
-        })
-    } else {
-        // Backdrop substitutions currently belong to Vello's GPU renderer.
-        // Invalidate retained CPU pixels when that path writes the target.
-        if let Some(canvas) = cpu.as_mut() {
-            canvas.invalidate();
-        }
-        rasterize_damage(
-            (&device_handle.device, &device_handle.queue),
-            RetainedTarget {
-                texture: &surface.target_texture,
-                view: &surface.target_view,
-            },
-            renderer,
-            damage_cache,
-            &raster_frame,
-        )
-        .map_err(|error| error.to_string())
-    };
-    if let Some(blur) = backdrop_blur.as_mut() {
-        blur.release(renderer);
-    }
+    let (rasterized, backdrop_stats) = raster.rasterize(
+        (&device_handle.device, &device_handle.queue),
+        renderer,
+        RetainedTarget {
+            texture: &surface.target_texture,
+            view: &surface.target_view,
+        },
+        frame,
+    );
     if present_dbg && let Some(stats) = backdrop_stats {
         eprintln!(
             "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",

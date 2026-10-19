@@ -111,6 +111,8 @@ mod tests {
             assert!(p.highlighted().is_none());
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         new_starts_empty_and_hidden();
         set_items_seeds_visible_list();
         filter_narrows_results();
@@ -181,6 +183,8 @@ mod tests {
             assert!(p.take_selection().is_none());
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         arrow_keys_move_cursor();
         keyboard_highlight_keeps_scrolling_through_large_page_sets();
         enter_commits_selection_and_hides();
@@ -260,6 +264,8 @@ mod tests {
             assert!(!p.is_visible());
         }
 
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         typing_pushes_filter();
         ime_preedit_is_visible_but_filters_only_after_commit();
         backspace_removes_one_extended_grapheme();

@@ -306,7 +306,7 @@ fn publish_snapshot_of(
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
     let now = tilo_clock::try_unix_now().unwrap();
     let mut snapshot = SignedRegistrySnapshot {
-        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: previous
             .as_ref()
             .map_or(1, |old| old.sequence.saturating_add(1)),
@@ -328,7 +328,6 @@ fn publish_snapshot_of(
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
-        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();

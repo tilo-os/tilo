@@ -1,4 +1,4 @@
-//! Delta coding for [`super::ALPN_CODED_DELTA_V1`].
+//! Delta coding for [`super::EnvelopeV2::CodedDelta`].
 //!
 //! Two keystrokes of one author repeat most of their frame byte for byte:
 //! the workspace and author keys, the retention channel, the app, cluster
@@ -384,9 +384,7 @@ mod tests {
     }
 
     fn plain_payload(envelope: &Envelope) -> Vec<u8> {
-        super::super::encode_state_framed(envelope, super::super::StateFraming::Compact)
-            .unwrap()
-            .split_off(4)
+        super::super::encode_state(envelope).unwrap().split_off(4)
     }
 
     fn coded(frame: &[u8]) -> (u16, Vec<DeltaSegment>) {

@@ -115,7 +115,7 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
         private_may_overtake(
             frame,
             active_control,
-            cx.v2 && cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0,
+            cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0,
             self.backlog.iter().map(|(frame, _)| frame),
         )
     }

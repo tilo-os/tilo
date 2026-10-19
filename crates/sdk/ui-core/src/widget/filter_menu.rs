@@ -138,6 +138,14 @@ pub struct FilterMenu<T> {
     /// One-shot: the committed row's value, drained by the parent. Hiding
     /// the menu leaves it, as the parent may hide it before draining.
     pending: Option<T>,
+    /// Its coming from the caret or point it opens at, and going back
+    /// (`motion::Appear`).
+    appear: crate::motion::Appearing,
+    /// The pose it was last drawn in: rows are hit where they are drawn.
+    drawn: crate::motion::Pose,
+    /// The filter, rows and highlight it showed when it was hidden, so a
+    /// leaving menu fades as it was.
+    leaving: Option<(String, Vec<usize>, usize)>,
 }
 
 impl<T: Clone> FilterMenu<T> {
@@ -155,6 +163,9 @@ impl<T: Clone> FilterMenu<T> {
             placement: Placement::At(Point::ZERO),
             scale: 1.0,
             pending: None,
+            appear: crate::motion::Appearing::closed(),
+            drawn: crate::motion::Pose::REST,
+            leaving: None,
         };
         menu.rebuild_visible();
         menu
@@ -168,7 +179,11 @@ impl<T: Clone> FilterMenu<T> {
     /// Show / hide the menu. Hiding resets the filter and cursor so the
     /// next open lands fresh.
     pub fn set_visible(&mut self, visible: bool) {
+        if !visible && self.shows() {
+            self.leaving = Some((self.filter.clone(), self.visible.clone(), self.cursor));
+        }
         self.visible_flag = visible;
+        self.appear.show(visible);
         if !visible {
             self.filter.clear();
             self.filter_selection = Selection::collapsed(0);
@@ -339,6 +354,8 @@ impl<T: Clone> FilterMenu<T> {
     /// The visible row under a logical point, sharing the scrolled window
     /// and bounds checks with keyboard selection.
     fn row_at(&self, point: Point) -> Option<usize> {
+        // Rows are hit where they are drawn while the menu arrives.
+        let point = self.drawn.to_local(point);
         if !self.shows() || !self.rect().contains(point) {
             return None;
         }
@@ -486,12 +503,53 @@ impl<T: Clone> FilterMenu<T> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.shows() {
+        // It comes from the caret or point it opened at and goes back
+        // (`motion::Appear`). A menu that empties as the person types has
+        // nothing to fade: it goes at once.
+        let shows = self.shows();
+        if shows {
+            self.leaving = None;
+        } else if self.leaving.is_none() {
+            self.appear.snap(false);
+        }
+        self.appear.follow(shows, theme.motion());
+        if !self.appear.is_drawn() {
+            self.drawn = crate::motion::Pose::REST;
+            self.leaving = None;
             return;
         }
+        // A leaving menu shows what it showed when it was hidden.
+        let restore = self.leaving.clone().map(|(filter, visible, cursor)| {
+            (
+                std::mem::replace(&mut self.filter, filter),
+                std::mem::replace(&mut self.visible, visible),
+                std::mem::replace(&mut self.cursor, cursor),
+            )
+        });
         let rect = self.rect();
-        self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
-        self.draw_rows(scene, transform, text_renderer, theme, rect);
+        let anchor = match self.placement {
+            Placement::At(at) => at,
+            Placement::Caret { caret, .. } => caret.center(),
+        };
+        let pose = self.appear.pose(rect, anchor);
+        self.drawn = pose;
+        let bounds = crate::widget::floating_surface::painted_bounds(rect, theme);
+        if let Some(transform) = pose.begin(scene, transform, bounds) {
+            self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
+            self.draw_rows(scene, transform, text_renderer, theme, rect);
+            pose.end(scene);
+        }
+        if let Some((filter, visible, cursor)) = restore {
+            self.filter = filter;
+            self.visible = visible;
+            self.cursor = cursor;
+        }
+    }
+
+    /// Whether it is still arriving or leaving: a parent that draws it asks
+    /// for frames until it rests.
+    pub fn is_moving(&self) -> bool {
+        self.appear.is_moving()
     }
 
     /// The card background/border and the filter query box.

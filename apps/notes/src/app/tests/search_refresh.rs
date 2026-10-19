@@ -142,8 +142,10 @@ fn replacing_the_notes_drops_their_search_and_backlink_rows() {
     f.present();
     assert_eq!(f.app.backlink_index.get(&target), Some(&vec![(source, 1)]));
     let mut peer = f.state.doc.fork();
-    peer.put_object(automerge::ROOT, "pages", automerge::ObjType::Map)
-        .unwrap();
+    // A peer replaces the notes with a new, empty map.
+    let pages = ui::tilo_resource::Slot::Key(&automerge::ROOT, "pages");
+    pages.remove(&mut peer).unwrap();
+    pages.object(&mut peer, automerge::ObjType::Map).unwrap();
     f.state.doc.merge_incoming(&mut peer).unwrap();
     assert!(f.reader.sync(&f.state.doc).unwrap());
     f.present();

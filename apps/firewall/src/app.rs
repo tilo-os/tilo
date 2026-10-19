@@ -40,7 +40,6 @@ use crate::model::{StoredRule, StoredZonePaths};
 use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
 use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
 use ui::framework::Submit;
-use ui::tilo_resource::Json;
 
 /// The job that applies the stored configuration to this device.
 const APPLY_JOB: &str = "apply";
@@ -673,7 +672,7 @@ impl FirewallApp {
             &Firewall::rule(id),
             usize::MAX,
             &StoredRule {
-                matcher: Json(rule.matcher),
+                matcher: rule.matcher,
                 action: rule.action,
                 source: rule.source,
                 enabled: rule.enabled,

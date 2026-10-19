@@ -233,10 +233,11 @@ mod tests {
     use super::*;
     use tilo_actions::params::{ActionParam, ParamType};
     use tilo_actions::remote::{CataloguePage, CatalogueResource, CatalogueRow, InvocationReceipt};
-    use tilo_actions::{ActionAddress, ActionContract, ExecutionLocus, InputSpec, OperationKind};
+    use tilo_actions::{ActionContract, ExecutionLocus, InputSpec, OperationKind};
 
     fn shortcut_row(id: &str, label: &str, params: Vec<ActionParam>) -> CatalogueRow {
-        let resource = format!("{SHORTCUT_RESOURCE_KIND}:{id}");
+        let address = tilo_automation::shortcut_run_address(id);
+        let resource = address.resource.clone();
         CatalogueRow {
             provider: "workspace:room".into(),
             app_id: SHORTCUTS_APP_ID.into(),
@@ -249,7 +250,7 @@ mod tests {
             },
             action: Some(ActionDescriptor {
                 semantic_identity: None,
-                address: ActionAddress::new(resource, SHORTCUT_RUN_ACTION),
+                address,
                 resource_kind: SHORTCUT_RESOURCE_KIND.into(),
                 resource_label: label.into(),
                 action_label: label.into(),
@@ -355,7 +356,7 @@ mod tests {
         assert_eq!(request.target.provider, "workspace:room");
         assert_eq!(
             request.target.address,
-            ActionAddress::new("shortcuts.shortcut:archive", SHORTCUT_RUN_ACTION)
+            tilo_automation::shortcut_run_address("archive")
         );
         assert_eq!(
             request.argument,

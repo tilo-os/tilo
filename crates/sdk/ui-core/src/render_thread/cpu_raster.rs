@@ -103,6 +103,11 @@ impl CpuCanvas {
             .sum())
     }
 
+    /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
+    pub(super) fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
     pub(super) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
         let stride = self.size.0.saturating_mul(4);
         for region in &self.uploads {

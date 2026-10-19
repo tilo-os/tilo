@@ -37,7 +37,6 @@ use tilo_relay_protocol::{auth, live, room_workspace_id_matches};
 /// The relay wire messages together with the frame error, under the path the
 /// session modules use for both.
 mod transport {
-    pub use tilo_relay_client::frame::FrameError;
     pub use tilo_relay_protocol::transport::*;
 }
 

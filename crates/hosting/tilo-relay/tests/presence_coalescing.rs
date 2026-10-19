@@ -3,11 +3,9 @@
 //!
 //! A collaborator drags a pointer at 100 Hz through the real relay, then
 //! moves a caret and clears the pointer, publishing as the shell does
-//! (`RelayCoeditSession::publish_presence` on a client that dials
-//! `tilo-relay/6`; the relay reads each message's `presence_slot`). Two
-//! members read what the relay writes them: one on `tilo-relay/5`, which
-//! predates batching, and one on
-//! `tilo-relay/6`. Both must see the pointer paced to at most 20 Hz, its
+//! (`RelayCoeditSession::publish_presence`; the relay reads each message's
+//! `presence_slot`). A member reads what the relay writes it, batched and
+//! slot-coded. It must see the pointer paced to at most 20 Hz, its
 //! last position, the caret, and the event after everything sent before it;
 //! the byte budget is checked separately on a controlled writer schedule
 //! in `peer::state_tests::presence_cost`.
@@ -15,14 +13,14 @@
 //! It prints one `PRESENCE_COST key=value …` line. The network scenario
 //! checks final state, order and the frame ceiling. Its byte observations
 //! depend on how transport and executor scheduling group the presence; the
-//! production-writer test gates both protocols on identical delivered states.
+//! production-writer test gates them on a controlled schedule.
 //!
 //! A second scenario types: each keystroke is a retained delta followed by
 //! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
 //! and typing are held for the delta they follow and ride in its write,
 //! when they are pending before the writer takes the delta. It prints one
 //! `KEYSTROKE_WRITES key=value …` line and verifies every delta, typing range
-//! and caret reaches a `tilo-relay/7` member. Network scheduling may also let
+//! and caret reaches a member. Network scheduling may also let
 //! the delta go first, so exact write counts are gated at the production
 //! writer boundary in `peer::state_tests::keystroke`, under both schedules.
 //!
@@ -47,10 +45,7 @@ use std::time::{Duration, SystemTime};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{CommitNamed as _, PeerPresence, PeerPresencePayload};
 use neighbour_wire::NeighbourMsg;
-use tilo_delivery_protocol::transport_v2::{
-    ALPN_CODED_DELTA_V1, ALPN_COMPACT_STATE_V1, ALPN_PRESENCE_BATCH_V1, EnvelopeV2, SessionReader,
-    StateFraming, encode_state,
-};
+use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader, encode_state};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
 use tilo_relay::{AttributedPresence, Envelope, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -61,8 +56,8 @@ const WORKSPACE: u64 = 710;
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
 
-/// A member reading the relay's frames on one ALPN through the production
-/// session reader, which expands `PresenceBatch` frames.
+/// A member reading the relay's frames through the production session
+/// reader, which expands `PresenceBatch` frames.
 struct Member {
     _endpoint: iroh::Endpoint,
     _connection: iroh::endpoint::Connection,
@@ -71,22 +66,14 @@ struct Member {
 }
 
 impl Member {
-    async fn open(
-        relay: &TestRelay,
-        device: &TestDevice,
-        alpn: &[u8],
-        framing: StateFraming,
-    ) -> Self {
+    async fn open(relay: &TestRelay, device: &TestDevice) -> Self {
         let endpoint = client_endpoint().await;
         let connection = endpoint
-            .connect(relay.relay.node_addr(), alpn)
+            .connect(relay.relay.node_addr(), tilo_relay::ALPN)
             .await
             .unwrap();
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
-        let hello = tilo_relay::auth::Hello {
-            cert: device.cert.clone(),
-            client_nonce: [7; 32],
-        };
+        let hello = tilo_relay::auth::Hello::new(device.cert.clone(), [7; 32]);
         tilo_relay::frame::write_frame(&mut send, &postcard::to_allocvec(&hello).unwrap())
             .await
             .unwrap();
@@ -101,12 +88,9 @@ impl Member {
             .await
             .unwrap();
         send.write_all(
-            &encode_state(
-                &Envelope::Subscribe {
-                    workspace_id: WORKSPACE,
-                },
-                true,
-            )
+            &encode_state(&Envelope::Subscribe {
+                workspace_id: WORKSPACE,
+            })
             .unwrap(),
         )
         .await
@@ -115,7 +99,7 @@ impl Member {
             _endpoint: endpoint,
             _connection: connection,
             _send: send,
-            reader: SessionReader::framed(recv, framing),
+            reader: SessionReader::new(recv),
         };
         tilo_test_env::within("the subscription to be ready", async {
             while !matches!(
@@ -254,16 +238,11 @@ fn check(seen: &[([u8; 32], NeighbourMsg)], author: [u8; 32], user: &str, protoc
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6() {
+async fn presence_is_coalesced_and_slot_coded() {
     let user = TestUser::fresh("Presence cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
-    let older = user.enrol("tilo-relay/5 peer", DeviceCapabilities::member());
-    let current = user.enrol("tilo-relay/6 peer", DeviceCapabilities::member());
-    let members = [
-        author.device_pubkey(),
-        older.device_pubkey(),
-        current.device_pubkey(),
-    ];
+    let reader = user.enrol("member", DeviceCapabilities::member());
+    let members = [author.device_pubkey(), reader.device_pubkey()];
     let relay = Box::pin(spawn_relay(
         &user,
         user.enrol("relay", DeviceCapabilities::host()),
@@ -271,16 +250,8 @@ async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6
         &members,
     ))
     .await;
-    let mut old_member =
-        Member::open(&relay, &older, ALPN_COMPACT_STATE_V1, StateFraming::Compact).await;
-    let mut new_member = Member::open(
-        &relay,
-        &current,
-        ALPN_PRESENCE_BATCH_V1,
-        StateFraming::Presence,
-    )
-    .await;
-    // The publisher dials the newest protocol, as the shell does.
+    let mut member = Member::open(&relay, &reader).await;
+    // The publisher dials as the shell does.
     let publisher = RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
             client_endpoint().await,
@@ -303,8 +274,7 @@ async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6
     .await;
 
     let user_hex = hex::encode(user.user_pk);
-    let old_before = session_bytes(&relay, older.device_pubkey());
-    let new_before = session_bytes(&relay, current.device_pubkey());
+    let before = session_bytes(&relay, reader.device_pubkey());
     for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -319,20 +289,15 @@ async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6
             key: "tile".into(),
         },
     );
-    let old_seen = old_member.presence_until_cleared().await;
-    let new_seen = new_member.presence_until_cleared().await;
-    let old_count = check(&old_seen, author.device_pubkey(), &user_hex, "tilo-relay/5");
-    let new_count = check(&new_seen, author.device_pubkey(), &user_hex, "tilo-relay/6");
+    let seen = member.presence_until_cleared().await;
+    let count = check(&seen, author.device_pubkey(), &user_hex, "relay");
 
-    // Only presence reached either member since the counters were read.
-    let old_bytes = session_bytes(&relay, older.device_pubkey()) - old_before;
-    let new_bytes = session_bytes(&relay, current.device_pubkey()) - new_before;
-    let old_per = old_bytes as f64 / old_count as f64;
-    let new_per = new_bytes as f64 / new_count as f64;
+    // Only presence reached the member since the counters were read.
+    let bytes = session_bytes(&relay, reader.device_pubkey()) - before;
+    let per = bytes as f64 / count as f64;
     println!(
-        "PRESENCE_COST moves_published={MOVES} relay5_presence={old_count} relay5_bytes={old_bytes} \
-         relay5_bytes_per_presence={old_per:.1} relay6_presence={new_count} \
-         relay6_bytes={new_bytes} relay6_bytes_per_presence={new_per:.1}"
+        "PRESENCE_COST moves_published={MOVES} presence={count} bytes={bytes} \
+         bytes_per_presence={per:.1}"
     );
 }
 
@@ -427,13 +392,7 @@ async fn a_keystrokes_caret_and_typing_ride_in_its_deltas_write() {
     let (mut owner, mut doc) = seeded_room(&author, &reader);
     let body = doc.get(ROOT, "body").unwrap().unwrap().1;
 
-    let mut member = Member::open(
-        &relay,
-        &reader,
-        ALPN_CODED_DELTA_V1,
-        StateFraming::CodedDelta,
-    )
-    .await;
+    let mut member = Member::open(&relay, &reader).await;
     let publisher = RelayCoeditSession::join(
         RelayClient::connect_v2_to_enrolled_home_peer(
             client_endpoint().await,
@@ -564,13 +523,7 @@ async fn a_clients_resting_pointer_arrives_without_another_message() {
     .await;
     let user_hex = hex::encode(user.user_pk);
 
-    let mut member = Member::open(
-        &relay,
-        &reader,
-        ALPN_CODED_DELTA_V1,
-        StateFraming::CodedDelta,
-    )
-    .await;
+    let mut member = Member::open(&relay, &reader).await;
     let last = pointer(MOVES - 1, &user_hex);
     for step in 0..MOVES {
         publish(&publisher, &pointer(step, &user_hex));

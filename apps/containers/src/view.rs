@@ -675,7 +675,7 @@ fn line(label: &str, reading: &str) -> Element {
 
 /// A tile for an amount of data: the figure, and its unit beside it.
 fn bytes_tile(label: &str, bytes: u64) -> Element {
-    let formatted = ui::format::bytes(bytes);
+    let formatted = ui::format::memory(bytes);
     let tile = match formatted.rsplit_once(' ') {
         Some((value, unit)) => StatTile::new(label, value).unit(unit),
         None => StatTile::new(label, formatted.as_str()),
@@ -695,11 +695,11 @@ fn stats(c: &Container) -> Element {
     let memory = if s.mem_limit_bytes > 0 {
         format!(
             "{} of {}",
-            ui::format::bytes(s.mem_bytes),
-            ui::format::bytes(s.mem_limit_bytes)
+            ui::format::memory(s.mem_bytes),
+            ui::format::memory(s.mem_limit_bytes)
         )
     } else {
-        ui::format::bytes(s.mem_bytes)
+        ui::format::memory(s.mem_bytes)
     };
     let tiles: Vec<Element> = vec![
         bytes_tile("Received", s.net_rx_bytes),
@@ -901,7 +901,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
             let mut row = ListRow::new(format!("image-{r}"), r.clone())
                 .icon(Icon::Layers)
                 .secondary(used_by(image.in_use_by))
-                .meta(ui::format::bytes(image.size_bytes));
+                .meta(ui::format::size(image.size_bytes));
             if controls {
                 row = row_action(
                     row,
@@ -936,7 +936,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
         } else {
             "images"
         },
-        ui::format::bytes(engine.image_disk_bytes())
+        ui::format::size(engine.image_disk_bytes())
     );
     page(Some(summary), rows)
 }

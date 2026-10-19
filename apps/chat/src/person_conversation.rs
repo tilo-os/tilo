@@ -26,7 +26,7 @@ impl ChatApp {
 
     pub(crate) fn person_conversation_key(&self, public_key: &str) -> ConversationKey {
         ConversationKey::Person {
-            workspace: self.active_ws.clone(),
+            workspace: crate::app::ROOM_SCOPE.to_owned(),
             public_key: public_key.to_owned(),
         }
     }
@@ -78,11 +78,9 @@ impl ChatApp {
         self.direct_agent = None;
         self.direct_person = Some(public_key.to_owned());
         self.person_subscription = ui::person_chat::subscription_token(public_key);
-        self.person_workspace = Some(self.active_ws.clone());
         self.active_channel = self.person_conversation_key(public_key).draft_key();
         self.person_messages = conversation.messages;
         self.person_error = None;
-        self.inbox_open = false;
         self.thread_open = None;
         self.editing = None;
         self.focus = Focus::Main;
@@ -108,14 +106,6 @@ impl ChatApp {
         self.person_contacts = contacts;
         if changed {
             self.request_relayout();
-        }
-        if self.person_workspace.as_deref() != Some(self.active_ws.as_str()) {
-            if self.direct_person.is_some() {
-                self.leave_floated_agent_route();
-            }
-            self.person_messages.clear();
-            self.person_body_views.clear();
-            return;
         }
         let Some(public_key) = self.direct_person.clone() else {
             return;

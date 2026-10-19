@@ -18,7 +18,7 @@ use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
     MenuAction, MenuTarget, RowSwipe,
 };
-use crate::messages::chat_part;
+use crate::messages::{NewMessage, chat_part};
 use crate::model::{ChannelKind, Id};
 use crate::parts::ChatPart;
 use crate::record::chat;
@@ -821,8 +821,8 @@ impl ChatApp {
         }
     }
 
-    /// Right-click opens a context menu for the channel/category/workspace
-    /// under the cursor.
+    /// Right-click opens a context menu for the channel or category under
+    /// the cursor, else for the room.
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
             Hit::Channel(id) | Hit::VoiceChannel(id) => Some(self.context_menu(
@@ -855,9 +855,9 @@ impl ChatApp {
                 Some(self.context_menu(MenuTarget::Message(msg), self.last_mouse, items))
             }
             _ => Some(self.context_menu(
-                MenuTarget::Workspace(self.active_ws.clone()),
+                MenuTarget::Room,
                 self.last_mouse,
-                MenuAction::for_workspace().to_vec(),
+                MenuAction::for_room().to_vec(),
             )),
         };
         self.menu = menu;
@@ -886,22 +886,6 @@ impl ChatApp {
         // Ordinary content activation dismisses the modal context menu.
         self.menu = None;
         match hit {
-            Hit::Inbox => {
-                if self.direct_person.is_some()
-                    || self.direct_agent.is_some()
-                    || self.task_goal.is_some()
-                {
-                    self.leave_floated_agent_route();
-                    self.close_person_conversation();
-                }
-                self.inbox_open = true;
-                self.thread_open = None;
-                self.focus = Focus::Main;
-            }
-            Hit::CurrentContext => {
-                self.inbox_open = false;
-                self.on_hit_workspace(self.context_ws.clone());
-            }
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::DirectPerson(public_key) => {
                 if let Err(error) = self.open_person_conversation(&public_key) {
@@ -941,7 +925,7 @@ impl ChatApp {
                 if self.agent_tasks.needs_setup() {
                     let _ = self.answer_effect(crate::effects::ChatEffect::SetupTaskModels);
                 } else {
-                    self.agent_tasks.refresh_compute(&self.active_ws);
+                    self.agent_tasks.refresh_compute(crate::app::ROOM_SCOPE);
                     self.request_relayout();
                 }
             }
@@ -972,11 +956,10 @@ impl ChatApp {
             Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
-            Hit::AddChannel {
-                workspace,
-                category,
-            } if self.can_participate() => self.on_hit_add_channel(&workspace, &category),
-            Hit::AddCategory(ws) if self.can_participate() => self.on_hit_add_to_workspace(&ws),
+            Hit::AddChannel { category } if self.can_participate() => {
+                self.on_hit_add_channel(&category);
+            }
+            Hit::AddCategory if self.can_participate() => self.on_hit_add_to_room(),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
@@ -1095,21 +1078,6 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    fn on_hit_workspace(&mut self, id: Id) {
-        if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
-            self.leave_floated_agent_route();
-        }
-        self.task_goal = None;
-        self.close_person_conversation();
-        if self.active_ws != id {
-            self.active_ws = id;
-            self.thread_open = None;
-            self.reset_timeline_to_latest();
-            self.focus = Focus::Main;
-            self.active_channel.clear(); // force reload to pick first text channel
-        }
-    }
-
     fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         if self.direct_person.is_some() || self.direct_agent.is_some() || self.task_goal.is_some() {
             self.leave_floated_agent_route();
@@ -1121,9 +1089,6 @@ impl ChatApp {
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
         } else {
-            if let Some(workspace) = self.channel(&id).map(|channel| channel.workspace.clone()) {
-                self.active_ws = workspace;
-            }
             self.active_channel = id;
             self.thread_open = None;
             self.reset_timeline_to_latest();
@@ -1139,20 +1104,19 @@ impl ChatApp {
         }
     }
 
-    fn on_hit_add_channel(&mut self, workspace: &str, category: &str) {
+    fn on_hit_add_channel(&mut self, category: &str) {
         self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_channel(
-            workspace,
             category,
             ChannelKind::Text,
         ));
     }
 
-    /// The sidebar header's "+": what can be made in the workspace.
-    fn on_hit_add_to_workspace(&mut self, ws: &str) {
+    /// The sidebar header's "+": what can be made in the room.
+    fn on_hit_add_to_room(&mut self) {
         self.menu = Some(self.context_menu(
-            MenuTarget::Workspace(ws.to_owned()),
+            MenuTarget::Room,
             self.last_mouse,
-            MenuAction::for_workspace().to_vec(),
+            MenuAction::for_room().to_vec(),
         ));
     }
 
@@ -1224,7 +1188,6 @@ impl ChatApp {
                 self.apply_now(
                     doc,
                     Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-                        workspace: item(&answer.workspace),
                         name: answer.name.clone(),
                         category: answer.category.as_deref().map(item),
                         kind: Some(answer.kind),
@@ -1247,7 +1210,6 @@ impl ChatApp {
                 self.apply_now(
                     doc,
                     Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-                        workspace: item(&answer.workspace),
                         name: answer.name.clone(),
                     }),
                 );
@@ -1273,20 +1235,17 @@ impl ChatApp {
         }
     }
 
-    /// Add a channel named `name` to `category` of `workspace` now, as an
-    /// insert under an id minted here, so its inline rename can follow at
-    /// once; a text channel comes with its draft.
+    /// Add a channel named `name` to `category` now, as an insert under an
+    /// id minted here, so its inline rename can follow at once.
     pub(crate) fn create_channel_now(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
-        workspace: &str,
         category: &str,
         name: &str,
         kind: ChannelKind,
     ) -> String {
         let id = fresh_id("c");
         let channel = crate::record::Channel {
-            workspace: item(workspace),
             category: (!category.is_empty()).then(|| item(category)),
             name: name.to_owned(),
             kind,
@@ -1360,9 +1319,9 @@ impl ChatApp {
         self.emoji_open = false;
     }
 
-    /// Join this workspace's voice channel; if it has none, make one to
-    /// start the call in so the header "Call" button is never a dead end (a
-    /// text-only workspace can still huddle).
+    /// Join the room's voice channel; if it has none, make one to start the
+    /// call in so the header "Call" button is never a dead end (a text-only
+    /// room can still huddle).
     /// The header Call button. A click while the call is expanded collapses
     /// it — a button-only toggle; everything else is the published
     /// `start-call` effect's own path.
@@ -1487,13 +1446,12 @@ impl ChatApp {
                 }
                 _ => {}
             },
-            MenuTarget::Workspace(ws) => match action {
+            MenuTarget::Room => match action {
                 MenuAction::NewCategory => {
-                    self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category(&ws));
+                    self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category());
                 }
                 MenuAction::NewChannelHere => {
                     self.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_channel(
-                        &ws,
                         "",
                         ChannelKind::Text,
                     ));
@@ -1559,7 +1517,6 @@ impl ChatApp {
         action: MenuAction,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        let ws = self.active_ws.clone();
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
             MenuAction::Delete => self.apply_now(
@@ -1568,10 +1525,10 @@ impl ChatApp {
             ),
             MenuAction::ToggleCollapse => self.toggle_category(id),
             MenuAction::NewChannelHere => self.open_channel_sheet(
-                crate::channel_sheet::ChannelSheet::new_channel(&ws, id, ChannelKind::Text),
+                crate::channel_sheet::ChannelSheet::new_channel(id, ChannelKind::Text),
             ),
             MenuAction::NewVoiceChannelHere => self.open_channel_sheet(
-                crate::channel_sheet::ChannelSheet::new_channel(&ws, id, ChannelKind::Voice),
+                crate::channel_sheet::ChannelSheet::new_channel(id, ChannelKind::Voice),
             ),
             _ => {}
         }
@@ -1584,7 +1541,7 @@ impl ChatApp {
         let current = match &target {
             MenuTarget::Channel(id) => self.channel(id).map(|c| c.name.clone()),
             MenuTarget::Category(id) => self.category(id).map(|c| c.name.clone()),
-            MenuTarget::Message(_) | MenuTarget::Workspace(_) => None,
+            MenuTarget::Message(_) | MenuTarget::Room => None,
         }
         .unwrap_or_default();
         self.rename_input.set_text(&current);
@@ -1608,7 +1565,7 @@ impl ChatApp {
                         let rename = Chat::paths().categories.item(&item(&id)).name.set(text);
                         self.apply_now(doc, rename);
                     }
-                    MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
+                    MenuTarget::Message(_) | MenuTarget::Room => {}
                 }
             }
             self.rename_input.set_text("");
@@ -1863,13 +1820,15 @@ impl ChatApp {
         let posted = self.try_apply_part(
             doc,
             ChatPart::POST.with(chat_part::Post {
-                channel: item(&self.active_channel),
-                text,
-                parent: parent.as_deref().map(item),
-                body: Some(body),
-                attachment: None,
-                mentions: None,
-                written: None,
+                message: NewMessage {
+                    channel: item(&self.active_channel),
+                    text,
+                    parent: parent.as_deref().map(item),
+                    body: Some(body),
+                    attachment: None,
+                    mentions: None,
+                    written: None,
+                },
             }),
         );
         if let Err(reason) = posted {
@@ -1935,7 +1894,7 @@ impl ChatApp {
         };
         let Some(revision) = self
             .composer_main
-            .private_revision_for(&self.active_ws, &route)
+            .private_revision_for(crate::app::ROOM_SCOPE, &route)
         else {
             return false;
         };
@@ -1968,7 +1927,7 @@ impl ChatApp {
         if selected {
             self.agent_intents.update(|intents| {
                 intents.insert(
-                    (self.active_ws.clone(), agent),
+                    (crate::app::ROOM_SCOPE.to_owned(), agent),
                     crate::agent_tasks::AgentComposerIntent::Steer,
                 );
             });
@@ -2284,13 +2243,15 @@ impl ChatApp {
             crate::model::Attachment::File { name, blob, size }
         };
         self.submit_part(ChatPart::POST.with(chat_part::Post {
-            channel: item(&pending.channel),
-            text: String::new(),
-            parent: None,
-            body: None,
-            attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
-            mentions: None,
-            written: None,
+            message: NewMessage {
+                channel: item(&pending.channel),
+                text: String::new(),
+                parent: None,
+                body: None,
+                attachment: Some(crate::record::AttachmentUpdate::of(&attachment)),
+                mentions: None,
+                written: None,
+            },
         }));
         self.scroll = 0.0;
         self.attachment_status = Some("Attachment shared".into());
@@ -2433,7 +2394,7 @@ mod tests {
             MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
             MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
             MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
-            MenuTarget::Workspace(_) => MenuAction::for_workspace().to_vec(),
+            MenuTarget::Room => MenuAction::for_room().to_vec(),
         };
         let index = items
             .iter()
@@ -2937,94 +2898,25 @@ mod tests {
     }
 
     #[test]
-    fn live_start_workspace_switch_and_inbox_navigate_real_conversations() {
-        // Phase: live_starter_selects_first_real_workspace_and_channel.
-        {
-            // Against a real (minimal) starter document whose ids differ from the
-            // demo defaults the app boots with, `ensure_selection` must re-home
-            // the active workspace/channel and drop the stale demo thread.
-            let mut doc = AutoCommit::new();
-            crate::testing::starter(&mut doc, model::ME, "You", "Y");
-            let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
+    fn live_start_selects_the_rooms_first_real_channel() {
+        // Against a real (minimal) starter document whose ids differ from the
+        // demo defaults the app boots with, the reload must re-home the
+        // active channel and drop the stale demo thread.
+        let mut doc = AutoCommit::new();
+        crate::testing::starter(&mut doc, model::ME, "You", "Y");
+        let mut app = ChatApp::new_ephemeral(); // bare view state → demo ids
+        app.reload(&doc);
+        if app.ensure_selection() {
             app.reload(&doc);
-            if app.ensure_selection() {
-                app.reload(&doc);
-            }
-            assert_eq!(app.active_ws, "ws_home", "re-homed to the real workspace");
-            assert_eq!(
-                app.active_channel, "c_general",
-                "picked the first text channel"
-            );
-            assert!(app.thread_open.is_none(), "stale demo thread dropped");
-            // And nothing fake leaked in.
-            assert!(app.users.iter().all(|u| u.id == model::ME));
         }
-
-        // Phase: workspace_switch_resets_view_state.
-        {
-            let (mut app, doc) = app_with_doc();
-            app.thread_open = Some("m_concept".into());
-            app.scroll = -250.0;
-            app.focus = Focus::Thread;
-            app.on_hit_workspace("ws_tilo".into());
-            app.reload(&doc);
-            assert_eq!(app.active_ws, "ws_tilo");
-            assert!(
-                app.thread_open.is_none(),
-                "switching workspaces drops the open thread"
-            );
-            assert_eq!(app.scroll, 0.0, "scroll resets");
-            assert_eq!(app.focus, Focus::Main, "focus returns to the main composer");
-            assert_eq!(
-                app.channel(&app.active_channel).unwrap().workspace,
-                "ws_tilo",
-                "landed on a channel of the new workspace"
-            );
-        }
-
-        // Phase: inbox_opens_cross_workspace_conversation_without_losing_context.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            let context = app.context_ws.clone();
-            let cross_workspace = app
-                .channels
-                .iter()
-                .find(|channel| channel.workspace != context && channel.kind == ChannelKind::Text)
-                .expect("demo data has a cross-workspace conversation")
-                .clone();
-
-            app.on_hit(Hit::Inbox, &mut ui::widget::Edits::lend(&mut doc));
-            app.on_hit(
-                Hit::Channel(cross_workspace.id),
-                &mut ui::widget::Edits::lend(&mut doc),
-            );
-            assert!(app.inbox_open);
-            assert_eq!(app.active_ws, cross_workspace.workspace);
-            assert_eq!(app.context_ws, context, "Inbox never rewrites OS context");
-
-            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
-            assert!(!app.inbox_open);
-            assert_eq!(app.active_ws, context);
-        }
-
-        // Phase: tab_and_enter_activate_the_visible_inbox_control.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            render_frame(&mut app, 1280.0, 720.0);
-
-            let inbox_index = app
-                .semantic_hits()
-                .iter()
-                .position(|(_, hit, ..)| matches!(hit, Hit::Inbox))
-                .expect("Inbox is in the visible keyboard inventory");
-            for _ in 0..=inbox_index {
-                feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
-            }
-            assert_eq!(app.keyboard_target, Some(inbox_index));
-            feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-
-            assert!(app.inbox_open, "Enter follows the first visible Tab target");
-        }
+        assert_eq!(
+            app.active_channel,
+            crate::record::CHAT_CHANNEL,
+            "picked the first text channel"
+        );
+        assert!(app.thread_open.is_none(), "stale demo thread dropped");
+        // And nothing fake leaked in.
+        assert!(app.users.iter().all(|u| u.id == model::ME));
     }
 
     #[test]
@@ -3398,7 +3290,6 @@ mod tests {
         let before = app.channels.len();
         app.on_hit(
             Hit::AddChannel {
-                workspace: "ws_acme".into(),
                 category: "cat_acme_main".into(),
             },
             &mut ui::widget::Edits::lend(&mut doc),
@@ -3474,14 +3365,9 @@ mod tests {
         // Phase: category_create_and_collapse_via_the_hit_path.
         {
             let (mut app, mut doc) = app_with_doc();
-            let acme_cats = |app: &ChatApp| {
-                app.categories
-                    .iter()
-                    .filter(|c| c.workspace == "ws_acme")
-                    .count()
-            };
+            let acme_cats = |app: &ChatApp| app.categories.len();
             let before = acme_cats(&app);
-            app.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category("ws_acme"));
+            app.open_channel_sheet(crate::channel_sheet::ChannelSheet::new_category());
             type_str(&mut app, &mut doc, "Research");
             feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
             assert_eq!(acme_cats(&app), before + 1, "a category was created");
@@ -4199,7 +4085,16 @@ mod tests {
             }]);
             assert!(app.device_files.is_empty());
             assert!(app.attachment_status.is_some());
-            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
+            let channel = app
+                .channels
+                .iter()
+                .find(|channel| channel.kind == ChannelKind::Text)
+                .map(|channel| channel.id.clone())
+                .expect("a text channel");
+            app.on_hit(
+                Hit::Channel(channel),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.settle_device_files();
             assert!(app.attachment_pending.is_none());
         }
@@ -4214,10 +4109,13 @@ mod tests {
     #[test]
     fn tasks_remain_reachable_without_a_workspace_rail() {
         let (mut app, mut doc) = app_with_doc();
-        // A single workspace has no Inbox destination, but still needs Tasks.
-        let context = app.context_ws.clone();
-        app.channels.retain(|channel| channel.workspace == context);
-        app.workspaces.retain(|workspace| workspace.id == context);
+        // The room keeps one destination above its channel tree: Tasks.
+        let channel = app
+            .channels
+            .iter()
+            .find(|channel| channel.kind == ChannelKind::Text)
+            .map(|channel| channel.id.clone())
+            .expect("a text channel");
         app.left_flap.snap(true);
         render_frame(&mut app, 1280.0, 800.0);
         assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Tasks)));
@@ -4226,30 +4124,12 @@ mod tests {
         app.left_flap.snap(true);
         render_frame(&mut app, 1280.0, 800.0);
         assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::NewTask)));
-        assert!(
-            app.hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::CurrentContext))
+        app.on_hit(
+            Hit::Channel(channel),
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
         assert!(app.task_goal.is_none());
         assert!(app.direct_agent.is_none());
-        assert_eq!(app.active_ws, context);
-    }
-
-    #[test]
-    fn inbox_leaves_private_task_navigation() {
-        for scenario in ["TaskGoalBeforeSetup", "agent-task"] {
-            let (mut app, mut doc) = app_with_doc();
-            app.stage_scenario(scenario);
-            app.left_flap.snap(true);
-            render_frame(&mut app, 1280.0, 800.0);
-            assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Inbox)));
-            app.on_hit(Hit::Inbox, &mut ui::widget::Edits::lend(&mut doc));
-            assert!(app.inbox_open);
-            assert!(app.task_goal.is_none());
-            assert!(app.direct_agent.is_none());
-        }
     }
 
     #[test]
@@ -4271,7 +4151,16 @@ mod tests {
             );
             let controls = app.published_rows();
             assert!(!controls.iter().any(|row| row.id() == "chat.start-call"));
-            app.on_hit(Hit::CurrentContext, &mut ui::widget::Edits::lend(&mut doc));
+            let channel = app
+                .channels
+                .iter()
+                .find(|channel| channel.kind == ChannelKind::Text)
+                .map(|channel| channel.id.clone())
+                .expect("a text channel");
+            app.on_hit(
+                Hit::Channel(channel),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
             app.left_flap.snap(true);
             render_frame(&mut app, 1280.0, 800.0);
             assert!(app.task_goal.is_none() && app.direct_agent.is_none());
@@ -4324,8 +4213,9 @@ mod tests {
     fn narrow_task_tree_scrolls_to_last_child_without_clipped_hit_targets() {
         let (mut app, mut doc) = app_with_doc();
         app.stage_scenario("Subtask");
-        let workspace = app.active_ws.clone();
-        let view = app.agent_tasks.stage_capture(&workspace, "scribe");
+        let view = app
+            .agent_tasks
+            .stage_capture(crate::app::ROOM_SCOPE, "scribe");
         let parent = view.current().unwrap().clone();
         for index in 0..20 {
             let mut child = parent.clone();
@@ -4523,7 +4413,6 @@ mod tests {
         let selection = app.composer_main.selection();
         let parent_channel = app.active_channel.clone();
         app.answer_effect(crate::effects::ChatEffect::OpenTaskConversation {
-            workspace: app.active_ws.clone(),
             agent: "scribe".into(),
             task: "task:review-child".into(),
             run_epoch: 0,
@@ -4542,7 +4431,6 @@ mod tests {
                 .all(|message| !message.text.contains("Keep the existing open action"))
         );
         app.answer_effect(crate::effects::ChatEffect::OpenTaskConversation {
-            workspace: app.active_ws.clone(),
             agent: "scribe".into(),
             task: "task:review".into(),
             run_epoch: 7,
@@ -4759,7 +4647,7 @@ mod tests {
                 .any(|(_, author, _, _)| author == "task-report:task:review")
         );
         let key = crate::composer::ConversationKey::Agent {
-            workspace: app.active_ws.clone(),
+            workspace: crate::app::ROOM_SCOPE.to_owned(),
             route: app.agent_draft_route().unwrap(),
         };
         let editor = ui::private_draft::Editor {
@@ -4870,7 +4758,7 @@ mod tests {
         let text = app.composer_main.value();
         let selection = app.composer_main.selection();
         app.agent_tasks
-            .stage_answer_capture(&app.active_ws, "scribe");
+            .stage_answer_capture(crate::app::ROOM_SCOPE, "scribe");
         app.sync_agent_route();
         render_frame(&mut app, 420.0, 680.0);
         assert_eq!(
@@ -5352,7 +5240,7 @@ mod tests {
         app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
     }
 
-    // --- contextual channels + cross-workspace Inbox -------------------
+    // --- the room's channels, one place -------------------------------
 
     #[test]
     #[allow(
@@ -5367,11 +5255,14 @@ mod tests {
             let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
             assert_eq!(root.role, ui::a11y::Role::Group);
             assert_eq!(root.name.as_deref(), Some("Chat"));
-            assert!(root.children.iter().any(|node| {
-                node.name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Inbox"))
-            }));
+            assert!(
+                root.children.iter().all(|node| {
+                    node.name
+                        .as_deref()
+                        .is_none_or(|name| !name.starts_with("Inbox"))
+                }),
+                "one room is one place: no inbox across chat workspaces"
+            );
             assert!(
                 root.children
                     .iter()
@@ -5752,71 +5643,24 @@ mod tests {
     }
 
     #[test]
-    fn roster_shows_only_this_workspaces_people_and_collaboration_controls() {
-        // Phase: workspace_people_do_not_leak_from_the_global_identity_directory.
-        {
-            let (mut app, mut doc) = app_with_doc();
-            assert!(
-                app.users.iter().any(|user| user.id == "u_aria"),
-                "demo precondition: the first workspace has other known people"
-            );
+    fn a_private_room_keeps_collaboration_controls_out_of_the_header() {
+        let mut doc = AutoCommit::new();
+        crate::testing::starter(&mut doc, model::ME, "You", "QD");
+        let mut app = ChatApp::new_ephemeral();
+        app.active_channel = crate::record::CHAT_CHANNEL.into();
+        app.thread_open = None;
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
 
-            // A fresh workspace owns empty text/voice channels but shares the
-            // document's identity directory. Its People/call chrome must stay
-            // quiet until someone actually participates in one of its channels.
-            crate::testing::apply_as(
-                &mut doc,
-                model::ME,
-                crate::resource::Chat::CREATE_WORKSPACE.with(chat::CreateWorkspace {
-                    name: "Private draft".into(),
-                }),
-            )
-            .unwrap();
-            let fresh = crate::projection::read(&doc)
-                .workspace_rows()
-                .into_iter()
-                .find(|workspace| workspace.name == "Private draft")
-                .expect("the workspace is made")
-                .id;
-            app.active_ws = fresh;
-            app.active_channel.clear();
-            app.thread_open = None;
-            app.reload(&doc);
-
-            assert!(
-                app.users.iter().all(|user| app.is_me(&user.id)),
-                "only the local identity is evidenced in the fresh workspace; got {:?}",
-                app.users.iter().map(|user| &user.id).collect::<Vec<_>>()
-            );
-            assert!(!app.has_other_collaborator());
-            render_frame(&mut app, 1280.0, 720.0);
-            assert_eq!(
-                count_hits(&app, |hit| matches!(
-                    hit,
-                    Hit::StartCall | Hit::ToggleRightFlap
-                )),
-                0,
-                "global directory entries must not surface People/call controls in a private workspace"
-            );
-        }
-
-        // Phase: private_workspace_keeps_collaboration_controls_out_of_the_header.
-        {
-            let mut doc = AutoCommit::new();
-            crate::testing::starter(&mut doc, model::ME, "You", "QD");
-            let mut app = ChatApp::new_ephemeral();
-            app.active_ws = "ws_home".into();
-            app.active_channel = "c_general".into();
-            app.thread_open = None;
-            app.reload(&doc);
-            render_frame(&mut app, 1280.0, 720.0);
-
-            assert_eq!(
-                count_hits(&app, |h| matches!(h, Hit::StartCall | Hit::ToggleRightFlap)),
-                0,
-                "a private workspace has no People or call controls in its resting header"
-            );
-        }
+        assert!(
+            app.users.iter().all(|user| app.is_me(&user.id)),
+            "only the local identity is evidenced in a fresh room"
+        );
+        assert_eq!(
+            count_hits(&app, |h| matches!(h, Hit::StartCall | Hit::ToggleRightFlap)),
+            0,
+            "a private room has no People or call controls in its resting header"
+        );
     }
 
     // --- unread badges (were seed-only fake data) -----------------------
@@ -6082,17 +5926,12 @@ mod tests {
 
     #[test]
     fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
-        // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
+        // Phase: start_call_creates_a_voice_channel_when_the_room_has_none.
         {
-            let (mut app, mut doc) = app_with_doc();
-            app.on_hit_workspace("ws_jam".into());
-            app.reload(&doc);
-            assert_eq!(app.active_ws, "ws_jam");
+            let (mut app, mut doc) = text_only_room();
             assert!(
-                !app.channels
-                    .iter()
-                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
-                "the weekend-jam workspace starts text-only"
+                !app.channels.iter().any(|c| c.kind == ChannelKind::Voice),
+                "the room is text-only"
             );
             app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
             assert!(
@@ -6100,9 +5939,7 @@ mod tests {
                 "the Call button starts a call even with no voice channel"
             );
             assert!(
-                app.channels
-                    .iter()
-                    .any(|c| c.workspace == "ws_jam" && c.kind == ChannelKind::Voice),
+                app.channels.iter().any(|c| c.kind == ChannelKind::Voice),
                 "a voice channel was created to hold the call"
             );
             assert!(app.call.muted);
@@ -6119,7 +5956,7 @@ mod tests {
             let voice_before = app
                 .channels
                 .iter()
-                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+                .filter(|c| c.kind == ChannelKind::Voice)
                 .count();
             app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
             assert!(app.call.active);
@@ -6131,7 +5968,7 @@ mod tests {
             let voice_after = app
                 .channels
                 .iter()
-                .filter(|c| c.workspace == "ws_acme" && c.kind == ChannelKind::Voice)
+                .filter(|c| c.kind == ChannelKind::Voice)
                 .count();
             assert_eq!(
                 voice_before, voice_after,
@@ -6181,11 +6018,29 @@ mod tests {
         }
     }
 
-    fn voice_channels(app: &ChatApp, ws: &str) -> usize {
+    fn voice_channels(app: &ChatApp) -> usize {
         app.channels
             .iter()
-            .filter(|c| c.workspace == ws && c.kind == ChannelKind::Voice)
+            .filter(|c| c.kind == ChannelKind::Voice)
             .count()
+    }
+
+    /// A room whose only channel is `#chat`: its voice channel deleted.
+    fn text_only_room() -> (ChatApp, crate::testing::Room) {
+        let mut doc = crate::testing::Room::default();
+        crate::testing::starter(&mut doc, model::ME, "You", "Y");
+        crate::testing::apply_as(
+            &mut doc,
+            model::ME,
+            Chat::DELETE_CHANNEL.with(chat::DeleteChannel {
+                channel: item(crate::record::VOICE_CHANNEL),
+            }),
+        )
+        .unwrap();
+        let mut app = ChatApp::new_ephemeral();
+        app.attach_room(&doc);
+        app.reload(&doc);
+        (app, doc)
     }
 
     /// The joins sent to the native voice service (status polls aside).
@@ -6205,16 +6060,14 @@ mod tests {
     }
 
     #[test]
-    fn start_call_joins_the_workspace_voice_channel_creating_one_when_text_only() {
+    fn start_call_joins_the_rooms_voice_channel_creating_one_when_text_only() {
         use crate::effects::ChatEffect;
-        // A text-only workspace gains a voice channel, and the call starts in
+        // A text-only room gains a voice channel, and the call starts in
         // it once the channel is in the document.
-        let (mut app, mut doc) = app_with_doc();
-        app.on_hit_workspace("ws_jam".into());
-        app.reload(&doc);
-        assert_eq!(voice_channels(&app, "ws_jam"), 0);
+        let (mut app, mut doc) = text_only_room();
+        assert_eq!(voice_channels(&app), 0);
         app.on_hit(Hit::StartCall, &mut ui::widget::Edits::lend(&mut doc));
-        assert_eq!(voice_channels(&app, "ws_jam"), 1);
+        assert_eq!(voice_channels(&app), 1);
         assert!(app.call.active);
         let channel = app.channel(&app.call.channel).expect("call channel");
         assert_eq!(
@@ -6226,15 +6079,15 @@ mod tests {
             ui::native_media::State::Preparing
         );
 
-        // A workspace with a voice channel joins it without making another,
+        // A room with a voice channel joins it without making another,
         // through the published effect.
         let (mut app, _doc) = app_with_doc();
-        let before = voice_channels(&app, "ws_acme");
+        let before = voice_channels(&app);
         assert!(before > 0);
         app.answer_effect(ChatEffect::StartCall)
             .expect("start-call runs");
         assert!(app.call.active);
-        assert_eq!(voice_channels(&app, "ws_acme"), before);
+        assert_eq!(voice_channels(&app), before);
         assert_eq!(
             voice_joins(&mut app),
             vec![ui::native_media::Command::Join {
@@ -6416,7 +6269,7 @@ mod tests {
     // production event handlers do the writing and the real CRDT does the
     // merging, so this is a faithful test of live multi-peer chat.
 
-    /// A distinct participant: a fresh app bound to the shared `ws_home`
+    /// A distinct participant: a fresh app bound to the shared room
     /// starter, authoring under `id` — genuinely different from any other peer.
     fn peer(id: &str, name: &str, initials: &str, color: usize) -> ChatApp {
         let mut app = ChatApp::new_ephemeral();
@@ -6427,8 +6280,7 @@ mod tests {
             color_idx: color,
         };
         app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", id));
-        app.active_ws = "ws_home".into();
-        app.active_channel = "c_general".into();
+        app.active_channel = crate::record::CHAT_CHANNEL.into();
         app.thread_open = None;
         app.focus = Focus::Main;
         app
@@ -6454,7 +6306,7 @@ mod tests {
     fn two_participants_converge_on_messages_and_edits() {
         // Phase: messages_channels_and_reactions_converge_across_two_participants.
         {
-            // Alice seeds a starter workspace; Bob adopts her document (as a
+            // Alice opens the room's chat; Bob adopts her document (as a
             // late-joining peer does) and announces himself.
             let mut doc_a = AutoCommit::new();
             crate::testing::starter(&mut doc_a, "u_alice", "Alice", "AL");
@@ -6479,9 +6331,8 @@ mod tests {
                 &mut doc_a,
                 "u_alice",
                 crate::resource::Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-                    workspace: item("ws_home"),
                     name: "planning".into(),
-                    category: Some(item("cat_home_text")),
+                    category: None,
                     kind: None,
                     topic: None,
                 }),
@@ -6747,11 +6598,11 @@ mod tests {
         let before_a = doc_a.save();
         let before_b = doc_b.save();
         a.on_hit(
-            Hit::Channel("c_lounge".into()),
+            Hit::Channel("c_voice".into()),
             &mut ui::widget::Edits::lend(&mut doc_a),
         );
         b.on_hit(
-            Hit::Channel("c_lounge".into()),
+            Hit::Channel("c_voice".into()),
             &mut ui::widget::Edits::lend(&mut doc_b),
         );
         for app in [&mut a, &mut b] {
@@ -6761,7 +6612,7 @@ mod tests {
                 ui::native_media::State::Preparing
             );
             assert_eq!(app.native_voice.take_requests(ui::time::now()).len(), 1);
-            assert!(app.voice_in("c_lounge").is_empty());
+            assert!(app.voice_in("c_voice").is_empty());
         }
         assert_eq!(doc_a.save(), before_a);
         assert_eq!(doc_b.save(), before_b);

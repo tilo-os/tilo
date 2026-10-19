@@ -105,7 +105,7 @@ fn live_personal_import_search_folder_and_removal_never_edit_workspace_bookmarks
     import(&mut app, &bundle);
     let record = app.person::<PersonalBookmarks>().unwrap();
     let original = record.get();
-    assert_eq!(original.imported_trees[0].nodes.len(), 64);
+    assert_eq!(original.imported_trees()[0].nodes.len(), 64);
     assert!(app.state().bookmarks.is_empty());
     let entries = app
         .with_surface::<crate::BrowserWindow, _>(|surface| surface.page().search_entries())
@@ -154,13 +154,13 @@ fn live_personal_import_search_folder_and_removal_never_edit_workspace_bookmarks
     import(&mut app, &bundle);
     let state = record.get();
     assert!(
-        !state.imported_trees[0]
+        !state.imported_trees()[0]
             .nodes
             .iter()
             .any(|node| node.id == "first")
     );
     assert!(
-        state.imported_trees[0]
+        state.imported_trees()[0]
             .nodes
             .iter()
             .any(|node| node.id == "again")
@@ -176,7 +176,7 @@ fn assert_folder_controls(app: &mut TestApp<TestBrowser>, bundle: &ImportBundle)
     let record = app.person::<PersonalBookmarks>().unwrap();
     let state = record.get();
     let next = crate::browser_widget::personal::request_resource(
-        &state,
+        &state.projected(),
         ViewRequest::Folder {
             source: bundle.source,
             id: Some("bar".into()),
@@ -246,4 +246,121 @@ fn live_personal_bookmark_folder_rasterizes_in_both_themes_and_scaled_viewports(
             }
         }
     }
+}
+
+/// A library as Browser kept it before it was a record: its adds, a
+/// tombstone, an import receipt, an imported tree and a removed placement as
+/// prefixed keys at the document's root. Opened now, it holds the same
+/// bookmarks and trees, and nothing stays under the old keys.
+#[test]
+fn a_library_kept_before_the_record_opens_with_its_bookmarks_and_trees() {
+    use automerge::ReadDoc as _;
+    use ui::tilo_resource::{Atom, Slot, evolution, write_key};
+    let mut doc = ui::tilo_resource::Doc::new();
+    let root = automerge::ROOT;
+    for (tag, url, title) in [
+        ("bookmark:a", "https://kept.test/", "Kept"),
+        ("bookmark:b", "https://gone.test/", "Gone"),
+    ] {
+        let add = Slot::Key(&root, &format!("browser.bookmarks.v2.add:{tag}"))
+            .object(&mut doc, automerge::ObjType::Map)
+            .unwrap();
+        write_key(&mut doc, &add, "url", &Atom(url.into())).unwrap();
+        write_key(&mut doc, &add, "title", &Atom(title.into())).unwrap();
+    }
+    write_key(
+        &mut doc,
+        &root,
+        "browser.bookmarks.v2.remove:bookmark:b",
+        &true,
+    )
+    .unwrap();
+    let tree = ImportedTree {
+        source: [9; 32],
+        nodes: vec![
+            ImportedNode {
+                id: "root".into(),
+                parent: None,
+                position: 0,
+                title: "Imported".into(),
+                kind: NodeKind::Folder,
+            },
+            ImportedNode {
+                id: "leaf".into(),
+                parent: Some("root".into()),
+                position: 0,
+                title: "Leaf".into(),
+                kind: NodeKind::Bookmark {
+                    url: "https://kept.test/".into(),
+                },
+            },
+        ],
+    };
+    let source = crate::imported_folders::source_id(&tree.source);
+    write_key(
+        &mut doc,
+        &root,
+        &format!("browser.import.bookmarks:{source}"),
+        &Atom("digest".into()),
+    )
+    .unwrap();
+    write_key(
+        &mut doc,
+        &root,
+        &format!("browser.imported-tree:{source}"),
+        &Atom(serde_json::to_string(&tree).unwrap()),
+    )
+    .unwrap();
+    write_key(
+        &mut doc,
+        &root,
+        &format!(
+            "browser.imported-tree-removed:{}",
+            crate::imported_folders::node_key(&tree.source, "leaf")
+        ),
+        &true,
+    )
+    .unwrap();
+    doc.commit();
+
+    assert!(
+        evolution::read_checked::<PersonalBookmarks>(&doc).is_err(),
+        "an unmigrated library never reads as the record"
+    );
+    assert!(evolution::migrate::<PersonalBookmarks>(&mut doc).unwrap());
+    let library = evolution::read_checked::<PersonalBookmarks>(&doc).unwrap();
+    let urls: Vec<String> = library
+        .bookmarks()
+        .entries()
+        .iter()
+        .map(|bookmark| bookmark.url.clone())
+        .collect();
+    assert_eq!(
+        urls,
+        ["https://kept.test/"],
+        "the removed add stays removed"
+    );
+    assert_eq!(
+        library.trees.get(&source),
+        Some(&tree),
+        "the tree is kept whole"
+    );
+    let shown: Vec<String> = library.imported_trees()[0]
+        .nodes
+        .iter()
+        .map(|node| node.id.clone())
+        .collect();
+    assert_eq!(shown, ["root"], "the removed placement stays removed");
+    assert_eq!(
+        library
+            .receipts
+            .get(&source)
+            .map(|digest| digest.0.as_str()),
+        Some("digest"),
+        "a retried import is still recognised"
+    );
+    assert!(
+        doc.keys(root).all(|key| !key.starts_with("browser.")),
+        "nothing stays under the old keys"
+    );
 }

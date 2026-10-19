@@ -286,9 +286,15 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
         // The shim is in this argv only to host the egress relay.
         return LandlockOutcome::NotEnforced;
     }
+    let spec = ruleset_spec(args);
+    let scopes = sandbox_core::landlock::describe_scopes(
+        spec.scoped,
+        sandbox_core::landlock::effective_scopes(&spec),
+    );
     match build_and_restrict(args) {
         Ok(status) => {
             eprintln!("tilo-sandbox-exec: Landlock restriction status: {status:?}");
+            eprintln!("tilo-sandbox-exec: {scopes}");
             outcome_from_status(&status.ruleset)
         }
         Err(e) => {
@@ -902,6 +908,12 @@ mod tests {
             assert!(open.connect_ports.is_empty());
             assert!(open.trim_file_rights);
             assert_eq!(open.rules, rules);
+            // Every app asks for both ABI 6 scopes; sandbox-core enforces
+            // them where the kernel offers them and keeps ABI 5 elsewhere.
+            assert_eq!(
+                open.scoped,
+                landlock::Scope::AbstractUnixSocket | landlock::Scope::Signal
+            );
 
             let restricted = ruleset_spec(&ShimArgs {
                 net_restricted: true,
@@ -994,6 +1006,8 @@ mod provider_sandbox_tests {
             ruleset_spec(&lenient).compat,
             landlock::CompatLevel::BestEffort
         );
+        // Best effort never drops the scopes from the request.
+        assert_eq!(ruleset_spec(&lenient).scoped, ruleset_spec(&strict).scoped);
     }
 
     #[test]

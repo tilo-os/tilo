@@ -672,21 +672,13 @@ impl SidebarDrawer {
         false
     }
 
-    /// Advance the eased reveal on the slide's own clock over the theme's
-    /// `motion.durations.base` ([`FlapState::advance`]). Call once per draw.
-    /// Under reduced motion the reveal jumps to its target. Returns whether
-    /// it is still animating.
+    /// Advance the reveal on the standard panel slide
+    /// ([`FlapState::advance`]). Call once per draw. Under reduced motion the
+    /// reveal lands at once. Returns whether it is still animating.
     pub fn tick(&mut self, theme: &Theme) -> bool {
-        if theme.reduce_motion {
-            self.flap.settle(self.layout);
-            self.animating = false;
-        } else {
-            self.animating = self.flap.advance(
-                self.layout,
-                crate::time::now(),
-                theme.tokens.motion.durations.base(),
-            );
-        }
+        self.animating = self
+            .flap
+            .advance(self.layout, crate::time::now(), theme.motion());
         self.recompute_rects();
         self.animating
     }
@@ -744,14 +736,24 @@ impl SidebarDrawer {
                 let full = self.docked_width_in(o.width()).min(o.width());
                 let rail = self.resolved_rail_width().min(full);
                 let inset = rail + (full - rail) * r;
+                // The content reflows once, at the wide end of the slide
+                // (`motion::PanelSlide`): while the sidebar moves it keeps
+                // the width it has with the sidebar shut and slides with
+                // the sidebar's edge, under the sidebar or the window edge.
+                let content_w = crate::motion::PanelSlide::content_width(
+                    o.width() - inset,
+                    o.width() - rail,
+                    self.flap.is_animating(self.layout),
+                );
                 match self.side {
                     SidebarSide::Left => {
                         self.sidebar_rect = Rect::new(o.x0, o.y0, o.x0 + inset, o.y1);
-                        self.content_rect = Rect::new(o.x0 + inset, o.y0, o.x1, o.y1);
+                        self.content_rect =
+                            Rect::new(o.x0 + inset, o.y0, o.x0 + inset + content_w, o.y1);
                     }
                     SidebarSide::Right => {
                         self.sidebar_rect = Rect::new(o.x1 - inset, o.y0, o.x1, o.y1);
-                        self.content_rect = Rect::new(o.x0, o.y0, o.x1 - inset, o.y1);
+                        self.content_rect = Rect::new(o.x0, o.y0, o.x0 + content_w, o.y1);
                     }
                 }
                 self.scrim_rect = Rect::ZERO;

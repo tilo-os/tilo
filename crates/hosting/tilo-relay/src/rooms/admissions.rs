@@ -142,6 +142,28 @@ impl Admissions {
         self.save()
     }
 
+    /// Tell the owner `notice`, in one write.
+    pub(super) fn notice(&mut self, notice: RoomNotice) -> Result<(), String> {
+        if self.notices.len() >= MAX_NOTICES {
+            self.notices.remove(0);
+        }
+        self.notices.push(notice);
+        self.save()
+    }
+
+    /// Change the grant recorded for `invite_id` in place, as an attacker
+    /// with the room's files would.
+    #[cfg(test)]
+    pub(super) fn tamper(&mut self, invite_id: [u8; 32], change: impl FnOnce(&mut PreAdmission)) {
+        if let Some(granted) = self
+            .grants
+            .iter_mut()
+            .find(|granted| granted.invite_id == invite_id)
+        {
+            change(&mut granted.grant);
+        }
+    }
+
     pub(super) fn notices(&self) -> Vec<RoomNotice> {
         self.notices.clone()
     }

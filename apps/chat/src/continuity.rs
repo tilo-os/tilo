@@ -83,7 +83,7 @@ impl ChatApp {
             channel.id == self.call.channel && channel.kind == ChannelKind::Voice
         })?;
         let continuation = ChatCallContinuation {
-            workspace_id: channel.workspace.clone(),
+            workspace_id: crate::app::ROOM_SCOPE.to_owned(),
             channel_id: channel.id.clone(),
             media: ui::realtime_continuity::RealtimeMediaFacets {
                 microphone: true,
@@ -120,9 +120,7 @@ impl ChatApp {
                 .channel_rows()
                 .iter()
                 .any(|channel| {
-                    channel.id == continuation.channel_id
-                        && channel.workspace == continuation.workspace_id
-                        && channel.kind == ChannelKind::Voice
+                    channel.id == continuation.channel_id && channel.kind == ChannelKind::Voice
                 })
         {
             return false;
@@ -351,7 +349,7 @@ mod tests {
             app.call.sharing = true;
             let metadata = Continuable::continuation_metadata(&app, &doc, &ROOT).unwrap();
             let json = String::from_utf8(metadata.bytes.clone()).unwrap();
-            assert!(json.contains("c_huddle") && json.contains("ws_acme"));
+            assert!(json.contains("c_huddle") && json.contains(crate::app::ROOM_SCOPE));
             for forbidden in [
                 "sim://",
                 "pipewire",

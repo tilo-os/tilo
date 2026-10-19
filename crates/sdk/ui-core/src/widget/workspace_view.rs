@@ -1,8 +1,6 @@
-use crate::animation::Spring;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::SpringParams;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -20,7 +18,9 @@ pub enum WorkspaceSwitchDirection {
 pub struct WorkspaceView {
     workspace_count: usize,
     active_index: usize,
-    slide: Spring,
+    /// The switch's direction cue: the view's offset, settling to 0 on the
+    /// drill (`motion::Drill`, a whole-view change in depth).
+    slide: crate::motion::MotionValue<f64>,
     rect: Rect,
 }
 
@@ -30,14 +30,7 @@ impl WorkspaceView {
         Self {
             workspace_count: wc,
             active_index: active_index.min(wc.saturating_sub(1)),
-            slide: Spring::new(
-                0.0,
-                SpringParams {
-                    stiffness: 220.0,
-                    damping: 24.0,
-                    mass: 1.0,
-                },
-            ),
+            slide: crate::motion::MotionValue::new(0.0).with_tolerance(0.25),
             rect: Rect::ZERO,
         }
     }
@@ -53,10 +46,10 @@ impl WorkspaceView {
     pub fn active_index(&self) -> usize {
         self.active_index
     }
-    /// Non-zero while a switch transition is in flight; the spring eases it
-    /// back to 0.
+    /// Non-zero while a switch transition is in flight; the drill settles
+    /// it back to 0.
     pub fn slide_target(&self) -> f32 {
-        self.slide.value()
+        crate::num::f32_of_f64(self.slide.get(crate::time::now()))
     }
     pub fn switch(&mut self, d: WorkspaceSwitchDirection) -> bool {
         let (new_idx, direction_sign) = match d {
@@ -74,19 +67,16 @@ impl WorkspaceView {
             }
         };
         self.active_index = new_idx;
-        // The workspace view's own on-screen height is always many orders
-        // of magnitude below f32::MAX, so this narrowing can't truncate.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "screen-space pixel height never approaches f32::MAX"
-        )]
-        let h = self.rect.height().max(300.0) as f32;
-        self.slide.snap(direction_sign * h);
-        self.slide.set_target(0.0);
+        let h = self.rect.height().max(300.0);
+        let now = crate::time::now();
+        self.slide.snap(f64::from(direction_sign) * h);
+        let timing = crate::motion::Drill::SPEC.timing(
+            crate::motion::Direction::Enter,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+        );
+        self.slide.set(0.0, timing, now);
         true
-    }
-    pub fn tick_animation(&mut self, dt: f32) {
-        self.slide.step(dt);
     }
 }
 
@@ -98,12 +88,7 @@ impl Widget for WorkspaceView {
         Some(self)
     }
     fn update(&mut self, _s: &AppModel, _p: &ModelPath) -> bool {
-        if self.slide.is_settled() {
-            false
-        } else {
-            self.tick_animation(1.0 / 60.0);
-            true
-        }
+        self.slide.is_moving(crate::time::now())
     }
     fn build_layout(
         &mut self,
@@ -134,9 +119,9 @@ impl Widget for WorkspaceView {
     ) {
         // A static workspace inherits the app background and doesn't need
         // to re-paint it.
-        let offset = self.slide.value();
-        if offset.abs() > f32::EPSILON {
-            let t = transform.pre_translate(Vec2::new(0.0, f64::from(offset)));
+        let offset = self.slide.get(crate::time::now());
+        if offset.abs() > f64::EPSILON {
+            let t = transform.pre_translate(Vec2::new(0.0, offset));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 t,

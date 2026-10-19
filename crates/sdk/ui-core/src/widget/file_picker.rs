@@ -2842,7 +2842,7 @@ impl FilePicker {
                 );
             };
             if show_size && !entry.is_dir {
-                meta(scene, &crate::format::bytes_si(entry.size), size_x1, true);
+                meta(scene, &crate::format::size(entry.size), size_x1, true);
             }
             if show_date && let Some(modified) = entry.modified {
                 let Some(when) = chrono::DateTime::from_timestamp(modified, 0)
@@ -2850,12 +2850,7 @@ impl FilePicker {
                 else {
                     continue;
                 };
-                meta(
-                    scene,
-                    &when.format("%Y-%m-%d %H:%M").to_string(),
-                    date_x0,
-                    false,
-                );
+                meta(scene, &crate::format::timestamp(&when), date_x0, false);
             }
         }
 

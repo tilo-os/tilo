@@ -4,7 +4,6 @@
 //! `pending_detach`, splices the tab + `TileHost` into a matching sibling.
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
-use crate::animation::{Curve, Transition};
 use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use crate::tokens::MotionSource;
@@ -192,12 +191,10 @@ impl GroupMove {
     /// Offset and velocity `elapsed` after `started`, for natural
     /// frequency `omega` (rad/s).
     fn at(self, elapsed: Duration, omega: f64) -> (f64, f64) {
-        let t = elapsed.as_secs_f64();
-        let decay = (-omega * t).exp();
-        let b = self.velocity + omega * self.from;
-        (
-            (self.from + b * t) * decay,
-            (self.velocity - omega * b * t) * decay,
+        crate::motion::SpringSpec::critical(omega).state(
+            self.from,
+            self.velocity,
+            elapsed.as_secs_f64(),
         )
     }
 }
@@ -266,16 +263,16 @@ struct SnapAnim {
 }
 
 impl SnapAnim {
-    /// Position and velocity (px/s) of the cubic-out curve at `now`.
+    /// Position and velocity (px/s) at `now`: a critically damped spring
+    /// that has arrived by `duration` (`motion::SpringSpec::settling_within`),
+    /// so a shortcut's reveal is over within its budget.
     fn at(self, now: Instant) -> (f64, f64) {
-        let total = self.duration.as_secs_f64().max(f64::EPSILON);
-        let raw =
-            (now.saturating_duration_since(self.started).as_secs_f64() / total).clamp(0.0, 1.0);
-        let span = self.to - self.from;
-        let position = self.from + span * crate::ease_out(raw);
-        // d/dt of 1 - (1 - t)³.
-        let velocity = span * 3.0 * (1.0 - raw).powi(2) / total;
-        (position, velocity)
+        let (offset, velocity) = crate::motion::SpringSpec::settling_within(self.duration).state(
+            self.from - self.to,
+            0.0,
+            now.saturating_duration_since(self.started).as_secs_f64(),
+        );
+        (self.to + offset, velocity)
     }
 }
 
@@ -325,10 +322,9 @@ struct GroupDrag {
     held: bool,
 }
 
-/// How long a held group takes to spring back once let go; how far it
-/// follows a drag before it stops is a section gap
-/// ([`crate::tokens::Spacing::BASE`]).
-const GROUP_RESIST_RETURN_MS: u64 = 260;
+// A held group springs back once let go as a let-go surface settles
+// (`motion::Snap`); how far it follows a drag before it stops is a section
+// gap ([`crate::tokens::Spacing::BASE`]).
 
 /// `delta` as a held window follows it: a rubber band that gives a little
 /// and no more, less so up and down.
@@ -524,7 +520,7 @@ pub struct GroupRow {
     /// Openness of sibling groups while one is maximized or fullscreen.
     /// `1` is the tiled strip; `0` is hidden. A mid-flight Super+M
     /// retargets from the current alpha so the fade is interruptible.
-    sibling_fade: Transition,
+    sibling_fade: crate::motion::Presence,
     /// Capture-harness pose for [`Self::hold_sibling_fade_at`]. Skips
     /// `sync_sibling_fade` so a slow offscreen paint cannot retire the
     /// 130 ms curve before the next snapshot.
@@ -1019,7 +1015,7 @@ impl Pan {
     /// reads as one continuous motion rather than a curve restarting from
     /// rest at every step. Re-asking for the target already in flight
     /// changes nothing, and a sub-pixel move is not worth a frame.
-    fn ease_to(&mut self, sx: f64, now: Instant, omega: f64) {
+    fn glide_to(&mut self, sx: f64, now: Instant, omega: f64) {
         if let Some(glide) = self.glide
             && (glide.to - sx).abs() <= SNAP_SETTLED_PX
         {
@@ -1213,7 +1209,7 @@ impl Pan {
 
     /// Ease on the snap curve from `from` to where the pan now is, over
     /// `duration`, rather than cutting there.
-    fn ease_scroll_from(&mut self, from: f64, now: Instant, duration: Duration) {
+    fn slide_scroll_from(&mut self, from: f64, now: Instant, duration: Duration) {
         self.snap_anim = Some(SnapAnim {
             from,
             to: self.scroll_x,
@@ -1240,7 +1236,7 @@ impl Pan {
             return;
         }
         self.scroll_x = sx;
-        self.ease_scroll_from(from, now, duration);
+        self.slide_scroll_from(from, now, duration);
     }
 
     /// Note where the run's groups were laid out. The pan stays where it
@@ -1402,7 +1398,7 @@ impl GroupRow {
             reduce_motion: false,
             motion_source: MotionSource::default(),
             motion: crate::tokens::Motion::default(),
-            sibling_fade: Transition::open(),
+            sibling_fade: crate::motion::Presence::opened(),
             sibling_fade_hold: None,
             fade_hero: None,
             culled_groups: Vec::new(),
@@ -1510,28 +1506,18 @@ impl GroupRow {
                 .fullscreen_idx()
                 .or_else(|| self.groups.iter().position(|g| g.maximized))
                 .and_then(|i| self.groups.get(i).map(|g| g.id));
-        } else if self.sibling_fade.is_open() && !self.sibling_fade.is_animating(crate::time::now())
-        {
+        } else if self.sibling_fade.is_open() && !self.sibling_fade.is_moving(crate::time::now()) {
             self.fade_hero = None;
         }
         let want_open = !hide;
-        if theme.reduce_motion {
-            self.sibling_fade
-                .set_open(want_open, Duration::ZERO, Curve::EaseOut);
-            return;
-        }
-        // `set_open` retargets from the current alpha. Calling it every
-        // layout/draw frame with the same intent would restart the curve.
-        if want_open == self.sibling_fade.is_open() {
-            return;
-        }
-        self.sibling_fade.set_open(
+        // The siblings cross-fade (`motion::CROSS_FADE`); a shortcut's
+        // result shows at once. A repeated intent changes nothing.
+        self.sibling_fade.show(
             want_open,
-            theme
-                .tokens
-                .motion
-                .result(self.motion_source, theme.tokens.motion.durations.fast()),
-            Curve::EaseOut,
+            crate::motion::WindowMotion::SIBLINGS,
+            theme.motion(),
+            self.motion_source,
+            crate::time::now(),
         );
     }
 
@@ -1549,7 +1535,7 @@ impl GroupRow {
         if !self.sibling_fade.is_visible(now) {
             return;
         }
-        let alpha = self.sibling_fade.value(now);
+        let alpha = crate::motion::unit_opacity(self.sibling_fade.progress(now));
         if alpha <= f32::EPSILON {
             return;
         }
@@ -1576,12 +1562,12 @@ impl GroupRow {
 
     #[cfg(test)]
     pub(crate) fn sibling_fade_value(&self) -> f32 {
-        self.sibling_fade.value(crate::time::now())
+        crate::motion::unit_opacity(self.sibling_fade.progress(crate::time::now()))
     }
 
     #[cfg(test)]
     pub(crate) fn sibling_fade_is_animating(&self) -> bool {
-        self.sibling_fade.is_animating(crate::time::now())
+        self.sibling_fade.is_moving(crate::time::now())
     }
 
     /// Rewind the live fade so a test can sample it mid-flight without
@@ -1593,14 +1579,15 @@ impl GroupRow {
         let started = now.checked_sub(elapsed).unwrap_or(now);
         let hide = self.siblings_should_hide();
         self.sibling_fade = if hide {
-            Transition::open()
+            crate::motion::Presence::opened()
         } else {
-            Transition::closed()
+            crate::motion::Presence::closed()
         };
-        self.sibling_fade.set_open_at(
+        self.sibling_fade.show(
             !hide,
-            crate::tokens::Durations::default().fast(),
-            Curve::EaseOut,
+            crate::motion::WindowMotion::SIBLINGS,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
             started,
         );
     }
@@ -1615,13 +1602,12 @@ impl GroupRow {
             return false;
         }
         let hide = self.siblings_should_hide();
-        let duration = crate::tokens::Durations::default().fast();
-        let t = if duration.is_zero() {
-            1.0
-        } else {
-            (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0)
-        };
-        let eased = Curve::EaseOut.apply(t);
+        let eased = crate::motion::WindowMotion::SIBLINGS.progress_after(
+            crate::motion::Direction::of(!hide),
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Pointer,
+            elapsed,
+        );
         let openness = if hide { 1.0 - eased } else { eased };
         #[allow(
             clippy::cast_possible_truncation,
@@ -1629,7 +1615,7 @@ impl GroupRow {
             reason = "openness is 0..=1 so permille is 0..=1000, which fits u16"
         )]
         let permille = (openness * 1000.0).round().clamp(0.0, 1000.0) as u16;
-        self.sibling_fade = Transition::capture_open_at(permille);
+        self.sibling_fade = crate::motion::Presence::held_at(permille);
         self.sibling_fade_hold = Some(elapsed);
         true
     }
@@ -2703,7 +2689,7 @@ impl GroupRow {
             self.pan_of_group_mut(group_id).slide_to(sx, now, slide);
         } else {
             let omega = self.move_omega;
-            self.pan_of_group_mut(group_id).ease_to(sx, now, omega);
+            self.pan_of_group_mut(group_id).glide_to(sx, now, omega);
         }
         self.scroll_dirty = true;
         true
@@ -2778,7 +2764,7 @@ impl GroupRow {
             self.pan_of_group_mut(keep).slide_to(sx, now, slide);
         } else {
             let omega = self.move_omega;
-            self.pan_of_group_mut(keep).ease_to(sx, now, omega);
+            self.pan_of_group_mut(keep).glide_to(sx, now, omega);
         }
         self.scroll_dirty = true;
         true
@@ -3648,12 +3634,23 @@ impl GroupRow {
             return Some(resisted(self.last_cursor - drag.start));
         }
         let (group, pull, at) = self.group_resist_back?;
-        let back = Duration::from_millis(GROUP_RESIST_RETURN_MS);
-        let elapsed = at.elapsed();
+        // It springs back as a let-go surface settles (`motion::Snap`).
+        let elapsed = crate::time::now().saturating_duration_since(at);
+        let back = crate::motion::Snap::SPEC.settle_time(
+            crate::motion::Direction::Enter,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Gesture,
+        );
         if group != id || elapsed >= back {
             return None;
         }
-        Some(pull * (1.0 - crate::ease_out(elapsed.as_secs_f64() / back.as_secs_f64())))
+        let returned = crate::motion::Snap::SPEC.progress_after(
+            crate::motion::Direction::Enter,
+            crate::tokens::EffectiveMotion::default(),
+            crate::tokens::MotionSource::Gesture,
+            elapsed,
+        );
+        Some(pull * (1.0 - returned))
     }
 
     /// A finger on the tab bar (pills or ground) may become a strip pan.
@@ -4658,7 +4655,7 @@ impl Widget for GroupRow {
                 && !pan.animating()
                 && (pan.scroll_x - before).abs() > 0.5
             {
-                pan.ease_scroll_from(before, now, reframe);
+                pan.slide_scroll_from(before, now, reframe);
             }
         }
         // Done AFTER the clamp so a structural mutation that snapped
@@ -5154,7 +5151,7 @@ impl Widget for GroupRow {
             || self
                 .group_resist_back
                 .is_some_and(|(id, _, _)| self.group_pull(id).is_some())
-            || self.sibling_fade.is_animating(crate::time::now())
+            || self.sibling_fade.is_moving(crate::time::now())
             || self
                 .groups
                 .iter()
@@ -5318,7 +5315,7 @@ impl GroupRow {
         // and springs to its new spot, so the strip is seen opening or
         // closing a gap rather than having always had one.
         let now = crate::time::now();
-        let fade_alpha = self.sibling_fade.value(now);
+        let fade_alpha = crate::motion::unit_opacity(self.sibling_fade.progress(now));
         // Only the hero's own run fades: on a strip spread across displays
         // the others keep their windows.
         let fade_hero = self.fade_hero.filter(|&hero| {
@@ -5683,12 +5680,13 @@ impl GroupRow {
         let progress = if theme.reduce_motion {
             1.0
         } else {
-            let duration = theme.tokens.motion.durations.fast().as_secs_f64();
-            if duration <= f64::EPSILON {
-                1.0
-            } else {
-                crate::ease_out((drag.lifted_at.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0))
-            }
+            // Lifted as a picked-up row is (`motion::ListChange::FADE`).
+            crate::motion::ListChange::FADE.progress_after(
+                crate::motion::Direction::Enter,
+                theme.motion(),
+                crate::tokens::MotionSource::Pointer,
+                crate::time::now().saturating_duration_since(drag.lifted_at),
+            )
         };
         let scale = 1.0 - 0.04 * progress;
         let rect = group.get_rect();

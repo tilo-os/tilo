@@ -381,10 +381,10 @@ impl Capabilities {
             let status = match d.state.as_str() {
                 "progress" if d.total > 0 => format!(
                     "{} of {}",
-                    ui::format::bytes_si(d.received),
-                    ui::format::bytes_si(d.total)
+                    ui::format::size(d.received),
+                    ui::format::size(d.total)
                 ),
-                "progress" => format!("{} downloaded", ui::format::bytes_si(d.received)),
+                "progress" => format!("{} downloaded", ui::format::size(d.received)),
                 "complete" => format!("Saved to {}", d.path),
                 "cancelled" => "Cancelled".to_owned(),
                 _ if d.error.is_empty() => "The download failed".to_owned(),

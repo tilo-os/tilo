@@ -49,6 +49,8 @@ pub struct WinitState {
     pub compositor_state: Arc<CompositorState>,
 
     pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
+    /// Buffers another process drew, attached to a window's surface (Tilo).
+    pub client_buffers: Option<Arc<super::types::client_buffers::ClientBuffers>>,
     pub private_text_input: Option<super::types::tilo_text_input::PrivateTextInputManager>,
 
     /// The state of the subcompositor.
@@ -169,6 +171,10 @@ impl WinitState {
             };
 
         let shm = Shm::bind(globals, queue_handle).map_err(WaylandError::Bind)?;
+        let client_buffers =
+            super::types::client_buffers::ClientBuffers::bind(globals, shm.wl_shm(), queue_handle)
+                .ok()
+                .map(Arc::new);
         let custom_cursor_pool = Arc::new(Mutex::new(SlotPool::new(2, &shm).unwrap()));
 
         // Drag-and-drop: the bytes of a drop are read on a thread and come
@@ -201,6 +207,7 @@ impl WinitState {
             )
             .ok()
             .map(Arc::new),
+            client_buffers,
             subcompositor_state: subcompositor_state.map(Arc::new),
             output_state,
             seat_state,

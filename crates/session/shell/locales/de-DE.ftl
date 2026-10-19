@@ -715,6 +715,7 @@ capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jede
 capability-system-info = Sehen, wie ausgelastet dieses Gerät ist
 capability-processes = Die laufenden Programme dieses Geräts sehen und eigene beenden
 capability-process-commands = Die Befehlszeilen laufender Programme sehen
+capability-io-uring = Die schnelle asynchrone Ein- und Ausgabe des Kernels nutzen (io_uring)
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
@@ -1001,6 +1002,16 @@ codec-failed = Mehr Video- und Audioformate konnten nicht eingeschaltet werden
 codec-failed-retry = Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-failed-with-error = { $error } Öffne Einstellungen, Updates, um es erneut zu versuchen.
 codec-app-name = Video- und Audioformate
+system-update-app-name = Updates
+system-update-restart-title = Neu starten, um die Updates abzuschließen
+system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.
+collaborator-needs-update = { $name } muss aktualisieren, damit ihr weiter zusammenarbeiten könnt
+collaborator-needs-update-body = Deine Änderungen erreichen { $name }, sobald das geschehen ist.
+collaborator-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren, damit ihr weiter zusammenarbeiten könnt
+collaborator-host-needs-update-body = Deine Änderungen erreichen ihn, sobald das geschehen ist.
+collaborator-update-self = Tilo wird aktualisiert, um weiter mit { $name } zusammenzuarbeiten
+collaborator-update-self-host = Tilo wird aktualisiert, um weiter zusammenzuarbeiten
+collaborator-update-self-body = Deine Änderungen bleiben bis dahin hier.
 
 # Screen capture surfaces
 capture-live-alt = Live-Aufnahme: { $title }
@@ -1047,6 +1058,9 @@ launch-failed-previous-instance = Die vorherige Instanz der App wird noch geschl
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
 launch-failed-runtime-mismatch = Diese App wurde für eine andere Tilo-Laufzeitumgebung gebaut. Aktualisiere sie oder installiere sie neu, um die passende Laufzeitumgebung zu erhalten.
+launch-failed-update = Braucht ein Update zum Öffnen. Versuche es erneut, sobald du online bist.
+launch-failed-waiting-for-developer = Wartet auf ein Update vom Entwickler
+launch-failed-system-behind = Öffnet sich, sobald Tilo aktualisiert ist
 launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
 launch-failed-collaboration = Die App konnte dem Zusammenarbeitsdienst dieses Arbeitsbereichs nicht beitreten und wurde daher beendet, bevor sie sich öffnete. Das Desktop-Protokoll nennt den Grund.
 launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werden. Öffne sie erneut über Anwendungen; das Desktop-Protokoll nennt den Grund.
@@ -1054,6 +1068,15 @@ launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
+
+# An app, or a process it started, that the system ended because memory ran out
+memory-app-closed-title = { $app } hatte nicht genug Arbeitsspeicher und wurde geschlossen
+memory-app-closed-body = Öffne es erneut, um dort weiterzumachen, wo du warst.
+memory-app-runaway-body = Es hat immer mehr Arbeitsspeicher belegt, bis der Computer knapp wurde. Öffne es erneut, um dort weiterzumachen, wo du warst.
+memory-job-stopped-title = { $process } in { $app } hatte nicht genug Arbeitsspeicher und wurde beendet
+memory-job-stopped-body = { $app } ist weiterhin geöffnet.
+memory-job-runaway-body = Es hat immer mehr Arbeitsspeicher belegt, bis der Computer knapp wurde. { $app } ist weiterhin geöffnet.
+memory-app-reopen = Erneut öffnen
 
 # Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
 window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
@@ -1361,7 +1384,13 @@ search-action-room-activity-open-subtitle = Verlauf dieses Arbeitsbereichs: Änd
 search-action-peer-invite = Mitwirkende einladen …
 search-action-peer-invite-subtitle = Eine Einladung prüfen, bevor sie erstellt wird
 search-action-peer-connect = Einem Arbeitsbereich beitreten…
-search-action-peer-connect-subtitle = Eine Website wie tilo.coffee, ein Arbeitsbereichslink oder eine Einladung
+search-action-peer-connect-subtitle = Öffentliche Arbeitsbereiche, eine Website wie tilo.coffee, ein Link oder eine Einladung
+search-action-workspace-publish = Diesen Arbeitsbereich öffentlich machen…
+search-action-workspace-publish-subtitle = Im Verzeichnis seines Hosts aufführen, mit Beschreibung und der Rolle, die Beitretende bekommen
+search-action-workspace-unpublish = Diesen Arbeitsbereich privat machen
+search-action-workspace-unpublish-subtitle = Aus dem Verzeichnis nehmen; die Mitglieder bleiben
+search-action-workspace-report = Diesen Arbeitsbereich melden…
+search-action-workspace-report-subtitle = Den Betreibenden dieses öffentlichen Arbeitsbereichs sagen, was nicht stimmt
 search-action-pair-device = Neues Gerät koppeln
 search-action-pair-device-subtitle = Dein Telefon, einen Browser oder einen anderen Computer zu einem deiner Geräte machen
 search-action-tab-new-terminal-here = Neuer Terminal-Tab hier
@@ -2037,6 +2066,10 @@ shell-window-opening-slow = { $app } wird geöffnet … dauert länger als übli
 shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
 shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
 shell-window-installing-received = { $app } wird installiert … { $received }
+shell-window-updating = { $app } wird aktualisiert …
+shell-window-updating-slow = { $app } wird aktualisiert … dauert länger als üblich
+shell-window-updating-of = { $app } wird aktualisiert … { $received } von { $total }
+shell-window-updating-received = { $app } wird aktualisiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2845,7 +2878,10 @@ search-kw-presence-status-set = status, abwesend, beschäftigt, verfügbar
 search-kw-presence-status-sharing-set = status teilen, status privatsphäre, status verbergen
 search-kw-room-activity-open = aktivität, verlauf, änderungen, zeitleiste, nachholen, chronik, protokoll
 search-kw-peer-invite = einladen, teilen, person hinzufügen, zusammenarbeiten, einladungslink
-search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben
+search-kw-peer-connect = beitreten, einladung annehmen, verbinden, code eingeben, öffentliche arbeitsbereiche, durchsuchen, entdecken, verzeichnis, community
+search-kw-workspace-publish = öffentlich, veröffentlichen, verzeichnis, standardrolle, auffindbar
+search-kw-workspace-unpublish = privat, nicht mehr öffentlich, aus verzeichnis nehmen
+search-kw-workspace-report = melden, missbrauch, spam
 search-kw-peer-invite-named = einladen, namentlich einladen
 search-kw-agent-invite = ki, assistent, agent, helfer
 search-kw-tab-new-terminal-here = konsole, kommandozeile, neuer tab, shell
@@ -2880,7 +2916,7 @@ search-kw-group-wider = breiter, vergrößern, größe ändern
 search-kw-tab-move-to-group-previous = tab verschieben, zusammenführen, tab nach links
 search-kw-tab-move-to-group-next = tab verschieben, zusammenführen, tab nach rechts
 search-kw-window-focus-nth = fenster nummer, gehe zu fenster, zu fenster springen
-search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, leiste wechseln, lounge
+search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, leiste wechseln
 search-kw-group-restore = wiederherstellen, verkleinern, normale größe, maximierung aufheben
 search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
@@ -2949,6 +2985,9 @@ drives-failed-title = { $drive } konnte nicht geöffnet werden
 
 # Arbeitsbereichsmenü und Profilkarte der oberen Leiste
 workspace-menu-settings = Einstellungen des Arbeitsbereichs…
+workspace-menu-join = Einem Arbeitsbereich beitreten…
+workspace-menu-report = Arbeitsbereich melden…
+workspace-menu-leave = Arbeitsbereich verlassen
 profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…
@@ -3003,19 +3042,12 @@ strip-switcher-workspaces = Arbeitsbereiche
 strip-switcher-unnamed = Leiste { $number }
 strip-switcher-new-strip = Neue Leiste
 strip-switcher-new-workspace = Neuer Arbeitsbereich
+strip-switcher-join-workspace = Einem Arbeitsbereich beitreten…
 strip-switcher-rename = Leiste umbenennen
 strip-switcher-name-placeholder = Name der Leiste
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
 
 
-## The community workspace's steps (Settings).
-community-resource = Community-Arbeitsbereich
-community-status = Community-Arbeitsbereich
-community-status-subtitle = Ob dieser Computer in seinem Community-Arbeitsbereich ist
-community-join = Dem Community-Arbeitsbereich wieder beitreten
-community-join-subtitle = Dem verlassenen Arbeitsbereich wieder beitreten, als du
-community-leave = Community-Arbeitsbereich verlassen
-community-leave-subtitle = Auf diesem Computer verlassen; in den Einstellungen kannst du wieder beitreten
 
 ## Pairing a new device of the person.
 pairing-title = Neues Gerät koppeln
@@ -3058,5 +3090,37 @@ desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
 
-# The shared strip every workspace has: chat, tasks and notes.
-strip-lounge = Lounge
+
+## „Einem Arbeitsbereich beitreten…“: das Verzeichnis öffentlicher Arbeitsbereiche.
+directory-title = Einem Arbeitsbereich beitreten
+directory-search = Öffentliche Arbeitsbereiche suchen oder Link oder Code einfügen
+directory-link-or-code = Mit Link oder Code beitreten
+directory-close = Schließen
+directory-loading = Öffentliche Arbeitsbereiche werden gesucht…
+directory-empty = Hier gibt es noch keine öffentlichen Arbeitsbereiche. Gib eine Website wie tilo.coffee ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
+directory-no-match = Nichts passt zu „{ $query }“. Drücke die Eingabetaste, um es als Website nachzuschlagen.
+directory-failed = Das Verzeichnis konnte nicht gelesen werden: { $error }
+directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
+directory-join = Beitreten
+directory-open = Öffnen
+directory-joining = Wird beigetreten…
+directory-join-named = { $name } beitreten
+directory-open-named = { $name } öffnen
+directory-community = { $name } · der eigene von { $host }
+directory-here-now = { $count } gerade hier
+directory-active-today = Heute aktiv
+directory-active-week = Diese Woche aktiv
+directory-quiet = Zuletzt ruhig
+directory-members = { $count ->
+    [one] 1 Mitglied
+   *[other] { $count } Mitglieder
+}
+directory-joins-as = Du trittst als { $role } bei
+directory-role-viewer = Betrachter
+directory-role-commenter = Kommentierende
+directory-role-editor = Bearbeitende
+directory-role-moderator = Moderierende
+directory-reported = Arbeitsbereich gemeldet
+directory-reported-body = Die Betreibenden wurden benachrichtigt.
+directory-report-failed = Die Meldung ist nicht angekommen
+directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.

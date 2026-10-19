@@ -1,36 +1,15 @@
 //! Old-format fixture -> production import transaction -> durable reload.
 use super::*;
-use automerge::{ObjId, ObjType, transaction::Transactable};
+use automerge::transaction::Transactable;
 use ui::tilo_resource::{Model, Resource};
 
 fn fixture_into(doc: &mut AutoCommit) {
-    fn write(doc: &mut AutoCommit, object: &ObjId, fixture: &serde_json::Value) {
-        for (key, value) in fixture.as_object().unwrap() {
-            match value {
-                serde_json::Value::Object(fields) if fields.contains_key("$text") => {
-                    let text = doc.put_object(object, key, ObjType::Text).unwrap();
-                    doc.splice_text(&text, 0, 0, fields["$text"].as_str().unwrap())
-                        .unwrap();
-                }
-                serde_json::Value::Object(_) => {
-                    let child = doc.put_object(object, key, ObjType::Map).unwrap();
-                    write(doc, &child, value);
-                }
-                serde_json::Value::String(value) => {
-                    doc.put(object, key, value.as_str()).unwrap();
-                }
-                serde_json::Value::Bool(value) => {
-                    doc.put(object, key, *value).unwrap();
-                }
-                _ => panic!("unsupported fixture scalar"),
-            }
-        }
-    }
-    write(
+    ui::tilo_resource::evolution::fixture(
         doc,
         &ROOT,
         &serde_json::from_str(include_str!("../../tests/fixtures/legacy-workspace.json")).unwrap(),
-    );
+    )
+    .unwrap();
 }
 
 fn fixture() -> AutoCommit {
@@ -264,16 +243,18 @@ fn concurrent_legacy_map_roots_keep_requests_from_both_peers() {
         .unwrap()
         .unwrap()
         .1;
-    let extra = right
-        .put_object(&saved, "other-saved", ObjType::Map)
-        .unwrap();
-    right
-        .put(&extra, "collection_id", "\"collection-id\"")
-        .unwrap();
-    right.put(&extra, "name", "\"Other peer's draft\"").unwrap();
-    right
-        .put(&extra, "url", "https://example.org/other")
-        .unwrap();
+    ui::tilo_resource::evolution::fixture(
+        &mut right,
+        &saved,
+        &serde_json::json!({
+            "other-saved": {
+                "collection_id": "\"collection-id\"",
+                "name": "\"Other peer's draft\"",
+                "url": "https://example.org/other",
+            }
+        }),
+    )
+    .unwrap();
     app.merge_peer(&mut left).unwrap();
     app.merge_peer(&mut right).unwrap();
     let mut left = app.read_document(Clone::clone);
@@ -300,7 +281,12 @@ fn unsupported_secret_variable_refuses_import_without_publishing_its_value() {
         .unwrap()
         .1;
     let variable = doc.get(&variables, "variable-id").unwrap().unwrap().1;
-    doc.put(&variable, "secret", true).unwrap();
+    ui::tilo_resource::evolution::fixture(
+        &mut doc,
+        &variable,
+        &serde_json::json!({"secret": true}),
+    )
+    .unwrap();
     let before = doc.save();
     let error = import(
         &mut doc,

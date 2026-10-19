@@ -25,6 +25,12 @@ path = "src/main.rs"
 # this binary. Off by default -- a normal `cargo build --release -p
 # word-processor` is an unchanged static build.
 thin = ["dep:runtime-dylib"]
+# Reach the PDF engine through its engine library in the runtime bundle
+# (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
+# The release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links tilo-pdf statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "tilo-pdf-engine/thin"]
 # Writer's publication without a window, for peers in other crates' tests
 # that serve a Writer document the way its framework app publishes it.
 test-support = []
@@ -35,6 +41,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
@@ -46,7 +53,7 @@ tilo-spellcheck = { path = "../../crates/text/spellcheck" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+tilo-content = { path = "../../crates/system/content", features = ["dir"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 vello.workspace = true

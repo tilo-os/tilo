@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use ui::num::f32_of_f64;
 
 use taffy::{NodeId, TaffyTree};
@@ -163,8 +162,9 @@ pub(super) struct CaptureMirrorImage {
     /// as the handoff lands.
     document_aspect: Option<f64>,
     document_scroll_y: f64,
-    handoff_started_at: Instant,
-    handoff_progress_override: Option<f64>,
+    /// The handoff from the captured pixels to the live view: one thing
+    /// becoming another in place (`ui::motion::Zoom`).
+    handoff: ui::motion::Presence,
     rect: Rect,
 }
 
@@ -184,8 +184,7 @@ impl CaptureMirrorImage {
             crossfade_handoff: false,
             document_aspect: None,
             document_scroll_y: 0.0,
-            handoff_started_at: Instant::now(),
-            handoff_progress_override: None,
+            handoff: handoff_started(),
             rect: Rect::ZERO,
         }
     }
@@ -205,8 +204,7 @@ impl CaptureMirrorImage {
             crossfade_handoff: true,
             document_aspect,
             document_scroll_y: 0.0,
-            handoff_started_at: Instant::now(),
-            handoff_progress_override: None,
+            handoff: handoff_started(),
             rect: Rect::ZERO,
         }
     }
@@ -220,25 +218,19 @@ impl CaptureMirrorImage {
 
     pub(super) fn set_handoff_progress(&mut self, permille: u16) {
         if !self.handoff_layers.is_empty() {
-            self.handoff_progress_override = Some(f64::from(permille.min(1_000)) / 1_000.0);
+            self.handoff = ui::motion::Presence::held_at(permille);
         }
     }
 
     fn handoff_mix(&self) -> f64 {
-        const HANDOFF_DURATION: Duration = Duration::from_millis(360);
-        let raw = self.handoff_progress_override.unwrap_or_else(|| {
-            (self.handoff_started_at.elapsed().as_secs_f64() / HANDOFF_DURATION.as_secs_f64())
-                .clamp(0.0, 1.0)
-        });
-        raw * raw * (3.0 - 2.0 * raw)
+        self.handoff.progress(ui::time::now())
     }
 
     fn painted_image_rect(&mut self, mix: f64) -> Rect {
         let Some(aspect) = self.document_aspect else {
             return self.rect;
         };
-        let raw = ((mix - 0.14) / 0.86).clamp(0.0, 1.0);
-        let unfold = raw * raw * (3.0 - 2.0 * raw);
+        let unfold = ui::motion::stage(mix, 0.14, 1.0);
         let document_height = self.rect.width() / aspect.max(0.05);
         let height = self.rect.height() + (document_height - self.rect.height()) * unfold;
         let max_scroll = (height - self.rect.height()).max(0.0);
@@ -274,8 +266,7 @@ impl CaptureMirrorImage {
         let Some(aspect) = self.document_aspect else {
             return;
         };
-        let raw = ((mix - 0.58) / 0.42).clamp(0.0, 1.0);
-        let alpha = f32_of_f64(raw * raw * (3.0 - 2.0 * raw) * 0.46);
+        let alpha = f32_of_f64(ui::motion::stage(mix, 0.58, 1.0) * 0.46);
         if alpha <= 0.001 {
             return;
         }
@@ -326,12 +317,15 @@ impl Widget for CaptureMirrorImage {
         _: &PresenceCtx,
     ) {
         let mix = self.handoff_mix();
+        // Under reduced motion the pixels land where they go and only the
+        // cross-fade remains.
+        let travel = if theme.motion().moves() { mix } else { 1.0 };
         if self.handoff_layers.is_empty() {
             self.image.paint_at(scene, transform, self.rect);
             return;
         }
         if self.crossfade_handoff {
-            let target = self.painted_image_rect(mix);
+            let target = self.painted_image_rect(travel);
             if mix >= 0.999 {
                 self.image.paint_at(scene, transform, target);
                 self.draw_document_scrollbar(scene, transform, theme, mix);
@@ -359,7 +353,7 @@ impl Widget for CaptureMirrorImage {
             return;
         }
         for layer in &mut self.handoff_layers {
-            let normalized = lerp_normalized_rect(layer.source, layer.target, mix);
+            let normalized = ui::motion::Zoom::rect_at(layer.source, layer.target, travel);
             let target = Rect::new(
                 self.rect.x0 + normalized.x0 * self.rect.width(),
                 self.rect.y0 + normalized.y0 * self.rect.height(),
@@ -391,13 +385,17 @@ impl Widget for CaptureMirrorImage {
     }
 }
 
-fn lerp_normalized_rect(from: Rect, to: Rect, progress: f64) -> Rect {
-    Rect::new(
-        from.x0 + (to.x0 - from.x0) * progress,
-        from.y0 + (to.y0 - from.y0) * progress,
-        from.x1 + (to.x1 - from.x1) * progress,
-        from.y1 + (to.y1 - from.y1) * progress,
-    )
+/// The handoff, started now on the zoom.
+fn handoff_started() -> ui::motion::Presence {
+    let mut handoff = ui::motion::Presence::closed();
+    handoff.show(
+        true,
+        ui::motion::Zoom::SPEC,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+        ui::time::now(),
+    );
+    handoff
 }
 
 pub(super) fn capture_mirror_origin(
@@ -570,13 +568,11 @@ mod tests {
             mirror.set_handoff_progress(0);
             assert_eq!(mirror.handoff_mix(), 0.0);
             mirror.set_handoff_progress(400);
-            assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
-            mirror.set_handoff_progress(600);
-            assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
+            assert!((mirror.handoff_mix() - 0.4).abs() < 0.000_001);
             mirror.set_handoff_progress(1_000);
             assert_eq!(mirror.handoff_mix(), 1.0);
-            assert_eq!(lerp_normalized_rect(source, target, 0.0), source);
-            assert_eq!(lerp_normalized_rect(source, target, 1.0), target);
+            assert_eq!(ui::motion::Zoom::rect_at(source, target, 0.0), source);
+            assert_eq!(ui::motion::Zoom::rect_at(source, target, 1.0), target);
         }
 
         fn live_frame_refresh_preserves_retained_layout() {

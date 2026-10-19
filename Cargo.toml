@@ -23,6 +23,8 @@ exclude = [
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    "vendor/pulldown-cmark",
+    "vendor/regex-syntax",
     # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
     "vendor/zlink-macros",
     "vendor/web-transport-quinn",
@@ -49,6 +51,7 @@ default-members = [
 ]
 members = [
     "crates/browser/browser-continuity",
+    "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
     "crates/dev/registry-review",
     "apps/canvas",
@@ -65,9 +68,11 @@ members = [
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
+    "crates/browser/content-blocker",
     "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
+    "crates/session/render-service",
     "crates/sdk/ui-core",
 
     # Applications
@@ -268,6 +273,7 @@ members = [
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/platform/tilo-lock",
+    "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
@@ -290,6 +296,7 @@ members = [
     "crates/platform/tilo-pdf",
     "crates/platform/tilo-process",
     "crates/platform/tilo-presentation",
+    "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-subject",
@@ -306,14 +313,20 @@ members = [
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     # Engines a few apps load, shipped beside it in the runtime bundle.
+    "crates/runtime/engine-loader",
     "crates/runtime/engines/accounts",
+    "crates/runtime/engines/adblock",
     "crates/runtime/engines/contact-directory",
+    "crates/runtime/engines/fuse",
+    "crates/runtime/engines/highlight",
     "crates/runtime/engines/paint",
+    "crates/runtime/engines/pdf",
     "crates/runtime/engines/spotify",
     "crates/runtime/engines/timezone",
     "crates/runtime/engines/typst",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
+    "crates/runtime/runtime-fs-fuse",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
@@ -361,6 +374,7 @@ members = [
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",
+    "crates/system/content-device",
     "crates/system/content-types",
     "crates/system/durable-store",
     "crates/system/endpoint-reachability",
@@ -409,6 +423,8 @@ members = [
 
     # Text
     "crates/text/emoji",
+    "crates/text/highlight",
+    "crates/text/highlight-grammars",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
 
@@ -505,6 +521,7 @@ must_use_candidate = "allow"
 
 [workspace.dependencies]
 browser-continuity = { path = "crates/browser/browser-continuity", version = "0.1.0" }
+browser-continuity-core = { path = "crates/browser/browser-continuity-core", version = "0.1.0" }
 
 # ---------------------------------------------------------------------------
 # UI toolkit stack
@@ -522,7 +539,7 @@ taffy = "0.10.1"
 # crates.io crates reach it through the `[patch]` facade below. The default
 # `wayland-csd-adwaita` draws titles through ab_glyph and owned_ttf_parser;
 # `-notitle` keeps the client-side frame without that stack.
-winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
 # Automerge 0.12.0 folded the formatting changes of several text objects in
 # one diff into a single patch on the first of them, so undoing a mark set
 # across several paragraphs cleared it from the first alone. Tilo's fork keeps
@@ -625,7 +642,6 @@ blake3 = "1.8.5"
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 zeroize = "1"
-bip39 = "2"
 
 # ---------------------------------------------------------------------------
 # Collaboration transport and content addressing
@@ -1065,6 +1081,16 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# The HTML5 entity table as offsets into two string literals instead of 2125
+# pairs of pointers the loader relocates in every app process (it is in the
+# shared runtime through the Markdown codec). See
+# vendor/pulldown-cmark/TILO-PATCH.md.
+pulldown-cmark = { path = "vendor/pulldown-cmark" }
+# The Unicode name and case folding tables as string literals and offsets
+# instead of about 3,900 entries of pointers the loader relocates in every
+# app process (regex is in the shared runtime). Generated by
+# tools/regex-syntax-tables.py; see vendor/regex-syntax/TILO-PATCH.md.
+regex-syntax = { path = "vendor/regex-syntax" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
 # kernel cancels on resume or a clock step replaces it), and no gossip cache

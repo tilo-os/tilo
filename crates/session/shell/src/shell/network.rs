@@ -6,6 +6,7 @@
 mod boot_join;
 mod community;
 pub(crate) use community::configured_site as configured_community_site;
+pub use directory::{DirectoryListing, Publication};
 pub use site_join::SiteRoom;
 #[cfg(test)]
 mod display_input_tests;
@@ -50,6 +51,9 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+pub(crate) mod directory;
+#[cfg(test)]
+mod directory_tests;
 pub(crate) mod join_field;
 #[cfg(test)]
 mod node_member_tests;
@@ -6817,12 +6821,6 @@ impl ShellNetwork {
             PersonalFabricPayload::Action(bytes) => {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
-            PersonalFabricPayload::MediaTransfer(_) => {
-                // The retired media lane: a device that predates the unified
-                // transfer lane. Its bytes are never accepted; the handoff
-                // fails on the sender's timeout like any other unanswered one.
-                tracing::debug!(peer = %peer, "dropping legacy personal media transfer frame");
-            }
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
                     identity.device_pubkey,
@@ -7139,12 +7137,28 @@ impl ShellNetwork {
             return;
         }
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
+        if let NeighbourMsg::IdentityHello {
+            protocol,
+            cert,
+            revocations,
+        } = &msg
+        {
             // A new hello is a full replacement attempt for this exact route.
             // Purge first so a wrong-user/revoked replacement can never leave
             // the old same-user authority alive.
             if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
                 routes.remove(&(ws, peer));
+            }
+            // A device at another peer protocol version is admitted to
+            // nothing; the one behind updates (docs/architecture/compatibility.md).
+            if *protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                self.peer_identities.remove(&origin);
+                crate::shell::collaborator_versions::note(
+                    peer.to_string(),
+                    cert.device_label.clone(),
+                    *protocol,
+                );
+                return;
             }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
             self.refresh_authenticated_persons();
@@ -10370,6 +10384,7 @@ mod tests {
             Some(membership_epoch),
             false,
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
             },
@@ -12908,6 +12923,7 @@ mod tests {
                     membership_epoch: None,
                     replayed: false,
                     msg: NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(cert.clone()),
                         revocations: Vec::new(),
                     },
@@ -14779,6 +14795,7 @@ mod tests {
             Some(crate::network::actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
             },
@@ -14967,6 +14984,7 @@ mod tests {
                 membership_epoch: None,
                 replayed: false,
                 msg: NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
                 },

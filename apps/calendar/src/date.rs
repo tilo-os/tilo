@@ -1,7 +1,7 @@
 //! Date arithmetic helpers built on `chrono`.
 //!
-//! Everything in the calendar is **Monday-first** (ISO week). These
-//! helpers are pure functions over `NaiveDate` / `NaiveDateTime` — no
+//! Weeks start on the first day of the week the person chose in Region &
+//! Formats (Monday unless they changed it). These helpers are pure functions over `NaiveDate` / `NaiveDateTime` — no
 //! timezone juggling, no `Local` reads (the live app's "today" is read
 //! once at construction; tests pin a fixed anchor for determinism).
 
@@ -15,14 +15,20 @@ pub fn month_grid(anchor: NaiveDate) -> Vec<NaiveDate> {
     // Day 1 is valid in every month, so `with_day(1)` never actually
     // returns `None` for a valid `anchor`; the fallback is unreachable.
     let first = anchor.with_day(1).unwrap_or(anchor);
-    let offset = i64::from(first.weekday().num_days_from_monday());
-    let start = first - Duration::days(offset);
+    let start = week_start(first);
     (0..42).map(|i| start + Duration::days(i)).collect()
 }
 
-/// Monday at the start of the ISO week containing `date`.
+/// The first day of the week containing `date`, on the first day of the
+/// week the person chose (Region & Formats; Monday unless they changed it).
 pub fn week_start(date: NaiveDate) -> NaiveDate {
-    date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
+    week_start_from(date, ui::format::first_weekday())
+}
+
+/// The day `first` that starts the week containing `date`.
+pub fn week_start_from(date: NaiveDate, first: chrono::Weekday) -> NaiveDate {
+    let into_week = (date.weekday().num_days_from_monday() + 7 - first.num_days_from_monday()) % 7;
+    date - Duration::days(i64::from(into_week))
 }
 
 /// The seven dates Mon..Sun of the week containing `date`.
@@ -51,27 +57,17 @@ pub fn add_months(date: NaiveDate, delta: i32) -> NaiveDate {
 
 /// "June 2026"
 pub fn month_title(anchor: NaiveDate) -> String {
-    format!("{} {}", month_name(anchor.month()), anchor.year())
+    ui::format::month_heading(anchor)
 }
 
 /// Compact month title for constrained navigation bars, e.g. `Sep 2026`.
 pub(crate) fn month_title_short(anchor: NaiveDate) -> String {
-    format!("{} {}", month_abbr(anchor.month()), anchor.year())
+    ui::format::month_heading_short(anchor)
 }
 
-/// Full English month name for a 1-based month.
-fn month_name(m: u32) -> &'static str {
-    ui::format::month_name(m.saturating_sub(1) as usize)
-}
-
-/// Three-letter month name for a 1-based month.
-fn month_abbr(m: u32) -> &'static str {
-    ui::format::month_abbrev(m.saturating_sub(1) as usize)
-}
-
-/// Three-letter weekday abbreviation for `date`'s day of week.
-pub(crate) fn weekday_short(date: NaiveDate) -> &'static str {
-    ui::format::weekday_abbrev(date.weekday().num_days_from_sunday() as usize)
+/// The abbreviated weekday of `date`: `Mon`.
+pub(crate) fn weekday_short(date: NaiveDate) -> String {
+    ui::format::weekday_short(date.weekday())
 }
 
 /// "14:30" or "2:30 PM", as the person reads clocks.
@@ -79,41 +75,27 @@ pub fn fmt_time(dt: &NaiveDateTime) -> String {
     ui::clock::time_of_day(dt)
 }
 
-/// "Mon 15 Jun"
+/// "Mon, Jun 15"
 pub fn fmt_day_long(date: NaiveDate) -> String {
-    format!(
-        "{} {} {}",
-        weekday_short(date),
-        date.day(),
-        month_abbr(date.month()),
-    )
+    ui::format::day_heading_short(date)
 }
 
-/// "15 Jun" — no weekday prefix (used for compact week ranges where the
+/// "Jun 15" — no weekday prefix (used for compact week ranges where the
 /// day-of-week is already visible in the column headers).
 pub fn fmt_day_short(date: NaiveDate) -> String {
-    format!("{} {}", date.day(), month_abbr(date.month()))
+    ui::format::month_day(date)
 }
 
-/// A week range with weekday names, e.g. "Mon 29 Jun – Sun 5 Jul".
+/// A week range with weekday names, e.g. "Mon, Jun 29 – Sun, Jul 5".
 pub fn week_range_long(start: NaiveDate, end: NaiveDate) -> String {
-    format!("{} – {}", fmt_day_long(start), fmt_day_long(end))
+    ui::format::range(&fmt_day_long(start), &fmt_day_long(end))
 }
 
-/// A compact week range: "23 – 29 Jun" within one month, "29 Jun – 5 Jul"
+/// A compact week range: "Jun 23 – 29" within one month, "Jun 29 – Jul 5"
 /// across a month boundary. Always shows both endpoints so the full span
 /// reads even where horizontal room is tight.
 pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
-    if start.month() == end.month() {
-        format!(
-            "{} – {} {}",
-            start.day(),
-            end.day(),
-            month_abbr(end.month())
-        )
-    } else {
-        format!("{} – {}", fmt_day_short(start), fmt_day_short(end))
-    }
+    ui::format::day_range(start, end)
 }
 
 /// A human "relative" label for a due date against `today`.
@@ -123,7 +105,7 @@ pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
         return near;
     }
     match d {
-        2..=6 => weekday_short(due).into(),
+        2..=6 => weekday_short(due),
         _ if d < 0 => format!("{} d overdue", -d),
         _ => fmt_day_long(due),
     }
@@ -164,6 +146,16 @@ mod tests {
         let w = week_days(d(2026, 6, 17));
         assert_eq!(w[0], d(2026, 6, 15));
         assert_eq!(w[6], d(2026, 6, 21));
+
+        // A week the person starts on Sunday.
+        assert_eq!(
+            week_start_from(d(2026, 6, 17), chrono::Weekday::Sun),
+            d(2026, 6, 14)
+        );
+        assert_eq!(
+            week_start_from(d(2026, 6, 14), chrono::Weekday::Sun),
+            d(2026, 6, 14)
+        );
 
         // days_in_month handles February.
         assert_eq!(days_in_month(2024, 2), 29);

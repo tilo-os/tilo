@@ -173,11 +173,9 @@ pub struct CacheFreed {
     pub freed_bytes: u64,
 }
 
-/// A request on the storage socket.
-///
-/// The daemon and its clients are built and updated separately, and
-/// postcard numbers variants by position, so new variants go last. A
-/// daemon that predates one closes the connection.
+/// A request on the storage socket. Postcard numbers variants by position:
+/// the bytes are part of the runtime interface, and a change to them is a
+/// new runtime interface version.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageRequest {
     Snapshot,
@@ -298,7 +296,7 @@ impl StorageClient {
     /// # Errors
     ///
     /// Returns an [`std::io::Error`] if the socket write/read fails, the
-    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    /// daemon reports [`StorageResponse::Error`], or it answers another kind.
     pub fn residency(&mut self) -> std::io::Result<ResidencySummary> {
         match self.request(&StorageRequest::Residency)? {
             StorageResponse::Residency(summary) => Ok(summary),
@@ -309,7 +307,7 @@ impl StorageClient {
     /// # Errors
     ///
     /// Returns an [`std::io::Error`] if the socket write/read fails, the
-    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    /// daemon reports [`StorageResponse::Error`], or it answers another kind.
     pub fn free_cache(&mut self, workspace: &str) -> std::io::Result<CacheFreed> {
         match self.request(&StorageRequest::FreeCache {
             workspace: workspace.to_owned(),
@@ -322,7 +320,7 @@ impl StorageClient {
     /// # Errors
     ///
     /// Returns an [`std::io::Error`] if the socket write/read fails, the
-    /// daemon reports [`StorageResponse::Error`], or it predates the request.
+    /// daemon reports [`StorageResponse::Error`], or it answers another kind.
     pub fn keep_here(&mut self, workspace: &str, keep: bool) -> std::io::Result<()> {
         match self.request(&StorageRequest::KeepHere {
             workspace: workspace.to_owned(),
@@ -380,8 +378,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// The residency requests go last: the bytes of the requests an older
-    /// daemon knows stay what they were, and each new one is pinned.
+    /// Every request's bytes are pinned.
     #[test]
     fn residency_requests_are_appended_to_the_wire() {
         let encode = |request: &StorageRequest| {
@@ -432,9 +429,7 @@ mod tests {
         assert!(matches!(decoded, StorageResponse::Residency(back) if back == summary));
     }
 
-    /// The cache-policy requests' bytes. Appended variants keep the
-    /// existing ones' bytes and take the next numbers, so an older Settings
-    /// and a newer daemon still agree.
+    /// The cache-policy requests' bytes, pinned.
     #[test]
     fn cache_policy_wire_bytes_are_pinned() {
         const REQUEST: [u8; 9] = [5, 0, 0, 0, 3, 0, 1, 0x80, 0x08];

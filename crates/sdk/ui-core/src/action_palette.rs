@@ -365,6 +365,9 @@ pub struct ActionPalette {
     controls: crate::widget::Row,
     controls_node: Option<NodeId>,
     command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
+    /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it
+    /// at once, a click brings it in.
+    appear: crate::motion::Appearing,
 }
 
 enum PaletteFieldSource {
@@ -483,6 +486,7 @@ impl ActionPalette {
             controls,
             controls_node: None,
             command,
+            appear: crate::motion::Appearing::closed(),
         }
     }
 
@@ -645,6 +649,14 @@ impl ActionPalette {
     }
     pub(crate) fn is_presented(&self) -> bool {
         self.open && !self.history_suspended
+    }
+
+    /// Follow whether it is presented, with the motion the person allows:
+    /// its host calls this every frame, drawn or not, so a palette hidden
+    /// and shown again arrives again.
+    pub(crate) fn follow_presence(&mut self, motion: crate::tokens::EffectiveMotion) {
+        let presented = self.is_presented();
+        self.appear.follow(presented, motion);
     }
     fn target(&self, part: &str) -> String {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
@@ -2314,6 +2326,14 @@ impl ActionPalette {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // It arrives from its centre (`motion::Appear`).
+        let presented = self.is_presented();
+        self.appear.follow(presented, theme.motion());
+        let pose = self.appear.pose(self.rect, self.rect.center());
+        let bounds = crate::widget::floating_surface::painted_bounds(self.rect, theme);
+        let Some(transform) = pose.begin(scene, transform, bounds) else {
+            return;
+        };
         self.field
             .draw(scene, transform, text_renderer, theme, presence);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
@@ -2323,6 +2343,7 @@ impl ActionPalette {
             self.controls
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+        pose.end(scene);
     }
 
     pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {
@@ -3226,6 +3247,8 @@ mod tests {
 
     #[test]
     fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority`.
         {
             let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -3280,6 +3303,8 @@ mod tests {
 
     #[test]
     fn progressive_palette_reaches_exact_match_beyond_one_hundred_thousand_candidates() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let catalog = crate::search::SearchCatalog::new("Adversarial corpus");
         for id in 0..100_000usize {
             let resource_id = format!("item:{id:06}");
@@ -3359,6 +3384,8 @@ mod tests {
 
     #[test]
     fn palette_activation_dispatches_navigates_prompts_or_queues() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `activating_an_action_dispatches_and_mutates`:
         // Activating an ACTION row dispatches through `tilo_actions` and mutates the
         // CRDT — the real replay path.
@@ -3593,6 +3620,8 @@ mod tests {
 
     #[test]
     fn removed_or_disabled_actions_are_refused_at_activation_and_dispatch() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `removed_canonical_action_is_refused_at_activation`.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
@@ -3661,6 +3690,8 @@ mod tests {
 
     #[test]
     fn consequential_actions_confirm_by_exact_value() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         // Case `consequential_action_waits_for_exact_confirmation`.
         {
             let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
@@ -3838,6 +3869,8 @@ mod tests {
 
     #[test]
     fn history_suspends_the_same_palette_draft_and_ready_dispatch() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut palette =
             ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3888,6 +3921,8 @@ mod tests {
 
     #[test]
     fn history_requires_fresh_palette_confirmation_for_ready_work() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut resource = thing_resource();
         resource
             .actions
@@ -3941,6 +3976,8 @@ mod tests {
 
     #[test]
     fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let resource = |id: &str, label: &str| {
             let mut value = thing_resource();
             value.id = tilo_actions::ResourceId::new(id);
@@ -3969,6 +4006,8 @@ mod tests {
 
     #[test]
     fn invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let mut spec = ActionSpec::typed(
             "number",
             "Number",

@@ -55,7 +55,7 @@ pub mod destination {
 }
 
 /// A configured destination. A label or a URL is never routing authority.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct Destination {
     pub room: String,
@@ -80,7 +80,7 @@ impl Destination {
 
 /// Exactly the text shown in the approved preview. No original trace or
 /// account credential is a field of the submission protocol.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewedFeedback {
     pub text: String,
@@ -90,7 +90,7 @@ pub struct ReviewedFeedback {
 }
 
 /// Content-addressed masked PNG; raw surface bytes never enter the outbox.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenshotRef {
     pub hash: String,
@@ -99,7 +99,7 @@ pub struct ScreenshotRef {
 }
 
 /// A reviewable context field, already masked before persistence or transport.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct ContextField {
     pub key: String,
@@ -107,7 +107,7 @@ pub struct ContextField {
 }
 
 /// Mint the id once at authoring time. The same submission is retried unchanged.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[serde(deny_unknown_fields)]
 pub struct Submission {
     pub id: String,

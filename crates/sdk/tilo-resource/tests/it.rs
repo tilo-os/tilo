@@ -5,6 +5,8 @@
 
 #[path = "apply_cache.rs"]
 pub mod apply_cache;
+#[path = "data_enum.rs"]
+pub mod data_enum;
 #[cfg(feature = "chrono")]
 #[path = "dates.rs"]
 pub mod dates;
@@ -26,6 +28,8 @@ pub mod incremental;
 pub mod keyed;
 #[path = "kinds.rs"]
 pub mod kinds;
+#[path = "malformed_items.rs"]
+pub mod malformed_items;
 #[path = "one_pass_reads.rs"]
 pub mod one_pass_reads;
 #[path = "outbox.rs"]

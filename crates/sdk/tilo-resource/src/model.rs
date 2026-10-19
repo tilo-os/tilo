@@ -1000,6 +1000,125 @@ pub fn write_key_changed<T: Model>(
     }
 }
 
+/// The key under which a data enum (`#[derive(Model)]` on an enum with
+/// fields) names its variant, beside the variant's fields. No Rust field can
+/// have this name, so it never collides with one.
+pub const VARIANT_KEY: &str = "$variant";
+
+/// The map a data enum's variant `variant` is stored in, in `slot`: made
+/// when the slot holds anything else, its variant name written, and the
+/// fields of another variant it held before removed, so concurrent edits of
+/// the same variant merge field by field and a change of variant is one
+/// last-writer-wins write of its name.
+///
+/// # Errors
+/// Returns the document's write error.
+#[doc(hidden)]
+#[inline(never)]
+pub fn variant_map(
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    variant: &str,
+    fields: &[&str],
+) -> Result<ObjId, ModelError> {
+    let obj = slot.object(doc, ObjType::Map)?;
+    Slot::Key(&obj, VARIANT_KEY).put_scalar(doc, ScalarValue::Str(variant.into()))?;
+    let stale: Vec<String> = doc
+        .keys(&obj)
+        .filter(|key| key.as_str() != VARIANT_KEY && !fields.contains(&key.as_str()))
+        .collect();
+    for key in stale {
+        doc.delete(&obj, key.as_str())?;
+    }
+    Ok(obj)
+}
+
+/// The variant a data enum stored at `value` (the object `id`) names.
+///
+/// # Errors
+/// Returns a shape error when the slot holds no map naming a variant.
+#[doc(hidden)]
+#[inline(never)]
+pub fn stored_variant(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<String, ModelError> {
+    if !matches!(value, Value::Object(ObjType::Map)) {
+        return Err(ModelError::shape("a map naming its variant"));
+    }
+    match doc.get(id, VARIANT_KEY)? {
+        Some((Value::Scalar(name), _)) => match name.as_ref() {
+            ScalarValue::Str(name) => Ok(name.to_string()),
+            _ => Err(ModelError::shape("a variant name").at(VARIANT_KEY)),
+        },
+        _ => Err(ModelError::shape("a variant name").at(VARIANT_KEY)),
+    }
+}
+
+/// The variant name and fields of a data enum's JSON form,
+/// `{"$variant": name, field: value, ..}`.
+///
+/// # Errors
+/// Returns a shape error for any other JSON.
+#[doc(hidden)]
+#[inline(never)]
+pub fn json_variant(
+    value: &serde_json::Value,
+) -> Result<(&str, &serde_json::Map<String, serde_json::Value>), ModelError> {
+    let serde_json::Value::Object(fields) = value else {
+        return Err(json_shape("an object naming its variant"));
+    };
+    match fields.get(VARIANT_KEY) {
+        Some(serde_json::Value::String(name)) => Ok((name.as_str(), fields)),
+        _ => Err(json_shape("a variant name").at(VARIANT_KEY)),
+    }
+}
+
+/// The field `key` of a data enum's JSON form, or [`Model::missing`].
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn json_field<T: Model>(
+    fields: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<T, ModelError> {
+    match fields.get(key) {
+        Some(value) => T::from_json(value),
+        None => T::missing(),
+    }
+    .located(key)
+}
+
+/// A data enum's JSON form: its variant name and its fields.
+#[doc(hidden)]
+#[must_use]
+#[inline(never)]
+pub fn json_of_variant(variant: &str, fields: Vec<(&str, serde_json::Value)>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert(VARIANT_KEY.to_owned(), serde_json::Value::from(variant));
+    for (key, value) in fields {
+        map.insert(key.to_owned(), value);
+    }
+    serde_json::Value::Object(map)
+}
+
+/// That a data enum names a variant it does not have.
+#[doc(hidden)]
+#[must_use]
+#[inline(never)]
+pub fn unknown_variant(variant: &str) -> ModelError {
+    ModelError::invalid(format!("no variant `{variant}`")).at(VARIANT_KEY)
+}
+
+/// The JSON Schema of a data enum's variant `variant` with the fields
+/// `fields` as `(key, schema)`.
+#[doc(hidden)]
+#[must_use]
+#[inline(never)]
+pub fn variant_schema(variant: &str, fields: Vec<(&str, serde_json::Value)>) -> serde_json::Value {
+    let mut properties = vec![(VARIANT_KEY, crate::schema::constant(variant), true)];
+    properties.extend(fields.into_iter().map(|(key, schema)| (key, schema, false)));
+    crate::schema::object(properties)
+}
+
 fn scalar<'v>(value: &'v Value<'_>) -> Option<&'v ScalarValue> {
     match value {
         Value::Scalar(scalar) => Some(scalar.as_ref()),
@@ -1674,8 +1793,13 @@ impl<T: Model> Model for BTreeMap<String, T> {
 }
 
 /// An opaque value stored as one JSON string: written whole, last writer
-/// wins. The escape hatch for nested data that has no meaningful concurrent
-/// merge (a colour curve, a filter preset).
+/// wins. Only for a payload whose shape is another party's and opaque to the
+/// app's model: an account type's connection settings, a shortcut step's
+/// bindings (literal JSON values, other apps' parameter declarations with
+/// their JSON Schemas). Data the app shapes itself is a model type — a
+/// struct, an enum (a data enum is a map naming its variant), a list, a map —
+/// so its parts merge and migrate as values; a field that was `Json<T>` moves
+/// to one with `evolution::retype_json`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Json<T>(pub T);
 

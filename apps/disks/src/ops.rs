@@ -225,7 +225,7 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
         return Err(format!("read {path}: device returned no data"));
     }
     let secs = start.elapsed().as_secs_f64().max(1e-9);
-    let mbs = (total as f64 / 1_000_000.0) / secs;
+    let rate = ui::format::rate(total as f64 / secs);
 
     // Random-seek latency across the device.
     let size = f
@@ -252,7 +252,7 @@ fn benchmark_reader(f: &mut (impl Read + Seek), path: &str) -> Result<String, St
     let avg_ms = seek_start.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
 
     Ok(format!(
-        "{path}: {mbs:.0} MB/s sequential read, {avg_ms:.2} ms average seek"
+        "{path}: {rate} sequential read, {avg_ms:.2} ms average seek"
     ))
 }
 

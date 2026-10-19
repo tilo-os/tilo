@@ -11,9 +11,14 @@
 //! Fetching and caching the list text is the caller's job (the browser
 //! app fetches with its own HTTP stack and disk cache); this module is
 //! pure text → JSON.
+//!
+//! The compiler itself (`tilo-content-blocker`, adblock-rust) is not part of
+//! the shared runtime every app maps. With `lazy-adblock` (the runtime's
+//! build, turned on by the engine library's own build) it comes from
+//! `libtilo_adblock_engine.so`, opened the first time an app compiles lists;
+//! otherwise it is linked.
 
-use adblock::FilterSet;
-use adblock::lists::ParseOptions;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdblockError {
@@ -23,6 +28,9 @@ pub enum AdblockError {
     Conversion,
     #[error("serialising content-blocker rules failed: {0}")]
     Serialise(#[from] serde_json::Error),
+    /// The compiler's engine library could not be opened.
+    #[error("the content-blocker compiler is unavailable: {0}")]
+    Unavailable(String),
 }
 
 /// `WebKit` rejects a single content-rule list over this many rules with
@@ -41,6 +49,17 @@ pub struct ChunkedFilter {
     pub skipped: usize,
 }
 
+/// The compiler `libtilo_adblock_engine.so` hands over: what
+/// [`compile_filter_lists_chunked`] does, over a slice of lists.
+pub type CompileFn = fn(&[&str], usize) -> Result<ChunkedFilter, AdblockError>;
+
+/// The entry `libtilo_adblock_engine.so` exports, returning its [`CompileFn`].
+pub type EngineEntry = fn() -> CompileFn;
+
+/// The engine library and its entry.
+pub const ENGINE_LIBRARY: &str = "libtilo_adblock_engine.so";
+pub const ENGINE_ENTRY: &str = "tilo_adblock_engine_entry";
+
 /// Compile `lists` into `WebKit` content-blocker JSON, split into chunks of
 /// at most `max_rules_per_chunk` rules each.
 ///
@@ -48,105 +67,88 @@ pub struct ChunkedFilter {
 ///
 /// Returns [`AdblockError::Conversion`] if adblock-rust's content-blocking
 /// conversion fails, [`AdblockError::Empty`] if `lists` produces no rule
-/// convertible to `WebKit`'s declarative format, and
-/// [`AdblockError::Serialise`] if a chunk fails to serialise to JSON.
+/// convertible to `WebKit`'s declarative format,
+/// [`AdblockError::Serialise`] if a chunk fails to serialise to JSON, and
+/// [`AdblockError::Unavailable`] if the compiler's engine library does not
+/// open.
 pub fn compile_filter_lists_chunked<'a>(
     lists: impl IntoIterator<Item = &'a str>,
     max_rules_per_chunk: usize,
 ) -> Result<ChunkedFilter, AdblockError> {
-    let mut set = FilterSet::new(true);
-    for list in lists {
-        set.add_filter_list(list, ParseOptions::default());
-    }
-    let (rules, skipped) = set
-        .into_content_blocking()
-        .map_err(|()| AdblockError::Conversion)?;
-    if rules.is_empty() {
-        return Err(AdblockError::Empty);
-    }
-    let rule_count = rules.len();
-    let max = max_rules_per_chunk.max(1);
-    let mut chunks = Vec::new();
-    for slice in rules.chunks(max) {
-        chunks.push(std::sync::Arc::new(serde_json::to_string(slice)?));
-    }
-    Ok(ChunkedFilter {
-        chunks,
-        rule_count,
-        skipped: skipped.len(),
-    })
+    let lists: Vec<&str> = lists.into_iter().collect();
+    compiler()?(&lists, max_rules_per_chunk)
 }
 
-#[cfg(test)]
+/// The compiler, linked.
+#[cfg(not(feature = "lazy-adblock"))]
+fn compiler() -> Result<CompileFn, AdblockError> {
+    Ok(linked)
+}
+
+/// The compiler, from its engine library: opened the first time, kept.
+#[cfg(feature = "lazy-adblock")]
+fn compiler() -> Result<CompileFn, AdblockError> {
+    static COMPILER: std::sync::OnceLock<CompileFn> = std::sync::OnceLock::new();
+    if let Some(compile) = COMPILER.get() {
+        return Ok(*compile);
+    }
+    // SAFETY: the engine's entry is checked against `EngineEntry` where it
+    // is defined (crates/runtime/engines/adblock), in the same build.
+    let entry = unsafe { tilo_engine_loader::entry::<EngineEntry>(ENGINE_LIBRARY, ENGINE_ENTRY) }
+        .map_err(|error| AdblockError::Unavailable(error.to_string()))?;
+    Ok(*COMPILER.get_or_init(entry))
+}
+
+/// [`CompileFn`] over the linked compiler.
+#[cfg(not(feature = "lazy-adblock"))]
+fn linked(lists: &[&str], max_rules_per_chunk: usize) -> Result<ChunkedFilter, AdblockError> {
+    use tilo_content_blocker::Failure;
+    match tilo_content_blocker::compile(lists, max_rules_per_chunk) {
+        Ok(compiled) => Ok(chunked_filter(
+            compiled.chunks,
+            compiled.rule_count,
+            compiled.skipped,
+        )),
+        Err(Failure::Empty) => Err(AdblockError::Empty),
+        Err(Failure::Conversion) => Err(AdblockError::Conversion),
+        Err(Failure::Serialise(error)) => Err(AdblockError::Serialise(error)),
+    }
+}
+
+/// [`ChunkedFilter`] from the compiler's parts. The engine library maps the
+/// compiler's result through this (the toolkit's runtime build names no
+/// compiler type).
+#[must_use]
+pub fn chunked_filter(
+    chunks: Vec<Arc<String>>,
+    rule_count: usize,
+    skipped: usize,
+) -> ChunkedFilter {
+    ChunkedFilter {
+        chunks,
+        rule_count,
+        skipped,
+    }
+}
+
+#[cfg(all(test, not(feature = "lazy-adblock")))]
 mod tests {
     use super::*;
 
     const FIXTURE: &str = "\
 ! Title: fixture list
 ||ads.example.com^
-||tracker.test^$third-party
 ###ad-banner
-example.org##.sponsored
 ";
 
     #[test]
-    fn adblock_rules_compile_to_chunked_json_filters() {
-        // phase: compiles_network_and_cosmetic_rules_to_json
-        {
-            let compiled =
-                compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
-            assert!(compiled.rule_count >= 3, "got {}", compiled.rule_count);
-            assert_eq!(compiled.chunks.len(), 1, "under the cap is one filter");
-            let json = &compiled.chunks[0];
-
-            let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
-            let rules = parsed.as_array().expect("JSON array of rules");
-            assert_eq!(rules.len(), compiled.rule_count);
-
-            assert!(
-                rules.iter().any(|r| {
-                    r["action"]["type"] == "block"
-                        && r["trigger"]["url-filter"]
-                            .as_str()
-                            .is_some_and(|f| f.contains("ads\\.example\\.com"))
-                }),
-                "expected a block rule for ads.example.com in {json}"
-            );
-            assert!(
-                rules.iter().any(|r| {
-                    r["action"]["type"] == "css-display-none"
-                        && r["action"]["selector"]
-                            .as_str()
-                            .is_some_and(|s| s.contains("#ad-banner"))
-                }),
-                "expected a css-display-none rule for #ad-banner",
-            );
-        }
-        // phase: empty_input_is_an_error
-        {
-            assert!(matches!(
-                compile_filter_lists_chunked([""], 10_000),
-                Err(AdblockError::Empty)
-            ));
-        }
-        // phase: chunking_splits_rules_across_multiple_filters
-        {
-            let compiled = compile_filter_lists_chunked([FIXTURE], 2).expect("fixture compiles");
-            assert!(compiled.rule_count >= 3);
-            assert!(
-                compiled.chunks.len() >= 2,
-                "expected multiple chunks, got {}",
-                compiled.chunks.len()
-            );
-            let mut total = 0;
-            for chunk in &compiled.chunks {
-                let arr: serde_json::Value =
-                    serde_json::from_str(chunk).expect("each chunk is valid JSON");
-                let n = arr.as_array().expect("array").len();
-                assert!(n <= 2, "chunk exceeds the cap: {n}");
-                total += n;
-            }
-            assert_eq!(total, compiled.rule_count, "chunks must cover every rule");
-        }
+    fn the_toolkit_api_compiles_through_the_linked_compiler() {
+        let compiled = compile_filter_lists_chunked([FIXTURE], 10_000).expect("fixture compiles");
+        assert!(compiled.rule_count >= 2, "got {}", compiled.rule_count);
+        assert_eq!(compiled.chunks.len(), 1);
+        assert!(matches!(
+            compile_filter_lists_chunked([""], 10_000),
+            Err(AdblockError::Empty)
+        ));
     }
 }

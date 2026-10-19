@@ -61,23 +61,18 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     chat::demo::apply_as(
         &mut doc,
         &writer,
-        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-            name: "Remote encrypted space".into(),
+        chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+            name: "general".into(),
+            category: None,
+            kind: None,
+            topic: None,
         }),
     )
     .unwrap();
-    let workspace = chat::projection::read(&doc)
-        .workspace_rows()
-        .into_iter()
-        .find(|workspace| workspace.name == "Remote encrypted space")
-        .unwrap()
-        .id;
     let channel = chat::projection::read(&doc)
         .channel_rows()
         .into_iter()
-        .find(|channel| {
-            channel.workspace == workspace && channel.kind == chat::model::ChannelKind::Text
-        })
+        .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))

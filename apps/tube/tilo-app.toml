@@ -22,7 +22,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["clipboard", "files.paths", "app-files", "secrets", "network.http", "network.sockets", "threads", "media.decode", "media.session", "processes", "settings"]
+optional = ["clipboard", "files.paths", "app-files", "secrets", "network.http", "network.sockets", "threads", "media.decode", "media.session", "processes", "settings", "gpu"]
 
 [resources]
 kinds = ["tube.library", "tube.watch-history"]
@@ -55,8 +55,8 @@ mode = "host"
 secret = "via-host"
 
 [sandbox.services]
-collab = "optional@1"
-tilo-fs = "optional@1"
+collab = "optional@2"
+tilo-fs = "optional@2"
 
 [entrypoint]
 bin             = "bin/tube"

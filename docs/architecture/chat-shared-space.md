@@ -59,12 +59,12 @@ journey still need manual validation before release.
 
 ## Bridges
 
-A bridge mirrors a Chat workspace to an outside service. It is built from the bot
+A bridge mirrors a room's Chat to an outside service. It is built from the bot
 framework ([bots.md](bots.md)): a connector app holds the service's credentials and
 socket, and a bot program maps Chat's changes to the connector's verbs and back. The
 Discord bridge ([discord-bridge.md](discord-bridge.md)) is the first. Chat stays
 service-agnostic: it learns nothing about Discord, and every change below applies to
-every workspace, bridged or not.
+every room's Chat, bridged or not.
 
 - **Appearance.** A bot allowed `Personas` may post under another name and avatar.
   `post`, `share-resource` and `react` read `ActionCx::appearance()` and store it:
@@ -147,7 +147,7 @@ passes its explicit existing id (including the canonical package-primary id), th
 rechecks the host catalogue after hydration and the local app's current action catalogue, then invokes the chosen declared
 resource view. It never invokes a document mutation or navigates the host's window.
 Only explicit `ResourceViewSpec` navigation declarations qualify: read queries with
-`OperationKind::View` alone do not. Chat declares workspace, text conversation and
+`OperationKind::View` alone do not. Chat declares category, text conversation and
 message views through its existing navigation effects; opening a voice channel is
 excluded because it would join a call. Cancellation, disconnect, changed connection,
 missing views and refused invocations clean up the provisional mount. Record waits

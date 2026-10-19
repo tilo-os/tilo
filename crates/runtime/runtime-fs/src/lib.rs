@@ -117,15 +117,11 @@ pub mod directory_backend;
 pub mod directory_client;
 #[cfg(unix)]
 pub mod directory_connection;
-#[cfg(all(target_os = "linux", feature = "selected-fuse"))]
-pub mod directory_fuse;
 pub mod native_reply;
 #[cfg(unix)]
 pub mod selected_client;
 #[cfg(unix)]
 pub mod selected_file;
-#[cfg(all(target_os = "linux", feature = "selected-fuse"))]
-pub mod selected_fuse;
 #[cfg(unix)]
 pub mod workspace_server;
 

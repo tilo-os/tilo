@@ -712,6 +712,7 @@ capability-host-shell = Open this device's own shell, outside every sandbox
 capability-system-info = See how busy this device is
 capability-processes = See the programs running on this device and end your own
 capability-process-commands = See the command lines of running programs
+capability-io-uring = Use the kernel's fast asynchronous input and output (io_uring)
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
@@ -998,6 +999,16 @@ codec-failed = More video and audio formats could not be turned on
 codec-failed-retry = Open Settings, Updates, to try again.
 codec-failed-with-error = { $error } Open Settings, Updates, to try again.
 codec-app-name = Video and audio formats
+system-update-app-name = Updates
+system-update-restart-title = Restart to finish updating
+system-update-restart-body = Your windows come back after the restart.
+collaborator-needs-update = { $name } needs to update to keep working together
+collaborator-needs-update-body = Your changes reach { $name } once they have.
+collaborator-host-needs-update = This workspace’s host needs to update to keep working together
+collaborator-host-needs-update-body = Your changes reach it once it has.
+collaborator-update-self = Updating Tilo to keep working with { $name }
+collaborator-update-self-host = Updating Tilo to keep working together
+collaborator-update-self-body = Your changes stay here until then.
 
 # Screen capture surfaces
 capture-live-alt = Live capture: { $title }
@@ -1044,6 +1055,9 @@ launch-failed-previous-instance = The previous copy of the app is still closing.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
 launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
 launch-failed-runtime-mismatch = This app was built for a different Tilo runtime. Update or reinstall it to get the runtime it needs.
+launch-failed-update = Needs an update to open. Try again when you’re online.
+launch-failed-waiting-for-developer = Waiting for an update from the developer
+launch-failed-system-behind = Opens once Tilo has updated
 launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
 launch-failed-collaboration = The app couldn't join this workspace's collaboration service, so it stopped before opening. The desktop log says why.
 launch-failed-window-lost = Its window stopped without being closed. Open it again from Applications; the desktop log says why.
@@ -1051,6 +1065,15 @@ launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
+
+# An app, or a process it started, that the system ended because memory ran out
+memory-app-closed-title = { $app } ran out of memory and was closed
+memory-app-closed-body = Reopen it to continue where you left off.
+memory-app-runaway-body = It kept taking more memory until the computer ran low. Reopen it to continue where you left off.
+memory-job-stopped-title = { $process } in { $app } ran out of memory and was stopped
+memory-job-stopped-body = { $app } is still open.
+memory-job-runaway-body = It kept taking more memory until the computer ran low. { $app } is still open.
+memory-app-reopen = Reopen
 
 # Tab and window actions that could not be carried out
 window-duplicate-no-tab = There is no tab to duplicate.
@@ -1375,7 +1398,13 @@ search-action-room-activity-open-subtitle = History of this workspace: changes, 
 search-action-peer-invite = Invite a collaborator…
 search-action-peer-invite-subtitle = Review an invite before creating it
 search-action-peer-connect = Join a workspace…
-search-action-peer-connect-subtitle = A site like tilo.coffee, a workspace link or an invitation
+search-action-peer-connect-subtitle = Public workspaces, a site like tilo.coffee, a link or an invitation
+search-action-workspace-publish = Make this workspace public…
+search-action-workspace-publish-subtitle = List it in its host's directory with a description and the role people who join get
+search-action-workspace-unpublish = Make this workspace private
+search-action-workspace-unpublish-subtitle = Take it out of the directory; its members stay
+search-action-workspace-report = Report this workspace…
+search-action-workspace-report-subtitle = Tell the people who run this public workspace what is wrong
 search-action-pair-device = Pair a new device
 search-action-pair-device-subtitle = Make your phone, a browser or another computer one of your devices
 search-action-tab-new-terminal-here = New terminal tab here
@@ -2051,6 +2080,10 @@ shell-window-opening-slow = Opening { $app }… taking longer than usual
 shell-window-installing-slow = Installing { $app }… taking longer than usual
 shell-window-installing-of = Installing { $app }… { $received } of { $total }
 shell-window-installing-received = Installing { $app }… { $received }
+shell-window-updating = Updating { $app }…
+shell-window-updating-slow = Updating { $app }… taking longer than usual
+shell-window-updating-of = Updating { $app }… { $received } of { $total }
+shell-window-updating-received = Updating { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2886,7 +2919,10 @@ search-kw-presence-status-set = status, away, busy, availability
 search-kw-presence-status-sharing-set = status privacy, share status, hide status
 search-kw-room-activity-open = activity, history, what changed, changes, timeline, catch up, log, recent
 search-kw-peer-invite = invite, share, add person, collaborate, join link, send invite
-search-kw-peer-connect = join, join workspace, accept invite, connect, enter code
+search-kw-peer-connect = join, join workspace, accept invite, connect, enter code, public workspaces, browse workspaces, discover, directory, community
+search-kw-workspace-publish = public, publish, list, directory, default role, discoverable, open to everyone
+search-kw-workspace-unpublish = private, unpublish, unlist, hide from directory
+search-kw-workspace-report = report, abuse, spam, flag
 search-kw-peer-invite-named = invite by name, invite
 search-kw-agent-invite = ai, assistant, claude, agent, bot, helper
 search-kw-tab-new-terminal-here = terminal, shell, console, command line, new tab
@@ -2921,7 +2957,7 @@ search-kw-group-wider = wider, grow, bigger, larger, resize
 search-kw-tab-move-to-group-previous = merge tab, move tab, tab left
 search-kw-tab-move-to-group-next = merge tab, move tab, tab right
 search-kw-window-focus-nth = focus window number, go to window, jump to window
-search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch strip, lounge
+search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch strip
 search-kw-group-restore = restore, unmaximize, un-maximize, normal size, shrink window
 search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
@@ -2990,6 +3026,9 @@ drives-failed-title = { $drive } couldn't be opened
 
 # The top bar's workspace menu and profile card
 workspace-menu-settings = Workspace settings…
+workspace-menu-join = Join a workspace…
+workspace-menu-report = Report workspace…
+workspace-menu-leave = Leave workspace
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity…
 profile-action-pair-device = Pair a device…
@@ -3044,19 +3083,12 @@ strip-switcher-workspaces = Workspaces
 strip-switcher-unnamed = Strip { $number }
 strip-switcher-new-strip = New strip
 strip-switcher-new-workspace = New workspace
+strip-switcher-join-workspace = Join a workspace…
 strip-switcher-rename = Rename strip
 strip-switcher-name-placeholder = Strip name
 strip-switcher-refused = Couldn't change the strip
 
 
-## The community workspace's steps (Settings).
-community-resource = Community workspace
-community-status = Community workspace
-community-status-subtitle = Whether this computer is in its community workspace
-community-join = Join the community workspace again
-community-join-subtitle = Join the workspace you left, as you
-community-leave = Leave the community workspace
-community-leave-subtitle = Leave it on this computer; you can join it again in Settings
 
 ## Pairing a new device of the person.
 pairing-title = Pair a new device
@@ -3099,5 +3131,37 @@ desk-monitor-temperature = Temperature
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
 
-# The shared strip every workspace has: chat, tasks and notes.
-strip-lounge = Lounge
+
+## "Join a workspace…": the directory of public workspaces.
+directory-title = Join a workspace
+directory-search = Search public workspaces, or paste a link or code
+directory-link-or-code = Join with a link or code
+directory-close = Close
+directory-loading = Looking for public workspaces…
+directory-empty = No public workspaces here yet. Type a site like tilo.coffee and press Enter to see its workspaces.
+directory-no-match = Nothing matches “{ $query }”. Press Enter to look it up as a site.
+directory-failed = The directory could not be read: { $error }
+directory-join-failed = Couldn't join { $name }: { $error }
+directory-join = Join
+directory-open = Open
+directory-joining = Joining…
+directory-join-named = Join { $name }
+directory-open-named = Open { $name }
+directory-community = { $name } · { $host }'s own
+directory-here-now = { $count } here now
+directory-active-today = Active today
+directory-active-week = Active this week
+directory-quiet = Quiet lately
+directory-members = { $count ->
+    [one] 1 member
+   *[other] { $count } members
+}
+directory-joins-as = You join as { $role }
+directory-role-viewer = a viewer
+directory-role-commenter = a commenter
+directory-role-editor = an editor
+directory-role-moderator = a moderator
+directory-reported = Workspace reported
+directory-reported-body = The people who run it have been told.
+directory-report-failed = The report didn't go through
+directory-moved = { $name } moved to your host, so anyone can find and join it.

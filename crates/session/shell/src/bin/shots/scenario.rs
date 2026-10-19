@@ -411,8 +411,6 @@ pub enum Action {
     /// screen, and the default width is the whole display.
     SetWindowWidths(u32),
     SwitchWorkspace(usize),
-    /// Give every workspace its Lounge, as a session start does.
-    EnsureLounges,
     PushQsLevel(QsLevel),
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
@@ -449,6 +447,33 @@ pub enum Action {
     /// Move the pointer through `points`, one frame (~16 ms) apart: a
     /// trajectory, for pointer intent.
     PointerPath(Vec<Point>),
+    /// Apply `cue` and capture `frames` frames `every_ms` apart on the
+    /// toolkit's clock (`prefix-000`, `prefix-001`, …): every motion is
+    /// sampled exactly where its production curve stands at each instant,
+    /// however long an offscreen render takes. Needs the shell's
+    /// `test-support` feature (the toolkit's clock is pinned per frame);
+    /// without it the frames are skipped with a note.
+    MotionFrames {
+        prefix: &'static str,
+        cue: MotionCue,
+        frames: u32,
+        every_ms: u64,
+    },
+}
+
+/// What starts the motion a [`Action::MotionFrames`] captures.
+#[derive(Debug, Clone)]
+pub enum MotionCue {
+    /// Quick Settings opens, as a click on the tray opens it.
+    OpenQuickSettings,
+    /// Quick Settings closes.
+    CloseQuickSettings,
+    /// A Quick Settings submenu opens, as a click on its tile opens it.
+    QuickSettingsLevel(QsLevel),
+    /// Back out of the Quick Settings submenu.
+    QuickSettingsBack,
+    /// Click at this point.
+    ClickAt(Point),
 }
 
 /// A named, ordered list of actions.
@@ -553,6 +578,69 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_wifi_and_select_group(driver, action);
     apply_window_and_workspace_actions(driver, action);
     apply_desk(driver, action);
+    apply_motion_frames(driver, action, sink);
+}
+
+/// `Action::MotionFrames` — split out of [`apply`] to keep that dispatcher
+/// short.
+fn apply_motion_frames<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    let Action::MotionFrames {
+        prefix,
+        cue,
+        frames,
+        every_ms,
+    } = action
+    else {
+        return;
+    };
+    #[cfg(not(feature = "test-support"))]
+    {
+        let _ = (driver, sink, prefix, cue, frames, every_ms);
+        eprintln!(
+            "scenario: MotionFrames pins the toolkit's clock, which needs \
+             `--features test-support`; skipping"
+        );
+    }
+    #[cfg(feature = "test-support")]
+    {
+        driver.relayout();
+        let start = ui::time::now();
+        let every = std::time::Duration::from_millis(*every_ms);
+        for i in 0..*frames {
+            let at = start + every * i;
+            ui::time::testing::with_monotonic_time(at, || {
+                if i == 0 {
+                    apply_motion_cue(driver, cue);
+                }
+                // The apps answer what the cue asked (a toggle, a page) on
+                // their update, as on a real frame.
+                driver.pump_apps();
+                driver.relayout();
+                let name: &'static str = Box::leak(format!("{prefix}-{i:03}").into_boxed_str());
+                sink.capture(driver, name);
+            });
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
+    match cue {
+        MotionCue::OpenQuickSettings => driver.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.quick_settings.bluetooth_available = true;
+        }),
+        MotionCue::CloseQuickSettings => {
+            driver.with_chrome(|st| st.overlays.quick_settings = false)
+        }
+        MotionCue::QuickSettingsLevel(level) => {
+            let level = level.clone();
+            driver.with_chrome(|st| st.quick_settings.push_level(level));
+        }
+        MotionCue::QuickSettingsBack => driver.with_chrome(|st| st.quick_settings.pop_level()),
+        MotionCue::ClickAt(point) => driver.click_at(*point),
+    }
 }
 
 /// The desk widgets and the Super surface.
@@ -1493,12 +1581,6 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 }
             }
         }
-        Action::EnsureLounges => {
-            driver.with_chrome(|st: &mut ChromeState| {
-                st.tree_mut().desktop.ensure_lounges();
-                st.bump();
-            });
-        }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
                 let mut tree = st.tree_mut();
@@ -1887,6 +1969,70 @@ fn desk_widgets_scenario() -> Scenario {
     }
 }
 
+/// Quick Settings appearing from the tray, drilling into Wi-Fi and back,
+/// and leaving: frame by frame at 90 Hz on the toolkit's clock.
+fn motion_quick_settings_scenario() -> Scenario {
+    Scenario {
+        name: "motion_quick_settings",
+        description: "Quick Settings appears from the tray, drills into Wi-Fi and back, and leaves, at 90 Hz (needs --features test-support).",
+        actions: vec![
+            Action::MotionFrames {
+                prefix: "qs-open",
+                cue: MotionCue::OpenQuickSettings,
+                frames: 26,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "qs-drill",
+                cue: MotionCue::QuickSettingsLevel(QsLevel::Wifi),
+                frames: 26,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "qs-back",
+                cue: MotionCue::QuickSettingsBack,
+                frames: 26,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "qs-close",
+                cue: MotionCue::CloseQuickSettings,
+                frames: 16,
+                every_ms: 11,
+            },
+        ],
+    }
+}
+
+/// The Notes window's sidebar collapsing and expanding by a click on its
+/// toggle: frame by frame at 90 Hz on the toolkit's clock.
+fn motion_sidebar_scenario() -> Scenario {
+    Scenario {
+        name: "motion_sidebar",
+        description: "A window's sidebar collapses and expands from its toggle, at 90 Hz (needs --features test-support).",
+        actions: vec![
+            // Focus the Notes window first, as a person's first click does.
+            Action::ClickAt(Point::new(900.0, 700.0)),
+            Action::Wait(4),
+            Action::Snapshot("sidebar-rest"),
+            Action::MotionFrames {
+                prefix: "sidebar-collapse",
+                // The Notes window's sidebar toggle, in its header.
+                cue: MotionCue::ClickAt(Point::new(60.0, 96.0)),
+                frames: 26,
+                every_ms: 11,
+            },
+            Action::MotionFrames {
+                prefix: "sidebar-expand",
+                // The Notes window's sidebar toggle, in its header.
+                cue: MotionCue::ClickAt(Point::new(60.0, 96.0)),
+                frames: 26,
+                every_ms: 11,
+            },
+        ],
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the shell screenshot catalogue is one data table of action lists; splitting it would only relocate rows"
@@ -1894,6 +2040,8 @@ fn desk_widgets_scenario() -> Scenario {
 fn build_scenarios() -> Vec<Scenario> {
     vec![
         desk_widgets_scenario(),
+        motion_quick_settings_scenario(),
+        motion_sidebar_scenario(),
         Scenario {
             name: "task_cursor_ready",
             description: "Production task cursor controls with a synthetic live-run projection; not a delivery proof.",
@@ -3062,22 +3210,6 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(1),
                 Action::Snapshot("03-ws0-again"),
-            ],
-        },
-        Scenario {
-            name: "lounge",
-            description: "Every workspace's Lounge: first, with the room's chat, tasks and \
-             notes, and the strip switcher listing it above the person's own strips.",
-            actions: vec![
-                Action::EnsureLounges,
-                Action::Relayout,
-                Action::Wait(10),
-                Action::Snapshot("00-lounge"),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(10),
-                Action::Snapshot("01-switcher"),
             ],
         },
         Scenario {

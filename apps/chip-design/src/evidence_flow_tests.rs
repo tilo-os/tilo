@@ -286,14 +286,11 @@ fn measured_graph_rows_do_not_overlap_at_two_hundred_percent_text() {
 fn public_host_search_exposes_actual_indexed_evidence_stage() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
     import(&mut app, &fixture());
-    let address = ui::tilo_actions::ActionAddress::new("tilo.host:search", "open");
+    let open = ui::search::open_search_invocation(
+        &ui::search::SearchRequest::this_app().with_query("Synthetic CPU"),
+    );
     app.harness()
-        .invoke_action(
-            &address,
-            json!({"query":"Synthetic CPU"}).as_object().unwrap(),
-            false,
-            None,
-        )
+        .invoke_action(&open.address, &open.arguments, false, None)
         .unwrap();
     app.settle();
     assert!(

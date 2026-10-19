@@ -3,6 +3,7 @@
 
 Gateway defaults are client-only. Its own tests must also observe the server,
 trusted-host adapter and native segmentation rather than passing without them.
+The Imager's default is its Tilo app; its tests also cover the installation.
 Only enable these features when the gateway itself is selected, not for its
 client dependents. Keep package argument strings separate from feature flags.
 """
@@ -12,6 +13,9 @@ import sys
 
 NATIVE_TEST_FEATURES = {
     "tilo-model-gateway": ("local-models", "host-backend", "runtime-client"),
+    # The Imager's default build is the Tilo app (the image writer); its tests
+    # and lints cover the guided installation as the host downloads ship it.
+    "imager": ("installation",),
 }
 
 

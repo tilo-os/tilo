@@ -162,7 +162,7 @@ pub struct Model<'a> {
 
 /// A stored size in the platform's unit for stored data (SI).
 pub fn size(bytes: u64) -> String {
-    ui::format::bytes_si(bytes)
+    ui::format::size(bytes)
 }
 
 /// `12:05` or `12:05 PM`.
@@ -175,12 +175,7 @@ pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
     let days = (day - today).num_days();
     match ui::format::near_day(days) {
         Some(near) if days <= 0 => near,
-        _ => format!(
-            "{} {} {}",
-            ui::format::weekday_name(day.weekday().num_days_from_sunday() as usize),
-            day.day(),
-            ui::format::month_name(day.month0() as usize)
-        ),
+        _ => ui::format::day_heading(day, day.year() != today.year()),
     }
 }
 
@@ -260,7 +255,7 @@ pub(crate) fn schedule_label(schedule: Schedule) -> String {
             minute,
         } => format!(
             "Every {} at {}",
-            ui::format::weekday_name(weekday.num_days_from_sunday() as usize),
+            ui::format::weekday_name(weekday),
             ui::clock::hour_minute(hour, minute)
         ),
     }

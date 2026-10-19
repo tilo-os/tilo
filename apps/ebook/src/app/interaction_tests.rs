@@ -8,6 +8,7 @@ use crate::model::{AnnoKind, LibraryPrefs, Progress};
 use serial_test::serial;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
+use ui::time::Duration;
 use ui::widget::Edits;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
@@ -4719,14 +4720,9 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
                 Arc::new(TestLibrary::read_library_entries(&doc)),
                 1,
             );
-            let comment = ui::search::SearchProvider::resolve_action_resource(
-                &provider,
-                &tilo_actions::ActionAddress::new(
-                    crate::resource::mark_place_resource(&cm, true),
-                    "open",
-                ),
-            )
-            .expect("exact comment resource");
+            let comment = provider
+                .resolve(&crate::resource::mark_place_resource(&cm, true))
+                .expect("exact comment resource");
             let spec = comment
                 .actions
                 .iter()

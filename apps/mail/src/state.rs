@@ -14,7 +14,6 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use vello::kurbo::{Point, Rect};
 
-use ui::ImageStore;
 use ui::icons::Icon;
 
 use crate::account::AccountStore;
@@ -227,8 +226,9 @@ pub struct MailState {
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
 
-    /// Remote avatar loader (Gravatar). No-op fetcher unless built `live`.
-    pub images: ImageStore,
+    /// The pictures beside senders: Contacts' and the person's own, never
+    /// fetched from a picture service.
+    pub avatars: crate::avatars::Avatars,
 
     // --- shell-derived flags the app writes each layout, panes read ---
     /// The overview and the message are separate screens (a narrow window).
@@ -262,20 +262,23 @@ impl MailState {
     /// The bundled sample mailbox and accounts, editing the document it is
     /// handed.
     #[cfg(test)]
-    pub fn new_sample(images: ImageStore) -> Self {
-        let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), images);
+    pub fn new_sample(avatars: crate::avatars::Avatars) -> Self {
+        let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), avatars);
         state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
         state
     }
 
     /// What a screenshot shows: the fixture's mailbox, accounts and clock,
     /// with a conversation selected so the reader is populated.
-    pub fn from_fixture(fixture: &crate::sample::MailFixture, images: ImageStore) -> Self {
+    pub fn from_fixture(
+        fixture: &crate::sample::MailFixture,
+        avatars: crate::avatars::Avatars,
+    ) -> Self {
         let mut s = Self::empty(
             fixture.mailbox.clone(),
             fixture.accounts.clone(),
             fixture.now_min,
-            images,
+            avatars,
         );
         let threads = s.current_threads();
         let pick = threads
@@ -290,12 +293,17 @@ impl MailState {
 
     /// The live app: real account list, empty corpus until the engine fetches.
     /// No fabricated messages.
-    pub fn new_live(accounts: AccountStore, images: ImageStore) -> Self {
+    pub fn new_live(accounts: AccountStore, avatars: crate::avatars::Avatars) -> Self {
         let cfg = accounts.active_config();
-        Self::empty(Mailbox::new(cfg), accounts, now_minutes(), images)
+        Self::empty(Mailbox::new(cfg), accounts, now_minutes(), avatars)
     }
 
-    fn empty(mailbox: Mailbox, accounts: AccountStore, now_min: i64, images: ImageStore) -> Self {
+    fn empty(
+        mailbox: Mailbox,
+        accounts: AccountStore,
+        now_min: i64,
+        avatars: crate::avatars::Avatars,
+    ) -> Self {
         Self {
             mailbox,
             accounts,
@@ -312,7 +320,7 @@ impl MailState {
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
             fetching_first: false,
-            images,
+            avatars,
             narrow: false,
             detail_pushed: false,
             seeded: false,
@@ -1008,7 +1016,7 @@ mod tests {
     use automerge::ReadDoc;
 
     fn state() -> MailState {
-        MailState::new_sample(crate::app::avatar_store_offline())
+        MailState::new_sample(crate::avatars::Avatars::new())
     }
 
     fn first_inbox_id(st: &MailState) -> Option<MessageId> {

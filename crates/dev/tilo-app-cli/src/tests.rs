@@ -3393,6 +3393,44 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         }
     }
 
+    // Phase: a_new_apps_services_speak_the_runtime_version_the_image_serves.
+    {
+        let spec = AppSpec {
+            package_name: "errands".into(),
+            crate_name: "errands".into(),
+            title: "Errands".into(),
+            app_id: "so.tilo.errands".into(),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+            },
+            template: Template::Starter,
+        };
+        let served: toml::Value = toml::from_str(
+            &std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../os/usr/share/tilo/system-interfaces.toml"),
+            )
+            .expect("the image's interface declaration"),
+        )
+        .expect("it parses");
+        let runtime = served["interfaces"]["runtime"]
+            .as_integer()
+            .expect("runtime");
+        let manifest: toml::Value = toml::from_str(&app_manifest(&spec)).expect("manifest");
+        let services = manifest["sandbox"]["services"]
+            .as_table()
+            .expect("services");
+        assert!(!services.is_empty());
+        for (name, requirement) in services {
+            assert!(
+                requirement
+                    .as_str()
+                    .is_some_and(|it| it.ends_with(&format!("@{runtime}"))),
+                "a new app's {name} speaks runtime {runtime}: {requirement}"
+            );
+        }
+    }
+
     // Phase: collection_template_uses_item_actions_and_starts_empty.
     {
         let spec = AppSpec {

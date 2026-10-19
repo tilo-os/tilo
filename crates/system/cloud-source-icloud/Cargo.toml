@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "iCloud Drive as a best-effort cloud-source provider over Apple's undocumented web API: the signed-in web session, drivews/docws listing, ranged downloads, uploads, moves and trash."
 
 [dependencies]
-mime_guess.workspace = true
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }

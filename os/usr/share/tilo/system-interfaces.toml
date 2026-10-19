@@ -1,32 +1,43 @@
-# The system interfaces this image serves, with every version of each.
+# The interfaces this image serves to apps: one version of each.
 #
-# An app requires an interface by naming it `required@N` in its manifest's
-# `[sandbox.services]`. The registry client offers only builds whose
-# requirements are all listed here, `tilo-install` refuses the rest, and the
-# launcher runs the image's own copy of an app instead of a user copy that
-# needs a version missing here. The image's preinstalled apps always fit:
-# crates/packaging/launcher checks every manifest in apps/ against this file.
+# An app names the version it speaks of each service it uses in its
+# manifest's `[sandbox.services]` (`required@N` or `optional@N`). It runs
+# only where every one is served at exactly that version: the registry
+# client offers only builds that fit, `tilo-install` refuses the rest, the
+# launcher connects nothing at another version, and the shell updates an app
+# that is behind before it opens it (docs/architecture/compatibility.md).
+# Nothing is kept for an older version; the image's own apps are built with
+# it and always fit (crates/packaging/launcher checks every manifest in apps/
+# against this file).
 #
-# A change an existing client could not work with is a new version. Keep
-# serving the old one beside it for as long as published builds use it; a
-# version dropped here strands every installed build that requires it on the
-# image's copy.
+# Each version is the code's (`interface.toml` beside the code that owns it);
+# tools/policy/check_interfaces.py fails when the two differ.
 
 [interfaces]
 # The image-owned grant Settings drives the system through: host clients and
 # configuration, the filtered system bus to the system's authorities
 # (NetworkManager, BlueZ, logind, timedated, ...), PipeWire and the
 # compositor's runtime state (crates/packaging/launcher/src/system_authority.rs).
-system = [1]
+system = 1
 
-# Session services handed to apps as connected sockets.
-app-host = [1]
-collab = [1]
-compat = [1]
-identity = [1]
-model-gateway = [1]
-models = [1]
-shell-ui = [1]
-tilo-fs = [1]
-tools = [1]
-ush = [1]
+# App ↔ shell: the shell-ui connection (crates/sdk/ui-core/interface.toml).
+shell-ui = 6
+
+# App ↔ runtime: every service under [runtime] below
+# (crates/runtime/runtime-portal/interface.toml).
+runtime = 2
+
+[runtime]
+# Session services handed to apps as connected sockets; each speaks the
+# runtime interface's version.
+services = [
+    "app-host",
+    "collab",
+    "compat",
+    "identity",
+    "model-gateway",
+    "models",
+    "tilo-fs",
+    "tools",
+    "ush",
+]

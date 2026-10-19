@@ -596,8 +596,8 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
             NaiveDate::from_ymd_opt(2026, 6, 29).unwrap(),
             NaiveDate::from_ymd_opt(2026, 7, 5).unwrap(),
         );
-        assert!(s.contains("29 Jun"), "start kept: {s}");
-        assert!(s.contains("5 Jul"), "end kept: {s}");
+        assert!(s.contains("Jun 29"), "start kept: {s}");
+        assert!(s.contains("Jul 5"), "end kept: {s}");
     }
     // Case `elide_to_width_ellipsizes_and_actually_fits`.
     {
@@ -1348,7 +1348,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         let mail_roots = vec![mailbox];
         let encoded = tilo_actions::door::encode_json(
             &mail_roots,
-            &tilo_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
+            &mail::actions::MailEffect::PREPARE_CALENDAR_INVITATION.on("mail.mailbox"),
             &arguments,
         )
         .expect("Mail accepts Calendar's exact typed arguments");
@@ -3609,7 +3609,9 @@ fn platform_history_restore_returns_the_calendar_to_a_chosen_version() {
     let entry = first.unwrap();
     harness
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(session.id.as_str(), "select"),
+            &session
+                .action_address("select")
+                .expect("a History session publishes `select`"),
             Some(&format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3681,7 +3683,9 @@ fn open_platform_history(harness: &mut ui::headless::FrameHarness) {
     assert!(!open.label.trim().is_empty());
     harness
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(history.id.as_str(), "open"),
+            &history
+                .action_address(&open.id)
+                .expect("History publishes `open`"),
             None,
         )
         .unwrap();

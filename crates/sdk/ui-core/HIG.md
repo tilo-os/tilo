@@ -1330,7 +1330,42 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
 
 ### 9.7 Motion
 
-All chrome animation reads `tokens.motion.durations` and nothing else:
+Every animation is composed from the standard motions in `ui::motion`
+(`src/motion/`), each defined once; a call site names *what* moves and never
+says how (no curve, duration, spring constant or eased ratio of its own):
+
+| Motion | For |
+|---|---|
+| `Appear` | popovers, menus, sheets, dialogs: opacity and a 0.96 → 1 scale about the control that summoned them; in `base`, out `fast` |
+| `Drill` / `DrillDepth` | drill-in and back in a panel (shared axis: 28 px and a fade); whole-column pushes |
+| `Disclose` / `Extent` | expand and collapse; a panel's height following its page (clip, never re-layout) |
+| `PanelSlide` | sidebars, drawers, the inspector; content beside reflows once, at the wide end; edge sheets |
+| `CrossFade` | content swapped in place |
+| `ListChange` | rows arriving, leaving, changing places |
+| `Snap` | carousels settling on a detent with the release velocity |
+| `Zoom` | one thing becoming another (window and overview card) |
+| `WindowMotion` | windows opening, closing, moving on the strip (`springs.heavy`) |
+| `Ambient` | chrome that comes back on its own (leaves at once, arrives slowly unless asked) |
+| `Feedback` | press and hover tints: on at once, off over `fast` |
+| `Attention` | a refusal's shake, a single pulse; a tint under reduced motion |
+
+They all run on `MotionValue`, a damped spring solved in closed form: exact
+at any frame rate, interruptible (a new target continues from the drawn
+position *and velocity*, so repeated presses are one motion, never a queue),
+and exactly at rest once settled (no frames while idle). Routine motion is
+critically damped: nothing bounces. Input acts on the new state at once; the
+motion only draws it. A moving surface is hit-tested where it is drawn
+(`Pose::to_local`), and nothing moves under a pointer that is aiming at it
+(`motion::held_by_aim`). A motion that is genuinely new is added to the
+library; `tools/policy/check_motion_library.py` rejects easing math, ad-hoc
+springs and lerp-over-time anywhere else.
+
+Not everything moves: typing, the caret, scrolling content (direct
+manipulation), hover across lists and menus, live values and a keyboard
+shortcut's result get instant feedback only.
+
+The paces are the motion tokens, `tokens.motion.durations`, as critically
+damped springs that have settled by then:
 
 - `fast` (130 ms) — hover, press, chip toggle, drop-zone hint, pip elongation.
 - `base` (210 ms) — a Panel opening or closing, a tab in/out, a strip change,
@@ -1338,10 +1373,9 @@ All chrome animation reads `tokens.motion.durations` and nothing else:
 - `slow` (400 ms) — whole-view changes: overview, workspace switch, window
   spawn, when a pointer or gesture starts them.
 
-Panels open with the **one** entrance: opacity 0→1, y −10→0, scale 0.95→1,
-`Curve::EaseOut` over `base`, and reverse to close. Bespoke per-surface
-constants (the shell previously carried eight near-but-unequal ones) are a
-defect.
+Panels open with the **one** entrance, `motion::Appear`, and reverse to close.
+Bespoke per-surface constants (the shell previously carried eight
+near-but-unequal ones) are a defect.
 
 **Reduced motion** is one rule, read through `Theme::motion()`
 (`tokens::EffectiveMotion`) and nowhere else:

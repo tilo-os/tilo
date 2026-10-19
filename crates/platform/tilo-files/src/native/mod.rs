@@ -21,6 +21,7 @@ pub mod bounded;
 pub mod checked;
 pub mod identity;
 pub mod lock;
+pub mod migration;
 pub mod nofollow;
 pub mod private;
 pub mod retained_home;

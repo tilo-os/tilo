@@ -340,19 +340,27 @@ impl Birthday {
         }
     }
 
-    /// Human-readable form, e.g. `December 10, 1815`, or `December 10` when the
-    /// year is unknown.
+    /// Human-readable form in the toolkit's worded date, e.g.
+    /// `Dec 10, 1815`, or `Dec 10` when the year is unknown.
     pub fn pretty(&self) -> String {
-        let name = crate::date::month_name(self.month());
-        match self {
-            Birthday::Full { year, day, .. } => format!("{name} {day}, {year}"),
-            Birthday::MonthDay { day, .. } => format!("{name} {day}"),
+        match *self {
+            Birthday::Full { year, month, day } => {
+                ui::format::NaiveDate::from_ymd_opt(year, month, day)
+                    .map_or_else(|| self.iso(), ui::format::month_day_year)
+            }
+            // Any leap year holds every month and day a year-less date can name.
+            Birthday::MonthDay { month, day } => {
+                ui::format::NaiveDate::from_ymd_opt(2000, month, day)
+                    .map_or_else(|| self.iso(), ui::format::month_day)
+            }
         }
     }
 }
 
 /// How much text one field of a contact may hold.
 pub const MAX_CONTACT_FIELD_BYTES: usize = 32 * 1024;
+/// How much text a contact's picture may take: a portrait is far smaller.
+pub const MAX_CONTACT_PHOTO_BYTES: usize = 96 * 1024;
 /// How many rows one repeated field of a contact may hold.
 pub const MAX_CONTACT_ROWS: usize = 256;
 
@@ -390,6 +398,13 @@ pub struct Contact {
     pub groups: Ordered<GroupEntry>,
     /// Favorite
     pub favorite: bool,
+    /// Picture
+    ///
+    /// A small square JPEG as base64 (`ui::held_images::portrait`), from an
+    /// imported card or chosen by the person; empty for none.
+    #[model(readonly)]
+    #[serde(default)]
+    pub photo: String,
 }
 
 impl Identified for Contact {
@@ -435,6 +450,11 @@ impl Contact {
                 "a contact's field holds at most {MAX_CONTACT_FIELD_BYTES} bytes"
             )));
         }
+        if self.photo.len() > MAX_CONTACT_PHOTO_BYTES {
+            return Err(Refusal::new(format!(
+                "a contact's picture takes at most {MAX_CONTACT_PHOTO_BYTES} bytes"
+            )));
+        }
         if [
             self.phones.len(),
             self.emails.len(),
@@ -466,6 +486,26 @@ impl Contact {
         Self {
             id: Uuid::new_v4(),
             ..Default::default()
+        }
+    }
+
+    /// The picture's encoded bytes, if the contact has one.
+    pub fn photo_bytes(&self) -> Option<Vec<u8>> {
+        if self.photo.is_empty() {
+            return None;
+        }
+        ui::held_images::picture_bytes(&self.photo)
+    }
+
+    /// Take `encoded` (any picture) as the contact's picture, made a small
+    /// square. Returns whether it decoded.
+    pub fn set_photo(&mut self, encoded: &[u8]) -> bool {
+        match ui::held_images::portrait(encoded) {
+            Some(portrait) => {
+                self.photo = ui::held_images::picture_text(&portrait);
+                true
+            }
+            None => false,
         }
     }
 
@@ -515,6 +555,9 @@ impl Contact {
             hay.push_str(&birthday.iso());
             hay.push(' ');
             hay.push_str(&birthday.pretty());
+            hay.push(' ');
+            // The month's whole name too, so "december" finds the birthday.
+            hay.push_str(&ui::format::month_name(birthday.month()));
             hay.push(' ');
         }
         hay.push_str(&self.notes);
@@ -694,6 +737,7 @@ fn make_sample(spec: SampleSpec<'_>) -> Contact {
             .map(|value| GroupEntry::new(*value))
             .collect(),
         favorite: spec.favorite,
+        photo: String::new(),
     }
 }
 
@@ -988,12 +1032,9 @@ mod tests {
                     day: 10
                 }
                 .pretty(),
-                "December 10, 1815"
+                "Dec 10, 1815"
             );
-            assert_eq!(
-                Birthday::MonthDay { month: 12, day: 10 }.pretty(),
-                "December 10"
-            );
+            assert_eq!(Birthday::MonthDay { month: 12, day: 10 }.pretty(), "Dec 10");
         }
     }
 

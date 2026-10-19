@@ -85,7 +85,7 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
         .iter()
         .find(|(known, _)| extension.is_some_and(|extension| extension.eq_ignore_ascii_case(known)))
         .map(|(_, media_type)| *media_type)
-        .or_else(|| mime_guess::from_path(path).first_raw())
+        .or_else(|| tilo_mime::from_path(path))
 }
 
 /// The file types Tilo's own apps write, which no general table knows:

@@ -606,6 +606,7 @@ fn runtime_details(
 fn runtime_item(offer: app_cli::CatalogueApp) -> StoreItem {
     StoreItem {
         bot: None,
+        awaiting_developer: false,
         id: offer.package_id,
         name: offer.display_name,
         description: offer.description,
@@ -1456,6 +1457,7 @@ mod tests {
     pub(super) fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
             bot: None,
+            awaiting_developer: false,
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),

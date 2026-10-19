@@ -58,7 +58,7 @@ pub fn save_as(app: &mut App, path: &Path) {
     arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
     app.harness()
         .invoke_action(
-            &tilo_actions::ActionAddress::new("word-processor.document", "save-as"),
+            &word_processor::effects::WordProcessorEffect::SAVE_AS.on("word-processor.document"),
             &arguments,
             true,
             None,

@@ -100,6 +100,7 @@ impl Steward {
         publish(
             &session,
             &NeighbourMsg::IdentityHello {
+                protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(device.cert.clone()),
                 revocations: Vec::new(),
             },
@@ -235,7 +236,7 @@ async fn admit(
             continue;
         };
         let message = postcard::from_bytes::<NeighbourMsg>(&data);
-        if let Ok(NeighbourMsg::MlsAccessRequest { request, .. }) = &message
+        if let Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) = &message
             && request.verify().is_ok()
         {
             let gate = admissions
@@ -254,7 +255,7 @@ async fn admit(
         let outgoing = {
             let mut channels = channels.lock().unwrap();
             match message {
-                Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+                Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
                     if request.verify().is_err() {
                         continue;
                     }

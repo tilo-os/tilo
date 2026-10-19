@@ -505,7 +505,8 @@ impl Widget for EmbeddedApp {
         let visible = presentation_changed
             || self.app.unsettled()
             || (woken && self.app.root_widget.needs_redraw())
-            || self.app.root_widget.needs_animation_frame();
+            || self.app.root_widget.needs_animation_frame()
+            || crate::motion::frames_wanted(crate::time::now());
         if visible {
             self.wants_frame.set(true);
         }
@@ -971,6 +972,8 @@ mod theme_repaint_tests {
 
     #[test]
     fn a_tooltip_in_an_embedded_app_damages_its_chip_not_the_app() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
         let app = App::new_with_controlled_inputs(
             crate::state::State::new(),
             Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),

@@ -66,9 +66,10 @@ fn opening_presentations_preserves_cdata_text() {
         let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
         for index in 0..source.len() {
             let mut entry = source.by_index(index).unwrap();
+            let name = entry.name().unwrap().into_owned();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
-            if entry.name().ends_with(".xml") {
+            if name.ends_with(".xml") {
                 let xml = String::from_utf8(bytes).unwrap();
                 // The exact sentinel is text content, never an attribute.
                 bytes = xml
@@ -87,7 +88,7 @@ fn opening_presentations_preserves_cdata_text() {
                     .into_bytes();
             }
             output
-                .start_file(entry.name(), zip::write::SimpleFileOptions::default())
+                .start_file(name, zip::write::SimpleFileOptions::default())
                 .unwrap();
             output.write_all(&bytes).unwrap();
         }

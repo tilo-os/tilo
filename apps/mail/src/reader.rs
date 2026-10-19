@@ -28,7 +28,7 @@ use ui::{TextKind, TextRole};
 
 use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, Shared};
-use crate::util::{format_absolute, gravatar_url, local_minutes};
+use crate::util::{format_absolute, local_minutes};
 
 /// The engine for HTML mail: the packaged Chromium runtime when the image has
 /// it, over a throwaway profile (no cookies or storage survive the process),
@@ -312,7 +312,7 @@ impl Flow<'_, '_> {
         let caption_h = self.line(TextRole::Caption);
 
         let name = message.from.display();
-        let image = self.state.images.get(&gravatar_url(&message.from.email));
+        let image = self.state.avatars.image(&message.from.email);
         AvatarFace::new(&name, &message.from.email)
             .image(image.as_ref())
             .paint(
@@ -1362,7 +1362,7 @@ mod tests {
     use ui::webview::test_engine::TestEngine;
 
     fn shared() -> Shared {
-        MailState::shared(MailState::new_sample(crate::app::avatar_store_offline()))
+        MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
     }
 
     /// A reader of `w`×`h` showing message `id`, opened as a row click opens it.
@@ -1617,7 +1617,7 @@ mod tests {
     fn a_refetched_message_is_one_message_in_the_conversation() {
         let shared = MailState::shared(MailState::new_live(
             crate::account::AccountStore::new(),
-            crate::app::avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         let raw = b"From: Maya <maya@x.example>\r\nTo: sam@rivera.example\r\n\
 Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
@@ -1650,7 +1650,7 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
     fn the_reader_shows_the_conversation_the_list_shows_and_opens_earlier_messages() {
         let shared = MailState::shared(MailState::new_live(
             crate::account::AccountStore::new(),
-            crate::app::avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         let parse = |bytes: Vec<u8>, at: i64| {
             let mut message = crate::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
@@ -1740,7 +1740,7 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
 
         let shared = MailState::shared(MailState::new_live(
             crate::account::AccountStore::new(),
-            crate::app::avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         let mut message = crate::transport::parse_eml(
             format!("From: a@x\r\nSubject: S\r\nMessage-ID: <q@x>\r\n\r\n{body}").as_bytes(),
@@ -1779,7 +1779,7 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
     fn unread_earlier_messages_open_with_the_conversation() {
         let shared = MailState::shared(MailState::new_live(
             crate::account::AccountStore::new(),
-            crate::app::avatar_store_offline(),
+            crate::avatars::Avatars::new(),
         ));
         let first = crate::transport::parse_eml(
             &raw("a@x", "Plan", None, "Unread start."),

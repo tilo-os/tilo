@@ -1635,7 +1635,7 @@ impl SetupApp {
             } else {
                 "files"
             },
-            ui::format::bytes_si(folder.scan.bytes)
+            ui::format::size(folder.scan.bytes)
         );
         if folder.scan.skipped_count > 0 {
             let _ = write!(
@@ -1818,7 +1818,7 @@ impl SetupApp {
                 let mut facts = format!(
                     "{}, {}",
                     mode_label(folder.mode),
-                    ui::format::bytes_si(folder.scan.bytes)
+                    ui::format::size(folder.scan.bytes)
                 );
                 if folder.scan.skipped_count > 0 {
                     let _ = write!(
@@ -1857,12 +1857,12 @@ impl SetupApp {
                     if skipped == 0 {
                         format!(
                             "These folders need about {} in Tilo.",
-                            ui::format::bytes_si(bytes)
+                            ui::format::size(bytes)
                         )
                     } else {
                         format!(
                             "These folders need about {} in Tilo. The estimate is incomplete: it leaves out {} that could not be read.",
-                            ui::format::bytes_si(bytes),
+                            ui::format::size(bytes),
                             items_phrase(skipped)
                         )
                     }
@@ -2811,8 +2811,8 @@ impl SetupApp {
             })) => t_args(
                 "imager-setup-internal-plan-error-space",
                 &[
-                    ("needed", ui::format::bytes(needed_bytes).into()),
-                    ("available", ui::format::bytes(available_bytes).into()),
+                    ("needed", ui::format::memory(needed_bytes).into()),
+                    ("available", ui::format::memory(available_bytes).into()),
                 ],
             ),
             Some(Err(super::staging::plan::PlanError::Unsupported(detail))) => t_args(
@@ -2829,13 +2829,13 @@ impl SetupApp {
                                 ("host", host.into()),
                                 (
                                     "shrink",
-                                    ui::format::bytes(
+                                    ui::format::memory(
                                         shrink.from_bytes.saturating_sub(shrink.to_bytes),
                                     )
                                     .into(),
                                 ),
-                                ("from", ui::format::bytes(shrink.from_bytes).into()),
-                                ("to", ui::format::bytes(shrink.to_bytes).into()),
+                                ("from", ui::format::memory(shrink.from_bytes).into()),
+                                ("to", ui::format::memory(shrink.to_bytes).into()),
                             ],
                         )
                     },
@@ -2846,14 +2846,14 @@ impl SetupApp {
                         "imager-setup-internal-plan-target",
                         &[(
                             "target",
-                            ui::format::bytes(install_flow::target_extent_bytes(plan)).into(),
+                            ui::format::memory(install_flow::target_extent_bytes(plan)).into(),
                         )],
                     ),
                     t_args(
                         "imager-setup-internal-plan-staging",
                         &[(
                             "staging",
-                            ui::format::bytes(install_flow::staging_bytes(plan)).into(),
+                            ui::format::memory(install_flow::staging_bytes(plan)).into(),
                         )],
                     ),
                 ]
@@ -3030,8 +3030,8 @@ impl SetupApp {
                                 "imager-setup-internal-run-progress",
                                 &[
                                     ("step", step.into()),
-                                    ("done", ui::format::bytes(progress.done_bytes).into()),
-                                    ("total", ui::format::bytes(progress.total_bytes).into()),
+                                    ("done", ui::format::memory(progress.done_bytes).into()),
+                                    ("total", ui::format::memory(progress.total_bytes).into()),
                                 ],
                             )
                         }

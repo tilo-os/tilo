@@ -1286,6 +1286,7 @@ mod tests {
                         publisher.device_public_key,
                     ),
                     neighbour_wire::NeighbourMsg::IdentityHello {
+                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(publisher.clone()),
                         revocations: vec![entry],
                     },

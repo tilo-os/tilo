@@ -238,7 +238,7 @@ impl Attachment {
 
     /// Human-readable size, e.g. `14 KiB`, `1.2 MiB`.
     pub fn size_human(&self) -> String {
-        ui::format::bytes(self.size)
+        ui::format::size(self.size)
     }
 
     /// Coarse category used to pick a themed vector [`Icon`] for the chip.

@@ -1203,6 +1203,20 @@ fn create_window_render(
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
+    // Drawn by the room's render service: no device in this process.
+    #[cfg(target_os = "linux")]
+    if crate::render_thread::remote::requested() {
+        match crate::render_thread::remote::spawn(
+            window.clone(),
+            transparent,
+            render_ready_wake(window.id(), proxy.clone()),
+        ) {
+            Ok(render) => return Ok(render),
+            Err(reason) => {
+                tracing::warn!(%reason, "no render service; drawing on this process's own device");
+            }
+        }
+    }
     create_window_render_prepared(window, transparent, None, None, proxy)
 }
 
@@ -1641,6 +1655,18 @@ impl AppHandler {
     /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
+        // Drawn by the room's render service: the launch prepared its
+        // connection, not a device (`startup::prepare_native_renderer`).
+        #[cfg(target_os = "linux")]
+        if crate::render_thread::remote::requested() {
+            self.app.startup_renderer = None;
+            self.render = Some(create_window_render(
+                window,
+                false,
+                self.a11y_proxy.clone(),
+            )?);
+            return Ok(());
+        }
         if let Some(retained) = self.suspended_renderer.take()
             && !retained.device_lost()
         {
@@ -2359,6 +2385,10 @@ impl AppHandler {
                     ..
                 }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                    ..
+                }
+                // Never delivered: the client's `pump` ends on it.
+                | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {
                     ..
                 } => {}
             }
@@ -3762,6 +3792,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         window.request_redraw();
                     }
                     AkWindowEvent::ActionRequested(req) => {
+                        // Assistive technology acts like a shortcut: what it
+                        // opens lands at once.
+                        crate::motion::note_source(crate::tokens::MotionSource::Action);
                         // `Some((x, y))` means "synthesise a click here".
                         if let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
                             req.action,
@@ -3965,6 +3998,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         event: WindowEvent,
     ) {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // What this event opens or closes follows it (a key lands it at
+        // once, a click moves it): `motion::input_source`.
+        crate::motion::note_input(&event);
         if let Some(window) = self
             .window
             .clone()
@@ -4380,7 +4416,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // starving the pump: a fade that replaces a slide still needs its
         // frames, and gating here froze every reduced-motion app that waited
         // on one.
-        let widget_animation = app.root_widget.needs_animation_frame();
+        // A motion started outside the polled tree (a menu its owner draws in
+        // its own overlay pass) asks through the motion clock.
+        let widget_animation = app.root_widget.needs_animation_frame()
+            || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
                 .presence_ctx
@@ -4568,6 +4607,7 @@ impl AppHandler {
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
+                crate::motion::note_source(crate::tokens::MotionSource::Action);
                 if dispatch_native_surface_accessibility(
                     self.app.root_widget.as_mut(),
                     &id,

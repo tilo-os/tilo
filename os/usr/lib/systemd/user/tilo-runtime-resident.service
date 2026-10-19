@@ -1,0 +1,38 @@
+[Unit]
+Description=Keep the libraries of your own app runtimes in memory
+# The system's tilo-runtime-resident.service keeps the runtimes the image
+# ships. A runtime you installed into your own store (one your apps name and
+# the system does not hold) is kept here, in your session: verified as a
+# launch verifies it, and each library only when the kernel measures its
+# signed fs-verity digest on the open file, so what stays in memory is the
+# publisher's bytes, never whatever a path in your home names
+# (crates/packaging/launcher/src/runtime_resident.rs). It runs no app code.
+# tilo-runtime-resident.path starts it again when your registry or runtimes
+# change.
+PartOf=tilo-graphical-session.target
+After=tilo-graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/tilo-launcher runtime-resident --user
+# Read once, behind everything that is waiting on the disk.
+IOSchedulingClass=idle
+Nice=19
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=tilo-graphical-session.target

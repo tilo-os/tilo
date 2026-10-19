@@ -506,6 +506,10 @@ impl ContactsApp {
     fn configured() -> Self {
         let store = Rc::default();
         let shared: Shared = std::rc::Rc::new(std::cell::RefCell::new(Bridge::default()));
+        {
+            let mut bridge = shared.borrow_mut();
+            bridge.images = Some(bridge.pictures.store());
+        }
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
         let mut shell = NavShell::new()
@@ -1226,6 +1230,7 @@ impl ContactsApp {
     /// Hand the list its rows and the sidebar its groups.
     fn publish_list(&mut self) {
         self.list_stale = false;
+        let pictures = self.shared.borrow().pictures.clone();
         let rows: Vec<ListEntry> = self
             .visible_ids()
             .into_iter()
@@ -1235,6 +1240,7 @@ impl ContactsApp {
                 name: contact.display_name(),
                 secondary: contact.subtitle(),
                 favorite: contact.favorite,
+                photo: pictures.hold_text(&contact.photo),
             })
             .collect();
         let empty_title = match self.group_filter.as_deref() {

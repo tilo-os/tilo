@@ -2130,19 +2130,13 @@ impl WorkspaceTree {
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
-        // A room arriving here is a workspace like any other: it has its
-        // Lounge, first windows included, before the windows others put in
-        // it fold in; a Lounge it held is left as it is.
-        let mut changed = self.desktop.ensure_lounge_in(room);
         let replicated = projection::contents_of(doc);
-        changed |= projection::merge_room_contents(
+        let changed = projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
         );
-        // Idempotent on what the merge leaves: the Lounge is already first.
-        changed |= self.desktop.ensure_lounge_in(room);
         if self.requires_native_owner(room) {
             let presets = projection::workspace_presets_of(doc);
             let mut reprofiled = false;
@@ -2760,7 +2754,6 @@ impl WorkspaceTree {
 
     fn rebuild_cache_from_doc(&mut self) {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
-        self.desktop.ensure_lounges();
     }
 
     /// Save the tree to [`Self::persist_path`], if one is set, and export
@@ -5176,9 +5169,6 @@ impl WorkspaceTree {
             DesktopCommand::CreateStrip { .. } => None,
             DesktopCommand::RenameStrip { strip, .. } => {
                 let strip = StripId(*strip);
-                if tilo_desktop_model::ids::is_shared(strip.raw()) {
-                    return Err("the Lounge belongs to the room and keeps its name".into());
-                }
                 if !self.may_rename_strip(strip) {
                     return Err("target belongs to another topology owner".into());
                 }

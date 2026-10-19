@@ -20,7 +20,7 @@ use crate::capabilities::{CapabilityPlan, load_capability_file};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{ManifestView, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
-use crate::seccomp::compile_baseline;
+use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, BASELINE_SECCOMP_CHILD_FD, CLONE3_COMPAT_SECCOMP_CHILD_FD,
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
@@ -462,7 +462,9 @@ fn validate_open_uri(manifest: &ManifestView, opts: &RunOptions) -> Result<(), R
     Ok(())
 }
 
-/// The system interfaces `manifest` requires that `provided` does not serve.
+/// The interface versions `manifest` speaks that `provided` does not serve:
+/// every service it names, required or optional, since where an optional
+/// one is present the app speaks only its own version of it.
 fn interfaces_unmet(
     manifest: &ManifestView,
     provided: Option<&tilo_app_package::interfaces::ProvidedInterfaces>,
@@ -470,11 +472,10 @@ fn interfaces_unmet(
     let Some(provided) = provided else {
         return Vec::new();
     };
-    let required: Vec<_> = manifest
+    let spoken: Vec<_> = manifest
         .sandbox
         .services
         .iter()
-        .filter(|(_, req)| req.is_required())
         .map(
             |(name, req)| tilo_app_package::interfaces::InterfaceRequirement {
                 name: name.clone(),
@@ -482,12 +483,15 @@ fn interfaces_unmet(
             },
         )
         .collect();
-    provided.unmet(&required)
+    provided.unmet(&spoken)
 }
 
-/// Refuse a package built against system interface versions this OS does
-/// not serve. The catalog already runs the image's copy instead of such an
-/// update; this is the same rule for every other way into a launch.
+/// Refuse a package built against interface versions this OS does not
+/// serve: the launcher sets up the app's connections, and it sets up none at
+/// a version the other side does not speak. The catalog already runs the
+/// image's copy instead of such an update, and the shell updates the package
+/// first (docs/architecture/compatibility.md); this is the same rule for
+/// every other way into a launch.
 fn validate_interfaces(manifest: &ManifestView) -> Result<(), RunError> {
     let provided = package_store::interfaces::system_interfaces();
     let unmet = interfaces_unmet(manifest, provided.as_ref());
@@ -668,18 +672,24 @@ mod interface_tests {
     use tilo_app_package::interfaces::ProvidedInterfaces;
 
     #[test]
-    fn a_build_needing_an_interface_the_os_lacks_is_refused() {
+    fn a_build_speaking_another_interface_version_is_refused() {
         let settings: ManifestView = crate::manifest::test_manifest(
             "id = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"",
             "[entrypoint]\nbin = \"bin/settings\"\n\
              [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
         );
-        let old_os = ProvidedInterfaces::new([("system", &[1][..]), ("collab", &[1][..])]);
-        let new_os = ProvidedInterfaces::new([("system", &[1, 2][..])]);
-        let unmet = interfaces_unmet(&settings, Some(&old_os));
-        assert_eq!(unmet.len(), 1, "an optional service is never a requirement");
+        let os = |system: u32, runtime: u32| {
+            ProvidedInterfaces::new([("system", system), ("runtime", runtime)], ["collab"])
+        };
+        let unmet = interfaces_unmet(&settings, Some(&os(1, 3)));
+        assert_eq!(unmet.len(), 1);
         assert_eq!(unmet[0].requirement, "system@2");
-        assert!(interfaces_unmet(&settings, Some(&new_os)).is_empty());
+        let optional = interfaces_unmet(&settings, Some(&os(2, 4)));
+        assert_eq!(
+            optional[0].requirement, "collab@3",
+            "an optional service is spoken at its own version where it is there"
+        );
+        assert!(interfaces_unmet(&settings, Some(&os(2, 3))).is_empty());
         assert!(interfaces_unmet(&settings, None).is_empty());
 
         let message = RunError::InterfacesUnmet {
@@ -885,7 +895,7 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
 }
 
 /// Priority: explicit override > manifest declaration (per-user, then
-/// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
 ///
 /// # Errors
 ///
@@ -1063,7 +1073,7 @@ pub fn resolve_gpu_selection(
 }
 
 /// Priority: explicit override > manifest declaration (per-user, then
-/// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+/// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
 ///
 /// # Errors
 ///
@@ -1106,8 +1116,9 @@ pub fn resolve_runtime(
 }
 
 /// Look `raw` (`<name>/<version>`) up where runtime bundles are installed —
-/// the configured/user root first, then the immutable system fallback — and
-/// verify the first bundle found. Returns the bundle and its version, plus
+/// the configured/user root first, then the immutable system fallback, and
+/// the other way round for an ABI-bound version ([`runtime_candidates`]) —
+/// and verify the first bundle found. Returns the bundle and its version, plus
 /// every directory checked.
 ///
 /// A developer build honours `TILO_RUNTIME_BUNDLE_DIR`; developer sessions
@@ -1132,7 +1143,7 @@ fn find_runtime_bundle(
     )
     .ok();
     let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    let candidates = runtime_candidates(version, per_user, system.clone());
     for cand in &candidates {
         if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
             enforce_bundle_policy(cand, opts, cand == &system)?;
@@ -1140,6 +1151,25 @@ fn find_runtime_bundle(
         }
     }
     Ok((None, candidates))
+}
+
+/// Where to look for runtime `version`, in order.
+///
+/// A person's own store comes first, so a runtime they installed stands in
+/// for the system's of the same name. An ABI-bound version
+/// (`<release>+native.<digest>`) is the exception: its name is its payload's
+/// identity (the digest of the root hash every launch verifies), so the
+/// system's bundle of it holds the same bytes as the person's. Apps then run
+/// on the system's copy: proven once by its immutable root-owned tree rather
+/// than hashed at each launch, and the copy `tilo-runtime-resident.service`
+/// keeps in memory for every person, instead of a second copy of the same
+/// file in each person's store.
+fn runtime_candidates(version: &str, per_user: Option<PathBuf>, system: PathBuf) -> Vec<PathBuf> {
+    if runtime_bundle::split_abi_version(version).is_some() {
+        [system].into_iter().chain(per_user).collect()
+    } else {
+        per_user.into_iter().chain([system]).collect()
+    }
 }
 
 /// A version names a directory under the runtime roots and the sandbox's
@@ -1249,6 +1279,28 @@ fn enforce_bundle_policy(
     opts: &RunOptions,
     system_bundle: bool,
 ) -> Result<(), RunError> {
+    verified_bundle(path, opts, system_bundle).map(drop)
+}
+
+/// A runtime bundle a person installed into their own store, verified by the
+/// policy a launch applies to it ([`enforce_bundle_policy`]): every payload
+/// byte proven (by its signed fs-verity digest, else hashed), signed by a
+/// trusted publisher. Returns its manifest, whose root hash is the bundle's
+/// identity.
+///
+/// # Errors
+///
+/// The [`RunError`] a launch of an app on this bundle would refuse with.
+pub fn verified_user_bundle(path: &Path) -> Result<runtime_bundle::BundleManifest, RunError> {
+    verified_bundle(path, &RunOptions::default(), false)
+}
+
+/// [`enforce_bundle_policy`], returning the verified manifest.
+fn verified_bundle(
+    path: &Path,
+    opts: &RunOptions,
+    system_bundle: bool,
+) -> Result<runtime_bundle::BundleManifest, RunError> {
     let trusted = load_trusted_publishers_for_bundle(path).map_err(|error| {
         RunError::RuntimeBundleSignature {
             path: path.to_path_buf(),
@@ -1296,7 +1348,7 @@ fn enforce_bundle_policy(
                     path: path.to_path_buf(),
                     reason: error.to_string(),
                 })?;
-            Ok(())
+            Ok(manifest)
         }
         Err(runtime_bundle::BundleError::NotSigned) => Err(RunError::RuntimeBundleUnsigned {
             path: path.to_path_buf(),
@@ -1599,6 +1651,34 @@ pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publ
 /// build's gate let through ([`package_store::dev_env::dev_override`]).
 fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
     allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
+}
+
+#[cfg(test)]
+mod runtime_candidate_tests {
+    use super::*;
+
+    #[test]
+    fn an_abi_bound_runtime_runs_on_the_system_copy_of_its_identity() {
+        let user = PathBuf::from("/home/ana/.local/share/tilo-runtime");
+        let system = PathBuf::from("/usr/lib/tilo-runtime");
+        let bound = "2026.07+native.0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            runtime_candidates(bound, Some(user.join(bound)), system.join(bound)),
+            [system.join(bound), user.join(bound)],
+            "the version names its payload, so the system's bundle is the same bytes"
+        );
+        // A release-only version (a development bundle, an engine runtime)
+        // names no payload: the person's own install stands in for the
+        // system's of that name.
+        assert_eq!(
+            runtime_candidates("1", Some(user.join("1")), system.join("1")),
+            [user.join("1"), system.join("1")]
+        );
+        assert_eq!(
+            runtime_candidates(bound, None, system.join(bound)),
+            [system.join(bound)]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2375,16 +2455,22 @@ fn splice_gpu(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
     opts: &RunOptions,
-    capabilities: &CapabilityPlan,
+    gpu_granted: bool,
 ) -> Result<(Option<crate::gpu::GpuSelection>, Option<PathBuf>), RunError> {
+    // An app without `gpu` draws through its room's render service: no
+    // device node, no loader pin, no shader-cache seed, and none of the ICD
+    // probing they cost.
+    if !gpu_granted {
+        return Ok((None, None));
+    }
+    let entry = pop_entry(argv)?;
+    crate::profile::push_gpu_devices(argv);
+    argv.push(entry);
     let gpu = resolve_gpu_selection(manifest, opts);
     if let Some(sel) = &gpu {
         let entry = pop_entry(argv)?;
-        crate::sandbox::push_gpu_selection(
-            argv,
-            sel,
-            crate::sandbox::grants_drm(manifest, capabilities),
-        );
+        // The device nodes were just bound: narrow them to the node.
+        crate::sandbox::push_gpu_selection(argv, sel, true);
         argv.push(entry);
     } else if opts.render_node.is_none()
         && let Some(pin) = crate::gpu::inherited_software_pin()
@@ -2455,6 +2541,8 @@ struct ShimSpliceCtx<'a> {
     system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
+    /// The app was granted `gpu`: its device nodes are bound.
+    gpu_devices: bool,
     pipeline_seed: &'a Option<PathBuf>,
     keep_fds: &'a [RawFd],
 }
@@ -2565,11 +2653,13 @@ fn splice_sandbox_shim(
     // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
-    // The GPU device nodes the profile bound — same O_RDWR reasoning
+    // The GPU device nodes a `gpu` app was bound — same O_RDWR reasoning
     // as above.
-    for path in crate::profile::landlock_rw_device_paths() {
-        argv.push("--rw".to_string());
-        argv.push(path.display().to_string());
+    if ctx.gpu_devices {
+        for path in crate::profile::landlock_rw_device_paths() {
+            argv.push("--rw".to_string());
+            argv.push(path.display().to_string());
+        }
     }
     push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
@@ -3083,7 +3173,10 @@ fn spawn_and_wait(
 /// image decides whether this package may have it. An unrecognised name is a
 /// packaging mistake; a recognised-but-unentitled one is an app trying to
 /// lift a protection off itself — logged distinctly.
-fn stage_seccomp(manifest: &ManifestView) -> Result<SeccompFds, RunError> {
+fn stage_seccomp(
+    manifest: &ManifestView,
+    grants: crate::seccomp::SyscallGrants,
+) -> Result<SeccompFds, RunError> {
     let decision = crate::seccomp::resolve_profile(&manifest.sandbox.seccomp, &manifest.package_id);
     let profile = decision.applied;
     if decision.refused {
@@ -3106,7 +3199,7 @@ fn stage_seccomp(manifest: &ManifestView) -> Result<SeccompFds, RunError> {
     }
     Ok(SeccompFds {
         clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
-        baseline: stage_seccomp_blob(&compile_baseline(profile)?)?,
+        baseline: stage_seccomp_blob(&compile_app_baseline(profile, grants)?)?,
     })
 }
 
@@ -3503,9 +3596,28 @@ pub(crate) fn run_with_context(
     // meanwhile leaves them alone (`crate::lease`).
     let _leases = crate::lease::LaunchLeases::take(manifest, payload_root, opts)?;
 
+    // The user's capability decision. Empty unless the compositor wrote a
+    // file — an app launched without one is confined to its manifest alone.
+    // Resolved before the seccomp baseline, which a grant can narrow.
+    let mut capabilities = resolve_capabilities(manifest, opts);
+
     // Host preflight precedes connected service custody.
     // Seccomp baseline → tmpfile → fd.
-    let seccomp_fds = stage_seccomp(manifest)?;
+    let seccomp_fds = stage_seccomp(
+        manifest,
+        crate::seccomp::syscall_grants(
+            manifest,
+            &capabilities,
+            crate::system_stats::image_shipped(payload_root),
+        ),
+    )?;
+    // Whether the app opens the GPU itself, or its room's render service
+    // draws it.
+    let gpu_granted = crate::gpu::granted(
+        manifest,
+        &capabilities,
+        crate::system_stats::image_shipped(payload_root),
+    );
     tilo_startup_metrics::handoff_mark("seccomp-staged");
 
     // D-Bus proxy decision. Failure leaves the bus unavailable; there is
@@ -3552,9 +3664,6 @@ pub(crate) fn run_with_context(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
-    // The user's capability decision. Empty unless the compositor wrote a
-    // file — an app launched without one is confined to its manifest alone.
-    let mut capabilities = resolve_capabilities(manifest, opts);
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
     {
@@ -3613,6 +3722,17 @@ pub(crate) fn run_with_context(
         {
             resolved.push(chooser);
         }
+        #[cfg(target_os = "linux")]
+        if matches!(opts.mode, LaunchMode::Gui)
+            && !gpu_granted
+            && let Some(render) = crate::services::resolve_render_bind(
+                package_id,
+                opts.workspace_id.as_deref(),
+                opts.no_services,
+            )?
+        {
+            resolved.push(render);
+        }
         if let Some(stats) = crate::system_stats::resolve_bind(
             manifest,
             &capabilities,
@@ -3621,6 +3741,10 @@ pub(crate) fn run_with_context(
             opts.no_services,
         )? {
             resolved.push(stats);
+        }
+        // Every app may start independent jobs; it declares nothing for it.
+        if let Some(door) = crate::job_door::open(opts.no_services) {
+            resolved.push(door);
         }
         resolved
     };
@@ -3729,7 +3853,7 @@ pub(crate) fn run_with_context(
     let (gpu, pipeline_seed) = if retained_io.is_some() || target_projection.is_some() {
         (None, None)
     } else {
-        splice_gpu(&mut argv, manifest, opts, &capabilities)?
+        splice_gpu(&mut argv, manifest, opts, gpu_granted)?
     };
     splice_startup_marks(&mut argv)?;
     splice_sandbox_shim(
@@ -3746,6 +3870,7 @@ pub(crate) fn run_with_context(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
@@ -4307,13 +4432,22 @@ fn run_with_capture_spawn<T>(
 
     // Seccomp baseline resolved identically to `run_with` — two paths
     // reaching different conclusions would make capture a way around the filter.
-    let seccomp_fds = SeccompFds {
-        clone3_compat: stage_seccomp_blob(&crate::seccomp::compile_clone3_compat()?)?,
-        baseline: stage_seccomp_blob(&compile_baseline(crate::seccomp::manifest_profile(
-            &manifest.sandbox,
-            &manifest.package_id,
-        ))?)?,
-    };
+    let capabilities = resolve_capabilities(manifest, opts);
+    let seccomp_fds = stage_seccomp(
+        manifest,
+        crate::seccomp::syscall_grants(
+            manifest,
+            &capabilities,
+            crate::system_stats::image_shipped(payload_root),
+        ),
+    )?;
+    // Whether the app opens the GPU itself, or its room's render service
+    // draws it.
+    let gpu_granted = crate::gpu::granted(
+        manifest,
+        &capabilities,
+        crate::system_stats::image_shipped(payload_root),
+    );
 
     // As in `run_with_context`: held from before the lookup until the
     // sandbox has exited.
@@ -4327,7 +4461,6 @@ fn run_with_capture_spawn<T>(
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
-    let capabilities = resolve_capabilities(manifest, opts);
     // As in `run_with_context`, cold runtime checks precede service handoff.
     // Capture must not start the executing-task deadline during verification.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
@@ -4361,6 +4494,17 @@ fn run_with_capture_spawn<T>(
         resolve_chooser_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
     {
         resolved.push(chooser);
+    }
+    #[cfg(target_os = "linux")]
+    if matches!(opts.mode, LaunchMode::Gui)
+        && !gpu_granted
+        && let Some(render) = crate::services::resolve_render_bind(
+            package_id,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+        )?
+    {
+        resolved.push(render);
     }
     if let Some(stats) = crate::system_stats::resolve_bind(
         manifest,
@@ -4423,7 +4567,7 @@ fn run_with_capture_spawn<T>(
     let _browser_projection = crate::browser_projection::splice(&mut argv, manifest, opts)?;
     splice_action_authority(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
-    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
+    let (gpu, pipeline_seed) = splice_gpu(&mut argv, manifest, opts, gpu_granted)?;
     splice_sandbox_shim(
         &mut argv,
         opts,
@@ -4438,6 +4582,7 @@ fn run_with_capture_spawn<T>(
             system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
+            gpu_devices: gpu_granted,
             pipeline_seed: &pipeline_seed,
             keep_fds: &keep_fds,
         },
@@ -5806,11 +5951,17 @@ mod mesa_seed_software_tests {
             .remove(crate::gpu::EGL_VENDOR_ENV);
         let manifest: ManifestView = crate::manifest::test_manifest(
             "id = \"io.tilo.software-pin\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n",
+            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
         );
         let opts = RunOptions::default();
         let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, _) = splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        let (gpu, _) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(gpu.is_none(), "no render node, no device pin");
         let path = lavapipe.to_str().unwrap();
         assert!(
@@ -5823,13 +5974,22 @@ mod mesa_seed_software_tests {
         ] {
             assert!(argv.windows(3).any(|args| args == ["--setenv", key, path]));
         }
-        assert!(!argv.iter().any(|arg| arg == "--dev-bind-try"));
+        assert!(
+            !argv.iter().any(|arg| arg.starts_with("/dev/dri/renderD")),
+            "no render node, no node pin: {argv:?}"
+        );
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
 
         // A GPU's driver in the environment is not the software pin.
         home.env().set(crate::gpu::VK_DRIVER_FILES_ENV, &radeon);
         let mut argv = vec!["/app/probe".to_owned()];
-        splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(
             !argv
                 .iter()
@@ -5850,12 +6010,17 @@ mod mesa_seed_software_tests {
         std::fs::create_dir_all(&source).unwrap();
         let manifest: ManifestView = crate::manifest::test_manifest(
             "id = \"io.tilo.seed-test\"\nversion = \"0.1.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/probe\"\n",
+            "[entrypoint]\nbin = \"bin/probe\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
         );
         let opts = RunOptions::default();
         let mut argv = vec!["/app/probe".to_owned()];
-        let (gpu, seed) =
-            splice_gpu(&mut argv, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+        let (gpu, seed) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
         assert!(gpu.is_none());
         assert_eq!(seed.as_deref(), Some(source.as_path()));
         assert!(argv.windows(3).any(|args| args
@@ -5864,11 +6029,9 @@ mod mesa_seed_software_tests {
                 source.to_str().unwrap(),
                 crate::gpu::SANDBOX_PIPELINE_SEED_DIR
             ]));
-        assert!(
-            !argv
-                .iter()
-                .any(|arg| arg == "--dev-bind-try" || arg == crate::gpu::VK_DRIVER_FILES_ENV)
-        );
+        assert!(!argv.iter().any(
+            |arg| arg.starts_with("/dev/dri/renderD") || arg == crate::gpu::VK_DRIVER_FILES_ENV
+        ));
         assert!(
             argv.windows(3)
                 .any(|args| args == ["--setenv", crate::mesa_seed::CONSUME_ENV, "1"])
@@ -5887,7 +6050,13 @@ mod mesa_seed_software_tests {
                 ..RunOptions::default()
             };
             let mut helper = vec!["/app/helper".to_owned()];
-            splice_gpu(&mut helper, &manifest, &opts, &CapabilityPlan::empty()).unwrap();
+            splice_gpu(
+                &mut helper,
+                &manifest,
+                &opts,
+                crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+            )
+            .unwrap();
             assert!(
                 !helper
                     .iter()
@@ -5896,6 +6065,72 @@ mod mesa_seed_software_tests {
             );
         }
         assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
+    }
+}
+
+#[cfg(test)]
+mod render_service_launch_tests {
+    use super::*;
+
+    /// An app that draws through its room's render service: no GPU node, no
+    /// loader pin, no shader-cache seed, and none of the probing they cost,
+    /// even with a render node and a session seed to hand out.
+    #[test]
+    fn an_app_without_gpu_gets_no_device_and_no_graphics_setup() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        home.env()
+            .set(
+                crate::gpu::VK_DRIVER_FILES_ENV,
+                "/usr/share/vulkan/icd.d/x.json",
+            )
+            .remove(crate::gpu::EGL_VENDOR_ENV);
+        std::fs::create_dir_all(home.runtime().join("tilo/pipeline-seed")).unwrap();
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.calculator\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/calculator\"\n",
+        );
+        assert!(!crate::gpu::granted(
+            &manifest,
+            &CapabilityPlan::empty(),
+            true
+        ));
+        let opts = RunOptions {
+            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
+            ..RunOptions::default()
+        };
+        let mut argv = vec!["/app/calculator".to_owned()];
+        let (gpu, seed) = splice_gpu(
+            &mut argv,
+            &manifest,
+            &opts,
+            crate::gpu::granted(&manifest, &CapabilityPlan::empty(), true),
+        )
+        .unwrap();
+        assert!(gpu.is_none() && seed.is_none());
+        assert_eq!(argv, vec!["/app/calculator".to_owned()], "nothing spliced");
+    }
+
+    /// An app that declares `gpu` keeps what every app had before: the
+    /// device nodes, narrowed to the compositor's render node.
+    #[test]
+    fn an_app_declaring_gpu_gets_its_device() {
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.browser\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/browser\"\n\n[capabilities]\noptional = [\"gpu\"]\n",
+        );
+        assert!(crate::gpu::granted(
+            &manifest,
+            &CapabilityPlan::empty(),
+            true
+        ));
+        let mut argv = vec!["/app/browser".to_owned()];
+        splice_gpu(&mut argv, &manifest, &RunOptions::default(), true).unwrap();
+        assert!(
+            argv.windows(3)
+                .any(|args| args == ["--dev-bind-try", "/dev/dri", "/dev/dri"]),
+            "{argv:?}"
+        );
+        assert_eq!(argv.last().map(String::as_str), Some("/app/browser"));
     }
 }
 
@@ -6011,6 +6246,7 @@ mod retained_files_tests {
                 system_authority: &None,
                 wayland_bind: &None,
                 gpu: &None,
+                gpu_devices: false,
                 pipeline_seed: &None,
                 keep_fds: &[],
             },

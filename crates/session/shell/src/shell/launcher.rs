@@ -953,6 +953,10 @@ pub enum LaunchError {
     /// The host entry exists but cannot be run as written (for example an
     /// unusable `Exec=` line).
     HostAppRefused { desktop_id: String, detail: String },
+    /// The app's build needs interface versions newer than this system
+    /// serves; the system's update has been started
+    /// ([`crate::shell::app_versions`]).
+    SystemBehind { package_id: String, unmet: String },
 }
 
 impl LaunchError {
@@ -1003,6 +1007,9 @@ impl LaunchError {
             LaunchError::HostAppRefused { desktop_id, detail } => {
                 format!("{desktop_id} cannot be started: {detail}")
             }
+            LaunchError::SystemBehind { package_id, unmet } => {
+                format!("{package_id} needs a newer system: {unmet}")
+            }
         }
     }
 
@@ -1030,6 +1037,7 @@ impl LaunchError {
             Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
+            Self::SystemBehind { .. } => t("launch-failed-system-behind"),
         }
     }
 }
@@ -1062,6 +1070,14 @@ pub enum LaunchFailure {
     SandboxSupervision,
     /// The previous copy of the app is still shutting down.
     PreviousInstanceBusy,
+    /// The app was behind this system's interfaces, and its update could not
+    /// be fetched.
+    UpdateFailed,
+    /// The app is behind this system's interfaces and its developer has not
+    /// published a build that fits yet.
+    WaitingForDeveloper,
+    /// The app needs a newer system, whose update has been started.
+    SystemBehind,
     /// Held launches released by a failed prerequisite and other causes with
     /// no more specific copy.
     Other,
@@ -1097,6 +1113,9 @@ impl LaunchFailure {
             Self::AuthorityTimedOut => "launch-failed-authority-timeout",
             Self::SandboxSupervision => "launch-error-sandbox-supervision",
             Self::PreviousInstanceBusy => "launch-failed-previous-instance",
+            Self::UpdateFailed => "launch-failed-update",
+            Self::WaitingForDeveloper => "launch-failed-waiting-for-developer",
+            Self::SystemBehind => "launch-failed-system-behind",
         }
     }
 }
@@ -1121,6 +1140,7 @@ impl LaunchError {
             Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
             Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
             Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
+            Self::SystemBehind { .. } => LaunchFailure::SystemBehind,
         }
     }
 }
@@ -1170,6 +1190,40 @@ pub enum LaunchEventKind {
         code: Option<i32>,
         stderr_tail: String,
     },
+    /// The system ended the app, or one of its independent jobs, because
+    /// memory ran out (`launcher::memory_pressure`).
+    OutOfMemory(MemoryEnd),
+}
+
+/// How memory ended an app or one of its jobs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryEnd {
+    pub cause: ::launcher::memory_pressure::Cause,
+    /// The job that ended (a language server, a terminal session), by the
+    /// name of its program, when only it did: the app keeps running. `None`
+    /// when the whole app was closed.
+    pub job: Option<String>,
+}
+
+impl MemoryEnd {
+    /// Whether the whole app ended, not just one of its jobs.
+    #[must_use]
+    pub const fn closed_the_app(&self) -> bool {
+        self.job.is_none()
+    }
+}
+
+/// What memory did to a launch that ended with `status`: the spawner's
+/// `cause` stands unless the app ended on its own, cleanly.
+#[must_use]
+pub fn memory_end_of(
+    status: &std::io::Result<std::process::ExitStatus>,
+    cause: Option<::launcher::memory_pressure::Cause>,
+) -> Option<MemoryEnd> {
+    let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
+    cause
+        .filter(|_| !clean)
+        .map(|cause| MemoryEnd { cause, job: None })
 }
 
 /// Normal-user copy for an asynchronous launch failure. The launcher keeps
@@ -1192,6 +1246,9 @@ impl LaunchEvent {
     /// diagnostics are emitted by [`Self::log_failure`] instead of being
     /// copied into notification chrome.
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
+        if let LaunchEventKind::OutOfMemory(end) = &self.kind {
+            return Some(memory_notice(&self.display_name, end));
+        }
         let body = match &self.kind {
             LaunchEventKind::SpawnFailed { reason, .. } => {
                 crate::shell::i18n::t(reason.message_key())
@@ -1202,7 +1259,9 @@ impl LaunchEvent {
             LaunchEventKind::WindowLost { .. } => {
                 crate::shell::i18n::t("launch-failed-window-lost")
             }
-            LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
+            LaunchEventKind::Started { .. }
+            | LaunchEventKind::Exited
+            | LaunchEventKind::OutOfMemory(_) => return None,
         };
         let window_lost = match &self.kind {
             LaunchEventKind::WindowLost { .. } => true,
@@ -1254,6 +1313,16 @@ impl LaunchEvent {
                     exit_code = ?code,
                     stderr_tail = ?stderr_tail,
                     "application window went away without being closed"
+                );
+            }
+            LaunchEventKind::OutOfMemory(end) => {
+                tracing::error!(
+                    target: "tilo::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    job = ?end.job,
+                    cause = end.cause.wire(),
+                    "ended because memory ran out"
                 );
             }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
@@ -1341,6 +1410,38 @@ pub(crate) fn launch_failure_title(display_name: &str) -> String {
     )
 }
 
+/// What the person is told when memory ended an app or one of its jobs:
+/// which, and why.
+pub(crate) fn memory_notice(display_name: &str, end: &MemoryEnd) -> LaunchFailureNotice {
+    use ::launcher::memory_pressure::Cause;
+    let app = compact_notice_name(display_name);
+    match &end.job {
+        None => LaunchFailureNotice {
+            title: crate::shell::i18n::t_args("memory-app-closed-title", &[("app", app.into())]),
+            body: crate::shell::i18n::t(match end.cause {
+                Cause::Kernel => "memory-app-closed-body",
+                Cause::Runaway => "memory-app-runaway-body",
+            }),
+        },
+        Some(job) => LaunchFailureNotice {
+            title: crate::shell::i18n::t_args(
+                "memory-job-stopped-title",
+                &[
+                    ("process", compact_notice_name(job).into()),
+                    ("app", app.clone().into()),
+                ],
+            ),
+            body: crate::shell::i18n::t_args(
+                match end.cause {
+                    Cause::Kernel => "memory-job-stopped-body",
+                    Cause::Runaway => "memory-job-runaway-body",
+                },
+                &[("app", app.into())],
+            ),
+        },
+    }
+}
+
 /// Who a running launch is, for the event stream — a package id for a
 /// `.tapp`, a desktop-file id for a host app.
 #[cfg(any(test, target_os = "linux"))]
@@ -1411,6 +1512,11 @@ pub(crate) struct SessionLaunches {
     /// compositor never asked, and the person never reached the app to ask
     /// it. However the process then exits, the window was lost.
     vanished: Mutex<HashSet<String>>,
+    /// The tabs of windows that went away without being asked to close, by
+    /// launch key, as a reopen restores them: kept until the launch's end
+    /// says whether memory ended it (then its notice reopens them) or not.
+    lost_tabs:
+        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::closed_tabs::ClosedTab)>>>,
     /// Launch keys whose app has been handed an action invocation since it
     /// started: an agent, another device or the person drove it, so a
     /// window it then closes was closed on request.
@@ -1451,6 +1557,7 @@ impl Default for SessionLaunches {
             surfaces: Mutex::default(),
             presented: Mutex::default(),
             vanished: Mutex::default(),
+            lost_tabs: Mutex::default(),
             acted_on: Mutex::default(),
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
@@ -1682,6 +1789,23 @@ pub fn clear_workspace_capabilities() {
 /// file.
 pub fn capabilities_for_app(app_id: &str) -> LaunchGrants {
     lock(&WORKSPACE_CAPABILITIES).for_app(app_id)
+}
+
+/// Asks the person, on a launch worker, for permissions the sandbox applies
+/// at launch (`crate::compositor::launch_permissions`), and returns what to
+/// add to that launch's capabilities.
+pub(crate) type LaunchPermissionAsk = dyn Fn(&InstalledApp, RoomId, &LaunchGrants) -> Vec<collab_types::caps::CapOverride>
+    + Send
+    + Sync;
+
+/// Registered once by the compositor. Absent (tests, headless tools) nobody
+/// is asked and nothing beyond the room's grants is added.
+static LAUNCH_PERMISSIONS: std::sync::OnceLock<Box<LaunchPermissionAsk>> =
+    std::sync::OnceLock::new();
+
+/// Install the session's launch-time permission prompt.
+pub(crate) fn set_launch_permissions(ask: Box<LaunchPermissionAsk>) {
+    let _ = LAUNCH_PERMISSIONS.set(ask);
 }
 
 /// Where a launch's capability file lives: `<runtime>/tilo/capabilities/`,
@@ -3493,6 +3617,127 @@ enum LaunchContext<'a> {
     Raw(String),
 }
 
+/// A launch to run again once its app is updated: everything
+/// [`execute_installed_inner`] was asked, owned.
+struct Replay {
+    room: RoomId,
+    document: Option<PathBuf>,
+    uri: Option<String>,
+    context: ReplayContext,
+    media_handoff: Option<MediaHandoffLaunch>,
+    capability_snapshot: Option<LaunchGrants>,
+    native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
+}
+
+enum ReplayContext {
+    #[cfg(target_os = "linux")]
+    SelectedOpen(Arc<retained_home::selected_target::SelectedContinuation>),
+    None,
+    Tool(ToolIntent),
+    Raw(String),
+}
+
+impl ReplayContext {
+    fn of(context: &LaunchContext<'_>) -> Self {
+        match context {
+            #[cfg(target_os = "linux")]
+            LaunchContext::SelectedOpen(selected) => Self::SelectedOpen(Arc::clone(selected)),
+            LaunchContext::None => Self::None,
+            LaunchContext::Tool(intent) => Self::Tool((*intent).clone()),
+            LaunchContext::Raw(raw) => Self::Raw(raw.clone()),
+        }
+    }
+}
+
+impl Replay {
+    fn start(self, app: InstalledApp) -> Result<InstalledApp, LaunchError> {
+        let context = match &self.context {
+            #[cfg(target_os = "linux")]
+            ReplayContext::SelectedOpen(selected) => LaunchContext::SelectedOpen(selected),
+            ReplayContext::None => LaunchContext::None,
+            ReplayContext::Tool(intent) => LaunchContext::Tool(intent),
+            ReplayContext::Raw(raw) => LaunchContext::Raw(raw.clone()),
+        };
+        execute_installed_inner(
+            app,
+            self.room,
+            self.document.as_deref(),
+            self.uri.as_deref(),
+            context,
+            self.media_handoff,
+            self.capability_snapshot,
+            self.native_owner,
+        )
+    }
+}
+
+/// Update `app`, which is behind this system, then start `replay` with the
+/// build that fits. When the store has none yet, the app waits for its
+/// developer and does not start; when the update cannot be fetched, the
+/// place says so and offers to try again.
+fn update_then_start(app: InstalledApp, replay: Replay) {
+    let package_id = app.package_id.clone();
+    crate::shell::app_versions::update_then(&package_id, move |outcome| {
+        let fail = |reason: LaunchFailure, detail: String| {
+            push_event(LaunchEvent {
+                package_id: app.package_id.clone(),
+                display_name: app.display_name.clone(),
+                managed_agent_id: None,
+                managed_workspace_id: None,
+                kind: LaunchEventKind::SpawnFailed { reason, detail },
+            });
+        };
+        let fresh = match installed_apps() {
+            Ok(apps) => apps
+                .into_iter()
+                .find(|installed| installed.package_id == app.package_id),
+            Err(error) => {
+                fail(error.failure(), error.user_message());
+                return;
+            }
+        };
+        let Some(fresh) = fresh else {
+            fail(
+                LaunchFailure::NotInstalled,
+                format!("{} is no longer installed", app.package_id),
+            );
+            return;
+        };
+        match (
+            crate::shell::app_versions::fit(&fresh.manifest_path),
+            outcome,
+        ) {
+            (crate::shell::app_versions::Fit::Fits, _) => {
+                if let Err(error) = replay.start(fresh) {
+                    fail(error.failure(), error.user_message());
+                }
+            }
+            (
+                crate::shell::app_versions::Fit::AppBehind(unmet),
+                crate::shell::app_versions::UpdateOutcome::Updated,
+            ) => fail(
+                LaunchFailure::WaitingForDeveloper,
+                format!(
+                    "no build of {} fits this system yet: {}",
+                    app.package_id,
+                    registry_types::interfaces::describe_unmet(&unmet)
+                ),
+            ),
+            (
+                crate::shell::app_versions::Fit::AppBehind(_),
+                crate::shell::app_versions::UpdateOutcome::Failed(detail),
+            ) => fail(LaunchFailure::UpdateFailed, detail),
+            (crate::shell::app_versions::Fit::SystemBehind(unmet), _) => {
+                crate::shell::app_versions::update_system_now();
+                fail(
+                    LaunchFailure::SystemBehind,
+                    registry_types::interfaces::describe_unmet(&unmet),
+                );
+            }
+        }
+    });
+}
+
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
@@ -3568,6 +3813,37 @@ fn execute_installed_inner(
     capability_snapshot: Option<LaunchGrants>,
     native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    // A build speaks exactly the interface versions this system serves, or
+    // it does not start: one that is behind is updated first and starts
+    // after, in the place held for it now.
+    match crate::shell::app_versions::fit(&app.manifest_path) {
+        crate::shell::app_versions::Fit::Fits => {}
+        crate::shell::app_versions::Fit::AppBehind(unmet) => {
+            tracing::info!(
+                package_id = %app.package_id,
+                unmet = %registry_types::interfaces::describe_unmet(&unmet),
+                "updating an app that is behind this system before it starts"
+            );
+            let replay = Replay {
+                room,
+                document: document.map(Path::to_path_buf),
+                uri: uri.map(str::to_owned),
+                context: ReplayContext::of(&context),
+                media_handoff,
+                capability_snapshot,
+                native_owner,
+            };
+            update_then_start(app.clone(), replay);
+            return Ok(app);
+        }
+        crate::shell::app_versions::Fit::SystemBehind(unmet) => {
+            crate::shell::app_versions::update_system_now();
+            return Err(LaunchError::SystemBehind {
+                package_id: app.package_id,
+                unmet: registry_types::interfaces::describe_unmet(&unmet),
+            });
+        }
+    }
     #[cfg(target_os = "linux")]
     let retained = if document.is_none() && uri.is_none() && matches!(&context, LaunchContext::None)
     {
@@ -3598,6 +3874,10 @@ fn execute_installed_inner(
         || capabilities_for_app(&app.package_id),
         |grants| grants.for_app(&app.package_id),
     );
+    if let Some(ask) = LAUNCH_PERMISSIONS.get() {
+        let added = ask(&app, room, &capabilities);
+        capabilities.sandbox.extend(added);
+    }
     let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
         .map_err(|error| LaunchError::IdentityUnavailable {
@@ -4410,6 +4690,14 @@ impl SupervisedLaunchChild {
             Self::Retained(child) => child.id(),
         }
     }
+    /// The app cgroup the session's spawner made for it, when it did.
+    #[cfg(target_os = "linux")]
+    fn app_cgroup(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Delegated(child) => Some(child.cgroup()),
+            Self::Local(_) | Self::Retained(_) => None,
+        }
+    }
     fn kill(&mut self) -> io::Result<()> {
         match self {
             Self::Local(child) => child.kill(),
@@ -4784,8 +5072,17 @@ fn start_launch(
             // Born in a cgroup of its own through the session's spawner, with
             // no round trip to the user manager; the plain spawn below when
             // the spawner is not running (never in tests) or cannot take it.
+            // A Tilo app (it has a service identity) is one unit when memory
+            // runs out; a host app keeps the structure it was built with.
             #[cfg(target_os = "linux")]
-            if let Some(spawned) = launcher::spawner::spawn_gated(&mut cmd, &app.package_id) {
+            let kind = if command.service_identity.is_some() {
+                launcher::app_cgroup::AppKind::Tilo
+            } else {
+                launcher::app_cgroup::AppKind::Host
+            };
+            #[cfg(target_os = "linux")]
+            if let Some(spawned) = launcher::spawner::spawn_gated(&mut cmd, &app.package_id, kind)
+            {
                 let (child, gate) = spawned?;
                 return Ok((
                     SupervisedLaunchChild::Delegated(child),
@@ -4989,6 +5286,17 @@ fn start_launch(
 
         let launcher_pid = child.id();
         let status = child.wait();
+        // Ended by memory? Asked of the spawner once, now the launcher is
+        // reaped: the kernel's OOM killer or the pressure policy.
+        #[cfg(target_os = "linux")]
+        let memory_end = memory_end_of(
+            &status,
+            child
+                .app_cgroup()
+                .and_then(launcher::spawner::memory_end),
+        );
+        #[cfg(not(target_os = "linux"))]
+        let memory_end: Option<MemoryEnd> = None;
         // Reaped: the registry's liveness check now fails for this pid, even
         // while a descendant keeps stderr open and delays unregistering it.
         // A replacement waiting for this writer to retire may go now.
@@ -5021,13 +5329,14 @@ fn start_launch(
             lock(&events.launch_history).exited(id, diagnostic_exit);
         }
         unregister_launched_process(launcher_pid);
-        let kind = match status {
-            Ok(status) if status.success() => LaunchEventKind::Exited,
-            Ok(status) => LaunchEventKind::Failed {
+        let kind = match (memory_end, status) {
+            (Some(end), _) => LaunchEventKind::OutOfMemory(end),
+            (None, Ok(status)) if status.success() => LaunchEventKind::Exited,
+            (None, Ok(status)) => LaunchEventKind::Failed {
                 code: status.code(),
                 stderr_tail: tail.iter().cloned().collect::<Vec<_>>().join("\n"),
             },
-            Err(e) => LaunchEventKind::SpawnFailed {
+            (None, Err(e)) => LaunchEventKind::SpawnFailed {
                 reason: LaunchFailure::LauncherUnavailable,
                 detail: e.to_string(),
             },
@@ -5039,6 +5348,11 @@ fn start_launch(
             ),
             LaunchEventKind::SpawnFailed { detail, .. } => {
                 events.startup.fail(startup_token, detail.clone());
+            }
+            LaunchEventKind::OutOfMemory(_) => {
+                events
+                    .startup
+                    .fail(startup_token, "the app ran out of memory".to_string());
             }
             LaunchEventKind::Started { .. }
             | LaunchEventKind::Exited
@@ -5476,12 +5790,68 @@ pub(crate) fn note_launch_restarted(key: &str) {
     let session = LaunchSession::current();
     lock(&session.vanished).remove(key);
     lock(&session.acted_on).remove(key);
+    lock(&session.lost_tabs).remove(key);
 }
 
 /// Whether a window of launch `key` went away without being closed since
 /// the launch started, clearing the mark.
 pub fn take_launch_vanished(key: &str) -> bool {
     lock(&LaunchSession::current().vanished).remove(key)
+}
+
+/// The most lost windows kept per launch.
+const LOST_TABS_PER_LAUNCH: usize = 8;
+
+/// How long before its launch ended a lost window counts as lost with it: an
+/// app ended for memory loses every window at once, and the launch's end
+/// follows within moments. A window the app closed itself long before is
+/// not brought back.
+const LOST_WITH_THE_LAUNCH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A window of launch `key` went away without being asked to close; `tab`
+/// is its tab as a reopen restores it. Kept until the launch ends.
+pub(crate) fn note_lost_tab(key: &str, tab: crate::shell::closed_tabs::ClosedTab) {
+    let session = LaunchSession::current();
+    let mut lost = lock(&session.lost_tabs);
+    let tabs = lost.entry(key.to_string()).or_default();
+    if tabs.len() == LOST_TABS_PER_LAUNCH {
+        tabs.remove(0);
+    }
+    tabs.push((std::time::Instant::now(), tab));
+}
+
+/// The tabs of launch `key`'s windows that went away unasked just before
+/// now, taken once; older ones are forgotten.
+pub(crate) fn take_lost_tabs(key: &str) -> Vec<crate::shell::closed_tabs::ClosedTab> {
+    lock(&LaunchSession::current().lost_tabs)
+        .remove(key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(at, _)| at.elapsed() <= LOST_WITH_THE_LAUNCH)
+        .map(|(_, tab)| tab)
+        .collect()
+}
+
+/// What the session's app spawner reports on its own: an app's independent
+/// job (a terminal session, a language server) ended for memory while the
+/// app keeps running. Called on the spawner's thread.
+#[cfg(target_os = "linux")]
+pub fn note_spawner_event(event: ::launcher::spawner::SpawnerEvent) {
+    match event {
+        ::launcher::spawner::SpawnerEvent::JobEnded { app_id, job, cause } => {
+            let display_name = display_name_for_app_id(&app_id).unwrap_or_else(|| app_id.clone());
+            push_event(LaunchEvent {
+                package_id: app_id,
+                display_name,
+                managed_agent_id: None,
+                managed_workspace_id: None,
+                kind: LaunchEventKind::OutOfMemory(MemoryEnd {
+                    cause,
+                    job: Some(job),
+                }),
+            });
+        }
+    }
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -5498,6 +5868,7 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
     lock(&session.vanished).clear();
+    lock(&session.lost_tabs).clear();
     lock(&session.acted_on).clear();
 }
 
@@ -6471,6 +6842,94 @@ mod tests {
     /// person is told, whether the process then exited cleanly (an app
     /// whose drawing surface died used to) or with an error after its
     /// window was up (which is otherwise an ordinary ending).
+    // USER REQUIREMENT (2026-10-19): "failures are bugs: disk full/OOM
+    // crashing or blocking login is a bug to fix, never normal". When memory
+    // ends an app the person reads which and why ("Mail ran out of memory and
+    // was closed"); when it ends only a job, the app is named as still open.
+    #[test]
+    fn memory_endings_name_the_app_or_its_job_and_why() {
+        use ::launcher::memory_pressure::Cause;
+        let event = |display_name: &str, end: MemoryEnd| LaunchEvent {
+            package_id: "so.tilo.example".into(),
+            display_name: display_name.into(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: LaunchEventKind::OutOfMemory(end),
+        };
+        let app = |cause| MemoryEnd { cause, job: None };
+        let job = |cause| MemoryEnd {
+            cause,
+            job: Some("rust-analyzer".into()),
+        };
+
+        let notice = event("Mail", app(Cause::Kernel)).failure_notice().unwrap();
+        assert_eq!(notice.title, "Mail ran out of memory and was closed");
+        assert_eq!(notice.body, "Reopen it to continue where you left off.");
+        let notice = event("Mail", app(Cause::Runaway)).failure_notice().unwrap();
+        assert_eq!(notice.title, "Mail ran out of memory and was closed");
+        assert_eq!(
+            notice.body,
+            "It kept taking more memory until the computer ran low. \
+             Reopen it to continue where you left off."
+        );
+        let notice = event("Code Editor", job(Cause::Runaway))
+            .failure_notice()
+            .unwrap();
+        assert_eq!(
+            notice.title,
+            "rust-analyzer in Code Editor ran out of memory and was stopped"
+        );
+        assert_eq!(
+            notice.body,
+            "It kept taking more memory until the computer ran low. Code Editor is still open."
+        );
+        let notice = event(
+            "Terminal",
+            MemoryEnd {
+                cause: Cause::Kernel,
+                job: Some("bash".into()),
+            },
+        )
+        .failure_notice()
+        .unwrap();
+        assert_eq!(
+            notice.title,
+            "bash in Terminal ran out of memory and was stopped"
+        );
+        assert_eq!(notice.body, "Terminal is still open.");
+        // A lost window does not turn an ending for memory into another one.
+        assert!(matches!(
+            event("Mail", app(Cause::Kernel))
+                .with_window_lost(true)
+                .kind,
+            LaunchEventKind::OutOfMemory(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_ends_a_launch_only_when_the_launch_did_not_end_on_its_own() {
+        use ::launcher::memory_pressure::Cause;
+        use std::os::unix::process::ExitStatusExt as _;
+        let killed: std::io::Result<std::process::ExitStatus> =
+            Ok(std::process::ExitStatus::from_raw(libc::SIGKILL));
+        let clean: std::io::Result<std::process::ExitStatus> =
+            Ok(std::process::ExitStatus::from_raw(0));
+        assert_eq!(
+            memory_end_of(&killed, Some(Cause::Runaway)),
+            Some(MemoryEnd {
+                cause: Cause::Runaway,
+                job: None
+            })
+        );
+        assert_eq!(memory_end_of(&killed, None), None);
+        assert_eq!(
+            memory_end_of(&clean, Some(Cause::Kernel)),
+            None,
+            "a helper the kernel ended earlier does not make a clean exit a crash"
+        );
+    }
+
     #[test]
     fn a_window_lost_unasked_is_reported_however_the_process_exits() {
         clear_launched_for_test();

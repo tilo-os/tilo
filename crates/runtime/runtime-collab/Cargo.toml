@@ -33,7 +33,10 @@ native-retained-qualification = ["client"]
 
 [dependencies]
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
-browser-continuity.workspace = true
+# Only the session vocabulary and the engine launch boundary: this crate is
+# in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
+# never be unified into it.
+browser-continuity-core.workspace = true
 blake3.workspace = true
 zeroize.workspace = true
 # Signed retained proofs use the current canonical personal/device identity.

@@ -2,12 +2,14 @@
 
 use std::collections::HashMap;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Historic v1 identity-signature domain; retained for public log verification.
-pub const MODERATION_DOMAIN: &[u8] = b"tilo-registry-moderation-v1\0";
+/// The moderation protocol's one version: every signed mutation names it,
+/// and a reader accepts exactly it (docs/architecture/compatibility.md). It is
+/// part of what the actor's credential signs.
+pub const MODERATION_PROTOCOL: u16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,14 +108,15 @@ pub struct SignedModerationMutation {
 }
 
 impl SignedModerationMutation {
-    /// Recover the exact approved JSON action payload from a v2 request.
+    /// Recover the exact approved JSON action payload from a request.
     ///
     /// # Errors
-    /// Returns an error for historic or destination-less requests.
+    /// Returns an error for a request at another protocol or without a
+    /// destination.
     pub fn external_operation(
         &self,
     ) -> Result<crate::ExternalModerationOperation, ModerationWireError> {
-        if self.protocol != 2 {
+        if self.protocol != MODERATION_PROTOCOL {
             return Err(ModerationWireError::UnsupportedProtocol);
         }
         Ok(crate::ExternalModerationOperation {
@@ -245,17 +248,6 @@ pub enum ModerationWireError {
     InvalidCase,
 }
 
-#[derive(Serialize)]
-struct SigningPayload<'a> {
-    protocol: u16,
-    request_id: &'a str,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    actor_role: ModerationActorRole,
-    actor_pubkey_hex: &'a str,
-    mutation: &'a ModerationMutation,
-}
-
 /// Canonical digest covered by an actor signature.
 ///
 /// # Errors
@@ -263,68 +255,20 @@ struct SigningPayload<'a> {
 pub fn moderation_signing_message(
     request: &SignedModerationMutation,
 ) -> Result<[u8; 32], ModerationWireError> {
-    if request.protocol == 2 {
-        let operation = request.external_operation()?;
-        let bytes = serde_json::to_vec(&(
-            request.protocol,
-            operation.action(),
-            &operation,
-            request.actor_role,
-            &request.actor_pubkey_hex,
-            &request.credential,
-        ))
-        .map_err(|_| ModerationWireError::Encoding)?;
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(crate::external_moderation::MUTATION_DOMAIN);
-        hasher.update(&bytes);
-        return Ok(*hasher.finalize().as_bytes());
-    }
-    if request.protocol != 1 || request.destination.is_some() || request.credential.is_some() {
-        return Err(ModerationWireError::UnsupportedProtocol);
-    }
-    let payload = SigningPayload {
-        protocol: request.protocol,
-        request_id: &request.request_id,
-        issued_at_unix: request.issued_at_unix,
-        expires_at_unix: request.expires_at_unix,
-        actor_role: request.actor_role,
-        actor_pubkey_hex: &request.actor_pubkey_hex,
-        mutation: &request.mutation,
-    };
-    let bytes = postcard::to_stdvec(&payload).map_err(|_| ModerationWireError::Encoding)?;
+    let operation = request.external_operation()?;
+    let bytes = serde_json::to_vec(&(
+        request.protocol,
+        operation.action(),
+        &operation,
+        request.actor_role,
+        &request.actor_pubkey_hex,
+        &request.credential,
+    ))
+    .map_err(|_| ModerationWireError::Encoding)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(MODERATION_DOMAIN);
+    hasher.update(crate::external_moderation::MUTATION_DOMAIN);
     hasher.update(&bytes);
     Ok(*hasher.finalize().as_bytes())
-}
-
-/// Construct and sign one moderation mutation.
-///
-/// # Errors
-/// Returns an encoding error if the canonical payload cannot be serialized.
-pub fn sign_moderation_mutation(
-    request_id: String,
-    issued_at_unix: u64,
-    expires_at_unix: u64,
-    role: ModerationActorRole,
-    mutation: ModerationMutation,
-    key: &SigningKey,
-) -> Result<SignedModerationMutation, ModerationWireError> {
-    let mut request = SignedModerationMutation {
-        protocol: 1,
-        request_id,
-        issued_at_unix,
-        expires_at_unix,
-        actor_role: role,
-        actor_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
-        mutation,
-        signature_hex: String::new(),
-        destination: None,
-        credential: None,
-    };
-    request.signature_hex =
-        hex::encode(key.sign(&moderation_signing_message(&request)?).to_bytes());
-    Ok(request)
 }
 
 /// Verify an actor's public key and signature over the complete request.
@@ -345,38 +289,34 @@ pub fn verify_moderation_mutation(
     let key =
         VerifyingKey::from_bytes(&key_bytes).map_err(|_| ModerationWireError::InvalidPublicKey)?;
     let message = moderation_signing_message(request)?;
-    if request.protocol == 2 {
-        let operation = request.external_operation()?;
-        operation
-            .validate()
-            .map_err(ModerationWireError::InvalidOperation)?;
-        if operation.role() != request.actor_role {
-            return Err(ModerationWireError::InvalidSignature);
-        }
-        let credential = request
-            .credential
-            .as_ref()
-            .ok_or(ModerationWireError::InvalidSignature)?;
-        let binding = Signature::from_slice(
-            &hex::decode(&credential.binding_signature_hex)
-                .map_err(|_| ModerationWireError::InvalidSignature)?,
-        )
-        .map_err(|_| ModerationWireError::InvalidSignature)?;
-        key.verify_strict(
-            &crate::external_moderation::binding_message(request)?,
-            &binding,
-        )
-        .map_err(|_| ModerationWireError::InvalidSignature)?;
-        let bytes: [u8; 32] = hex::decode(&credential.public_key_hex)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(ModerationWireError::InvalidPublicKey)?;
-        return VerifyingKey::from_bytes(&bytes)
-            .map_err(|_| ModerationWireError::InvalidPublicKey)?
-            .verify_strict(&message, &signature)
-            .map_err(|_| ModerationWireError::InvalidSignature);
+    let operation = request.external_operation()?;
+    operation
+        .validate()
+        .map_err(ModerationWireError::InvalidOperation)?;
+    if operation.role() != request.actor_role {
+        return Err(ModerationWireError::InvalidSignature);
     }
-    key.verify(&message, &signature)
+    let credential = request
+        .credential
+        .as_ref()
+        .ok_or(ModerationWireError::InvalidSignature)?;
+    let binding = Signature::from_slice(
+        &hex::decode(&credential.binding_signature_hex)
+            .map_err(|_| ModerationWireError::InvalidSignature)?,
+    )
+    .map_err(|_| ModerationWireError::InvalidSignature)?;
+    key.verify_strict(
+        &crate::external_moderation::binding_message(request)?,
+        &binding,
+    )
+    .map_err(|_| ModerationWireError::InvalidSignature)?;
+    let bytes: [u8; 32] = hex::decode(&credential.public_key_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(ModerationWireError::InvalidPublicKey)?;
+    VerifyingKey::from_bytes(&bytes)
+        .map_err(|_| ModerationWireError::InvalidPublicKey)?
+        .verify_strict(&message, &signature)
         .map_err(|_| ModerationWireError::InvalidSignature)
 }
 
@@ -495,16 +435,15 @@ pub fn verify_moderation_authorization(
 ) -> Result<(), ModerationWireError> {
     let mut cases: HashMap<&str, (&str, &str)> = HashMap::new();
     for event in events {
-        if event.signed_mutation.protocol == 2
-            && !event
-                .signed_mutation
-                .destination
-                .as_ref()
-                .is_some_and(|destination| {
-                    destination
-                        .owner_pubkey_hex
-                        .eq_ignore_ascii_case(owner_pubkey_hex)
-                })
+        if !event
+            .signed_mutation
+            .destination
+            .as_ref()
+            .is_some_and(|destination| {
+                destination
+                    .owner_pubkey_hex
+                    .eq_ignore_ascii_case(owner_pubkey_hex)
+            })
         {
             return Err(ModerationWireError::UnauthorizedActor(event.sequence));
         }
@@ -637,7 +576,33 @@ pub fn transparency_event_hash(event: &ModerationEvent) -> Result<String, Modera
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    /// One mutation signed for the test registry whose owner is `owner`.
+    fn sign(
+        request_id: &str,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        mutation: ModerationMutation,
+        key: &SigningKey,
+        owner: &SigningKey,
+    ) -> SignedModerationMutation {
+        crate::sign_external_moderation(
+            &crate::ExternalModerationOperation {
+                destination: crate::ModerationDestination {
+                    base_url: "https://registry.test".into(),
+                    owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                },
+                request_id: request_id.into(),
+                issued_at_unix,
+                expires_at_unix,
+                mutation,
+            },
+            key,
+        )
+        .unwrap()
+    }
 
     #[test]
     #[allow(
@@ -648,11 +613,10 @@ mod tests {
         // phase: signature_binds_role_expiry_and_body
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let mut request = sign_moderation_mutation(
-                "request-1".into(),
+            let mut request = sign(
+                "request-1",
                 10,
                 20,
-                ModerationActorRole::Reporter,
                 ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
                     category: "security".into(),
@@ -660,8 +624,8 @@ mod tests {
                     evidence_digest_hex: "aa".repeat(32),
                 },
                 &key,
-            )
-            .unwrap();
+                &SigningKey::from_bytes(&[2; 32]),
+            );
             verify_moderation_mutation(&request).unwrap();
             request.expires_at_unix = 21;
             assert_eq!(
@@ -672,11 +636,10 @@ mod tests {
         // phase: transparency_chain_detects_edit
         {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-            let request = sign_moderation_mutation(
-                "r".into(),
+            let request = sign(
+                "r",
                 1,
                 20,
-                ModerationActorRole::Reporter,
                 ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
                     category: "quality".into(),
@@ -684,8 +647,8 @@ mod tests {
                     evidence_digest_hex: "bb".repeat(32),
                 },
                 &key,
-            )
-            .unwrap();
+                &SigningKey::from_bytes(&[2; 32]),
+            );
             let mut event = ModerationEvent {
                 sequence: 1,
                 case_id: "case".into(),
@@ -715,11 +678,10 @@ mod tests {
             let reporter = SigningKey::from_bytes(&[1; 32]);
             let owner = SigningKey::from_bytes(&[2; 32]);
             let outsider = SigningKey::from_bytes(&[3; 32]);
-            let report = sign_moderation_mutation(
-                "report".into(),
+            let report = sign(
+                "report",
                 10,
                 20,
-                ModerationActorRole::Reporter,
                 ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
                     category: "security".into(),
@@ -727,8 +689,8 @@ mod tests {
                     evidence_digest_hex: "aa".repeat(32),
                 },
                 &reporter,
-            )
-            .unwrap();
+                &owner,
+            );
             let mut first = ModerationEvent {
                 sequence: 1,
                 case_id: "case-one".into(),
@@ -751,19 +713,18 @@ mod tests {
             first.record_hash_hex = transparency_event_hash(&first).unwrap();
 
             let decision_for = |key: &SigningKey| {
-                sign_moderation_mutation(
-                    "decision".into(),
+                sign(
+                    "decision",
                     12,
                     20,
-                    ModerationActorRole::Reviewer,
                     ModerationMutation::ReviewerDecision {
                         case_id: "case-one".into(),
                         decision: ModerationDecision::Quarantine,
                         reason: "confirmed".into(),
                     },
                     key,
+                    &owner,
                 )
-                .unwrap()
             };
             let make_second = |request: SignedModerationMutation| {
                 let mut event = ModerationEvent {

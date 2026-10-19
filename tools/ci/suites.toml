@@ -790,6 +790,9 @@ inputs = [
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
   "os/usr/lib/systemd/system/tilo-extension-refresh.timer",
   "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf",
+  "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf",
+  "os/usr/lib/systemd/system/tilo-live-update.service",
+  "os/usr/lib/systemd/system/tilo-live-update-session.service",
   "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension",
   "os/usr/libexec/tilo-install",
   "keys/extensions.pub",
@@ -1010,6 +1013,8 @@ inputs = [
   "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
   # Workspace certification tells a windowless service from a window by its manifest.
   "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
+  # A new app's services speak the runtime interface version the image serves.
+  "os/usr/share/tilo/system-interfaces.toml",
   # The production resource regression reads Music and its whole normal local
   # dependency closure. SDK/platform/vendor roots above already cover theirs;
   # keep the remaining source roots explicit when the Music graph changes.

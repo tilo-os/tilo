@@ -70,7 +70,6 @@ fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -
     {
         let mut emails: Vec<_> = person
             .emails
-            .0
             .iter()
             .filter_map(|email| canonical_email_hint(email))
             .collect();
@@ -168,7 +167,6 @@ impl MailApp {
             || canonical_email_hint(email).as_deref() != Some(email)
             || !person
                 .emails
-                .0
                 .iter()
                 .any(|hint| canonical_email_hint(hint).as_deref() == Some(email))
         {

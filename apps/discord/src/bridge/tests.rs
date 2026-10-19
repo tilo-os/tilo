@@ -7,7 +7,6 @@ use crate::record::Link;
 fn guild() -> Guild {
     let mut g = Guild {
         guild_id: "1".into(),
-        workspace: "w1".into(),
         bot_user: "9".into(),
         ownership: Ownership::Adopted,
         ..Guild::default()

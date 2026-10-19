@@ -134,10 +134,10 @@ impl WordProcessorWidget {
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
             ToolAction::Hyperlink => {
                 if !self.selection_blocks_cached().is_empty() {
-                    self.action_palette_request = Some(tilo_actions::ActionAddress::new(
-                        "word-processor.caret",
-                        "set-hyperlink",
-                    ));
+                    self.action_palette_request = Some(
+                        crate::effects::WordProcessorEffect::SET_HYPERLINK
+                            .on("word-processor.caret"),
+                    );
                 }
             }
             ToolAction::FontSizeInc => {
@@ -219,13 +219,7 @@ impl WordProcessorWidget {
 
     /// Open the toolbar's More menu, as a person choosing it would.
     pub(super) fn open_toolbar_overflow(&mut self) {
-        let _ = Widget::perform_semantic_action(
-            &mut self.tool_bar,
-            "toolbar.overflow",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        );
+        self.tool_bar.open_overflow();
         self.lifecycle.dirty = true;
     }
 

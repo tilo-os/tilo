@@ -83,19 +83,18 @@ impl ChatApp {
         self.close_person_conversation();
         self.direct_agent = None;
         self.task_goal = Some(TaskGoalDraft {
-            workspace: self.active_ws.clone(),
+            workspace: crate::app::ROOM_SCOPE.to_owned(),
             parent,
             saving: false,
             error: None,
         });
-        self.inbox_open = false;
         self.thread_open = None;
         self.editing = None;
         self.focus = Focus::Main;
         self.scroll = 0.0;
         self.sync_task_goal();
-        self.agent_tasks.observe_tasks(&self.active_ws);
-        self.agent_tasks.refresh_compute(&self.active_ws);
+        self.agent_tasks.observe_tasks(crate::app::ROOM_SCOPE);
+        self.agent_tasks.refresh_compute(crate::app::ROOM_SCOPE);
         self.request_relayout();
     }
 
@@ -115,7 +114,7 @@ impl ChatApp {
         let Some(goal) = &self.task_goal else {
             return false;
         };
-        if goal.saving || goal.workspace != self.active_ws {
+        if goal.saving || goal.workspace != crate::app::ROOM_SCOPE {
             return false;
         }
         let key = goal.key();
@@ -141,9 +140,12 @@ impl ChatApp {
     fn task_goal_caption(&self, goal: &TaskGoalDraft) -> String {
         if goal.saving
             || goal.error.is_some()
-            || self.agent_tasks.eligible_compute(&self.active_ws).is_some()
+            || self
+                .agent_tasks
+                .eligible_compute(crate::app::ROOM_SCOPE)
+                .is_some()
         {
-            goal.caption(self.agent_tasks.eligible_compute(&self.active_ws))
+            goal.caption(self.agent_tasks.eligible_compute(crate::app::ROOM_SCOPE))
         } else if self.agent_tasks.needs_model_setup() {
             crate::i18n::t("chat-task-model-needed")
         } else if self.agent_tasks.can_prepare_model_start() {
@@ -238,7 +240,6 @@ impl ChatApp {
                 let opened = if saved.agent.is_empty() {
                     // An unbound task has a task/run route, not a persona.
                     self.direct_agent = Some(String::new());
-                    self.inbox_open = false;
                     self.thread_open = None;
                     self.focus = Focus::Main;
                     self.scroll = 0.0;

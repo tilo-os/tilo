@@ -703,7 +703,7 @@ mod tests {
         collection.extend(b"bin/app");
         collection.extend(blake3::hash(payload_bytes).as_bytes());
         let mut signed = b"TLOPKG\0\0".to_vec();
-        signed.extend(1_u32.to_le_bytes());
+        signed.extend(tilo_app_package::TAPP_FORMAT_VERSION.to_le_bytes());
         signed.extend(blake3::hash(manifest).as_bytes());
         signed.extend(blake3::hash(&collection).as_bytes());
         signed.push(1);

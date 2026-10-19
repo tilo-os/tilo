@@ -1,7 +1,8 @@
 //! The app spawner on a real cgroup2 hierarchy: launches are born in their
-//! own cgroup as children of the compositor, a whole app ends with
-//! `cgroup.kill`, empty cgroups are removed, and a process in an app cgroup
-//! can neither move out of it nor change its own limits.
+//! own cgroup's main leaf as children of the compositor, a whole app ends
+//! with `cgroup.kill`, empty cgroups are removed, a job joins a leaf of its
+//! own beside the app's, and a process in an app cgroup can neither move out
+//! of it nor change its own limits.
 //!
 //! They need a cgroup this test may write below its own, as a delegated
 //! subtree (a systemd scope of the person's, a `Delegate=yes` unit). Where
@@ -18,12 +19,12 @@
 )]
 
 use std::io::Read as _;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use launcher::app_cgroup;
+use launcher::app_cgroup::{self, AppKind};
 use launcher::spawner::{DelegatedChild, Request, SpawnError, Spawner};
 
 /// Set only in the probe child [`cgroup_escape_probe_child`] runs as.
@@ -74,6 +75,7 @@ impl Tree {
     fn spawn(&self, app_id: &str, argv: &[&str], env: &[(&str, &str)]) -> DelegatedChild {
         let request = Request {
             app_id: app_id.to_string(),
+            kind: AppKind::Tilo,
             program: PathBuf::from(argv[0]),
             args: argv.iter().map(Into::into).collect(),
             // This process's environment, as a launcher gets the compositor's.
@@ -161,10 +163,11 @@ fn a_launch_is_born_in_its_own_cgroup_as_the_callers_child_and_its_cgroup_goes_w
     assert!(status.success(), "{status:?}: {out}");
     let mut lines = out.lines();
     let own = lines.next().unwrap();
+    let main = cgroup.join(app_cgroup::MAIN_LEAF);
     assert!(
-        own.starts_with("0::/") && cgroup.ends_with(own.trim_start_matches("0::/")),
+        own.starts_with("0::/") && main.ends_with(own.trim_start_matches("0::/")),
         "the child ran in {own}, not {}",
-        cgroup.display()
+        main.display()
     );
     assert!(
         app_cgroup::app_cgroup_of(own).is_some(),
@@ -225,6 +228,7 @@ fn a_launch_that_cannot_be_executed_fails_and_leaves_nothing() {
     };
     let request = Request {
         app_id: "org.example.Missing".into(),
+        kind: AppKind::Host,
         program: PathBuf::from("/nonexistent/tilo-launcher"),
         args: vec!["/nonexistent/tilo-launcher".into()],
         env: Vec::new(),
@@ -240,6 +244,84 @@ fn a_launch_that_cannot_be_executed_fails_and_leaves_nothing() {
     wait_until("the failed launch's cgroup is removed", || {
         !tree.dir.join("app-org.example.Missing-1").exists()
     });
+}
+
+/// A job joins a leaf of its own beside its app's main leaf: what
+/// `runtime_portal::jobs` hands out is an open `cgroup.procs` the process
+/// writes `0` to between fork and exec. Asked of the spawner on the app's
+/// behalf, naming the app by one of its processes, as `ush` does.
+#[test]
+fn a_job_is_born_in_a_leaf_of_its_own_beside_its_app() {
+    let Some(tree) = Tree::new(5) else {
+        return;
+    };
+    let Some(runtime) = runtime_portal::jobs::runtime_dir() else {
+        eprintln!("skipped: no XDG_RUNTIME_DIR for the job socket");
+        return;
+    };
+    let mut app = tree.spawn("org.example.Editor", &["/bin/sleep", "600"], &[]);
+    let socket = runtime_portal::jobs::socket_path(
+        &runtime,
+        tree.dir.file_name().unwrap().to_str().unwrap(),
+    );
+    let member = {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: pidfd_open returns a new descriptor or -1.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, app.id(), 0) };
+        assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+        // SAFETY: the kernel just installed it for this process.
+        unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).unwrap()) }
+    };
+    let door = runtime_portal::jobs::connect(&socket).unwrap();
+    let slot =
+        runtime_portal::jobs::request(door.as_fd(), "rust-analyzer", Some(member.as_fd())).unwrap();
+    assert_eq!(slot.oom_score_adj(), 100, "a job of the focused app");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", "cat /proc/self/cgroup /proc/self/oom_score_adj"])
+        .stdout(std::process::Stdio::piped());
+    slot.place(&mut command);
+    let out = command.output().unwrap();
+    let out = String::from_utf8(out.stdout).unwrap();
+    let mut lines = out.lines();
+    let own = lines.next().unwrap();
+    let job = app.cgroup().join("job-1");
+    assert!(
+        job.ends_with(own.trim_start_matches("0::/")),
+        "the job ran in {own}, not {}",
+        job.display()
+    );
+    // Raised to the job's value; a test host may have started it higher
+    // already, and an unprivileged process cannot go below that.
+    let adj: i32 = lines.next().unwrap().trim().parse().unwrap();
+    assert!(adj >= 100, "oom_score_adj {adj}");
+    if job.join("memory.oom.group").exists() {
+        assert_eq!(
+            std::fs::read_to_string(job.join("memory.oom.group"))
+                .unwrap()
+                .trim(),
+            "1",
+            "a job is its own OOM group"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                app.cgroup()
+                    .join(app_cgroup::MAIN_LEAF)
+                    .join("memory.oom.group")
+            )
+            .unwrap()
+            .trim(),
+            "1",
+            "a Tilo app is one OOM group"
+        );
+    }
+    // A process outside the tree is no app to make jobs for.
+    let stranger = runtime_portal::jobs::own_pidfd().unwrap();
+    assert!(runtime_portal::jobs::request(door.as_fd(), "x", Some(stranger.as_fd())).is_err());
+    app.kill().unwrap();
+    app.wait().unwrap();
+    let cgroup = app.cgroup().to_path_buf();
+    wait_until("the app and its jobs are removed", || !cgroup.exists());
 }
 
 /// The kernel half of the boundary: even a process that could reach a
@@ -263,7 +345,7 @@ fn a_process_in_an_app_cgroup_cannot_move_or_retune_itself() {
     };
     let mut victim = tree.spawn("org.example.Victim", &["/bin/sleep", "600"], &[]);
     let targets = [
-        victim.cgroup().to_path_buf(),
+        victim.cgroup().join(app_cgroup::MAIN_LEAF),
         tree.dir.join(app_cgroup::SPAWNER_LEAF),
         tree.dir.clone(),
     ]
@@ -282,7 +364,7 @@ fn a_process_in_an_app_cgroup_cannot_move_or_retune_itself() {
         ],
         &[(PROBE_ENV, &targets)],
     );
-    let own = probe.cgroup().to_path_buf();
+    let own = probe.cgroup().join(app_cgroup::MAIN_LEAF);
     let out = stdout_of(&mut probe);
     assert!(probe.wait().unwrap().success(), "{out}");
     let report = |name: &str| {
@@ -318,10 +400,15 @@ fn a_process_in_an_app_cgroup_cannot_move_or_retune_itself() {
         1
     );
     assert_eq!(
-        std::fs::read_to_string(victim.cgroup().join("cgroup.procs"))
-            .unwrap()
-            .lines()
-            .count(),
+        std::fs::read_to_string(
+            victim
+                .cgroup()
+                .join(app_cgroup::MAIN_LEAF)
+                .join("cgroup.procs")
+        )
+        .unwrap()
+        .lines()
+        .count(),
         1
     );
     assert_eq!(

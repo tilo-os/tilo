@@ -2,7 +2,6 @@
 use automerge::transaction::Transactable as _;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::ActionAddress;
 
 use crate::actions::file_resource_id;
 use crate::doc::EditorDoc;
@@ -32,15 +31,9 @@ fn invoke(
     action: &str,
     args: Value,
 ) -> Result<Option<ui::tilo_actions::ActionOutput>, ui::tilo_actions::DoorError> {
-    let arguments = serde_json::from_value::<serde_json::Map<String, Value>>(args).unwrap();
-    let instance = app.harness().component_instance_id().unwrap();
-    let output = app.harness().invoke_bound_action(
-        &ui::bound_dispatch::BoundActionAddress {
-            instance_id: instance,
-            address: ActionAddress::new(file_resource_id(file), action),
-        },
-        &arguments,
-    )?;
+    let output = app
+        .harness()
+        .call_on(&file_resource_id(file), action, args)?;
     app.settle();
     Ok(output.completed())
 }
@@ -360,9 +353,13 @@ fn text_operations_snapshot_rejects_real_pending_edits_and_aba_revision() {
         let refused = crate::text_operations::committed_heads(doc, &heads, Some(&expected));
         assert!(refused.unwrap_err().contains("revision changed"));
         let mut pending = doc.clone();
-        pending
-            .put(automerge::ROOT, "pending-snapshot-fixture", true)
-            .unwrap();
+        ui::tilo_resource::write_key(
+            &mut pending,
+            &automerge::ROOT,
+            "pending-snapshot-fixture",
+            &true,
+        )
+        .unwrap();
         let count = pending.pending_ops();
         assert!(count > 0);
         assert!(

@@ -3,10 +3,12 @@
 //! As soon as a connection opens, both sides perform this challenge/response:
 //!
 //! ```text
-//! client → server:   Hello { cert: DeviceCert, nonce: [u8;32] }
-//! server checks cert; if the client is admissible under the trust
-//! policy, replies:
+//! client → server:   Hello { protocol: u32, cert: DeviceCert, nonce: [u8;32] }
+//! server checks the protocol version (another one is answered with the
+//! server's own, alone, and the connection ends) and the cert; if the client
+//! is admissible under the trust policy, replies:
 //! server → client:   HelloAck {
+//!     protocol: u32,
 //!     cert: DeviceCert,
 //!     nonce: [u8;32],
 //!     sig_over_client_nonce: [u8;64],
@@ -34,12 +36,14 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 
 use crate::policy::TrustPolicy;
 
-/// The device ↔ device interface's one version: the handshake, the relay
-/// session's frames and the peer-sync messages they carry. Two devices sync
-/// only when theirs are equal (docs/architecture/compatibility.md);
-/// `interface.toml` holds the schema, and the repository policy fails a
-/// change to it that keeps the number.
-pub const PEER_PROTOCOL_VERSION: u32 = 2;
+/// The device ↔ device interface's one version
+/// ([`neighbour_wire::PEER_PROTOCOL_VERSION`]), which the handshake checks.
+///
+/// [`Hello`] and [`HelloAck`] start with it, so every version reads it
+/// whatever follows ([`decode_handshake`]). A server answers a hello at
+/// another version with a frame holding only its own ([`version_answer`])
+/// and closes; neither side reads anything else from the other.
+pub use neighbour_wire::PEER_PROTOCOL_VERSION;
 
 /// Domain tag bound into every mutual-authentication challenge signature.
 /// Domain tag under which the *server* signs the client's challenge.
@@ -58,6 +62,8 @@ const TILO_AUTH_CLIENT_TAG: &[u8] = b"tilo-relay-auth-v2/client\0";
 /// First message: client → server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hello {
+    /// The client's [`PEER_PROTOCOL_VERSION`]. First, and never moved.
+    pub protocol: u32,
     /// Client's device cert.
     pub cert: DeviceCert,
     /// Fresh 32-byte challenge nonce the client wants the server to
@@ -68,6 +74,8 @@ pub struct Hello {
 /// Second message: server → client.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HelloAck {
+    /// The server's [`PEER_PROTOCOL_VERSION`]. First, and never moved.
+    pub protocol: u32,
     /// Server's device cert (the relay's cert).
     pub cert: DeviceCert,
     /// Fresh 32-byte challenge nonce the server wants the client
@@ -78,6 +86,78 @@ pub struct HelloAck {
     /// holds the private key matching the cert.
     #[serde(with = "serde_bytes")]
     pub sig_over_client_nonce: [u8; 64],
+}
+
+impl Hello {
+    /// This device's hello: its certificate and a fresh `client_nonce`, at
+    /// this build's [`PEER_PROTOCOL_VERSION`].
+    #[must_use]
+    pub fn new(cert: DeviceCert, client_nonce: [u8; 32]) -> Self {
+        Self {
+            protocol: PEER_PROTOCOL_VERSION,
+            cert,
+            client_nonce,
+        }
+    }
+}
+
+/// A handshake frame that is not one this device reads.
+#[derive(Debug, Error)]
+pub enum HandshakeFrameError {
+    /// The other side speaks another [`PEER_PROTOCOL_VERSION`]: `theirs`.
+    #[error("the other device speaks peer protocol {theirs}, this one {PEER_PROTOCOL_VERSION}")]
+    Version {
+        /// The version the frame starts with.
+        theirs: u32,
+    },
+    /// The frame does not decode at this device's version.
+    #[error("handshake frame does not decode: {0}")]
+    Codec(#[from] postcard::Error),
+}
+
+impl HandshakeFrameError {
+    /// The other side's version, when that is why the frame was refused.
+    #[must_use]
+    pub const fn peer_version(&self) -> Option<u32> {
+        match self {
+            Self::Version { theirs } => Some(*theirs),
+            Self::Codec(_) => None,
+        }
+    }
+}
+
+/// Which side of a version mismatch is behind.
+#[must_use]
+pub const fn this_device_is_behind(theirs: u32) -> bool {
+    theirs > PEER_PROTOCOL_VERSION
+}
+
+/// Decode a [`Hello`] or [`HelloAck`] frame: its leading version first, so
+/// a frame from another version is refused as such, whatever its shape.
+///
+/// # Errors
+///
+/// [`HandshakeFrameError::Version`] when the frame starts with another
+/// [`PEER_PROTOCOL_VERSION`], [`HandshakeFrameError::Codec`] when it does not
+/// decode.
+pub fn decode_handshake<T: serde::de::DeserializeOwned>(
+    frame: &[u8],
+) -> Result<T, HandshakeFrameError> {
+    let (theirs, _) = postcard::take_from_bytes::<u32>(frame)?;
+    if theirs != PEER_PROTOCOL_VERSION {
+        return Err(HandshakeFrameError::Version { theirs });
+    }
+    Ok(postcard::from_bytes(frame)?)
+}
+
+/// What a server answers a hello at another version with: its own
+/// version, alone, before it closes.
+///
+/// # Errors
+///
+/// Returns the encoding error.
+pub fn version_answer() -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(&PEER_PROTOCOL_VERSION)
 }
 
 /// Third message: client → server.
@@ -360,6 +440,7 @@ pub fn build_hello_ack(
     let digest = server_challenge_digest(client_nonce);
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck {
+        protocol: PEER_PROTOCOL_VERSION,
         cert: own_cert,
         server_nonce,
         sig_over_client_nonce: sig,
@@ -601,6 +682,7 @@ mod tests {
         // And the other way round: a client's proof is not a server's.
         let client_proof = build_hello_ack2(&client.sk, &victim_server_nonce);
         let reflected_ack = HelloAck {
+            protocol: PEER_PROTOCOL_VERSION,
             cert: client.cert,
             server_nonce: [4u8; 32],
             sig_over_client_nonce: client_proof.sig_over_server_nonce,
@@ -640,10 +722,7 @@ mod tests {
         let revs = RevocationList::new();
         let client_nonce = [1u8; 32];
         let server_nonce = [2u8; 32];
-        let hello = Hello {
-            cert: client.cert.clone(),
-            client_nonce,
-        };
+        let hello = Hello::new(client.cert.clone(), client_nonce);
         let server_peer = accept_hello(
             &hello,
             &user.public_key,
@@ -668,10 +747,7 @@ mod tests {
             "laptop",
             DeviceCapabilities::primary(),
         );
-        let hello = Hello {
-            cert: bob_client.cert,
-            client_nonce: [0u8; 32],
-        };
+        let hello = Hello::new(bob_client.cert, [0u8; 32]);
         assert!(matches!(
             accept_hello(
                 &hello,
@@ -695,10 +771,7 @@ mod tests {
         sign_revocation_entry(&mut rev, &root_sk).unwrap();
         let mut revoked = RevocationList::new();
         revoked.insert(rev).unwrap();
-        let hello = Hello {
-            cert: client.cert,
-            client_nonce: [0u8; 32],
-        };
+        let hello = Hello::new(client.cert, [0u8; 32]);
         assert!(matches!(
             accept_hello(
                 &hello,
@@ -745,10 +818,7 @@ mod tests {
     }
 
     fn hello(party: &Party) -> Hello {
-        Hello {
-            cert: party.cert.clone(),
-            client_nonce: [3; 32],
-        }
+        Hello::new(party.cert.clone(), [3; 32])
     }
 
     #[test]
@@ -965,62 +1035,16 @@ mod tests {
         ));
     }
 
-    /// `Hello` as a build from before the foreign-device marker encodes it.
-    mod v1 {
-        #[allow(
-            clippy::struct_excessive_bools,
-            reason = "a frozen copy of the v1 wire type"
-        )]
-        #[derive(serde::Serialize, serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        pub struct DeviceCapabilities {
-            pub can_own_workspaces: bool,
-            pub can_admit_devices: bool,
-            pub can_act_as_host: bool,
-            pub can_read_all_workspaces: bool,
-        }
-
-        #[derive(serde::Serialize, serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        pub struct DeviceCert {
-            pub user_public_key: [u8; 32],
-            pub device_public_key: [u8; 32],
-            pub device_label: String,
-            pub capabilities: DeviceCapabilities,
-            pub issued_at_ns: u64,
-            pub expires_at_ns: Option<u64>,
-            #[serde(with = "serde_bytes")]
-            pub signature: [u8; 64],
-        }
-
-        #[derive(serde::Serialize, serde::Deserialize)]
-        pub struct Hello {
-            pub cert: DeviceCert,
-            pub client_nonce: [u8; 32],
-        }
-    }
-
-    /// An old relay decodes the frame with its own types; for what it can
-    /// decode, verification is the unchanged v1 path.
-    fn old_relay_accepts(frame: &[u8], user: &[u8; 32]) -> bool {
-        postcard::from_bytes::<v1::Hello>(frame).is_ok() && new_relay_accepts(frame, user).is_some()
-    }
-
-    fn new_relay_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
-        let hello: Hello = postcard::from_bytes(frame).ok()?;
+    fn relay_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
+        let hello: Hello = decode_handshake(frame).ok()?;
         let policy = TrustPolicy::default();
         accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
     }
 
+    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
-    fn relay_handshakes_across_certificate_versions() {
+    fn devices_on_another_peer_version_are_told_which_and_read_nothing_else() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
-        let native = enrol(
-            &root_sk,
-            user.public_key,
-            "laptop",
-            DeviceCapabilities::primary(),
-        );
         let foreign = enrol(
             &root_sk,
             user.public_key,
@@ -1030,47 +1054,42 @@ mod tests {
                 ..DeviceCapabilities::primary()
             },
         );
-        let hello = |cert: &DeviceCert| {
-            postcard::to_stdvec(&Hello {
-                cert: cert.clone(),
-                client_nonce: [1; 32],
-            })
-            .unwrap()
+        let frame = |protocol: u32| {
+            let mut hello = Hello::new(foreign.cert.clone(), [1; 32]);
+            hello.protocol = protocol;
+            postcard::to_stdvec(&hello).unwrap()
         };
 
-        // Old client, new relay: the old client's frame is the native frame.
-        let caps = &native.cert.capabilities;
-        let old_frame = postcard::to_stdvec(&v1::Hello {
-            cert: v1::DeviceCert {
-                user_public_key: native.cert.user_public_key,
-                device_public_key: native.cert.device_public_key,
-                device_label: native.cert.device_label.clone(),
-                capabilities: v1::DeviceCapabilities {
-                    can_own_workspaces: caps.can_own_workspaces,
-                    can_admit_devices: caps.can_admit_devices,
-                    can_act_as_host: caps.can_act_as_host,
-                    can_read_all_workspaces: caps.can_read_all_workspaces,
-                },
-                issued_at_ns: native.cert.issued_at_ns,
-                expires_at_ns: native.cert.expires_at_ns,
-                signature: native.cert.signature,
-            },
-            client_nonce: [1; 32],
-        })
-        .unwrap();
-        assert_eq!(hello(&native.cert), old_frame);
-        assert!(new_relay_accepts(&old_frame, &user.public_key).is_some());
-
-        // New native client, old relay.
-        assert!(old_relay_accepts(&hello(&native.cert), &user.public_key));
-
-        // New foreign client: an old relay cannot decode it; a new relay
-        // admits it with the marker the room's role cap reads.
-        let foreign_frame = hello(&foreign.cert);
-        assert!(!old_relay_accepts(&foreign_frame, &user.public_key));
-        let peer = new_relay_accepts(&foreign_frame, &user.public_key).unwrap();
+        // The same version: the relay admits it, with the marker the room's
+        // role cap reads.
+        let peer = relay_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
         assert!(peer.cert.capabilities.foreign);
         assert_eq!(peer.role, PeerRole::Device);
+
+        // Another version, older or newer: refused as such, whatever follows.
+        for theirs in [PEER_PROTOCOL_VERSION - 1, PEER_PROTOCOL_VERSION + 1] {
+            let refused = decode_handshake::<Hello>(&frame(theirs)).unwrap_err();
+            assert_eq!(refused.peer_version(), Some(theirs));
+            assert!(relay_accepts(&frame(theirs), &user.public_key).is_none());
+        }
+        let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 1)).unwrap();
+        newer.extend_from_slice(b"a shape this build has never seen");
+        assert_eq!(
+            decode_handshake::<Hello>(&newer)
+                .unwrap_err()
+                .peer_version(),
+            Some(PEER_PROTOCOL_VERSION + 1)
+        );
+        assert!(this_device_is_behind(PEER_PROTOCOL_VERSION + 1));
+        assert!(!this_device_is_behind(PEER_PROTOCOL_VERSION - 1));
+
+        // The server answers another version with its own, alone: what a
+        // client at another version reads in place of an ack.
+        let answer = version_answer().unwrap();
+        assert_eq!(
+            postcard::take_from_bytes::<u32>(&answer).unwrap(),
+            (PEER_PROTOCOL_VERSION, &[][..])
+        );
     }
 
     #[test]

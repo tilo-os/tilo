@@ -45,7 +45,7 @@ tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Content addressing everywhere; the on-disk store, and the device store where
 # the launcher hands one over.
-tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
+tilo-content = { path = "../../crates/system/content", features = ["dir"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true

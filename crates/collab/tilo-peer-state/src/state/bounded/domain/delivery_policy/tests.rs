@@ -141,6 +141,7 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
             peer.receive_from(
                 TransportOrigin::UntrustedPresence(peer.authority().device_public_key),
                 NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.authority().clone()),
                     revocations: vec![entry],
                 },

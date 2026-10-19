@@ -252,13 +252,7 @@ fn drive_name(drive: &Drive) -> String {
 }
 
 fn size_text(bytes: u64) -> String {
-    const GB: u64 = 1_000_000_000;
-    if bytes >= 10 * GB {
-        format!("{} GB", bytes / GB)
-    } else {
-        let tenths = bytes.saturating_mul(10) / GB;
-        format!("{}.{} GB", tenths / 10, tenths % 10)
-    }
+    ui::format::size(bytes)
 }
 
 /// The sheet for `drive`.

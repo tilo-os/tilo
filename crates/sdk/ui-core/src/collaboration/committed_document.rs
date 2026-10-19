@@ -1368,8 +1368,8 @@ impl NativeReadJoin {
 const MERGE_RECHECK: Duration = Duration::from_millis(100);
 
 /// The shortest gap between two Opens of one route, however often its
-/// document changes, and how often a reader re-Opens when its broker cannot
-/// hold an `Await` (an older shell).
+/// document changes, and so how often a reader re-Opens while its broker's
+/// `Await` keeps failing.
 const READ_RECHECK: Duration = Duration::from_millis(200);
 
 /// How long a reader waits for a change before it confirms its read with an
@@ -1390,8 +1390,8 @@ enum Woke {
     Local,
     /// Nothing changed for [`AWAIT_KEEPALIVE`]: confirm the read.
     Keepalive,
-    /// The broker did not hold the wait (an older broker refuses the
-    /// request), or the call failed: the next Open decides.
+    /// The wait failed or was answered with something other than `Stale`:
+    /// the next Open decides.
     Refused,
 }
 
@@ -1505,13 +1505,6 @@ pub(super) async fn install(
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        // Whether the broker holds `Await`. An Open that answers right
-        // after a refused Await says it does not, and the reader polls.
-        let mut awaits = true;
-        let mut probing = false;
-        // Whether the broker answers `OpenChanges`; an older one refuses it
-        // and the reader reads whole, as it always did.
-        let mut changes_supported = true;
         let mut last_open;
         'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
@@ -1571,41 +1564,16 @@ pub(super) async fn install(
             }
             last_open = crate::time::now();
             let known = if refresh { None } else { revision };
-            let changes = known.filter(|_| changes_supported);
-            let request = changes.map_or(
+            // A reader holding a revision asks for only the changes since.
+            let request = known.map_or(
                 Request::Open {
-                    known_revision: known,
+                    known_revision: None,
                 },
                 |known_revision| Request::OpenChanges { known_revision },
             );
-            let mut result =
+            let result =
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
                     .await;
-            if changes.is_some() && matches!(result, Ok(Err(_))) {
-                // An older broker refuses a request it does not know. The
-                // Open it stands for decides, now and on this route from
-                // here on; a refusal is that Open's refusal.
-                changes_supported = false;
-                result = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    channel.committed_document(&Request::Open {
-                        known_revision: known,
-                    }),
-                )
-                .await;
-            }
-            let changes = changes.filter(|_| changes_supported);
-            if std::mem::take(&mut probing)
-                && matches!(
-                    result,
-                    Ok(Ok(Reply::Unchanged { .. }
-                        | Reply::Chunk { .. }
-                        | Reply::Changes { .. }
-                        | Reply::Unavailable))
-                )
-            {
-                awaits = false;
-            }
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
@@ -1614,7 +1582,7 @@ pub(super) async fn install(
                 }
                 Ok(Ok(reply))
                     if matches!(reply, Reply::Chunk { .. })
-                        || (changes.is_some() && matches!(reply, Reply::Changes { .. })) =>
+                        || (known.is_some() && matches!(reply, Reply::Changes { .. })) =>
                 {
                     set_read_ready(&inbound, &ready, false);
                     match read_capture(&channel, reply).await {
@@ -1717,16 +1685,11 @@ pub(super) async fn install(
                 }
             }
             drop(turn);
-            if !awaits {
-                tokio::time::sleep(READ_RECHECK).await;
-                continue;
-            }
             // Nothing to do until the read changes: wait for the broker to
-            // say so instead of asking five times a second.
-            if until_stale(&channel, revision, &inbound, &key, &ready).await == Woke::Refused {
-                probing = true;
-                continue;
-            }
+            // say so instead of asking five times a second. However the wait
+            // ends, the next Open decides, no sooner than READ_RECHECK after
+            // the last.
+            until_stale(&channel, revision, &inbound, &key, &ready).await;
             let since = crate::time::now().saturating_duration_since(last_open);
             tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
         }

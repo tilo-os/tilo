@@ -29,7 +29,7 @@ aarch64 = "aarch64"
 # macOS prompts for the camera from the usage string this declaration puts in
 # the .app's Info.plist; without it the system ends the process on first use.
 [capabilities]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "open-uri"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "open-uri", "gpu"]
 
 [resources]
 kinds = ["camera"]
@@ -63,9 +63,9 @@ mode = "off"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@1"
-tilo-fs = "optional@1"
-tools = "optional@1"
+collab = "optional@2"
+tilo-fs = "optional@2"
+tools = "optional@2"
 
 [entrypoint]
 bin             = "bin/camera"

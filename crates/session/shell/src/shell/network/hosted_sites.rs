@@ -30,6 +30,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
 /// The largest `entry.json` or door answer read.
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
+/// The largest directory read: a few hundred listings with their faces.
+const MAX_DIRECTORY_BYTES: usize = 1024 * 1024;
 
 fn hosted_rooms_path(state_dir: &Path) -> PathBuf {
     state_dir.join("hosted-rooms.json")
@@ -277,11 +279,24 @@ pub(crate) struct SiteWorkspace {
     /// The host's admission door, when it admits people without an
     /// invitation.
     pub admission: Option<url::Url>,
+    /// The site's directory of public workspaces, when it names one.
+    pub directory: Option<url::Url>,
 }
 
 #[derive(Deserialize)]
 struct EntryJson {
     home: Option<HomeJson>,
+    /// The site's directory of public workspaces.
+    directory: Option<String>,
+}
+
+/// What a site's `entry.json` says: its home workspace and its directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SiteEntry {
+    /// The home workspace, when the site names one.
+    pub home: Option<SiteWorkspace>,
+    /// The directory of public workspaces, when the site names one.
+    pub directory: Option<url::Url>,
 }
 
 #[derive(Deserialize)]
@@ -342,13 +357,36 @@ pub(crate) fn site_entry(text: &str) -> Result<url::Url, SiteError> {
 
 /// Read the home workspace the site at `entry` names.
 pub(crate) async fn resolve_site(entry: &url::Url) -> Result<SiteWorkspace, SiteError> {
+    read_site(entry).await?.home.ok_or(SiteError::NoWorkspace)
+}
+
+/// Read what the site at `entry` names: its home workspace and its
+/// directory of public workspaces.
+pub(crate) async fn read_site(entry: &url::Url) -> Result<SiteEntry, SiteError> {
     let client = client()?;
     let config: EntryJson = get_json(
         &client,
         &entry.join("entry.json").map_err(|_| SiteError::Invalid)?,
     )
     .await?;
-    let home = config.home.ok_or(SiteError::NoWorkspace)?;
+    let directory = config
+        .directory
+        .as_deref()
+        .and_then(|directory| entry.join(directory).ok())
+        .and_then(|directory| web_origin(directory.as_str()).ok());
+    let home = match config.home {
+        Some(home) => Some(home_workspace(entry, home, directory.clone())?),
+        None => None,
+    };
+    Ok(SiteEntry { home, directory })
+}
+
+/// The home workspace `home` of the site at `entry`.
+fn home_workspace(
+    entry: &url::Url,
+    home: HomeJson,
+    directory: Option<url::Url>,
+) -> Result<SiteWorkspace, SiteError> {
     let origin = web_origin(&home.host.origin)?;
     let admission = home
         .admission
@@ -365,18 +403,71 @@ pub(crate) async fn resolve_site(entry: &url::Url) -> Result<SiteWorkspace, Site
         name,
         origin: origin.origin().ascii_serialization(),
         admission,
+        directory,
     })
 }
 
+/// The public workspaces the directory at `directory` lists. Every
+/// directory route is a `POST`, as a relay serves nothing else.
+pub(crate) async fn fetch_directory(
+    directory: &url::Url,
+) -> Result<tilo_relay_protocol::directory::DirectoryPage, SiteError> {
+    let response = client()?
+        .post(directory.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|error| SiteError::Unreachable(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SiteError::Unreachable(format!(
+            "the directory answered HTTP {}",
+            response.status().as_u16()
+        )));
+    }
+    let bytes = response
+        .bytes_limited(MAX_DIRECTORY_BYTES)
+        .await
+        .map_err(|error| SiteError::Unreachable(error.to_string()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| SiteError::Unreachable(format!("the directory is unreadable: {error}")))
+}
+
+/// Report the public workspace behind `door` to the people who run it.
+pub(crate) async fn report_at_door(
+    door: &url::Url,
+    reporter: [u8; 32],
+    reason: &str,
+) -> Result<(), SiteError> {
+    let url = door.join("report").map_err(|_| SiteError::Invalid)?;
+    let response = client()?
+        .post(url.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .json(&tilo_relay_protocol::directory::DoorReport {
+            reporter_user_public_key: hex::encode(reporter),
+            reason: reason.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(|error| SiteError::Unreachable(error.to_string()))?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    Err(SiteError::Refused(format!(
+        "HTTP {}",
+        response.status().as_u16()
+    )))
+}
+
 /// What a door answers a person it admits.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DoorAnswer {
     /// The invitation bound to the person, as text.
     pub invitation: String,
     /// The one-time token that admits them at once.
     pub admission_token: String,
-    /// The origin of the host to redeem it at.
+    /// The origin of the host to redeem it at: the one the door named, else
+    /// the door's own.
     pub origin: String,
 }
 
@@ -412,10 +503,18 @@ pub(crate) async fn admit(
         .await
         .map_err(|error| SiteError::Unreachable(error.to_string()))?;
     if status.is_success() {
-        let answer: DoorAnswer = serde_json::from_slice(&bytes)
+        let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&bytes)
             .map_err(|error| SiteError::Refused(error.to_string()))?;
-        web_origin(&answer.origin)?;
-        return Ok(answer);
+        // A relay's door answers on the host it admits to.
+        let origin = answer
+            .origin
+            .unwrap_or_else(|| door.origin().ascii_serialization());
+        web_origin(&origin)?;
+        return Ok(DoorAnswer {
+            invitation: answer.invitation,
+            admission_token: answer.admission_token,
+            origin,
+        });
     }
     let reason = serde_json::from_slice::<DoorRefusal>(&bytes)
         .ok()

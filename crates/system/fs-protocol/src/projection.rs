@@ -36,12 +36,10 @@ pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
 pub const RECORD_ID_XATTR: &str = "user.tilo.record-id";
 /// Bounded rich metadata copied from the signed replicated record.
 pub const METADATA_XATTR: &str = "user.tilo.metadata";
-/// Bounded workspace-root catalog of every record visible through this mount.
-/// Paths are mutable provenance; consumers activate by stable `record_id` and
-/// resolve the latest path from a fresh projection.
-pub const RECORD_INDEX_XATTR: &str = "user.tilo.record-index";
-/// Revisioned, pageable successor to [`RECORD_INDEX_XATTR`]. The manifest is
-/// deliberately tiny; pages are requested as
+/// Revisioned, pageable workspace-root catalog of every record visible through
+/// a mount without an ACL. Paths are mutable provenance; consumers activate by
+/// stable `record_id` and resolve the latest path from a fresh page. The
+/// manifest is deliberately tiny; pages are requested as
 /// `user.tilo.record-index.v2.<revision>.<offset>`. A stale revision is absent
 /// rather than silently serving a different ordering.
 pub const RECORD_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
@@ -72,10 +70,6 @@ pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
 pub const METADATA_PROJECTION_VERSION: u16 = 1;
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
-pub const RECORD_INDEX_PROJECTION_VERSION: u16 = 1;
-pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
-/// Stay below Linux's usual 64 KiB xattr ceiling, including filesystem framing.
-pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 pub const RECORD_INDEX_V2_VERSION: u16 = 2;
 pub const RECORD_INDEX_V3_VERSION: u16 = 3;
 /// Keep a worst-case ordinary page within a single Linux filesystem xattr
@@ -234,15 +228,6 @@ pub struct RecordIndexEntryV1 {
     pub is_dir: bool,
 }
 
-/// The single bounded value of [`RECORD_INDEX_XATTR`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordIndexProjectionV1 {
-    pub schema_version: u16,
-    pub truncated: bool,
-    pub records: Vec<RecordIndexEntryV1>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordIndexManifestV2 {
@@ -304,43 +289,6 @@ fn strictly_ascending(records: &[RecordIndexEntryV1]) -> bool {
     records
         .windows(2)
         .all(|pair| matches!(pair, [first, second] if first.record_id < second.record_id))
-}
-
-impl RecordIndexProjectionV1 {
-    /// Decode JSON through the shared protocol implementation. Callers still
-    /// check their transport bounds and the expected authority generation.
-    ///
-    /// # Errors
-    /// Returns the schema error for malformed JSON.
-    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(bytes)
-    }
-
-    /// Validate the bounded, canonical record-index projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when version, bounds, ordering, identity, or path
-    /// invariants are invalid.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != RECORD_INDEX_PROJECTION_VERSION {
-            return Err("unsupported record-index projection version");
-        }
-        if self.records.len() > MAX_RECORD_INDEX_ENTRIES {
-            return Err("record-index projection exceeds its entry bound");
-        }
-        if !self
-            .records
-            .iter()
-            .all(|record| valid_record_index_path(&record.path))
-        {
-            return Err("record-index path is not an absolute mount path");
-        }
-        if !strictly_ascending(&self.records) {
-            return Err("record-index identities are not canonical and unique");
-        }
-        Ok(())
-    }
 }
 
 impl RecordIndexManifestV2 {
@@ -862,14 +810,6 @@ mod tests {
                 assert!(<$ty>::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
             }};
         }
-        round_trip!(
-            RecordIndexProjectionV1,
-            RecordIndexProjectionV1 {
-                schema_version: 1,
-                truncated: true,
-                records: vec![record.clone()],
-            }
-        );
         round_trip!(
             RecordIndexManifestV2,
             RecordIndexManifestV2 {

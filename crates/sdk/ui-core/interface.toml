@@ -5,10 +5,10 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 5
+version = 6
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
-served_to_apps = false
+served_to_apps = true
 sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
@@ -99,6 +99,8 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceClientMessage::device_shell_outcome.result" = "Result<Value, String>"
 "FloatingSurfaceClientMessage::dismiss" = "struct"
 "FloatingSurfaceClientMessage::dismiss.id" = "String"
+"FloatingSurfaceClientMessage::hello" = "struct"
+"FloatingSurfaceClientMessage::hello.version" = "u16"
 "FloatingSurfaceClientMessage::move_device_display" = "struct"
 "FloatingSurfaceClientMessage::move_device_display.placement" = "DeviceDisplayMove"
 "FloatingSurfaceClientMessage::move_device_display.request" = "u64"
@@ -175,6 +177,8 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceHostMessage::share_selection" = "unit"
 "FloatingSurfaceHostMessage::suspended" = "struct"
 "FloatingSurfaceHostMessage::suspended.id" = "String"
+"FloatingSurfaceHostMessage::version_mismatch" = "struct"
+"FloatingSurfaceHostMessage::version_mismatch.shell" = "u16"
 "FloatingSurfaceProtocolRequest" = "struct"
 "FloatingSurfaceProtocolRequest.aspect_ratio" = "Option<f64> optional"
 "FloatingSurfaceProtocolRequest.id" = "String"
@@ -184,7 +188,6 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceProtocolRequest.role" = "FloatingSurfaceProtocolRole"
 "FloatingSurfaceProtocolRequest.source" = "FloatingSurfaceProtocolSource"
 "FloatingSurfaceProtocolRequest.title" = "String"
-"FloatingSurfaceProtocolRequest.version" = "u16"
 "FloatingSurfaceProtocolRole" = "enum external"
 "FloatingSurfaceProtocolRole::active_call" = "unit"
 "FloatingSurfaceProtocolRole::conversation" = "unit"

@@ -632,19 +632,10 @@ fn sample_cmdline(name: &str, user: &str) -> String {
     }
 }
 
-/// Human-readable throughput: 0 / 84 KB/s / 2.4 MB/s (decimal, like most
-/// network tools).
+/// Human-readable throughput in the toolkit's rate style: `0 B/s`,
+/// `84 kB/s`, `2.4 MB/s` (decimal, like most network tools).
 pub fn fmt_rate(bytes_per_sec: f32) -> String {
-    let bps = f64::from(bytes_per_sec.max(0.0));
-    if bps < 1000.0 {
-        format!("{bps:.0} B/s")
-    } else if bps < 1_000_000.0 {
-        format!("{:.0} KB/s", bps / 1000.0)
-    } else if bps < 1_000_000_000.0 {
-        format!("{:.1} MB/s", bps / 1_000_000.0)
-    } else {
-        format!("{:.2} GB/s", bps / 1_000_000_000.0)
-    }
+    ui::format::rate(f64::from(bytes_per_sec))
 }
 
 /// `5h 42m 17s` style duration.

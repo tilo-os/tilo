@@ -302,11 +302,8 @@ fn body(note: usize, blocks: usize) -> String {
 /// an agent does.
 fn apply(app: &mut App, action: &notes::actions::Action) -> Result<(), Failure> {
     let invoke = ui::tilo_resource::Invoke::<notes::Notebook>::apply(action)?;
-    app.invoke_local_resource_action(
-        &tilo_actions::ActionAddress::new("notes.notebook", invoke.id),
-        &invoke.arguments,
-    )
-    .map_err(|error| format!("{}: {error:?}", invoke.id))?;
+    app.invoke_local_resource_action(&invoke.address(), &invoke.arguments)
+        .map_err(|error| format!("{}: {error:?}", invoke.id))?;
     Ok(())
 }
 

@@ -4,8 +4,9 @@
 //! Mail and Settings sign in to online accounts through `account-custody`
 //! (`OAuth` through `tilo-oauth`, the Google Drive, `OneDrive`, Dropbox and
 //! `iCloud` providers it resolves new accounts against) and talk IMAP through
-//! `async-imap`; Music's Spotify sign-in reaches custody through its own
-//! engine library, which chains on this one. Inside `libruntime_dylib.so`
+//! `async-imap`; Calendar and Settings talk WebDAV/CalDAV through `tilo-dav`,
+//! whose calendar sign-in reaches custody too; Music's Spotify sign-in reaches
+//! custody through its own engine library, which chains on this one. Inside `libruntime_dylib.so`
 //! every app process mapped and relocated them. Here they are a library of
 //! their own in the runtime bundle that only those name `DT_NEEDED`, and no
 //! tapp carries a copy; the runtime keeps what they share with other apps
@@ -26,6 +27,8 @@ extern crate runtime_dylib;
 pub use account_custody;
 #[cfg(feature = "thin")]
 pub use async_imap;
+#[cfg(feature = "thin")]
+pub use tilo_dav;
 #[cfg(feature = "thin")]
 pub use tilo_oauth;
 

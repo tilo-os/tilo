@@ -80,6 +80,11 @@ existing private checkpoint metadata for reconnect and restart; retries never
 execute callbacks again. Pending, refused and unsigned history are visible.
 A device without internet can still use its connected local broker. A fresh
 unmanaged development session can edit, but has explicitly unsigned history.
+History is unsigned only once an edit is actually recorded without an
+authenticated publication: input that changes no document (scrolling,
+selecting, hovering, moving focus) touches no history state, shows nothing and
+asks for no frame. The status appears once, with that first edit, in the
+existing History bar.
 
 `admitLocalDocumentAction` authenticates the existing SDK channel, revalidates
 its original worker and route, resolves the exact published action/revision,

@@ -289,7 +289,7 @@ impl Site {
         self.relay.as_ref().unwrap()
     }
 
-    fn origin(&self) -> String {
+    pub(super) fn origin(&self) -> String {
         self.behind.lock().unwrap().origin.clone()
     }
 
@@ -307,6 +307,7 @@ impl Site {
             name: "Lounge".into(),
             origin: self.origin(),
             admission: Some(self.entry.join("door/").unwrap()),
+            directory: None,
         };
         let answer = self
             .runtime

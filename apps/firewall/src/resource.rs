@@ -35,6 +35,8 @@ use crate::model::{FirewallConfig, ZoneKind};
     available = Firewall::available,
     children = Firewall::zone_places,
     search = Firewall::search,
+    version = 2,
+    migrate = crate::model::upgrade,
 )]
 impl Firewall {
     /// Start firewall.
@@ -424,6 +426,46 @@ mod tests {
             .as_array()?
             .iter()
             .find(|row| row["resource"] == "firewall.config" && row["action"] == id)
+    }
+
+    /// A configuration from before a rule's match was stored as its variant
+    /// and fields: each match was one JSON string. Opened now, every rule
+    /// matches what it matched.
+    #[test]
+    fn rules_kept_with_json_matches_migrate_to_their_variants() {
+        use ui::tilo_resource::{Replica, Slot, evolution, read_key};
+        let mut replica = Replica::<Firewall>::new();
+        replica
+            .apply(Firewall::import_of(&sample_config()))
+            .unwrap();
+        let expected = replica.state().unwrap();
+        let doc = replica.doc_mut();
+        let root = ui::automerge::ROOT;
+        for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
+            for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
+                let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
+                let slot = Slot::Key(&rule, "matcher");
+                slot.remove(doc).unwrap();
+                slot.put_scalar(
+                    doc,
+                    ui::automerge::ScalarValue::Str(
+                        serde_json::to_string(&matcher).unwrap().into(),
+                    ),
+                )
+                .unwrap();
+            }
+        }
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .remove(doc)
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<Firewall>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
+        assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
     }
 
     /// The configuration still to apply is the stored one until this device

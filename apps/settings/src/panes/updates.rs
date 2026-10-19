@@ -788,14 +788,9 @@ struct Job {
     landing: Landing,
 }
 
-/// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
+/// A real wall-clock "last checked" stamp in the toolkit's timestamp style.
 fn now_stamp() -> String {
-    let now = ui::clock::local_now();
-    format!(
-        "{} {}",
-        now.format("%A, %-d %B %Y"),
-        ui::clock::time_of_day(&now)
-    )
+    ui::format::timestamp(&ui::clock::local_now())
 }
 
 #[allow(

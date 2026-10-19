@@ -25,7 +25,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Style, TaffyTree};
 use tilo_content::ContentStore;
 
 use crate::actions::PhotosEffect;
@@ -33,7 +32,6 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
 use ui::a11y::Role;
-use ui::animation::{Animated, Transition};
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
@@ -588,7 +586,7 @@ pub struct PhotosApp {
     people_selection: Option<PeopleSelection>,
     /// The person review sheet enters with the shared motion primitive.  The
     /// renderer snaps it open when reduced motion is requested.
-    people_detail_transition: Transition,
+    people_detail_transition: ui::motion::Presence,
     people_merge_mode: bool,
     people_show_hidden: bool,
     /// How far the People cards are scrolled under the recognition section.
@@ -645,7 +643,7 @@ pub struct PhotosApp {
     /// only presentation geometry—camera position itself stays immediate so
     /// keyboard, pointer, agents, and screen readers all observe the same
     /// completed operation at once.
-    places_camera_feedback: Option<Animated<f64>>,
+    places_camera_feedback: Option<ui::motion::Feedback>,
     places_motion_reduced: bool,
     /// Count for the always-addressable Favorites virtual collection. This is
     /// a scalar projection of the shared library, so paint never walks the
@@ -978,7 +976,7 @@ impl PhotosApp {
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
             people_selection: None,
-            people_detail_transition: Transition::closed(),
+            people_detail_transition: ui::motion::Presence::closed(),
             people_merge_mode: false,
             people_show_hidden: false,
             people_scroll: 0.0,
@@ -1377,73 +1375,12 @@ impl PhotosApp {
         app
     }
 
-    /// Zoom the canvas, as the scroll wheel would. Lets a caller frame a crop
-    /// without simulating a chain of scroll events by hand.
-    ///
-    /// `ImageViewer` exposes no direct zoom setter to a widget that only
-    /// depends on it (only a `#[cfg(test)]` one, private to that crate), so
-    /// this drives the same `MouseWheel` path a real scroll takes: park the
-    /// cursor at the viewer's own centre — where the widget's screen-to-image
-    /// mapping is invariant under a zoom change, so pan stays exactly where it
-    /// was — then send one wheel notch sized to land on `zoom` exactly.
+    /// Zoom the canvas, as the scroll wheel turned at its centre would: the
+    /// pan stays. Lets a caller frame a crop.
     pub fn set_zoom(&mut self, zoom: f32) {
-        let Some(v) = self.viewer.as_mut() else {
-            return;
-        };
-        let rect = Widget::get_rect(v);
-        if rect.width() <= 0.0 || rect.height() <= 0.0 || v.zoom() <= 0.0 {
-            return;
+        if let Some(viewer) = self.viewer.as_mut() {
+            viewer.set_zoom(zoom);
         }
-        let center =
-            winit::dpi::PhysicalPosition::new((rect.x0 + rect.x1) * 0.5, (rect.y0 + rect.y1) * 0.5);
-        // Solves `v.zoom() * ZOOM_STEP.powf(scroll_y) == zoom` for the notch
-        // the widget's own wheel handler would need to see. `1.1` mirrors the
-        // private `ZOOM_STEP` constant in `ui::widget::image_viewer` — there is
-        // no public way to ask the widget for it.
-        let scroll_y = (zoom / v.zoom()).ln() / 1.1_f32.ln();
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        // A fresh leaf on a fresh tree cannot fail; bail out rather than
-        // panic if it somehow does.
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let device_id = winit::event::DeviceId::dummy();
-        v.handle_event(
-            &winit::event::WindowEvent::CursorMoved {
-                device_id,
-                position: center,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        v.handle_event(
-            &winit::event::WindowEvent::MouseWheel {
-                device_id,
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, scroll_y),
-                phase: winit::event::TouchPhase::Moved,
-            },
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
     }
 
     /// The visible region of the canvas in normalized image coordinates, or
@@ -1905,8 +1842,13 @@ pub(crate) fn dimensions_label(width: u32, height: u32) -> String {
     format!("{width} × {height}")
 }
 
-/// A capture time as people read it: "Jul 12, 2026 at 18:16".
+/// A capture time as people read it: the toolkit's timestamp style
+/// (`2026-07-12 18:16`, in the person's formats) when the library stored an
+/// ISO time, else the date and the time it holds.
 fn captured_label(captured_at: &str) -> String {
+    if let Ok(at) = ui::format::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%dT%H:%M") {
+        return ui::format::timestamp(&at);
+    }
     let date = timeline_date_label(captured_at);
     match captured_at.split_whitespace().nth(1) {
         Some(time) if !time.is_empty() => tr_args(
@@ -2036,24 +1978,16 @@ fn timeline_date_label(captured_at: &str) -> String {
     let known_month = month.len() == 2
         && month.bytes().all(|byte| byte.is_ascii_digit())
         && ("01"..="12").contains(&month);
-    if known_month
-        && day_of_month.len() == 2
-        && day_of_month.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        tr_args(
-            "photos-day-label",
-            &[
-                (
-                    "month",
-                    ArgValue::Text(tr(&format!("photos-month-{month}"))),
-                ),
-                ("day", ArgValue::Text(day_of_month.to_owned())),
-                ("year", ArgValue::Text(year.to_owned())),
-            ],
-        )
-    } else {
-        day
-    }
+    let date = known_month
+        .then(|| {
+            ui::format::NaiveDate::from_ymd_opt(
+                year.parse().ok()?,
+                month.parse().ok()?,
+                day_of_month.parse().ok()?,
+            )
+        })
+        .flatten();
+    date.map_or(day, ui::format::month_day_year)
 }
 
 /// Preserve a capture day as the timeline's chronological identity. Display

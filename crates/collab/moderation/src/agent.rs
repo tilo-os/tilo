@@ -277,7 +277,7 @@ impl<J: Judge> ModerationAgent<J> {
         if let Err(why) = lifted {
             failures.push(format!("lifting: {why}"));
         }
-        for reverted in &decision.reverted.0 {
+        for reverted in &decision.reverted {
             if let Err(why) = door.invoke(
                 &reverted.app,
                 &reverted.record,

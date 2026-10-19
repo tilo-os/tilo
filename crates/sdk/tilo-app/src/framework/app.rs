@@ -1362,7 +1362,7 @@ fn prepare_named(
     let mut prepared = native.prepare_launch(definition, named, inputs)?;
     prepared
         .context
-        .provide_content(tilo_content::ContentStore::for_app());
+        .provide_content(tilo_content_device::for_app());
     Ok(prepared)
 }
 

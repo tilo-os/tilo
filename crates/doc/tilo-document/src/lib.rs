@@ -41,8 +41,18 @@ pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3
 
 /// One block of a copied rich fragment — text plus its formatting (marks and
 /// paragraph attributes), with mark offsets relative to the block's own text.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+    tilo_resource::Model,
+)]
 pub struct ClipBlock {
+    #[model(atom)]
     pub kind: String,
     pub text: String,
     pub marks: Vec<tilo_doc::document::MarkSpan>,
@@ -56,7 +66,16 @@ pub struct ClipBlock {
 }
 
 /// One block attribute a [`ClipBlock`] carries.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+    tilo_resource::Model,
+)]
 pub enum ClipAttr {
     Bool(bool),
     Int(i64),

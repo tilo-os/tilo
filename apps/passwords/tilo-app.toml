@@ -41,7 +41,7 @@ mode = "off"
 secrets = "via-host"
 
 [sandbox.services]
-tilo-fs = "optional@1"
+tilo-fs = "optional@2"
 
 [entrypoint]
 bin = "bin/passwords"

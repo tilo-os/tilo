@@ -22,6 +22,7 @@ use ui::clock::TimeStyle;
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
+        DateStyle::Language => "settings-region-date-language",
         DateStyle::Iso => "settings-region-date-iso",
         DateStyle::Us => "settings-region-date-us",
         DateStyle::Eu => "settings-region-date-eu",
@@ -38,6 +39,7 @@ fn date_from_shown(label: &str) -> Option<DateStyle> {
 
 fn time_label(style: TimeStyle) -> String {
     t(match style {
+        TimeStyle::Language => "settings-region-time-language",
         TimeStyle::H24 => "settings-region-time-24",
         TimeStyle::H12 => "settings-region-time-12",
     })
@@ -267,11 +269,11 @@ impl RegionPane {
                 preview_line(&t("settings-region-preview-amount"), &amount),
                 preview_line(
                     &t("settings-region-preview-date"),
-                    loc.date_format.example(),
+                    &loc.date_format.example(),
                 ),
                 preview_line(
                     &t("settings-region-preview-time"),
-                    loc.time_format.example(),
+                    &loc.time_format.example(),
                 ),
                 preview_line(&t("settings-region-preview-temp"), &temp),
                 preview_line(&t("settings-region-preview-week"), &week_starts),
@@ -342,6 +344,37 @@ mod tests {
 
         assert!(locale_field(&mut app, "currency", "not-a-currency").is_err());
         assert_eq!(app.settings::<Locale>().get(), locale);
+    }
+
+    /// With no date format or clock chosen the pane shows "Follow language"
+    /// as each value and offers it first; ISO, 12-hour and 24-hour are
+    /// explicit choices among the rest.
+    #[test]
+    fn the_date_format_and_clock_default_to_following_the_language() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let pane = RegionPane::new(cx.clone());
+        assert_eq!(pane.locale().date_format, DateStyle::Language);
+        assert_eq!(
+            pane.shown.date.get(),
+            date_label(DateStyle::Language),
+            "the default is shown as following the language"
+        );
+        assert_eq!(DateStyle::ALL[0], DateStyle::Language);
+        assert_eq!(
+            date_from_shown(&date_label(DateStyle::Iso)),
+            Some(DateStyle::Iso)
+        );
+        assert_eq!(
+            date_from_shown(&date_label(DateStyle::Language)),
+            Some(DateStyle::Language)
+        );
+        assert_eq!(pane.locale().time_format, TimeStyle::Language);
+        assert_eq!(pane.shown.time.get(), time_label(TimeStyle::Language));
+        assert_eq!(TimeStyle::ALL[0], TimeStyle::Language);
+        for style in [TimeStyle::H12, TimeStyle::H24, TimeStyle::Language] {
+            assert_eq!(time_from_shown(&time_label(style)), Some(style));
+        }
     }
 
     /// The pane shows the stored locale and follows a change made elsewhere.

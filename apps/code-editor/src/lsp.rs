@@ -596,6 +596,9 @@ impl LspClient {
         // Own the complete tree so closing a project cannot strand those
         // descendants in the user's session.
         bounded_command::own_process_tree(&mut command);
+        // An independent job: in a cgroup of its own below the editor's, so a
+        // server that runs out of memory ends alone and the editor stays.
+        tilo_process::job::independent(&mut command, &prog);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 format!("{prog} not found on PATH — install it for live diagnostics")

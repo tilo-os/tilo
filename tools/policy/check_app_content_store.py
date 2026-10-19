@@ -5,10 +5,11 @@ An app keeps the bytes its records name (pictures, attachments) in the content
 store its host lends the window, ``cx.content()``. That store is joined to the
 record's route: what the app stores reaches the record's other readers, and
 what the record references and this device lacks is asked of them. A store an
-app opens itself, ``ContentStore::for_app()``, bypasses the route, so
-production code outside the hosts that lend the store may not call it:
+app opens itself, ``tilo_content_device::for_app()`` (or the local store under
+it, ``ContentStore::local_for_app()``), bypasses the route, so production code
+outside the hosts that lend the store may not call it:
 
-* the content crate, which defines it;
+* the content crates, which define it;
 * the framework's native process host, which lends it to the window;
 * the filesystem daemon, which serves it;
 * the app runtime, which hosts apps and decides what their records receive
@@ -40,11 +41,15 @@ ROOT = Path(__file__).resolve().parents[2]
 SCANNED = (Path("apps"), Path("crates"))
 ALLOWED = (
     Path("crates/system/content"),
+    Path("crates/system/content-device"),
     Path("crates/sdk/tilo-app/src/framework/app.rs"),
     Path("crates/system/fs/src/main.rs"),
     Path("crates/runtime/tilo-runtime/src/cli.rs"),
+    Path("crates/runtime/tilo-runtime/src/standalone.rs"),
 )
-CALL = re.compile(r"\bContentStore\s*::\s*for_app\b")
+CALL = re.compile(
+    r"\b(?:tilo_content_device\s*::\s*for_app|ContentStore\s*::\s*local_for_app)\b"
+)
 # A `static` (or a `thread_local!` item) whose type names a content store.
 HELD = re.compile(
     r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?static\s+(?:mut\s+)?\w+\s*:(?!:)[^=;]*\bContentStore\b"

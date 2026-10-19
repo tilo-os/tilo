@@ -93,10 +93,6 @@ publisher change sig = ed25519_sign(publisher_key,
 
 bot entry/change sig = the same, under b"tilo-registry-bot-entry-v1\0"
 
-bots sig             = ed25519_sign(owner_or_channel_key,
-                                    blake3(b"tilo-registry-bots-v1\0"
-                                           || postcard((index digest, bots))))
-
 owner index sig      = ed25519_sign(owner_key,
                                     blake3(b"tilo-registry-index-v1\0"
                                            || postcard(index_manifest)))
@@ -107,17 +103,11 @@ delegated index sig  = ed25519_sign(channel_key,
                                                        + root authorization)))
 ```
 
-Bot entries were added without changing what any released client reads.
-An app entry encodes, signs and verifies byte for byte as before: its
-`kind` is omitted and its versions keep their flat `tapp_*` fields. A bot
+An app entry's `kind` is omitted and its versions keep their flat `tapp_*` fields. A bot
 entry carries `"kind": "bot"`, its versions carry `bot` instead of the
 `tapp_*` fields, and its signature uses the bot domain, so neither kind can
-pass for the other. Snapshots list bot entries under `bots`, beside
-`entries`, with `bots_signature_hex`: the same key's signature over the bot
-entries and the digest the snapshot's own signature covers (the compact
-form uses `tilo-registry-compact-bots-v1`). The owner signature and the
-snapshot hash cover `entries` only, so a client that predates bots ignores
-both new fields and verifies the snapshot unchanged. See
+pass for the other. Snapshots list both kinds under `entries`, and the
+owner (or channel) signature and the snapshot hash cover all of them. See
 [architecture/bots.md](architecture/bots.md) §10 for bot entries.
 
 Postcard was chosen over JSON because JSON's key order and
@@ -803,8 +793,11 @@ retained window can only be restored from backups.
 
 Every entry keeps up to 128 versions, and every client fetches the snapshot
 at least daily, so the full snapshot grows with each release. Each signing
-command therefore also signs a compact form (protocol 4,
-`registry_types::compact`) with the same key, owner or channel:
+command therefore also signs a compact form (`registry_types::compact`)
+with the same key, owner or channel. Both forms, the version indexes and the
+channel authorizations carry the Store package format's one version
+(`registry_types::PACKAGE_FORMAT_VERSION`) in `protocol`, and a client reads
+that number only (docs/architecture/compatibility.md):
 
 - Per entry it keeps only the newest release and the newest pre-release of
   each exact target (`newest_versions`), in their original order. Any

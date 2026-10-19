@@ -393,6 +393,7 @@ COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /bui
 COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
+COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
 COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
@@ -736,7 +737,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # (default collection), the Browser included; its engine is the separate
     # runtime built at the end of this step.
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,word-processor/runtime-engine,print-centre/runtime-engine,imager/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -778,7 +779,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} --features tilo-relay/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} --features tilo-relay/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
@@ -1095,6 +1096,9 @@ RUN --mount=type=secret,id=browser_runtime_identity \
        fi
 
 # ---- Pack + install every app into the image-wide app store -----------------
+# Each app's size budget, which pack-apps.sh holds every package to. Copied
+# here, after the builds, so a budget change does not rebuild anything.
+COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # Without this the launcher's registry is empty on a fresh install and the
 # command palette's Applications provider has nothing to list, however many
 # app binaries the image contains.
@@ -1121,6 +1125,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
        fi \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
+    TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     COHORT_TAPP_DIR=/usr/share/tilo-apps/cohort \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \
@@ -1379,6 +1384,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-repair@.service \
     os/usr/lib/systemd/system/tilo-deployment-rollback.service \
     os/usr/lib/systemd/system/tilo-deployment-update.service \
+    os/usr/lib/systemd/system/tilo-live-update.service \
+    os/usr/lib/systemd/system/tilo-live-update-session.service \
     os/usr/lib/systemd/system/tilo-system-extension-userspace.service \
     os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service \
     os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.service \
@@ -1431,6 +1438,11 @@ COPY \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf
+# The component manifest a live system update classifies changes by
+# (tilo-extension live:*): the staged image's own copy says what each path is.
+COPY os/components.toml /usr/share/tilo/components.toml
 COPY os/usr/lib/tmpfiles.d/tilo-extension.conf /usr/lib/tmpfiles.d/tilo-extension.conf
 COPY os/etc/polkit-1/rules.d/49-tilo-extension.rules /etc/polkit-1/rules.d/49-tilo-extension.rules
 COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
@@ -2221,6 +2233,10 @@ COPY \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
+    os/usr/lib/systemd/user/tilo-app-update.service \
+    os/usr/lib/systemd/user/tilo-app-update.timer \
+    os/usr/lib/systemd/user/tilo-runtime-resident.service \
+    os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
@@ -2334,6 +2350,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-sandbox-view.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.path \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
+    os/usr/lib/systemd/system/tilo-runtime-resident.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
@@ -2765,6 +2782,8 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-flatpak-defaults.service && \
     systemctl enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
+    systemctl --global enable tilo-app-update.timer && \
+    systemctl --global enable tilo-runtime-resident.service tilo-runtime-resident.path && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
@@ -2789,6 +2808,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
+    systemctl enable tilo-runtime-resident.service && \
     systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work

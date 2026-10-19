@@ -217,7 +217,8 @@ fn native_owner_commits_exact_chat_and_reopens() {
         .unwrap();
     let disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(
-        disk["schema_version"], 3,
+        disk["schema_version"],
+        persist::NATIVE_STATE_SCHEMA_VERSION,
         "old shell must refuse before dropping durable authority"
     );
 }
@@ -443,14 +444,12 @@ fn bootstrap_candidate(
                 generation: descriptor::GenerationExpectation::FirstAccepted {
                     minimum_generation: 1,
                 },
-                allowed_delivery_capabilities: 3,
                 now,
             };
             let ns = tilo_joined_room::testing::ns(now)?;
             descriptor::issue_transport_hint(
                 &descriptor::DescriptorSettings {
                     origin: "https://native.example".into(),
-                    delivery_capabilities: 3,
                     issued_at_ns: ns,
                     expires_at_ns: ns.checked_add(120_000_000_000).unwrap(),
                     generation,

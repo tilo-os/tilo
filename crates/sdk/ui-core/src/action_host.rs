@@ -168,6 +168,16 @@ impl ActionHost {
             crate::local_document_action::reserve(&encoded, context.as_ref(), doc, &before)?
         };
         let captured_context = observation.as_ref().and_then(|_| context.clone());
+        // Without an authenticated publication, only an execution that changes
+        // the document makes this input's history unsigned.
+        let unsigned = if observation.is_none()
+            && !matches!(change_kind, tilo_actions::ChangeKind::External)
+        {
+            crate::local_document_action::unsigned_input(context.as_ref())
+                .map(|edits| (edits, doc.get_heads()))
+        } else {
+            None
+        };
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,
@@ -190,6 +200,12 @@ impl ActionHost {
             && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
         {
             observation.finish(doc, &before, encoded.clone(), captured_context)?;
+        }
+        if let Some((edits, heads)) = unsigned
+            && matches!(dispatched, tilo_actions::Dispatched::AppliedLocal(_))
+            && doc.get_heads() != heads
+        {
+            crate::local_document_action::note_unsigned_edit(&edits);
         }
         // Content from outside (fetched rows, a process's output) is nobody's
         // undo step: it opens no bracket and is left out of the open one.

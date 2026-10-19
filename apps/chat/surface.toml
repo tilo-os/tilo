@@ -3,17 +3,11 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 3
+version = 4
 fields = [
-  { path = "workspaces", type = "Collection<Workspace>", stored = "collection" },
-  { path = "workspaces.*.name", type = "String", label = true },
-  { path = "workspaces.*.glyph", type = "String" },
-  { path = "workspaces.*.color", type = "u32" },
   { path = "categories", type = "Collection<Category>", stored = "collection" },
-  { path = "categories.*.workspace", type = "Id", readonly = true },
   { path = "categories.*.name", type = "String", label = true },
   { path = "channels", type = "Collection<Channel>", stored = "collection" },
-  { path = "channels.*.workspace", type = "Id", readonly = true },
   { path = "channels.*.category", type = "Option<Id>" },
   { path = "channels.*.name", type = "String", label = true },
   { path = "channels.*.topic", type = "String" },
@@ -68,8 +62,6 @@ fields = [
 id = "begin-chat"
 kind = "undoable"
 params = [
-  { name = "workspace", required = false, schema = { type = ["string", "null"] } },
-  { name = "workspace_name", required = false, schema = { type = ["string", "null"] } },
   { name = "name", required = true, schema = { type = "string" } },
   { name = "initials", required = true, schema = { type = "string" } },
   { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
@@ -93,17 +85,9 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "create-workspace"
-kind = "undoable"
-params = [
-  { name = "name", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
 id = "create-category"
 kind = "undoable"
 params = [
-  { name = "workspace", required = true, schema = { type = "string" } },
   { name = "name", required = true, schema = { type = "string" } },
 ]
 
@@ -111,7 +95,6 @@ params = [
 id = "create-channel"
 kind = "undoable"
 params = [
-  { name = "workspace", required = true, schema = { type = "string" } },
   { name = "name", required = true, schema = { type = "string" } },
   { name = "category", required = false, schema = { type = ["string", "null"] } },
   { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
