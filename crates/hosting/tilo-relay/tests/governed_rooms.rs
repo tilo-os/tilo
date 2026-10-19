@@ -674,7 +674,7 @@ type = "String"
 "#;
     let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
-    tilo_peer_state::decide_with_surfaces(
+    let _surfaces = crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
                 (wanted == hex).then(|| SURFACE.as_bytes().to_vec())
@@ -847,7 +847,7 @@ params = []
 "#;
     let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
-    tilo_peer_state::decide_with_surfaces(
+    let _surfaces = crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
                 (wanted == hex).then(|| SURFACE.as_bytes().to_vec())

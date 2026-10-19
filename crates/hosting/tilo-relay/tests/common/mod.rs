@@ -275,3 +275,45 @@ pub fn print_phase_diagnostic() {
         .collect::<Vec<_>>();
     eprintln!("{}", String::from_utf8_lossy(&bytes));
 }
+
+/// The app surfaces a process decides received changes against
+/// (`tilo_peer_state::decide_with_surfaces`) are one per process, and a
+/// single-process `cargo test` run shares them across this binary's tests.
+/// A test that installs surfaces holds [`install_process_surfaces`]'s guard;
+/// one that depends on none holds [`no_process_surfaces`]. Neither runs
+/// beside the other, and the surfaces are taken off again when the guard
+/// drops.
+pub struct ProcessSurfaces {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+fn process_surfaces_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Decide every change of this process against `surfaces`, naming `of`'s
+/// surface for each app, until the guard drops.
+pub fn install_process_surfaces(
+    surfaces: collab_types::Surfaces,
+    of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
+) -> ProcessSurfaces {
+    let lock = process_surfaces_lock();
+    tilo_peer_state::decide_with_surfaces(surfaces, of);
+    ProcessSurfaces { _lock: lock }
+}
+
+/// Run with no process-wide app surfaces installed: changes are decided by
+/// their record.
+pub fn no_process_surfaces() -> ProcessSurfaces {
+    let lock = process_surfaces_lock();
+    tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
+    ProcessSurfaces { _lock: lock }
+}
+
+impl Drop for ProcessSurfaces {
+    fn drop(&mut self) {
+        tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
+    }
+}
