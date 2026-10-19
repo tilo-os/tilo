@@ -2508,8 +2508,10 @@ impl InstallerPreview {
                     } else if self.flatpak_access_details && self.journey.details {
                         self.flatpak_access_details = false;
                         true
-                    } else if self.journey.details && !choices_edit {
-                        self.journey.back()?;
+                    } else if self.journey.details {
+                        // Details close back to the overview in a review edit
+                        // too; only the overview's Back cancels or retreats.
+                        self.journey.toggle_details();
                         true
                     } else {
                         false
