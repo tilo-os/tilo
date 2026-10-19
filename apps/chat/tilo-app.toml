@@ -25,7 +25,7 @@ aarch64 = "aarch64"
 optional = ["open-uri", "clipboard", "files.open", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "notifications", "gpu"]
 
 [resources]
-kinds = ["chat.workspace", "tilo.moderation", "tilo.rich-text"]
+kinds = ["chat.drafts", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

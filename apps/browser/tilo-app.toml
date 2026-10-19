@@ -31,7 +31,7 @@ required = ["network.http", "webview"]
 optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets", "gpu"]
 
 [resources]
-kinds = ["browser.address-book", "browser.application", "browser.browsing-history"]
+kinds = ["browser.address-book", "browser.application", "browser.browsing-history", "browser.personal-bookmarks"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
