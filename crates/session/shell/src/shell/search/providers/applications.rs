@@ -47,13 +47,19 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     }
 }
 
-/// An app row's second line: its category, or nothing. The package id,
-/// vendor and version are how a developer tells builds apart, not how a
-/// person recognises an app; the id stays searchable, never shown.
-fn app_detail(category: Option<&str>) -> Option<String> {
-    category
-        .map(str::trim)
-        .filter(|category| !category.is_empty())
+/// An app row's second line: the tag line the Tilo fleet publishes for it,
+/// else its category, else nothing. The package id, vendor and version are
+/// how a developer tells builds apart, not how a person recognises an app;
+/// the id stays searchable, never shown.
+fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
+    app_catalogue::fleet::metadata(package_id)
+        .map(|app| app.tagline.trim())
+        .filter(|tagline| !tagline.is_empty())
+        .or_else(|| {
+            category
+                .map(str::trim)
+                .filter(|category| !category.is_empty())
+        })
         .map(str::to_owned)
 }
 
@@ -246,7 +252,7 @@ impl ApplicationsProvider {
                 continue;
             };
             let launch_app = Arc::clone(&app);
-            let detail = app_detail(app.category.as_deref());
+            let detail = app_detail(&app.package_id, app.category.as_deref());
             out.push(SearchResult::nullary_fallible(
                 kind.clone(),
                 self.id(),
@@ -1421,17 +1427,34 @@ mod tests {
             let out = p.results_for(
                 "office",
                 vec![
-                    app_in("so.tilo.sheets", "Sheets", Some("Office")),
-                    app_in("so.tilo.calculator", "Calculator", Some("Utility")),
+                    app_in("so.example.ledger", "Ledger", Some("Office")),
+                    app_in("so.example.abacus", "Abacus", Some("Utility")),
                 ],
             );
             assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
-            assert_eq!(out[0].id, "so.tilo.sheets");
+            assert_eq!(out[0].id, "so.example.ledger");
             assert_eq!(out[0].score, 34, "category ranks below name and id matches");
             assert_eq!(
                 out[0].subtitle.as_deref(),
                 Some("Office"),
-                "a declared category is the only metadata a row shows"
+                "with no tag line, the declared category is the only metadata a row shows"
+            );
+        }
+
+        // Phase `a_tilo_apps_tag_line_is_its_second_line`.
+        {
+            let p = ApplicationsProvider::new();
+            let out = p.results_for(
+                "sheets",
+                vec![app_in("so.tilo.sheets", "Sheets", Some("Office"))],
+            );
+            let tagline = app_catalogue::fleet::metadata("so.tilo.sheets")
+                .map(|app| app.tagline)
+                .expect("Sheets is in the fleet");
+            assert_eq!(
+                out[0].subtitle.as_deref(),
+                Some(tagline),
+                "every app row shows its tag line as the second line"
             );
         }
 
