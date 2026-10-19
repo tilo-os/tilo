@@ -3307,6 +3307,17 @@ timeout_secs = 5400
 default = true
 
 [[check]]
+name = "app-binaries-x86_64"
+run = "bash tools/apps/t-release.sh binaries x86_64 /target/app-binaries/x86_64"
+inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/app-binaries/x86_64/**"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 5400
+default = false
+
+[[check]]
 name = "sign-apps-x86_64"
 run = "bash tools/apps/t-release.sh sign x86_64 /target/apps-release/x86_64 /target/apps-release/x86_64/signed"
 inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
@@ -3336,6 +3347,17 @@ cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
 default = true
+
+[[check]]
+name = "app-binaries-aarch64"
+run = "bash tools/apps/t-release.sh binaries aarch64 /target/app-binaries/aarch64"
+inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/app-binaries/aarch64/**"]
+requires = ["arch=arm64"]
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 5400
+default = false
 
 [[check]]
 name = "sign-apps-aarch64"

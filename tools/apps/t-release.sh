@@ -12,6 +12,10 @@
 #                        when a tapp or the runtime is over its budget
 #                        (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
 #                        on every commit of main, so the commit that took an app over is named.
+#   binaries ARCH OUT    no credentials: compile the default collection as `build` does but keep
+#                        the symbol tables, and leave the apps, the runtime and its engines in
+#                        OUT, for reading what makes an app large (`t outputs app-binaries-ARCH`;
+#                        docs/measurements/app-package-size.md)
 #   sign ARCH BUILT OUT  TAPP_PUBLISHER_IDENTITY and RUNTIME_BUNDLE_SIGNING_KEY: package and sign
 #                        BUILT/compiled without compiling anything, into OUT
 #   publish OUT SIGNED.. REGISTRY_TOKEN: upload the signed tapps, collections, registry media and
@@ -102,6 +106,24 @@ case $command in
     dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS="tapp_size runtime_size" tools/apps/release-smoke.sh "$arch"
     ;;
+  binaries)
+    arch=${1:?usage: t-release.sh binaries ARCH OUT} out=${2:?}
+    os/dev/assert-native-arch.sh "$arch"
+    target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+    apps=$(default_apps)
+    export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
+    export CARGO_INCREMENTAL=0
+    export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(cargo_jobs)}
+    export TILO_RELEASE_APPS=$apps TILO_APP_RELEASE_OUT=$scratch/app-binaries TILO_APP_TOOLS_PROFILE=dev
+    TILO_THIN_KEEP_SYMBOLS=1 TILO_APP_COMPILE_ONLY=1 TILO_APP_SKIP_TOOLS=1 dist/apps/package-apps.sh
+    rm -rf "$out"
+    mkdir -p "$out"
+    cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" "$out/"
+    while IFS= read -r file; do
+      cp -p "$target/thin-app/$file" "$out/"
+    done < <(cat "$target/thin-app/runtime-engines"
+             python3 -I tools/ci/python.py tools/apps/app_release.py --apps "$apps" | jq -r '.catalog[].binary')
+    ;;
   sign)
     arch=${1:?usage: t-release.sh sign ARCH BUILT OUT} built=${2:?} out=$(realpath -m "${3:?}")
     release_only
@@ -146,6 +168,6 @@ case $command in
     printf 'Submitted the apps of %s to %s\n' "$T_COMMIT" "$registry_url"
     ;;
   *)
-    die "usage: t-release.sh build|sizes|sign|publish|submit ..."
+    die "usage: t-release.sh build|sizes|binaries|sign|publish|submit ..."
     ;;
 esac

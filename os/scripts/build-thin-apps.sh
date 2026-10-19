@@ -23,6 +23,11 @@ if [ "$BUILD_ROLE" = home-capture ]; then
 fi
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
 
+# TILO_THIN_KEEP_SYMBOLS=1 keeps the symbol tables of the apps, the runtime and its engines, for
+# reading what makes an app large (the app-binaries check); every package is built the same way
+# otherwise. Shipped packages are stripped.
+strip=symbols
+[ "${TILO_THIN_KEEP_SYMBOLS:-}" = 1 ] && strip=none
 packages=()
 features=()
 binary_crates=()
@@ -51,7 +56,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     # matching only the binary crate name misses differently named libraries.
     app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
                    --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
-                   --config "profile.$PROFILE.package.\"$package\".strip=\"symbols\"")
+                   --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
     features+=("$package/thin")
     if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then
         binary=tilo-home-export
@@ -157,11 +162,14 @@ if [ "$BUILD_PHASE" != verify ] && [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     exec > >(tee "$SDK_COMPILER_UNITS" >&3)
     sdk_compiler_stream_pid=$!
 fi
+keep_symbols=()
+[ "$strip" = none ] && keep_symbols=(--config "profile.$PROFILE.strip=\"none\"")
 if [ "$BUILD_PHASE" != verify ]; then
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$REPO/tools/ci/rustc-thin-app-wrapper.sh\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
-    "${app_profiles[@]}" -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
+    "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
+    -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 fi
 if [ "$BUILD_PHASE" = build ]; then
     if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
