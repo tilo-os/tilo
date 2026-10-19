@@ -1319,16 +1319,24 @@ fn every_close_route_commits_the_exact_surface_durably() {
             "a normal restart must keep the clicked-close tab absent"
         );
 
-        // Close the remaining tab through its newly laid-out hit target. The
-        // whole group must disappear durably as one consequence of its last
-        // window closing; this is the live-session "closed group came back"
-        // failure, not merely the two-tabs case above.
+        // Close the remaining tab through its newly laid-out hit target: a
+        // window of one tab shows it as its title, so the window's own close
+        // control closes it. The whole group must disappear durably as one
+        // consequence of its last window closing; this is the live-session
+        // "closed group came back" failure, not merely the two-tabs case above.
         let remaining = h.tabs[0][1];
         let close = h
             .host
             .group_at_for_tests(h.strip, 0)
-            .and_then(|group| group.close_rect_for_tests(remaining))
-            .expect("remaining tab must expose a close hit target after resync");
+            .map(|group| {
+                assert!(
+                    group.close_rect_for_tests(remaining).is_none(),
+                    "a lone tab carries no close of its own; the window's close closes it"
+                );
+                group.bar_for_tests().window_controls().close
+            })
+            .filter(|rect| rect.area() > 0.0)
+            .expect("the window must expose its close control after resync");
         h.click(close.center());
         assert!(
             h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
