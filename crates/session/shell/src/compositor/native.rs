@@ -8415,6 +8415,11 @@ fn attach_collab_broker_bridges(
     if let Some(review) = broker.task_review() {
         frame_builder.host_mut().attach_task_review(review);
     }
+    // The roster reads who is in which voice channel, and the call this
+    // device is in, from the session's calls.
+    if let Some(media) = broker.native_media_service() {
+        frame_builder.host_mut().set_native_media(media);
+    }
     if let Some(realtime) = broker.realtime_fabric_bridge() {
         frame_builder
             .host_mut()

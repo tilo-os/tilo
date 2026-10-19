@@ -301,6 +301,9 @@ impl super::ShellOverlayHost {
             sent = self.push_visibilities(&rooms);
             self.self_presence.visibility_inputs = inputs;
         }
+        // The voice channel this device is in is this person's call, as its
+        // people see it; leaving the call clears it.
+        self.self_presence.call = self.own_voice_channel();
         sent | self.tell_absence() | self.publish_availability()
     }
 

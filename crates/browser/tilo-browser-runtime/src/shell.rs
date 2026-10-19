@@ -31,8 +31,8 @@ use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
 };
 use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange, RosterRow,
-    RosterStatus,
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange,
+    RosterRow, RosterStatus,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -263,6 +263,7 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
         followable: false,
         availability: ui::Availability::Available,
         call: None,
+        join: None,
     }
 }
 
@@ -536,6 +537,7 @@ impl BrowserShell {
             }
             CollaboratorsHit::ToggleFollow(_)
             | CollaboratorsHit::Wave(_)
+            | CollaboratorsHit::JoinCall(_)
             | CollaboratorsHit::Absorb => {}
         }
     }

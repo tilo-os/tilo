@@ -27,6 +27,7 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
             followable: true,
             availability: ui::Availability::Available,
             call: None,
+            join: None,
         })
         .collect()
 }
