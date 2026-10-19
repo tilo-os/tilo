@@ -104,7 +104,7 @@ class TestAssets(unittest.TestCase):
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 6)
-        self.assertEqual(sum(row["bytes"] for row in rows), 3718990)
+        self.assertEqual(sum(row["bytes"] for row in rows), 3715029)
         self.assertEqual({row["file"] for row in rows}, {
             f"{theme}-display-{display}-text-{text}.png"
             for theme in ("dark", "light")
@@ -121,7 +121,7 @@ class TestAssets(unittest.TestCase):
     def test_reader_linux_and_windows_baselines_remain_pinned(self):
         rows = assets.manifest(ROOT / "apps/ebook/tests/fixtures/typography/artifacts.json")
         self.assertEqual(len(rows), 4)
-        self.assertEqual(sum(row["bytes"] for row in rows), 801102)
+        self.assertEqual(sum(row["bytes"] for row in rows), 801292)
         self.assertEqual({row["file"] for row in rows}, {
             "serif-reader.png", "serif-reader-windows.png",
             "math-reader.png", "math-reader-windows.png"})
