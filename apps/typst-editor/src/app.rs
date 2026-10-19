@@ -172,6 +172,9 @@ pub struct TypstApp {
     /// This window added a file to an empty workspace: it opens once it
     /// lands.
     pending_open: bool,
+    /// The files the workspace held when last presented, to tell a file
+    /// that just arrived from one that was there.
+    known_files: Vec<Id>,
     actions: Option<ui::framework::Dispatcher<crate::resource::Workspace>>,
     /// An in-flight host file dialog: the operation and the channel its chosen
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
@@ -280,6 +283,7 @@ impl TypstApp {
             files: Rc::default(),
             current: None,
             pending_open: false,
+            known_files: Vec::new(),
             io: None,
             background_poll_deadline: Cell::new(None),
             file_reply: None,
@@ -349,7 +353,30 @@ impl TypstApp {
     /// Show the workspace as it is now: the file shown stays open unless it
     /// left the workspace; a file this window added opens once it lands.
     pub(crate) fn present_state(&mut self, state: &Rc<crate::resource::Workspace>) {
+        // A file that arrives (written by an action, an agent, the palette)
+        // while the window shows a blank, never-saved one opens: there is
+        // nothing on screen to keep, and the new file is what was asked for.
+        let arrived = state
+            .files
+            .ids()
+            .rfind(|id| !self.known_files.contains(id))
+            .cloned();
+        let blank = self
+            .current
+            .as_ref()
+            .and_then(|id| self.files.file(id))
+            .is_some_and(|file| file.source.trim().is_empty() && file.path.is_none());
+        let seen_before = !self.known_files.is_empty();
+        self.known_files = state.files.ids().cloned().collect();
         self.files = Rc::clone(state);
+        if seen_before
+            && blank
+            && let Some(arrived) = arrived
+        {
+            self.open_file(&arrived);
+            self.dirty = true;
+            return;
+        }
         let shown = self.current.as_ref().filter(|id| state.file(id).is_some());
         if shown.is_none() {
             let first = state.files.ids().next().cloned();
@@ -1933,6 +1960,33 @@ mod tests {
             "a successful retry dismisses the failure card"
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A file written by an action while the window shows its blank
+    /// untitled file opens; one written beside a file with words in it
+    /// leaves that file on screen.
+    #[test]
+    fn a_new_file_opens_over_a_blank_one_but_never_over_work() {
+        let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+        app.settle();
+        app.invoke(crate::resource::new_file("letter.typ", None, "= Dear Dr Raman"))
+            .unwrap();
+        app.settle();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(view.current_file().unwrap().name.0, "letter.typ");
+        })
+        .unwrap();
+        app.invoke(crate::resource::new_file("notes.typ", None, "= Notes"))
+            .unwrap();
+        app.settle();
+        app.with_surface::<TypstApp, _>(|view| {
+            assert_eq!(
+                view.current_file().unwrap().name.0,
+                "letter.typ",
+                "a file with words in it stays on screen"
+            );
+        })
+        .unwrap();
     }
 
     #[test]

@@ -94,6 +94,12 @@ class Plan:
     binary: str
     app_id: str
     situations: list
+    # What the person already has in their home before the app opens:
+    # files (`[[file]]`: path, text) and git repositories (`[[repository]]`:
+    # path, commits of message and files, branches, uncommitted changes).
+    # Steps name them under `${HOME}`.
+    files: list = field(default_factory=list)
+    repositories: list = field(default_factory=list)
 
 
 def catalog() -> list[dict]:
@@ -118,7 +124,7 @@ def load_plan(entry: dict) -> Plan:
     situations = []
     if path.is_file():
         data = tomllib.loads(path.read_text())
-        unknown = set(data) - {"situation"}
+        unknown = set(data) - {"situation", "file", "repository"}
         if unknown:
             raise ValueError(f"{path}: unknown keys {sorted(unknown)}")
         for raw in data.get("situation", []):
@@ -139,7 +145,59 @@ def load_plan(entry: dict) -> Plan:
             raise ValueError(f"{path}: situation names repeat")
     else:
         situations.append(Situation("opened", "The window as it opens"))
-    return Plan(entry["name"], entry["binary"], entry.get("id", entry["name"]), situations)
+    files = data.get("file", []) if path.is_file() else []
+    repositories = data.get("repository", []) if path.is_file() else []
+    for item in [*files, *repositories]:
+        relative = Path(item.get("path", ""))
+        if not item.get("path") or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
+    return Plan(
+        entry["name"], entry["binary"], entry.get("id", entry["name"]), situations,
+        files, repositories,
+    )
+
+
+def seed_home(plan: Plan, home: Path, env: dict) -> None:
+    """Put the plan's files and repositories in the profile's home."""
+    for item in plan.files:
+        target = home / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(item.get("text", ""))
+    git_env = {**env, "GIT_AUTHOR_DATE": "2026-06-30T09:00:00", "GIT_COMMITTER_DATE": "2026-06-30T09:00:00"}
+
+    def git(repo: Path, *argv: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *argv], env=git_env, check=True, capture_output=True)
+
+    for item in plan.repositories:
+        repo = home / item["path"]
+        repo.mkdir(parents=True, exist_ok=True)
+        git(repo, "init", "-q", "-b", item.get("default_branch", "main"))
+        git(repo, "config", "user.name", item.get("author", "Lena Hoffmann"))
+        git(repo, "config", "user.email", item.get("email", "lena@example.org"))
+        for commit in item.get("commit", []):
+            for name, text in commit.get("files", {}).items():
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", commit["message"])
+        for branch in item.get("branches", []):
+            git(repo, "branch", branch)
+        for name, text in item.get("changes", {}).items():
+            target = repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+
+
+def resolve_home(value, home: Path):
+    """`${HOME}` in a step's strings: the profile's home directory."""
+    if isinstance(value, str):
+        return value.replace("${HOME}", str(home))
+    if isinstance(value, list):
+        return [resolve_home(item, home) for item in value]
+    if isinstance(value, dict):
+        return {key: resolve_home(item, home) for key, item in value.items()}
+    return value
 
 
 def profile_env(root: Path, lib_dirs: list[Path]) -> dict:
@@ -192,9 +250,14 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
     shots = captures(app_dir, situation)
     with tempfile.TemporaryDirectory(prefix=f"shots-{plan.app}-") as tmp:
         tmp = Path(tmp)
+        env = profile_env(tmp / "profile", args.lib_dir)
+        home = Path(env["HOME"])
+        seed_home(plan, home, env)
         spec = {
             "viewport": list(VIEWPORTS["wide"]),
-            "actions": resolve_dates(situation.steps, datetime.date.today()),
+            "actions": resolve_home(
+                resolve_dates(situation.steps, datetime.date.today()), home
+            ),
             "results": str(tmp / "results.json"),
             "capture": shots,
         }
@@ -204,7 +267,7 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
         started = time.monotonic()
         try:
             done = subprocess.run(
-                command, env=profile_env(tmp / "profile", args.lib_dir), cwd=tmp,
+                command, env=env, cwd=tmp,
                 capture_output=True, text=True, timeout=RUN_SECONDS,
             )
             status, log = done.returncode, done.stdout + done.stderr

@@ -19,10 +19,13 @@ invoke = { resource = "contacts.book/derived/favorites", action = "open-favorite
 
 [[situation]]
 name = "new-contact"
-title = "A contact added by name"
+title = "A contact just added, shown"
 
 [[situation.steps]]
 invoke = { resource = "contacts.book", action = "add-contacts", args = { contacts = [{ id = "34c2fc3c-ec2c-55a9-9912-b2389793efc5", first = "Amira", last = "Haddad", org = "Northwind Studio", title = "Product designer", website = "", notes = "", phones = [{ id = "8fb7bf9f-675e-5a06-b85c-5fa023bd22f9", label = "mobile", value = "+49 151 2345 6789" }], emails = [{ id = "50e8cd20-2d5c-5bfa-ba48-9e40e4564ade", label = "work", value = "amira@northwind.studio" }], addresses = [{ id = "4b6ec172-aa4d-5f9f-a9a0-39cacd3557c1", label = "home", street = "Lindenstraße 12", city = "Berlin", region = "", postal = "10969", country = "Germany" }], groups = [{ id = "940b2518-e29a-5636-8c3d-611295ad2232", value = "Work" }], favorite = true, birthday = { MonthDay = { month = 3, day = 14 } } }, { id = "aaae872e-ab70-5a3c-bbe4-eac42c15e80c", first = "Jonas", last = "Becker", org = "Northwind Studio", title = "Illustrator", website = "", notes = "", phones = [{ id = "9a2ca984-7865-5cf9-bc9d-b62b6fb041f2", label = "mobile", value = "+49 160 9876 5432" }], emails = [{ id = "fe50e18d-eedb-5838-a88e-9d206bda4067", label = "work", value = "jonas@northwind.studio" }], addresses = [], groups = [{ id = "c8799e25-7e14-5383-980f-df974b78838e", value = "Work" }], favorite = false }, { id = "72be136e-9c05-5a64-888a-cda205cd07e2", first = "Priya", last = "Raman", org = "City Parks Office", title = "Arborist", website = "", notes = "", phones = [{ id = "cc2312d7-bdef-597b-aaec-6b1dd4e5b6f4", label = "mobile", value = "+49 30 9012 3344" }], emails = [{ id = "bbb57482-ed90-5abb-beb3-343d1c8e008e", label = "work", value = "p.raman@parks.berlin.de" }], addresses = [], groups = [{ id = "9c2a7a4d-2a5a-5dad-9fb0-6b563113c2bf", value = "Work" }], favorite = true }] } }
 
 [[situation.steps]]
-invoke = { resource = "contacts.book", action = "new-contact", args = { name = "Hannah Schulz" } }
+invoke = { resource = "contacts.book", action = "add-contacts", args = { contacts = [{ id = "5d1e3c2a-8f4b-5c6d-9e7f-0a1b2c3d4e5f", first = "Hannah", last = "Schulz", org = "", title = "", website = "", notes = "", phones = [], emails = [], addresses = [], groups = [], favorite = false }] } }
+
+[[situation.steps]]
+invoke = { resource = "contacts.book/contacts/5d1e3c2a-8f4b-5c6d-9e7f-0a1b2c3d4e5f", action = "open" }
