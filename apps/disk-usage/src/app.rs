@@ -467,8 +467,14 @@ impl DiskUsageApp {
         let (title, view) = match &self.view {
             View::Home => (String::new(), self.home_view()),
             View::Loading(path) => (folder_title(&self.places, path), Self::loading_view()),
-            View::Analysis(result) => (folder_title(&self.places, &result.path), self.analysis_view(result)),
-            View::Error(path, message) => (folder_title(&self.places, path), self.error_view(path, message)),
+            View::Analysis(result) => (
+                folder_title(&self.places, &result.path),
+                self.analysis_view(result),
+            ),
+            View::Error(path, message) => (
+                folder_title(&self.places, path),
+                self.error_view(path, message),
+            ),
         };
         let back = !matches!(self.view, View::Home);
         self.can_go_back.set(back);
@@ -743,8 +749,14 @@ mod view_tests {
                 path: PathBuf::from("/"),
             },
         ];
-        assert_eq!(folder_title(&places, std::path::Path::new("/var/home/lena")), "Home");
-        assert_eq!(folder_title(&places, std::path::Path::new("/")), "File system");
+        assert_eq!(
+            folder_title(&places, std::path::Path::new("/var/home/lena")),
+            "Home"
+        );
+        assert_eq!(
+            folder_title(&places, std::path::Path::new("/")),
+            "File system"
+        );
         assert_eq!(
             folder_title(&places, std::path::Path::new("/var/home/lena/Projects")),
             "Projects"

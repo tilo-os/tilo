@@ -50,7 +50,10 @@ pub fn self_check() -> Result<String, String> {
         .parse(&written)
         .ok_or("mail-parser could not read the message back")?;
     if message.subject() != Some("Engine check") {
-        return Err(format!("mail-parser read the subject {:?}", message.subject()));
+        return Err(format!(
+            "mail-parser read the subject {:?}",
+            message.subject()
+        ));
     }
     let sender = message
         .from()

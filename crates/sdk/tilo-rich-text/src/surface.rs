@@ -1184,7 +1184,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.erased().perform_action_dyn(action, key_path, state, path)
+        self.erased()
+            .perform_action_dyn(action, key_path, state, path)
     }
 }
 

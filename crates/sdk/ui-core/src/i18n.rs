@@ -842,8 +842,10 @@ pub struct LanguagePack {
 
 /// Where installed language packs are, in the order they are read: the ones
 /// the person's languages fetched, then the ones the OS image carries.
-pub const LANGUAGE_PACK_ROOTS: &[&str] =
-    &["/var/lib/tilo/language-packs", "/usr/share/tilo/language-packs"];
+pub const LANGUAGE_PACK_ROOTS: &[&str] = &[
+    "/var/lib/tilo/language-packs",
+    "/usr/share/tilo/language-packs",
+];
 
 impl LanguagePack {
     /// The Fluent source of `locale`'s catalogue, from the first root that
@@ -1117,15 +1119,13 @@ mod tests {
     /// language packs, here the crate's own `locales/` directory.
     #[test]
     fn a_catalogue_reads_its_other_languages_from_the_language_packs() {
-        static PACKED: EmbeddedCatalog = EmbeddedCatalog::new(
-            "en-US",
-            &[("en-US", "packed-greeting = Hello\n")],
-        )
-        .with_language_pack(LanguagePack {
-            id: "tilo-ui-pack-test",
-            locales: &["en-US", "de-DE"],
-            source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
-        });
+        static PACKED: EmbeddedCatalog =
+            EmbeddedCatalog::new("en-US", &[("en-US", "packed-greeting = Hello\n")])
+                .with_language_pack(LanguagePack {
+                    id: "tilo-ui-pack-test",
+                    locales: &["en-US", "de-DE"],
+                    source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+                });
         let sources = PACKED.every_source();
         assert_eq!(sources.first().map(|(locale, _)| *locale), Some("en-US"));
         let german = sources

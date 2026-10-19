@@ -3005,7 +3005,9 @@ impl ShellDriver {
     /// One saved window that didn't reopen, alone on the strip: its app
     /// `app_id` (shown as `label`) and what the restore found, `note`.
     fn scene_saved_window(&mut self, app_id: &str, label: &str, note: &str) {
-        use shell::shell::state::{MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth};
+        use shell::shell::state::{
+            MintIds, ProcessIds, Tab, TileContent, WindowGroup, WindowWidth,
+        };
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();

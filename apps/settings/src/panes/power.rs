@@ -429,7 +429,9 @@ fn sample_history(now: u64) -> os_actions::BatteryHistory {
     for (minute, capacity, on_ac) in points {
         history.record(os_actions::BatteryHistoryPoint::sampled(
             minute,
-            (capacity + shift).round().clamp(3.0, f64::from(LIMIT_PERCENT)) as u32,
+            (capacity + shift)
+                .round()
+                .clamp(3.0, f64::from(LIMIT_PERCENT)) as u32,
             Some(80),
             on_ac,
         ));
