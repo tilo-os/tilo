@@ -1150,6 +1150,137 @@ mod tests {
         );
     }
 
+    /// An action host that records what it is asked to run.
+    #[derive(Default)]
+    struct RecordingHost {
+        invoked: std::sync::Mutex<Vec<tilo_actions::remote::InvokeRequest>>,
+    }
+
+    impl tilo_actions::remote::ActionHost for RecordingHost {
+        fn query(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: tilo_actions::remote::CatalogueQuery,
+        ) -> tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+        > {
+            tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::default()))
+        }
+        fn invoke(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            request: tilo_actions::remote::InvokeRequest,
+        ) -> tilo_actions::remote::Pending<
+            Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+        > {
+            let receipt = tilo_actions::remote::InvocationReceipt {
+                invocation: request.invocation,
+                status: tilo_actions::remote::ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            };
+            self.invoked
+                .lock()
+                .expect("recording host lock")
+                .push(request);
+            tilo_actions::remote::Pending::ready(Ok(receipt))
+        }
+        fn observe(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+        fn cancel(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Result<(), tilo_actions::remote::ActionHostError> {
+            Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-19): "all resource types and actions must
+    // also be searchable, even if app not installed" — and choosing one gets
+    // the app and runs it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn choosing_an_uninstalled_apps_action_gets_the_app_then_runs_the_action() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().expect("a scratch directory");
+        let asked = tmp.path().join("asked");
+        let fake = tmp.path().join("app");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", asked.display()),
+        )
+        .expect("the fake catalogue binary");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("the fake catalogue binary runs");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_BIN", &fake);
+
+        let host = Arc::new(RecordingHost::default());
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let provider = StoreCatalogueProvider {
+            action_sessions: Some(ActionSessionSource::with_mock(broker, host.clone())),
+            ..StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(state(
+                &[],
+                &[],
+            )))
+        };
+        let row = search(&provider, "show tasks")
+            .into_iter()
+            .find(|row| row.id == "offer:so.tilo.calendar/calendar.calendar/show-tasks")
+            .expect("Calendar's closed action is found while Calendar is not here");
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string())
+            .expect("an active workspace");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &tilo_actions::ActionArgs::none(),
+        )
+        .expect("choosing the action is accepted");
+
+        let deadline = tilo_test_env::hang_deadline();
+        while host.invoked.lock().expect("recording host lock").is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the action never ran after the app was got"
+            );
+            std::thread::yield_now();
+        }
+        env.remove("TILO_APP_BIN");
+        assert_eq!(
+            std::fs::read_to_string(&asked)
+                .expect("the catalogue binary was asked")
+                .trim(),
+            "install --progress-lines so.tilo.calendar",
+            "the app is got first"
+        );
+        let invoked = host.invoked.lock().expect("recording host lock");
+        assert_eq!(invoked.len(), 1, "the action runs once");
+        assert_eq!(
+            invoked[0].target,
+            tilo_actions::remote::application_action_target(
+                &room,
+                "so.tilo.calendar",
+                "calendar.calendar",
+                "show-tasks"
+            ),
+            "it runs the chosen action, in the active workspace"
+        );
+    }
+
     #[test]
     fn an_empty_query_offers_nothing_to_get() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(

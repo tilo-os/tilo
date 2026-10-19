@@ -23,8 +23,8 @@ use crate::shell::quick_settings::actions::{QsActionAvailability, UnavailableQsA
 use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
 use crate::shell::search::providers::{
-    ActionsProvider, ApplicationsProvider, SessionActionPolicy, SessionActionsProvider,
-    SettingsPagesProvider, SystemSettingsProvider, WebProvider,
+    ActionsProvider, ApplicationsProvider, FilesProvider, SessionActionPolicy,
+    SessionActionsProvider, SettingsPagesProvider, SystemSettingsProvider, WebProvider,
 };
 use crate::shell::search::{QueryArgs, SearchRegistry, SearchResult};
 
@@ -198,6 +198,14 @@ impl Palette {
     fn with_web(mut self) -> Self {
         self.registry
             .register(Rc::new(WebProvider::with_installed(|_| None)));
+        self
+    }
+
+    /// The palette on a home holding these `~/…` files, every one changed
+    /// just now, so recency favours them as much as it ever does.
+    fn with_files(mut self, names: &[&str]) -> Self {
+        self.registry
+            .register(Rc::new(FilesProvider::with_walked_names(names)));
         self
     }
 }
@@ -719,5 +727,40 @@ fn a_service_named_alone_offers_its_site_below_the_app_that_serves_it() {
     assert_eq!(
         titles(&rows).last().copied(),
         Some("Search the web for youtube")
+    );
+}
+
+// USER REQUIREMENT (2026-10-19): ""finder" doesnt even show the files app" and
+// ""explorer" only shows the files app if its an exact match … before that,
+// random files are before".
+#[test]
+fn finder_and_explorer_lead_with_files_ahead_of_files_named_like_them() {
+    let palette = Palette::new().with_files(&[
+        "~/finder",
+        "~/Documents/finder notes.txt",
+        "~/Documents/Finder shortcuts.md",
+        "~/explorer",
+        "~/Downloads/explorer-setup.exe",
+        "~/Documents/Explorer.md",
+        "~/explorations.txt",
+        "~/projects/explorer/README.md",
+    ]);
+    for query in ["finder", "Finder", "explorer", "explo", "file explorer"] {
+        for rows in [palette.ask(query), palette.shown(query)] {
+            assert_eq!(
+                rows.first()
+                    .map(|row| (row.provider_id.as_str(), row.id.as_str())),
+                Some((APP, "so.tilo.file-explorer")),
+                "{query:?}: {:?}",
+                titles(&rows)
+            );
+        }
+    }
+    assert!(
+        palette
+            .ask("explorer")
+            .iter()
+            .any(|row| row.provider_id == "files"),
+        "the files named like it are still found"
     );
 }
