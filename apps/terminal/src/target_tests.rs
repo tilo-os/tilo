@@ -703,7 +703,7 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
         let host = menu
             .children
             .iter()
-            .find(|node| node.name.as_deref() == Some("This device (unconfined)"))
+            .find(|node| node.name.as_deref() == Some("Your shell on this device"))
             .unwrap();
         assert!(widget.perform_semantic_action(
             host.action_target.as_deref().unwrap(),

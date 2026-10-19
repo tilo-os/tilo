@@ -1,5 +1,5 @@
 terminal-find-scrollback = Find in scrollback
-terminal-target-host = This device (unconfined)
+terminal-target-host = Your shell on this device
 terminal-target-default = Default environment
 terminal-target-legacy = legacy VM
 terminal-target-manage = Manage environments…
@@ -9,7 +9,7 @@ terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
 terminal-host-denied = This device's own shell was not allowed
 terminal-no-runtime-status = No environment can start here — press Enter for this device's own shell
 terminal-no-runtime-title = This terminal's environment cannot start on this device.
-terminal-no-runtime-host = Press Enter to open this device's own shell instead (unconfined; Tilo asks you to allow it first),
+terminal-no-runtime-host = Press Enter to open this device's own shell instead (Tilo asks you to allow it first),
 terminal-no-runtime-picker = or choose another place from the target menu at the top of this tab.
 terminal-no-runtime-install = An environment needs an env-runtime image: update Tilo, or install one from the app store.
 terminal-env-title = Environments
