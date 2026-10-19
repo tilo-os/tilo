@@ -72,12 +72,15 @@ mod tests {
         room: RoomId,
     ) -> (
         super::super::remote_actions::BrokerActionHost,
+        impl Fn(),
         tokio::sync::mpsc::UnboundedReceiver<
             tilo_action_broker::collab_broker_capnp::InvocationEnvelope,
         >,
     ) {
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+        // Signed admission is queued to the broker's turn, as on the live
+        // broker; the returned turn services it.
+        let (broker, turn) =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
                 std::sync::Arc::new(super::super::broker_services::NativeWorkspaceAuthority(
                     tree.clone(),
                 )),
@@ -131,17 +134,25 @@ mod tests {
         let invocations = broker.capture_invocations_for_test(7);
         let host = super::super::remote_actions::BrokerActionHost::new(broker.clone());
         drop(broker);
-        (host, invocations)
+        (host, turn, invocations)
     }
 
     fn invoke_native(
         host: &super::super::remote_actions::BrokerActionHost,
+        turn: &impl Fn(),
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<(u64, tilo_actions::remote::InvocationReceipt), tilo_actions::remote::ActionHostError>
     {
-        host.invoke_local_person_job(caller, request)
-            .wait_timeout(std::time::Duration::from_secs(1))
+        let mut answer = host.invoke_local_person_job(caller, request);
+        // A refusal before admission answers at once; an admitted call waits
+        // for the broker's turn.
+        if let tilo_actions::remote::PendingPoll::Ready(result) = answer.poll_ready() {
+            return result;
+        }
+        turn();
+        answer
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("native route resolves")
@@ -214,10 +225,11 @@ mod tests {
         );
         // The exact maintained BrokerActionHost used by the palette/admin
         // socket acquires this protected identity, not a supplied certificate.
-        let (host, mut invocations) = native_host(&tree, room);
+        let (host, turn, mut invocations) = native_host(&tree, room);
         let caller = tilo_actions::remote::Caller::local_person(&person).in_room(room.to_string());
-        let invoke =
-            |caller: &tilo_actions::remote::Caller, request| invoke_native(&host, caller, &request);
+        let invoke = |caller: &tilo_actions::remote::Caller, request| {
+            invoke_native(&host, &turn, caller, &request)
+        };
         let applied = invoke(&caller, request("apply"));
         assert!(applied.is_ok(), "{applied:?}");
         assert_eq!(invocations.try_recv().unwrap().actor, person);
