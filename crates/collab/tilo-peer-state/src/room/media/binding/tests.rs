@@ -263,7 +263,7 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
     }
 }
 // Original public resolver retained as independent identity/shape oracle.
-use super::super::{strict_map, strict_string};
+use super::super::strict_string;
 fn historical_resolve(
     app: &str,
     record: &str,
@@ -273,15 +273,16 @@ fn historical_resolve(
     if !candidate.get_missing_deps(&[]).is_empty() {
         return Err(MediaPolicyError::Binding);
     }
-    let channels = strict_map(candidate, &ROOT, "channels")?;
-    let entry = strict_map(candidate, &channels, channel)?;
-    let object = match candidate
-        .get(&entry, "v")
+    let winner = |parent: &automerge::ObjId, key: &str| match candidate
+        .get(parent, key)
         .map_err(|_| MediaPolicyError::Malformed)?
     {
-        Some((Value::Object(ObjType::Map), object)) => object,
-        _ => return Err(MediaPolicyError::Binding),
+        Some((Value::Object(ObjType::Map), object)) => Ok(object),
+        _ => Err(MediaPolicyError::Binding),
     };
+    let channels = winner(&ROOT, "channels")?;
+    let entry = winner(&channels, channel)?;
+    let object = winner(&entry, "v")?;
     if strict_string(candidate, &object, "kind")? != "voice" {
         return Err(MediaPolicyError::Binding);
     }
