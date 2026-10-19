@@ -321,7 +321,10 @@ exit 99
                     self.assertIn("packed app=calculator output=", result.stdout)
                     self.assertIn("tapp_bytes=64 limit=8388608", result.stdout)
                     calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
-                    self.assertTrue(any("--release" in call["args"] for call in calls))
+                    # The packing tools build in the release profile.
+                    self.assertIn(["--profile", "release"], [
+                        call["args"][index:index + 2] for call in calls
+                        for index, arg in enumerate(call["args"]) if arg == "--profile"])
                     self.assertTrue(any("thin-app" in call["args"] for call in calls))
                     out = self.root / "dist/app-release"
                     artifact = self.root / "download" / architecture

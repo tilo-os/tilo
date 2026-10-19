@@ -788,9 +788,11 @@ scope = { inputs = [
 
 [[cargo]]
 package = "tilo-app-package"
-inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml"]
+# Every app's search taglines are checked in each shipped language.
+inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/search/*.ftl"]
 readers = [
   "crates/packaging/tilo-app-package/tests/app_manifests.rs",
+  "crates/packaging/tilo-app-package/src/search_keywords.rs",
   "crates/packaging/tilo-app-package/src/validate.rs",
   "crates/packaging/tilo-app-package/src/view.rs",
 ]
@@ -985,14 +987,22 @@ inputs = [
   "crates/collab/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
   "os/usr/libexec/tilo-session",
+  # The OOM score the image gives the session.
+  "os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf",
+  # The units that rebuild the sandbox system view when what it reads changes.
+  "os/usr/lib/systemd/system/tilo-sandbox-view.path",
+  "os/usr/lib/systemd/system/tilo-extension-activate.service",
 ]
 readers = [
   "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
   "crates/packaging/launcher/src/netgate.rs",
+  "crates/packaging/launcher/src/priority.rs",
+  "crates/packaging/launcher/src/sandbox_view.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
   "crates/packaging/launcher/examples/startup_frame_timeline.rs",
+  "crates/packaging/launcher/examples/web_engine_sandbox.rs",
   "crates/packaging/launcher/tests/capture_service/openpgp_native.rs",
 ]
 
@@ -1117,6 +1127,8 @@ inputs = [
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  # The SDK's current interfaces are the image's declaration from the same commit.
+  "crates/dev/tilo-app-cli/src/interface_versions.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
   # Focused source lookup verifies the embedded shared-checklist test bytes.
   "crates/dev/tilo-app-cli/tests/json_output.rs",

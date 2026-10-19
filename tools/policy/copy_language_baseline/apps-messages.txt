@@ -1,7 +1,3 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
 en-US messages-first-permission-review narration
-en-US messages-route-label chain
-en-US messages-account-label glyph
-en-US messages-route-label glyph
-en-US messages-setup-selected glyph
