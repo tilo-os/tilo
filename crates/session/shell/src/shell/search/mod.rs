@@ -631,10 +631,20 @@ pub trait SearchProvider {
         false
     }
 
-    /// Whether `result` is offered only when nothing else answers the query
-    /// (a web search for it): a fallback never takes a row from a match.
+    /// Whether `result` is the row that answers any query, after every
+    /// match (searching the web for it): a person typing sees it last, below
+    /// whatever matched, and it never takes a row from a match.
     fn is_fallback(&self, _result: &SearchResult) -> bool {
         false
+    }
+
+    /// What `needle` says about `result` beyond the lexical fit of its title,
+    /// added to its strength at the merge: a row the query names by another
+    /// word ("youtube cats" for "Search YouTube for cats") ranks like an
+    /// exact name, and a row that stands in for an app's own (a web service
+    /// an app serves) gives way to it. Zero for most rows.
+    fn intent_strength(&self, _result: &SearchResult, _needle: &str) -> f32 {
+        0.0
     }
 
     /// The word `result` matched `needle` through when neither its title nor
@@ -1452,11 +1462,12 @@ impl SearchRegistry {
                     r.score,
                     top,
                     proximity,
-                ) + if interactive {
-                    window_intent(needle, &r, top) + usage_strength(needle, &r)
-                } else {
-                    0.0
-                };
+                ) + provider.intent_strength(&r, needle)
+                    + if interactive {
+                        window_intent(needle, &r, top) + usage_strength(needle, &r)
+                    } else {
+                        0.0
+                    };
                 let key = (r.provider_id.clone(), r.id.clone());
                 if interactive && only_loosely_matched(needle, &r, top) {
                     loose.insert(key.clone());
@@ -1479,11 +1490,13 @@ impl SearchRegistry {
             loose_matches_give_way(&mut merged, &loose);
             self.one_row_per_open_app(&mut merged, chrome);
             files_follow_what_was_named(&mut merged, needle);
-            if merged.is_empty() {
-                merged = fallbacks;
-            }
         }
         system::order_by_kind(&mut merged, |r| &r.kind);
+        // The rows that answer any query (searching the web for it) come
+        // last, after every match, in their own group.
+        if interactive && !needle.trim().is_empty() {
+            merged.append(&mut fallbacks);
+        }
         let completion = QueryCompletion {
             complete: incomplete.is_empty(),
             incomplete,

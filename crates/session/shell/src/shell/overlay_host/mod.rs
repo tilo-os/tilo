@@ -2364,6 +2364,11 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::QuickAnswersProvider::new(),
         ));
+        // The web, the last tier: searching it for what was typed, and the
+        // web services people search by name.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::WebProvider::new(),
+        ));
         (search_registry, room_records, qs_action_slot)
     }
 

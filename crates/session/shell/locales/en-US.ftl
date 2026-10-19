@@ -1268,7 +1268,12 @@ search-answer-copied = Copied
 search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
 search-answer-open-address = Open { $address }
-search-answer-web = Search the web for “{ $query }”
+search-provider-web = Web
+search-kind-web = Web
+search-kind-websites = Websites
+search-web-for = Search the web for { $query }
+search-web-service-for = Search { $service } for { $query }
+search-web-subtitle = Web
 search-answer-no-browser = No app on this desktop opens web addresses.
 search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
