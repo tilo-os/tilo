@@ -23,6 +23,10 @@ aarch64 = "aarch64"
 [capabilities]
 required = ["network.http", "secrets"]
 
+# Bridging a server asks the room's host through its governance actions.
+[actions]
+invoke = true
+
 [resources]
 kinds = ["discord.guild"]
 

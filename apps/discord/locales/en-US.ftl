@@ -1,5 +1,6 @@
 discord-empty-title = Bring a Discord server into this room
-discord-empty-body = Once a room admin connects a server with the Discord Bridge bot, its channels and messages show up in this room's Chat and stay in step both ways. Then you can link your Discord account here.
+discord-empty-body = Bridge a server with the Discord Bridge bot and its channels and messages show up in this room's Chat, in step both ways. Then everyone can link their Discord account here.
+discord-bridge-server = Bridge a server
 discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
 discord-status-bridged = Messages go both ways between this room's Chat and the server.
 discord-channels = { $count ->
@@ -14,6 +15,32 @@ discord-your-account = Your Discord account
 discord-link-explanation = Link your account so what you write in Discord shows up as you here.
 discord-link-account = Link my Discord account
 discord-link-code = In Discord, type /link with this code. It works for 10 minutes.
+
+## Bridging a server.
+discord-setup-title = Bridge a Discord server
+discord-setup-token = Bot token
+discord-setup-token-explanation = Paste the token from the Bot page of your application in the Discord developer portal. It goes to this room's host for the bridge and is kept nowhere else.
+discord-setup-find = Find servers
+discord-setup-finding = Asking Discord which servers the bot is in…
+discord-setup-choose = Choose the server this room bridges.
+discord-setup-server = Server
+discord-setup-no-servers = The bot isn't in any server yet. Invite it to yours from the developer portal, then try again.
+discord-setup-bridge = Bridge
+discord-setup-asking = Asking the room's host to bridge { $server }…
+discord-setup-asked = { $server } is being bridged. Its channels show up in Chat as the bridge brings them in.
+discord-setup-done = Done
+discord-setup-try-again = Try again
+discord-setup-cancel = Cancel
+discord-setup-not-a-token = That doesn't look like a bot token. Copy it again from the Bot page of your application.
+discord-setup-token-refused = Discord didn't accept this token. Reset it on the Bot page and paste the new one.
+discord-setup-unreachable = Discord didn't answer. Check the connection, then try again.
+discord-setup-discord-error = Discord couldn't list the bot's servers right now. Try again in a moment.
+discord-setup-unreadable = Discord's answer couldn't be read. Try again in a moment.
+discord-setup-no-room = Only a room can bridge a server. Open Discord from a room.
+discord-setup-host-unreachable = The room's host can't be reached right now. Try again in a moment.
+discord-setup-not-allowed = Bridging needs a room hosted on a relay that runs bots, and the right to add bots to it.
+discord-setup-host-refused = The room's host didn't take it: { $reason }
+discord-setup-cancelled = The room's host stopped before the bridge was set up.
 
 ## History: the bridge's verbs.
 discord-connect = Connected the Discord server { $name }

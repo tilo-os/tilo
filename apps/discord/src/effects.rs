@@ -51,6 +51,31 @@ pub enum DiscordEffect {
         #[param(secret)]
         token: String,
     },
+    /// Find the bot's servers
+    ///
+    /// The Discord servers the bot with this token is in, by id and name,
+    /// to choose the one this room bridges. The token is used for this one
+    /// request and kept nowhere.
+    #[effect(job, returns, device_only)]
+    FindServers {
+        #[param(secret)]
+        token: String,
+    },
+    /// Bridge a server
+    ///
+    /// Gives the room's host the bot token and asks it to run the Discord
+    /// Bridge for this server: the same setup the room's operator gives on
+    /// the command line, through the room's own actions, which decide
+    /// whether this person may add bots.
+    #[effect(device_only)]
+    BridgeServer {
+        #[param(secret)]
+        token: String,
+        #[param("The server's id")]
+        guild: String,
+        #[param("The server's name")]
+        server: String,
+    },
     /// Find the message an event is about
     ///
     /// The Chat message and channel the bridge reads before planning
@@ -80,7 +105,9 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
         DiscordEffect::LinkAccount
         | DiscordEffect::MyLink
         | DiscordEffect::UnlinkMine
-        | DiscordEffect::SetBotToken { .. } => None,
+        | DiscordEffect::SetBotToken { .. }
+        | DiscordEffect::FindServers { .. }
+        | DiscordEffect::BridgeServer { .. } => None,
         DiscordEffect::PlanRoute { event } => Some(json!({
             "message": bridge::route(guild, event),
             "channel": bridge::route_channel(event),

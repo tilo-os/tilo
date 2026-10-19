@@ -17,6 +17,7 @@ pub mod outbound;
 pub mod record;
 pub mod resource;
 pub mod roles;
+pub mod setup;
 pub mod slug;
 pub mod tilo;
 pub mod token;
