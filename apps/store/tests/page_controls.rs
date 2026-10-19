@@ -121,7 +121,11 @@ fn an_empty_search_offers_to_clear_it() {
     let mut store = store::fixture::seeded_app();
     store.set_query("zzzz-nothing-matches".into());
     let mut app = lay_out(store);
-    let clear = rect_of(&*app, "store.empty.clear");
+    // The empty state carries the action's id; its button is the part a
+    // pointer presses.
+    let clear = find_test_id(&*app, "store.empty.clear")
+        .and_then(|empty| empty.synthetic_accessibility_rect(&[0]))
+        .expect("the empty search offers its clear button");
     click(&mut app, clear.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("clearing the search is an exported action");

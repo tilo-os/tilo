@@ -882,7 +882,8 @@ mod tests {
             let index = ListIndex::default();
             let rank = |needle: &str| relevance(&index, needle, &[&n])[0];
             let prefix = rank("no");
-            let mid = rank("tes");
+            // A match inside a word takes four letters (shared search).
+            let mid = rank("otes");
             let desc = rank("little");
             assert!(mid.is_some() && desc.is_some());
             assert!(

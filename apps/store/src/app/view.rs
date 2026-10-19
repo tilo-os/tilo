@@ -739,6 +739,7 @@ impl StoreApp {
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
                 Text::new(&item.name)
+                    .with_id("store.detail.name")
                     .with_role(TextRole::LargeTitle)
                     .with_heading_level(1),
             ));
