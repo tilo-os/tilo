@@ -76,6 +76,12 @@ pub(crate) fn composite(over: Color, ground: Color) -> Color {
 /// only has to catch a wash landing within rounding distance of its surface.
 pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
 
+/// How far a selection lifts its ground, in surface steps
+/// ([`Colors::lift_on`]). Past the hover and press lift so a selected row
+/// moves the dark window's ground by at least [`HAIRLINE_MIN_DELTA`] and
+/// stands clear of a table's zebra stripe on every ground.
+pub const SELECTED_LIFT_T: f32 = 1.2;
+
 /// How far a floating surface's inner hairline (white at 7 % on a dark
 /// material, black at 8 % on a light one, `docs/design-language.md`,
 /// "Surfaces") moves its fill. Quieter than [`HAIRLINE_MIN_DELTA`] by
@@ -111,6 +117,21 @@ pub struct ColorRamp {
     pub stops: [Color; 11],
 }
 
+/// The neutral material at lightness `l`: `chroma` at `hue`, eased back
+/// where 8-bit rounding near black would carry it past
+/// [`NEUTRAL_MAX_CHROMA`]. A workspace hue moves the hue only; it never
+/// buys chroma (design language, "Workspace temperature").
+fn neutral_at(l: f32, chroma: f32, hue: f32) -> Color {
+    let mut c = chroma.clamp(0.0, NEUTRAL_MAX_CHROMA);
+    loop {
+        let colour = oklch(l, c, hue);
+        if c <= 0.0 || Oklch::from_color(colour).c <= NEUTRAL_MAX_CHROMA {
+            return colour;
+        }
+        c = (c - 0.002).max(0.0);
+    }
+}
+
 impl ColorRamp {
     pub fn len(&self) -> usize {
         self.stops.len()
@@ -132,7 +153,7 @@ impl ColorRamp {
                           where f32 loses integer precision"
             )]
             let t = (i as f32 / 10.0).powf(1.5);
-            *stop = oklch(from + (to - from) * t, chroma, hue);
+            *stop = neutral_at(from + (to - from) * t, chroma, hue);
         }
         Self { stops }
     }
@@ -1034,11 +1055,12 @@ impl Colors {
         oklch(g.l + step * t, chroma, hue)
     }
 
-    /// The selected row's lift on `ground`: one surface step, faintly the
-    /// accent hue (neutral under [`Emphasis::Inverted`]).
+    /// The selected row's lift on `ground`: a fifth past one surface step
+    /// ([`SELECTED_LIFT_T`]), faintly the accent hue (neutral under
+    /// [`Emphasis::Inverted`]).
     #[must_use]
     pub fn selected_on(&self, ground: Color) -> Color {
-        let lift = self.lift_on(ground, 1.0);
+        let lift = self.lift_on(ground, SELECTED_LIFT_T);
         match self.accent_hue() {
             Some(hue) => {
                 let o = Oklch::from_color(lift);
@@ -1655,13 +1677,15 @@ mod tests {
                 let l = |x: Color| Oklch::from_color(x).l;
                 let s = &c.surfaces;
                 // Dark: ground, region (recessed), window, then the raised
-                // wells and floating chrome above it. Light: ground, region,
-                // the raised well, then the window, and floating as the one
-                // white. Sidebar and inspector are one level.
+                // wells and floating chrome above it. Light: ground, the
+                // raised well (0.95, darker than the region), the region
+                // (0.965), then the window, and floating as the one white
+                // (design-system.md, "Surfaces"). Sidebar and inspector are
+                // one level.
                 let order: &[Color] = if palette.dark {
                     &[s.base, s.sidebar, s.content, s.overlay]
                 } else {
-                    &[s.base, s.sidebar, s.raised, s.content, s.overlay]
+                    &[s.base, s.raised, s.sidebar, s.content, s.overlay]
                 };
                 for pair in order.windows(2) {
                     if let [a, b] = pair {
