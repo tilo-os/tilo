@@ -557,6 +557,23 @@ pub const fn param_type_name(ty: ParamType) -> &'static str {
     }
 }
 
+/// What a value of `ty` is called to a person: "Whole number", not
+/// "integer".
+#[must_use]
+pub const fn param_type_label(ty: ParamType) -> &'static str {
+    match ty {
+        ParamType::Text => "Text",
+        ParamType::Integer => "Whole number",
+        ParamType::Number => "Number",
+        ParamType::Boolean => "Yes or no",
+        ParamType::DateTime => "Date and time",
+        ParamType::Secret => "Secret",
+        ParamType::Resource => "Item from an app",
+        ParamType::Object => "Group of values",
+        ParamType::Array => "List",
+    }
+}
+
 #[cfg(test)]
 #[path = "editor_tests.rs"]
 mod tests;
