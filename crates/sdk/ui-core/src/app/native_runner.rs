@@ -4439,7 +4439,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let (animation_due, animation_deadline) =
             self.animation_schedule.poll(crate::time::now(), animate);
         if animation_due {
-            app.needs_sync |= widget_animation;
+            // An animation frame advances what moves in the frame's update
+            // (`update_native_model`), which syncs, and drops the published
+            // resources, only when a widget reports that its model changed.
+            // A glide, a fade or a slide changes nothing the app publishes:
+            // forcing a sync here rebuilt and republished the whole resource
+            // tree on every frame of every animation.
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
             app.layout.layout_dirty |= widget_animation;

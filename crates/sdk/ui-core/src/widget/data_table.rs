@@ -3145,15 +3145,18 @@ impl<Row: 'static> Widget for DataTable<Row> {
             self.refresh_view_anchor();
             return received_changes || children_changed;
         }
+        // A glide moves only the viewport, which the frame it asks for lays
+        // out; rows it brings near mount through that layout's rebuild. It
+        // is no change of the model, so it does not report one (as
+        // `Scrollable::update`).
         let delta = self.momentum.advance(now);
         let before = self.viewport.offset();
         self.set_scroll_offset(before + delta);
-        let moved = self.viewport.offset().to_bits() != before.to_bits();
-        if !moved {
+        if self.viewport.offset().to_bits() == before.to_bits() {
             self.momentum.stop();
         }
         self.refresh_view_anchor();
-        received_changes || moved || children_changed
+        received_changes || children_changed
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -3582,7 +3585,12 @@ impl<Row: 'static> Widget for DataTable<Row> {
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let sideways = ctx.modifiers.state().shift_key();
+                let before = *ctx.handled;
                 self.on_wheel(delta, *phase, sideways, ctx.handled);
+                // It moved only this table's view: nothing the app publishes.
+                if *ctx.handled && !before {
+                    crate::widget::note_view_only_pan();
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -6135,7 +6143,8 @@ mod tests {
             assert_eq!(immediate, 60.0);
             assert!(table.needs_animation_frame());
             let frame = crate::time::now() + crate::time::Duration::from_millis(16);
-            assert!(crate::time::testing::with_monotonic_time(frame, || {
+            // The glide moves only the view: it is no change of the model.
+            assert!(!crate::time::testing::with_monotonic_time(frame, || {
                 Widget::update(&mut table, &AutoCommit::new(), &automerge::ROOT)
             }));
             assert!(

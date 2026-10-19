@@ -2862,13 +2862,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .replace(now)
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         let mut changed = received_changes;
+        // A glide moves only the viewport, which the frame it asks for lays
+        // out: no change of the model, so it does not report one (as
+        // `Scrollable::update`).
         if self.momentum.is_active() {
             let delta = self.momentum.advance(now);
             let before = self.scroll_offset();
             self.set_scroll_offset(before + delta);
-            let moved = self.scroll_offset().to_bits() != before.to_bits();
-            changed |= moved;
-            if !moved {
+            if self.scroll_offset().to_bits() == before.to_bits() {
                 self.momentum.stop();
             }
         }
@@ -4227,6 +4228,10 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             {
                 self.drag_scroll.cancel();
                 *handled = self.on_wheel(delta, *phase);
+                // It moved only this tree's view: nothing the app publishes.
+                if *handled {
+                    crate::widget::note_view_only_pan();
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5963,7 +5968,8 @@ mod tests {
             assert_eq!(immediate, 60.0);
             assert!(view.needs_animation_frame());
             let frame = crate::time::now() + Duration::from_millis(16);
-            assert!(crate::time::testing::with_monotonic_time(frame, || {
+            // The glide moves only the view: it is no change of the model.
+            assert!(!crate::time::testing::with_monotonic_time(frame, || {
                 Widget::update(&mut view, &AutoCommit::new(), &automerge::ROOT)
             }));
             assert!(view.scroll_y() > immediate, "momentum advances after input");
