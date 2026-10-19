@@ -190,10 +190,12 @@ fn personal_search_entries_join_the_bookmarks_scope_and_no_other_library_section
     let flat_url = "https://continuity.test/flat";
     app.person::<PersonalBookmarks>()
         .unwrap()
-        .apply(&PersonalBookmarkAction::Add {
-            url: flat_url.into(),
-            title: "Personal flat page".into(),
-            tag: "bookmark:personal-search-boundary".into(),
+        .apply(&ui::tilo_resource::Stamped {
+            operation: PersonalBookmarksAction::AddBookmark(personal_bookmarks::AddBookmark {
+                url: flat_url.into(),
+                title: "Personal flat page".into(),
+            }),
+            now_ms: 0,
         })
         .unwrap();
     app.settle();
