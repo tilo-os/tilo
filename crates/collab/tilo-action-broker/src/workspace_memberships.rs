@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(
             membership_command(&InvocationEnvelope {
                 argument: Some(argument),
-                ..request.clone()
+                ..request
             })
             .unwrap(),
             command,

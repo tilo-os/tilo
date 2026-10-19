@@ -619,7 +619,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
             "original_request": null,
         });
         assert!(recovered.admitted_request_is(&request));
-        let mut retry = recovered.intent.clone();
+        let mut retry = recovered.intent;
         retry["request"] = request;
         assert!(!restored.admit(admitted.key.clone(), retry.clone(), 999).unwrap(),
             "an exact retry reuses the recovered admission");

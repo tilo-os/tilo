@@ -15,7 +15,7 @@ struct Governance {
 }
 
 impl WorkspaceGovernanceServices for Governance {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
@@ -159,7 +159,7 @@ fn owner_governance_rejects_witness_from_other_original_contexts() {
             "revision" => binding.revision = Some("previous-publication".into()),
             "invocation" => binding.invocation = tilo_actions::InvocationId::new(),
             "publication" => binding.publication.0 = binding.publication.0.wrapping_add(1),
-            _ => unreachable!(),
+            _ => panic!("not exercised by this test"),
         }
         request.confirmation = Some(Confirmation::Witnessed(
             state.witness_confirmation(&binding).unwrap(),
@@ -330,7 +330,7 @@ fn expired_owner_witness_cannot_confirm_governance() {
     let (state, service, owner, mut request) = broker(true);
     let confirmation = witness(&state, "owner", &request);
     let Confirmation::Witnessed(token) = &confirmation else {
-        unreachable!()
+        panic!("not exercised by this test")
     };
     state
         .witnessed_confirmations
@@ -338,7 +338,9 @@ fn expired_owner_witness_cannot_confirm_governance() {
         .unwrap()
         .get_mut(token)
         .unwrap()
-        .expires = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        .expires = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap();
     request.confirmation = Some(confirmation);
     assert_eq!(
         invoke(&state, &owner, &request),
@@ -358,7 +360,7 @@ fn legacy_governance_retains_service_owned_admission() {
     request.target.address.resource = "legacy-service-validates-this".into();
     request.confirmation = Some(witness(&state, "owner", &request));
     let Some(Confirmation::Witnessed(token)) = request.confirmation.as_ref() else {
-        unreachable!()
+        panic!("not exercised by this test")
     };
     invoke(&state, &owner, &request).unwrap();
     assert_eq!(*service.calls.lock().unwrap(), vec![serde_json::json!({})]);

@@ -75,6 +75,10 @@ impl action_directory::Server for LocalDocumentDirectory {
     }
 }
 
+#[allow(
+    clippy::indexing_slicing,
+    reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
+)]
 async fn local_report_admission(
     kind: tilo_actions::OperationKind,
     mutation_hashes: Vec<[u8; 32]>,
@@ -110,7 +114,7 @@ async fn local_report_admission(
                 .unwrap()
                 .clone();
             let raw: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
-                person_chat_views: RefCell::default(),
+                person_chat_views: std::cell::RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: rig.state.clone(),
                 directories: rig.directories.clone(),
@@ -366,7 +370,7 @@ async fn local_report_admission(
                 assert!(record.admitted_request_is(&private_request));
                 evidence.validate_retained(retained).unwrap();
                 let mut exact_intent = retained.clone();
-                exact_intent["request"] = private_request.clone();
+                exact_intent["request"] = private_request;
                 let opening = evidence.opening_for_owner(&facts.actor).unwrap();
                 opening
                     .verify(evidence.public_receipt(), &exact_intent)

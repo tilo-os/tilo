@@ -1044,6 +1044,10 @@ mod tests {
         assert_eq!(app.try_recv().expect("delivered").action, "new-window");
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
     /// An action the room's grants let an agent take only after asking is
     /// offered to it marked as asking for confirmation. The agent's own word
     /// does not confirm it; the person's answer, witnessed on their device,

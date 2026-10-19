@@ -31,7 +31,7 @@ fn operation(action: &str, content: &str) -> String {
     serde_json::to_string(&ExternalModerationOperation {
         request_id: uuid::Uuid::from_u128(9201).to_string(),
         issued_at_unix: issued,
-        expires_at_unix: issued + 3600,
+        expires_at_unix: issued.saturating_add(3600),
         destination: ModerationDestination {
             base_url: "https://registry.example".into(),
             owner_pubkey_hex: "ab".repeat(32),
@@ -153,6 +153,10 @@ fn provision_receipt_signer(
     .unwrap();
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() {
     let identity = tempfile::tempdir().unwrap();
@@ -230,6 +234,10 @@ impl crate::services::LauncherServices for StoreLauncher {
         }]
     }
 
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "a test double asserts what it is asked to launch; the Result is the launcher contract's"
+    )]
     fn launch(
         &self,
         app: &str,
@@ -248,6 +256,10 @@ impl crate::services::LauncherServices for StoreLauncher {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[tokio::test(flavor = "current_thread")]
 async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_draft() {
     let identity = tempfile::tempdir().unwrap();

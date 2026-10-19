@@ -419,7 +419,8 @@ pub(super) mod signed_test_support {
             _room: uuid::Uuid,
             certificate: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
-            if let Some(time) = self.replace_time_on_authorize.lock().unwrap().take() {
+            let replacement = self.replace_time_on_authorize.lock().unwrap().take();
+            if let Some(time) = replacement {
                 *self.time.lock().unwrap() = time;
             }
             if self.revoked.load(Ordering::SeqCst) || certificate != &self.certificate {
@@ -439,9 +440,9 @@ pub(super) mod signed_test_support {
         certified_host: Option<Arc<dyn tilo_actions::remote::ActionHost>>,
         _fanout: Arc<FanoutState>,
         _environment: tilo_test_env::ScopedEnv,
-        _directory: tempfile::TempDir,
+        directory: tempfile::TempDir,
         clock: crate::peer_actions::OwnerPolicyClock,
-        _origin: crate::peer_actions::PolicyOrigin,
+        policy_origin: crate::peer_actions::PolicyOrigin,
     }
 
     impl Fixture {
@@ -450,7 +451,7 @@ pub(super) mod signed_test_support {
         }
 
         pub fn retire_policy_origin(&self) {
-            self._origin.invalidate();
+            self.policy_origin.invalidate();
         }
 
         pub fn new(services: HostServices) -> Self {
@@ -540,9 +541,9 @@ pub(super) mod signed_test_support {
                 certified_host: None,
                 _fanout: fanout,
                 _environment: environment,
-                _directory: directory,
+                directory,
                 clock,
-                _origin: policy_origin,
+                policy_origin,
             }
         }
 
@@ -604,7 +605,7 @@ pub(super) mod signed_test_support {
                         agent: None,
                     }
                 }
-                _ => panic!("authenticated custody"),
+                InvocationCaller::NativePerson { .. } => panic!("authenticated custody"),
             }
         }
 
@@ -649,6 +650,10 @@ pub(super) mod signed_test_support {
                 .expect("the certified caller may query")
         }
 
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the test keeps its fixture and guards alive through its assertions"
+        )]
         pub fn admission_check(&self, request: &InvokeRequest) -> Box<dyn Fn() + Send> {
             let key = InvocationKey {
                 room: self.room.clone(),
@@ -673,6 +678,10 @@ pub(super) mod signed_test_support {
             })
         }
 
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the test keeps its fixture and guards alive through its assertions"
+        )]
         pub fn record(&self, request: &InvokeRequest) -> DurableInvocation {
             let guard = self.state.journal.lock().unwrap();
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
@@ -703,7 +712,7 @@ pub(super) mod signed_test_support {
             let mut guard = self.state.journal.lock().unwrap();
             drop(guard.as_mut().unwrap().take());
             *guard = Ok(Some(
-                super::super::InvocationJournal::open(&self._directory.path().join("journal"))
+                super::super::InvocationJournal::open(&self.directory.path().join("journal"))
                     .unwrap(),
             ));
         }
@@ -897,6 +906,10 @@ mod identity_admin_tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn certified_host_steps_admit_only_nonforeign_local_custody() {
         for pairing in [false, true] {
@@ -957,7 +970,7 @@ mod identity_admin_tests {
                     .unwrap()
                     .pop()
                     .unwrap()
-                    .complete(Ok(Default::default()));
+                    .complete(Ok(tilo_actions::ActionOutput::default()));
                 f.assert_signed(&asked, true);
                 f.invoke(&asked).unwrap();
                 assert_eq!(service.started.lock().unwrap().len(), 1);
@@ -971,6 +984,10 @@ mod identity_admin_tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn device_pairing_uses_the_same_signed_admission_and_terminal_path() {
         let host = Arc::new(PairingHost::default());
@@ -1001,6 +1018,10 @@ mod identity_admin_tests {
         assert_eq!(host.0.started.lock().unwrap().len(), 1);
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn identity_admin_signs_before_start_and_retains_the_original_uuid() {
         let host = Arc::new(Host::default());
@@ -1040,6 +1061,10 @@ mod identity_admin_tests {
         assert_eq!(f.assert_signed(&asked, true), completed);
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn identity_admin_persists_failed_and_dropped_host_outcomes() {
         for dropped in [false, true] {
@@ -1084,6 +1109,10 @@ mod identity_admin_tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn identity_admin_admission_and_completion_barriers_are_fail_closed() {
         for admission_failure in [false, true] {
@@ -1118,6 +1147,10 @@ mod identity_admin_tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
@@ -1208,6 +1241,10 @@ mod identity_admin_tests {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
     #[test]
     fn identity_admin_refuses_revoked_custody_and_missing_signer_before_start() {
         for revoked in [false, true] {

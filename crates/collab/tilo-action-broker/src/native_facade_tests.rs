@@ -17,7 +17,7 @@ impl NativeFacadeHostSteps {
 }
 
 impl crate::services::IdentityAdminServices for NativeFacadeHostSteps {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.settings"
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
@@ -32,12 +32,14 @@ impl crate::services::IdentityAdminServices for NativeFacadeHostSteps {
             .lock()
             .unwrap()
             .push((request.room.into(), request.actor.id().into()));
-        Ok(tilo_actions::remote::Pending::ready(Ok(Default::default())))
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
 impl crate::services::DevicePairingServices for NativeFacadeHostSteps {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.settings"
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
@@ -52,7 +54,9 @@ impl crate::services::DevicePairingServices for NativeFacadeHostSteps {
             .lock()
             .unwrap()
             .push((request.room.into(), request.actor.id().into()));
-        Ok(tilo_actions::remote::Pending::ready(Ok(Default::default())))
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
@@ -232,7 +236,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
 #[derive(Default)]
 struct NativeFacadeGovernance(Mutex<Vec<(bool, tilo_actions::InvocationId)>>);
 impl crate::services::WorkspaceGovernanceServices for NativeFacadeGovernance {
-    fn app_id(&self) -> &str {
+    fn app_id(&self) -> &'static str {
         "so.tilo.workspace"
     }
     fn handles(&self, action: &str) -> bool {
@@ -325,9 +329,11 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
                     .is_err()
             );
             assert!(
-                local_host_answer(native.query(&caller, Default::default()))
-                    .await
-                    .is_err()
+                local_host_answer(
+                    native.query(&caller, tilo_actions::remote::CatalogueQuery::default())
+                )
+                .await
+                .is_err()
             );
             assert_eq!(
                 governance.0.lock().unwrap().len(),

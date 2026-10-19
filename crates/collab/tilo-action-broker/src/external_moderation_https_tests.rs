@@ -8,12 +8,20 @@ mod https_completion {
         ModerationConsentPreview, ModerationConsentPurpose,
     };
 
+    #[allow(
+        clippy::panic,
+        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
+    )]
     async fn bounded<T>(stage: &str, future: impl std::future::Future<Output = T>) -> T {
         tokio::time::timeout(std::time::Duration::from_secs(15), future)
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for {stage}"))
     }
 
+    #[allow(
+        clippy::panic,
+        reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
+    )]
     async fn scenario(stage: &str, future: impl std::future::Future<Output = ()>) {
         tokio::time::timeout(std::time::Duration::from_secs(60), future)
             .await
@@ -145,7 +153,11 @@ mod https_completion {
                 .row();
             let descriptor = descriptor("submit-report");
             row.action = Some(descriptor.action.clone());
-            row.visibility.as_mut().unwrap().action = descriptor.action.clone();
+            row.visibility
+                .as_mut()
+                .unwrap()
+                .action
+                .clone_from(&descriptor.action);
             row.visibility.as_mut().unwrap().contract = descriptor.contract.clone();
             row.visibility.as_mut().unwrap().governing_kind = Some(descriptor.operation_kind);
             row.descriptor = Some(descriptor);
@@ -162,7 +174,7 @@ mod https_completion {
         base: String,
         identity: ServerIdentity,
         task: tokio::task::JoinHandle<()>,
-        _directory: tempfile::TempDir,
+        directory: tempfile::TempDir,
     }
 
     impl Drop for HttpsRegistry {
@@ -246,14 +258,14 @@ mod https_completion {
                 base,
                 identity,
                 task,
-                _directory: directory,
+                directory,
             }
         }
 
         fn service(&self) -> ModerationApiService {
             // Reopen from disk rather than asserting solely on the live handler's state.
             ModerationApiService::new(
-                Storage::open(self._directory.path()).unwrap(),
+                Storage::open(self.directory.path()).unwrap(),
                 self.identity.clone(),
             )
         }
@@ -557,7 +569,7 @@ mod https_completion {
                         sheet = bounded("native host sheet", sheets.recv()) => sheet.unwrap(),
                     };
                     assert_preview(&question, &operation, &room.original.cert.user_public_key);
-                    assert!(server.service().transparency(1, 10).unwrap().events.len() == usize::from(case_id.is_some()));
+                    assert_eq!(server.service().transparency(1, 10).unwrap().events.len(), usize::from(case_id.is_some()));
                     let delivery = stream.read();
                     tokio::pin!(delivery);
                     assert!(tokio::time::timeout(std::time::Duration::from_millis(20), &mut delivery).await.is_err());

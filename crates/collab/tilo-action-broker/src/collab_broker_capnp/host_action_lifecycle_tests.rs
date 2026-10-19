@@ -1,5 +1,9 @@
 use super::*;
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn retired_host_rejects_late_completion_without_rewriting_observation() {
     let root = tempfile::tempdir().unwrap();
@@ -25,7 +29,7 @@ fn retired_host_rejects_late_completion_without_rewriting_observation() {
                 &admitted,
                 InvocationUpdate::Succeeded {
                     invocation: request.invocation,
-                    output: Default::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             )
             .is_err()
@@ -44,6 +48,10 @@ fn retired_host_rejects_late_completion_without_rewriting_observation() {
     assert!(record.update.is_terminal());
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn host_terminal_is_single_assignment_and_never_cancellable() {
     let root = tempfile::tempdir().unwrap();
@@ -70,7 +78,7 @@ fn host_terminal_is_single_assignment_and_never_cancellable() {
     assert!(!state.can_cancel_for_owner(admitted.id, &admitted.owner));
     let terminal = InvocationUpdate::Succeeded {
         invocation: request.invocation,
-        output: Default::default(),
+        output: tilo_actions::ActionOutput::default(),
     };
     state
         .complete_host_action(&admitted, terminal.clone())
@@ -83,10 +91,14 @@ fn host_terminal_is_single_assignment_and_never_cancellable() {
     assert_eq!(state.invocation_status(admitted.id), Some(terminal));
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
     let fixture = crate::collab_broker_capnp::host_steps::signed_test_support::Fixture::new(
-        Default::default(),
+        crate::services::HostServices::default(),
     );
     let descriptor = descriptor();
     let request = request(&descriptor);
@@ -120,7 +132,7 @@ fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
                 &admitted,
                 InvocationUpdate::Succeeded {
                     invocation: request.invocation,
-                    output: Default::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             )
             .is_err(),
@@ -152,10 +164,14 @@ fn recovered_host_replay_uses_exact_owner_and_request_without_dispatch() {
     );
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
 #[test]
 fn app_local_origin_replays_host_terminal_before_live_target_resolution() {
     let fixture = crate::collab_broker_capnp::host_steps::signed_test_support::Fixture::new(
-        Default::default(),
+        crate::services::HostServices::default(),
     );
     let descriptor = descriptor();
     let mut request = request(&descriptor);
@@ -175,7 +191,7 @@ fn app_local_origin_replays_host_terminal_before_live_target_resolution() {
         .unwrap();
     let terminal = InvocationUpdate::Succeeded {
         invocation: request.invocation,
-        output: Default::default(),
+        output: tilo_actions::ActionOutput::default(),
     };
     fixture
         .state

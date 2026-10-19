@@ -312,6 +312,10 @@ impl Fixture {
     fn new() -> Self {
         Self::with_launcher(None)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
     fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
