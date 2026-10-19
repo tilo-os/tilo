@@ -235,9 +235,9 @@ impl TextStack {
     /// Replace the lines.
     pub fn set_lines(&mut self, title: &str, secondary: &str, tertiary: &str) {
         if self.title != title || self.secondary != secondary || self.tertiary != tertiary {
-            self.title = title.to_owned();
-            self.secondary = secondary.to_owned();
-            self.tertiary = tertiary.to_owned();
+            title.clone_into(&mut self.title);
+            secondary.clone_into(&mut self.secondary);
+            tertiary.clone_into(&mut self.tertiary);
             self.dirty = true;
         }
     }
