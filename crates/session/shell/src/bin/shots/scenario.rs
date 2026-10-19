@@ -425,6 +425,10 @@ pub enum Action {
     /// shared card path used by the shell, without typing hundreds of
     /// deterministic key events into the visual harness.
     SeedLongNotes(usize),
+    /// Merge changes Ada and her agent made into the long note
+    /// [`Action::SeedLongNotes`] put in the `idx`-th group, as their replicas
+    /// send them: the note's History then lists who did what, and when.
+    SeedNoteHistory(usize),
     /// Resize every window in the active strip to `permille` of the
     /// display's usable width — what dragging the resize handles gets
     /// you.
@@ -914,6 +918,67 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: collaboration journey cannot label a frame 'Ada in Files' unless Files was focused"
         ),
         _ => {}
+    }
+}
+
+/// `Action::SeedNoteHistory`: an afternoon of work on the long note by Ada
+/// and the agent working for her, merged as their replicas send it.
+fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
+    let target = {
+        let chrome = driver.chrome();
+        let tree = chrome.tree();
+        tree.desktop.active_workspace().and_then(|workspace| {
+            let strip = workspace.strips.first()?;
+            let group = strip.window_groups.get(group_idx)?;
+            Some((workspace.room.to_string(), group.active_tab))
+        })
+    };
+    let Some((room, tab)) = target else {
+        eprintln!("scenario: no window to seed History in");
+        return;
+    };
+    // The agent writes as its own device key, which the session verified as
+    // delegated by Ada: its changes read as the agent's, for Ada.
+    let agent_device = [0x5a_u8; 32];
+    ui::history_source::set_room_agents(
+        &room,
+        vec![ui::history_source::RosterAgent {
+            device: agent_device,
+            person: [0xad_u8; 32],
+            person_name: "Ada".into(),
+            agent_id: "research".into(),
+            label: "Research".into(),
+            color: [0x8b, 0x7c, 0xf6],
+        }],
+    );
+    let now = ui::time::wall()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
+    let edits = [
+        notes::scenario::PeerEdit {
+            actor: b"Ada",
+            purpose: "Added the open questions",
+            paragraph: "Open questions: who owns the capture budget, and when do we review it?",
+            at: now.saturating_sub(3 * 3600),
+        },
+        notes::scenario::PeerEdit {
+            actor: b"Ada",
+            purpose: "Added the next steps",
+            paragraph: "Next steps: draft the review, then share it with the team on Thursday.",
+            at: now.saturating_sub(3 * 3600 - 240),
+        },
+        notes::scenario::PeerEdit {
+            actor: &agent_device,
+            purpose: "Summarised the note",
+            paragraph: "Summary: the capture continues past the display; two questions remain open.",
+            at: now.saturating_sub(25 * 60),
+        },
+    ];
+    let inputs = driver.chrome().hosted_inputs().clone();
+    match inputs.merge_note_edits(&room, tab, &edits) {
+        Ok(merged) if merged == edits.len() => {}
+        Ok(merged) => eprintln!("scenario: only {merged} of the note's changes merged"),
+        Err(error) => eprintln!("scenario: the note's history was not seeded: {error}"),
     }
 }
 
@@ -1734,6 +1799,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 }
             }
         }
+        Action::SeedNoteHistory(group_idx) => seed_note_history(driver, *group_idx),
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
                 let mut tree = st.tree_mut();
@@ -3735,6 +3801,44 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::MouseWheel { dx: 10.0, dy: 0.0 },
                 Action::Wait(24),
                 Action::Snapshot("02-back-to-start"),
+            ],
+        },
+        Scenario {
+            name: "notes_search_in_place",
+            description: "Search in the window bar: the control after the title expands into a field, the long note highlights every match with n of m, and Enter steps on.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::Relayout,
+                Action::Snapshot("00-control-at-rest"),
+                Action::ClickNamed("window-search-open"),
+                Action::Wait(24),
+                Action::Type("capture 1"),
+                Action::Wait(8),
+                Action::Snapshot("01-search-in-place"),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Key(Key::Named(NamedKey::Enter)),
+                Action::Wait(8),
+                Action::Snapshot("02-third-match"),
+            ],
+        },
+        Scenario {
+            name: "notes_history_panel",
+            description: "History as a side panel of the Notes window: changes by Ada and her agent grouped by session, filtered by person, and one previewed in place, read-only, with Restore and Restore just this change.",
+            actions: vec![
+                Action::SeedLongNotes(0),
+                Action::Wait(2),
+                Action::SeedNoteHistory(0),
+                Action::Wait(4),
+                Action::Relayout,
+                Action::ClickNamed("window-history"),
+                Action::Wait(30),
+                Action::Snapshot("01-history-panel"),
+                // Ada's latest change, in her session's band: its version
+                // shows in place of the note, read-only.
+                Action::ClickAt(Point::new(1400.0, 332.0)),
+                Action::Wait(30),
+                Action::Snapshot("02-entry-preview"),
             ],
         },
         Scenario {
