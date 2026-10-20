@@ -2243,6 +2243,7 @@ impl ChatApp {
         } = paint;
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = ButtonFace::height(ControlSize::Regular, theme);
+        self.resource_navigation.shown(&m.id);
         for (open, hit) in [
             (false, Hit::CopyResourceLink(m.id.clone())),
             (true, Hit::OpenResourceLink(m.id.clone())),
