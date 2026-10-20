@@ -72,8 +72,11 @@ view board(b: Board) {
     }
 }
 
-/// A board not pointed at anything yet. A scenario reaches only this package's roots, so the
-/// notes, todos and chats it would show are attached by the person.
-scenario "a new board" {
-    root Board
+/// A board over this morning's list, notebook and chats. Each app's own first scenario fills
+/// what the board attaches.
+scenario "a morning board" {
+    let b = root Board
+    b.todos = .some(root todo.TodoList)
+    b.notebook = .some(root notes.Notebook)
+    b.chats = .some(root chat.Chat)
 }

@@ -342,18 +342,31 @@ impl Checker<'_> {
             self.err("E094", span, "`root T` names the workspace's root resource, which only a scenario reaches; elsewhere take the resource as a parameter");
             return Ex::error();
         }
-        let named = match &t.kind {
-            ast::TypeExprKind::Named(path) if path.len() == 1 => path.first(),
+        let info = match &t.kind {
+            ast::TypeExprKind::Named(path) => match path.as_slice() {
+                [name] => env
+                    .own_type(&name.name)
+                    .filter(|info| env.roots.contains(&info.key)),
+                // `root notes.Notebook`: an imported package's root, which a scenario may fill
+                // through that package's actions (a board's scenario attaches its apps).
+                [alias, name] => env.find_import(&alias.name).and_then(|import| {
+                    env.types.iter().find(|info| {
+                        info.key.app == import.app
+                            && info.key.name == name.name
+                            && import.roots.contains(&info.id)
+                    })
+                }),
+                _ => None,
+            },
             _ => None,
         };
-        let info = named
-            .and_then(|n| env.own_type(&n.name))
-            .filter(|info| env.roots.contains(&info.key));
         let Some(info) = info else {
             self.err(
                 "E094",
                 t.span,
-                format!("`root` takes a root type of this package; {roots}"),
+                format!(
+                    "`root` takes a root type of this package or of one it uses (`root alias.T`); {roots}"
+                ),
             );
             return Ex::error();
         };
