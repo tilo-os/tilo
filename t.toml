@@ -2231,6 +2231,9 @@ name = "visual-baselines"
 on = ["dispatch"]
 run = "bash tools/ci/visual-baselines.sh"
 requires = ["arch=x86_64"]
+# It renders the goldens the `goldens` checks render, all at once, so it needs
+# at least what they do.
+requirement = { cores = 16, memory = "48GiB" }
 writable_sources = true
 git = true
 cache = false
