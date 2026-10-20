@@ -834,9 +834,9 @@ impl Window {
     }
 
     /// Header buttons for `actions`, with the header's own controls (`controls`: sort, search)
-    /// placed as native headers place them: the primary action as the Primary button with its
-    /// label, the others with an icon as icon buttons, then the controls, then a More menu of the
-    /// actions with no icon to stand for them.
+    /// placed as native headers place them: the controls first, then the actions with an icon as
+    /// icon buttons, a More menu of those without one, and the primary action last as the
+    /// labelled Primary button, next to History.
     fn action_buttons(
         &self,
         actions: &[RowAction],
@@ -860,15 +860,19 @@ impl Window {
             };
             Box::new(button.on_view(move || requests.borrow_mut().push(request.clone())))
         };
-        let (iconic, labelled): (Vec<_>, Vec<_>) = actions
+        let (primary, others): (Vec<_>, Vec<_>) = actions
             .iter()
             .enumerate()
-            .partition(|(_, action)| action.primary || action.icon.is_some());
-        let mut buttons: Vec<Element> = iconic
+            .partition(|(_, action)| action.primary);
+        let (iconic, labelled): (Vec<_>, Vec<_>) = others
             .into_iter()
-            .map(|(index, action)| button(index, action))
-            .collect();
-        buttons.extend(controls);
+            .partition(|(_, action)| action.icon.is_some());
+        let mut buttons: Vec<Element> = controls;
+        buttons.extend(
+            iconic
+                .into_iter()
+                .map(|(index, action)| button(index, action)),
+        );
         if !labelled.is_empty() {
             let items = labelled
                 .into_iter()
@@ -891,6 +895,11 @@ impl Window {
                     .with_menu(items),
             ));
         }
+        buttons.extend(
+            primary
+                .into_iter()
+                .map(|(index, action)| button(index, action)),
+        );
         buttons
     }
 
