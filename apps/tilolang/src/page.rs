@@ -47,7 +47,10 @@ use crate::reconcile::{EventSink, Reconciler, UiEvent};
 /// Where the window is.
 enum Mode {
     Home,
-    Open { view: Box<ViewInstance> },
+    Open {
+        app: String,
+        view: Box<ViewInstance>,
+    },
 }
 
 /// A navigation the person asked for.
@@ -96,6 +99,10 @@ pub struct TilolangPage {
     last_size: Option<(f32, f32)>,
     /// Whether the first frame built the host.
     started: bool,
+    /// The packages under development (`tilolang run`), loaded in place of the built-in ones,
+    /// and the version of them the host runs.
+    dev: Option<Rc<RefCell<crate::dev::DevPackages>>>,
+    dev_generation: u64,
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -154,7 +161,18 @@ impl TilolangPage {
             rem: 16.0,
             last_size: None,
             started: false,
+            dev: None,
+            dev_generation: 0,
         }
+    }
+
+    /// The window of `tilolang run`: it runs the packages under development instead of the
+    /// built-in ones, opens the last of them, and follows each new build of their sources.
+    #[must_use]
+    pub fn developing(me: String, dev: Rc<RefCell<crate::dev::DevPackages>>) -> Self {
+        let mut page = Self::new(me);
+        page.dev = Some(dev);
+        page
     }
 
     /// The host over the room record, built (with every embedded package) the first time the
@@ -182,9 +200,11 @@ impl TilolangPage {
                 return Self::failed_host(doc, &message);
             }
         };
-        for package in EMBEDDED {
-            if let Err(error) = host.load_builtin(package.source, package.ids) {
-                tracing::error!(package = package.dir, %error, "a built-in package did not load");
+        if self.dev.is_none() {
+            for package in EMBEDDED {
+                if let Err(error) = host.load_builtin(package.source, package.ids) {
+                    tracing::error!(package = package.dir, %error, "a built-in package did not load");
+                }
             }
         }
         *self.host.borrow_mut() = Some(host.clone());
@@ -206,6 +226,91 @@ impl TilolangPage {
 
     fn current_host(&self) -> Option<Host> {
         self.host.borrow().clone()
+    }
+
+    /// Run the newest build of the packages under development: load it into the host (the room
+    /// keeps its state) and open the open app again, or the package being developed the first
+    /// time. A build with errors keeps the last good one running and says so.
+    fn follow_dev(&mut self, host: &Host) {
+        let Some(dev) = self.dev.clone() else {
+            return;
+        };
+        let (generation, error, compiled, main) = {
+            let dev = dev.borrow();
+            (
+                dev.generation(),
+                dev.error().is_some(),
+                dev.compiled().to_vec(),
+                dev.main_app(),
+            )
+        };
+        let shows_error = self.notice.as_deref() == Some(t("tilolang-dev-errors").as_str());
+        if error != shows_error {
+            self.notice = error.then(|| t("tilolang-dev-errors"));
+            self.rebuild_chrome();
+        }
+        if generation == self.dev_generation {
+            return;
+        }
+        let first = self.dev_generation == 0;
+        self.dev_generation = generation;
+        for package in &compiled {
+            if let Err(error) = host.load_compiled(package) {
+                tracing::error!(app = package.meta.app, %error, "a package under development did not load");
+            }
+        }
+        let open = match &self.mode {
+            Mode::Open { app, .. } => Some(app.clone()),
+            Mode::Home if first => main,
+            Mode::Home => None,
+        };
+        match open {
+            // The views of the old version still run its code: open the app again.
+            Some(app) => self.open(&app),
+            None => self.show_home(),
+        }
+    }
+
+    /// The view tree the window shows, when an app is open.
+    #[cfg(test)]
+    pub(crate) fn shown(&self) -> Option<&UiNode> {
+        self.body_tree.as_ref()
+    }
+
+    /// The app the window shows.
+    #[cfg(test)]
+    pub(crate) fn open_app(&self) -> Option<&str> {
+        match &self.mode {
+            Mode::Open { app, .. } => Some(app),
+            Mode::Home => None,
+        }
+    }
+
+    /// What the window tells the person under the view, when anything.
+    #[cfg(test)]
+    pub(crate) fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// Report what a person did to the view, as its controls do.
+    #[cfg(test)]
+    pub(crate) fn act(&self, event: UiEvent) {
+        self.events.borrow_mut().push(event);
+    }
+
+    /// The door answered the oldest invocation handed over: the queued action is the record's
+    /// now, or it was refused with `error`.
+    pub(crate) fn door_answered(&mut self, error: Option<String>) {
+        let Some(ticket) = self.in_flight.pop_front() else {
+            return;
+        };
+        if let Some(host) = self.current_host() {
+            let _ = host.store().take_ticket(ticket);
+        }
+        if let Some(error) = error {
+            self.notice = Some(error);
+            self.rebuild_chrome();
+        }
     }
 
     // ----- body, header and chrome ---------------------------------------------------------
@@ -411,6 +516,7 @@ impl TilolangPage {
             Ok(view) => {
                 let tree = view.tree().clone();
                 self.mode = Mode::Open {
+                    app: app.to_owned(),
                     view: Box::new(view),
                 };
                 self.class = None;
@@ -716,17 +822,8 @@ impl ui::widget::controls::ActionControls for TilolangPage {
     }
 
     fn on_control_invocation_result(&mut self, _address: &ActionAddress, result: &ControlResult) {
-        let Some(ticket) = self.in_flight.pop_front() else {
-            return;
-        };
-        if let Some(host) = self.current_host() {
-            // Answered, one way or the other: the queued action is the door's now, or dropped.
-            let _ = host.store().take_ticket(ticket);
-        }
-        if let Err(error) = result {
-            self.notice = Some(error.to_string());
-            self.rebuild_chrome();
-        }
+        // Answered, one way or the other: the queued action is the door's now, or dropped.
+        self.door_answered(result.as_ref().err().map(ToString::to_string));
     }
 }
 
@@ -770,6 +867,7 @@ impl Widget for TilolangPage {
             self.show_home();
             self.rebuild_chrome();
         }
+        self.follow_dev(&host);
         if host.sync_from(doc) {
             self.refresh_bound();
         }
@@ -942,17 +1040,26 @@ mod tests {
     }
 
     fn first_text(node: &UiNode) -> Option<String> {
-        if node.kind == "text" {
+        // The counter shows its value as a heading.
+        if node.kind == "text" || node.kind == "heading" {
             return node.props.get("value").map(crate::reconcile::display);
         }
         node.children.iter().find_map(first_text)
     }
 
+    /// The counter's `+1` button, else the first button.
     fn first_button(node: &UiNode) -> Option<String> {
-        if node.kind == "button" {
-            return Some(node.key.clone());
+        fn labelled(node: &UiNode, label: Option<&str>) -> Option<String> {
+            let matches =
+                label.is_none_or(|label| node.props.get("label") == Some(&Value::text(label)));
+            if node.kind == "button" && matches {
+                return Some(node.key.clone());
+            }
+            node.children
+                .iter()
+                .find_map(|child| labelled(child, label))
         }
-        node.children.iter().find_map(first_button)
+        labelled(node, Some("+1")).or_else(|| labelled(node, None))
     }
 
     #[test]
@@ -1008,7 +1115,7 @@ mod tests {
         let host = room.page.current_host().expect("the host started");
         // The notes are items of the notebook's collection, not resources of their own.
         let notes = |host: &Host| {
-            let (package, _, root) = host
+            let (package, _, notebook) = host
                 .records()
                 .into_iter()
                 .find(|(_, ty, _)| ty == "Notebook")
@@ -1023,7 +1130,7 @@ mod tests {
                 .expect("the notebook has notes");
             match host
                 .store()
-                .record(&root)
+                .record(&notebook)
                 .expect("the notebook reads")
                 .get(&field)
             {
