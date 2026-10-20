@@ -3017,6 +3017,8 @@ mod slot;
 pub use slot::{Slot, SlotHandle, Switch};
 mod columns;
 pub use columns::Columns;
+/// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
+pub mod arrange;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
