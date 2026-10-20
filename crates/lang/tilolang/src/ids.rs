@@ -188,7 +188,10 @@ impl IdsLock {
         }
         let moved = |name: &str, from: &str| -> Option<String> {
             let rest = name.strip_prefix(from)?;
-            (rest.is_empty() || rest.starts_with('.') || rest.starts_with('#'))
+            (rest.is_empty()
+                || rest.starts_with('.')
+                || rest.starts_with('#')
+                || rest == PRESENT_SUFFIX)
                 .then(|| rest.to_string())
         };
         let renames: Vec<(String, String)> = self
@@ -259,9 +262,19 @@ pub fn scenario_key(name: &str) -> String {
     format!("scenario \"{name}\"")
 }
 
+/// The ids-lock name (and the view name) of the hidden view that presents the action
+/// `action`'s state: a name source cannot write.
+pub fn present_key(action: &str) -> String {
+    format!("{action}{PRESENT_SUFFIX}")
+}
+
+/// What the name of an action's presentation view adds to the action's.
+pub const PRESENT_SUFFIX: &str = "~present";
+
 /// The qualified name of every declaration that gets an id: types (`Album`), fields
-/// (`Album.title`), actions, flows, views and fns (`play`), anchors (`album_page#play`) and
-/// scenarios (`scenario "a week of notes"`).
+/// (`Album.title`), actions, flows, views and fns (`play`), anchors (`album_page#play`),
+/// scenarios (`scenario "a week of notes"`), and the presentation view of an action whose label,
+/// icon or state follow its subject (`toggle_pin~present`).
 pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {
@@ -283,7 +296,12 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                     }
                 }
             }
-            Item::Action(a) => out.push(a.name.name.clone()),
+            Item::Action(a) => {
+                out.push(a.name.name.clone());
+                if a.presents_state() {
+                    out.push(present_key(&a.name.name));
+                }
+            }
             Item::Flow(f) => out.push(f.name.name.clone()),
             Item::Fn(f) => out.push(f.name.name.clone()),
             Item::View(v) => {

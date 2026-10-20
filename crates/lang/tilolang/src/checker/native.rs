@@ -676,6 +676,55 @@ impl Checker<'_> {
         n
     }
 
+    // ---- presentation -----------------------------------------------------------------------
+
+    /// The hidden view of an action whose `label:` or `icon:` is an `if`, or that declares
+    /// `on:`: a view of the subject (the action's first parameter) building one `present` node
+    /// with those props. `params` are the action's parameters, the subject first; the view reads
+    /// only the subject.
+    pub(super) fn run_present(
+        &mut self,
+        view: &Callable,
+        opts: &[ast::ActionOpt],
+        params: &[&str],
+    ) -> crate::ir::Func {
+        self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
+        let n = self.new_node("present", Ex::str(&view.id));
+        let node = Ex::local(n, Ty::View);
+        let others = params.get(1..).unwrap_or_default();
+        for opt in opts {
+            let name = opt.name.name.as_str();
+            let dynamic = name == "on" || matches!(opt.value.kind, ExprKind::If { .. });
+            if !dynamic || !matches!(name, "label" | "icon" | "on") {
+                continue;
+            }
+            if let Some(other) = mentions(&opt.value, others) {
+                let subject = params.first().copied().unwrap_or_default();
+                self.err("E090", opt.value.span, format!("`{name}:` is shown wherever the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
+                continue;
+            }
+            match name {
+                "label" => {
+                    let v = self.expr_as(&opt.value, &Ty::Text);
+                    self.prop(node.clone(), "label", v, opt.value.span);
+                }
+                "icon" => self.icon_value(n, "icon", &opt.value),
+                _ => {
+                    let v = self.expr_as(&opt.value, &Ty::Bool);
+                    self.prop(node.clone(), "on", v, opt.value.span);
+                }
+            }
+        }
+        self.emit(Stmt::Return(Some(node)));
+        let mut f = self.end(
+            crate::ir::FuncKind::View,
+            &view.name,
+            &format!("v_{}", view.id),
+        );
+        f.nparams = view.params.len();
+        f
+    }
+
     // ---- facts ----------------------------------------------------------------------------
 
     /// `"Due": d.due` in `facts { }`: a `fact` node with its `label` and `value`.
@@ -713,5 +762,49 @@ impl Checker<'_> {
             Imp::UiChild,
             vec![Ex::local(parent, Ty::View), Ex::local(n, Ty::View)],
         ));
+    }
+}
+
+/// The first of `names` an expression reads as a variable, ignoring the inside of lambdas.
+fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> {
+    let block = |b: &ast::Block| {
+        b.stmts.iter().find_map(|s| match &s.kind {
+            StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
+            StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
+            StmtKind::Assign { value, .. } => mentions(value, names),
+            StmtKind::For { iter, .. } => mentions(iter, names),
+        })
+    };
+    match &e.kind {
+        ExprKind::Ident(n) => names.iter().find(|x| **x == n).copied(),
+        ExprKind::Field { base, .. } => mentions(base, names),
+        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) => mentions(operand, names),
+        ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
+        ExprKind::Call { callee, args } => {
+            mentions(callee, names).or_else(|| args.iter().find_map(|a| mentions(&a.value, names)))
+        }
+        ExprKind::Variant { args, .. } => args
+            .as_ref()
+            .and_then(|args| args.iter().find_map(|a| mentions(&a.value, names))),
+        ExprKind::Tuple(items) | ExprKind::List(items) => {
+            items.iter().find_map(|x| mentions(x, names))
+        }
+        ExprKind::If { cond, then, els } => mentions(cond, names)
+            .or_else(|| block(then))
+            .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
+        ExprKind::Block(b) => block(b),
+        ExprKind::Match { scrutinee, arms } => mentions(scrutinee, names)
+            .or_else(|| arms.iter().find_map(|a| mentions(&a.body, names))),
+        ExprKind::Str(parts) => parts.iter().find_map(|p| match p {
+            ast::StrPart::Interp(x) => mentions(x, names),
+            ast::StrPart::Lit(_) => None,
+        }),
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Length(..)
+        | ExprKind::Bool(_)
+        | ExprKind::Ref(_)
+        | ExprKind::Lambda { .. }
+        | ExprKind::Root(_) => None,
     }
 }

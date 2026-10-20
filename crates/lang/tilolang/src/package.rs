@@ -369,6 +369,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     icon: None,
                     role: None,
                     scenario: true,
+                    present: None,
                 });
                 meta.scenarios.push(ScenarioMeta {
                     id: c.id.clone(),
@@ -440,7 +441,25 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     icon: c.present.icon.clone(),
                     role: c.present.role.clone(),
                     scenario: false,
+                    present: c.present.view.clone(),
                 });
+                if let Some(v) = env.callables.iter().find(|v| {
+                    v.own && v.kind == CKind::View && Some(&v.id) == c.present.view.as_ref()
+                }) {
+                    meta.views.push(ViewMeta {
+                        id: v.id.clone(),
+                        name: v.name.clone(),
+                        doc: String::new(),
+                        params: params_meta(&v.params, app),
+                        anchors: Vec::new(),
+                        reaches: v
+                            .func
+                            .and_then(|f| fx.reaches.get(f).cloned())
+                            .unwrap_or_default(),
+                        state: Vec::new(),
+                        presents: Some(c.id.clone()),
+                    });
+                }
             }
             Item::Flow(f) => {
                 let Some(c) = env.own_callable(&f.name.name) else {
@@ -492,6 +511,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                             ty: s.ty.meta_text(app),
                         })
                         .collect(),
+                    presents: None,
                 });
             }
             Item::Fn(f) => {

@@ -140,6 +140,9 @@ pub struct Presentation {
     pub icon: Option<String>,
     /// `primary` or `destructive`.
     pub role: Option<String>,
+    /// The id of the hidden view that presents the action's state for its subject, when its
+    /// `label:` or `icon:` is an `if`, or it declares `on:`.
+    pub view: Option<String>,
 }
 
 /// `new_note` as "New note".
@@ -175,6 +178,11 @@ pub fn variant_label(name: &str, doc: &str) -> String {
 }
 
 impl Callable {
+    /// A callable source never names: a scenario's action or an action's presentation view.
+    pub fn hidden(&self) -> bool {
+        self.scenario || self.name.ends_with(crate::ids::PRESENT_SUFFIX)
+    }
+
     pub fn signature(&self, own_app: &str) -> String {
         let params: Vec<String> = self
             .params
@@ -395,6 +403,7 @@ impl Env {
                 },
                 icon: a.icon.clone(),
                 role: a.role.clone(),
+                view: a.present.clone(),
             };
             add(
                 CKind::Action,
@@ -421,7 +430,7 @@ impl Env {
                 present,
             );
         }
-        for v in &meta.views {
+        for v in meta.offered_views() {
             add(
                 CKind::View,
                 &v.name,
@@ -1127,6 +1136,8 @@ impl Resolver<'_> {
 
     fn callables(&mut self, module: &ast::Module, lock: &IdsLock) {
         let mut func = 0usize;
+        // The presentation views of actions, which get functions after every declared one.
+        let mut presents: Vec<(String, ParamInfo)> = Vec::new();
         for item in &module.items {
             if let Item::Scenario(sc) = item {
                 let index = func;
@@ -1189,7 +1200,20 @@ impl Resolver<'_> {
                 (_, None) => Ty::Unit,
             };
             let present = match item {
-                Item::Action(a) => self.presentation(a),
+                Item::Action(a) => {
+                    let mut p = self.presentation(a);
+                    if a.presents_state() {
+                        match params.first() {
+                            Some(subject) => {
+                                let key = crate::ids::present_key(&name.name);
+                                p.view = Some(id_of(lock, &key));
+                                presents.push((key, subject.clone()));
+                            }
+                            None => self.err("E090", name.span, format!("`{}` presents a state of its subject, its first parameter, and has none; take the resource first, or write `label:` and `icon:` as plain values", name.name)),
+                        }
+                    }
+                    p
+                }
                 Item::Flow(f) => Presentation {
                     label: action_label(&f.name.name, &f.doc.join("\n")),
                     ..Presentation::default()
@@ -1213,6 +1237,22 @@ impl Resolver<'_> {
                 self.anchors(v, lock);
                 self.states(v, lock);
             }
+        }
+        for (key, subject) in presents {
+            self.env.callables.push(Callable {
+                kind: CKind::View,
+                id: id_of(lock, &key),
+                name: key,
+                app: self.env.app.clone(),
+                own: true,
+                func: Some(func),
+                params: vec![subject],
+                result: Ty::View,
+                class: None,
+                present: Presentation::default(),
+                scenario: false,
+            });
+            func += 1;
         }
         self.one_primary(module);
     }
@@ -1256,11 +1296,14 @@ impl Resolver<'_> {
     }
 
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`.
+    /// A `label:` or `icon:` written as an `if` follows the subject; the static one is then its
+    /// `else` branch's value (or its first), what a menu shows without evaluating anything.
     fn presentation(&mut self, a: &ast::ActionDecl) -> Presentation {
         let mut out = Presentation {
             label: action_label(&a.name.name, &a.doc.join("\n")),
             icon: None,
             role: a.role.map(|(r, _)| r.word().to_string()),
+            view: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1274,29 +1317,34 @@ impl Resolver<'_> {
                 ("icon", ExprKind::Variant { name: icon, args: None }) => {
                     out.icon = self.icon(icon);
                 }
+                ("icon", ExprKind::If { .. }) => {
+                    if let Some(icon) = fallback_icon(&opt.value) {
+                        out.icon = prims::icon(&icon.name).map(str::to_string);
+                    }
+                }
                 ("icon", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`icon:` takes an icon written with a dot, such as `icon: .plus`",
+                    "`icon:` takes an icon written with a dot, such as `icon: .plus`, or an `if` over the subject: `icon: if n.pinned { .pin_off } else { .pin }`",
                 ),
-                ("label", ExprKind::Str(parts)) if parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))) => {
-                    out.label = parts
-                        .iter()
-                        .map(|p| match p {
-                            ast::StrPart::Lit(t) => t.as_str(),
-                            ast::StrPart::Interp(_) => "",
-                        })
-                        .collect();
+                ("label", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
+                    out.label = plain_text(&opt.value).unwrap_or_default();
+                }
+                ("label", ExprKind::If { .. }) => {
+                    if let Some(label) = fallback_label(&opt.value) {
+                        out.label = label;
+                    }
                 }
                 ("label", _) => self.err(
                     "E090",
                     opt.value.span,
-                    "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`",
+                    "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`, or an `if` over the subject: `label: if n.pinned { \"Unpin\" } else { \"Pin\" }`",
                 ),
+                ("on", _) => {}
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:` and `label:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:` and `on:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }
@@ -1541,6 +1589,57 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
         own_enums,
     };
     r.resolve_type(te, false)
+}
+
+/// The text of a string literal without interpolation.
+fn plain_text(e: &Expr) -> Option<String> {
+    let ExprKind::Str(parts) = &e.kind else {
+        return None;
+    };
+    parts
+        .iter()
+        .map(|p| match p {
+            ast::StrPart::Lit(t) => Some(t.as_str()),
+            ast::StrPart::Interp(_) => None,
+        })
+        .collect()
+}
+
+/// The one expression of a block written as `{ e }`.
+fn block_expr(b: &ast::Block) -> Option<&Expr> {
+    match b.stmts.as_slice() {
+        [
+            ast::Stmt {
+                kind: ast::StmtKind::Expr(e),
+                ..
+            },
+        ] => Some(e),
+        _ => None,
+    }
+}
+
+/// What a dynamic option shows without evaluation: the value of its `else` branch, or of its
+/// first branch that has one.
+fn fallback<T>(e: &Expr, leaf: &impl Fn(&Expr) -> Option<T>) -> Option<T> {
+    match &e.kind {
+        ExprKind::If { then, els, .. } => els
+            .as_deref()
+            .and_then(|x| fallback(x, leaf))
+            .or_else(|| block_expr(then).and_then(|x| fallback(x, leaf))),
+        ExprKind::Block(b) => block_expr(b).and_then(|x| fallback(x, leaf)),
+        _ => leaf(e),
+    }
+}
+
+fn fallback_label(e: &Expr) -> Option<String> {
+    fallback(e, &plain_text)
+}
+
+fn fallback_icon(e: &Expr) -> Option<ast::Ident> {
+    fallback(e, &|x: &Expr| match &x.kind {
+        ExprKind::Variant { name, args: None } => Some(name.clone()),
+        _ => None,
+    })
 }
 
 /// Names the language gives types of its own; a package cannot declare them.

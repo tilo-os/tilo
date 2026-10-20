@@ -141,7 +141,7 @@ pub fn catalogue(apps: &[&PackageMeta]) -> Vec<Signature> {
                 ),
             );
         }
-        for v in &m.views {
+        for v in m.offered_views() {
             push(
                 SignatureKind::View,
                 &v.name,

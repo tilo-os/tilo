@@ -207,6 +207,18 @@ pub struct ActionDecl {
     pub span: Span,
 }
 
+impl ActionDecl {
+    /// Whether the action's presentation follows its subject: a `label:` or `icon:` written
+    /// as an `if`, or an `on:` state. It is then lowered to a hidden view of the subject.
+    pub fn presents_state(&self) -> bool {
+        self.opts.iter().any(|o| match o.name.name.as_str() {
+            "on" => true,
+            "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
+            _ => false,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FlowDecl {
     pub node: NodeId,
