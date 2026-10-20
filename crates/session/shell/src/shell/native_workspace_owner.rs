@@ -3,11 +3,14 @@
 //! The owner itself is `tilo_joined_room`'s; this host keeps its record
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
-//! resulting file-system capabilities under the same writer lock.
+//! resulting file-system capabilities under the same writer lock, without
+//! holding the tree across the state file's I/O.
 #[cfg(test)]
 mod frame_loop_tests;
 mod local_filesystem_consents;
 pub(crate) mod publication;
+#[cfg(test)]
+mod publication_lock_tests;
 #[cfg(test)]
 mod publication_tests;
 pub(crate) mod store;
@@ -63,9 +66,22 @@ impl Store for TreeStore {
         self.tree.read().room_of(slot)
     }
 
+    /// Publish `next` with `change` applied to the tree, and install both.
+    ///
+    /// The tree is never held across the state file's I/O. The writer is
+    /// taken first and kept until the record is installed, so no other
+    /// write of the file can land between this publication's sequence and
+    /// its install; the tree is held only to copy it and take that
+    /// sequence, then again to install. Between the two the frame loop,
+    /// the network and every other reader and writer of the tree go on: a
+    /// data sync on a loaded disk takes seconds. What they change meanwhile
+    /// stays in the tree (the record and the room it projects are applied
+    /// to the live tree, not swapped in from the copy), and a save they
+    /// queue meanwhile, which still carries the old record, is followed by
+    /// a save of the installed tree (see [`store::NativeStateRuntime::begin`]).
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the state writer stays locked from the slot check through publication and export"
+        reason = "the tree is held through taking the sequence, so a later save of it carries a later one"
     )]
     fn publish(
         &self,
@@ -75,25 +91,121 @@ impl Store for TreeStore {
     ) -> Result<(), String> {
         #[cfg(test)]
         PUBLICATIONS_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
-        let mut tree = self.tree.write();
-        let path = tree
-            .persist_path
-            .clone()
-            .ok_or("native owner state-file path removed")?;
-        // Everything but the documents: encoded once below, and installed
-        // with the live documents moved into it only once it is published.
-        let mut candidate = tree.clone_without_documents();
-        let bound = if let Change::Room {
-            room,
-            bind: Some(target),
-            ..
-        } = change
-        {
-            if tree.room_of(target.workspace) != Some(target.prior_room) {
+        let mut turn = self.runtime.begin();
+        let (path, mut candidate, sequence) = {
+            let mut tree = self.tree.write();
+            if !tree.native_runtime.is(&self.runtime) {
+                return Err("native state writer replaced under its owner".into());
+            }
+            let path = tree
+                .persist_path
+                .clone()
+                .ok_or("native owner state-file path removed")?;
+            if let Change::Room {
+                bind: Some(target), ..
+            } = change
+                && tree.room_of(target.workspace) != Some(target.prior_room)
+            {
                 return Err(
                     "enrollment target or pending generation changed before completion".into(),
                 );
             }
+            // Everything but the documents: encoded once below.
+            let candidate = tree.clone_without_documents();
+            // Taken while the tree is held, so any later save of it carries
+            // a later sequence; it waits for the writer this turn holds.
+            let sequence = turn.start();
+            (path, candidate, sequence)
+        };
+        let prepared = Self::prepare(&mut candidate, next, &change);
+        let published = prepared.and_then(|(base, bound)| {
+            // The encode is bounded: an oversized candidate is refused here.
+            let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
+            // Taken before the writer accepts the record: from then until
+            // this export is published, the policy observers hold is the
+            // previous record's, and they must know its replacement is on
+            // the way rather than judge it withdrawn.
+            let export = matches!(change, Change::Room { .. })
+                .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
+            turn.write(&path, base, &candidate.native_authority, &encoded, sequence)
+                .map_err(|e| e.to_string())?;
+            Ok((bound, export))
+        });
+        let mut tree = self.tree.write();
+        let (bound, export) = match published {
+            Ok(published) => published,
+            Err(error) => {
+                if turn.finish() {
+                    tree.queue_save();
+                }
+                drop(tree);
+                drop(turn);
+                return Err(error);
+            }
+        };
+        // The record the file now holds becomes the accepted one in the
+        // same write that installs it, so nothing that reads the tree sees
+        // one without the other.
+        turn.accept();
+        install();
+        if bound
+            && let Change::Room {
+                room,
+                bind: Some(target),
+                ..
+            } = change
+        {
+            tree.set_room_in_memory(target.workspace, room);
+        }
+        tree.native_authority = next.clone();
+        if let Change::Room { room, peer, .. } = change {
+            tree.project_native_room(room, peer);
+        }
+        if bound {
+            // The binding changes the room the tree document records.
+            tree.seed_doc_from_cache();
+        }
+        let follow_up = turn.finish();
+        match change {
+            Change::Pending => tree.native_runtime.document_log().cut(&tree.doc),
+            Change::Room { .. } => {
+                // Only the acknowledged final admitted projection reaches
+                // authority exports.
+                tree.export_fs_capabilities();
+                if let Some(export) = export {
+                    export.submit();
+                }
+            }
+        }
+        if follow_up {
+            tree.queue_save();
+        }
+        drop(tree);
+        drop(turn);
+        if matches!(change, Change::Pending) {
+            persist::write_document(&self.runtime, &path);
+        }
+        Ok(())
+    }
+}
+
+impl TreeStore {
+    /// Apply `next` and `change` to `candidate`, a copy of the tree, as the
+    /// state file will hold them; answer the digest of the record the file
+    /// holds now and whether an enrolled slot was bound.
+    fn prepare(
+        candidate: &mut super::state::WorkspaceTree,
+        next: &NativeAuthorityStorage,
+        change: &Change<'_>,
+    ) -> Result<([u8; 32], bool), String> {
+        // What the file must still hold: the record this tree last installed.
+        let base = store::digest(&candidate.native_authority).map_err(|e| e.to_string())?;
+        let bound = if let Change::Room {
+            room,
+            bind: Some(target),
+            ..
+        } = *change
+        {
             // This pure helper cannot reach any persistence/export/publisher channel.
             candidate.set_room_in_memory(target.workspace, room);
             if candidate.room_of(target.workspace) != Some(room) {
@@ -104,52 +216,10 @@ impl Store for TreeStore {
             false
         };
         candidate.native_authority = next.clone();
-        if let Change::Room { room, peer, .. } = change {
+        if let Change::Room { room, peer, .. } = *change {
             candidate.project_native_room(room, peer);
         }
-        // The encode is bounded: an oversized candidate is refused here.
-        let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
-        // Taken before the writer accepts the record: from then until this
-        // export is published, the policy observers hold is the previous
-        // record's, and they must know its replacement is on the way rather
-        // than judge it withdrawn.
-        let export = matches!(change, Change::Room { .. })
-            .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
-        // What the file must still hold: the record this tree last installed.
-        let base = store::digest(&tree.native_authority).map_err(|e| e.to_string())?;
-        let sequence = tree.native_runtime.next_sequence();
-        let published = tree
-            .native_runtime
-            .publish(&path, base, &candidate.native_authority, &encoded, sequence)
-            .map_err(|e| e.to_string())?;
-        // The tree is held from the sequence through here, so no later
-        // snapshot of it can have reached the file first.
-        if published == store::Publication::Superseded {
-            return Err("native owner publication was superseded".into());
-        }
-        candidate.adopt_documents_of(&mut tree);
-        if bound {
-            // The binding mirrored the room into the candidate's placeholder
-            // document; record it in the live one.
-            candidate.seed_doc_from_cache();
-        }
-        match change {
-            Change::Pending => {
-                install();
-                *tree = candidate;
-                persist::save_document(&tree, &path);
-            }
-            Change::Room { .. } => {
-                install();
-                *tree = candidate;
-                // Only the acknowledged final admitted projection reaches authority exports.
-                tree.export_fs_capabilities();
-                if let Some(export) = export {
-                    export.submit();
-                }
-            }
-        }
-        Ok(())
+        Ok((base, bound))
     }
 }
 

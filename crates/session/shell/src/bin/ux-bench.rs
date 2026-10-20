@@ -162,7 +162,7 @@ fn execute() -> Result<bool, String> {
         return ux_bench_support::run(&mut driver, &scenario, &out, state_snapshot, || {
             session.records.try_flush()?;
             let state_path = options.state_dir.join("state.json");
-            shell::shell::persist::save_tree_to(&session.tree.read(), &state_path)
+            shell::shell::persist::save_shared_tree_to(&session.tree, &state_path)
                 .map_err(|e| e.to_string())?;
             let reopened =
                 shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
@@ -178,7 +178,7 @@ fn execute() -> Result<bool, String> {
     session.records.try_flush()?;
     // Match the native runner's normal shutdown persistence boundary.
     let state_path = options.state_dir.join("state.json");
-    shell::shell::persist::save_tree_to(&session.tree.read(), &state_path)
+    shell::shell::persist::save_shared_tree_to(&session.tree, &state_path)
         .map_err(|e| e.to_string())?;
     let reopened = shell::shell::persist::load_tree_from(&state_path).map_err(|e| e.to_string())?;
     let expected_names: Vec<_> = session
