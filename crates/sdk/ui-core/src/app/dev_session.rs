@@ -288,20 +288,7 @@ struct DevCaretField {
 impl crate::widget::Widget for DevCaretField {
     crate::provides!(dyn crate::undo::UndoPoints);
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        _theme: &crate::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
-    ) -> taffy::NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
-        node
-    }
-
-    fn name(&self) -> &str {
-        "DevCaretField"
-    }
+    crate::testing::inert_widget_methods!(leaf_layout, name = "DevCaretField");
 
     fn is_focusable(&self) -> bool {
         true
