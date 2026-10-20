@@ -50,18 +50,33 @@ def owned_fields(pid, birth):
     return None
 
 
-def describe_children(sent):
-    states = []
+def owned_children():
+    owned = []
     for pid, birth in children():
         try:
             fields = owned_fields(pid, birth)
         except (FileNotFoundError, ProcessLookupError):
             continue
         if fields is not None:
-            signals = ','.join(action.name for action in (signal.SIGTERM, signal.SIGKILL)
-                               if (pid, birth, action) in sent) or 'none'
-            states.append(f'pid={pid} birth={birth} state={fields[0]} sent={signals}')
+            owned.append((pid, birth, fields[0]))
+    return owned
+
+
+def describe_children(sent, owned=None):
+    states = []
+    for pid, birth, state in owned_children() if owned is None else owned:
+        signals = ','.join(action.name for action in (signal.SIGTERM, signal.SIGKILL)
+                           if (pid, birth, action) in sent) or 'none'
+        states.append(f'pid={pid} birth={birth} state={state} sent={signals}')
     return '; '.join(states) or 'no visible owned children (waitpid not yet proven)'
+
+
+# How long after KILL a child that already shows as a zombie may take to be
+# reapable. A killed process reads Z as soon as its main thread exits, but
+# waitpid takes it only once every thread has, and a large renderer unmapping
+# its memory on a loaded host takes seconds for that. It is exiting, not
+# hanging, so it gets this long rather than the KILL phase's few seconds.
+EXITING_GRACE = 30
 
 
 def quiesce():
@@ -98,11 +113,14 @@ def quiesce():
                 kill_deadline = time.monotonic() + 3
                 print(f'owned browser KILL phase: {describe_children(sent)}',
                       file=sys.stderr, flush=True)
-            elif time.monotonic() >= kill_deadline:
+            elif (now := time.monotonic()) >= kill_deadline:
                 if reap():
                     return
-                raise RuntimeError('owned browser descendants did not exit; profile must remain; '
-                                   + describe_children(sent))
+                owned = owned_children()
+                exiting = owned and all(state == 'Z' for _pid, _birth, state in owned)
+                if not exiting or now >= kill_deadline - 3 + EXITING_GRACE:
+                    raise RuntimeError('owned browser descendants did not exit; profile must remain; '
+                                       + describe_children(sent, owned))
         time.sleep(0.01)
 
 

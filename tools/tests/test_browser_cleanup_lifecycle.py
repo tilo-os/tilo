@@ -217,6 +217,31 @@ class BrowserProcessDiscovery(unittest.TestCase):
         self.assertEqual([call.args for call in send.call_args_list],
                          [(42, signal.SIGTERM), (42, signal.SIGKILL)])
 
+    def test_killed_zombie_gets_time_to_finish_exiting(self):
+        supervisor = self.supervisor()
+        with patch.object(supervisor, 'reap', side_effect=[False, False, False, False, True]), \
+                patch.object(supervisor, 'children', return_value=[(123, '456')]), \
+                patch.object(supervisor, 'owned_fields', return_value=['Z']), \
+                patch.object(supervisor.os, 'pidfd_open', return_value=42), \
+                patch.object(supervisor.os, 'close'), \
+                patch.object(supervisor.signal, 'pidfd_send_signal'), \
+                patch.object(supervisor.time, 'monotonic', side_effect=[0, .1, 5.5, 5.5, 8.6, 8.6]), \
+                patch.object(supervisor.time, 'sleep'):
+            supervisor.quiesce()
+
+    def test_zombie_that_never_becomes_reapable_still_fails(self):
+        supervisor = self.supervisor()
+        with patch.object(supervisor, 'reap', return_value=False), \
+                patch.object(supervisor, 'children', return_value=[(123, '456')]), \
+                patch.object(supervisor, 'owned_fields', return_value=['Z']), \
+                patch.object(supervisor.os, 'pidfd_open', return_value=42), \
+                patch.object(supervisor.os, 'close'), \
+                patch.object(supervisor.signal, 'pidfd_send_signal'), \
+                patch.object(supervisor.time, 'monotonic', side_effect=[0, .1, 5.5, 5.5, 40, 40]), \
+                patch.object(supervisor.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'pid=123 birth=456 state=Z sent=SIGTERM,SIGKILL'):
+                supervisor.quiesce()
+
     def test_adopted_children_get_kill_without_renewing_deadline(self):
         supervisor = self.supervisor()
         with patch.object(supervisor, 'reap', return_value=False), \
