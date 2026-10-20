@@ -130,6 +130,10 @@ impl Session {
         }
         stage("saving the workspace");
         persist::save_tree_to(&tree, &path)?;
+        // The room policy the native seat and every launched app are admitted
+        // against is the accepted one just saved; publish it as a save does,
+        // or nothing is admitted until the first later write.
+        crate::shell::launcher::action_authority::Export::of(&tree).publish();
         let tree = tree.shared();
         let identity_socket = root.join(IDENTITY_SOCKET);
         let channel_keys = crate::shell::channel_encryption::ChannelKeyProvider::default();
