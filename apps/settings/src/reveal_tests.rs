@@ -76,6 +76,10 @@ fn a_setting_opens_scrolled_to_its_control_with_the_keyboard_on_it() {
 /// stop retaining it: a reveal is not a permanent focus request.
 #[test]
 fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
+    fn filter_focused(widget: &dyn Widget) -> bool {
+        (widget.test_id() == Some("settings.search") && focused(widget))
+            || widget.children().into_iter().any(filter_focused)
+    }
     ui::i18n::I18nManager::init("en-US");
     let setting = settings_store::index::setting("appearance.hide_top_bar").expect("indexed");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
@@ -122,10 +126,6 @@ fn a_revealed_control_keeps_focus_across_layouts_until_the_keyboard_moves() {
         !control(app.harness().root_widget(), setting).unwrap().1,
         "layout must not return the keyboard to a previous reveal"
     );
-    fn filter_focused(widget: &dyn Widget) -> bool {
-        (widget.test_id() == Some("settings.search") && focused(widget))
-            || widget.children().into_iter().any(filter_focused)
-    }
     assert!(
         filter_focused(app.harness().root_widget()),
         "the filter keeps the keyboard"
