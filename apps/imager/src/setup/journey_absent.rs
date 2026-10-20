@@ -11,20 +11,16 @@
 //! journey's own delivery answers when no native preparation is available
 //! (`journey/prepared_media/presentation.rs`): nothing is pending, and a
 //! request to deliver is refused.
-#![allow(
-    clippy::uninhabited_references,
-    reason = "the types here are uninhabited by design: no reference to one can exist, so the empty matches are unreachable"
-)]
 
 /// The original system's files a person granted to the installer journey.
 pub mod portable_source {
     /// Never constructed without the installation.
-    pub enum OriginalSource {}
+    pub struct OriginalSource(pub(crate) std::convert::Infallible);
 
     impl OriginalSource {
         /// Whether only the original applications are carried over.
         pub fn applications_only(&self) -> bool {
-            match *self {}
+            match self.0 {}
         }
     }
 }
@@ -43,26 +39,26 @@ pub mod prepared_media {
     use crate::setup::original_admission::ReviewedOriginalImage;
 
     /// Never constructed without the installation.
-    pub enum PreparedMedia {}
+    pub struct PreparedMedia(pub(crate) std::convert::Infallible);
 
     impl PreparedMedia {
         pub fn expectation(&self) -> &PreparedSetupExpectation {
-            match *self {}
+            match self.0 {}
         }
         pub fn account_custody_protocol(&self) -> Option<u32> {
-            match *self {}
+            match self.0 {}
         }
         pub fn service_session_protocol(&self) -> Option<u32> {
-            match *self {}
+            match self.0 {}
         }
         pub fn applications_protocol(&self) -> Option<u32> {
-            match *self {}
+            match self.0 {}
         }
         pub fn home_archive_protocol(&self) -> Option<u32> {
-            match *self {}
+            match self.0 {}
         }
         pub fn install_profile_draft(&self) -> io::Result<Option<InstallProfile>> {
-            match *self {}
+            match self.0 {}
         }
         pub(crate) fn prepare_original_on_media(
             self: &Arc<Self>,
@@ -71,7 +67,7 @@ pub mod prepared_media {
             _original: &OriginalSource,
             _cancel: &AtomicBool,
         ) -> io::Result<PreparedOriginalMedia> {
-            match **self {}
+            match self.0 {}
         }
     }
 
@@ -86,7 +82,7 @@ pub mod prepared_media {
         prepared: &Arc<PreparedMedia>,
         _cancel: &AtomicBool,
     ) -> io::Result<Arc<PreparedMedia>> {
-        match **prepared {}
+        match prepared.0 {}
     }
 
     /// No native source review exists to have failed.
@@ -127,13 +123,13 @@ pub mod prepared_media {
 
     impl Delivery {
         pub fn with_artifact(artifact: Arc<PreparedMedia>) -> Self {
-            match *artifact {}
+            match artifact.0 {}
         }
         pub fn start_awaiting_offline_export_automatic(
             &mut self,
             review: Arc<offline::OfflineMediaReview>,
         ) -> Result<(), &'static str> {
-            match *review {}
+            match review.0 {}
         }
         pub fn finish_close(&mut self) -> io::Result<()> {
             Ok(())
@@ -204,7 +200,7 @@ pub mod prepared_media {
     /// The native review of a medium that carries the original files.
     pub mod offline {
         /// Never constructed without the installation.
-        pub enum OfflineMediaReview {}
+        pub struct OfflineMediaReview(pub(crate) std::convert::Infallible);
 
         impl OfflineMediaReview {
             #[cfg(target_os = "linux")]
@@ -213,7 +209,7 @@ pub mod prepared_media {
                 _artifact: &super::PreparedMedia,
                 _request: &mut crate::write::WriteRequest,
             ) -> std::io::Result<()> {
-                match *self {}
+                match self.0 {}
             }
         }
     }
