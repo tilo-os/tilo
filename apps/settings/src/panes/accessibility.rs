@@ -15,12 +15,9 @@
 
 use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
-use tilo_accessibility_settings::{
-    ColorFilter, OnScreenKeyboard, ScreenReaderVoice, SwitchKeyPair,
-};
+use tilo_accessibility_settings::ScreenReaderVoice;
 
 use crate::accessibility_settings::AccessibilitySettings;
-use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
@@ -28,13 +25,12 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::appearance::{text_size_label, text_size_options};
+use crate::panes::appearance::{TEXT_SIZES, text_size_label};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
+use crate::row::SettingRow;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
-    El, Item, SettingsSection, error_row, note, rows, section, setting_row, value_row,
-};
+use crate::widgets::{Item, SettingsSection, error_row, note, rows, section, value_row};
 
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -92,52 +88,8 @@ fn labels<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'stat
     table.iter().map(|(label, _)| *label)
 }
 
-/// The colour filter a shown label stands for.
-fn colour_filter(label: &str) -> Result<ColorFilter, String> {
-    ColorFilter::from_label(label).ok_or_else(|| format!("`{label}` is not a colour filter"))
-}
-
-/// The magnifier zoom a shown label stands for.
-fn magnifier_zoom(label: &str) -> Result<u8, String> {
-    magnifier::zoom_from_label(label).ok_or_else(|| format!("`{label}` is not a magnifier zoom"))
-}
-
-/// The magnifier view a shown label stands for.
-fn magnifier_view(label: &str) -> Result<magnifier::MagnifierView, String> {
-    magnifier::MagnifierView::from_label(label)
-        .ok_or_else(|| format!("`{label}` is not a magnifier view"))
-}
-
-/// The cursor size a shown label stands for.
-fn cursor_size(label: &str) -> Result<u32, String> {
-    AccessibilitySettings::cursor_size_px(label)
-        .ok_or_else(|| format!("`{label}` is not a cursor size"))
-}
-
-/// The osk mode a shown label stands for.
-fn osk_mode(label: &str) -> Result<OnScreenKeyboard, String> {
-    OnScreenKeyboard::from_label(label)
-        .ok_or_else(|| format!("`{label}` is not an on-screen keyboard mode"))
-}
-
-/// The bounce delay a shown label stands for.
-fn bounce_delay(label: &str) -> Result<u32, String> {
-    AccessibilitySettings::bounce_delay_ms(label)
-        .ok_or_else(|| format!("`{label}` is not a bounce keys delay"))
-}
-
-/// The switch keys a shown label stands for.
-fn switch_keys(label: &str) -> Result<SwitchKeyPair, String> {
-    SwitchKeyPair::from_label(label).ok_or_else(|| format!("`{label}` is not a switch key pair"))
-}
-
-/// The switch scan a shown label stands for.
-fn switch_scan(label: &str) -> Result<u16, String> {
-    SWITCH_SCANS
-        .iter()
-        .find(|(known, _)| *known == label)
-        .map(|(_, ms)| *ms)
-        .ok_or_else(|| format!("`{label}` is not a scan interval"))
+fn values<T: Copy>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = T> {
+    table.iter().map(|(_, value)| *value)
 }
 
 /// The pointer, typing, hearing and screen-reader assists the compositor's
@@ -222,122 +174,10 @@ pub(crate) fn statuses(speech: bool) -> Vec<EffectStatus> {
     statuses
 }
 
-/// What the pane's controls show: the stored preferences, as labels.
-struct Shown {
-    high_contrast: LocalState<bool>,
-    reduce_motion: LocalState<bool>,
-    text_size: LocalState<String>,
-    color_filter: LocalState<String>,
-    magnifier: LocalState<String>,
-    magnifier_view: LocalState<String>,
-    mouse_keys: LocalState<bool>,
-    large_cursor: LocalState<bool>,
-    cursor_size: LocalState<String>,
-    cursor_crosshair: LocalState<bool>,
-    thick_text_caret: LocalState<bool>,
-    sticky_keys: LocalState<bool>,
-    slow_keys: LocalState<bool>,
-    bounce_keys: LocalState<bool>,
-    bounce_delay: LocalState<String>,
-    bounce_alert: LocalState<bool>,
-    on_screen_keyboard: LocalState<String>,
-    switch_control: LocalState<bool>,
-    switch_keys: LocalState<String>,
-    switch_scan: LocalState<String>,
-    screen_reader: LocalState<bool>,
-    speech_rate: LocalState<String>,
-    speech_voice: LocalState<String>,
-    dictation_language: LocalState<String>,
-    dictation_literal: LocalState<bool>,
-    visual_alerts: LocalState<bool>,
-}
-
-impl Shown {
-    fn of(appearance: &AppearancePrefs, access: &AccessibilitySettings) -> Self {
-        let flag = || LocalState::new(false);
-        let text = || LocalState::new(String::new());
-        let shown = Self {
-            high_contrast: flag(),
-            reduce_motion: flag(),
-            text_size: text(),
-            color_filter: text(),
-            magnifier: text(),
-            magnifier_view: text(),
-            mouse_keys: flag(),
-            large_cursor: flag(),
-            cursor_size: text(),
-            cursor_crosshair: flag(),
-            thick_text_caret: flag(),
-            sticky_keys: flag(),
-            slow_keys: flag(),
-            bounce_keys: flag(),
-            bounce_delay: text(),
-            bounce_alert: flag(),
-            on_screen_keyboard: text(),
-            switch_control: flag(),
-            switch_keys: text(),
-            switch_scan: text(),
-            screen_reader: flag(),
-            speech_rate: text(),
-            speech_voice: text(),
-            dictation_language: text(),
-            dictation_literal: flag(),
-            visual_alerts: flag(),
-        };
-        shown.show_appearance(appearance);
-        shown.show_access(access);
-        shown
-    }
-
-    fn show_appearance(&self, appearance: &AppearancePrefs) {
-        self.high_contrast.set(appearance.high_contrast);
-        self.reduce_motion.set(appearance.reduce_motion);
-        self.text_size.set(text_size_label(appearance.text_scale));
-    }
-
-    fn show_access(&self, access: &AccessibilitySettings) {
-        self.color_filter
-            .set(access.color_filter.label().to_owned());
-        self.magnifier
-            .set(magnifier::zoom_label(access.magnifier_zoom).to_owned());
-        self.magnifier_view
-            .set(access.magnifier_view.label().to_owned());
-        self.mouse_keys.set(access.mouse_keys);
-        self.large_cursor.set(access.large_cursor);
-        self.cursor_size
-            .set(AccessibilitySettings::cursor_size_label(access.cursor_size).to_owned());
-        self.cursor_crosshair.set(access.cursor_crosshair);
-        self.thick_text_caret.set(access.thick_text_caret);
-        self.sticky_keys.set(access.sticky_keys);
-        self.slow_keys.set(access.slow_keys);
-        self.bounce_keys.set(access.bounce_keys);
-        self.bounce_delay
-            .set(AccessibilitySettings::bounce_delay_label(access.bounce_keys_delay_ms).to_owned());
-        self.bounce_alert.set(access.bounce_keys_alert);
-        self.on_screen_keyboard
-            .set(access.on_screen_keyboard.label().to_owned());
-        self.switch_control.set(access.switch_control);
-        self.switch_keys
-            .set(access.switch_key_pair.label().to_owned());
-        self.switch_scan
-            .set(switch_scan_label(access.switch_scan_ms).to_owned());
-        self.screen_reader.set(access.screen_reader);
-        self.speech_rate
-            .set(speech_rate_label(access.screen_reader_rate).to_owned());
-        self.speech_voice
-            .set(access.screen_reader_voice.label().to_owned());
-        self.visual_alerts.set(access.visual_alerts);
-        self.dictation_literal.set(access.dictation_literal);
-        self.dictation_language
-            .set(access.dictation_language.code().to_owned());
-    }
-}
-
 pub struct AccessibilityPane {
     cx: PaneCx,
     appearance: Followed<AppearancePrefs>,
     access: Followed<AccessibilitySettings>,
-    shown: Shown,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
     composed: ui::widget::Composed,
@@ -377,14 +217,10 @@ impl Software {
 
 impl AccessibilityPane {
     pub fn new(cx: PaneCx, software: Software) -> Self {
-        let appearance = cx.follow::<AppearancePrefs>();
-        let access = cx.follow::<AccessibilitySettings>();
-        let shown = Shown::of(appearance.get(), access.get());
         Self {
+            appearance: cx.follow::<AppearancePrefs>(),
+            access: cx.follow::<AccessibilitySettings>(),
             cx,
-            appearance,
-            access,
-            shown,
             speech: software.speech,
             composed: ui::widget::Composed::default(),
         }
@@ -408,9 +244,25 @@ impl AccessibilityPane {
         ])
     }
 
+    /// The row of the assist at `path`, labelled by `label` and its
+    /// `-desc` line, its control `id`.
+    fn assist<V>(
+        &self,
+        label: &str,
+        id: &str,
+        path: tilo_resource::Path<AccessibilitySettings, V>,
+    ) -> SettingRow<'_, AccessibilitySettings, V> {
+        self.cx
+            .row(t(label))
+            .described(t(&format!("{label}-desc")))
+            .id(id)
+            .of(&self.access, path)
+    }
+
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> SettingsSection {
-        let shown = &self.shown;
+        let appearance = AppearancePrefs::paths();
+        let access = AccessibilitySettings::paths();
         section(
             &t("a11y-vision-title"),
             rows(vec![
@@ -418,183 +270,129 @@ impl AccessibilityPane {
                     .row(t("a11y-high-contrast"))
                     .described(t("a11y-high-contrast-desc"))
                     .id("a11y.high_contrast")
-                    .toggle(&shown.high_contrast, AppearancePrefs::paths().high_contrast),
+                    .of(&self.appearance, appearance.high_contrast)
+                    .toggle(),
                 self.cx
                     .row(t("a11y-reduce-motion"))
                     .described(t("a11y-reduce-motion-desc"))
                     .id("a11y.reduce_motion")
-                    .toggle(&shown.reduce_motion, AppearancePrefs::paths().reduce_motion),
+                    .of(&self.appearance, appearance.reduce_motion)
+                    .toggle(),
                 self.cx
                     .row(t("a11y-text-size"))
                     .id("a11y.text_size")
-                    .choice(
-                        text_size_options(),
-                        &shown.text_size,
-                        AppearancePrefs::paths().text_scale,
-                        |label: String| crate::panes::appearance::text_size_value(&label),
-                    ),
+                    .of(&self.appearance, appearance.text_scale)
+                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
+                        text_size_label(*scale)
+                    }),
                 self.cx
                     .row(t("a11y-colour-filter"))
                     .id("a11y.color_filter")
-                    .choice(
-                        ColorFilter::OPTIONS.iter().copied(),
-                        &shown.color_filter,
-                        AccessibilitySettings::paths().color_filter,
-                        |label: String| colour_filter(&label),
-                    ),
+                    .of(&self.access, access.color_filter)
+                    .choose(),
                 self.cx
                     .row(t("a11y-magnifier"))
                     .id("a11y.magnifier")
-                    .choice(
-                        magnifier::ZOOM_LABELS,
-                        &shown.magnifier,
-                        AccessibilitySettings::paths().magnifier_zoom,
-                        |label: String| magnifier_zoom(&label),
-                    ),
+                    .of(&self.access, access.magnifier_zoom)
+                    .among(magnifier::zoom_levels(), |zoom: &u8| {
+                        magnifier::zoom_label(*zoom).to_owned()
+                    }),
                 self.cx
                     .row(t("a11y-magnifier-view"))
                     .id("a11y.magnifier_view")
-                    .choice(
-                        magnifier::MagnifierView::ALL.map(magnifier::MagnifierView::label),
-                        &shown.magnifier_view,
-                        AccessibilitySettings::paths().magnifier_view,
-                        |label: String| magnifier_view(&label),
-                    ),
+                    .of(&self.access, access.magnifier_view)
+                    .choose(),
             ]),
         )
     }
 
     // --- Pointer: mouse keys, large cursor + size.
     fn build_pointer_card(&self) -> SettingsSection {
-        let shown = &self.shown;
+        let access = AccessibilitySettings::paths();
         section(
             &t("a11y-pointer-title"),
             rows(vec![
-                self.cx
-                    .row(t("a11y-mouse-keys"))
-                    .described(t("a11y-mouse-keys-desc"))
-                    .id("a11y.mouse_keys")
-                    .toggle(&shown.mouse_keys, AccessibilitySettings::paths().mouse_keys),
+                self.assist("a11y-mouse-keys", "a11y.mouse_keys", access.mouse_keys)
+                    .toggle(),
                 note(&t("a11y-mouse-keys-caption")),
-                self.cx
-                    .row(t("a11y-large-cursor"))
-                    .described(t("a11y-large-cursor-desc"))
-                    .id("a11y.large_cursor")
-                    .toggle(
-                        &shown.large_cursor,
-                        AccessibilitySettings::paths().large_cursor,
-                    ),
+                self.assist(
+                    "a11y-large-cursor",
+                    "a11y.large_cursor",
+                    access.large_cursor,
+                )
+                .toggle(),
                 self.cx
                     .row(t("a11y-cursor-size"))
                     .id("a11y.cursor_size")
-                    .choice(
-                        labels(AccessibilitySettings::CURSOR_SIZES),
-                        &shown.cursor_size,
-                        AccessibilitySettings::paths().cursor_size,
-                        |label: String| cursor_size(&label),
-                    ),
-                self.cx
-                    .row(t("a11y-pointer-crosshair"))
-                    .described(t("a11y-pointer-crosshair-desc"))
-                    .id("a11y.cursor_crosshair")
-                    .toggle(
-                        &shown.cursor_crosshair,
-                        AccessibilitySettings::paths().cursor_crosshair,
-                    ),
-                self.cx
-                    .row(t("a11y-thick-caret"))
-                    .described(t("a11y-thick-caret-desc"))
-                    .id("a11y.thick_text_caret")
-                    .toggle(
-                        &shown.thick_text_caret,
-                        AccessibilitySettings::paths().thick_text_caret,
-                    ),
+                    .of(&self.access, access.cursor_size)
+                    .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
+                        AccessibilitySettings::cursor_size_label(*size).to_owned()
+                    }),
+                self.assist(
+                    "a11y-pointer-crosshair",
+                    "a11y.cursor_crosshair",
+                    access.cursor_crosshair,
+                )
+                .toggle(),
+                self.assist(
+                    "a11y-thick-caret",
+                    "a11y.thick_text_caret",
+                    access.thick_text_caret,
+                )
+                .toggle(),
             ]),
         )
     }
 
     // --- Typing.
     fn build_typing_card(&self) -> SettingsSection {
-        let shown = &self.shown;
-        let osk_row = self
-            .cx
-            .row(t("a11y-osk"))
-            .described(t("a11y-osk-desc"))
-            .id("a11y.on_screen_keyboard")
-            .choice(
-                OnScreenKeyboard::OPTIONS.iter().copied(),
-                &shown.on_screen_keyboard,
-                AccessibilitySettings::paths().on_screen_keyboard,
-                |label: String| osk_mode(&label),
-            );
+        let access = AccessibilitySettings::paths();
         section(
             &t("a11y-typing-title"),
             rows(vec![
-                self.cx
-                    .row(t("a11y-sticky-keys"))
-                    .described(t("a11y-sticky-keys-desc"))
-                    .id("a11y.sticky_keys")
-                    .toggle(
-                        &shown.sticky_keys,
-                        AccessibilitySettings::paths().sticky_keys,
-                    ),
-                self.cx
-                    .row(t("a11y-slow-keys"))
-                    .described(t("a11y-slow-keys-desc"))
-                    .id("a11y.slow_keys")
-                    .toggle(&shown.slow_keys, AccessibilitySettings::paths().slow_keys),
-                self.cx
-                    .row(t("a11y-bounce-keys"))
-                    .described(t("a11y-bounce-keys-desc"))
-                    .id("a11y.bounce_keys")
-                    .toggle(
-                        &shown.bounce_keys,
-                        AccessibilitySettings::paths().bounce_keys,
-                    ),
+                self.assist("a11y-sticky-keys", "a11y.sticky_keys", access.sticky_keys)
+                    .toggle(),
+                self.assist("a11y-slow-keys", "a11y.slow_keys", access.slow_keys)
+                    .toggle(),
+                self.assist("a11y-bounce-keys", "a11y.bounce_keys", access.bounce_keys)
+                    .toggle(),
                 self.cx
                     .row(t("a11y-bounce-delay"))
                     .id("a11y.bounce_delay")
-                    .choice(
-                        labels(AccessibilitySettings::BOUNCE_DELAYS),
-                        &shown.bounce_delay,
-                        AccessibilitySettings::paths().bounce_keys_delay_ms,
-                        |label: String| bounce_delay(&label),
-                    ),
-                self.cx
-                    .row(t("a11y-bounce-alert"))
-                    .described(t("a11y-bounce-alert-desc"))
-                    .id("a11y.bounce_keys_alert")
-                    .toggle(
-                        &shown.bounce_alert,
-                        AccessibilitySettings::paths().bounce_keys_alert,
-                    ),
-                osk_row,
-                self.cx
-                    .row(t("a11y-switch-control"))
-                    .described(t("a11y-switch-control-desc"))
-                    .id("a11y.switch_control")
-                    .toggle(
-                        &shown.switch_control,
-                        AccessibilitySettings::paths().switch_control,
-                    ),
+                    .of(&self.access, access.bounce_keys_delay_ms)
+                    .among(values(AccessibilitySettings::BOUNCE_DELAYS), |ms: &u32| {
+                        AccessibilitySettings::bounce_delay_label(*ms).to_owned()
+                    }),
+                self.assist(
+                    "a11y-bounce-alert",
+                    "a11y.bounce_keys_alert",
+                    access.bounce_keys_alert,
+                )
+                .toggle(),
+                self.assist(
+                    "a11y-osk",
+                    "a11y.on_screen_keyboard",
+                    access.on_screen_keyboard,
+                )
+                .choose(),
+                self.assist(
+                    "a11y-switch-control",
+                    "a11y.switch_control",
+                    access.switch_control,
+                )
+                .toggle(),
                 self.cx
                     .row(t("a11y-switch-keys"))
                     .id("a11y.switch_keys")
-                    .choice(
-                        SwitchKeyPair::OPTIONS.iter().copied(),
-                        &shown.switch_keys,
-                        AccessibilitySettings::paths().switch_key_pair,
-                        |label: String| switch_keys(&label),
-                    ),
+                    .of(&self.access, access.switch_key_pair)
+                    .choose(),
                 self.cx
                     .row(t("a11y-switch-scan"))
                     .id("a11y.switch_scan")
-                    .choice(
-                        labels(&SWITCH_SCANS),
-                        &shown.switch_scan,
-                        AccessibilitySettings::paths().switch_scan_ms,
-                        |label: String| switch_scan(&label),
-                    ),
+                    .of(&self.access, access.switch_scan_ms)
+                    .among(values(&SWITCH_SCANS), |ms: &u16| {
+                        switch_scan_label(*ms).to_owned()
+                    }),
             ]),
         )
     }
@@ -603,7 +401,7 @@ impl AccessibilityPane {
     // without an apply path remain status rows below so Settings never
     // promises an inert preference.
     fn build_advanced_card(&self) -> SettingsSection {
-        let shown = &self.shown;
+        let access = AccessibilitySettings::paths();
         let reader_rows: Vec<Item> = if let Some(backend) = self.speech {
             vec![
                 self.cx
@@ -611,7 +409,7 @@ impl AccessibilityPane {
                     .described(t("a11y-screen-reader-desc"))
                     .id("a11y.screen_reader")
                     .toggle_effect(
-                        &shown.screen_reader,
+                        &self.access.shown(&access.screen_reader, bool::clone),
                         effect(AccessibilityEffect::SET_SCREEN_READER),
                     ),
                 value_row(&t("a11y-speech-engine"), backend),
@@ -620,7 +418,9 @@ impl AccessibilityPane {
                     .id("a11y.reader_rate")
                     .choice_effect(
                         labels(&SPEECH_RATES),
-                        &shown.speech_rate,
+                        &self.access.shown(&access.screen_reader_rate, |rate: &u16| {
+                            speech_rate_label(*rate).to_owned()
+                        }),
                         effect(AccessibilityEffect::SET_SPEECH_RATE),
                     ),
                 self.cx
@@ -628,7 +428,11 @@ impl AccessibilityPane {
                     .id("a11y.reader_voice")
                     .choice_effect(
                         ScreenReaderVoice::OPTIONS.iter().copied(),
-                        &shown.speech_voice,
+                        &self
+                            .access
+                            .shown(&access.screen_reader_voice, |voice: &ScreenReaderVoice| {
+                                voice.label().to_owned()
+                            }),
                         effect(AccessibilityEffect::SET_SPEECH_VOICE),
                     ),
             ]
@@ -649,27 +453,20 @@ impl AccessibilityPane {
                 reader_rows
                     .into_iter()
                     .chain([
-                        setting_row(
-                            &t("a11y-dictation-language"),
-                            self.dictation_language_choice(),
-                        ),
+                        self.dictation_language_row(),
                         note(&t("a11y-dictation-language-desc")),
-                        self.cx
-                            .row(t("a11y-dictation-literal"))
-                            .described(t("a11y-dictation-literal-desc"))
-                            .id("a11y.dictation_literal")
-                            .toggle(
-                                &shown.dictation_literal,
-                                AccessibilitySettings::paths().dictation_literal,
-                            ),
-                        self.cx
-                            .row(t("a11y-visual-alerts"))
-                            .described(t("a11y-visual-alerts-desc"))
-                            .id("a11y.visual_alerts")
-                            .toggle(
-                                &shown.visual_alerts,
-                                AccessibilitySettings::paths().visual_alerts,
-                            ),
+                        self.assist(
+                            "a11y-dictation-literal",
+                            "a11y.dictation_literal",
+                            access.dictation_literal,
+                        )
+                        .toggle(),
+                        self.assist(
+                            "a11y-visual-alerts",
+                            "a11y.visual_alerts",
+                            access.visual_alerts,
+                        )
+                        .toggle(),
                         value_row(
                             &t("a11y-focus-highlight"),
                             &t("a11y-focus-highlight-status"),
@@ -688,20 +485,33 @@ impl AccessibilityPane {
         )
     }
 
-    fn dictation_language_choice(&self) -> El {
-        let mut dropdown = Dropdown::from_state(Vec::new(), &self.shown.dictation_language)
-            .with_id("a11y.dictation_language")
-            .with_resolved_accessible_name(t("a11y-dictation-language"));
-        dropdown.set_value_options(
-            DictationLanguage::ALL
-                .iter()
-                .map(|language| (language.code().to_owned(), t(&language.label_key())))
-                .collect(),
-        );
-        Box::new(self.cx.bind(
-            dropdown,
-            effect(AccessibilityEffect::SET_DICTATION_LANGUAGE),
-        ))
+    /// The dictation language, by its stable code, among every language
+    /// dictation knows by name.
+    fn dictation_language_row(&self) -> Item {
+        self.cx
+            .row(t("a11y-dictation-language"))
+            .of(
+                &self.access,
+                AccessibilitySettings::paths().dictation_language,
+            )
+            .custom(
+                |language: &DictationLanguage| language.code().to_owned(),
+                |language, _| {
+                    let mut dropdown = Dropdown::from_state(Vec::new(), language)
+                        .with_id("a11y.dictation_language")
+                        .with_resolved_accessible_name(t("a11y-dictation-language"));
+                    dropdown.set_value_options(
+                        DictationLanguage::ALL
+                            .iter()
+                            .map(|language| (language.code().to_owned(), t(&language.label_key())))
+                            .collect(),
+                    );
+                    Box::new(self.cx.bind(
+                        dropdown,
+                        effect(AccessibilityEffect::SET_DICTATION_LANGUAGE),
+                    ))
+                },
+            )
     }
 }
 
@@ -709,12 +519,8 @@ impl Widget for AccessibilityPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // Controls follow the stored values; the composition itself does not
         // change with them.
-        if self.appearance.refresh() {
-            self.shown.show_appearance(self.appearance.get());
-        }
-        if self.access.refresh() {
-            self.shown.show_access(self.access.get());
-        }
+        self.appearance.refresh();
+        self.access.refresh();
         self.composed.sync(state, root);
     }
 
@@ -733,6 +539,7 @@ mod tests {
     use crate::resource::SettingsShell;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
+    use tilo_accessibility_settings::OnScreenKeyboard;
     use ui::prelude::TestApp;
     use ui::theme::Theme;
 
@@ -898,8 +705,16 @@ mod tests {
             })
             .unwrap();
         let mut pane = AccessibilityPane::new(cx.clone(), Software::installed());
-        assert_eq!(pane.shown.magnifier.get(), "5×");
-        assert_eq!(pane.shown.cursor_size.get(), "Largest");
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        let access = AccessibilitySettings::paths();
+        // The rows' own states, which a field shown as text shares.
+        let zoom = pane.access.shown(&access.magnifier_zoom, |_| String::new());
+        assert_eq!(zoom.get(), "5×");
+        let cursor = pane.access.shown(&access.cursor_size, |_| String::new());
+        assert_eq!(cursor.get(), "Largest");
 
         cx.settings::<AppearancePrefs>()
             .update(|prefs| prefs.high_contrast = true)
@@ -909,15 +724,11 @@ mod tests {
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
-        assert!(pane.shown.high_contrast.get());
-        assert!(pane.shown.sticky_keys.get());
+        let contrast = AppearancePrefs::paths().high_contrast;
+        assert!(pane.appearance.shown(&contrast, bool::clone).get());
+        assert!(pane.access.shown(&access.sticky_keys, bool::clone).get());
         assert!(pane.appearance().high_contrast);
         assert!(pane.access().sticky_keys);
-
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
     /// Without a speech engine, the screen reader's effects say so instead

@@ -14,6 +14,16 @@ pub const DEFAULT_SCREEN_READER_RATE: u16 = 100;
 /// The speech rates reading clamps to.
 pub const SCREEN_READER_RATE_RANGE: RangeInclusive<u16> = 50..=200;
 
+/// A persisted choice Settings offers by name: every value, each with its
+/// label.
+pub trait Labelled: Copy + PartialEq + 'static {
+    /// Every value, in the order Settings offers them.
+    const CHOICES: &'static [Self];
+
+    /// The label Settings shows for the value.
+    fn label(self) -> &'static str;
+}
+
 /// Generates a persisted choice with the labels Settings offers for it.
 #[doc(hidden)]
 #[macro_export]
@@ -39,6 +49,14 @@ macro_rules! labelled_choice {
 
             pub fn from_label(label: &str) -> Option<Self> {
                 Self::ALL.iter().copied().find(|choice| choice.label() == label)
+            }
+        }
+
+        impl $crate::Labelled for $name {
+            const CHOICES: &'static [Self] = Self::ALL;
+
+            fn label(self) -> &'static str {
+                Self::label(self)
             }
         }
     };

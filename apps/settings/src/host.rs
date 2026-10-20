@@ -536,10 +536,23 @@ impl PaneCx {
 }
 
 /// A typed preference a pane shows, read again when its document changes.
+///
+/// Its fields' controls show what [`Followed::shown`] hands out, which
+/// follows the value in place: a change elsewhere (the palette, an agent,
+/// another window) moves the control without the pane rebuilding.
 pub struct Followed<T> {
     settings: StoredSettings<T>,
     seen: SettingsRevision,
     value: T,
+    shown: std::cell::RefCell<Vec<Shown<T>>>,
+}
+
+/// One field of a followed value as a control shows it.
+struct Shown<T> {
+    /// The field's path and the type it is shown as.
+    key: (Vec<ui::tilo_resource::Segment>, TypeId),
+    state: Box<dyn Any>,
+    show: Box<dyn Fn(&T)>,
 }
 
 impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
@@ -550,6 +563,7 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
             settings,
             seen,
             value,
+            shown: std::cell::RefCell::default(),
         }
     }
 
@@ -572,6 +586,9 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
             return false;
         }
         self.value = stored;
+        for shown in self.shown.borrow().iter() {
+            (shown.show)(&self.value);
+        }
         true
     }
 
@@ -585,6 +602,46 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
         self.seen
+    }
+}
+
+impl<T: Section> Followed<T> {
+    /// The field at `path` as `show` makes it for a control, kept current
+    /// as the value changes. Every control of the field shown as the same
+    /// type shares one state.
+    pub fn shown<V, S>(
+        &self,
+        path: &ui::tilo_resource::Path<T, V>,
+        show: impl Fn(&V) -> S + 'static,
+    ) -> LocalState<S>
+    where
+        V: 'static,
+        S: Clone + Default + PartialEq + 'static,
+    {
+        let key = (path.segments().to_vec(), TypeId::of::<S>());
+        let mut all = self.shown.borrow_mut();
+        if let Some(state) = all
+            .iter()
+            .find(|shown| shown.key == key)
+            .and_then(|shown| shown.state.downcast_ref::<LocalState<S>>())
+        {
+            return state.clone();
+        }
+        let state = LocalState::new(path.get(&self.value).map(&show).unwrap_or_default());
+        let path = path.clone();
+        let follows = state.clone();
+        all.push(Shown {
+            key,
+            state: Box::new(state.clone()),
+            show: Box::new(move |value: &T| {
+                if let Some(now) = path.get(value).map(&show)
+                    && follows.with(|was| *was != now)
+                {
+                    follows.set(now);
+                }
+            }),
+        });
+        state
     }
 }
 

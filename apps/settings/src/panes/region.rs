@@ -11,12 +11,11 @@
 //! shown label to the stored value; the pane shows what the section holds,
 //! whoever changed it.
 
-use ui::LocalState;
-use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
+use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::widgets::{Item, choice_row, note, rows, section};
+use crate::widgets::{Item, note, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
 
@@ -30,13 +29,6 @@ fn date_label(style: DateStyle) -> String {
     })
 }
 
-fn date_from_shown(label: &str) -> Option<DateStyle> {
-    DateStyle::ALL
-        .iter()
-        .copied()
-        .find(|style| style.label() == label || date_label(*style) == label)
-}
-
 fn time_label(style: TimeStyle) -> String {
     t(match style {
         TimeStyle::Language => "settings-region-time-language",
@@ -45,25 +37,11 @@ fn time_label(style: TimeStyle) -> String {
     })
 }
 
-fn time_from_shown(label: &str) -> Option<TimeStyle> {
-    TimeStyle::ALL
-        .iter()
-        .copied()
-        .find(|style| style.label() == label || time_label(*style) == label)
-}
-
 fn measure_label(measure: Measurement) -> String {
     t(match measure {
         Measurement::Metric => "settings-region-measure-metric",
         Measurement::Imperial => "settings-region-measure-imperial",
     })
-}
-
-fn measure_from_shown(label: &str) -> Option<Measurement> {
-    Measurement::ALL
-        .iter()
-        .copied()
-        .find(|measure| measure.label() == label || measure_label(*measure) == label)
 }
 
 fn weekday_label(day: FirstDayOfWeek) -> String {
@@ -74,65 +52,18 @@ fn weekday_label(day: FirstDayOfWeek) -> String {
     })
 }
 
-fn weekday_from_shown(label: &str) -> Option<FirstDayOfWeek> {
-    FirstDayOfWeek::ALL
-        .iter()
-        .copied()
-        .find(|day| day.label() == label || weekday_label(*day) == label)
-}
-
-/// What the pane's choosers show.
-struct Shown {
-    currency: LocalState<String>,
-    date: LocalState<String>,
-    time: LocalState<String>,
-    measurement: LocalState<String>,
-    number_style: LocalState<String>,
-    first_day: LocalState<String>,
-}
-
-impl Shown {
-    fn of(locale: Locale) -> Self {
-        let text = || LocalState::new(String::new());
-        let shown = Self {
-            currency: text(),
-            date: text(),
-            time: text(),
-            measurement: text(),
-            number_style: text(),
-            first_day: text(),
-        };
-        shown.show(locale);
-        shown
-    }
-
-    fn show(&self, locale: Locale) {
-        self.currency.set(locale.currency.code().to_owned());
-        self.date.set(date_label(locale.date_format));
-        self.time.set(time_label(locale.time_format));
-        self.measurement.set(measure_label(locale.measurement));
-        self.number_style
-            .set(locale.number_style.label().to_owned());
-        self.first_day.set(weekday_label(locale.first_day_of_week));
-    }
-}
-
 pub struct RegionPane {
     cx: PaneCx,
     locale: Followed<Locale>,
-    shown: Shown,
     composed: ui::widget::Composed,
 }
 
 impl RegionPane {
     /// The pane over `cx`'s locale.
     pub fn new(cx: PaneCx) -> Self {
-        let locale = cx.follow::<Locale>();
-        let shown = Shown::of(*locale.get());
         Self {
+            locale: cx.follow::<Locale>(),
             cx,
-            locale,
-            shown,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -147,112 +78,43 @@ impl RegionPane {
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
         let loc = *self.locale.get();
-        let cx = &self.cx;
-        let shown = &self.shown;
-        let dropdown = |options: Vec<String>, state: &LocalState<String>, id: &str| {
-            let placeholder = state.get();
-            Dropdown::from_state(options, state)
-                .with_id(id)
-                .with_placeholder(&placeholder)
-        };
-
-        // Currency dropdown — options are ISO codes (the stored form).
-        let currency = cx.bind_field_with(
-            dropdown(
-                Currency::ALL.iter().map(|c| c.code().to_string()).collect(),
-                &shown.currency,
-                "region.currency",
-            ),
-            Locale::paths().currency,
-            |code: String| {
-                Currency::from_code(&code).ok_or_else(|| format!("`{code}` is not offered"))
-            },
-        );
-        let date = cx.bind_field_with(
-            dropdown(
-                DateStyle::ALL.iter().copied().map(date_label).collect(),
-                &shown.date,
-                "region.date",
-            ),
-            Locale::paths().date_format,
-            |shown: String| {
-                date_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
-            },
-        );
-        let time = cx.bind_field_with(
-            dropdown(
-                TimeStyle::ALL.iter().copied().map(time_label).collect(),
-                &shown.time,
-                "region.time",
-            ),
-            Locale::paths().time_format,
-            |shown: String| {
-                time_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
-            },
-        );
-        let units = cx.bind_field_with(
-            dropdown(
-                Measurement::ALL
-                    .iter()
-                    .copied()
-                    .map(measure_label)
-                    .collect(),
-                &shown.measurement,
-                "region.measurement",
-            ),
-            Locale::paths().measurement,
-            |shown: String| {
-                measure_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
-            },
-        );
-        let number_style = cx.bind_field_with(
-            dropdown(
-                NumberStyle::ALL
-                    .iter()
-                    .map(|style| style.label().to_string())
-                    .collect(),
-                &shown.number_style,
-                "region.number_style",
-            ),
-            Locale::paths().number_style,
-            |shown: String| {
-                NumberStyle::ALL
-                    .into_iter()
-                    .find(|style| style.label() == shown)
-                    .ok_or_else(|| format!("`{shown}` is not offered"))
-            },
-        );
-        let first_day = cx.bind_field_with(
-            dropdown(
-                FirstDayOfWeek::ALL
-                    .iter()
-                    .copied()
-                    .map(weekday_label)
-                    .collect(),
-                &shown.first_day,
-                "region.first_day",
-            ),
-            Locale::paths().first_day_of_week,
-            |shown: String| {
-                weekday_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
-            },
-        );
-
-        let currency_title = t("settings-region-currency");
-        let date_title = t("settings-region-date-format");
-        let time_title = t("settings-region-time-format");
-        let measure_title = t("settings-region-measurement");
-        let number_title = t("settings-region-number-format");
-        let first_title = t("settings-region-first-day");
+        let paths = Locale::paths();
+        let row = |label: &str, id: &str| self.cx.row(t(label)).id(id);
         let formats = section(
             &t("settings-region-formats-card"),
             rows(vec![
-                choice_row(&currency_title, Box::new(currency)),
-                choice_row(&date_title, Box::new(date)),
-                choice_row(&time_title, Box::new(time)),
-                choice_row(&measure_title, Box::new(units)),
-                choice_row(&number_title, Box::new(number_style)),
-                choice_row(&first_title, Box::new(first_day)),
+                // Currencies by their ISO code, the stored form.
+                row("settings-region-currency", "region.currency")
+                    .of(&self.locale, paths.currency)
+                    .menu(Currency::ALL.iter().copied(), |currency: &Currency| {
+                        currency.code().to_owned()
+                    }),
+                row("settings-region-date-format", "region.date")
+                    .of(&self.locale, paths.date_format)
+                    .menu(DateStyle::ALL.iter().copied(), |style: &DateStyle| {
+                        date_label(*style)
+                    }),
+                row("settings-region-time-format", "region.time")
+                    .of(&self.locale, paths.time_format)
+                    .menu(TimeStyle::ALL.iter().copied(), |style: &TimeStyle| {
+                        time_label(*style)
+                    }),
+                row("settings-region-measurement", "region.measurement")
+                    .of(&self.locale, paths.measurement)
+                    .menu(Measurement::ALL.iter().copied(), |measure: &Measurement| {
+                        measure_label(*measure)
+                    }),
+                row("settings-region-number-format", "region.number_style")
+                    .of(&self.locale, paths.number_style)
+                    .menu(NumberStyle::ALL, |style: &NumberStyle| {
+                        style.label().to_owned()
+                    }),
+                row("settings-region-first-day", "region.first_day")
+                    .of(&self.locale, paths.first_day_of_week)
+                    .menu(
+                        FirstDayOfWeek::ALL.iter().copied(),
+                        |day: &FirstDayOfWeek| weekday_label(*day),
+                    ),
             ]),
         );
 
@@ -291,7 +153,6 @@ impl RegionPane {
 impl Widget for RegionPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.locale.refresh() {
-            self.shown.show(*self.locale.get());
             // The preview card follows the values.
             self.composed.invalidate();
         }
@@ -352,28 +213,25 @@ mod tests {
     fn the_date_format_and_clock_default_to_following_the_language() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let pane = RegionPane::new(cx.clone());
+        let pane = RegionPane::new(cx);
         assert_eq!(pane.locale().date_format, DateStyle::Language);
+        let paths = Locale::paths();
         assert_eq!(
-            pane.shown.date.get(),
+            pane.locale
+                .shown(&paths.date_format, |style| date_label(*style))
+                .get(),
             date_label(DateStyle::Language),
             "the default is shown as following the language"
         );
         assert_eq!(DateStyle::ALL[0], DateStyle::Language);
-        assert_eq!(
-            date_from_shown(&date_label(DateStyle::Iso)),
-            Some(DateStyle::Iso)
-        );
-        assert_eq!(
-            date_from_shown(&date_label(DateStyle::Language)),
-            Some(DateStyle::Language)
-        );
         assert_eq!(pane.locale().time_format, TimeStyle::Language);
-        assert_eq!(pane.shown.time.get(), time_label(TimeStyle::Language));
+        assert_eq!(
+            pane.locale
+                .shown(&paths.time_format, |style| time_label(*style))
+                .get(),
+            time_label(TimeStyle::Language)
+        );
         assert_eq!(TimeStyle::ALL[0], TimeStyle::Language);
-        for style in [TimeStyle::H12, TimeStyle::H24, TimeStyle::Language] {
-            assert_eq!(time_from_shown(&time_label(style)), Some(style));
-        }
     }
 
     /// The pane shows the stored locale and follows a change made elsewhere.
@@ -388,16 +246,20 @@ mod tests {
             })
             .unwrap();
         let mut pane = RegionPane::new(cx.clone());
-        assert_eq!(pane.shown.currency.get(), "EUR");
+        let paths = Locale::paths();
+        let currency = pane
+            .locale
+            .shown(&paths.currency, |currency| currency.code().to_owned());
+        assert_eq!(currency.get(), "EUR");
+        let measurement = pane
+            .locale
+            .shown(&paths.measurement, |measure| measure_label(*measure));
         cx.settings::<Locale>()
             .update(|locale| locale.measurement = Measurement::Imperial)
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.locale().measurement, Measurement::Imperial);
-        assert_eq!(
-            pane.shown.measurement.get(),
-            measure_label(Measurement::Imperial)
-        );
+        assert_eq!(measurement.get(), measure_label(Measurement::Imperial));
     }
 }
