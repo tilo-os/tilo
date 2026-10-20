@@ -1,4 +1,4 @@
-app so.tilo.letters "Letters"
+app so.tilo.lang.letters "Letters" (icon: .mail, category: .office)
 
 type Draft {
     to: Text

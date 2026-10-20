@@ -1,4 +1,4 @@
-app so.tilo.chat "Chat"
+app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
 /// One piece of a message: plain text, or the source of a block that renders inline.
 type Part {

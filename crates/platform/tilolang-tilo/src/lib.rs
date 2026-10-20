@@ -13,6 +13,7 @@
 
 pub mod action;
 pub mod authority;
+pub mod bundle;
 pub mod effects;
 pub mod host;
 pub mod meta;

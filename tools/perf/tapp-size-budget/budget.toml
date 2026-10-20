@@ -161,10 +161,6 @@ aarch64 = 786432
 x86_64 = 4259840
 aarch64 = 3866624
 
-[apps."so.tilo.lang"]
-x86_64 = 5242880
-aarch64 = 5111808
-
 [apps."so.tilo.logs"]
 x86_64 = 983040
 aarch64 = 917504

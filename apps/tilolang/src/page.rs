@@ -56,6 +56,7 @@ pub use stage::SCENARIOS;
 
 use crate::i18n::t;
 use crate::names::Names;
+#[cfg(test)]
 use crate::packages::EMBEDDED;
 use crate::reconcile::{EventSink, Reconciler, UiEvent};
 
@@ -221,10 +222,9 @@ pub struct TilolangPage {
     detail_shown: bool,
     /// A press in the list pane may open something in the detail pane: go there once it does.
     pending_detail: bool,
-    /// The packages under development (`tilolang run`), loaded in place of the built-in ones,
-    /// and the version of them the host runs.
-    dev: Option<Rc<RefCell<crate::dev::DevPackages>>>,
-    dev_generation: u64,
+    /// The installed package this window runs: the app it is. Home and the other packages exist
+    /// only in the window's own tests, which run the built-in packages side by side.
+    runs: Option<Arc<tilolang_tilo::bundle::Bundle>>,
     /// What a capture stages before it is drawn: empty on every live path.
     stage: VecDeque<stage::Step>,
 }
@@ -319,8 +319,7 @@ impl TilolangPage {
             navigation: None,
             detail_shown: false,
             pending_detail: false,
-            dev: None,
-            dev_generation: 0,
+            runs: None,
             stage: VecDeque::new(),
         }
     }
@@ -341,13 +340,11 @@ impl TilolangPage {
         self
     }
 
-    /// The window of `tilolang run`: it runs the packages under development instead of the
-    /// built-in ones, opens the last of them, and follows each new build of their sources.
+    /// The window of the installed app `bundle`: it runs that one package and opens its root.
     #[must_use]
-    pub fn developing(me: String, dev: Rc<RefCell<crate::dev::DevPackages>>) -> Self {
-        let mut page = Self::new(me);
-        page.dev = Some(dev);
-        page
+    pub fn running(mut self, bundle: Arc<tilolang_tilo::bundle::Bundle>) -> Self {
+        self.runs = Some(bundle);
+        self
     }
 
     /// The host over the room record, built (with every embedded package) the first time the
@@ -382,12 +379,22 @@ impl TilolangPage {
         if let Some(sink) = self.sink.borrow_mut().take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
-        if self.dev.is_none() {
-            for package in EMBEDDED {
-                if let Err(error) = host.load_builtin(package.source, package.ids) {
-                    tracing::error!(package = package.dir, %error, "a built-in package did not load");
+        match &self.runs {
+            Some(bundle) => {
+                if let Err(error) = host.load_bundle(bundle) {
+                    tracing::error!(app = bundle.meta.app, %error, "the installed package did not load");
                 }
             }
+            #[cfg(test)]
+            None => {
+                for package in EMBEDDED {
+                    if let Err(error) = host.load_builtin(package.source, package.ids) {
+                        tracing::error!(package = package.dir, %error, "a built-in package did not load");
+                    }
+                }
+            }
+            #[cfg(not(test))]
+            None => tracing::error!("no package is installed in this runtime"),
         }
         *self.host.borrow_mut() = Some(host.clone());
         host
@@ -410,49 +417,6 @@ impl TilolangPage {
         self.host.borrow().clone()
     }
 
-    /// Run the newest build of the packages under development: load it into the host (the room
-    /// keeps its state) and open the open app again, or the package being developed the first
-    /// time. A build with errors keeps the last good one running and says so.
-    fn follow_dev(&mut self, host: &Host) {
-        let Some(dev) = self.dev.clone() else {
-            return;
-        };
-        let (generation, error, compiled, main) = {
-            let dev = dev.borrow();
-            (
-                dev.generation(),
-                dev.error().is_some(),
-                dev.compiled().to_vec(),
-                dev.main_app(),
-            )
-        };
-        let shows_error = self.notice.as_deref() == Some(t("tilolang-dev-errors").as_str());
-        if error != shows_error {
-            self.notice = error.then(|| t("tilolang-dev-errors"));
-            self.rebuild_chrome();
-        }
-        if generation == self.dev_generation {
-            return;
-        }
-        let first = self.dev_generation == 0;
-        self.dev_generation = generation;
-        for package in &compiled {
-            if let Err(error) = host.load_compiled(package) {
-                tracing::error!(app = package.meta.app, %error, "a package under development did not load");
-            }
-        }
-        let open = match &self.mode {
-            Mode::Open { app, .. } => Some(app.clone()),
-            Mode::Home if first => main,
-            Mode::Home => None,
-        };
-        match open {
-            // The views of the old version still run its code: open the app again.
-            Some(app) => self.open(&app),
-            None => self.show_home(),
-        }
-    }
-
     /// The view tree the window shows, when an app is open.
     #[cfg(test)]
     pub(crate) fn shown(&self) -> Option<&UiNode> {
@@ -466,12 +430,6 @@ impl TilolangPage {
             Mode::Open { app, .. } => Some(app),
             Mode::Home => None,
         }
-    }
-
-    /// What the window tells the person under the view, when anything.
-    #[cfg(test)]
-    pub(crate) fn notice(&self) -> Option<&str> {
-        self.notice.as_deref()
     }
 
     /// Report what a person did to the view, as its controls do.
@@ -691,6 +649,11 @@ impl TilolangPage {
     // ----- navigation ----------------------------------------------------------------------
 
     fn show_home(&mut self) {
+        // An installed app is its package: its home is its root's window.
+        if let Some(app) = self.runs.as_ref().map(|bundle| bundle.meta.app.clone()) {
+            self.open(&app);
+            return;
+        }
         self.mode = Mode::Home;
         self.body_tree = None;
         self.navigation = None;
@@ -1296,12 +1259,19 @@ impl AppWidget for TilolangPage {
         AppKind::Editor
     }
 
-    fn app_title(&self) -> &'static str {
-        "tilolang"
+    fn app_title(&self) -> &str {
+        self.runs
+            .as_ref()
+            .map_or("tilolang", |bundle| bundle.meta.title.as_str())
     }
 
     fn app_icon(&self) -> IconDescriptor {
-        IconDescriptor::Named("code-editor".into())
+        let icon = self
+            .runs
+            .as_ref()
+            .and_then(|bundle| bundle.meta.icon.as_deref())
+            .unwrap_or("code-editor");
+        IconDescriptor::Named(icon.replace('_', "-"))
     }
 }
 
@@ -1333,7 +1303,6 @@ impl Widget for TilolangPage {
             self.rebuild_chrome();
         }
         let moved = host.sync_from(doc) | self.moved.take();
-        self.follow_dev(&host);
         if moved {
             self.refresh_bound();
             *self.index.borrow_mut() = crate::search::refresh(&self.search, &host);
@@ -1731,7 +1700,7 @@ mod tests {
     #[test]
     fn a_notes_row_opens_the_note_in_place_and_back_returns_to_the_list() {
         let mut room = Room::new();
-        room.open("so.tilo.notes");
+        room.open("so.tilo.lang.notes");
         room.press("New note");
         room.press("Untitled");
         let shown = room.page.shown().expect("a view is open");
@@ -1773,24 +1742,27 @@ mod tests {
         let room = Room::new();
         let host = room.page.current_host().expect("the host started");
         let apps: Vec<String> = host.packages().into_iter().map(|p| p.meta.app).collect();
-        assert!(apps.contains(&"so.tilo.counter".to_owned()), "{apps:?}");
-        assert!(apps.contains(&"so.tilo.notes".to_owned()), "{apps:?}");
+        assert!(
+            apps.contains(&"so.tilo.lang.counter".to_owned()),
+            "{apps:?}"
+        );
+        assert!(apps.contains(&"so.tilo.lang.notes".to_owned()), "{apps:?}");
     }
 
     #[test]
     fn opening_an_app_creates_its_root_through_the_door_and_shows_it() {
         let mut room = Room::new();
-        room.open("so.tilo.counter");
+        room.open("so.tilo.lang.counter");
         assert_eq!(room.shown_count(), "0");
         // The root exists in the record now, committed as a recorded action.
-        let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.counter");
+        let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.lang.counter");
         assert_eq!(records.len(), 1);
     }
 
     #[test]
     fn a_press_counts_through_the_runtime_and_the_door() {
         let mut room = Room::new();
-        room.open("so.tilo.counter");
+        room.open("so.tilo.lang.counter");
         let key = room.button("+1");
         for expected in ["1", "2", "3"] {
             room.page
@@ -1807,18 +1779,21 @@ mod tests {
     #[test]
     fn the_published_tree_has_the_host_and_every_record() {
         let mut room = Room::new();
-        room.open("so.tilo.counter");
+        room.open("so.tilo.lang.counter");
         let resources = room.page.resources(&room.doc);
         let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
         assert!(kinds.contains(&"tl.host"), "{kinds:?}");
-        assert!(kinds.contains(&"tl.so.tilo.counter.Counter"), "{kinds:?}");
+        assert!(
+            kinds.contains(&"tl.so.tilo.lang.counter.Counter"),
+            "{kinds:?}"
+        );
     }
 
     #[test]
     #[allow(clippy::similar_names, reason = "the room and the notebook's root")]
     fn the_notes_package_opens_and_a_new_note_is_created_through_the_door() {
         let mut room = Room::new();
-        room.open("so.tilo.notes");
+        room.open("so.tilo.lang.notes");
         let host = room.page.current_host().expect("the host started");
         // The notes are items of the notebook's collection, not resources of their own.
         let count_notes = |host: &Host| {
@@ -1875,7 +1850,7 @@ mod tests {
             .and_then(|declared| declared.fields.iter().find(|field| field.name == "notes"))
             .map(|field| field.id.clone())
             .expect("the notebook has notes");
-        let on_disk = tilolang_tilo::action::read_resource(&room.doc, "so.tilo.notes", &root)
+        let on_disk = tilolang_tilo::action::read_resource(&room.doc, "so.tilo.lang.notes", &root)
             .expect("the record has it");
         let Some(tilolang_tilo::DynValue::Collection(stored)) = on_disk.get(&field) else {
             panic!("not a collection");
@@ -1919,7 +1894,7 @@ mod tests {
         assert!(
             survey
                 .iter()
-                .any(|d| d.resource_kind == "tl.so.tilo.letters.Desk"
+                .any(|d| d.resource_kind == "tl.so.tilo.lang.letters.Desk"
                     && d.action_label == "new_draft"),
             "the verbs of a record are discoverable"
         );
@@ -1933,8 +1908,8 @@ mod tests {
         let output = room.agent_invokes(HOST, "catalogue", &Json::Null).unwrap();
         let signatures = output.value.expect("the catalogue is the answer");
         let text = signatures.to_string();
-        assert!(text.contains("so.tilo.letters"), "{text}");
-        assert!(text.contains("action so.tilo.letters.send"), "{text}");
+        assert!(text.contains("so.tilo.lang.letters"), "{text}");
+        assert!(text.contains("action so.tilo.lang.letters.send"), "{text}");
         assert!(
             text.contains("Posts the letter"),
             "doc comments come with it: {text}"
@@ -1963,7 +1938,7 @@ mod tests {
     fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() {
         let mut room = Room::staged("chat");
         let host = room.page.current_host().expect("the host started");
-        let desk = host.root_of("so.tilo.letters").unwrap();
+        let desk = host.root_of("so.tilo.lang.letters").unwrap();
         let tilolang_tilo::runtime::Value::List(drafts) =
             host.runtime().read(&desk, "drafts").unwrap()
         else {
@@ -2011,14 +1986,14 @@ mod tests {
     fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
         let mut room = Room::staged("board");
         let host = room.page.current_host().expect("the host started");
-        let list = host.root_of("so.tilo.todo").unwrap().id_string();
-        let notebook = host.root_of("so.tilo.notes").unwrap().id_string();
+        let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
+        let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
         let output = room
             .agent_invokes(
                 HOST,
                 "run-flow",
                 &serde_json::json!({
-                    "flow": "so.tilo.board.morning_cleanup",
+                    "flow": "so.tilo.lang.board.morning_cleanup",
                     "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
                 }),
             )
@@ -2073,7 +2048,7 @@ mod tests {
     fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_once() {
         let mut room = Room::staged("chat");
         let host = room.page.current_host().expect("the host started");
-        let desk = host.root_of("so.tilo.letters").unwrap();
+        let desk = host.root_of("so.tilo.lang.letters").unwrap();
         let tilolang_tilo::runtime::Value::List(drafts) =
             host.runtime().read(&desk, "drafts").unwrap()
         else {
@@ -2128,18 +2103,18 @@ mod tests {
         let host = room.page.current_host().expect("the host started");
         // The person narrowed this agent: changes to the todo app ask first.
         host.set_agent_answer(
-            "so.tilo.todo",
+            "so.tilo.lang.todo",
             tilolang_tilo::runtime::meta::EffectClass::Undoable,
             Decision::Ask,
         );
-        let list = host.root_of("so.tilo.todo").unwrap().id_string();
-        let notebook = host.root_of("so.tilo.notes").unwrap().id_string();
+        let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
+        let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
         let waiting = room
             .agent_invokes(
                 HOST,
                 "run-flow",
                 &serde_json::json!({
-                    "flow": "so.tilo.board.morning_cleanup",
+                    "flow": "so.tilo.lang.board.morning_cleanup",
                     "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
                 }),
             )
@@ -2151,17 +2126,17 @@ mod tests {
             room.page.ask.is_some(),
             "the window asks the person, as for a press"
         );
-        let todos_before = items_of(&room, "so.tilo.todo", "items");
+        let todos_before = items_of(&room, "so.tilo.lang.todo", "items");
         assert_eq!(todos_before, 3, "nothing was removed while it waits");
         let run = waiting["run"].as_str().unwrap().to_owned();
         let done = person_decides(&mut room, "approve", &run).unwrap();
         assert_eq!(done["state"], "done", "{done}");
         assert_eq!(
-            items_of(&room, "so.tilo.todo", "items"),
+            items_of(&room, "so.tilo.lang.todo", "items"),
             2,
             "the finished todo went, once"
         );
-        let notes_after = items_of(&room, "so.tilo.notes", "notes");
+        let notes_after = items_of(&room, "so.tilo.lang.notes", "notes");
         assert_eq!(
             notes_after, 3,
             "and one note says so: two staged and the morning one"
@@ -2171,8 +2146,8 @@ mod tests {
             "it completes once"
         );
         room.settle();
-        assert_eq!(items_of(&room, "so.tilo.todo", "items"), 2);
-        assert_eq!(items_of(&room, "so.tilo.notes", "notes"), 3);
+        assert_eq!(items_of(&room, "so.tilo.lang.todo", "items"), 2);
+        assert_eq!(items_of(&room, "so.tilo.lang.notes", "notes"), 3);
     }
 
     /// How many items the collection `field` of the root of `app` holds.
@@ -2191,7 +2166,9 @@ mod tests {
         let survey = room.surveyed();
         let pin = survey
             .iter()
-            .find(|d| d.resource_kind == "tl.so.tilo.notes.Note" && d.action_label == "toggle_pin")
+            .find(|d| {
+                d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "toggle_pin"
+            })
             .expect("a note publishes its own verbs");
         let (resource, action) = (pin.address.resource.clone(), pin.address.action.clone());
         assert!(
@@ -2211,7 +2188,9 @@ mod tests {
         let send = chat
             .surveyed()
             .into_iter()
-            .find(|d| d.resource_kind == "tl.so.tilo.letters.Draft" && d.action_label == "send")
+            .find(|d| {
+                d.resource_kind == "tl.so.tilo.lang.letters.Draft" && d.action_label == "send"
+            })
             .expect("a draft publishes its send");
         chat.applies_as(
             Some(task()),
@@ -2238,7 +2217,7 @@ mod tests {
     /// Whether the note published as `resource` is pinned.
     fn pinned(room: &Room, resource: &str) -> bool {
         let host = room.page.current_host().unwrap();
-        let path = resource.strip_prefix("tl:so.tilo.notes:").unwrap();
+        let path = resource.strip_prefix("tl:so.tilo.lang.notes:").unwrap();
         let probe = tilolang_tilo::runtime::ResourceRef::parse_id(path, String::new()).unwrap();
         let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe).unwrap();
         let note = tilolang_tilo::runtime::ResourceRef::parse_id(path, ty).unwrap();

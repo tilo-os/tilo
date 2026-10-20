@@ -16381,7 +16381,6 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-test-env",
  "tilo-user-identity",
- "tilolang-app",
  "tokio",
  "tokio-rustls",
  "totp",
@@ -19985,7 +19984,6 @@ dependencies = [
  "tilo-search",
  "tilo-spellcheck",
  "tilo-ui",
- "tilolang-app",
  "totp",
  "tube",
  "typst-editor",
@@ -20140,10 +20138,33 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "serde_json",
+ "thiserror 2.0.21",
  "tilo-app",
  "tilo-automerge",
+ "tilolang",
  "tilolang-tilo",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-cli"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "notify",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-ui",
+ "tilolang",
+ "tilolang-tilo",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 

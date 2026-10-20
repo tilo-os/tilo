@@ -1,8 +1,8 @@
-//! The tilolang host: one Tilo app that runs every tilolang app package.
+//! The tilolang runtime: runs the one installed tilolang app the launcher started it for.
 //!
-//! Started with one of the `tilolang` commands (`check`, `build`, `fmt`, `ids`, `run`), the same
-//! binary is the language's command line, and `run` opens a package under development in a
-//! window of its own (`tilolang_app::dev`). Anything else launches the app.
+//! The launcher executes this binary from the tilolang runtime bundle with `TILO_PACKAGE_ID`
+//! and `TILO_APP_MODULE` set (see `tilolang_app`). The language's command line (`tilolang build`,
+//! `tilolang run`) is a separate tool, `crates/lang/tilolang-cli`.
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
@@ -11,14 +11,9 @@ extern crate runtime_dylib;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
-    use tilolang_tilo::tilolang::cli;
-
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args
-        .first()
-        .is_some_and(|command| cli::COMMANDS.contains(&command.as_str()))
-    {
-        return cli::main(&args, Some(&tilolang_app::dev::run));
+    if let Err(error) = tilolang_app::install_from_env() {
+        eprintln!("tilolang: {error}");
+        return std::process::ExitCode::from(2);
     }
     ui::launch::run_or_exit(&tilolang_app::launch_spec());
     std::process::ExitCode::SUCCESS

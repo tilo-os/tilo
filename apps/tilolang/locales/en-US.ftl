@@ -23,4 +23,3 @@ tilolang-invocation-declined = Declined
 tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
 tilolang-embed-error = This block could not run
-tilolang-dev-errors = The app has errors. The terminal that runs it lists them.

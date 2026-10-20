@@ -1,8 +1,8 @@
-//! The built-in packages: tilolang sources embedded at build time.
+//! The built-in packages as test fixtures: their sources, compiled in the test process.
 //!
-//! Compiling a package takes milliseconds, so the host compiles each at startup instead of
-//! shipping wasm. The ids lock sits next to the source and is committed, so every replica of a
-//! room compiles the same declaration ids.
+//! The runtime binary compiles nothing; an installed app's package arrives compiled
+//! (`TILO_APP_MODULE`). The window's own tests still run several packages in one host, which
+//! is what they were written against.
 
 macro_rules! embedded {
     ($dir:literal) => {
@@ -31,3 +31,13 @@ pub const EMBEDDED: &[Embedded] = &[
     embedded!("chat"),
     embedded!("board"),
 ];
+
+/// The surface of a host running every built-in package.
+#[must_use]
+pub fn surface() -> Vec<u8> {
+    let sources: Vec<(&str, &str)> = EMBEDDED
+        .iter()
+        .map(|package| (package.source, package.ids))
+        .collect();
+    tilolang_tilo::host::builtin_surface(&sources)
+}
