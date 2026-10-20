@@ -29,6 +29,10 @@ pub trait Sheets: Send + Sync {
     fn ask(&self, handle: &str, request: &SecretRequest) -> SheetReply;
     /// Take the sheet named `handle` down, if it is still up.
     fn cancel(&self, handle: &str);
+    /// `request` needed secrets the agent could not ask for: `NetworkManager`
+    /// connected on its own and nothing usable was remembered. The host
+    /// tells the person, who joins the network themselves to be asked.
+    fn cannot_ask(&self, _request: &SecretRequest) {}
 }
 
 /// Where `NetworkManager` looks for every agent.
@@ -72,6 +76,10 @@ impl SheetPrompter {
 impl SecretPrompter for SheetPrompter {
     async fn ask(&self, request: &SecretRequest) -> Option<SheetAnswer> {
         self.sheets.ask(&self.handle, request).await
+    }
+
+    fn cannot_ask(&self, request: &SecretRequest) {
+        self.sheets.cannot_ask(request);
     }
 }
 

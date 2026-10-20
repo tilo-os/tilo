@@ -386,3 +386,31 @@ fn an_unnamed_connection_is_this_network() {
         "Enter the password for \u{201c}this network\u{201d}."
     );
 }
+
+/// A network NetworkManager could not join on its own for want of a usable
+/// password: the person reads "Couldn't join <network>" once, and its
+/// action joins that connection as them, which asks for the password.
+#[test]
+fn a_network_that_could_not_be_joined_is_told_once_with_a_join_action() {
+    let request = request_for(wifi_psk_connection(), "802-11-wireless-security", &[]);
+    let notice = CannotJoin::new(&request).expect("a network to name");
+    assert_eq!(notice.network, "Home Net", "named by its SSID");
+    assert_eq!(
+        notice.action(),
+        format!("{JOIN_ACTION_PREFIX}{}", request.connection_path)
+    );
+    let shown = notice.notification();
+    assert!(shown.title.contains("Home Net"), "{}", shown.title);
+
+    let before = drain_cannot_join().len();
+    assert_eq!(before, 0);
+    notice.clone().queue();
+    notice.queue();
+    let told = drain_cannot_join();
+    assert_eq!(told.len(), 1, "told once per network");
+    assert_eq!(
+        told[0].default_action_key(),
+        Some(format!("{JOIN_ACTION_PREFIX}{}", request.connection_path)),
+        "the notification joins the network"
+    );
+}
