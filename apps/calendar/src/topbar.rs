@@ -19,7 +19,6 @@ use ui::widget::{
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
-use crate::sidebar::segment_rects;
 use crate::{date, model::View};
 
 const NEW_EVENT: &str = "New event";
@@ -395,7 +394,7 @@ fn solve(
             mid + SegmentedFace::height(ControlSize::Regular, theme) / 2.0,
         );
         x1 = strip.x0 - sibling;
-        segment_rects(strip, View::ALL.len())
+        SegmentedFace::partition(strip, &labels, ControlSize::Regular, text, theme)
     } else {
         Vec::new()
     };

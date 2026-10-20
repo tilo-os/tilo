@@ -220,9 +220,10 @@ impl Sidebar {
             let height = SegmentedFace::height(ControlSize::Regular, &local);
             let r = self.rect();
             let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
-            let segments = segment_rects(strip, View::ALL.len());
             let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
             let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
+            let segments =
+                SegmentedFace::partition(strip, &labels, ControlSize::Regular, ctx.text, &local);
             let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
             let hovered = segments.iter().position(|s| s.contains(pointer));
             ToggleGroup::paint(
@@ -244,21 +245,6 @@ impl Sidebar {
             hits,
         })
     }
-}
-
-/// `count` equal, contiguous segments across `strip`.
-pub(crate) fn segment_rects(strip: Rect, count: usize) -> Vec<Rect> {
-    let width = strip.width() / count.max(1) as f64;
-    (0..count)
-        .map(|index| {
-            Rect::new(
-                strip.x0 + width * index as f64,
-                strip.y0,
-                strip.x0 + width * (index as f64 + 1.0),
-                strip.y1,
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]
