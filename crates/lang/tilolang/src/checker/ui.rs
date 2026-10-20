@@ -764,11 +764,16 @@ impl Checker<'_> {
     }
 
     pub(super) fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
-        self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text]);
+        let _ = self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text]);
     }
 
     /// `bind:` to a field or view state whose type is one of `allowed`.
-    pub(super) fn bind_typed(&mut self, node: &Ex, value: &ast::Expr, allowed: &[Ty]) {
+    pub(super) fn bind_typed(
+        &mut self,
+        node: &Ex,
+        value: &ast::Expr,
+        allowed: &[Ty],
+    ) -> Option<Ty> {
         let names = allowed
             .iter()
             .map(|t| self.show(t))
@@ -780,7 +785,7 @@ impl Checker<'_> {
             if !allowed.contains(&state.ty) {
                 let t = self.show(&state.ty);
                 self.err("E062", value.span, format!("this binds view state of type {names}; `{n}` is {t}; change it with `on: set({n}, value)`"));
-                return;
+                return None;
             }
             let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
             self.emit(Stmt::Eval(Ex::host(
@@ -788,7 +793,7 @@ impl Checker<'_> {
                 vec![node.clone(), layer, Ex::str(&state.id)],
                 Ty::Unit,
             )));
-            return;
+            return Some(state.ty);
         }
         let ExprKind::Field { base, name } = &value.kind else {
             self.err(
@@ -797,7 +802,7 @@ impl Checker<'_> {
                 "`bind:` takes a field of a resource, such as `bind: item.done`, or a `window` or `lens` declaration of the view",
             );
             let _ = self.expr(value, None);
-            return;
+            return None;
         };
         let b = self.expr(base, None);
         let Ty::Record(key) = b.ty.clone() else {
@@ -808,7 +813,7 @@ impl Checker<'_> {
                     "`bind:` takes a field of a resource, such as `bind: item.done`",
                 );
             }
-            return;
+            return None;
         };
         let env = self.env;
         let Some(f) = env.type_info(&key).and_then(|t| t.field(&name.name)) else {
@@ -824,7 +829,7 @@ impl Checker<'_> {
                     key.name, name.name
                 ),
             );
-            return;
+            return None;
         };
         if f.ty.is_container() || !allowed.contains(&f.ty) {
             let t = self.show(&f.ty);
@@ -833,13 +838,14 @@ impl Checker<'_> {
                 value.span,
                 format!("this binds a field of type {names}; `{}` is {t}", f.name),
             );
-            return;
+            return None;
         }
         self.emit(Stmt::Eval(Ex::host(
             Imp::UiBind,
             vec![node.clone(), b, Ex::str(&f.id)],
             Ty::Unit,
         )));
+        Some(f.ty.clone())
     }
 
     /// A call of a view: the caller wraps the result in a node keyed by the call site, so two

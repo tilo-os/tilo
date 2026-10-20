@@ -108,6 +108,7 @@ view task(t: Task) {
     stack {
         text(t.start)
         date(bind: t.due)
+        date(bind: t.start)
         facts {
             "Due": t.due
             "Done": t.done_at
@@ -191,7 +192,14 @@ view rows(l: Tasks) {
         assert_eq!(text_prop(facts[0], "value"), "", "none is the empty text");
         assert_eq!(text_prop(facts[0], "value:as"), "date");
         assert_eq!(text_prop(facts[1], "value:as"), "time");
-        let control = of_kind(view.tree(), "date")[0].key.clone();
+        let dates = of_kind(view.tree(), "date");
+        assert_eq!(
+            dates[0].props.get("optional"),
+            Some(&Value::Int(1)),
+            "a date that may be none can be cleared"
+        );
+        assert!(!dates[1].props.contains_key("optional"));
+        let control = dates[0].key.clone();
         assert_eq!(view.bound_value(&control), Some(Value::none()));
         view.edit(&control, &Value::text("2026-12-24")).unwrap();
         assert_eq!(

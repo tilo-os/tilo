@@ -98,12 +98,16 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         let want = match (prim, name) {
             ("toggle", "bind") => {
-                self.bind_typed(&node, value, &[Ty::Bool]);
+                let _ = self.bind_typed(&node, value, &[Ty::Bool]);
                 return true;
             }
             ("date", "bind") => {
                 let day = [Ty::Date, Ty::Option(Box::new(Ty::Date))];
-                self.bind_typed(&node, value, &day);
+                // Only a date that may be none can be cleared.
+                if let Some(Ty::Option(_)) = self.bind_typed(&node, value, &day) {
+                    let yes = Ex::new(Ek::Bool(true), Ty::Bool);
+                    self.prop(node, "optional", yes, value.span);
+                }
                 return true;
             }
             ("inspector" | "card", "item") => {
@@ -499,7 +503,9 @@ impl Checker<'_> {
                     let v = self.expr_as(value, &Ty::Principal);
                     self.prop(node.clone(), "avatar", v, value.span);
                 }
-                Some("checkbox") => self.bind_typed(&node, value, &[Ty::Bool]),
+                Some("checkbox") => {
+                    let _ = self.bind_typed(&node, value, &[Ty::Bool]);
+                }
                 Some(name) if prims::NODE_ARGS.contains(&name) => {
                     self.apply_arg(n, "row", name, value);
                 }
