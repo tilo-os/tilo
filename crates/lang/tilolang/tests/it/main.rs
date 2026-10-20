@@ -13,6 +13,7 @@ mod errors;
 mod ids_lock;
 mod layout;
 mod multifile;
+mod native;
 mod principal;
 mod roundtrip;
 mod semantics;

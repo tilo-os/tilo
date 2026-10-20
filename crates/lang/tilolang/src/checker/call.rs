@@ -529,6 +529,11 @@ impl Checker<'_> {
             return Ex::error();
         };
         let v = self.expr_as(&value.value, &state.ty);
+        Self::set_action(&state, v)
+    }
+
+    /// The action that sets the view state `state` to `v`.
+    pub(super) fn set_action(state: &super::StateRef, v: Ex) -> Ex {
         let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
         Ex::host(
             Imp::ActSet,

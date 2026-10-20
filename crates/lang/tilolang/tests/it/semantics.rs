@@ -273,7 +273,7 @@ fn anchors_are_written_with_as() {
 #[test]
 fn roots_and_default_views_are_in_the_metadata() {
     let c = crate::common::compile_body(
-        "type Book {\n    title: Text\n}\ntype Shelf {\n    books: Collection<Book>\n}\nroot Shelf\ndefault view shelf for Shelf\ndefault view book for Book\nview shelf(s: Shelf) {\n    for b in s.books {\n        button(b.title, on: open(b))\n    }\n}\nview book(b: Book) {\n    text(b.title)\n}\nview cover(b: Book) {\n    button(b.title, on: open(b, view: book))\n}",
+        "type Book {\n    title: Text\n}\ntype Shelf {\n    books: Collection<Book>\n}\nroot Shelf\ndefault view shelf for Shelf\ndefault view book for Book\nview shelf(s: Shelf) {\n    page {\n        for b in s.books {\n            button(b.title, on: open(b))\n        }\n    }\n}\nview book(b: Book) {\n    document {\n        text(b.title)\n    }\n}\nview cover(b: Book) {\n    button(b.title, on: open(b, view: book))\n}",
     );
     let id = |name: &str| c.ids.get(name).expect("an id").to_string();
     assert_eq!(c.meta.roots, vec![id("Shelf")]);

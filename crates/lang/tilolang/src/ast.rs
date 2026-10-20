@@ -23,6 +23,8 @@ pub struct Module {
 pub struct AppHeader {
     pub id: String,
     pub title: String,
+    /// `(icon: .name)`: the app's icon, a dot literal of the platform's icon set.
+    pub icon: Option<Ident>,
     pub span: Span,
 }
 
@@ -35,6 +37,10 @@ pub enum Item {
     Root(RootDecl),
     /// `default view v for T`: the view a window of a `T` uses unless changed.
     DefaultView(DefaultViewDecl),
+    /// `row view v for T`: the row a list of `T`s shows for each item.
+    RowView(DefaultViewDecl),
+    /// `scenario "name" { ... }`: named seed data, run as a hidden action.
+    Scenario(ScenarioDecl),
     Action(ActionDecl),
     Flow(FlowDecl),
     View(ViewDecl),
@@ -93,6 +99,18 @@ pub struct DefaultViewDecl {
     pub span: Span,
 }
 
+/// `scenario "a week of notes" { ... }`: statements that fill a workspace with sample data for
+/// screenshots, tests and benchmarks (native-apps.md section 5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScenarioDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: String,
+    pub name_span: Span,
+    pub body: Block,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MergeSpec {
     pub kind: MergeKind,
@@ -106,6 +124,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
+    /// `(title)` or `(body)`: what the field is to the platform.
+    pub marker: Option<Ident>,
     pub default: Option<Expr>,
     pub span: Span,
 }
@@ -139,14 +159,43 @@ pub struct Proposal {
     pub args: Option<Vec<Ident>>,
 }
 
+/// `primary` or `destructive` before `action`: how the platform presents the action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionRole {
+    /// The one main action on its subject: the header's Primary button and the empty state's
+    /// action.
+    Primary,
+    /// Drawn as destructive; undone rather than confirmed.
+    Destructive,
+}
+
+impl ActionRole {
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Destructive => "destructive",
+        }
+    }
+}
+
+/// One option of an action's `(icon: .x, label: "y")` list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionOpt {
+    pub name: Ident,
+    pub value: Expr,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
+    pub role: Option<(ActionRole, Span)>,
     pub name: Ident,
     pub params: Vec<Param>,
     pub result: Option<TypeExpr>,
     pub proposal: Option<Proposal>,
+    /// `(icon: .plus, label: "New")`, as written.
+    pub opts: Vec<ActionOpt>,
     pub body: Block,
     pub span: Span,
 }
@@ -375,6 +424,8 @@ pub enum ExprKind {
     /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
+    /// `root T`: in a scenario, the workspace's resource of the root type `T`.
+    Root(TypeExpr),
 }
 
 /// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
@@ -421,6 +472,12 @@ pub enum UiKind {
     },
     /// `window name: T = default` or `lens name: T = default`.
     State(StateDecl),
+    /// `"Due": d.due`: one fact of a `facts { }` block.
+    Fact {
+        node: NodeId,
+        label: Expr,
+        value: Expr,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -472,6 +529,8 @@ pub struct UiCall {
     pub node: NodeId,
     /// A call of a UI primitive or of a view, or a bare name.
     pub call: Expr,
+    /// The item name of a list's item block: `list(xs) { x -> ... }`.
+    pub item: Option<Ident>,
     pub block: Option<Vec<UiStmt>>,
     pub anchor: Option<Ident>,
 }

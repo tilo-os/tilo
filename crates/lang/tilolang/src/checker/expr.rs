@@ -122,6 +122,7 @@ impl Checker<'_> {
             }
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
+            ExprKind::Root(t) => self.root_of(t, e.span),
         }
     }
 
@@ -325,6 +326,46 @@ impl Checker<'_> {
                 Ex::error()
             }
         }
+    }
+
+    /// `root T` in a scenario: the workspace's resource of the root type `T`, which the host
+    /// creates with the id `root-<type id>`.
+    fn root_of(&mut self, t: &ast::TypeExpr, span: Span) -> Ex {
+        let env = self.env;
+        let roots: Vec<&str> = env.roots.iter().map(|k| k.name.as_str()).collect();
+        let roots = if roots.is_empty() {
+            "it declares none; add `root T`".to_string()
+        } else {
+            format!("its roots: {}", roots.join(", "))
+        };
+        if !self.st.scenario {
+            self.err("E094", span, "`root T` names the workspace's root resource, which only a scenario reaches; elsewhere take the resource as a parameter");
+            return Ex::error();
+        }
+        let named = match &t.kind {
+            ast::TypeExprKind::Named(path) if path.len() == 1 => path.first(),
+            _ => None,
+        };
+        let info = named
+            .and_then(|n| env.own_type(&n.name))
+            .filter(|info| env.roots.contains(&info.key));
+        let Some(info) = info else {
+            self.err(
+                "E094",
+                t.span,
+                format!("`root` takes a root type of this package; {roots}"),
+            );
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::RefLit,
+            vec![
+                Ex::str(&info.key.app),
+                Ex::str(&info.id),
+                Ex::str(&format!("root-{}", info.id)),
+            ],
+            Ty::Record(info.key.clone()),
+        )
     }
 
     fn ref_lit(&mut self, r: &ast::RefLit, span: Span) -> Ex {

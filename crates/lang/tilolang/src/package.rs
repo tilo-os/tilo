@@ -10,7 +10,7 @@ use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
     ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
-    ParamMeta, ProposalMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -312,6 +312,7 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         merge: f.merge,
         doc: f.doc.clone(),
         default: f.default.clone(),
+        role: f.role.clone(),
     }
 }
 
@@ -325,19 +326,55 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
     meta.roots = env.roots.iter().map(type_id).collect();
-    meta.default_views = env
-        .default_views
-        .iter()
-        .filter_map(|(key, view)| {
-            Some(DefaultViewMeta {
-                ty: type_id(key),
-                view: env.own_callable(view)?.id.clone(),
+    let views_meta = |views: &[(crate::types::TypeKey, String)]| -> Vec<DefaultViewMeta> {
+        views
+            .iter()
+            .filter(|(key, _)| key.app == app)
+            .filter_map(|(key, view)| {
+                Some(DefaultViewMeta {
+                    ty: type_id(key),
+                    view: env.own_callable(view)?.id.clone(),
+                })
             })
-        })
-        .collect();
+            .collect()
+    };
+    meta.default_views = views_meta(&env.default_views);
+    meta.row_views = views_meta(&env.row_views);
+    meta.icon.clone_from(&env.icon);
+    let class_of = |idx: usize| {
+        fx.class
+            .get(idx)
+            .copied()
+            .unwrap_or(crate::types::EffectClass::Read)
+    };
     for item in &module.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) => {}
+            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Scenario(sc) => {
+                let Some(c) = env.scenario(&sc.name) else {
+                    continue;
+                };
+                let Some(idx) = c.func else { continue };
+                meta.actions.push(ActionMeta {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    doc: doc(&sc.doc),
+                    params: Vec::new(),
+                    result: None,
+                    class: class_of(idx),
+                    proposal: None,
+                    reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    label: c.present.label.clone(),
+                    icon: None,
+                    role: None,
+                    scenario: true,
+                });
+                meta.scenarios.push(ScenarioMeta {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    action: c.id.clone(),
+                });
+            }
             Item::Enum(e) => {
                 let Some(info) = env.own_enum(&e.name.name) else {
                     continue;
@@ -353,6 +390,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                             id: v.id.clone(),
                             name: v.name.clone(),
                             doc: v.doc.clone(),
+                            label: v.label.clone(),
                             fields: v.fields.iter().map(|f| field_meta(f, app)).collect(),
                         })
                         .collect(),
@@ -393,13 +431,13 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     doc: doc(&a.doc),
                     params: params_meta(&c.params, app),
                     result: result_meta(&c.result, app),
-                    class: fx
-                        .class
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(crate::types::EffectClass::Read),
+                    class: class_of(idx),
                     proposal,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    label: c.present.label.clone(),
+                    icon: c.present.icon.clone(),
+                    role: c.present.role.clone(),
+                    scenario: false,
                 });
             }
             Item::Flow(f) => {
@@ -413,11 +451,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     doc: doc(&f.doc),
                     params: params_meta(&c.params, app),
                     result: result_meta(&c.result, app),
-                    class: fx
-                        .class
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(crate::types::EffectClass::Read),
+                    class: class_of(idx),
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
                 });
             }

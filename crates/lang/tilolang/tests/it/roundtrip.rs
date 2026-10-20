@@ -78,7 +78,7 @@ view v(l: todo.TodoList) {
     column(gap: .section, align: .center) {
         for i in l.items {
             if i.done {
-                text("done", style: .caption)
+                text("done", role: .caption)
             } else if picked == .some(1) {
                 text("picked")
             } else {
@@ -92,7 +92,7 @@ view v(l: todo.TodoList) {
                 text(h)
             }
         }
-        button("Line", on: set(order, .line(len: 3)), style: .primary)
+        button("Line", on: set(order, .line(len: 3)))
         list(l.items) { i -> text(i.title) }
     }
 }
@@ -171,4 +171,89 @@ fn every_declaration_and_ui_call_has_an_id_and_a_span() {
         }
     }
     assert!(ids.len() > 8);
+}
+
+/// Every construct of the native vocabulary, in canonical form.
+const NATIVE: &str = r#"app so.tilo.notes "Notes" (icon: .bookmark)
+
+type Note {
+    title: Text (title)
+    body: Text merge text (body) = ""
+    pinned: Bool = false
+}
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+enum NoteFilter {
+    /// All notes
+    all
+    pinned
+}
+
+root Notebook
+
+default view notebook for Notebook
+
+row view note_row for Note
+
+/// Start a note.
+primary action new_note(nb: Notebook) -> Note (icon: .plus) {
+    return nb.notes.insert(Note(title: ""))
+}
+
+destructive action delete(nb: Notebook, n: Note) (icon: .trash_2, label: "Delete note") {
+    nb.notes.remove(n)
+}
+
+action pin(n: Note) -> Bool proposal note_row (icon: .pin) {
+    n.pinned = true
+    return true
+}
+
+view note_row(n: Note) {
+    row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+}
+
+view notebook(nb: Notebook) {
+    window filter: NoteFilter = .all
+    list(nb.notes, filter: filter, empty: "No notes yet") { n ->
+        row(n.title, checkbox: n.pinned)
+    }
+}
+
+view note(n: Note) {
+    document {
+        section("About") {
+            facts {
+                "Title": n.title
+                "Pinned": n.pinned
+            }
+        }
+        button(pin(n))
+    }
+}
+
+/// A notebook to take shots of.
+scenario "a week of notes" {
+    let nb = root Notebook
+    new_note(nb)
+}
+"#;
+
+#[test]
+fn the_native_vocabulary_is_canonical_and_round_trips() {
+    assert_eq!(print_of(NATIVE), NATIVE);
+    crate::common::compile(NATIVE);
+    let a = parse(NATIVE).expect("parses");
+    let b = parse(&print_module(&a)).expect("printed text parses");
+    assert_eq!(print_module(&a), print_module(&b));
+}
+
+#[test]
+fn facts_on_one_line_and_lists_in_braces_print_canonically() {
+    let src = "app t.x \"X\"\nview v(l: L) {\n    facts { \"a\": 1; \"b\": l.x }\n    list(l.items) { i -> text(i.t) }\n}\n";
+    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts {\n        \"a\": 1\n        \"b\": l.x\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
+    assert_eq!(print_of(src), want);
 }

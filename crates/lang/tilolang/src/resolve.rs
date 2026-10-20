@@ -17,6 +17,8 @@ pub struct FieldInfo {
     pub merge: MergeKind,
     pub doc: String,
     pub default: Option<serde_json::Value>,
+    /// `title` or `body`, from the field's marker.
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +49,7 @@ pub struct VariantInfo {
     pub name: String,
     pub id: String,
     pub doc: String,
+    pub label: String,
     pub fields: Vec<FieldInfo>,
 }
 
@@ -121,6 +124,52 @@ pub struct Callable {
     pub result: Ty,
     /// The class recorded in foreign metadata.
     pub class: Option<EffectClass>,
+    /// How the platform presents an action or flow: its label, icon and role.
+    pub present: Presentation,
+    /// The hidden action of a `scenario`; its name is the scenario's, which source cannot call.
+    pub scenario: bool,
+}
+
+/// What a button or a menu shows for an action or flow, from its declaration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub label: String,
+    /// A kebab-case name of the platform's icon set.
+    pub icon: Option<String>,
+    /// `primary` or `destructive`.
+    pub role: Option<String>,
+}
+
+/// `new_note` as "New note".
+pub fn sentence_case(name: &str) -> String {
+    let spaced = name.replace('_', " ");
+    let mut chars = spaced.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The first line of a doc comment without its closing period, when there is one.
+fn doc_line(doc: &str) -> Option<String> {
+    let line = doc.lines().next()?.trim();
+    let line = line.strip_suffix('.').unwrap_or(line).trim_end();
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// An action's or flow's label: its name in sentence case, or its doc's first line when that is
+/// shorter.
+pub fn action_label(name: &str, doc: &str) -> String {
+    let named = sentence_case(name);
+    match doc_line(doc) {
+        Some(line) if line.chars().count() < named.chars().count() => line,
+        _ => named,
+    }
+}
+
+/// A variant's label: its doc's first line, or its name in sentence case.
+pub fn variant_label(name: &str, doc: &str) -> String {
+    doc_line(doc).unwrap_or_else(|| sentence_case(name))
 }
 
 impl Callable {
@@ -161,6 +210,10 @@ pub struct Env {
     pub default_views: Vec<(TypeKey, String)>,
     /// The view state every view declares.
     pub states: Vec<StateInfo>,
+    /// `row view v for T`: the type and the view's name.
+    pub row_views: Vec<(TypeKey, String)>,
+    /// The app's icon, kebab-case.
+    pub icon: Option<String>,
 }
 
 impl Env {
@@ -185,7 +238,24 @@ impl Env {
     }
 
     pub fn own_callable(&self, name: &str) -> Option<&Callable> {
-        self.callables.iter().find(|c| c.own && c.name == name)
+        self.callables
+            .iter()
+            .find(|c| c.own && !c.scenario && c.name == name)
+    }
+
+    /// The hidden action of the scenario `name`.
+    pub fn scenario(&self, name: &str) -> Option<&Callable> {
+        self.callables
+            .iter()
+            .find(|c| c.own && c.scenario && c.name == name)
+    }
+
+    /// The row view of the record type `key`, when its package declares one.
+    pub fn row_view(&self, key: &TypeKey) -> Option<&Callable> {
+        let (_, name) = self.row_views.iter().find(|(k, _)| k == key)?;
+        self.callables
+            .iter()
+            .find(|c| c.app == key.app && !c.scenario && c.kind == CKind::View && &c.name == name)
     }
 
     pub fn foreign_callable(&self, app: &str, name: &str) -> Option<&Callable> {
@@ -246,6 +316,7 @@ impl Env {
             merge: f.merge,
             doc: f.doc.clone(),
             default: f.default.clone(),
+            role: f.role.clone(),
         };
         for e in &meta.enums {
             self.enums.push(EnumInfo {
@@ -262,6 +333,11 @@ impl Env {
                         name: v.name.clone(),
                         id: v.id.clone(),
                         doc: v.doc.clone(),
+                        label: if v.label.is_empty() {
+                            variant_label(&v.name, &v.doc)
+                        } else {
+                            v.label.clone()
+                        },
                         fields: v.fields.iter().map(field_info).collect(),
                     })
                     .collect(),
@@ -291,7 +367,7 @@ impl Env {
             r.as_ref()
                 .map_or(Ty::Unit, |t| Ty::parse_meta(t, &app).unwrap_or(Ty::Error))
         };
-        let mut add = |kind, name: &str, id: &str, params, result, class| {
+        let mut add = |kind, name: &str, id: &str, params, result, class, present| {
             self.callables.push(Callable {
                 kind,
                 name: name.to_string(),
@@ -302,9 +378,20 @@ impl Env {
                 params,
                 result,
                 class,
+                present,
+                scenario: false,
             });
         };
-        for a in &meta.actions {
+        for a in meta.offered_actions() {
+            let present = Presentation {
+                label: if a.label.is_empty() {
+                    action_label(&a.name, &a.doc)
+                } else {
+                    a.label.clone()
+                },
+                icon: a.icon.clone(),
+                role: a.role.clone(),
+            };
             add(
                 CKind::Action,
                 &a.name,
@@ -312,9 +399,14 @@ impl Env {
                 params(&a.params),
                 result(&a.result),
                 Some(a.class),
+                present,
             );
         }
         for f in &meta.flows {
+            let present = Presentation {
+                label: action_label(&f.name, &f.doc),
+                ..Presentation::default()
+            };
             add(
                 CKind::Flow,
                 &f.name,
@@ -322,6 +414,7 @@ impl Env {
                 params(&f.params),
                 result(&f.result),
                 Some(f.class),
+                present,
             );
         }
         for v in &meta.views {
@@ -332,7 +425,19 @@ impl Env {
                 params(&v.params),
                 Ty::View,
                 None,
+                Presentation::default(),
             );
+        }
+        for rv in &meta.row_views {
+            let ty = meta.types.iter().find(|t| t.id == rv.ty);
+            let view = meta.views.iter().find(|v| v.id == rv.view);
+            if let (Some(ty), Some(view)) = (ty, view) {
+                let key = TypeKey {
+                    app: app.clone(),
+                    name: ty.name.clone(),
+                };
+                self.row_views.push((key, view.name.clone()));
+            }
         }
         for f in &meta.fns {
             add(
@@ -342,6 +447,7 @@ impl Env {
                 params(&f.params),
                 Ty::parse_meta(&f.result, &app).unwrap_or(Ty::Error),
                 None,
+                Presentation::default(),
             );
         }
     }
@@ -514,7 +620,9 @@ impl Resolver<'_> {
                     );
                     continue;
                 }
-                fields.push(self.field(&t.name.name, f, lock));
+                let mut info = self.field(&t.name.name, f, lock);
+                info.role = self.marker(&t.name.name, f, &info, &fields);
+                fields.push(info);
             }
             self.env.types.push(TypeInfo {
                 key: TypeKey {
@@ -584,12 +692,15 @@ impl Resolver<'_> {
                     merge: MergeKind::Register,
                     doc: String::new(),
                     default: None,
+                    role: None,
                 });
             }
+            let doc = v.doc.join("\n");
             variants.push(VariantInfo {
                 name: v.name.name.clone(),
                 id: id_of(lock, &format!("{name}.{}", v.name.name)),
-                doc: v.doc.join("\n"),
+                label: variant_label(&v.name.name, &doc),
+                doc,
                 fields,
             });
         }
@@ -621,7 +732,34 @@ impl Resolver<'_> {
             merge,
             doc: f.doc.join("\n"),
             default,
+            role: None,
         }
+    }
+
+    /// The role a field's marker gives it: `(title)` or `(body)`, on a Text field, once per
+    /// type.
+    fn marker(
+        &mut self,
+        owner: &str,
+        f: &ast::FieldDecl,
+        info: &FieldInfo,
+        before: &[FieldInfo],
+    ) -> Option<String> {
+        let m = f.marker.as_ref()?;
+        if !matches!(m.name.as_str(), "title" | "body") {
+            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text", m.name));
+            return None;
+        }
+        if info.ty != Ty::Text {
+            let t = info.ty.display(&self.env.app);
+            self.err("E092", m.span, format!("only a Text field can be the {}; `{}` is {t}. Mark a Text field instead, or remove `({})`", m.name, f.name.name, m.name));
+            return None;
+        }
+        if let Some(other) = before.iter().find(|x| x.role.as_deref() == Some(&m.name)) {
+            self.err("E092", m.span, format!("`{owner}` already has a {} field, `{}`; a type has at most one. Remove `({})` from one of them", m.name, other.name, m.name));
+            return None;
+        }
+        Some(m.name.clone())
     }
 
     /// The merge kind of a field (implementation.md section 3.2).
@@ -956,6 +1094,12 @@ impl Resolver<'_> {
     fn callables(&mut self, module: &ast::Module, lock: &IdsLock) {
         let mut func = 0usize;
         for item in &module.items {
+            if let Item::Scenario(sc) = item {
+                let index = func;
+                func += 1;
+                self.scenario(sc, lock, index);
+                continue;
+            }
             let (kind, name, params, result) = match item {
                 Item::Action(a) => (CKind::Action, &a.name, &a.params, a.result.as_ref()),
                 Item::Flow(f) => (CKind::Flow, &f.name, &f.params, f.result.as_ref()),
@@ -965,14 +1109,20 @@ impl Resolver<'_> {
                 | Item::Type(_)
                 | Item::Enum(_)
                 | Item::Root(_)
-                | Item::DefaultView(_) => continue,
+                | Item::DefaultView(_)
+                | Item::RowView(_)
+                | Item::Scenario(_) => continue,
             };
             let index = func;
             func += 1;
             if !name_case_ok(&name.name, false) {
                 self.err("E016", name.span, format!("`{}` names a {}, which starts with a lowercase letter (uppercase is for types)", name.name, kind.word()));
             }
-            if prims::prim(&name.name).is_some() || prims::BUILTINS.contains(&name.name.as_str()) {
+            // A view's name is a UI statement, so it cannot be a primitive's; the others are
+            // called in expressions, where only the built-in functions are taken.
+            let taken = (kind == CKind::View && prims::prim(&name.name).is_some())
+                || prims::BUILTINS.contains(&name.name.as_str());
+            if taken {
                 self.err(
                     "E011",
                     name.span,
@@ -983,12 +1133,7 @@ impl Resolver<'_> {
                     ),
                 );
             }
-            if self
-                .env
-                .callables
-                .iter()
-                .any(|c| c.own && c.name == name.name)
-            {
+            if self.env.own_callable(&name.name).is_some() {
                 self.err(
                     "E011",
                     name.span,
@@ -1009,6 +1154,14 @@ impl Resolver<'_> {
                 (_, Some(t)) => self.resolve_type(t, false),
                 (_, None) => Ty::Unit,
             };
+            let present = match item {
+                Item::Action(a) => self.presentation(a),
+                Item::Flow(f) => Presentation {
+                    label: action_label(&f.name.name, &f.doc.join("\n")),
+                    ..Presentation::default()
+                },
+                _ => Presentation::default(),
+            };
             self.env.callables.push(Callable {
                 kind,
                 name: name.name.clone(),
@@ -1019,11 +1172,132 @@ impl Resolver<'_> {
                 params,
                 result,
                 class: None,
+                present,
+                scenario: false,
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
                 self.states(v, lock);
             }
+        }
+        self.one_primary(module);
+    }
+
+    /// A scenario's hidden action: no parameters, no result, named by the scenario.
+    fn scenario(&mut self, sc: &ast::ScenarioDecl, lock: &IdsLock, index: usize) {
+        let name = &sc.name;
+        if name.trim().is_empty() || name.trim() != name || name.contains(['=', '\n']) {
+            self.err("E094", sc.name_span, "a scenario's name is a short phrase without `=`, line breaks or spaces at its ends, such as `scenario \"a week of notes\"`");
+        }
+        if self.env.scenario(name).is_some() {
+            self.err(
+                "E094",
+                sc.name_span,
+                format!(
+                    "the scenario \"{name}\" is declared twice; give each scenario its own name"
+                ),
+            );
+        }
+        self.env.callables.push(Callable {
+            kind: CKind::Action,
+            name: name.clone(),
+            id: id_of(lock, &crate::ids::scenario_key(name)),
+            app: self.env.app.clone(),
+            own: true,
+            func: Some(index),
+            params: Vec::new(),
+            result: Ty::Unit,
+            class: None,
+            present: Presentation {
+                label: name.clone(),
+                ..Presentation::default()
+            },
+            scenario: true,
+        });
+    }
+
+    /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`.
+    fn presentation(&mut self, a: &ast::ActionDecl) -> Presentation {
+        let mut out = Presentation {
+            label: action_label(&a.name.name, &a.doc.join("\n")),
+            icon: None,
+            role: a.role.map(|(r, _)| r.word().to_string()),
+        };
+        let mut seen: Vec<&str> = Vec::new();
+        for opt in &a.opts {
+            let name = opt.name.name.as_str();
+            if seen.contains(&name) {
+                self.err("E090", opt.name.span, format!("`{name}:` is given twice"));
+                continue;
+            }
+            seen.push(name);
+            match (name, &opt.value.kind) {
+                ("icon", ExprKind::Variant { name: icon, args: None }) => {
+                    out.icon = self.icon(icon);
+                }
+                ("icon", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`icon:` takes an icon written with a dot, such as `icon: .plus`",
+                ),
+                ("label", ExprKind::Str(parts)) if parts.iter().all(|p| matches!(p, ast::StrPart::Lit(_))) => {
+                    out.label = parts
+                        .iter()
+                        .map(|p| match p {
+                            ast::StrPart::Lit(t) => t.as_str(),
+                            ast::StrPart::Interp(_) => "",
+                        })
+                        .collect();
+                }
+                ("label", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`label:` takes text in quotes, without `{ }`, such as `label: \"New note\"`",
+                ),
+                (other, _) => self.err(
+                    "E090",
+                    opt.name.span,
+                    format!("an action takes the options `icon:` and `label:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                ),
+            }
+        }
+        out
+    }
+
+    /// The kebab-case name of the icon `.name`, or an error naming close ones.
+    fn icon(&mut self, name: &ast::Ident) -> Option<String> {
+        if let Some(kebab) = prims::icon(&name.name) {
+            return Some(kebab.to_string());
+        }
+        self.err("E091", name.span, prims::unknown_icon(&name.name));
+        None
+    }
+
+    /// At most one `primary` action per subject type (its first parameter's record type).
+    fn one_primary(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(TypeKey, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some((ast::ActionRole::Primary, span)) = a.role else {
+                continue;
+            };
+            let subject = self
+                .env
+                .own_callable(&a.name.name)
+                .and_then(|c| c.params.first())
+                .and_then(|p| match &p.ty {
+                    Ty::Record(key) => Some(key.clone()),
+                    _ => None,
+                });
+            let Some(subject) = subject else {
+                self.err("E090", span, format!("a primary action is the main thing to do with a resource, so its first parameter is a record; `{}` has none. Remove `primary`, or take the resource first", a.name.name));
+                continue;
+            };
+            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == subject) {
+                self.err("E090", span, format!("`{}` already has a primary action, `{first}`; a resource has one. Remove `primary` from `{}` or from `{first}`", subject.name, a.name.name));
+                continue;
+            }
+            seen.push((subject, a.name.name.clone()));
         }
     }
 
@@ -1060,8 +1334,12 @@ impl Resolver<'_> {
         }
     }
 
-    /// `root T` and `default view v for T` (workspace-model.md sections 2 and 7).
+    /// `root T`, `default view v for T` and `row view v for T` (workspace-model.md sections 2
+    /// and 7, native-apps.md section 3.2), and the app's icon.
     fn package_decls(&mut self, module: &ast::Module) {
+        if let Some(icon) = &module.app.icon {
+            self.env.icon = self.icon(icon);
+        }
         for item in &module.items {
             match item {
                 Item::Root(r) => {
@@ -1078,6 +1356,7 @@ impl Resolver<'_> {
                     }
                     self.env.roots.push(key);
                 }
+                Item::RowView(d) => self.row_view_decl(d),
                 Item::DefaultView(d) => {
                     let Some(key) = self.own_record(&d.ty, "default view") else {
                         continue;
@@ -1121,6 +1400,42 @@ impl Resolver<'_> {
                 })
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
+        }
+    }
+
+    /// `row view v for T`: a view of one `T` whose body is one list row, `row(title, ...)`.
+    fn row_view_decl(&mut self, d: &ast::DefaultViewDecl) {
+        let Some(key) = self.own_record(&d.ty, "row view") else {
+            return;
+        };
+        if self.env.row_views.iter().any(|(k, _)| *k == key) {
+            self.err(
+                "E093",
+                d.span,
+                format!("`{}` has two row views; a type has one", key.name),
+            );
+            return;
+        }
+        let fits = self
+            .env
+            .own_callable(&d.view.name)
+            .filter(|c| c.kind == CKind::View)
+            .map(|c| matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())));
+        match fits {
+            Some(true) => self.env.row_views.push((key, d.view.name.clone())),
+            Some(false) => self.err(
+                "E093",
+                d.view.span,
+                format!(
+                    "the row view of `{}` takes the item and nothing else: `view {}(x: {})`",
+                    key.name, d.view.name, key.name
+                ),
+            ),
+            None => self.err(
+                "E093",
+                d.view.span,
+                format!("`{}` is not a view of this package", d.view.name),
+            ),
         }
     }
 
@@ -1237,7 +1552,7 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
                     collect(&arm.body, out);
                 }
             }
-            ast::UiKind::Let { .. } | ast::UiKind::State(_) => {}
+            ast::UiKind::Let { .. } | ast::UiKind::State(_) | ast::UiKind::Fact { .. } => {}
         }
     }
 }

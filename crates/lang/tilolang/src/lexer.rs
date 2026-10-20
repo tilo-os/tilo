@@ -12,9 +12,19 @@ pub const KEYWORDS: &[&str] = &[
 ];
 
 /// Words that are keywords only where a declaration starts: `window` and `lens` at the start
-/// of a statement of a view body, `root` and `default` at the start of an item. Elsewhere they
-/// are ordinary names.
-pub const CONTEXTUAL: &[&str] = &["window", "lens", "root", "default"];
+/// of a statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
+/// `primary` and `destructive` (before `action`) at the start of an item; `root` before a type
+/// in a scenario. Elsewhere they are ordinary names.
+pub const CONTEXTUAL: &[&str] = &[
+    "window",
+    "lens",
+    "root",
+    "default",
+    "row",
+    "scenario",
+    "primary",
+    "destructive",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPiece {

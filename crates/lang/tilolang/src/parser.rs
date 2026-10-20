@@ -3,10 +3,11 @@
 //! Syntax errors are recovered at statement and item boundaries, so one run reports several.
 
 use crate::ast::{
-    ActionDecl, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl, EnumDecl, Expr, ExprKind,
-    FieldDecl, FlowDecl, FnDecl, Ident, Item, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
-    Place, Proposal, RootDecl, StateDecl, StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr,
-    TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
+    ActionDecl, ActionOpt, ActionRole, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl,
+    EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, MatchArm, MergeSpec,
+    Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl, StateDecl, StateLayer,
+    Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
+    UseDecl, VariantDecl, ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
@@ -106,8 +107,7 @@ struct Parser<'a> {
 
 const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
 const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option", "Result"];
-const ITEM_EXPECTED: &str =
-    "`use`, `type`, `enum`, `root`, `default view`, `action`, `flow`, `view` or `fn`";
+const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `fn` or `scenario`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -303,6 +303,71 @@ impl<'a> Parser<'a> {
             || ITEM_KWS.iter().any(|k| self.is_kw(k))
             || self.at_root_decl()
             || self.at_default_view()
+            || self.at_row_view()
+            || self.at_scenario()
+            || self.at_action_role().is_some()
+    }
+
+    /// `row view v for T` at the start of an item.
+    fn at_row_view(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "row")
+            && matches!(self.peek_at(1), Tok::Kw("view"))
+    }
+
+    /// `scenario "name" { ... }` at the start of an item.
+    fn at_scenario(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "scenario")
+            && matches!(self.peek_at(1), Tok::Str(_))
+    }
+
+    /// `primary` or `destructive` before an action, or before another such word.
+    fn at_action_role(&self) -> Option<ActionRole> {
+        let role = match self.peek() {
+            Tok::Ident(n) if n == "primary" => ActionRole::Primary,
+            Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
+            _ => return None,
+        };
+        let next_is_role =
+            matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive");
+        (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
+    }
+
+    /// `(icon: .name)` after the app's title.
+    fn header_opts(&mut self) -> PResult<Option<Ident>> {
+        if !self.eat(&Tok::LParen) {
+            return Ok(None);
+        }
+        let mut icon = None;
+        while !self.is(&Tok::RParen) {
+            let name = self.ident("`icon`")?;
+            if name.name != "icon" {
+                return self.fail(
+                    name.span,
+                    format!(
+                        "the app header takes one option, `icon`: `(icon: .notebook)`; `{}` is not one",
+                        name.name
+                    ),
+                );
+            }
+            self.expect(&Tok::Colon)?;
+            icon = Some(self.icon_lit()?);
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(icon)
+    }
+
+    /// `.name`: an icon of the platform's set.
+    fn icon_lit(&mut self) -> PResult<Ident> {
+        if !self.eat(&Tok::Dot) {
+            return self.unexpected("an icon written with a dot, such as `.plus`");
+        }
+        let mut name = self.ident("an icon name")?;
+        // `.settings_2` lexes as the name `settings_2`; nothing else to join.
+        name.span = Span::new(name.span.start.saturating_sub(1), name.span.end);
+        Ok(name)
     }
 
     /// `root T` at the start of an item.
@@ -352,9 +417,11 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id().ok()?;
             let title = self.plain_string("the app title in quotes").ok()?;
+            let icon = self.header_opts().ok()?;
             AppHeader {
                 id,
                 title,
+                icon,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -388,13 +455,18 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id();
             let title = id
-                .and_then(|id| Ok((id, self.plain_string("the app title in quotes")?)))
+                .and_then(|id| {
+                    let title = self.plain_string("the app title in quotes")?;
+                    let icon = self.header_opts()?;
+                    Ok((id, title, icon))
+                })
                 .ok();
             match title {
-                Some((id, title)) => {
+                Some((id, title, icon)) => {
                     header = Some(AppHeader {
                         id,
                         title,
+                        icon,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }
@@ -463,6 +535,52 @@ impl<'a> Parser<'a> {
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
         }
+        if self.at_row_view() {
+            self.bump();
+            self.bump();
+            let node = self.node();
+            let view = self.ident("the name of the row view")?;
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::RowView(DefaultViewDecl {
+                node,
+                view,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        if self.at_scenario() {
+            self.bump();
+            let node = self.node();
+            let name_span = self.span();
+            let name = self.plain_string("the scenario's name in quotes")?;
+            let body = self.block()?;
+            return Ok(Item::Scenario(ScenarioDecl {
+                node,
+                doc,
+                name,
+                name_span,
+                body,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        let mut role = None;
+        while let Some(r) = self.at_action_role() {
+            let span = self.bump().span;
+            if role.is_some() {
+                self.diags.push(Diagnostic::new(
+                    "E090",
+                    span,
+                    "an action is `primary` or `destructive`, not both: the primary action is the one main thing to do, and a destructive one never is. Keep one of the words",
+                ));
+                continue;
+            }
+            role = Some((r, span));
+        }
+        if role.is_some() && self.is_kw("flow") {
+            let span = self.span();
+            return self.fail(span, "`primary` and `destructive` mark actions; a flow is offered as it is. Write the flow without the word, or make it an action");
+        }
         let Tok::Kw(kw) = self.peek().clone() else {
             return self.unexpected(ITEM_EXPECTED);
         };
@@ -470,7 +588,7 @@ impl<'a> Parser<'a> {
             "use" => self.use_decl(start).map(Item::Use),
             "type" => self.type_decl(doc, start).map(Item::Type),
             "enum" => self.enum_decl(doc, start).map(Item::Enum),
-            "action" => self.action(doc, start).map(Item::Action),
+            "action" => self.action(doc, role, start).map(Item::Action),
             "flow" => self.flow(doc, start).map(Item::Flow),
             "view" => self.view(doc, start).map(Item::View),
             "fn" => self.func(doc, start).map(Item::Fn),
@@ -606,6 +724,13 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let marker = if self.eat(&Tok::LParen) {
+            let m = self.ident("`title` or `body`")?;
+            self.expect(&Tok::RParen)?;
+            Some(m)
+        } else {
+            None
+        };
         let default = if self.eat(&Tok::Assign) {
             Some(self.expr()?)
         } else {
@@ -617,6 +742,7 @@ impl<'a> Parser<'a> {
             name,
             ty,
             merge,
+            marker,
             default,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
@@ -687,7 +813,12 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    fn action(&mut self, doc: Vec<String>, start: Span) -> PResult<ActionDecl> {
+    fn action(
+        &mut self,
+        doc: Vec<String>,
+        role: Option<(ActionRole, Span)>,
+        start: Span,
+    ) -> PResult<ActionDecl> {
         self.expect_kw("action")?;
         let node = self.node();
         let name = self.ident("an action name")?;
@@ -699,7 +830,9 @@ impl<'a> Parser<'a> {
         };
         let proposal = if self.eat_kw("proposal") {
             let view = self.ident("the name of the proposal view")?;
-            let args = if self.eat(&Tok::LParen) {
+            // `(icon: ...)` after the view is the action's options, not the view's arguments.
+            let options_follow = matches!(self.peek_at(2), Tok::Colon);
+            let args = if !options_follow && self.eat(&Tok::LParen) {
                 let mut names = Vec::new();
                 while !self.is(&Tok::RParen) {
                     names.push(self.ident("an action parameter")?);
@@ -716,17 +849,39 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let opts = self.action_opts()?;
         let body = self.block()?;
         Ok(ActionDecl {
             node,
             doc,
+            role,
             name,
             params,
             result,
             proposal,
+            opts,
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    /// `(icon: .plus, label: "New")` before an action's body.
+    fn action_opts(&mut self) -> PResult<Vec<ActionOpt>> {
+        let mut out = Vec::new();
+        if !self.eat(&Tok::LParen) {
+            return Ok(out);
+        }
+        while !self.is(&Tok::RParen) {
+            let name = self.ident("an option of the action: `icon` or `label`")?;
+            self.expect(&Tok::Colon)?;
+            let value = self.expr()?;
+            out.push(ActionOpt { name, value });
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(out)
     }
 
     fn flow(&mut self, doc: Vec<String>, start: Span) -> PResult<FlowDecl> {
@@ -1124,6 +1279,15 @@ impl<'a> Parser<'a> {
                 self.bump();
                 ExprKind::Bool(false)
             }
+            Tok::Ident(name) if name == "root" && matches!(self.peek_at(1), Tok::Ident(_)) => {
+                self.bump();
+                let ty = self.type_expr()?;
+                let span = start.to(ty.span);
+                return Ok(Expr {
+                    kind: ExprKind::Root(ty),
+                    span,
+                });
+            }
             Tok::Ident(name) if name == "do" && matches!(self.peek_at(1), Tok::Ident(_)) => {
                 let span = self.span();
                 return self.fail(
@@ -1340,6 +1504,11 @@ impl<'a> Parser<'a> {
 
     fn ui_block(&mut self) -> PResult<Vec<UiStmt>> {
         self.expect(&Tok::LBrace)?;
+        self.ui_block_rest()
+    }
+
+    /// The statements of a view block after its `{` (and a list's `x ->`), and the `}`.
+    fn ui_block_rest(&mut self) -> PResult<Vec<UiStmt>> {
         let mut out = Vec::new();
         loop {
             self.skip_nl();
@@ -1444,6 +1613,13 @@ impl<'a> Parser<'a> {
                 let value = self.expr()?;
                 UiKind::Let { name, value }
             }
+            Tok::Str(_) if matches!(self.peek_at(1), Tok::Colon) => {
+                let node = self.node();
+                let label = self.primary()?;
+                self.expect(&Tok::Colon)?;
+                let value = self.expr()?;
+                UiKind::Fact { node, label, value }
+            }
             _ => UiKind::Call(self.ui_call()?),
         };
         Ok(UiStmt {
@@ -1476,13 +1652,22 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let call = self.postfix()?;
         let mut block = None;
-        let mut call = call;
+        let mut item = None;
         if self.is(&Tok::LBrace) {
             if matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Arrow) {
-                // `list(items) { x -> ... }` is `column { for x in items { ... } }`.
-                let (new_call, stmts) = self.list_sugar(&call)?;
-                call = new_call;
-                block = Some(stmts);
+                let is_list = match &call.kind {
+                    ExprKind::Call { callee, .. } => {
+                        matches!(&callee.kind, ExprKind::Ident(n) if n == "list")
+                    }
+                    _ => false,
+                };
+                if !is_list {
+                    return self.fail(call.span, "`name { x -> ... }` is only available as `list(items) { x -> ... }`; write `for x in items { ... }` instead");
+                }
+                self.bump();
+                item = Some(self.ident("the item's name")?);
+                self.expect(&Tok::Arrow)?;
+                block = Some(self.ui_block_rest()?);
             } else {
                 block = Some(self.ui_block()?);
             }
@@ -1499,47 +1684,9 @@ impl<'a> Parser<'a> {
         Ok(UiCall {
             node,
             call,
+            item,
             block,
             anchor,
         })
-    }
-
-    fn list_sugar(&mut self, call: &Expr) -> PResult<(Expr, Vec<UiStmt>)> {
-        let items = match &call.kind {
-            ExprKind::Call { callee, args }
-                if matches!(&callee.kind, ExprKind::Ident(n) if n == "list") && args.len() == 1 =>
-            {
-                args.first().map(|a| a.value.clone())
-            }
-            _ => None,
-        };
-        let Some(iter) = items else {
-            return self.fail(call.span, "`name { x -> ... }` is only available as `list(items) { x -> ... }`; write `for x in items { ... }` instead");
-        };
-        self.expect(&Tok::LBrace)?;
-        let var = self.ident("a loop variable")?;
-        self.expect(&Tok::Arrow)?;
-        let mut body = Vec::new();
-        loop {
-            self.skip_nl();
-            if self.is(&Tok::RBrace) {
-                break;
-            }
-            if matches!(self.peek(), Tok::Eof) {
-                return self.unexpected("`}` to close the list body");
-            }
-            body.push(self.ui_stmt()?);
-        }
-        let close = self.expect(&Tok::RBrace)?;
-        let span = call.span.to(close);
-        let column = Expr {
-            kind: ExprKind::Ident("column".into()),
-            span: call.span,
-        };
-        let for_stmt = UiStmt {
-            kind: UiKind::For { var, iter, body },
-            span,
-        };
-        Ok((column, vec![for_stmt]))
     }
 }

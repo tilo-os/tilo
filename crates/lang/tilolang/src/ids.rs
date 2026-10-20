@@ -254,13 +254,20 @@ impl IdsLock {
     }
 }
 
+/// The ids-lock name of a scenario: its name in quotes, which no other declaration can have.
+pub fn scenario_key(name: &str) -> String {
+    format!("scenario \"{name}\"")
+}
+
 /// The qualified name of every declaration that gets an id: types (`Album`), fields
-/// (`Album.title`), actions, flows, views and fns (`play`), and anchors (`album_page#play`).
+/// (`Album.title`), actions, flows, views and fns (`play`), anchors (`album_page#play`) and
+/// scenarios (`scenario "a week of notes"`).
 pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) => {}
+            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Scenario(s) => out.push(scenario_key(&s.name)),
             Item::Type(t) => {
                 out.push(t.name.name.clone());
                 for f in &t.fields {
@@ -317,7 +324,7 @@ fn collect_anchors(view: &str, stmts: &[crate::ast::UiStmt], out: &mut Vec<Strin
                     collect_anchors(view, &arm.body, out);
                 }
             }
-            UiKind::Let { .. } | UiKind::State(_) => {}
+            UiKind::Let { .. } | UiKind::State(_) | UiKind::Fact { .. } => {}
         }
     }
 }

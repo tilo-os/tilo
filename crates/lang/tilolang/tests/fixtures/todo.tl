@@ -38,7 +38,7 @@ fn open_count(list: TodoList) -> Int {
 
 view todo_list(list: TodoList) {
     column {
-        heading("{list.name} ({open_count(list)} open)")
+        text("{list.name} ({open_count(list)} open)", role: .title)
         for item in list.items {
             row {
                 checkbox(item.title, bind: item.done)
