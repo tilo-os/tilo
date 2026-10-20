@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
+
+mod language_pack;
 use install::shim;
+use language_pack::install_language_pack;
 use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
 use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustFile, TrustedAttestor, TrustedAttestors,
@@ -993,6 +996,16 @@ fn install(
                 pinned,
                 dry_run,
             },
+            payload_from
+                .as_ref()
+                .map(|source| source as &dyn BlobFetcher),
+        );
+    }
+    if checked.manifest.package.kind == tilo_app_package::Kind::LanguagePack {
+        return install_language_pack(
+            &candidate,
+            &checked,
+            dry_run,
             payload_from
                 .as_ref()
                 .map(|source| source as &dyn BlobFetcher),

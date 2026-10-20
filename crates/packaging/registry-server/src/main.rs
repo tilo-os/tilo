@@ -1242,7 +1242,10 @@ fn validate_new_native_runtimes(
     previous: Option<&SignedRegistrySnapshot>,
 ) -> anyhow::Result<()> {
     for entry in entries {
-        if registry_types::is_runtime_package_id(&entry.package_id) {
+        // A runtime is one, and a language pack binds none.
+        if registry_types::is_runtime_package_id(&entry.package_id)
+            || registry_types::is_language_pack_package_id(&entry.package_id)
+        {
             continue;
         }
         if let Some((version, target)) = missing_native_runtime(entry, entries, previous) {
@@ -1273,7 +1276,10 @@ fn select_installable_promotions(
     apply_staged_changes(&mut entries, &staged.submissions)?;
     let deferred: BTreeSet<_> = entries
         .iter()
-        .filter(|entry| !registry_types::is_runtime_package_id(&entry.package_id))
+        .filter(|entry| {
+            !registry_types::is_runtime_package_id(&entry.package_id)
+                && !registry_types::is_language_pack_package_id(&entry.package_id)
+        })
         .filter(|entry| missing_native_runtime(entry, &entries, previous).is_some())
         .map(|entry| entry.package_id.clone())
         .collect();

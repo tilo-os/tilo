@@ -63,7 +63,11 @@ pub fn entry_to_app_for_channel(
     registry_name: &str,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> Option<CatalogueApp> {
-    if !v.trust.is_offerable() || registry_types::is_runtime_package_id(&v.entry.package_id) {
+    // Runtimes and language packs are not apps a person opens.
+    if !v.trust.is_offerable()
+        || registry_types::is_runtime_package_id(&v.entry.package_id)
+        || registry_types::is_language_pack_package_id(&v.entry.package_id)
+    {
         return None;
     }
     // Artifact version orders releases. A later publication timestamp must
@@ -98,7 +102,9 @@ fn installable_versions_on<'a>(
     channel: tilo_app_package::version::ReleaseChannel,
     provided: Option<&'a registry_types::ProvidedInterfaces>,
 ) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
-    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    // A runtime package is a runtime and a language pack binds none.
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id)
+        || registry_types::is_language_pack_package_id(&entry.package_id);
     // Only versions that bind a tapp: a bot entry's program is never an app.
     entry.versions.iter().filter(move |version| {
         version.tapp().is_some_and(|tapp| {
@@ -138,7 +144,8 @@ fn awaiting_developer_on(
     {
         return false;
     }
-    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id)
+        || registry_types::is_language_pack_package_id(&entry.package_id);
     entry
         .versions
         .iter()
@@ -275,6 +282,110 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
     Ok(None)
 }
 
+/// A language pack the enabled repositories offer: its locale (`de-DE`) and
+/// the newest version this device can install.
+#[derive(Clone, Debug)]
+pub struct LanguagePackOffer {
+    /// The locale as a BCP 47 tag, the pack's id suffix in its usual case.
+    pub locale: String,
+    /// The package to install.
+    pub offer: CatalogueApp,
+}
+
+/// `lower` (`de-de`, `zh-hant-tw`) in the usual case of a BCP 47 tag
+/// (`de-DE`, `zh-Hant-TW`): the language lower, a script title-cased, a
+/// region upper.
+#[must_use]
+pub fn locale_tag(lower: &str) -> String {
+    lower
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| match (index, part.len()) {
+            (0, _) => part.to_ascii_lowercase(),
+            (_, 2) => part.to_ascii_uppercase(),
+            (_, 4) => {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                })
+            }
+            _ => part.to_ascii_lowercase(),
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Every language pack the enabled repositories offer, by locale, the first
+/// repository that offers a locale answering for it.
+///
+/// # Errors
+///
+/// Returns the first repository's error when none could be read.
+pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
+    let registries = config::load_registries();
+    let mut offers: Vec<LanguagePackOffer> = Vec::new();
+    let mut first_error = None;
+    let mut read_any = false;
+    for registry in registries.enabled() {
+        let snapshot = match client::fetch_snapshot(registry) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                first_error.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
+        read_any = true;
+        let packs: Vec<String> = snapshot
+            .entries()
+            .into_iter()
+            .map(|listed| listed.entry.package_id.clone())
+            .filter(|id| registry_types::is_language_pack_package_id(id))
+            .collect();
+        for package_id in packs {
+            let Some(lower) = tilo_app_package::language_pack_locale(&package_id) else {
+                continue;
+            };
+            let locale = locale_tag(lower);
+            if offers.iter().any(|known| known.locale == locale) {
+                continue;
+            }
+            let Ok(verified) = client::all_versions_in(registry, &snapshot, &package_id) else {
+                continue;
+            };
+            if let Some(offer) = installable_versions(&verified.entry, registry.channel)
+                .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
+                .and_then(|version| app_for_version(&verified, version, &registry.name))
+            {
+                offers.push(LanguagePackOffer { locale, offer });
+            }
+        }
+    }
+    if !read_any && let Some(error) = first_error {
+        return Err(error);
+    }
+    offers.sort_by(|a, b| a.locale.cmp(&b.locale));
+    Ok(offers)
+}
+
+/// The version of the language pack installed for `locale`, if one is.
+#[must_use]
+pub fn installed_language_pack(locale: &str) -> Option<String> {
+    let root = tilo_paths::language_packs_dir()?;
+    let marker = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(locale))
+        })?
+        .path()
+        .join(".package");
+    let text = std::fs::read_to_string(marker).ok()?;
+    text.split_whitespace().nth(1).map(str::to_owned)
+}
+
 /// The catalogue row offering exactly `version` of a verified entry.
 fn app_for_version(
     v: &VerifiedEntry,
@@ -349,6 +460,10 @@ pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<Catal
 
 fn target_supported(tapp: &registry_types::TappArtifact) -> bool {
     let target = &tapp.target;
+    // Data for every architecture: a language pack.
+    if target.platform == registry_types::TILO_OS_PLATFORM && target.is_any_architecture() {
+        return true;
+    }
     if target.platform != registry_types::TILO_OS_PLATFORM
         || target.architecture != std::env::consts::ARCH
     {
@@ -658,7 +773,18 @@ pub fn resolve_offer<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+
+    /// A language pack's id names its locale in lower case; the picker shows
+    /// the tag in its usual case.
+    #[test]
+    fn a_language_packs_locale_reads_as_a_tag() {
+        assert_eq!(locale_tag("de-de"), "de-DE");
+        assert_eq!(locale_tag("pt-br"), "pt-BR");
+        assert_eq!(locale_tag("zh-hant-tw"), "zh-Hant-TW");
+        assert_eq!(locale_tag("fr"), "fr");
+    }
 
     fn native_baseline_isa() -> &'static str {
         #[cfg(target_arch = "x86_64")]

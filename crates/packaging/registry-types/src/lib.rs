@@ -118,9 +118,10 @@ pub use snapshot::{
     verify_snapshot, within_validity_window,
 };
 pub use target::{
-    ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, DESKTOP_PLATFORMS, LINUX_PLATFORM,
-    MACOS_PLATFORM, NATIVE_PLATFORMS, NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER,
-    NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime, TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM,
+    ANDROID_PACKAGE_EXTENSIONS, ANDROID_PLATFORM, ANY_ARCHITECTURE, DESKTOP_PLATFORMS,
+    LANGUAGE_PACK_PACKAGE_PREFIX, LINUX_PLATFORM, MACOS_PLATFORM, NATIVE_PLATFORMS,
+    NATIVE_RUNTIME_ID_HEX_LEN, NATIVE_RUNTIME_MARKER, NATIVE_RUNTIME_PACKAGE_ID, NativeRuntime,
+    TILO_OS_PLATFORM, TargetError, WINDOWS_PLATFORM, is_language_pack_package_id,
     is_runtime_package_id, parse_native_runtime,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};

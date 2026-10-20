@@ -74,6 +74,16 @@ pub fn workspace_root() -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
+/// Where the language packs a person installed live
+/// (`$XDG_DATA_HOME/tilo/language-packs`, one directory per locale): the
+/// installer service writes them there, on the path it installs runtimes
+/// on, and the runtime reads them before the packs the OS image carries.
+/// `None` without a home.
+#[must_use]
+pub fn language_packs_dir() -> Option<PathBuf> {
+    xdg::data_home().map(|data| data.join("tilo").join("language-packs"))
+}
+
 #[cfg(windows)]
 mod legacy {
     pub fn data_home() -> Option<std::path::PathBuf> {
