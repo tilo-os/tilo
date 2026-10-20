@@ -866,6 +866,9 @@ pub struct FrameBuilder {
     layers_stale: bool,
     /// The last [`FrameCache::generation`] handed out.
     layers_generation: u64,
+    /// Why the last frame of a presenter that wants every frame as layers
+    /// ([`LayerPolicy::Always`]) came without them, once said.
+    layers_off: Option<&'static str>,
     /// The sections of the latest drawing of the desktop as layers made at
     /// rest, and its generation: what the next one's [`ChromeDamage`] is
     /// measured from. `None` once a frame came as layers of its own.
@@ -1201,6 +1204,7 @@ impl FrameBuilder {
             drawing_layers_at_rest: false,
             layers_stale: false,
             layers_generation: 0,
+            layers_off: None,
             layers_drawn: None,
             strip_pan_presenter: StripPanPresenter::default(),
             scroll_copy_presenter: false,
@@ -2488,6 +2492,15 @@ impl FrameBuilder {
         .then(|| self.strip_plan())
         .flatten();
         let unbake = plan.as_ref().is_some_and(|plan| plan.unbake);
+        if layered && self.layer_policy == LayerPolicy::Always && !unbake {
+            self.note_layers_off(if global_filter {
+                "a filter over the whole desktop"
+            } else if plan.is_none() {
+                "no strip plan (not one unrotated output)"
+            } else {
+                "a strip's pan is not shown as layers (too wide, or between pixels)"
+            });
+        }
         let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
@@ -2599,6 +2612,17 @@ impl FrameBuilder {
                 || fullscreen_on_top.is_some()
                 || pieces.is_none())
         {
+            if self.layer_policy == LayerPolicy::Always {
+                self.note_layers_off(if !backdrop_surfaces.is_empty() {
+                    "a floating surface samples what is behind it"
+                } else if !hdr_layers.is_empty() {
+                    "an HDR surface"
+                } else if fullscreen_on_top.is_some() {
+                    "a fullscreen client on top"
+                } else {
+                    "the strips could not be drawn apart"
+                });
+            }
             // Material sampling needs the original screen-space sections, a
             // fullscreen client may be scanned out of the screen-space
             // scene, and strips the host could not draw apart as planned
@@ -2719,6 +2743,9 @@ impl FrameBuilder {
                 },
             }
         });
+        if layered.is_some() {
+            self.layers_off = None;
+        }
         phases.mark("frame-cache");
         if layered.is_some() {
             self.layers_generation = generation;
@@ -3284,6 +3311,26 @@ impl FrameBuilder {
         } else {
             self.set_retained_layer_width(None);
         }
+        self.align_strip_pans();
+    }
+
+    /// Say once why frames stopped coming as layers for a presenter that
+    /// wants every frame as layers: it then draws the whole screen, which on
+    /// a CPU renderer costs most of a frame.
+    fn note_layers_off(&mut self, reason: &'static str) {
+        if self.layers_off != Some(reason) {
+            self.layers_off = Some(reason);
+            eprintln!("STRIP-LAYERS-OFF reason={reason:?}");
+        }
+    }
+
+    /// The presenter keeps every layer in a canvas of its own, strips in
+    /// canvas coordinates up to `width` scene pixels wide: every frame the
+    /// layers can express comes as layers ([`LayerPolicy::Always`]), so the
+    /// presenter never needs the screen drawn whole after a pan.
+    pub fn keep_strip_canvases(&mut self, width: u32) {
+        self.set_layer_policy(LayerPolicy::Always);
+        self.set_retained_layer_width(Some(width));
         self.align_strip_pans();
     }
 
