@@ -2,4 +2,5 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 crates/session/shell/src/onboarding_view.rs declared_border 1
-crates/session/shell/src/shell/overlay_host/mod.rs declared_border 3
+crates/session/shell/src/shell/overlay_host/mod.rs declared_border 1
+crates/session/shell/src/shell/overlay_host/shortcut_help.rs declared_border 2
