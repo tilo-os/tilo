@@ -228,14 +228,7 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]
-    try:
-        vm.run(*args, timeout=300, slot=False)
-    except VmError as exc:
-        # A slot whose compositor missed the display change is reapplied, as tilo-vm advises.
-        if "did not pick up the display change" not in str(exc):
-            raise
-        time.sleep(3)
-        vm.run(*args, timeout=300, slot=False)
+    vm.run(*args, timeout=300, slot=False)
 
 
 def keep_slot_logs(vm: TiloVm, out: Path) -> Path | None:
