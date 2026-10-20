@@ -172,7 +172,7 @@ jobs:
               ('tools/app_packaging_qualification.py', 3650, 'c6fd766344d1b18d9c365b2f667627d2102df741a8ab1d1e18e7304240e14063'),
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
-              ('tools/ci/python.py', 4344, '5df9589c7e99bfac8f7adff39bebb54379c559a6012d0a35c9606d305aedd6fa'),
+              ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
               ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
               ('tools/ci/images.toml', 1502, '26c98fc6cb545cc75da650c97c9b384b246fe56f67e7ecc40b74047e834ba6ad'),
           )
