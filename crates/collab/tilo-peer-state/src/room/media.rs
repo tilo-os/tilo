@@ -1032,13 +1032,7 @@ mod room_media_tests {
             super::super::governance_of(Some(&before)),
             super::super::governance_of(Some(&after))
         );
-        assert!(!super::super::governance_change_allowed(
-            Some(&before),
-            &after,
-            false,
-            Some("owner"),
-            "guest"
-        ));
+        assert!(!super::super::governance_unchanged(Some(&before), &after));
         let mut malformed = before.clone();
         malformed.put_object(ROOT, FIELD, ObjType::Map).unwrap();
         assert_ne!(

@@ -8,7 +8,7 @@ pub(crate) mod private_policy;
 pub(crate) mod read;
 pub use admit::{
     AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
-    admit_room_changes,
+    admit_room_changes, check_candidate,
 };
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
@@ -271,15 +271,6 @@ pub fn declared_room_mismatches(candidate: &AutoCommit, room: uuid::Uuid) -> boo
         _ => None,
     };
     declared.is_some_and(|declared| declared != room)
-}
-pub fn governance_change_allowed(
-    before: Option<&AutoCommit>,
-    after: &AutoCommit,
-    local: bool,
-    pinned: Option<&str>,
-    source: &str,
-) -> bool {
-    governance_unchanged(before, after) || !local && pinned.is_none_or(|pinned| pinned == source)
 }
 /// Whether `after` carries the governance `before` does, compared by value: a
 /// peer echoing governance it learned re-states it under its own actor, which
