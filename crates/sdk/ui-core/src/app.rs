@@ -2113,6 +2113,8 @@ impl App {
         // Region & Formats change with the same settings stamp: dates and
         // numbers re-render in the new formats (the i18n revision moves).
         crate::format::region::refresh();
+        // So does the interface language: the copy relabels in it.
+        crate::i18n::follow_configured_language();
         self.accessibility.base_theme = self
             .floating
             .host_theme

@@ -316,9 +316,39 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 
-/// The host's preferred locale; see [`crate::host::HostEnvironment::locale`].
+/// The language the person chose for the interface
+/// (`settings_store::appearance::LANGUAGE`, which Settings › Region &
+/// Language writes), or else the host's preferred locale
+/// ([`crate::host::HostEnvironment::locale`]).
 fn preferred_locale() -> Option<LanguageIdentifier> {
-    parse_locale(crate::host::environment().locale.as_deref()?).ok()
+    configured_language()
+        .or_else(|| parse_locale(crate::host::environment().locale.as_deref()?).ok())
+}
+
+/// The interface language in the person's settings, if they chose one.
+fn configured_language() -> Option<LanguageIdentifier> {
+    language_in(&settings_store::load())
+}
+
+/// The interface language a settings document names, if it names one that
+/// parses.
+fn language_in(
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> Option<LanguageIdentifier> {
+    settings_store::appearance::LANGUAGE
+        .from_document(document)
+        .and_then(|language| parse_locale(&language).ok())
+}
+
+/// Select the language the person chose on this thread, when it is not the
+/// one selected: a choice made in Settings while the app runs relabels it
+/// (the [`I18nManager::revision`] moves). With no choice, the host's
+/// locale; with neither, the source locale.
+pub fn follow_configured_language() {
+    match preferred_locale() {
+        Some(locale) => I18nManager::set_locale(&locale.to_string()),
+        None => I18nManager::set_locale_or_source("C"),
+    }
 }
 
 fn make_bundle(
@@ -867,6 +897,34 @@ impl LanguagePack {
     }
 }
 
+impl LanguagePack {
+    /// Whether `locale`'s catalogue is installed: in a pack, or beside the
+    /// crate where it was built.
+    #[must_use]
+    pub fn has(&self, locale: &str) -> bool {
+        let file = format!("{}.ftl", self.id);
+        LANGUAGE_PACK_ROOTS
+            .iter()
+            .map(|root| std::path::Path::new(root).join(locale).join(&file))
+            .chain(std::iter::once(
+                std::path::Path::new(self.source_dir).join(format!("{locale}.ftl")),
+            ))
+            .any(|path| path.is_file())
+    }
+}
+
+/// `tag`'s language in its own words, as a language picker offers it: a
+/// person looking for their language reads it in that language. A tag this
+/// build has no name for reads as the tag.
+#[must_use]
+pub fn language_name(tag: &str) -> String {
+    match tag {
+        "en-US" => "English (United States)".to_owned(),
+        "de-DE" => "Deutsch (Deutschland)".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 /// A language pack's catalogue larger than this is not one.
 const MAX_LANGUAGE_PACK_BYTES: u64 = 4 << 20;
 
@@ -926,6 +984,22 @@ impl EmbeddedCatalog {
             }
         }
         sources
+    }
+
+    /// The languages this catalogue can show: the embedded ones and those
+    /// with an installed pack, in the order the catalogue names them.
+    #[must_use]
+    pub fn languages(&self) -> Vec<&'static str> {
+        let mut languages: Vec<&'static str> =
+            self.catalogs.iter().map(|(locale, _)| *locale).collect();
+        if let Some(pack) = &self.pack {
+            for locale in pack.locales {
+                if !languages.contains(locale) && pack.has(locale) {
+                    languages.push(locale);
+                }
+            }
+        }
+        languages
     }
 
     /// The Fluent source of the source locale's catalogue.
@@ -1124,6 +1198,33 @@ mod tests {
 
     /// A catalogue embeds only its source; its other languages come from the
     /// language packs, here the crate's own `locales/` directory.
+    /// The language the person picks in Settings is the one the interface
+    /// shows; a document naming none, or a tag that does not parse, leaves
+    /// the choice to the host.
+    #[test]
+    fn the_interface_language_is_the_one_the_settings_name() {
+        let document = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"language": "de-DE"}})
+            ))
+            .map(|locale| locale.to_string()),
+            Some("de-DE".to_owned())
+        );
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"mode": "dark"}})
+            )),
+            None
+        );
+        assert_eq!(
+            language_in(&document(
+                serde_json::json!({"appearance": {"language": "C"}})
+            )),
+            None
+        );
+    }
+
     #[test]
     fn a_catalogue_reads_its_other_languages_from_the_language_packs() {
         static PACKED: EmbeddedCatalog =
@@ -1150,6 +1251,9 @@ mod tests {
             source_dir: "/nonexistent",
         };
         assert_eq!(missing.read("xx-XX"), None);
+        assert!(!missing.has("xx-XX"));
+        // The languages offered are the ones that are installed.
+        assert_eq!(PACKED.languages(), ["en-US", "de-DE"]);
     }
 
     /// Lookup uses thread-local state; worker threads are reused across tests.
