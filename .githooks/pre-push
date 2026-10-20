@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 # A push to main runs t's push gate on exactly the commit being pushed (docs/t.md, "How changes
-# reach a release"): the checks of what the commit touches, plus the fast whole-tree checks.
-# Failures that main has too pass; a failure the change causes refuses the push, and a failure t
-# can fix is fixed for you to commit (never amended). Pushes to other branches run nothing.
-# Bypass with `git push --no-verify`.
+# reach a release"), and it has to be fast: main is where changes integrate, not what ships, and
+# CI on main runs everything else on every commit and tells whoever broke it. The gate runs
+# (tools/ci/pre_push.py): rustfmt of the changed Rust files, the policy steps, generated-file and
+# manifest checks whose inputs the change touches, the diff gates (`changes`) and clippy of the
+# packages it changes. No tests, VM checks, images, suites or dependents. A check that is red on
+# main where the push branched off is skipped, and said so. Failures that main has too pass; a
+# failure the change causes refuses the push, and one t can fix is fixed for you to commit
+# (never amended). Pushes to other branches run nothing. Bypass with `git push --no-verify`.
 set -euo pipefail
 note() { printf 'pre-push: %s\n' "$*" >&2; }
-
-# The fast whole-tree checks that keep main from going red for hours over a slip that takes
-# seconds to find: formatting, the lockfile, crates/workspace-hack, t.toml's and the code map's
-# generated parts, the SDK policy and the dependency policy. A check whose inputs the change
-# doesn't touch returns its cached result at once.
-gate=(fmt lockfile hakari t-toml codemap sdk-policy deny)
 
 remote=$1
 pushed=""
@@ -50,21 +48,46 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 started=$SECONDS
 
-# What the commit touches: the default checks of the packages whose files it changes (clippy,
-# tests) and of the command checks whose inputs it changes. t runs nothing it isn't named.
-touched=()
-if names=$(t scope -C "$top" --rev "$pushed" --names 2>"$out/scope"); then
-  read -r -a touched <<<"$names"
-else
-  note "t can't tell what $short touches, so only the whole-tree checks run:"
-  sed 's/^/    /' "$out/scope" >&2
+# What the commit touches (`t scope`: the default checks of the packages whose files it changes
+# and of the command checks whose inputs it changes) and what fails on main, side by side.
+t main -C "$top" --json >"$out/main.json" 2>/dev/null &
+board=$!
+scoped=1
+t scope -C "$top" --rev "$pushed" --json >"$out/scope.json" 2>"$out/scope.err" || scoped=0
+wait "$board" || : >"$out/main.json"
+if [ "$scoped" = 0 ]; then
+  note "t can't tell what $short touches, so only fmt-changed and changes run:"
+  sed 's/^/    /' "$out/scope.err" >&2
+  : >"$out/scope.json"
+fi
+base=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("base", ""))' "$out/scope.json" 2>/dev/null || true)
+git diff --name-only "${base:-$pushed^}" "$pushed" -- >"$out/changed" 2>/dev/null || : >"$out/changed"
+
+# Of those, what a push runs (tools/ci/pre_push.py says why), and what is red on main already.
+python3 -I "$top/tools/ci/pre_push.py" select --scope "$out/scope.json" --main "$out/main.json" \
+  --changed "$out/changed" >"$out/plan.json"
+plan() { python3 -I -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))[sys.argv[2]]))' "$out/plan.json" "$1"; }
+read -r -a gate <<<"$(plan run)"
+red=$(plan red)
+[ -z "$red" ] || note "skipped, red on main at ${base:0:10} already (t main): $red"
+
+# The opt-in checks the change touches, which a push doesn't run (`t suggest`, of the working
+# tree: it has no --rev, so only when the pushed commit is HEAD).
+if [ "$pushed" = "$(git rev-parse HEAD)" ]; then
+  t suggest -C "$top" --json >"$out/suggest.json" 2>/dev/null &
+  suggest=$!
 fi
 
 status=0
-t test -C "$top" --rev "$pushed" --priority high --json "${gate[@]}" "${touched[@]}" \
+t test -C "$top" --rev "$pushed" --priority high --json "${gate[@]}" \
   >"$out/run.jsonl" 2>"$out/stderr" || status=$?
 took=$((SECONDS - started))
-what="${#touched[@]} touched + ${#gate[@]} whole-tree checks"
+what="${#gate[@]} checks"
+
+if [ -n "${suggest:-}" ] && wait "$suggest"; then
+  opt_in=$(python3 -I "$top/tools/ci/pre_push.py" opt-in --suggest "$out/suggest.json")
+  [ -z "$opt_in" ] || note "$opt_in"
+fi
 
 # The run's id, its fixable failures that may be the change's, t's errors, and what a fix changed.
 read_run() {
@@ -105,7 +128,7 @@ case $status in
   *)
     note "t could not run the push gate on $short (exit $status):"
     { read_run "$out/run.jsonl" error; tail -n 5 "$out/stderr"; } | sed 's/^/    /' >&2
-    note "if t is down, push with --no-verify and run the checks once it is back: t test ${gate[*]} ${touched[*]}"
+    note "if t is down, push with --no-verify and run the checks once it is back: t test ${gate[*]}"
     exit 1
     ;;
 esac
