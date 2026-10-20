@@ -6341,6 +6341,7 @@ mod tests {
             value: "New identity".into(),
         })
         .unwrap();
+        wait_for_restart_idle(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         password(&mut app);

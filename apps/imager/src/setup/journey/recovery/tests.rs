@@ -3,14 +3,10 @@ use crate::setup::{
     journey::belongings::Belongings,
     windows_inventory::{RootRole, SelectedRoot},
 };
-use std::{
-    path::Path,
-    sync::atomic::AtomicBool,
-    time::{Duration, Instant},
-};
+use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
 
 fn wait(preview: &mut InstallerPreview) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while preview.recovery.busy() {
         preview.recovery.poll();
         assert!(Instant::now() < deadline, "Recovery worker did not finish");
