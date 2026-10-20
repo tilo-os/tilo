@@ -549,6 +549,20 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
             }
             _ => {}
         }
+        if let ChatEffect::ReadMessages {
+            channel,
+            page_size,
+            cursor,
+        } = &effect
+        {
+            return crate::effects::read_messages(
+                &self.held_messages(),
+                channel,
+                *page_size,
+                cursor.as_deref(),
+            )
+            .map(ui::framework::Effected::value);
+        }
         if let ChatEffect::ReadRoom { message, channel } = &effect {
             let chat = cx.live().get();
             return Ok(ui::framework::Effected::value(crate::effects::read_room(

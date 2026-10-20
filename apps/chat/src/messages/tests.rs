@@ -365,3 +365,36 @@ fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
     );
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
+
+/// read-messages reads a channel's messages from every part of the chat's
+/// messages, not the chat record (which holds none), page by page.
+#[test]
+fn read_messages_pages_through_a_channel_across_its_parts() {
+    let mut room = Room::demo().unwrap();
+    let later = fill_part(&mut room, 0);
+    assert_eq!(room.messages().part_of(&Id::from_raw(&later)), Some(1));
+    let held = room.messages();
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page =
+            crate::effects::read_messages(&held, "c_general", Some(7), cursor.as_deref()).unwrap();
+        let ids: Vec<String> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(ids.len() <= 7);
+        seen.extend(ids);
+        match page["nextCursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert!(seen.contains(&"m_welcome".to_owned()), "part 0's");
+    assert_eq!(seen.last(), Some(&later), "and part 1's, last");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), seen.len(), "each once");
+    assert!(crate::effects::read_messages(&held, "c_general", Some(0), None).is_err());
+}

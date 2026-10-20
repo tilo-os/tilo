@@ -150,6 +150,20 @@ pub enum ChatEffect {
         #[param("A channel whose latest messages to include, each with the message it answers")]
         channel: Option<String>,
     },
+    /// Read conversation messages
+    ///
+    /// A page of the channel's messages, oldest first, from every part of
+    /// the chat's messages this window holds; `cursor` is the preceding
+    /// page's `nextCursor`.
+    #[effect(kind = "read", returns, programmatic)]
+    ReadMessages {
+        #[param("Id of the channel")]
+        channel: String,
+        #[param("Maximum messages in this page, 1 to 32 (default 32)")]
+        page_size: Option<u8>,
+        #[param("The preceding page's nextCursor")]
+        cursor: Option<String>,
+    },
     /// Attach file
     ///
     /// Shares a file from this device in a conversation: its bytes go to
@@ -332,7 +346,7 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::ReadRoom { .. } => {
+            ChatEffect::ReadRoom { .. } | ChatEffect::ReadMessages { .. } => {
                 return Err("the record answers this read".into());
             }
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
@@ -730,6 +744,70 @@ impl ChatApp {
     }
 }
 
+/// The most messages one [`read_messages`] page holds.
+const PAGE_MOST: usize = 32;
+
+/// The answer of [`ChatEffect::ReadMessages`]: `channel`'s messages in
+/// `held` (every part of the chat's messages the window holds), oldest
+/// first, a page of at most `page_size` after `cursor`, with the cursor of
+/// the next page when there is more.
+///
+/// # Errors
+/// When `page_size` is out of bounds or `cursor` names no place.
+pub(crate) fn read_messages(
+    held: &crate::messages::Messages,
+    channel: &str,
+    page_size: Option<u8>,
+    cursor: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let size = page_size.map_or(PAGE_MOST, usize::from);
+    if !(1..=PAGE_MOST).contains(&size) {
+        return Err(format!("a page holds 1 to {PAGE_MOST} messages"));
+    }
+    let after = cursor
+        .map(|cursor| {
+            let (ts, id) = cursor
+                .split_once(':')
+                .ok_or("not a cursor of this channel")?;
+            Ok::<_, String>((
+                ts.parse::<i64>().map_err(|_| "not a cursor")?,
+                id.to_owned(),
+            ))
+        })
+        .transpose()?;
+    let mut messages: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
+        .iter()
+        .filter(|(_, found)| found.channel.as_str() == channel)
+        .filter(|(id, found)| {
+            after
+                .as_ref()
+                .is_none_or(|(ts, last)| (found.ts, id.as_str()) > (*ts, last.as_str()))
+        })
+        .collect();
+    messages.sort_by(|(a, left), (b, right)| (left.ts, a.as_str()).cmp(&(right.ts, b.as_str())));
+    let more = messages.len() > size;
+    messages.truncate(size);
+    let next = more
+        .then(|| {
+            messages
+                .last()
+                .map(|(id, found)| format!("{}:{}", found.ts, id.as_str()))
+        })
+        .flatten();
+    Ok(serde_json::json!({
+        "channel": channel,
+        "messages": messages.iter().map(|(id, found)| serde_json::json!({
+            "id": id.as_str(),
+            "author": found.author.0.as_str(),
+            "ts": found.ts.to_string(),
+            "parent": found.parent.as_ref().map_or("", tilo_resource::Id::as_str),
+            "edited": found.edited,
+            "text": found.text,
+        })).collect::<Vec<_>>(),
+        "nextCursor": next,
+    }))
+}
+
 /// How many of a channel's latest messages [`read_room`] includes: a
 /// post's change names its channel, not the message it made, so a bot finds
 /// that message among the channel's newest.
@@ -995,8 +1073,15 @@ impl ChatApp {
                 }),
             )
         } else {
-            row.operation(crate::semantic_read::action::spec(id))
-                .operation(crate::feedback::destination_read::spec(id))
+            row.operation(
+                ChatEffect::ReadMessages {
+                    channel: id.to_owned(),
+                    page_size: None,
+                    cursor: None,
+                }
+                .bound_asking(&["page_size", "cursor"]),
+            )
+            .operation(crate::feedback::destination_read::spec(id))
         })
     }
 
