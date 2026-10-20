@@ -545,7 +545,7 @@ impl Refresh {
         // elsewhere shows here too. Blocked apps stay in the catalogue, so a
         // link still opens their page, which says who blocked them; the
         // screens and search list them nowhere.
-        state.blocks = app_catalogue::BlockList::load();
+        state.blocks = ui::registry::BlockList::load();
         // Pending or failed alike: what these list is not current yet.
         state.unanswered_repositories = self
             .registries
