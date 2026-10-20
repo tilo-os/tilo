@@ -154,6 +154,23 @@ impl Editor {
     }
 
     fn vertical(&mut self, up: bool) {
+        if let Some((depth, _, offset)) = self.integral_context()
+            && depth.saturating_add(1) == self.caret.steps.len()
+            && let Some(ranges) = super::model::integral_ranges(self.row())
+            && let Some(current) = ranges
+                .iter()
+                .position(|range| range.contains(&offset) || range.end == offset)
+        {
+            let target = match (current, up) {
+                (0..=2, true) => Some(3),
+                (0 | 1 | 3, false) => Some(2),
+                _ => None,
+            };
+            if let Some(target) = target.and_then(|index| ranges.get(index)) {
+                self.caret.offset = target.start;
+                return;
+            }
+        }
         // If the caret is inside a structure, try moving between that
         // structure's vertically-stacked slots.
         if let Some((&(idx, slot), parent_steps)) = self.caret.steps.split_last() {
@@ -388,6 +405,7 @@ impl Editor {
             '^' => self.start_power(),
             '*' | '·' => self.insert_char('·'),
             '(' => self.start_paren(),
+            ',' if self.next_integral_argument() => {}
             ')' => self.skip_or_insert_close(),
             '√' => self.insert_sqrt(),
             'π' => self.insert_char('π'),
@@ -427,13 +445,18 @@ impl Editor {
             self.descend_into_last(Slot::Radicand);
             return;
         }
-        if super::model::FUNCS.contains(&run.as_str()) && !run.is_empty() {
+        if (super::model::FUNCS.contains(&run.as_str()) || run == "∫") && !run.is_empty() {
             let n = run.chars().count();
+            let integral = matches!(run.as_str(), "int" | "∫");
             self.replace_run_before(
                 n,
                 vec![Node::Func {
-                    name: run,
-                    arg: Vec::new(),
+                    name: if integral { "int".into() } else { run },
+                    arg: if integral {
+                        vec![Node::Char(','); 3]
+                    } else {
+                        Vec::new()
+                    },
                 }],
             );
             self.descend_into_last(Slot::Arg);
@@ -449,6 +472,11 @@ impl Editor {
     /// groups balanced so this just exits.
     fn skip_or_insert_close(&mut self) {
         self.delete_selection();
+        if let Some((depth, index, _)) = self.integral_context() {
+            self.caret.steps.truncate(depth);
+            self.caret.offset = index.saturating_add(1);
+            return;
+        }
         if let Some(&(idx, slot)) = self.caret.steps.last()
             && matches!(slot, Slot::Body | Slot::Arg | Slot::Radicand)
         {
@@ -456,6 +484,62 @@ impl Editor {
             self.caret.offset = idx.saturating_add(1);
         }
         // Not inside a group: ignore stray close to keep the tree balanced.
+    }
+
+    /// Locate an enclosing integral argument, crossing only implicit scripts
+    /// and fractions. Explicit groups and nested calls still own their commas
+    /// and closing parentheses.
+    fn integral_context(&self) -> Option<(usize, usize, usize)> {
+        for (depth, &(index, slot)) in self.caret.steps.iter().enumerate().rev() {
+            let parent = self.expr.row_at(self.caret.steps.get(..depth)?)?;
+            if slot == Slot::Arg
+                && let Some(Node::Func { name, .. }) = parent.get(index)
+                && matches!(name.as_str(), "int" | "∫")
+            {
+                let offset = self
+                    .caret
+                    .steps
+                    .get(depth.saturating_add(1))
+                    .map_or(self.caret.offset, |&(child, _)| child);
+                return Some((depth, index, offset));
+            }
+            if !matches!(
+                slot,
+                Slot::Exp | Slot::Num | Slot::Den | Slot::Sub | Slot::Sup
+            ) {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn next_integral_argument(&mut self) -> bool {
+        self.delete_selection();
+        let Some((depth, _, offset)) = self.integral_context() else {
+            return false;
+        };
+        let Some(steps) = self.caret.steps.get(..depth.saturating_add(1)) else {
+            return false;
+        };
+        let Some(arg) = self.expr.row_at(steps) else {
+            return false;
+        };
+        let Some(ranges) = super::model::integral_ranges(arg) else {
+            return false;
+        };
+        let Some(current) = ranges
+            .iter()
+            .position(|range| range.contains(&offset) || range.end == offset)
+        else {
+            return false;
+        };
+        let Some(next) = ranges.get(current.saturating_add(1)) else {
+            return false;
+        };
+        let next_offset = next.start;
+        self.caret.steps.truncate(depth.saturating_add(1));
+        self.caret.offset = next_offset;
+        true
     }
 
     /// Build an empty radical at the caret and drop into its radicand — the
@@ -547,7 +631,7 @@ impl Editor {
         let mut i = self.caret.offset;
         while let Some(prev_idx) = i.checked_sub(1) {
             if let Some(Node::Char(c)) = row.get(prev_idx)
-                && c.is_ascii_alphabetic()
+                && (c.is_ascii_alphabetic() || *c == '∫')
             {
                 s.insert(0, *c);
                 i = prev_idx;

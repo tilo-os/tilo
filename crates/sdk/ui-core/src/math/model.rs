@@ -343,8 +343,34 @@ pub const FUNCS: &[&str] = &[
     "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
     "exp", "ln", "log10", "log2", "log", "sqrt", "cbrt", "abs", "sign", "sgn", "floor", "ceil",
     "round", "trunc", "fract", "gamma", "fact", "mod", "atan2", "hypot", "max", "min", "root",
-    "pow", "rad", "deg",
+    "pow", "rad", "deg", "int",
 ];
+
+/// The four top-level argument spans of a definite integral. Keeping commas
+/// in the ordinary function row preserves the editor's paths and clipboard
+/// format while layout presents the spans as integrand, variable and limits.
+/// Malformed calls remain ordinary function calls so no input is hidden.
+pub(super) fn integral_ranges(arg: &Row) -> Option<[std::ops::Range<usize>; 4]> {
+    let mut start = 0;
+    let mut ranges = Vec::new();
+    for (index, node) in arg.iter().enumerate() {
+        if matches!(node, Node::Char(',')) {
+            ranges.push(start..index);
+            start = index.saturating_add(1);
+        }
+    }
+    ranges.push(start..arg.len());
+    ranges.try_into().ok()
+}
+
+/// The integrand, variable, lower and upper limit of a definite integral.
+pub(super) fn integral_parts<'a>(name: &str, arg: &'a Row) -> Option<[&'a [Node]; 4]> {
+    if name != "int" {
+        return None;
+    }
+    let ranges = integral_ranges(arg)?;
+    Some(ranges.map(|range| arg.get(range).unwrap_or_default()))
+}
 
 // ---------------------------------------------------------------------------
 // Parsing: linear ASCII → model tree.
@@ -415,52 +441,16 @@ impl LinParser {
                     self.expect(')');
                     row.push(Node::Paren { body });
                 }
-                c if c.is_ascii_alphabetic() => {
-                    let name = self.read_ident();
-                    if self.peek() == Some('(') {
+                c if c.is_ascii_alphabetic()
+                    || (c == '∫' && self.chars.get(self.pos.saturating_add(1)) == Some(&'(')) =>
+                {
+                    let name = if c == '∫' {
                         self.pos = self.pos.saturating_add(1);
-                        if name == "sqrt" {
-                            let radicand = self.parse_row(&[')']);
-                            self.expect(')');
-                            row.push(Node::Sqrt {
-                                index: None,
-                                radicand,
-                            });
-                        } else if name == "root" {
-                            let index = self.parse_row(&[',', ')']);
-                            if self.peek() == Some(',') {
-                                self.pos = self.pos.saturating_add(1);
-                                let radicand = self.parse_row(&[')']);
-                                self.expect(')');
-                                row.push(Node::Sqrt {
-                                    index: Some(index),
-                                    radicand,
-                                });
-                            } else {
-                                self.expect(')');
-                                row.push(Node::Sqrt {
-                                    index: None,
-                                    radicand: index,
-                                });
-                            }
-                        } else if FUNCS.contains(&name.as_str()) {
-                            let arg = self.parse_row(&[')']);
-                            self.expect(')');
-                            row.push(Node::Func { name, arg });
-                        } else {
-                            // Unknown name + paren: keep letters, then group.
-                            for ch in name.chars() {
-                                row.push(Node::Char(ch));
-                            }
-                            let body = self.parse_row(&[')']);
-                            self.expect(')');
-                            row.push(Node::Paren { body });
-                        }
+                        "int".to_owned()
                     } else {
-                        for ch in name.chars() {
-                            row.push(Node::Char(ch));
-                        }
-                    }
+                        self.read_ident()
+                    };
+                    row.extend(self.parse_named_atom(name));
                 }
                 _ => {
                     self.pos = self.pos.saturating_add(1);
@@ -512,38 +502,65 @@ impl LinParser {
                 }
                 r
             }
-            Some(c) if c.is_ascii_alphabetic() => {
-                let name = self.read_ident();
-                if self.peek() == Some('(') {
-                    // Re-enter the row parser to classify the call uniformly.
-                    let mut sub = LinParser {
-                        chars: format!("{name}(").chars().chain(self.tail()).collect(),
-                        pos: 0,
-                    };
-                    let nodes = sub.parse_row(&[]);
-                    // advance self by what sub consumed past `name(`
-                    let consumed = sub
-                        .pos
-                        .saturating_sub(name.chars().count().saturating_add(1));
-                    self.pos = self.pos.saturating_add(consumed);
-                    // Keep exactly the single produced call node. `next()`
-                    // already yields only the first; the truncate that used to
-                    // stand here computed 1.max(len.min(1)), which is always 1.
-                    if let Some(first) = nodes.into_iter().next() {
-                        vec![first]
-                    } else {
-                        vec![]
-                    }
+            Some(c)
+                if c.is_ascii_alphabetic()
+                    || (c == '∫' && self.chars.get(self.pos.saturating_add(1)) == Some(&'(')) =>
+            {
+                let name = if c == '∫' {
+                    self.pos = self.pos.saturating_add(1);
+                    "int".to_owned()
                 } else {
-                    name.chars().map(Node::Char).collect()
-                }
+                    self.read_ident()
+                };
+                self.parse_named_atom(name)
             }
             _ => Vec::new(),
         }
     }
 
-    fn tail(&self) -> impl Iterator<Item = char> + '_ {
-        self.chars.get(self.pos..).unwrap_or(&[]).iter().copied()
+    /// Classify exactly one call in place. Re-parsing the entire remaining
+    /// source for a denominator or exponent would swallow its following
+    /// operators and duplicate the opening parenthesis.
+    fn parse_named_atom(&mut self, name: String) -> Row {
+        if self.peek() != Some('(') {
+            return name.chars().map(Node::Char).collect();
+        }
+        self.pos = self.pos.saturating_add(1);
+        if name == "sqrt" {
+            let radicand = self.parse_row(&[')']);
+            self.expect(')');
+            vec![Node::Sqrt {
+                index: None,
+                radicand,
+            }]
+        } else if name == "root" {
+            let index = self.parse_row(&[',', ')']);
+            if self.peek() == Some(',') {
+                self.pos = self.pos.saturating_add(1);
+                let radicand = self.parse_row(&[')']);
+                self.expect(')');
+                vec![Node::Sqrt {
+                    index: Some(index),
+                    radicand,
+                }]
+            } else {
+                self.expect(')');
+                vec![Node::Sqrt {
+                    index: None,
+                    radicand: index,
+                }]
+            }
+        } else if FUNCS.contains(&name.as_str()) {
+            let arg = self.parse_row(&[')']);
+            self.expect(')');
+            vec![Node::Func { name, arg }]
+        } else {
+            let mut row: Row = name.chars().map(Node::Char).collect();
+            let body = self.parse_row(&[')']);
+            self.expect(')');
+            row.push(Node::Paren { body });
+            row
+        }
     }
 
     fn read_ident(&mut self) -> String {
