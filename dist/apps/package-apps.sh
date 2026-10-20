@@ -294,6 +294,15 @@ fi
     "$out/runtime/tilo-runtime/$runtime_version" so.tilo.runtime "Tilo runtime" \
     "$runtime_package_version" "$identity" "$release_dir" "$out/runtime-package" >/dev/null
 
+# Every language other than English, as the registry offers it: one signed
+# `kind = "language-pack"` package per locale, data for every architecture
+# (either build signs the same bytes), beside its registry listing. A size
+# check, which packages one app, leaves them out.
+if [[ -z ${TILO_APP_SKIP_LANGUAGE_PACKS:-} ]]; then
+    python3 "$repo_root/tools/apps/language_packs.py" pack "$repo_root" "$out/language-packs" \
+        "$runtime_package_version" "$identity" "$pubkey" "$release_dir/tilo-app-package" >/dev/null
+fi
+
 python3 - "$plan" "$out/tapp" "$out/index.json" "$(uname -m)" "${GITHUB_SHA:-unknown}" "$runtime_id" <<'PY'
 import hashlib, json, pathlib, sys
 plan = json.load(open(sys.argv[1], encoding="utf-8"))

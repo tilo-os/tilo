@@ -176,7 +176,7 @@ case $command in
     arch=${1:?usage: t-release.sh app-size ARCH APP} app=${2:?usage: t-release.sh app-size ARCH APP}
     (( $# == 2 )) || die "usage: t-release.sh app-size ARCH APP"
     shared_size_build "$arch" "$app" app-size
-    TILO_APP_TOOLS_BUILT=1 dist/apps/package-apps.sh
+    TILO_APP_TOOLS_BUILT=1 TILO_APP_SKIP_LANGUAGE_PACKS=1 dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS=tapp_size tools/apps/release-smoke.sh "$arch"
     ;;
   runtime-size)
