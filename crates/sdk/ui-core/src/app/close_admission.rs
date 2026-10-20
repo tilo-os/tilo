@@ -437,13 +437,14 @@ impl App {
         let Some(root) = self.layout.root_node else {
             return;
         };
-        let _ = self.layout.taffy.compute_layout_with_measure(
+        let _ = crate::widget::layout::solve_layout(
+            &mut self.layout.taffy,
             root,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(logical.0 as f32),
                 height: taffy::AvailableSpace::Definite(logical.1 as f32),
             },
-            |known, available, node, _, _| {
+            &mut |known, available, node| {
                 if let Some(ptr) = self.layout.node_map.get(&node) {
                     // SAFETY: the exclusive host owns this newly built dialog
                     // map; changing or dismissing it clears the map first.

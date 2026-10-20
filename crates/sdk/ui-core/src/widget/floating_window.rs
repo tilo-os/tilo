@@ -685,10 +685,11 @@ impl<C: Widget> FloatingWindow<C> {
             width: taffy::AvailableSpace::Definite(inner.width() as f32),
             height: taffy::AvailableSpace::Definite(inner.height() as f32),
         };
-        let _ = taffy.compute_layout_with_measure(
+        let _ = super::layout::solve_layout(
+            &mut taffy,
             node,
             available,
-            |known, available, node_id, _, _| {
+            &mut |known, available, node_id| {
                 if let Some(&ptr) = map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, text_renderer) }
                 } else {
