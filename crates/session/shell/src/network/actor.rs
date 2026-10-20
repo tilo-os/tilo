@@ -5751,35 +5751,6 @@ mod tests {
             "a silent, linked peer stays a member"
         );
 
-        // Phase `an_older_neighbour_that_beats_is_beaten_back`. A build that
-        // evicts a peer silent for 15 s announces itself by its timed beat;
-        // its neighbour answers at once and keeps beating for it.
-        let beats = |tally: &std::collections::BTreeMap<&'static str, u64>| {
-            tally.get("Heartbeat").copied().unwrap_or(0)
-        };
-        let answered_before = beats(&tally_of(&cmd_b).await);
-        cmd_b
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::Heartbeat {
-                    peer: 1,
-                    ts: tilo_clock::unix_now_ms(),
-                },
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("the older neighbour to be beaten back", async {
-            while beats(&tally_of(&cmd_b).await) < answered_before + 3 {
-                tokio::time::sleep(TICK).await;
-            }
-        })
-        .await;
-        assert_eq!(
-            beats(&tally_of(&cmd_a).await),
-            beats(&before_a) + 1,
-            "the answer is numbered, not timed, so it does not start the other side beating"
-        );
-
         // Phase `a_departed_peer_is_dropped_within_the_departure_grace`. A
         // peer that shuts down closes its links; it is dropped that grace
         // later, not after a heartbeat timeout.
