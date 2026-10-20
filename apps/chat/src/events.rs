@@ -504,7 +504,7 @@ impl ChatApp {
                 .get(sw.channel_index)
                 .map(|c| c.id.clone());
             if let Some(id) = channel {
-                if sw.dx() >= self.chrome.swipe_commit {
+                if sw.dx() >= self.chrome.swipe_commit && self.keeps_layout() {
                     // Swipe-left commits the channel's primary action,
                     // which is exactly the context menu's first item.
                     self.apply_channel_action(&id, MenuAction::channel_swipe_left(), doc);
@@ -827,16 +827,19 @@ impl ChatApp {
     /// the cursor, else for the room.
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(self.context_menu(
-                MenuTarget::Channel(id),
-                self.last_mouse,
-                MenuAction::for_channel().to_vec(),
-            )),
+            Hit::Channel(id) | Hit::VoiceChannel(id) if self.keeps_layout() => {
+                Some(self.context_menu(
+                    MenuTarget::Channel(id),
+                    self.last_mouse,
+                    MenuAction::for_channel().to_vec(),
+                ))
+            }
+            Hit::Channel(_) | Hit::VoiceChannel(_) => None,
             Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => {
                 Some(self.context_menu(
                     MenuTarget::Category(id),
                     self.last_mouse,
-                    MenuAction::for_category().to_vec(),
+                    self.layout_menu(MenuAction::for_category().to_vec()),
                 ))
             }
             // One of your own messages — offer the message actions (Edit).
@@ -856,11 +859,12 @@ impl ChatApp {
                 };
                 Some(self.context_menu(MenuTarget::Message(msg), self.last_mouse, items))
             }
-            _ => Some(self.context_menu(
+            _ if self.keeps_layout() => Some(self.context_menu(
                 MenuTarget::Room,
                 self.last_mouse,
                 MenuAction::for_room().to_vec(),
             )),
+            _ => None,
         };
         self.menu = menu;
     }
@@ -923,10 +927,10 @@ impl ChatApp {
             Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
-            Hit::AddChannel { category } if self.can_participate() => {
+            Hit::AddChannel { category } if self.keeps_layout() => {
                 self.on_hit_add_channel(&category);
             }
-            Hit::AddCategory if self.can_participate() => self.on_hit_add_to_room(),
+            Hit::AddCategory if self.keeps_layout() => self.on_hit_add_to_room(),
             Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
@@ -1189,7 +1193,13 @@ impl ChatApp {
                 };
                 let path = Chat::paths().channels.item(&item(id));
                 if channel.name != answer.name {
-                    self.apply_now(doc, path.name.set(answer.name.clone()));
+                    self.apply_now(
+                        doc,
+                        Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+                            channel: item(id),
+                            name: answer.name.clone(),
+                        }),
+                    );
                 }
                 if channel.topic != answer.topic {
                     self.apply_now(doc, path.topic.set(answer.topic.clone()));
@@ -1455,12 +1465,13 @@ impl ChatApp {
             }
             MenuAction::Archive => {
                 let archived = self.channel(id).is_some_and(|c| c.archived);
-                let archive = Chat::paths()
-                    .channels
-                    .item(&item(id))
-                    .archived
-                    .set(!archived);
-                self.apply_now(doc, archive);
+                self.apply_now(
+                    doc,
+                    Chat::ARCHIVE_CHANNEL.with(chat::ArchiveChannel {
+                        channel: item(id),
+                        archived: !archived,
+                    }),
+                );
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
@@ -1525,13 +1536,22 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        let name = text.trim_start_matches('#').to_owned();
-                        let rename = Chat::paths().channels.item(&item(&id)).name.set(name);
-                        self.apply_now(doc, rename);
+                        self.apply_now(
+                            doc,
+                            Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+                                channel: item(&id),
+                                name: text,
+                            }),
+                        );
                     }
                     MenuTarget::Category(id) => {
-                        let rename = Chat::paths().categories.item(&item(&id)).name.set(text);
-                        self.apply_now(doc, rename);
+                        self.apply_now(
+                            doc,
+                            Chat::RENAME_CATEGORY.with(chat::RenameCategory {
+                                category: item(&id),
+                                name: text,
+                            }),
+                        );
                     }
                     MenuTarget::Message(_) | MenuTarget::Room => {}
                 }
