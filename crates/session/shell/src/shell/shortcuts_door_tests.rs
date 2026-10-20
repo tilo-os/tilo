@@ -403,6 +403,9 @@ struct Door {
     app: FixtureApp,
     deadline: Instant,
     dir: tempfile::TempDir,
+    /// This host's own identity, which signs the evidence of every
+    /// admission it attests, as a desktop's does.
+    _host_identity: tilo_test_env::ScopedEnv,
 }
 
 impl Door {
@@ -414,6 +417,16 @@ impl Door {
             std::os::unix::fs::PermissionsExt::from_mode(0o700),
         )
         .expect("owner-only socket directory");
+        let mut host_identity = tilo_test_env::ScopedEnv::new();
+        host_identity
+            .set("XDG_CONFIG_HOME", dir.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", dir.path().join("system"))
+            .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+        crate::firstboot::ensure_throwaway_test_identity(
+            &runtime_identity::identity_dir_from_env().expect("the identity directory"),
+            &crate::firstboot::collaboration_identity_paths(),
+        )
+        .expect("the host's own identity");
         let socket = dir.path().join("collab.sock");
         let (broker, membership) = spawn_broker(&socket);
         let host = crate::shell::remote_actions::BrokerActionHost::new(
@@ -427,6 +440,7 @@ impl Door {
             app: FixtureApp::connect(&socket),
             deadline: tilo_test_env::hang_deadline(),
             dir,
+            _host_identity: host_identity,
         };
         while !["draft", "publish", "archive"]
             .into_iter()
@@ -2024,8 +2038,10 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
         )
         .map(|receipt| receipt.status)
     };
+    // Governance checks the confirmation itself: an unconfirmed revoke is
+    // refused there, or before admission, and changes nothing.
     match revoke(None) {
-        Ok(ReceiptStatus::Rejected { .. }) | Err(_) => {}
+        Ok(ReceiptStatus::Rejected { .. } | ReceiptStatus::Failed { .. }) | Err(_) => {}
         other => panic!("revoking needs confirmation: {other:?}"),
     }
     assert_eq!(invoker_draft_grants(&door).len(), 1);
