@@ -2400,9 +2400,13 @@ mod crop_tests {
         let expected = Rect::new(10.0, 20.0, 60.0, 60.0);
         assert_eq!(selection.region().bounds(), Some(expected));
         assert!((selection.feather - 3.0).abs() < f64::EPSILON);
-        assert_eq!(
-            selection.matte.as_ref().unwrap().rect,
-            [8.0, 18.0, 54.0, 44.0]
+        let matte = selection.matte.as_ref().unwrap().rect;
+        assert!(
+            matte
+                .iter()
+                .zip([8.0, 18.0, 54.0, 44.0])
+                .all(|(got, want)| (got - want).abs() < f64::EPSILON),
+            "matte rect {matte:?}"
         );
 
         art.apply(Artwork::USE_SELECTION.with(UseSelection {

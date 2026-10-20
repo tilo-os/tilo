@@ -69,7 +69,10 @@ fn opening_presentations_preserves_cdata_text() {
             let name = entry.name().unwrap().into_owned();
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).unwrap();
-            if name.ends_with(".xml") {
+            if std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+            {
                 let xml = String::from_utf8(bytes).unwrap();
                 // The exact sentinel is text content, never an attribute.
                 bytes = xml

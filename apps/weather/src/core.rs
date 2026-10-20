@@ -1989,7 +1989,11 @@ mod search_tests {
                 let mut core = Core::new(WeatherModel::default(), Units::METRIC);
                 core.begin_search();
                 core.on_query_changed("London");
-                core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                core.pending_query_at = Some(
+                    ui::time::now()
+                        .checked_sub(GEOCODE_DEBOUNCE)
+                        .unwrap_or_else(ui::time::now),
+                );
                 core.maybe_fire_geocode();
                 let mut requests = core.take_tracked_outbox();
                 let Request::Tracked {
@@ -2029,7 +2033,11 @@ mod search_tests {
                 assert!(!core.geocode_cache.contains_key("paris"));
                 assert!(!core.geocode_inflight);
                 if next_query == "Paris" {
-                    core.pending_query_at = Some(ui::time::now() - GEOCODE_DEBOUNCE);
+                    core.pending_query_at = Some(
+                        ui::time::now()
+                            .checked_sub(GEOCODE_DEBOUNCE)
+                            .unwrap_or_else(ui::time::now),
+                    );
                     core.maybe_fire_geocode();
                     let mut requests = core.take_tracked_outbox();
                     let Request::Tracked {

@@ -467,7 +467,7 @@ mod tests {
             vec![Cell::Real(9_223_372_036_854_775_808.0)],
             vec![Cell::Real(f64::INFINITY)],
             vec![Cell::Real(f64::NAN)],
-            vec![Cell::Text("".into())],
+            vec![Cell::Text(String::new())],
             vec![Cell::Text("11".into())],
             vec![Cell::Text("A".into()), Cell::Text("a".into())],
             vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],
