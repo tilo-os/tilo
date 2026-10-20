@@ -216,6 +216,9 @@ members = [
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
 
+    # Language
+    "crates/lang/tilolang-runtime",
+
     # Hosting
     "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
