@@ -181,6 +181,9 @@ pub struct Dropdown {
     chooser_cap: f64,
     /// The open list's width for its options, from the latest paint.
     list_width: f64,
+    /// The widest option label and what it was measured with, so an open
+    /// list repaints without reshaping every option.
+    list_measure: Option<ListMeasure>,
     /// One row of the open list: a menu row, grown with its text.
     item_h: f64,
     /// Host-owned pointer precision controls direct-touch target geometry.
@@ -196,6 +199,16 @@ pub struct Dropdown {
     /// The filter and scroll the list showed when it closed, so a leaving
     /// list fades as it was rather than jumping to every option.
     leaving: Option<(String, f32)>,
+}
+
+/// The widest label of the open list, valid while the options, the body
+/// style, the empty-list hint and the renderer's fonts and text scale stay.
+struct ListMeasure {
+    style: TextStyle,
+    hint: String,
+    epoch: std::sync::Arc<()>,
+    text_scale: f32,
+    widest: f64,
 }
 
 /// Lists shorter than this never show a filter: a typed letter jumps to the
@@ -312,6 +325,7 @@ impl Dropdown {
             column: None,
             chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
             list_width: 0.0,
+            list_measure: None,
             item_h: ITEM_HEIGHT,
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
@@ -518,6 +532,7 @@ impl Dropdown {
     pub fn set_options(&mut self, options: Vec<String>) {
         if self.options != options || self.values != options {
             self.layout_dirty = true;
+            self.list_measure = None;
         }
         self.values.clone_from(&options);
         self.options = options;
@@ -530,6 +545,7 @@ impl Dropdown {
         let (values, labels): (Vec<_>, Vec<_>) = options.into_iter().unzip();
         if self.options != labels {
             self.layout_dirty = true;
+            self.list_measure = None;
         }
         self.values = values;
         self.options = labels;
@@ -858,13 +874,31 @@ impl Dropdown {
     /// the row insets and the menu inset either side.
     fn measure_list(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let style = theme.text(TextRole::Body);
-        let widest = self
-            .options
-            .iter()
-            .map(|option| f64::from(text.measure_style(option, None, &style).0))
-            .fold(0.0, f64::max);
         let hint = crate::i18n!("dropdown-no-matches");
-        let widest = widest.max(f64::from(text.measure_style(&hint, None, &style).0));
+        let current = self.list_measure.as_ref().filter(|m| {
+            m.style == style
+                && m.hint == hint
+                && m.text_scale.to_bits() == text.text_scale().to_bits()
+                && std::sync::Arc::ptr_eq(&m.epoch, text.layout_epoch())
+        });
+        let widest = if let Some(measure) = current {
+            measure.widest
+        } else {
+            let widest = self
+                .options
+                .iter()
+                .chain(std::iter::once(&hint))
+                .map(|label| f64::from(text.measure_style(label, None, &style).0))
+                .fold(0.0, f64::max);
+            self.list_measure = Some(ListMeasure {
+                style,
+                hint,
+                epoch: std::sync::Arc::clone(text.layout_epoch()),
+                text_scale: text.text_scale(),
+                widest,
+            });
+            widest
+        };
         let check = f64::from(theme.tokens.metrics.icon_sm);
         self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
     }
@@ -2325,6 +2359,67 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    fn paint_list(dd: &mut Dropdown, renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        dd.draw_overlay(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            renderer,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        dd.list_width
+    }
+
+    #[test]
+    fn open_list_repaints_without_remeasuring_every_option() {
+        let options: Vec<String> = (0..512).map(|n| format!("Language {n:04}")).collect();
+        let mut dd = Dropdown::new(options, "language");
+        dd.rect = Rect::new(0.0, 0.0, 300.0, CONTROL_HEIGHT);
+        dd.do_open();
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::dark();
+        paint_list(&mut dd, &mut renderer, &theme);
+        let (hits, misses) = renderer.cache_stats();
+        dd.highlight = 1;
+        paint_list(&mut dd, &mut renderer, &theme);
+        let (hits_after, misses_after) = renderer.cache_stats();
+        assert_eq!(misses_after, misses, "a repaint shapes nothing new");
+        assert!(
+            hits_after - hits < 128,
+            "a repaint looks up the visible rows, not all 512 options: {}",
+            hits_after - hits
+        );
+    }
+
+    #[test]
+    fn open_list_width_follows_options_text_size_and_fonts() {
+        let mut dd = Dropdown::new(vec!["Small".into(), "Medium".into()], "value").open();
+        dd.rect = Rect::new(0.0, 0.0, 300.0, CONTROL_HEIGHT);
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::dark();
+        let initial = paint_list(&mut dd, &mut renderer, &theme);
+        dd.set_value_options(vec![(
+            "one".into(),
+            "A much wider replacement label for the only choice".into(),
+        )]);
+        let wider = paint_list(&mut dd, &mut renderer, &theme);
+        assert!(wider > initial, "new labels set the width");
+        let larger = Theme::dark().with_text_scale(2.0);
+        let scaled = paint_list(&mut dd, &mut renderer, &larger);
+        assert!(scaled > wider, "the theme's text size sets the width");
+        let mut fresh = Dropdown::new(dd.options.clone(), "value").open();
+        assert!((paint_list(&mut fresh, &mut TextRenderer::new(), &larger) - scaled).abs() < 0.5);
+        renderer.bump_generation();
+        let misses = renderer.cache_stats().1;
+        paint_list(&mut dd, &mut renderer, &theme);
+        assert!(
+            renderer.cache_stats().1 > misses,
+            "a font change remeasures the options"
+        );
+        dd.set_options(vec!["Small".into(), "Medium".into()]);
+        assert!((paint_list(&mut dd, &mut renderer, &theme) - initial).abs() < 0.5);
     }
 
     /// A list long enough to filter: `opts` and four zones with no `a`.
