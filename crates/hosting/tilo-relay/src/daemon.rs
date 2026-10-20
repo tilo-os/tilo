@@ -2408,18 +2408,9 @@ impl ProtocolHandler for ManagementProtocol {
                         "revocation does not target this home peer",
                     )));
                 }
-                let mut entries =
-                    crate::store::load_revocations(&self.state_root).map_err(|error| {
-                        AcceptError::from_err(std::io::Error::other(error.to_string()))
-                    })?;
-                if !entries.iter().any(|entry| {
-                    entry.revoked_device_public_key == revocation.revoked_device_public_key
-                }) {
-                    entries.push(revocation.clone());
-                    crate::store::save_revocations(&self.state_root, &entries).map_err(
-                        |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
-                    )?;
-                }
+                crate::store::append_revocation(&self.state_root, &revocation).map_err(
+                    |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
+                )?;
                 // Apply it here too rather than wait for the log to be read
                 // back: this process stops serving its own revoked identity
                 // now. A conflicting entry is the log reader's to reject.

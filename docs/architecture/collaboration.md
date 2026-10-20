@@ -58,6 +58,21 @@ takes its public display label from the account's passwd entry. This route does
 not create a second login or identity password, and it does not rewrite or
 migrate a pre-existing identity record.
 
+### Revoking a device
+
+A lost or stolen device is revoked by its person's root (`RevocationEntry`).
+Any device of theirs announces the signed entry with its identity
+(`IdentityHello`); receivers check the root's signature, not who carried it.
+
+In the rooms a workspace host governs, the host takes it from there
+(`crates/hosting/tilo-relay/src/rooms/revocations.rs`). An entry of the host's
+own person joins the host's revocation log, which every handshake, session and
+administration door reads, so the device is refused in every room at once.
+Every room the host governs writes into its governance each entry its owner's
+root signed, and each that revokes a device the room certifies to the signing
+root: the device leaves the room's access and its channels, and every
+member's replica refuses it from the room's own history, after a restart too.
+
 ## Direct collaboration
 
 `crates/session/shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic
