@@ -40,8 +40,17 @@ class LanguagePackTests(unittest.TestCase):
 
     def test_the_repository_packs_settings_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "settings"), found)
+        self.assertIn(("de-DE", "settings-core"), found)
         self.assertNotIn("en-US", {locale for locale, _ in found})
+
+    def test_a_locales_pack_is_signed_data_named_by_the_locale(self) -> None:
+        import tomllib
+        manifest = tomllib.loads(packs.manifest("de-DE", "0.1.7", "ab" * 32))
+        self.assertEqual(manifest["package"]["id"], "so.tilo.language-pack.de-de")
+        self.assertEqual(manifest["package"]["kind"], "language-pack")
+        self.assertNotIn("isa", manifest["package"], "a pack is for every architecture")
+        self.assertEqual(manifest["publisher"]["identity"], "ed25519:" + "ab" * 32)
+        self.assertEqual(packs.metadata("de-DE")["supported_languages"], ["en"])
 
 
 if __name__ == "__main__":
