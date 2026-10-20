@@ -289,7 +289,7 @@ impl Connection {
         reason = "Cap'n Proto runs on this test's LocalSet"
     )]
     async fn settled(&self, operation: &str) -> Reply {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 let reply = self
                     .command(Command::Observe {
@@ -571,7 +571,7 @@ fn clipboard_bridge_expired_ticket_and_closed_source_cannot_publish_or_paste() {
         let offer = a.publish(ticket, false).await;
         let destination = b.capture(&folder, true).await;
         drop(a);
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if matches!(
                     b.command(Command::Snapshot).await,
