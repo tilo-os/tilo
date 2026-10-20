@@ -48,6 +48,15 @@ class SourceBoundaries(unittest.TestCase):
                 self.assertEqual(owner.delivered_ranges, [])
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
                 self.assertEqual(response.read(), source.DAV_BYTES)
+            # The handler records a GET only once its body is written, which
+            # the client can finish reading first: wait for the record,
+            # bounded by the shared hang bound.
+            deadline = time.monotonic() + int(os.environ.get('TILO_TEST_HANG_BOUND_SECS', '120'))
+            while time.monotonic() < deadline:
+                with owner.lock:
+                    if owner.gets:
+                        break
+                time.sleep(0.01)
             with owner.lock:
                 self.assertEqual(owner.gets, 1)
                 self.assertEqual(owner.delivered_ranges, [(0, len(source.DAV_BYTES))])
