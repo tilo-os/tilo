@@ -201,9 +201,13 @@ pub fn read<R: Read>(reader: R, sink: &mut dyn BlobSink) -> Result<Tapp, TappErr
                 let Some(ready) = pending.take() else {
                     return Err(TappError::MetadataAfterBlobs(name));
                 };
-                let finished = ready
-                    .finish()
-                    .map_err(|_| TappError::MetadataAfterBlobs(name.clone()))?;
+                // A metadata entry still missing at the first blob is out of
+                // order; anything else (another package format, a broken
+                // root) is that error, named as itself.
+                let finished = ready.finish().map_err(|error| match error {
+                    TappError::MissingEntry(_) => TappError::MetadataAfterBlobs(name.clone()),
+                    other => other,
+                })?;
                 sink.metadata(&finished)?;
                 meta = Some(finished);
             }
@@ -468,6 +472,39 @@ type = "gui"
             bytes[at + marker.len() - 2] = b'1';
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
             assert!(matches!(error, TappError::UnsupportedFormat(1)), "{error}");
+        }
+        // phase: a_full_archive_of_another_format_says_so
+        // A format-1 package carrying its blobs, in the right order, was
+        // reported as "metadata must precede payload blobs".
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let marker = b"format = 2\n";
+            let at = bytes
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            bytes[at + marker.len() - 2] = b'1';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::UnsupportedFormat(1)), "{error}");
+            assert!(
+                error.to_string().contains("unsupported tapp format 1"),
+                "{error}"
+            );
+        }
+        // phase: a_blob_before_the_metadata_is_out_of_order
+        {
+            let mut tar = tar::Builder::new(Vec::new());
+            append(
+                &mut tar,
+                &format!("{BLOB_PREFIX}{}", BlobHash::of(b"x")),
+                1,
+                &b"x"[..],
+            )
+            .unwrap();
+            let bytes = tar.into_inner().unwrap();
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::MetadataAfterBlobs(_)), "{error}");
         }
     }
 }
