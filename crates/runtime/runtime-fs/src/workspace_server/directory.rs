@@ -1322,7 +1322,7 @@ mod replacement_pin_tests {
             // Observe actual remote-capability release, never assume dropping the
             // client synchronously released the original-user capture claim.
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(2))
+                .checked_add(tilo_test_env::hang_bound())
                 .unwrap();
             let local = loop {
                 match fixture.session.operation_store().unwrap().pin_replacement(
@@ -1420,12 +1420,12 @@ mod replacement_pin_tests {
             drop(job);
             stop_client.await.unwrap();
             stop_server.await.unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(2), client_task)
+            tokio::time::timeout(tilo_test_env::hang_bound(), client_task)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+            tokio::time::timeout(tilo_test_env::hang_bound(), server_task)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1723,7 +1723,7 @@ mod pending_replacement_tests {
                 .build()
                 .unwrap();
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::time::timeout(tilo_test_env::hang_bound(), async {
                     let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
                     a.set_nonblocking(true).unwrap();
                     b.set_nonblocking(true).unwrap();
@@ -2025,7 +2025,7 @@ mod created_temporary_tests {
                 .build()
                 .unwrap();
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::time::timeout(tilo_test_env::hang_bound(), async {
                     let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
                     a.set_nonblocking(true).unwrap();
                     b.set_nonblocking(true).unwrap();
@@ -2106,7 +2106,7 @@ mod pending_handoff_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 let (source, client) = std::os::unix::net::UnixStream::pair().unwrap();
                 let server = serve_pending_connected(source, pending, runtime.handle().clone(), Arc::new(PendingHandoffRegistry::default())).unwrap();
                 client.set_nonblocking(true).unwrap();
@@ -2352,7 +2352,7 @@ mod history_read_tests {
                 .build()
                 .unwrap();
             tokio::task::LocalSet::new().block_on(&runtime, async {
-                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::time::timeout(tilo_test_env::hang_bound(), async {
                     let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
                     a.set_nonblocking(true).unwrap();
                     b.set_nonblocking(true).unwrap();
@@ -2519,7 +2519,7 @@ mod history_read_handoff_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 let (source, socket) = std::os::unix::net::UnixStream::pair().unwrap();
                 let server = serve_history_read_connected(source, subject, runtime.handle().clone(), Arc::new(PendingHandoffRegistry::default())).unwrap();
                 socket.set_nonblocking(true).unwrap();
@@ -2572,7 +2572,7 @@ mod history_read_handoff_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 let (source, socket) = std::os::unix::net::UnixStream::pair().unwrap();
                 let server = serve_history_read_connected(source, source_subject,
                     runtime.handle().clone(), Arc::new(PendingHandoffRegistry::default())).unwrap();
@@ -2657,7 +2657,7 @@ mod pending_purpose_transport_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime, async {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), async {
                 let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
                 a.set_nonblocking(true).unwrap();
                 b.set_nonblocking(true).unwrap();
@@ -2768,7 +2768,7 @@ mod atomic_prepare_transport_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime,async {
-            tokio::time::timeout(std::time::Duration::from_secs(30),async {
+            tokio::time::timeout(tilo_test_env::hang_bound(),async {
                 let (a,b)=std::os::unix::net::UnixStream::pair().unwrap();
                 let interrupt=b.try_clone().unwrap();
                 a.set_nonblocking(true).unwrap();b.set_nonblocking(true).unwrap();
@@ -2863,7 +2863,7 @@ mod malformed_atomic_refusal_tests {
             .build()
             .unwrap();
         tokio::task::LocalSet::new().block_on(&runtime,async {
-            tokio::time::timeout(std::time::Duration::from_secs(10),async {
+            tokio::time::timeout(tilo_test_env::hang_bound(),async {
                 let (a,b)=std::os::unix::net::UnixStream::pair().unwrap();a.set_nonblocking(true).unwrap();b.set_nonblocking(true).unwrap();
                 let a=tokio::net::UnixStream::from_std(a).unwrap();let b=tokio::net::UnixStream::from_std(b).unwrap();
                 let state=Rc::new(Server {backend,runtime:runtime.handle().clone(),calls:Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),handoffs:None,drain:None});
