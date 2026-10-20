@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::handles::Retained;
-use crate::ids::FieldId;
+use crate::ids::{FieldId, ModuleHash};
 use crate::value::{ResourceRef, Value};
 
 /// A two-way binding: an input or checkbox edits this field.
@@ -11,6 +11,8 @@ use crate::value::{ResourceRef, Value};
 pub struct Binding {
     pub target: ResourceRef,
     pub field: FieldId,
+    /// The module whose code wrote the binding: the author of edits made through it.
+    pub author: ModuleHash,
 }
 
 /// A node of a rendered view. Events hold retained action references.

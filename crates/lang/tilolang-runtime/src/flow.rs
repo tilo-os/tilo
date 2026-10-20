@@ -31,6 +31,10 @@ pub enum JournalEntry {
     Failed { action: ActionId, reason: String },
     /// A model call and the answer it got.
     Model { kind: String, result: Value },
+    /// A value the flow read from a resource. Replay answers reads from the journal, so a
+    /// replayed flow sees what it saw the first time and takes the same branches, even after
+    /// the actions it approved have changed the resources.
+    Read { value: Value },
 }
 
 /// Everything needed to replay a run.
