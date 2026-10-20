@@ -8,11 +8,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
+use crate::i18n::I18nManager;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// A widget's composition: the element tree it rebuilds at every layout and
+/// A widget's composition: the element tree it rebuilds at every layout, or
+/// keeps across layouts until it is invalidated ([`Composed::build_layout_kept`]), and
 /// lays out as the only child of its own node, plus the box it was given and
 /// whether the owner asked for a rebuild. The owning widget forwards its tree
 /// methods here.
@@ -21,6 +23,11 @@ pub struct Composed {
     rect: Rect,
     element: Option<Element>,
     invalidated: bool,
+    /// The owner asked for a fresh composition since the last was built.
+    /// Unlike `invalidated`, reading the structure flag leaves it set.
+    stale: bool,
+    /// The language the composition was built in ([`I18nManager::revision`]).
+    language: u64,
 }
 
 impl Composed {
@@ -34,14 +41,37 @@ impl Composed {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.invalidated = false;
+        self.stale = false;
+        self.language = I18nManager::revision();
         self.element
             .insert(element)
             .build_layout(taffy, theme, node_map)
     }
 
+    /// Lay out the composition kept from the last layout, or what `build`
+    /// makes where there is none, the owner invalidated it or the language
+    /// changed since. A relayout (a resize, a theme, a parent's reflow) then
+    /// keeps the controls, and the hover, press and focus they hold; the
+    /// owner invalidates when what it builds the composition from changes.
+    pub fn build_layout_kept(
+        &mut self,
+        build: impl FnOnce() -> Element,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let element = match self.element.take() {
+            Some(element) if !self.stale && self.language == I18nManager::revision() => element,
+            _ => build(),
+        };
+        self.build_layout(element, taffy, theme, node_map)
+    }
+
     /// Swap in `element` without laying it out.
     pub fn replace(&mut self, element: Element) -> &mut (dyn Widget + 'static) {
         self.invalidated = false;
+        self.stale = false;
+        self.language = I18nManager::revision();
         self.element.insert(element).as_mut()
     }
 
@@ -55,6 +85,7 @@ impl Composed {
     /// is built from changed. A fresh composition settles it.
     pub fn invalidate(&mut self) {
         self.invalidated = true;
+        self.stale = true;
     }
 
     /// Drop the composition until the next layout builds a fresh one.
@@ -89,7 +120,12 @@ impl Composed {
         self.element.as_deref_mut()
     }
 
+    /// Sync the composition; one built in another language is rebuilt at
+    /// the next layout.
     pub fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.element.is_some() && self.language != I18nManager::revision() {
+            self.invalidate();
+        }
         if let Some(element) = &mut self.element {
             element.sync(state, path);
         }

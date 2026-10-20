@@ -375,8 +375,46 @@ pub struct AppearancePane {
     desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
-    status_shown: Option<String>,
+    /// What the page was built showing ([`Shape`]).
+    shape: Shape,
     composed: ui::widget::Composed,
+}
+
+/// What the page shows of the values other than through a control that
+/// follows its field: the chosen theme's tile, the chosen wallpaper, the
+/// schedule's rows, the desk widgets that are on and where the wallpaper
+/// request stands. A change in any of them rebuilds the page; any other
+/// change only moves its control.
+#[derive(Clone, PartialEq)]
+struct Shape {
+    theme: String,
+    wallpaper: Option<String>,
+    schedule: [String; 3],
+    desk: [bool; 4],
+    status: Option<String>,
+}
+
+impl AppearancePane {
+    fn shape(&self) -> Shape {
+        let prefs = self.prefs();
+        let desk = self.desk.get();
+        Shape {
+            theme: prefs.theme_choice(),
+            wallpaper: prefs.wallpaper.clone(),
+            schedule: [
+                prefs.schedule.clone(),
+                prefs.sunrise.clone(),
+                prefs.sunset.clone(),
+            ],
+            desk: [
+                desk.music.enabled,
+                desk.team.enabled,
+                desk.calendar.enabled,
+                desk.system_monitor.enabled,
+            ],
+            status: self.wallpaper_status.get(),
+        }
+    }
 }
 
 impl AppearancePane {
@@ -386,16 +424,23 @@ impl AppearancePane {
         let prefs = cx.follow::<AppearancePrefs>();
         let desktop = cx.follow::<DesktopControls>();
         let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
-        let status_shown = wallpaper_status.get();
-        Self {
+        let mut pane = Self {
             cx,
             prefs,
             desktop,
             desk,
             wallpaper_status,
-            status_shown,
+            shape: Shape {
+                theme: String::new(),
+                wallpaper: None,
+                schedule: Default::default(),
+                desk: [false; 4],
+                status: None,
+            },
             composed: ui::widget::Composed::default(),
-        }
+        };
+        pane.shape = pane.shape();
+        pane
     }
 
     pub fn prefs(&self) -> &AppearancePrefs {
@@ -497,7 +542,7 @@ impl AppearancePane {
                     target_label(target)
                 }),
         ];
-        if let Some(status) = &self.status_shown {
+        if let Some(status) = &self.shape.status {
             body.push(note(status));
         }
         section(&t("settings-appearance-wallpaper-card"), rows(body))
@@ -609,19 +654,19 @@ impl AppearancePane {
 
 impl Widget for AppearancePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.prefs.refresh() {
-            // The schedule's rows and the applied theme follow the values.
-            self.composed.invalidate();
-        }
+        // The controls follow their fields; the page is rebuilt only when
+        // what it shows otherwise changes.
+        self.prefs.refresh();
         self.desktop.refresh();
-        let status = self.wallpaper_status.get();
-        if status != self.status_shown {
-            self.status_shown = status;
+        self.desk.refresh();
+        let shape = self.shape();
+        if shape != self.shape {
+            self.shape = shape;
             self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // This pane paints only its composition. Keep a child's local visual
