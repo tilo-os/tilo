@@ -1,10 +1,10 @@
 //! The stack of chrome above a window on the laptop panel (2944×1840 at
 //! scale 2): the top bar, then the window's tab row, then the window. One
 //! small step sits between the bar and the tab row, so the two read as two
-//! bars without leaving an empty band. A maximized window abuts the bar and
-//! the bottom edge, also when the maximize reaches a live desktop without a
-//! rebuild. While a hidden top bar shows over the windows, they move down
-//! below it, so a window's bar is never under the desktop's.
+//! bars without leaving an empty band. A maximized window hides the bar on
+//! its display and fills it, also when the maximize reaches a live desktop
+//! without a rebuild. While a hidden top bar shows over the windows, they
+//! move down below it, so a window's bar is never under the desktop's.
 
 use automerge::{AutoCommit, ROOT};
 use shell::compositor::backend::headless::parse_output_spec;
@@ -185,8 +185,13 @@ fn the_tab_row_sits_one_small_step_under_the_top_bar_on_the_scale_2_panel() {
     );
 }
 
+/// A maximize on the live desktop, without a rebuild: the top bar hides on
+/// the display the window fills, and the window takes the whole display,
+/// no margins; restored, the bar docks again and the margins come back.
 #[test]
-fn a_live_maximize_abuts_the_bar_and_the_bottom_edge() {
+fn a_live_maximize_hides_the_bar_and_fills_the_display() {
+    use tilo_desktop::chrome::TopBarPresence;
+
     let mut panel = Panel::new();
     let screen = panel.output.logical_rect();
     panel.toggle_maximized();
@@ -195,17 +200,28 @@ fn a_live_maximize_abuts_the_bar_and_the_bottom_edge() {
         panel.fb.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].maximized,
         "the maximize reached the tree"
     );
-    let bar = panel.top_bar();
+    assert_eq!(
+        panel.fb.chrome().top_bar_presence(),
+        TopBarPresence::Hidden,
+        "the maximized window hides the bar on its display"
+    );
     let (bounds, _) = panel.group();
     assert!(
-        (bounds.group.y0 - bar.y1).abs() < 0.5 && (screen.y1 - bounds.group.y1).abs() < 0.5,
-        "a maximize on the live desktop keeps no margins: bar {bar:?}, window {:?}",
+        (bounds.group.y0 - screen.y0).abs() < 0.5 && (screen.y1 - bounds.group.y1).abs() < 0.5,
+        "a maximize on the live desktop keeps no margins: window {:?}",
         bounds.group
     );
     panel.toggle_maximized();
     panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Docked);
+    let bar = panel.top_bar();
     let (bounds, _) = panel.group();
     drop(panel);
+    assert!(
+        (bounds.tab_bar.y0 - bar.y1 - TOP_MARGIN).abs() < 0.5,
+        "restoring docks the bar above the window again: bar {bar:?}, tab row {:?}",
+        bounds.tab_bar
+    );
     assert!(
         (screen.y1 - bounds.group.y1 - BOTTOM_MARGIN).abs() < 0.5,
         "restoring brings the bottom margin back: {:?}",

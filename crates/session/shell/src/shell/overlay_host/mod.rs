@@ -21830,6 +21830,10 @@ impl Widget for ShellOverlayHost {
         // The windows' bars put their menus and tooltips over the windows.
         self.draw_window_bar_popups(scene, transform, text_renderer, theme, presence);
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
+        // The bar's presence follows what this frame shows, as the retained
+        // sections bring it up to date: a single-scene paint (captures,
+        // shots, the frame tests) hides it over a maximized window too.
+        self.sync_top_bar_presence(Instant::now());
         // The top bar goes over all of that, as the retained sections
         // compose it: their workspace section holds everything above.
         if let Some(surface) = self.desktop_surface_mut() {
