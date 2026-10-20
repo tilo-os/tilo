@@ -51,6 +51,12 @@ RUN dnf install -y \
       ripgrep time yt-dlp \
     && dnf clean all
 
+# The launcher's signed OSTree/OpenPGP capture fixture (launcher-root) commits
+# a GPG-signed OSTree repository and compiles the OpenPGP engine probe against
+# gpgme, as the image build of that engine does.
+RUN dnf install -y --setopt=install_weak_deps=False ostree gpgme-devel \
+    && dnf clean all && rm -rf /var/cache/dnf
+
 # Required by production PDF capture tests. Use the same verified external
 # asset context as sccache; runtime/library upgrades do not touch Fedora packages.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
