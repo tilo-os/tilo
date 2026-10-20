@@ -100,9 +100,13 @@ impl<B: Backlight> ScreenDimmer<B> {
     }
 
     /// Put the display back to the brightness it had before [`Self::dim`].
+    /// A failed write keeps the saved level for the next restore, so the
+    /// dimmed level is never taken for the user's own.
     pub fn restore(&mut self) {
         if let Dim::Backlight(saved) = self.dim {
-            self.backlight.set_brightness(saved);
+            if !self.backlight.set_brightness(saved) {
+                return;
+            }
             BACKLIGHT_HELD.store(false, Ordering::Relaxed);
         }
         self.dim = Dim::Off;
@@ -111,6 +115,13 @@ impl<B: Backlight> ScreenDimmer<B> {
     /// Opacity of the dimming overlay the paint path must draw on top of the scene, if any.
     pub fn overlay_alpha(&self) -> Option<f32> {
         (self.dim == Dim::Overlay).then_some(OVERLAY_ALPHA)
+    }
+}
+
+impl<B: Backlight> Drop for ScreenDimmer<B> {
+    /// A session ending while dimmed leaves the panel at the user's level.
+    fn drop(&mut self) {
+        self.restore();
     }
 }
 
@@ -134,13 +145,14 @@ mod tests {
     struct FakeBacklight {
         level: RefCell<Option<f32>>,
         writes: RefCell<Vec<f32>>,
+        refuses: std::cell::Cell<bool>,
     }
 
     impl FakeBacklight {
         fn at(level: f32) -> Self {
             Self {
                 level: RefCell::new(Some(level)),
-                writes: RefCell::default(),
+                ..Self::default()
             }
         }
     }
@@ -150,7 +162,7 @@ mod tests {
             *self.level.borrow()
         }
         fn set_brightness(&self, fraction: f32) -> bool {
-            if self.level.borrow().is_none() {
+            if self.level.borrow().is_none() || self.refuses.get() {
                 return false;
             }
             *self.level.borrow_mut() = Some(fraction);
@@ -195,5 +207,27 @@ mod tests {
         dimmer.restore();
         assert_eq!(dimmer.overlay_alpha(), None);
         assert!(backlight.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_the_saved_level_for_the_next_one() {
+        let backlight = FakeBacklight::at(0.8);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        dimmer.dim();
+        backlight.refuses.set(true);
+        dimmer.restore();
+        dimmer.dim();
+        backlight.refuses.set(false);
+        dimmer.restore();
+        assert_eq!(*backlight.level.borrow(), Some(0.8));
+    }
+
+    #[test]
+    fn dropping_a_dimmed_session_restores_the_backlight() {
+        let backlight = FakeBacklight::at(0.6);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        dimmer.dim();
+        drop(dimmer);
+        assert_eq!(*backlight.level.borrow(), Some(0.6));
     }
 }

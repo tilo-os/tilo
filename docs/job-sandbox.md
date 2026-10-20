@@ -57,7 +57,8 @@ and denial of service through kernel locks that no cgroup accounts.
 ```text
 worker (t / ush)                       caller's namespaces, its own cgroup leaf
  └─ job init (pid 1)                   clone3 → new user, mount, pid, net, ipc, uts, cgroup ns,
-     │                                 born inside the job's cgroup (CLONE_INTO_CGROUP)
+     │                                 born inside the job's cgroup (CLONE_INTO_CGROUP),
+     │                                 then execve of the worker's program as `tilo-job-init`
      └─ the command                    fork + execve; everything it starts stays in the job
 ```
 
@@ -66,15 +67,26 @@ The library calls `clone3` from the worker with `CLONE_INTO_CGROUP`,
 inside the job's cgroup, so no instruction of the job ever runs outside its
 limits. The worker keeps the pidfd and waits on it without touching `SIGCHLD`.
 
-The child runs no allocator and takes no lock, because it is a copy of a
-multithreaded process. Every path, argument, mount, Landlock rule and the seccomp
-program is prepared before `clone3`. After it the child makes raw system calls
-only. In order, the child:
+The child is not a copy of the worker. A fork of a worker whose heap is tens of
+GiB copies its page tables on every job start (29 ms instead of 5 ms with a
+1 GiB heap, growing with it), and its init would keep, for the job's whole
+life, every page the worker changed since, charged to the worker. So `clone3` also takes
+`CLONE_VM | CLONE_VFORK`, as `posix_spawn` does: the child runs on the worker's
+memory and stack, with every signal blocked, while the thread that made it
+waits. It only puts the descriptors it keeps at their numbers and closes the
+rest (`close_range`), makes its capabilities in the new user namespace ambient
+(its uid isn't mapped yet, and an `execve` would drop them otherwise), and
+`execve`s the worker's program again, by descriptor, as `tilo-job-init`. The
+library registers an `.init_array` function that runs the init before `main`
+in any program that can start a job. The init tells the worker it runs (a
+program that didn't start it fails the job rather than running as itself) and
+reads its plan from a memory file: every path, argument, mount, Landlock rule
+and the seccomp program, prepared by the worker. In order, the init:
 
 1. Waits on a pipe until the worker has written its `uid_map`/`gid_map` and run
    the caller's setup hook. t's hook attaches pasta to the job's network
    namespace and installs its nftables. If the worker closes the pipe instead,
-   the child exits.
+   the init exits.
 2. Makes `/` private (`MS_REC|MS_PRIVATE`), then builds the new root on a
    tmpfs. The root is either an image's unpacked root filesystem, bound
    read-only, or the host's `/usr` and `/etc` bound read-only with
@@ -91,12 +103,13 @@ only. In order, the child:
    inheritable. Sets `SECBIT_NOROOT` (locked), so an `execve` as uid 0 inside
    regains none.
 7. Sets `no_new_privs`, then Landlock, then seccomp.
-8. Marks itself non-dumpable and zeroes the environment it inherited from the
-   worker. Even a process with the same uid inside the job can then neither
-   read `/proc/1/environ` nor attach to pid 1.
-9. Closes every descriptor except stdio, a status pipe and those the caller
-   passes explicitly (`close_range`). Without that, a job would hold another
-   job's pipe open, or the worker's server connection.
+8. Marks itself non-dumpable. Even a process with the same uid inside the job
+   can then neither read `/proc/1/` nor attach to pid 1. Its environment is
+   empty and holds nothing of the worker's.
+9. Holds no descriptor but stdio, its control pipes and those the caller
+   passes explicitly: the child closed the rest before its `execve`. Without
+   that, a job would hold another job's pipe open, or the worker's server
+   connection.
 10. Forks the command, which calls `setsid`, `dup2`s its stdio, `chdir`s and
     `execve`s with exactly the environment it was given. The `PATH` search runs
     inside the sandbox, on a stack buffer.
@@ -108,9 +121,11 @@ only. In order, the child:
 A setup step that fails writes its step number and `errno` to a report pipe. The
 caller gets "mounting /proc: Operation not permitted", not an exit status 127.
 
-Startup cost is dominated by `clone3` of the worker's page tables and the
-mounts. The benchmark (`cargo test -p tilo-sandbox --test job startup::`)
-reports the median of 200 spawns of `/bin/true`. It fails above 100 ms.
+Startup cost is dominated by the mounts and the init's `execve`; it does not
+grow with the worker's memory. The benchmark (`cargo test -p tilo-sandbox
+--test job startup::`) reports the median of 60 spawns of `/bin/true`, and
+fails above 100 ms. A second test starts jobs from a process holding a 1 GiB
+heap, and fails if the job's init holds any of it.
 
 ## Layers and settings
 

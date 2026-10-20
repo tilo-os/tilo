@@ -3846,6 +3846,15 @@ impl DrmScanout {
         self.match_signal_to_dumb_front();
         self.apply_adaptive_sync();
         self.apply_gamma_dim();
+        // What a lit CRTC shows through, once it is lit: its gamma LUT and
+        // the panel's backlight (a wake that leaves the screen dark must say
+        // which of them did not come back).
+        eprintln!(
+            "tilo compositor: DRM scanout: lit connector={} gamma={} backlight={}",
+            u32::from(self.connector),
+            self.crtc_gamma.describe(),
+            os_actions::display::backlight_state().unwrap_or_else(|| "none".into()),
+        );
         if self.hw_cursor_active
             && !self.cursor_bound
             && let Some(buf) = self.cursor_buffer.as_ref()
@@ -3880,6 +3889,11 @@ impl DrmScanout {
     /// The legacy DPMS property is not written there: on an atomic driver
     /// it is a blocking commit of its own.
     pub fn set_dpms(&mut self, on: bool, flip_unread: bool) {
+        eprintln!(
+            "tilo compositor: DRM scanout: power on={on} connector={} gamma={}",
+            u32::from(self.connector),
+            self.crtc_gamma.describe(),
+        );
         self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         let power = if on { Power::On } else { Power::Off };

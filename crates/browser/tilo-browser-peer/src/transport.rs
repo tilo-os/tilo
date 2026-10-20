@@ -14,8 +14,14 @@
 //!   as `RemoteCursorMoved` / `RemotePresenceUpdate`.
 //! - `InstallDocumentEncryption` seals and opens the route with its
 //!   `channel-crypto` group.
+//! - Content a record references and this page lacks (`WantContent`, a
+//!   picture's hash) is asked of the room on its presence, as every
+//!   device asks; the host and any member keeping it answer this device
+//!   alone, in pieces. Only pieces of content this page asked for are kept,
+//!   and the assembled bytes reach the app (`CollabEvent::RecordContent`)
+//!   only when they hash to what was asked for.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use tilo_relay_protocol::live::{
@@ -107,6 +113,39 @@ pub fn read_presence_anchors(
     ))
 }
 
+/// Largest content one reference names, as the room's hosts keep it.
+const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+/// Most bytes one piece carries.
+const PIECE_BYTES: usize = 192 * 1024;
+/// How long an unanswered request keeps collecting pieces, and how long
+/// before the same content is asked of the room again.
+const WANT_TTL_MS: u64 = 60_000;
+/// Requests open at once; past it, the oldest goes.
+const MAX_OPEN_WANTS: usize = 256;
+
+/// Content this page asked a room for, and the pieces of it that came.
+struct Want {
+    route: RouteSpec,
+    asked_ms: u64,
+    total: Option<u64>,
+    pieces: BTreeMap<u64, Vec<u8>>,
+}
+
+impl Want {
+    /// The whole content once its pieces cover it, end to end.
+    fn assembled(&self) -> Option<Vec<u8>> {
+        let total = self.total?;
+        let mut bytes = Vec::with_capacity(usize::try_from(total).ok()?);
+        for (offset, piece) in &self.pieces {
+            if *offset != u64::try_from(bytes.len()).ok()? {
+                return None;
+            }
+            bytes.extend_from_slice(piece);
+        }
+        (u64::try_from(bytes.len()).ok()? == total).then_some(bytes)
+    }
+}
+
 /// The certified relay session as a [`CollabTransport`].
 pub struct RelayCollabTransport {
     peer: PeerHandle,
@@ -118,6 +157,7 @@ pub struct RelayCollabTransport {
     routes: BTreeSet<DocumentRoute>,
     ready: BTreeSet<u64>,
     events: VecDeque<CollabEvent>,
+    wants: BTreeMap<String, Want>,
 }
 
 impl RelayCollabTransport {
@@ -133,6 +173,7 @@ impl RelayCollabTransport {
             routes: BTreeSet::new(),
             ready: BTreeSet::new(),
             events: VecDeque::new(),
+            wants: BTreeMap::new(),
         }
     }
 
@@ -163,7 +204,112 @@ impl RelayCollabTransport {
             }
             CollabRequest::Presence { key, payload } => self.presence(route, &key, &payload),
             CollabRequest::RequestDocumentSnapshot => Ok(()),
+            CollabRequest::WantContent { hash } => self.want_content(route, hash),
             _ => Err(TransportError::Unsupported),
+        }
+    }
+
+    /// This page's handle in content requests and answers.
+    fn own_handle(&self) -> neighbour_wire::PeerId {
+        neighbour_wire::peer_handle(&self.peer.status().device)
+    }
+
+    /// Ask the room for content `route`'s record references, unless it was
+    /// asked for within [`WANT_TTL_MS`].
+    fn want_content(&mut self, route: &RouteSpec, hash: String) -> Result<(), TransportError> {
+        let workspace = workspace(route).ok_or(TransportError::Unsupported)?;
+        let hash = hash.to_ascii_lowercase();
+        let now = tilo_clock::unix_now_ms();
+        if self
+            .wants
+            .get(&hash)
+            .is_some_and(|want| now.saturating_sub(want.asked_ms) < WANT_TTL_MS)
+        {
+            return Ok(());
+        }
+        if self.wants.len() >= MAX_OPEN_WANTS
+            && !self.wants.contains_key(&hash)
+            && let Some(oldest) = self
+                .wants
+                .iter()
+                .min_by_key(|(_, want)| want.asked_ms)
+                .map(|(hash, _)| hash.clone())
+        {
+            self.wants.remove(&oldest);
+        }
+        let request = neighbour_wire::NeighbourMsg::RecordContentWant {
+            requester: self.own_handle(),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.to_string(),
+            hash: hash.clone(),
+        };
+        let request = postcard::to_allocvec(&request).map_err(|_| TransportError::Unsupported)?;
+        self.wants.insert(
+            hash,
+            Want {
+                route: route.clone(),
+                asked_ms: now,
+                total: None,
+                pieces: BTreeMap::new(),
+            },
+        );
+        self.peer
+            .want_content(workspace, request)
+            .map_err(|_| TransportError::Closed)
+    }
+
+    /// One piece of content a member sent this page: kept when it belongs to
+    /// content this page asked for, and the content handed on once whole and
+    /// verified.
+    fn content_piece(&mut self, frame: &[u8]) {
+        let Ok(neighbour_wire::NeighbourMsg::RecordContentPiece {
+            requester,
+            app_id,
+            cluster_id,
+            hash,
+            total,
+            offset,
+            bytes,
+            ..
+        }) = postcard::from_bytes(frame)
+        else {
+            return;
+        };
+        let hash = hash.to_ascii_lowercase();
+        if requester != self.own_handle() || total > MAX_CONTENT_BYTES || bytes.len() > PIECE_BYTES
+        {
+            return;
+        }
+        let Some(want) = self.wants.get_mut(&hash) else {
+            return;
+        };
+        if want.route.app_id != app_id || want.route.cluster_id.to_string() != cluster_id {
+            return;
+        }
+        if want.total.is_some_and(|known| known != total) {
+            return;
+        }
+        let fits = u64::try_from(bytes.len())
+            .ok()
+            .and_then(|len| offset.checked_add(len))
+            .is_some_and(|end| end <= total);
+        if !fits {
+            return;
+        }
+        want.total = Some(total);
+        want.pieces.entry(offset).or_insert(bytes);
+        let Some(assembled) = want.assembled() else {
+            return;
+        };
+        let Some(want) = self.wants.remove(&hash) else {
+            return;
+        };
+        if blake3::hash(&assembled).to_hex().as_str() == hash {
+            self.events.push_back(CollabEvent::RecordContent {
+                route: want.route,
+                hash,
+                bytes: assembled,
+            });
         }
     }
 
@@ -233,6 +379,7 @@ impl RelayCollabTransport {
                     });
                 }
                 PeerEvent::Live { from, frame, .. } => self.remote_presence(from, &frame),
+                PeerEvent::RecordContent { frame, .. } => self.content_piece(&frame),
                 PeerEvent::LiveMember { device, active, .. } => {
                     self.live.member(device, active);
                 }
@@ -385,5 +532,49 @@ impl CollabTransport for RelayCollabTransport {
     fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(wake);
         self.peer.on_change(wake);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn want(total: u64, pieces: &[(u64, &[u8])]) -> Want {
+        Want {
+            route: RouteSpec {
+                app_id: "so.tilo.chat".into(),
+                cluster_id: Default::default(),
+                record: None,
+            },
+            asked_ms: 0,
+            total: Some(total),
+            pieces: pieces
+                .iter()
+                .map(|(at, bytes)| (*at, bytes.to_vec()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn content_is_whole_once_its_pieces_cover_it_in_any_order() {
+        assert_eq!(
+            want(6, &[(3, b"def"), (0, b"abc")]).assembled().as_deref(),
+            Some(&b"abcdef"[..])
+        );
+        assert_eq!(want(0, &[(0, b"")]).assembled().as_deref(), Some(&b""[..]));
+    }
+
+    #[test]
+    fn content_with_a_gap_or_short_of_its_total_is_not_whole() {
+        assert!(want(9, &[(0, b"abc"), (6, b"ghi")]).assembled().is_none());
+        assert!(want(9, &[(0, b"abc"), (3, b"def")]).assembled().is_none());
+        assert!(
+            Want {
+                total: None,
+                ..want(3, &[(0, b"abc")])
+            }
+            .assembled()
+            .is_none()
+        );
     }
 }

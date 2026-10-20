@@ -386,6 +386,36 @@ mod tests {
     }
 
     #[test]
+    fn history_shares_the_scaled_music_header() {
+        use ui::widget::Widget as _;
+        let mut app = TestApp::<MusicShell>::capture_at(Some("nowplaying"), (1440, 810)).unwrap();
+        let theme = ui::theme::Theme::dark().with_ui_scale(1.5);
+        let header_height = f64::from(theme.tokens.metrics.header_height);
+        app.harness().set_theme(theme);
+        app.harness().relayout();
+        let surface = app.surface_mut::<MusicApp>();
+        assert!(
+            surface.get_rect().y0.abs() < f64::EPSILON,
+            "no extra framework toolbar"
+        );
+        let history = surface
+            .children()
+            .into_iter()
+            .find(|child| {
+                child
+                    .accessibility()
+                    .is_some_and(|node| node.name.as_deref() == Some("History"))
+            })
+            .expect("the framework's History control is retained in Music");
+        let rect = history.get_rect();
+        assert!(
+            rect.y0 >= 0.0 && rect.y1 <= header_height,
+            "History is in the one top row"
+        );
+        assert!(rect.x0 > 1440.0 / 2.0, "History stays at the trailing edge");
+    }
+
+    #[test]
     fn recommendations_preferences_are_addressable_on_an_empty_library() {
         let resource = crate::recommendations::resource_by_id(
             &Library::default(),

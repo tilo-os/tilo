@@ -173,6 +173,8 @@ pub struct ContentStore {
     deferred: std::sync::Mutex<(usize, bool)>,
     /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
     write_syncs: std::sync::atomic::AtomicU64,
+    /// Bytes read so far; see [`ContentStore::read_bytes`].
+    read_bytes: std::sync::atomic::AtomicU64,
     /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
     /// The directory of an ephemeral store's area, removed with it.
@@ -395,6 +397,7 @@ impl ContentStore {
             gc,
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
             runtime: Some(runtime),
@@ -433,6 +436,7 @@ impl ContentStore {
             gc,
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
             runtime: None,
@@ -476,6 +480,7 @@ impl ContentStore {
             gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: Some(scratch),
             runtime: None,
@@ -516,6 +521,21 @@ impl ContentStore {
     /// it pays for one rather than one per blob.
     pub fn write_syncs(&self) -> u64 {
         self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many bytes reads of this store have taken so far: whole blobs
+    /// [`Self::local`] returned (cached or not), the verified leaves of
+    /// [`Self::read_blob_range`], and file-backed content. A ranged read pays
+    /// for its range, so a caller can check that it never loads whole blobs.
+    pub fn read_bytes(&self) -> u64 {
+        self.read_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(self.files.read_bytes())
+    }
+
+    fn note_read(&self, bytes: usize) {
+        self.read_bytes
+            .fetch_add(bytes as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
@@ -568,10 +588,12 @@ impl ContentStore {
     /// file-backed chunk, which is checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
+            self.note_read(b.len());
             return Some(b);
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
+                self.note_read(b.len());
                 self.cache_insert(hash, b.clone());
                 Some(b)
             }
@@ -695,6 +717,7 @@ impl ContentStore {
         while let Some(item) = items.next().await {
             match item {
                 EncodedItem::Leaf(leaf) => {
+                    self.note_read(leaf.data.len());
                     content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
                 }
                 EncodedItem::Size(actual) if actual != size => return None,

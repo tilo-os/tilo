@@ -23,6 +23,70 @@ pub struct CloneArgs {
 /// `CLONE_INTO_CGROUP`.
 pub const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
+/// `clone3` with `CLONE_VM | CLONE_VFORK` in `args.flags` and no stack of
+/// its own, as `vfork` is: the child runs `child(arg)` on this thread's
+/// stack, below its frames, while the thread waits for the child's `execve`
+/// or exit. libc wraps `vfork` this way, but not `clone3`, the only call that
+/// takes `CLONE_INTO_CGROUP`. Returns what the parent's `clone3` returned:
+/// the child's pid, or a negative errno.
+///
+/// # Safety
+/// `args` asks for `CLONE_VM | CLONE_VFORK` and no stack; `child` never
+/// returns, and runs nothing that this thread's state (its locks, its
+/// thread-local storage) may not see.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub unsafe fn clone3_vfork(
+    args: &CloneArgs,
+    child: unsafe extern "C" fn(*mut libc::c_void) -> !,
+    arg: *mut libc::c_void,
+) -> libc::c_long {
+    let size = std::mem::size_of::<CloneArgs>();
+    let ret: libc::c_long;
+    // SAFETY: the parent returns from the system call as from any other. The
+    // child starts at the same instruction with the same registers and stack
+    // pointer, calls `child` and so only writes below this frame, never
+    // returning into it: the parent's frames stay as they were. The stack may
+    // be used (no `nostack`), so nothing is kept below the stack pointer.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::asm!(
+            "syscall",
+            "test rax, rax",
+            "jnz 2f",
+            "mov rdi, r13",
+            "call r12",
+            "ud2",
+            "2:",
+            inlateout("rax") libc::SYS_clone3 => ret,
+            in("rdi") std::ptr::from_ref(args),
+            in("rsi") size,
+            in("r12") child,
+            in("r13") arg,
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    // SAFETY: as above; the kernel keeps every register but x0 across `svc`.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            "cbnz x0, 2f",
+            "mov x0, x10",
+            "blr x9",
+            "brk #0x1",
+            "2:",
+            inlateout("x0") std::ptr::from_ref(args) => ret,
+            in("x1") size,
+            in("x8") libc::SYS_clone3,
+            in("x9") child,
+            in("x10") arg,
+            lateout("x30") _,
+        );
+    }
+    ret
+}
+
 /// `struct mount_attr`.
 #[repr(C)]
 #[derive(Default)]

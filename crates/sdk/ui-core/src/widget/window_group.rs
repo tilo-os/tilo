@@ -2175,16 +2175,34 @@ impl WindowGroup {
     /// A missing target means it is not currently painted.
     pub fn presentation_bounds(&self) -> WindowGroupBounds {
         let painted = |rect: Rect| (rect.area() > 0.0).then_some(rect);
+        // The window's own controls stand at the end of its bar, maximized or
+        // not: one control maximizes or, on a maximized window, restores.
+        let controls = if self.navigation_bar_visible() {
+            *self.bar.window_controls()
+        } else {
+            crate::widget::window_controls::WindowControls::default()
+        };
+        let toggle = painted(controls.maximize);
         WindowGroupBounds {
             group: self.rect,
             client: self.active_host().map(Widget::get_rect),
             tab_bar: self.bar.get_rect(),
-            maximize: (!self.maximized && self.navigation_bar_visible())
-                .then(|| self.active_maximize_rect())
-                .flatten()
-                .and_then(painted),
-            restore: painted(self.restore_rect),
-            close: painted(self.close_rect),
+            maximize: if self.maximized {
+                None
+            } else {
+                toggle.or_else(|| {
+                    self.navigation_bar_visible()
+                        .then(|| self.active_maximize_rect())
+                        .flatten()
+                        .and_then(painted)
+                })
+            },
+            restore: if self.maximized {
+                toggle.or_else(|| painted(self.restore_rect))
+            } else {
+                None
+            },
+            close: painted(controls.close).or_else(|| painted(self.close_rect)),
         }
     }
 

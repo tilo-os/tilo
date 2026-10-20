@@ -1752,7 +1752,24 @@ impl QuickSettingsRoot {
             QuickSettingsControl::PowerMode => s.power_profile == PowerProfile::Saver,
         }
     }
-    fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
+    /// The network Wi-Fi is on: the observed link when it is Wi-Fi or
+    /// offline, else (wired, or not observed yet) the last scan's.
+    fn wifi_subline(s: &QuickSettingsState) -> String {
+        match &s.link {
+            Some(link) if link.kind == os_actions::LinkKind::Wifi => link
+                .name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| t("qs-connected")),
+            Some(link) if link.kind == os_actions::LinkKind::Offline => t("qs-not-connected"),
+            _ => s
+                .wifi_networks
+                .iter()
+                .find(|v| v.connected)
+                .map_or_else(|| t("qs-not-connected"), |v| v.ssid.clone()),
+        }
+    }
+    pub(crate) fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> String {
         if s.radio_change_pending
             && matches!(
                 c,
@@ -1790,11 +1807,7 @@ impl QuickSettingsRoot {
                         }
                     },
                 ),
-            QuickSettingsControl::Wifi if s.wifi => s
-                .wifi_networks
-                .iter()
-                .find(|v| v.connected)
-                .map_or_else(|| t("qs-not-connected"), |v| v.ssid.clone()),
+            QuickSettingsControl::Wifi if s.wifi => Self::wifi_subline(s),
             QuickSettingsControl::Wifi
                 if s.radios.wifi_hardware_blocked || s.wifi_problem.is_some() =>
             {

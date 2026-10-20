@@ -16784,6 +16784,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-browser-peer",
+ "tilo-content",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-search",
@@ -19209,7 +19210,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "memmap2",
+ "postcard",
  "rustix 1.1.4",
+ "serde",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-platform-caps",

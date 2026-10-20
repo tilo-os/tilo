@@ -534,6 +534,13 @@ struct JobState {
     total: AtomicU64,
     cancel: AtomicBool,
     outcome: Mutex<Option<ExportStatus>>,
+    /// How long one frame may go without every source's real picture before
+    /// the export fails rather than write a stand-in.
+    #[cfg_attr(
+        not(feature = "gst"),
+        allow(dead_code, reason = "only the GStreamer render composites frames")
+    )]
+    frame_patience: std::time::Duration,
 }
 
 impl ExportJob {
@@ -591,13 +598,17 @@ impl Drop for ExportJob {
 /// The message a cancelled render reports.
 pub const CANCELLED: &str = "Export cancelled";
 
-/// How long an export waits for one decoded frame of a source before it
-/// draws the source's representative fill instead. The preview's bound
-/// (two seconds) keeps a scrub responsive; an export has nobody waiting on
-/// a single frame, and a fill there is a wrong frame in the user's file.
-/// A source that answers nothing three times running is still written off.
+/// How long one request for a source's frame waits before the export checks
+/// for Cancel and asks again. An export never writes a frame without every
+/// source's real picture; this only bounds how late a Cancel is noticed.
 #[cfg(feature = "gst")]
-const EXPORT_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const EXPORT_FRAME_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long an export keeps asking for one frame's pictures before it fails,
+/// naming the source. A slow machine opening a source and landing its first
+/// picture takes seconds; a source that gives nothing for this long cannot
+/// produce the frame, and a stand-in in its place is not the person's work.
+const EXPORT_FRAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Start a render on a worker thread, writing to `destination`.
 ///
@@ -607,17 +618,28 @@ pub fn start_export(
     settings: &ExportSettings,
     destination: std::path::PathBuf,
 ) -> ExportJob {
+    start_export_with_patience(project, *settings, destination, EXPORT_FRAME_PATIENCE)
+}
+
+/// [`start_export`], giving up on a frame whose pictures have not all
+/// arrived after `frame_patience`.
+fn start_export_with_patience(
+    project: &Project,
+    settings: ExportSettings,
+    destination: std::path::PathBuf,
+    frame_patience: std::time::Duration,
+) -> ExportJob {
     let shared = Arc::new(JobState {
         done: AtomicU64::new(0),
         total: AtomicU64::new(0),
         cancel: AtomicBool::new(false),
         outcome: Mutex::new(None),
+        frame_patience,
     });
     // The worker owns its own copy: the UI thread keeps editing the project
     // while the render runs, and a render must encode the timeline as it was
     // when the user pressed Export.
     let project = project.clone();
-    let settings = *settings;
     let state = shared.clone();
     let handle = ui::rt::spawn_thread("video-editor-export", move || {
         let result = render(&project, settings, &destination, &state);
@@ -723,6 +745,28 @@ fn render(
             .unwrap_or("Export is unavailable")
             .to_string())
     }
+}
+
+/// Why an export stopped at a frame `media` gave no picture for.
+#[cfg_attr(
+    not(feature = "gst"),
+    allow(dead_code, reason = "only the GStreamer render composites frames")
+)]
+fn no_picture_reason(
+    project: &Project,
+    media: crate::model::MediaId,
+    source_time: f64,
+    waited: std::time::Duration,
+) -> String {
+    let name = project.media(media).map_or_else(
+        || "a source".to_string(),
+        |item| format!("\"{}\"", item.name),
+    );
+    format!(
+        "Cannot export: {name} gave no picture at {source_time:.2}s within {}s. The file \
+         would have held a stand-in frame there instead of the footage.",
+        waited.as_secs()
+    )
 }
 
 /// Why export cannot run in this build, or `None` when it can.
@@ -862,21 +906,21 @@ mod gst_pipeline {
         // The frames come off the very same GPU compositor the preview
         // canvas draws through — layer stack, grade, effect chain,
         // envelope and transitions — fed by the same media sessions, so
-        // the file cannot disagree with what was on screen. Media that
-        // has not hydrated falls back to its representative fill rather
-        // than failing the render.
+        // the file cannot disagree with what was on screen.
         //
         // `Exact` because an export has no interactive deadline to miss
         // and every frame must be the right one; the preview asks the
-        // same sources for `Responsive` instead. For the same reason a
-        // frame gets [`EXPORT_FRAME_TIMEOUT`], not the preview's bound: a
-        // busy machine that takes longer than that to open a source and
-        // land its first picture would otherwise encode the representative
-        // fill in its place.
+        // same sources for `Responsive` instead. `strict` because the
+        // preview's stand-ins (the representative fill, the last picture a
+        // source produced) are never written into the file: a frame is
+        // composited again until every source has given its real picture,
+        // and the export fails, naming the source, if one has not within
+        // the frame's patience.
         let mut compositor =
             crate::gpu::HeadlessCompositor::new().map_err(|e| format!("export compositor: {e}"))?;
         let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact)
-            .with_timeout(super::EXPORT_FRAME_TIMEOUT);
+            .with_timeout(super::EXPORT_FRAME_ATTEMPT)
+            .strict();
         let mut pcm = crate::audio::DecodedPcm::new(project);
         // Whether any frame of this render actually got a decoded picture.
         //
@@ -900,17 +944,33 @@ mod gst_pipeline {
         let frame_dur = gst::ClockTime::from_nseconds(ns_per_frame);
 
         for i in 0..total {
-            // Cancellation is checked between frames: the encode of one frame
-            // is short, and stopping mid-buffer would leave the muxer holding
-            // a partial sample.
-            if state.cancel.load(Ordering::Relaxed) {
-                let _ = pipeline.set_state(gst::State::Null);
-                // A half-written file must not be left looking like a render.
-                crate::files::remove(&out);
-                return Err(super::CANCELLED.to_string());
-            }
             let t = plan.time_of(i);
-            let rgba = compositor.frame(project, t, w, h, &mut sources);
+            let asked = ui::time::now();
+            let rgba = loop {
+                // Cancellation is checked between attempts: the encode of one
+                // frame is short, and stopping mid-buffer would leave the
+                // muxer holding a partial sample.
+                if state.cancel.load(Ordering::Relaxed) {
+                    let _ = pipeline.set_state(gst::State::Null);
+                    // A half-written file must not be left looking like a render.
+                    crate::files::remove(&out);
+                    return Err(super::CANCELLED.to_string());
+                }
+                let rgba = compositor.frame(project, t, w, h, &mut sources);
+                let Some(&(media, source_time)) = sources.missing_pictures().first() else {
+                    break rgba;
+                };
+                if ui::time::now().saturating_duration_since(asked) >= state.frame_patience {
+                    let _ = pipeline.set_state(gst::State::Null);
+                    crate::files::remove(&out);
+                    return Err(super::no_picture_reason(
+                        project,
+                        media,
+                        source_time,
+                        state.frame_patience,
+                    ));
+                }
+            };
             any_real |= sources.served_real_picture();
             debug_assert_eq!(rgba.len(), frame_bytes);
             let mut buffer = gst::Buffer::with_size(frame_bytes)
@@ -1215,6 +1275,41 @@ mod tests {
     }
 
     use super::*;
+
+    /// A source whose bytes resolve but never decode makes the export fail,
+    /// naming it, and leaves no file: an export never writes a stand-in in
+    /// place of a frame it could not get.
+    #[test]
+    #[cfg(feature = "gst")]
+    fn a_source_that_never_delivers_fails_the_export_instead_of_writing_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("never-decodes.mp4");
+        std::fs::write(&clip, vec![0x5a_u8; 64 * 1024]).unwrap();
+        let p = one_clip_over(&clip.to_string_lossy());
+        assert!(
+            unreadable_sources(&p).is_empty(),
+            "its bytes are there, so only decoding can tell it gives nothing",
+        );
+        let out = dir.path().join("render.mp4");
+        let status = start_export_with_patience(
+            &p,
+            ExportSettings::default(),
+            out.clone(),
+            std::time::Duration::from_secs(5),
+        )
+        .join();
+        match status {
+            ExportStatus::Failed { reason } => {
+                assert!(reason.contains("\"clip\""), "names the source: {reason:?}");
+                assert!(
+                    reason.contains("gave no picture"),
+                    "and says why: {reason:?}"
+                );
+            }
+            other => panic!("a source that never delivers must fail the export, got {other:?}"),
+        }
+        assert!(!out.exists(), "and no file is left behind");
+    }
 
     #[test]
     #[cfg(feature = "gst")]

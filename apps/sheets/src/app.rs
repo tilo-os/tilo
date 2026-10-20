@@ -43,6 +43,11 @@ use ui::widget::{
 mod annotations;
 mod chrome;
 mod overlays;
+#[cfg(test)]
+mod polish_tests;
+mod presence;
+#[cfg(test)]
+mod presence_tests;
 
 use chrome::{ChromeMetrics, CommandSlot, MenuRow};
 use overlays::SettingsSheet;
@@ -241,6 +246,7 @@ enum TabAction {
 #[derive(Clone)]
 enum AnnotationClick {
     Open(Addr),
+    ManageChart(String),
     EditChart(String),
     SetChartKind(String, ChartKind),
     ChartCells(String),
@@ -377,6 +383,8 @@ pub struct SheetsApp {
     /// drag-select, and the bar's caret/selection rendering. `formula_char_x[i]`
     /// is the x of the boundary before char `i`; the last entry is the end.
     formula_char_x: Vec<f64>,
+    /// Horizontal pan of the formula editor, keeping its caret inside the field.
+    formula_scroll_x: f64,
     /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
@@ -387,6 +395,8 @@ pub struct SheetsApp {
     /// Rebuilt on paint: annotation cards stay a visual projection of the
     /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
+    /// Only this chart exposes its management controls; plots are uncluttered otherwise.
+    managed_chart: Option<String>,
     /// The strip under the grid that holds the annotation cards, and where
     /// each card stands in it. Empty when the sheet has no annotations.
     dock_rect: Rect,
@@ -529,11 +539,13 @@ impl SheetsApp {
             name_box_edit: None,
             formula_field_rect: Rect::ZERO,
             formula_char_x: Vec::new(),
+            formula_scroll_x: 0.0,
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
             sheet_charts: Vec::new(),
             sheet_comments: Vec::new(),
             annotation_clicks: Vec::new(),
+            managed_chart: None,
             dock_rect: Rect::ZERO,
             dock_cards: Vec::new(),
             dock_scroll: ui::widget::ScrollRegion::horizontal(),
@@ -2644,6 +2656,7 @@ impl Widget for SheetsApp {
         self.apply_staged_overlay();
         self.draw_chrome(scene, transform, text_renderer, theme, presence);
         self.grid.draw(scene, transform, text_renderer, theme);
+        self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
         self.draw_annotation_dock(scene, transform, text_renderer, theme);
         // The transient floating status bubble sits above the grid and the
         // tab strip, below the top layer.
@@ -2999,6 +3012,10 @@ impl Widget for SheetsApp {
                             ))
                             .with_children(vec![
                                 AccessNode::new(Role::Button)
+                                    .with_name("Manage chart")
+                                    .with_action_target(format!("{target}:manage"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
                                     .with_name("Open chart range")
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
@@ -3177,15 +3194,15 @@ impl Widget for SheetsApp {
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
-    /// Announce which sheet the local user is viewing, so peers can flag
-    /// that tab. Keyed by sheet name (the same key
-    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
+    /// Publish durable cell anchors so a peer's selection follows inserted
+    /// rows and columns. Empty, not-yet-authored cells retain tab presence.
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        let name = self.sheet_names.get(self.active_sheet)?;
-        Some((
-            PresenceKey::Tab { id: name.clone() },
-            PresencePayload::Arrived,
-        ))
+        let key = self.cell_presence_key().or_else(|| {
+            self.sheet_names
+                .get(self.active_sheet)
+                .map(|name| PresenceKey::Tab { id: name.clone() })
+        })?;
+        Some((key, PresencePayload::Arrived))
     }
 }
 
@@ -3472,6 +3489,9 @@ impl SheetsApp {
             return;
         };
         match action {
+            AnnotationClick::ManageChart(id) => {
+                self.managed_chart = (self.managed_chart.as_ref() != Some(&id)).then_some(id);
+            }
             AnnotationClick::Open(addr) => {
                 self.grid.select_only(addr);
                 self.status = format!("Opened {}", crate::model::addr_to_a1(addr.0, addr.1));
@@ -3577,6 +3597,9 @@ impl SheetsApp {
                 .iter()
                 .find(|chart| chart.id == id)
                 .map(|chart| AnnotationClick::Open(chart.start)),
+            ("chart", "manage") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::ManageChart(id.to_string()))
+            }
             ("chart", "edit") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
                 Some(AnnotationClick::EditChart(id.to_string()))
             }
@@ -5035,22 +5058,16 @@ pub(crate) mod tests {
     #[test]
     fn presence_and_sheet_switching_follow_the_active_tab() {
         // Case `presence_payload_announces_active_sheet`.
-        // Presence-in-navigation, producer side: the app announces which
-        // sheet the local user is on as a `Tab { id: sheet_name }` scope, so
-        // peers can flag that tab. Switching sheets moves the announced scope.
+        // Cell presence also identifies the active sheet for navigation.
+        // Switching sheets retargets the same durable cell scope.
         {
             let (mut app, _doc) = seeded_app();
             assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
 
             let (key, payload) =
                 ui::presence::capability::presence_payload(&app).expect("a sheet is active");
-            assert_eq!(
-                key,
-                PresenceKey::Tab {
-                    id: app.sheet_names[app.active_sheet].clone()
-                },
-                "the announced scope must be the active sheet's tab"
-            );
+            let scope = presence::CellScope::from_key(&key).expect("cell scope");
+            assert_eq!(scope.sheet, app.sheet_ids[app.active_sheet].as_str());
             assert_eq!(payload, PresencePayload::Arrived);
 
             // Switching sheets re-targets the announcement at the new tab.
@@ -5059,12 +5076,8 @@ pub(crate) mod tests {
                 app.active_sheet = other;
                 let (key2, _) =
                     ui::presence::capability::presence_payload(&app).expect("still active");
-                assert_eq!(
-                    key2,
-                    PresenceKey::Tab {
-                        id: app.sheet_names[other].clone()
-                    }
-                );
+                let scope = presence::CellScope::from_key(&key2).expect("cell scope");
+                assert_eq!(scope.sheet, app.sheet_ids[other].as_str());
             }
         }
 
@@ -6412,6 +6425,14 @@ pub(crate) mod tests {
             .unwrap()
             .clone();
 
+        let manage = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::ManageChart(_)))
+            .map(|(rect, _)| rect.center())
+            .expect("the header offers chart management");
+        assert!(app.try_annotation_click(manage, &mut Edits::lend(&mut doc), &mut false));
+        paint_frame(&mut app, &mut tr, &theme);
         let line = app
             .annotation_clicks
             .iter()
@@ -6459,6 +6480,21 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!((shown.start, shown.end), ((0, 0), (3, 2)));
         assert_eq!(shown.kind, ChartKind::Line, "the type is kept");
+
+        paint_frame(&mut app, &mut tr, &theme);
+        assert_eq!(
+            app.annotation_clicks.len(),
+            7,
+            "six commands and the management toggle"
+        );
+        assert!(app.try_annotation_click(manage, &mut Edits::lend(&mut doc), &mut handled));
+        paint_frame(&mut app, &mut tr, &theme);
+        assert_eq!(
+            app.annotation_clicks.len(),
+            1,
+            "closing management restores the plot"
+        );
+        assert!(app.managed_chart.is_none());
     }
 
     /// An agent edits a chart's title, type and cells in one call, and a

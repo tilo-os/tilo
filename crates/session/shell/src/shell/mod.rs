@@ -200,6 +200,7 @@ pub mod window_previews;
 pub mod window_transfer;
 #[cfg(target_os = "linux")]
 pub mod windows_compat;
+pub(crate) mod work_accounting;
 pub mod workspace_drop;
 pub mod workspace_governance;
 pub mod workspace_history;
@@ -992,6 +993,7 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
         &mut self,
         request: tilo_desktop::resolver::TileRequest<'_>,
     ) -> tilo_desktop::resolver::TileResolution {
+        work_accounting::tile_resolved();
         if let Some(mounted) = mount_in_process(&request, self.inputs) {
             return mounted;
         }
@@ -1270,6 +1272,7 @@ pub(crate) fn build_desktop_root(
         inputs: &state.hosted_inputs,
         failures,
     };
+    work_accounting::surface_built();
     let mut surface = Box::new(tilo_desktop::composition::DesktopSurface::build(
         desktop,
         records,

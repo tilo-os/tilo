@@ -48,6 +48,27 @@ pub trait SecretStore: Send + Sync {
     ///
     /// When the vault cannot be rewritten.
     fn forget_connection(&self, uuid: &str) -> Result<(), String>;
+    /// The secrets `NetworkManager` rejected for `key` when they were what
+    /// this agent remembered: it never answers them on its own again.
+    fn rejected(&self, key: &StoreKey) -> Option<SettingSecrets>;
+    /// Remember that `NetworkManager` rejected `secrets` for `key`.
+    ///
+    /// # Errors
+    ///
+    /// When the vault cannot be rewritten.
+    fn reject(&self, key: &StoreKey, secrets: &SettingSecrets) -> Result<(), String>;
+    /// The person gave new secrets for `key`: nothing is rejected any more.
+    ///
+    /// # Errors
+    ///
+    /// When the vault cannot be rewritten.
+    fn clear_rejected(&self, key: &StoreKey) -> Result<(), String>;
+}
+
+/// Where the vault keeps the secrets rejected for a setting, beside the
+/// setting's own (a name no `NetworkManager` setting has).
+fn rejected_setting(setting: &str) -> String {
+    format!("rejected:{setting}")
 }
 
 /// The person's roaming Wi-Fi credentials.
@@ -185,7 +206,69 @@ impl VaultStore {
     }
 }
 
+impl VaultStore {
+    fn vaulted(&self, uuid: &str, setting: &str) -> Option<SettingSecrets> {
+        let _guard = self.lock.lock_recover();
+        match self.read() {
+            Ok(entries) => entries
+                .get(uuid)
+                .and_then(|settings| settings.get(setting))
+                .map(|values| {
+                    let mut secrets = SettingSecrets::default();
+                    for (name, value) in values {
+                        secrets.insert(name.clone(), value.clone());
+                    }
+                    secrets
+                }),
+            Err(error) => {
+                tracing::warn!(target: "shell::network_secrets", %error, "vault unreadable");
+                None
+            }
+        }
+    }
+
+    fn put(&self, uuid: &str, setting: &str, secrets: &SettingSecrets) -> Result<(), String> {
+        self.modify(|entries| {
+            let values = secrets
+                .0
+                .iter()
+                .map(|(name, value)| (name.clone(), value.to_string()))
+                .collect();
+            entries
+                .entry(uuid.to_owned())
+                .or_default()
+                .insert(setting.to_owned(), values);
+            true
+        })
+    }
+
+    fn remove(&self, uuid: &str, setting: &str) -> Result<(), String> {
+        self.modify(|entries| {
+            let Some(settings) = entries.get_mut(uuid) else {
+                return false;
+            };
+            let removed = settings.remove(setting).is_some();
+            if settings.is_empty() {
+                entries.remove(uuid);
+            }
+            removed
+        })
+    }
+}
+
 impl SecretStore for VaultStore {
+    fn rejected(&self, key: &StoreKey) -> Option<SettingSecrets> {
+        self.vaulted(&key.uuid, &rejected_setting(&key.setting))
+    }
+
+    fn reject(&self, key: &StoreKey, secrets: &SettingSecrets) -> Result<(), String> {
+        self.put(&key.uuid, &rejected_setting(&key.setting), secrets)
+    }
+
+    fn clear_rejected(&self, key: &StoreKey) -> Result<(), String> {
+        self.remove(&key.uuid, &rejected_setting(&key.setting))
+    }
+
     fn load(&self, key: &StoreKey) -> Option<SettingSecrets> {
         let vaulted = {
             let _guard = self.lock.lock_recover();

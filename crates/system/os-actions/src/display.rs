@@ -82,6 +82,28 @@ pub fn get_brightness() -> Result<f32, String> {
     }
 }
 
+/// The panel backlight as the kernel holds it, for the flight record:
+/// `device=<name> brightness=<n>/<max> actual=<n> bl_power=<n>`, or `None`
+/// when there is no backlight. A blank or wake logs it, so a screen that
+/// stays dark after a wake says whether its backlight came back.
+pub fn backlight_state() -> Option<String> {
+    backlight_state_in(Path::new(BACKLIGHT))
+}
+
+fn backlight_state_in(root: &Path) -> Option<String> {
+    let dev = preferred_device(root)?;
+    let field = |attr: &str| read_u32(&dev, attr).map_or_else(|| "?".to_owned(), |v| v.to_string());
+    Some(format!(
+        "device={} brightness={}/{} actual={} bl_power={}",
+        dev.file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        field("brightness"),
+        field("max_brightness"),
+        field("actual_brightness"),
+        field("bl_power"),
+    ))
+}
+
 /// Whether this machine has a controllable backlight at all. Desktops and most VMs do not,
 /// and the quick-settings panel uses this to leave the slider out rather than show a dead one.
 pub fn has_backlight() -> bool {
@@ -320,6 +342,22 @@ mod tests {
             fs::write(d.join("max_brightness"), format!("{max}\n")).unwrap();
         }
         dir
+    }
+
+    /// A blank or wake records what the kernel holds for the backlight, so
+    /// a panel that stays dark says whether its backlight came back.
+    #[test]
+    fn the_backlight_state_reads_brightness_actual_and_power() {
+        let dir = tree(&[("dp_aux_backlight", 0, 2047)]);
+        let dev = dir.path().join("dp_aux_backlight");
+        fs::write(dev.join("actual_brightness"), "0\n").unwrap();
+        fs::write(dev.join("bl_power"), "4\n").unwrap();
+        assert_eq!(
+            backlight_state_in(dir.path()).as_deref(),
+            Some("device=dp_aux_backlight brightness=0/2047 actual=0 bl_power=4")
+        );
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(backlight_state_in(none.path()), None);
     }
 
     #[test]

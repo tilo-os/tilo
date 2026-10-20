@@ -7,7 +7,8 @@
 //! nothing to do: netwatch's 15 s wall-clock poll, the socket's 20-26 s
 //! re-STUN tick with no relays, and the 15 s ping of a home relay kept after
 //! the relays were removed. And iroh-gossip swept each topic's message cache
-//! every 10 s for as long as the topic lived, empty or not.
+//! every 10 s for as long as the topic lived, empty or not. With relays, the
+//! net report re-ran every 20-26 s however often it found the same thing.
 
 #![allow(
     clippy::expect_used,
@@ -124,6 +125,78 @@ fn an_endpoint_whose_relays_were_removed_sleeps() {
     assert!(
         endpoint.addr().relay_urls().next().is_none(),
         "the endpoint still names the relay it gave up"
+    );
+    runtime.block_on(endpoint.close());
+    drop(server);
+}
+
+/// After a net report finds what the one before did, the next waits four
+/// times the 20-26 s period, so an idle endpoint with relays stops probing
+/// them every 20-26 s for as long as it lives.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_unchanged_net_report_rests_the_next() {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+
+    /// Three of the 20-26 s periods; a resting report waits 80-104 s.
+    const RESTING: Duration = Duration::from_secs(75);
+
+    let relay_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("relay-server")
+        .enable_all()
+        .build()
+        .expect("a runtime for the relay");
+    let server = relay_runtime.block_on(async {
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
+        Server::spawn(config)
+            .await
+            .expect("a loopback relay starts")
+    });
+    let url: iroh::RelayUrl = format!("http://{}", server.http_addr().expect("relay HTTP"))
+        .parse()
+        .expect("a loopback relay URL");
+    let mut relay = iroh::RelayConfig::from(url);
+    relay.quic = None;
+
+    // Its own thread name: the wakeup counts of the other tests here are
+    // taken by name, and the test harness may run this beside them.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("net-report-rest")
+        .enable_all()
+        .build()
+        .expect("a runtime for the endpoint");
+    let endpoint = runtime.block_on(async {
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Custom(std::iter::once(relay).collect()))
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .expect("a loopback bind address")
+            .bind()
+            .await
+            .expect("the endpoint binds");
+        tilo_test_env::within(
+            "the endpoint to connect to its home relay",
+            endpoint.online(),
+        )
+        .await;
+        endpoint
+    });
+    let reports = || endpoint.metrics().net_report.reports.get();
+    // The report at bind runs before there is a home relay, the first
+    // periodic one finds it, and the second finds the same as the first.
+    tilo_test_env::wait_until("two periodic net reports", || reports() >= 3);
+    let before = reports();
+    std::thread::sleep(RESTING);
+    let during = reports() - before;
+    eprintln!(
+        "net reports in the {} s after an unchanged one: {during}",
+        RESTING.as_secs()
+    );
+    assert_eq!(
+        during, 0,
+        "an unchanged net report must rest the next for 80-104 s"
     );
     runtime.block_on(endpoint.close());
     drop(server);

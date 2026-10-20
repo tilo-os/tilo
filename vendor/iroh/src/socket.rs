@@ -1084,6 +1084,8 @@ impl EndpointInner {
             sock: sock.clone(),
             remote_map,
             periodic_re_stun_timer: new_re_stun_timer(false),
+            re_stun_rest: 0,
+            last_net_report: None,
             network_monitor,
             local_interfaces_watcher,
             direct_addr_update_state,
@@ -1462,6 +1464,12 @@ struct Actor {
     remote_map: RemoteMap,
     /// When set, is an AfterFunc timer that will call Socket::do_periodic_stun.
     periodic_re_stun_timer: time::Interval,
+    /// TILO PATCH: how many periodic net reports in a row found nothing new;
+    /// each one lengthens the wait before the next (see [`re_stun_delay`]).
+    re_stun_rest: u32,
+    /// TILO PATCH: what the last net report found, to tell whether the next
+    /// one found anything new.
+    last_net_report: Option<NetReportOutcome>,
     /// An actor watching the local network interfaces.
     ///
     /// The monitored changes are emitted via [`Self::local_interfaces_watcher`].
@@ -1559,11 +1567,28 @@ impl Actor {
                 }
                 report = net_report_watcher.updated() => {
                     match report {
-                        Ok((report, _)) => {
+                        Ok((report, why)) => {
                             self.handle_net_report_report(report);
                             #[cfg(not(wasm_browser))]
                             {
-                                self.periodic_re_stun_timer = new_re_stun_timer(true);
+                                // TILO PATCH: a periodic report that found
+                                // what the last one did lets the next one
+                                // wait longer, up to RE_STUN_REST_MAX;
+                                // anything else restores the usual cadence.
+                                let outcome = NetReportOutcome {
+                                    direct_addrs: self.sock.direct_addrs.addrs.get(),
+                                    home_relay: self.sock.my_relay(),
+                                };
+                                let unchanged = why == UpdateReason::Periodic
+                                    && self.last_net_report.as_ref() == Some(&outcome);
+                                self.re_stun_rest = if unchanged {
+                                    self.re_stun_rest.saturating_add(1).min(RE_STUN_REST_STEPS)
+                                } else {
+                                    0
+                                };
+                                self.last_net_report = Some(outcome);
+                                self.periodic_re_stun_timer =
+                                    new_re_stun_timer_after(re_stun_delay(self.re_stun_rest));
                             }
                         }
                         Err(_) => {
@@ -1814,6 +1839,15 @@ impl Actor {
             }
             ActorMessage::AddConnection(remote, conn, tx) => {
                 self.remote_map.add_connection(remote, conn, tx).await;
+                // TILO PATCH: while the net report rests, the addresses it
+                // last found may be minutes old; a new connection is about to
+                // holepunch with them, so refresh them now and go back to the
+                // usual cadence.
+                #[cfg(not(wasm_browser))]
+                if self.re_stun_rest > 0 && !self.direct_addr_update_state.relay_map.is_empty() {
+                    self.re_stun_rest = 0;
+                    self.re_stun(UpdateReason::Periodic);
+                }
             }
             ActorMessage::DirectAddrRefresh => {
                 #[cfg(not(wasm_browser))]
@@ -2027,6 +2061,47 @@ fn find_flags(state: &netmon::State, ip: IpAddr) -> Option<Ipv6AddrFlags> {
     } else {
         None
     }
+}
+
+/// TILO PATCH: what a net report left that matters to others: the direct
+/// addresses and the home relay this endpoint advertises. Not the report's
+/// own `preferred_relay`: successive reports may leave it unset while the
+/// home relay stays, which would read as a change every other run.
+#[derive(Debug, PartialEq, Eq)]
+struct NetReportOutcome {
+    direct_addrs: BTreeSet<DirectAddr>,
+    home_relay: Option<RelayUrl>,
+}
+
+/// TILO PATCH: the longest a resting net report waits.
+///
+/// A net report probes every relay, resolves DNS and asks for a port
+/// mapping: about a hundred wakeups. Run every 20-26 s on an endpoint whose
+/// network does not change, that was most of an idle endpoint's wakeups. A
+/// link change, a relay map change and a new connection each run one at
+/// once anyway; what the periodic report alone catches is a change no local
+/// event shows, such as a new public address behind a router. A live
+/// connection keeps its own NAT binding with its keep-alives.
+const RE_STUN_REST_MAX: Duration = Duration::from_secs(5 * 60);
+
+/// TILO PATCH: how many unchanged periodic reports it takes to reach
+/// [`RE_STUN_REST_MAX`]: each one makes the wait four times the 20-26 s
+/// period, so the waits go 20-26 s, 80-104 s, then five minutes.
+const RE_STUN_REST_STEPS: u32 = 2;
+
+/// TILO PATCH: the wait before the next periodic net report, after `rest`
+/// periodic reports in a row found nothing new.
+fn re_stun_delay(rest: u32) -> Duration {
+    let mut rng = rand::rng();
+    let d: Duration = rng.random_range(Duration::from_secs(20)..=Duration::from_secs(26));
+    d.saturating_mul(1 << (2 * rest.min(RE_STUN_REST_STEPS)))
+        .min(RE_STUN_REST_MAX)
+}
+
+/// TILO PATCH: a periodic timer whose first tick is `delay` from now.
+fn new_re_stun_timer_after(delay: Duration) -> time::Interval {
+    debug!("scheduling periodic_stun to run in {}s", delay.as_secs());
+    time::interval_at(time::Instant::now() + delay, delay)
 }
 
 fn new_re_stun_timer(initial_delay: bool) -> time::Interval {

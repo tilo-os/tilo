@@ -422,6 +422,8 @@ pub struct Namespace {
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Node objects looked up in the document; see [`Self::node_lookup_count`].
+    node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Source of `Namespace::verified_generation` values.
@@ -581,6 +583,7 @@ impl Namespace {
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -1090,7 +1093,16 @@ impl Namespace {
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
+        self.node_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         map_at(&self.doc, &self.nodes, id)
+    }
+
+    /// Node objects looked up in the document so far: the unit of work of
+    /// every metadata read, so a test can bound what a listing costs.
+    #[must_use]
+    pub fn node_lookup_count(&self) -> u64 {
+        self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The structural index of every node, read from the document.
