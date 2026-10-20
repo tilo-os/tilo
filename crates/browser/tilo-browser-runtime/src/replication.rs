@@ -105,6 +105,13 @@ pub(crate) struct Room {
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
+    /// The heads of each such record as the room delivered it, until a mount
+    /// opens it. The room has everything up to them, so what the mount sends
+    /// first is what it changed after them, not the whole document: a
+    /// checkpoint reaches only devices that lack the record, and the changes
+    /// a window makes as it opens (taking a seat) would never reach the
+    /// others.
+    delivered: HashMap<(String, String), Vec<ui::automerge::ChangeHash>>,
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
@@ -178,6 +185,7 @@ pub(crate) fn open(
         desktop_value: None,
         local_value: None,
         stored: BTreeSet::new(),
+        delivered: HashMap::new(),
         unapplied: HashSet::new(),
         authored: 0,
         moderates: Arc::default(),
@@ -203,6 +211,13 @@ pub(crate) fn device_of(id: u32) -> Option<String> {
     room(id).map(|room| room.borrow().device.clone())
 }
 
+/// The heads of the saved document `bytes`, when it holds any change: the
+/// host's empty document for a record a member is creating holds none.
+fn heads_of(bytes: &[u8]) -> Option<Vec<ui::automerge::ChangeHash>> {
+    let heads = AutoCommit::load(bytes).ok()?.get_heads();
+    (!heads.is_empty()).then_some(heads)
+}
+
 /// Whether peer `id`'s room holds record `record` (wire form) of `app`:
 /// open in a mount, or delivered and stored for whoever opens it.
 pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
@@ -213,7 +228,7 @@ pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
             || storage_key(app, &room.uuid, record)
                 .ok()
                 .and_then(|key| room.store.read(&key).ok().flatten())
-                .is_some()
+                .is_some_and(|stored| heads_of(&stored.bytes).is_some())
     })
 }
 
@@ -846,7 +861,13 @@ impl Room {
         if merged {
             return Ok(());
         }
-        self.store_unopened(&app, &record, mutations)?;
+        // The host takes up a record a member created with an empty
+        // document of its own before the member's content arrives: no
+        // record yet, which a page opening it would refuse.
+        let Some(heads) = self.store_unopened(&app, &record, mutations)? else {
+            return Ok(());
+        };
+        self.delivered.insert((app.clone(), record.clone()), heads);
         // A window of the app that follows what its store keeps (a chain's
         // newer head) takes it up at its next frame.
         for mounted in self.mounts.values() {
@@ -866,16 +887,17 @@ impl Room {
         Ok(())
     }
 
-    /// Merge into the record's stored document for whoever opens it next.
-    /// A snapshot into an empty store is kept as it came: opening the record
-    /// loads and checks it once, instead of loading, merging and saving it
-    /// here first.
+    /// Merge into the record's stored document for whoever opens it next,
+    /// and answer its heads once it holds any change. A snapshot into an empty
+    /// store is kept as it came: opening the record loads and checks it once,
+    /// instead of loading, merging and saving it here first. A document with
+    /// no change in it is no record yet and is not kept.
     fn store_unopened(
         &self,
         app: &str,
         record: &str,
         mutations: Vec<DocumentMutation>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<Vec<ui::automerge::ChangeHash>>, String> {
         let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
         let writer = stored.as_ref().and_then(|stored| stored.writer.clone());
@@ -888,13 +910,16 @@ impl Room {
         let bytes = match (stored, mutations.peek()) {
             (None, Some(DocumentMutation::Snapshot(_))) => {
                 let Some(DocumentMutation::Snapshot(snapshot)) = mutations.next() else {
-                    return Ok(());
+                    return Ok(None);
                 };
                 if mutations.peek().is_none() {
+                    let Some(heads) = heads_of(&snapshot) else {
+                        return Ok(None);
+                    };
                     return self
                         .store
                         .write(&key, WriteOp::Replace(snapshot), writer.as_deref())
-                        .map(drop)
+                        .map(|_| Some(heads))
                         .map_err(|error| error.to_string());
                 }
                 snapshot
@@ -932,12 +957,16 @@ impl Room {
                 }
             }
         }
-        if doc.get_heads() == before && !fresh {
-            return Ok(());
+        let heads = doc.get_heads();
+        if heads.is_empty() {
+            return Ok(None);
+        }
+        if heads == before && !fresh {
+            return Ok(Some(heads));
         }
         self.store
             .write(&key, WriteOp::Replace(doc.save()), writer.as_deref())
-            .map(drop)
+            .map(|_| Some(heads))
             .map_err(|error| error.to_string())
     }
 
@@ -1007,13 +1036,24 @@ impl Room {
                             record: key.1.clone(),
                         });
                     }
-                    let replica = mounted
-                        .records
-                        .entry(key.clone())
-                        .or_insert_with(|| Replica {
-                            frontier: DocumentFrontier::default(),
-                            snapshotted: false,
-                        });
+                    let delivered = &mut self.delivered;
+                    let replica = mounted.records.entry(key.clone()).or_insert_with(|| {
+                        match delivered.remove(&key) {
+                            // The room has the record as it delivered it.
+                            Some(heads) => {
+                                let mut frontier = DocumentFrontier::default();
+                                frontier.advance(heads);
+                                Replica {
+                                    frontier,
+                                    snapshotted: true,
+                                }
+                            }
+                            None => Replica {
+                                frontier: DocumentFrontier::default(),
+                                snapshotted: false,
+                            },
+                        }
+                    });
                     let route = DocumentRoute {
                         app_id: app.clone(),
                         cluster_id: self.uuid.clone(),
