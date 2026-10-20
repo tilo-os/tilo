@@ -251,14 +251,15 @@ paid for building the index (a slab costs about as much as 16 ops of the
 build), the next apply builds it (2.5 ms at 80,000 ops) if the `id_ctr`
 column spans at least 64 slabs and at least half as many counters are
 lower than the one before them. A text typed in order has next to none
-and packs thousands of ops into a slab, and an import or a load searches
-little, so they hold nothing more (`patch_log_memory.rs` and
-`tilo-doc-codecs`' `import_memory.rs` pin that). A replica taking remote keystrokes
+and packs thousands of ops into a slab, and an import searches little, so
+they hold nothing more (`patch_log_memory.rs` and `tilo-doc-codecs`'
+`import_memory.rs` pin that); a scattered document loaded is indexed at load
+(see "a loaded document is indexed at load" below). A replica taking remote keystrokes
 into a scattered text builds it on the third: the 80,000-op document
 above holds 4.4 MB, and the index adds 0.65 MB. A document found not
 worth it is looked at again once it has grown by an eighth. The index is
 dropped, to be rebuilt by the next apply, when ops it was built with leave
-the document, actors are renumbered, a gap grows past 4,096 ops, or more
+the document, a gap grows past 4,096 ops, or more
 ops have been spliced in than a quarter of those built (ops spliced in
 since and taken out again, as a rolled back transaction's are, leave
 their gap instead: next section).
@@ -324,6 +325,39 @@ marked spot is `TILO(empty-commit)` in `autocommit.rs`. Pinned by
 cost 1.3 ms at 80,000 letters of scattered history and 37 µs at 4,000
 without the patch (test profile); with it the test holds the long history
 to ten times the short one's cost plus 50 µs.
+Upstreamable.
+
+# Tilo patch: a loaded document is indexed at load; a new actor keeps the index
+
+Two ways the op index of the sections above was built again in the middle
+of editing, each a pause on one keystroke of a large room (release, 10,000
+notes, about 400,000 ops):
+
+* A replica that loaded a scattered document built the index on whichever
+  apply first found its searches slow: 10.8 ms on that change. A loaded
+  document is one a replica keeps taking changes into, so `load` now looks
+  at it once (`OpSet::index_op_ids_at_load`): built if the `id_ctr` column
+  spans at least 64 slabs and its counters are scattered (the same test as
+  at an apply), searched or not. The index costs 8 bytes per op, only for
+  such documents; `import_memory.rs` still holds.
+* An actor sorting before the document's others renumbers every op's actor,
+  which dropped the index, so the next apply built it again: 12.6 ms on a
+  new peer's first change, on top of the 2 ms the renumbering itself costs.
+  `OpIdIndex::actor_inserted` now follows the renumbering: an empty list of
+  ops for the new actor, and the ops spliced in since the build renamed.
+  `actor_removed` does the same for an actor whose ops it holds none of (a
+  transaction's actor that wrote nothing); one whose ops it holds still
+  drops it.
+
+The marked spots are `TILO(op-id-index-load)` in `automerge.rs`, `op_set.rs`
+and `op_id_index.rs`, and `TILO(op-id-index-actors)` in `op_set.rs` and
+`op_id_index.rs`, with the unit test
+`a_new_actor_renumbers_the_index_rather_than_dropping_it`. Pinned by
+`crates/doc/tilo-automerge/tests/speculative_writes.rs`: of 24 remote
+letters taken in by a replica that loaded 80,000 letters of scattered
+history, the slowest took 3.4 ms more than the median without the patch
+(test profile, the fork optimised) and 0.4 ms with it; the test allows
+1.5 ms. The index decides how fast an op is found, never which.
 Upstreamable.
 
 # Tilo change: the fork's own tests run in CI

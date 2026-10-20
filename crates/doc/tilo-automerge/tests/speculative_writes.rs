@@ -168,3 +168,45 @@ fn a_write_after_an_empty_commit_commits_as_before() {
     assert_eq!(doc.get_heads(), vec![hash]);
     assert_eq!(doc.get(&map, "late").unwrap().unwrap().0.as_i64(), Some(1));
 }
+
+/// What a replica that loaded a scattered text pays to take in each of a
+/// peer's next letters: the slowest of them and the median.
+fn loaded_replica_applies(changes: usize) -> (Duration, Duration) {
+    let mut rng = Rng(0x6a09_e667_f3bc_c909);
+    let (mut base, text) = scattered(changes, &mut rng);
+    let saved = base.save();
+    let mut replica = AutoCommit::load(&saved).unwrap();
+    // A peer whose actor sorts after the document's: taking in its first
+    // change renumbers nothing.
+    let mut peer = AutoCommit::load(&saved)
+        .unwrap()
+        .with_actor(ActorId::from(vec![0xf0; 16]));
+    let mut took = Vec::new();
+    for _ in 0..24 {
+        let heads = peer.get_heads();
+        type_at_random(&mut peer, &text, &mut rng, 1);
+        peer.commit();
+        let change = peer.save_after(&heads);
+        let started = Instant::now();
+        replica.load_incoming(&change).unwrap();
+        took.push(started.elapsed());
+    }
+    assert_eq!(replica.save(), peer.save());
+    let slowest = took.iter().copied().max().unwrap_or_default();
+    (slowest, median(took))
+}
+
+#[test]
+fn a_loaded_replica_pays_for_no_index_build_on_a_later_change() {
+    // 80,000 letters of scattered history: the index is worth building, and
+    // building it on the change whose searches crossed the line cost that
+    // change 3.4 ms more than the median here (test profile, the fork
+    // optimised), 2.5 ms in a release build, 10 ms at 10,000 notes. Every
+    // apply also re-checks the whole document under debug assertions, which
+    // the difference leaves out.
+    let (slowest, median) = loaded_replica_applies(5_000);
+    assert!(
+        slowest.saturating_sub(median) <= Duration::from_micros(1_500),
+        "the slowest of a loaded replica's applies took {slowest:?}, the median {median:?}"
+    );
+}
