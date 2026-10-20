@@ -91,7 +91,7 @@ requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
@@ -269,7 +269,7 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 [[group]]
 name = "os-workflows"
 requirement = { cores = 2, memory = "1GiB" }
-inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
+inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/t_matrix.py", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
@@ -410,8 +410,9 @@ requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
   "crates/session/shell/src/shell/windows_compat.rs",
-  # test_windows_compat_sysext.py: the helper that installs the image.
-  "crates/system/extension-helper/src/",
+  # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
+  # publish it.
+  "crates/system/extension-helper/src/", "t.toml", "tools/ci/t_matrix.py",
 ]
 suites = [
   "os/tests/windows_compat_stack.sh",

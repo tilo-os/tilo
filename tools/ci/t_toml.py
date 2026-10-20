@@ -23,7 +23,8 @@ so t.toml carries both, generated between markers:
     elsewhere in the tree doesn't run them again;
   * the size checks: `app-size/<app>-<arch>` for each app of the default
     collection and `runtime-size-<arch>`, each keyed by what building and
-    measuring its subject reads (tools/apps/t-release.sh app-size, runtime-size).
+    measuring its subject reads (tools/apps/t-release.sh app-size, runtime-size),
+    written as matrices t expands per app and architecture.
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
@@ -40,6 +41,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import affected_packages  # noqa: E402
 import products  # noqa: E402
+import t_matrix  # noqa: E402
 import suites  # noqa: E402
 import workspace_graph  # noqa: E402
 
@@ -415,18 +417,77 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             "default = false",
         ]) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
-    blocks = []
-    for arch, node in SIZE_ARCHES:
-        blocks.append(check(f"runtime-size-{arch}", f"bash tools/apps/t-release.sh runtime-size {arch} {' '.join(media_free)}",
-                            node, runtime | {catalog[app]["package"] for app in media_free},
-                            [*SIZE_COMPILE, *RUNTIME_SIZE_MEASURE, *(f"apps/{app}/**" for app in media_free),
-                             *manifests]))
+    runtime_size = [check(f"runtime-size-{arch}",
+                          f"bash tools/apps/t-release.sh runtime-size {arch} {' '.join(media_free)}",
+                          node, runtime | {catalog[app]["package"] for app in media_free},
+                          [*SIZE_COMPILE, *RUNTIME_SIZE_MEASURE, *(f"apps/{app}/**" for app in media_free), *manifests])
+                    for arch, node in SIZE_ARCHES]
+    app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
+                            node, runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"]},
+                            [*SIZE_COMPILE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests])
+                      for arch, node in SIZE_ARCHES]
+                for app in apps}
+    return size_matrices(runtime_size, app_size, apps)
+
+
+def size_matrices(runtime_size: list[str], app_size: dict[str, list[str]], apps: list[str]) -> str:
+    """The size checks as matrices t expands (t's README, "Matrices"): `runtime-size-{arch}`, and
+    `app-size/{app}-{arch}` once for the apps that differ only by name, which `apps/*/tilo-app.toml`
+    lists, and once for each set of apps whose checks differ otherwise (what their packages read
+    beyond their directory). Verified to expand into exactly the checks written out one by one, so
+    their keys are those."""
+    import tomllib
+    concrete = {app: [tomllib.loads(block)["check"][0] for block in blocks] for app, blocks in app_size.items()}
+    arches = [{"arch": arch, "node": node} for arch, node in SIZE_ARCHES]
+
+    def template(fields: dict, values: dict[str, str]) -> dict:
+        """`fields` with each of `values` written as its placeholder where it stands as a whole
+        word (`apps/notes/**`, not `notesapp`); the expansion is verified below."""
+        def put(v):
+            if isinstance(v, str):
+                for name, value in sorted(values.items(), key=lambda kv: -len(kv[1])):
+                    v = re.sub(rf"(?<![\w.]){re.escape(value)}(?![\w.])", "{" + name + "}", v)
+                return v
+            if isinstance(v, list):
+                return [put(x) for x in v]
+            if isinstance(v, dict):
+                return {k: put(x) for k, x in v.items()}
+            return v
+        return put(fields)
+
+    # Apps by the template their checks share.
+    groups: list[tuple[dict, list[str]]] = []
     for app in apps:
-        for arch, node in SIZE_ARCHES:
-            blocks.append(check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
-                                node, runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"]},
-                                [*SIZE_COMPILE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests]))
-    return "\n".join(blocks)
+        shape = template(concrete[app][0], {"app": app, **arches[0]})
+        for found, members in groups:
+            if found == shape:
+                members.append(app)
+                break
+        else:
+            groups.append((shape, [app]))
+    groups.sort(key=lambda g: -len(g[1]))
+    tree = t_matrix.tree_paths(ROOT)
+    listed = tree("apps/*/tilo-app.toml")
+    blocks = []
+    shape = template(tomllib.loads(runtime_size[0])["check"][0], arches[0])
+    blocks.append(products.check(shape, None, {"arch": arches}))
+    for i, (shape, members) in enumerate(groups):
+        if i == 0:
+            axis = {"from": "apps/*/tilo-app.toml"}
+            left_out = [app for app in listed if app not in members]
+            matrix = {"app": axis, "arch": arches, **({"exclude": [{"app": app} for app in left_out]} if left_out else {})}
+        else:
+            matrix = {"app": members, "arch": arches}
+        blocks.append(products.check(shape, None, matrix))
+    text = "\n".join(blocks)
+    # What t reads of it must be what was written out.
+    want = [tomllib.loads(b)["check"][0] for b in runtime_size] + [c for app in apps for c in concrete[app]]
+    got = t_matrix.expand(tomllib.loads(text), tree)["check"]
+    by_name = {c["name"]: c for c in got}
+    differ = sorted({c["name"] for c in want if by_name.get(c["name"]) != c} | (by_name.keys() - {c["name"] for c in want}))
+    if differ or len(got) != len(want):
+        raise ValueError(f"the size checks' matrices don't expand into the checks they stand for: {', '.join(differ)}")
+    return text
 
 
 def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:

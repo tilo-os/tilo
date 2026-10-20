@@ -5,16 +5,17 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 DRIVER = ROOT / 'crates/system/accounts/web/run.mjs'
 
 
 class AccountsWebStorageTests(unittest.TestCase):
     def test_check_runs_production_probe_and_wasm_lint(self):
-        project = tomllib.loads((ROOT / 't.toml').read_text())
+        project = t_matrix.load(ROOT)
         check = next(c for c in project['check'] if c['name'] == 'accounts-web-storage')
         self.assertNotEqual(check.get('default'), False)
         self.assertIn('tilo-builder@sha256:', check.get('image', project['image']))

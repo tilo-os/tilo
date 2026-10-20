@@ -7,11 +7,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 SCRIPT = "os/tests/ci_fast_images.sh"
 FAST = "/archives/ci fast.oci.tar"
 CONTROL = "/archives/ci control.oci.tar"
@@ -95,7 +96,7 @@ sys.exit(37 if sys.argv[1] == os.environ.get('FAIL_ARCHIVE') else 0)
                 self.assertEqual(calls, [])
 
     def test_publication_requires_smoking_both_built_archives(self):
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
         smoke = checks["image-ci-fast-smoke"]
         self.assertEqual(smoke["needs"], ["image-ci-fast", "image-ci-control"])
         self.assertEqual(shlex.split(smoke["run"]), [

@@ -14,12 +14,13 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import tomllib
 import unittest
 import importlib.util
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "tools" / "ci"))
+import t_matrix  # noqa: E402
 PUBLISH = REPO / "tools/extensions/publish.sh"
 BASE_URL = "https://code.example/api/packages/tilo/generic"
 FINGERPRINT = "cd" * 32
@@ -368,7 +369,7 @@ class SigningAuthority(unittest.TestCase):
                     self.assertFalse(out.exists())
 
     def test_only_the_manifest_publisher_requests_the_extension_audience(self):
-        checks = tomllib.loads((REPO / "t.toml").read_text())["check"]
+        checks = t_matrix.load(REPO)["check"]
         users = sorted(c["name"] for c in checks if "tilo-extension-manifests" in c.get("id_token", []))
         self.assertEqual(users, ["publish-extension-manifests"])
         (publisher,) = (c for c in checks if c["name"] == "publish-extension-manifests")

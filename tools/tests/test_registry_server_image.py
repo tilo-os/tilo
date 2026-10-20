@@ -1,14 +1,16 @@
 from pathlib import Path
-import tomllib
 import unittest
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 
 
 class RegistryServerImageTests(unittest.TestCase):
     def setUp(self) -> None:
-        t = tomllib.loads((ROOT / "t.toml").read_text())
+        t = t_matrix.load(ROOT)
         self.checks = {check["name"]: check for check in t["check"]}
         self.containerfile = (
             ROOT / "crates/packaging/registry-server/container/Containerfile"
