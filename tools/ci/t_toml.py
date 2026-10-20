@@ -642,12 +642,28 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
     ]) + "\n"
 
 
+# The packages the test family runs on x86_64 only, as `test-x86_64`.
+X86_64_ONLY_TESTS = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
+
+
+def untested(packages: dict[str, dict]) -> list[str]:
+    """Packages with no test target of their own (`test = false` and no integration tests):
+    another package's tests compile their code in, and nextest refuses to run them alone."""
+    return sorted(name for name, package in packages.items()
+                  if not any(target.get("test") for target in package["targets"]))
+
+
+def test_families(packages: dict[str, dict]) -> dict[str, str]:
+    return {"test-exclude": f"exclude = {array(sorted({*X86_64_ONLY_TESTS, *untested(packages)}))}\n",
+            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n"}
+
+
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
     metadata = metadata if metadata is not None else workspace_graph.cargo_metadata(ROOT)
     packages = {p["name"]: p for p in metadata["packages"]}
     return {**{f"{name}-reads": cargo_check(name, spec, manifest, packages, ROOT)
                for name, spec in CARGO_CHECKS.items()},
-            "size-checks": size_checks(manifest, packages)}
+            "size-checks": size_checks(manifest, packages), **test_families(packages)}
 
 
 def generated(manifest: suites.Manifest) -> dict[str, str]:
