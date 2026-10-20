@@ -204,6 +204,8 @@ pub struct Scrollable {
     /// ([`crate::scroll_copy::offer`]).
     shown_drawing: Option<Shown>,
     shown_presented: Option<Shown>,
+    /// See [`Scrollable::following_end`].
+    follow_end: bool,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into and
@@ -277,6 +279,7 @@ impl Scrollable {
             semantic_key: None,
             shown_drawing: None,
             shown_presented: None,
+            follow_end: false,
         }
     }
     pub fn new_vertical() -> Self {
@@ -284,6 +287,13 @@ impl Scrollable {
     }
     pub fn new_horizontal() -> Self {
         Self::new(ScrollAxis::Horizontal)
+    }
+    /// Open at the end of the content and stay there while it grows, unless the person scrolled
+    /// away from the end: a conversation's transcript, whose newest message is last.
+    #[must_use]
+    pub fn following_end(mut self) -> Self {
+        self.follow_end = true;
+        self
     }
     /// The content, to change it in place and keep the scroll position.
     pub fn child_mut(&mut self) -> Option<&mut Element> {
@@ -1586,6 +1596,8 @@ impl Widget for Scrollable {
         self.cursor_initialized = false;
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
+        // At the end before this layout: a transcript that follows its end stays there.
+        let at_end = self.follow_end && self.max_offset_y() - self.offset_y <= FIT_EPS;
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
         // Measure the solved content, including descendant overflow, before
@@ -1629,6 +1641,9 @@ impl Widget for Scrollable {
                     self.content_h = walked_h;
                 }
             }
+        }
+        if at_end {
+            self.offset_y = self.max_offset_y();
         }
         self.clamp();
         if previous_offset != (self.offset_x, self.offset_y)
@@ -3408,6 +3423,34 @@ mod tests {
             "the end of the content fills the viewport, no blank frame: {content:?}"
         );
         assert!(cell.get().1 <= scroll.max_offset_y() + 0.01);
+    }
+
+    #[test]
+    fn a_transcript_opens_at_its_end_and_follows_it_until_scrolled_away() {
+        let mut scroll = Scrollable::new_vertical()
+            .following_end()
+            .with_child(tall_child())
+            .with_height(300.0);
+        host_solve(&mut scroll, 400.0, 300.0);
+        assert!(scroll.max_offset_y() > 0.0);
+        assert!(
+            (scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5,
+            "it opens on the newest line"
+        );
+        // A new line arrives: still at the end.
+        let mut longer = Column::new().with_intrinsic_height();
+        for i in 0..41 {
+            longer = longer.push(Box::new(Text::new(&format!("row {i}"))));
+        }
+        if let Some(child) = scroll.child_mut() {
+            *child = Box::new(longer);
+        }
+        host_solve(&mut scroll, 400.0, 300.0);
+        assert!((scroll.offset_y() - scroll.max_offset_y()).abs() < 0.5);
+        // Scrolled up to read: a new line does not pull the person back down.
+        scroll.set_offset_y(0.0);
+        host_solve(&mut scroll, 400.0, 300.0);
+        assert!(scroll.offset_y() < 0.5, "reading older lines stays put");
     }
 
     #[test]
