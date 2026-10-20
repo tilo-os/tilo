@@ -1698,6 +1698,18 @@ fn visibility_allows(
 /// are in: the name they gave their identity (`display_name`), else the login
 /// account's real name (its full name, else the user name). Never a device's
 /// name, nor a key, nor "Guest": the owner of this machine is known by name.
+/// What a room calls its members' sessions: the name each person gives
+/// themselves on the room's live plane (`live`) over what the room's
+/// governance recorded for their device (`roster`), a device's name, which
+/// presence never shows once the person has said who they are.
+fn named_by_themselves(
+    mut roster: std::collections::BTreeMap<u64, String>,
+    live: std::collections::BTreeMap<u64, String>,
+) -> std::collections::BTreeMap<u64, String> {
+    roster.extend(live);
+    roster
+}
+
 pub(crate) fn own_person_name(display_name: Option<String>) -> String {
     own_person_name_or(
         display_name,
@@ -2458,16 +2470,15 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return empty;
         };
-        let mut labels = replica.tree.read().room_peer_labels(room);
+        let labels = replica.tree.read().room_peer_labels(room);
         drop(replica);
-        if let Ok(live) = self.live_labels.lock()
-            && let Some(live) = live.get(cluster_id)
-        {
-            for (handle, label) in live {
-                labels.entry(*handle).or_insert_with(|| label.clone());
-            }
-        }
-        labels
+        let live = self
+            .live_labels
+            .lock()
+            .ok()
+            .and_then(|live| live.get(cluster_id).cloned())
+            .unwrap_or_default();
+        named_by_themselves(labels, live)
     }
 
     /// Live session handles and their admitted display names for one room.
@@ -8943,6 +8954,25 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 )]
 mod tests {
     use super::*;
+
+    /// presence.md: a device's name never leaves it. A member's pointer and
+    /// what they say beside it carry the name they give themselves, not
+    /// the device name the room recorded when the device joined.
+    #[test]
+    fn a_member_is_called_by_the_name_they_give_themselves() {
+        let roster = std::collections::BTreeMap::from([
+            (1, "Primary device".to_owned()),
+            (2, "Laptop".to_owned()),
+        ]);
+        let live = std::collections::BTreeMap::from([(1, "Ada Lovelace".to_owned())]);
+        assert_eq!(
+            named_by_themselves(roster, live),
+            std::collections::BTreeMap::from([
+                (1, "Ada Lovelace".to_owned()),
+                (2, "Laptop".to_owned()),
+            ])
+        );
+    }
     use crate::shell::state::WorkspaceAuthority as _;
 
     #[test]
