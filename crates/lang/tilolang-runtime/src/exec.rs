@@ -824,7 +824,12 @@ impl Core {
             }
             Imp::PrincipalName => {
                 let p = self.principal_arg(a.h(0)?)?;
-                self.ret_h(Value::Text(p.0))
+                let name = self
+                    .names
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(|| p.0.clone(), |host| host.name(&p));
+                self.ret_h(Value::Text(name))
             }
             Imp::QueueBlock => self.queue_block(a.h(0)?, a.h(1)?, a.h(2)?),
             _ => trap("not an effect import"),

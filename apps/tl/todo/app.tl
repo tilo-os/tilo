@@ -58,17 +58,9 @@ view main(list: TodoList) {
     page {
         stack(gap: section) {
             heading("{title_of(list)} ({open_count(list)} open)")
-            if space.compact {
-                stack(gap: related) {
-                    for item in list.items {
-                        item_row(list, item)
-                    }
-                }
-            } else {
-                grid(min: 18rem) {
-                    for item in list.items {
-                        item_row(list, item)
-                    }
+            stack(gap: related) {
+                for item in list.items {
+                    item_row(list, item)
                 }
             }
             row {

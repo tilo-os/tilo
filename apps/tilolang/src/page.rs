@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
+use tilolang_tilo::HostEffect;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{
     COMMIT, Committer, HOST_RESOURCE, Planner, host_resource, publish_package, publish_record,
@@ -31,8 +32,8 @@ use ui::LocalState;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, Resource};
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
-    Arranged, Fit, FlexLayout, Grid, Length, Page as PageLayout, Row, Slot, Space, Stack,
-    WidthClass, rem_of,
+    Arranged, Fit, FlexLayout, Grid, Length, Navigation, Page as PageLayout, Pane, Row, Slot,
+    Space, Stack, WidthClass, rem_of,
 };
 use ui::widget::controls::ControlResult;
 use ui::widget::{
@@ -44,6 +45,7 @@ mod stage;
 pub use stage::SCENARIOS;
 
 use crate::i18n::t;
+use crate::names::Names;
 use crate::packages::EMBEDDED;
 use crate::reconcile::{EventSink, Reconciler, UiEvent};
 
@@ -61,6 +63,8 @@ enum Mode {
 enum Nav {
     Open(String),
     Home,
+    /// From the detail pane of a view collapsed to one pane back to its list.
+    Back,
 }
 
 /// An answer to the Ask bar.
@@ -78,7 +82,15 @@ struct Inbox {
     answers: Rc<RefCell<Vec<Answer>>>,
 }
 
+/// Who an agent's block on the door is written by: its code is the author, and a person decides
+/// what it may do.
+const AGENT_ON_THE_DOOR: &str = "agent:door";
+
 /// The window. See the module docs.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent frame flags of one window: started, dirty, detail shown or pending"
+)]
 pub struct TilolangPage {
     me: String,
     host: Rc<RefCell<Option<Host>>>,
@@ -104,6 +116,18 @@ pub struct TilolangPage {
     started: bool,
     /// The room record moved while the host was fetched outside `sync`.
     moved: std::cell::Cell<bool>,
+    /// Set when the door asked the host to do something that the runtime committed: the commits
+    /// are then handed to the door like a press's.
+    door_work: Rc<std::cell::Cell<bool>>,
+    /// What the room's participants are called, and whether a frame brought a new name.
+    names: Names,
+    names_changed: std::cell::Cell<bool>,
+    /// The split of the open view that shows one pane at a time when narrow, and whether the
+    /// header offers the way back from its detail pane.
+    navigation: Option<Navigation>,
+    detail_shown: bool,
+    /// A press in the list pane may open something in the detail pane: go there once it does.
+    pending_detail: bool,
     /// What a capture stages before it is drawn: empty on every live path.
     stage: VecDeque<stage::Step>,
 }
@@ -149,14 +173,28 @@ impl TilolangPage {
                 })
                 .unwrap_or_default()
         });
+        let door_work: Rc<std::cell::Cell<bool>> = Rc::default();
+        let answering = (Rc::clone(&host), Rc::clone(&door_work));
+        let endpoint = ui::framework::EffectEndpoint::new(move |effect: HostEffect| {
+            let host = answering
+                .0
+                .borrow()
+                .clone()
+                .ok_or_else(|| "the tilolang host has not started".to_owned())?;
+            let answered = host.answer(effect, &Principal::new(AGENT_ON_THE_DOOR));
+            answering.1.set(true);
+            answered
+        });
         let root = Stack::stack()
             .fill_width()
             .fill_height()
             .gap(Rhythm::Tight)
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::fill(1.0)))
-            .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()));
+            .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
+            .push_slot(slot(Box::new(endpoint), Fit::hug()));
         Self {
+            names: Names::new(&me),
             me,
             host,
             mode: Mode::Home,
@@ -175,6 +213,11 @@ impl TilolangPage {
             last_size: None,
             started: false,
             moved: std::cell::Cell::new(false),
+            door_work,
+            names_changed: std::cell::Cell::new(false),
+            navigation: None,
+            detail_shown: false,
+            pending_detail: false,
             stage: VecDeque::new(),
         }
     }
@@ -206,6 +249,7 @@ impl TilolangPage {
                 return Self::failed_host(doc, &message);
             }
         };
+        host.runtime().set_name_host(self.names.clone());
         for package in EMBEDDED {
             if let Err(error) = host.load_builtin(package.source, package.ids) {
                 tracing::error!(package = package.dir, %error, "a built-in package did not load");
@@ -268,13 +312,15 @@ impl TilolangPage {
             Mode::Home => Box::new(Spacer::fixed(0.0)),
             Mode::Open { ref title, .. } => {
                 let nav = Rc::clone(&self.inbox.nav);
-                let crumbs = Breadcrumb::new(vec![t("tilolang-back"), title.clone()]).on_navigate(
-                    move |index| {
-                        if index == 0 {
-                            nav.borrow_mut().push(Nav::Home);
-                        }
-                    },
-                );
+                let mut segments = vec![t("tilolang-back"), title.clone()];
+                if self.detail_shown {
+                    segments.push(t("tilolang-detail"));
+                }
+                let crumbs = Breadcrumb::new(segments).on_navigate(move |index| match index {
+                    0 => nav.borrow_mut().push(Nav::Home),
+                    1 => nav.borrow_mut().push(Nav::Back),
+                    _ => {}
+                });
                 Box::new(
                     PageLayout::full()
                         .with_id("tilolang-header")
@@ -423,6 +469,8 @@ impl TilolangPage {
     fn show_home(&mut self) {
         self.mode = Mode::Home;
         self.body_tree = None;
+        self.navigation = None;
+        self.detail_shown = false;
         self.class = None;
         self.last_size = None;
         let home = self.home();
@@ -436,7 +484,7 @@ impl TilolangPage {
         };
         match host.open_main(app) {
             Ok(view) => {
-                let tree = view.tree().clone();
+                let tree = crate::reconcile::normalize(view.tree());
                 let title = host
                     .packages()
                     .into_iter()
@@ -449,8 +497,12 @@ impl TilolangPage {
                 };
                 self.class = None;
                 self.last_size = None;
+                self.reconciler.clear_navigation();
                 let body = self.reconciler.build(&tree);
                 self.body_tree = Some(tree);
+                self.navigation = self.reconciler.navigation();
+                self.detail_shown = false;
+                self.pending_detail = false;
                 self.set_slot(1, scrolling(body), Fit::fill(1.0));
                 self.rebuild_header();
                 self.commit_planned();
@@ -474,7 +526,7 @@ impl TilolangPage {
         match view.poll_patches() {
             Ok(patches) if patches.is_empty() => false,
             Ok(_) => {
-                let new_tree = view.tree().clone();
+                let new_tree = crate::reconcile::normalize(view.tree());
                 self.reconcile(&new_tree);
                 true
             }
@@ -494,8 +546,45 @@ impl TilolangPage {
             let updated = self.reconciler.update(inner, &old_tree, new_tree);
             self.set_slot(1, scrolling(updated), Fit::fill(1.0));
         }
+        if std::mem::take(&mut self.pending_detail)
+            && secondary_of(&old_tree) != secondary_of(new_tree)
+        {
+            self.show_detail();
+        }
         self.body_tree = Some(new_tree.clone());
         self.refresh_bound();
+    }
+
+    /// A press in the list pane of a view that shows one pane at a time: a row of the list opens
+    /// its detail at once; any other press goes there when it changes what the detail shows.
+    fn opening_detail(&mut self, key: &str) {
+        let Some(navigation) = &self.navigation else {
+            return;
+        };
+        if !navigation.collapsed() || navigation.shown() != Pane::Primary {
+            return;
+        }
+        let Some(tree) = &self.body_tree else {
+            return;
+        };
+        let Some(list) = primary_of(tree) else {
+            return;
+        };
+        let Some(pressed) = list.find(key) else {
+            return;
+        };
+        if pressed.kind == "list_row" {
+            self.show_detail();
+        } else {
+            self.pending_detail = true;
+        }
+    }
+
+    fn show_detail(&mut self) {
+        if let Some(navigation) = &self.navigation {
+            navigation.show(Pane::Secondary);
+            self.structure_dirty = true;
+        }
     }
 
     /// Show what the bound fields hold now in the controls that edit them.
@@ -504,6 +593,22 @@ impl TilolangPage {
             return;
         };
         visit_bound(self, &host, &tree);
+    }
+
+    /// What the door asked of the host since the last frame: the commits it made go to the door
+    /// like a press's, and a flow it left waiting for a person is asked about.
+    fn take_door_work(&mut self) -> bool {
+        if !self.door_work.take() {
+            return false;
+        }
+        self.commit_planned();
+        if let Some(host) = self.current_host()
+            && let Some(suggestion) = host.take_suspended()
+        {
+            self.ask = Some(suggestion);
+            self.rebuild_chrome();
+        }
+        true
     }
 
     /// Hand everything the runtime committed to the door.
@@ -532,6 +637,12 @@ impl TilolangPage {
             match nav {
                 Nav::Open(app) => self.open(&app),
                 Nav::Home => self.show_home(),
+                Nav::Back => {
+                    if let Some(navigation) = &self.navigation {
+                        navigation.show(Pane::Primary);
+                        self.structure_dirty = true;
+                    }
+                }
             }
         }
         let answers = std::mem::take(&mut *self.inbox.answers.borrow_mut());
@@ -548,6 +659,9 @@ impl TilolangPage {
     }
 
     fn event(&mut self, event: &UiEvent) {
+        if let UiEvent::Press(key) = event {
+            self.opening_detail(key);
+        }
         let Mode::Open { view, .. } = &self.mode else {
             return;
         };
@@ -739,6 +853,30 @@ fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
     }
 }
 
+/// The first split of a view, which is where its list and its detail are.
+fn split_of(tree: &UiNode) -> Option<&UiNode> {
+    if tree.kind == "split" {
+        return Some(tree);
+    }
+    tree.children.iter().find_map(split_of)
+}
+
+/// The list pane of the view's split.
+fn primary_of(tree: &UiNode) -> Option<&UiNode> {
+    split_of(tree)?
+        .children
+        .iter()
+        .find(|pane| pane.kind == "primary")
+}
+
+/// The detail pane of the view's split.
+fn secondary_of(tree: &UiNode) -> Option<&UiNode> {
+    split_of(tree)?
+        .children
+        .iter()
+        .find(|pane| pane.kind == "secondary")
+}
+
 /// The body in a vertical scroll: a view taller than its window scrolls instead of clipping.
 fn scrolling(body: Element) -> Element {
     Box::new(ui::widget::Scrollable::new_vertical().with_child(body))
@@ -764,6 +902,7 @@ impl ui::resources::PublishesResources for TilolangPage {
 
 impl ui::widget::controls::ActionControls for TilolangPage {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.take_door_work();
         let invocation = self.outgoing.pop_front()?;
         let ticket = invocation
             .arguments
@@ -841,7 +980,21 @@ impl Widget for TilolangPage {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let staging = self.play_stage();
-        let changed = self.handle_events() || staging;
+        let door = self.take_door_work();
+        let detail = self
+            .navigation
+            .as_ref()
+            .is_some_and(Navigation::detail_alone);
+        if detail != self.detail_shown {
+            self.detail_shown = detail;
+            self.rebuild_header();
+        }
+        if self.names_changed.take()
+            && let Mode::Open { view, .. } = &self.mode
+        {
+            view.refresh();
+        }
+        let changed = self.handle_events() || staging || door;
         let child = self.root.update(state, path);
         changed || child
     }
@@ -895,6 +1048,9 @@ impl Widget for TilolangPage {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        if self.names.follow(presence) {
+            self.names_changed.set(true);
+        }
         self.root.draw(scene, transform, text, theme, presence);
     }
 
@@ -978,6 +1134,63 @@ mod tests {
                 {
                     let _ = host.store().take_ticket(ticket);
                 }
+            }
+        }
+
+        /// A room whose scenario `name` has been staged and committed.
+        fn staged(name: &str) -> Self {
+            let mut room = Self {
+                doc: AutoCommit::new(),
+                page: TilolangPage::staged("ada".to_owned(), name),
+            };
+            for _ in 0..6 {
+                room.frame();
+                room.door();
+            }
+            room
+        }
+
+        /// What an agent sees of the door: every operation the window publishes, as inert data.
+        fn surveyed(&self) -> Vec<ui::tilo_actions::door::ActionDescriptor> {
+            ui::tilo_actions::door::survey(&self.page.resources(&self.doc))
+        }
+
+        /// Invoke `action` of `resource` the way an agent does: find it in the survey, encode its
+        /// arguments against the published parameters and hand the operation to the window.
+        fn agent_invokes(
+            &mut self,
+            resource: &str,
+            action: &str,
+            arguments: &Json,
+        ) -> Result<ui::tilo_actions::ActionOutput, String> {
+            use ui::framework::{Effected, HostDelivery as _};
+            let descriptor = self
+                .surveyed()
+                .into_iter()
+                .find(|d| d.address.resource == resource && d.address.action == action)
+                .ok_or_else(|| format!("{resource}/{action} is not published"))?;
+            let encoded = ui::tilo_actions::door::encode_json(
+                &self.page.resources(&self.doc),
+                &descriptor.address,
+                &arguments.as_object().cloned().unwrap_or_default(),
+            )
+            .map_err(|error| error.to_string())?;
+            let started = self
+                .page
+                .start_encoded(
+                    descriptor.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                    &mut self.doc,
+                    &ui::automerge::ROOT,
+                )?
+                .ok_or_else(|| "nothing answered the operation".to_owned())?;
+            self.frame();
+            self.door();
+            self.frame();
+            match started {
+                Effected::Done(output) => Ok(output),
+                Effected::Pending => Err("the operation is still running".to_owned()),
             }
         }
 
@@ -1164,5 +1377,134 @@ mod tests {
         let mut notes = Vec::new();
         rows(tree, &mut notes);
         assert_eq!(notes.len(), 3, "{notes:?}");
+    }
+
+    const HOST: &str = "tl:host";
+
+    #[test]
+    fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
+        let mut room = Room::staged("chat");
+        let host_actions: Vec<String> = room
+            .surveyed()
+            .into_iter()
+            .filter(|d| d.address.resource == HOST)
+            .map(|d| d.address.action)
+            .collect();
+        for wanted in ["run-block", "run-flow", "catalogue"] {
+            assert!(host_actions.iter().any(|a| a == wanted), "{host_actions:?}");
+        }
+        // The typed discovery path (what `list_operations` reads) holds the packages' verbs
+        // beside them, and nothing it lists lacks a handler or a decoder.
+        let survey = room.surveyed();
+        assert!(
+            survey
+                .iter()
+                .any(|d| d.resource_kind == "tl.so.tilo.letters.Desk"
+                    && d.action_label == "new_draft"),
+            "the verbs of a record are discoverable"
+        );
+        let resources = room.page.resources(&room.doc);
+        let violations = ui::tilo_actions::validate_surface(
+            &resources,
+            &ActionRegistry::with(register_actions),
+            &ui::widget::Widget::resource_operation_handlers(&room.page),
+        );
+        assert!(violations.is_empty(), "{violations:#?}");
+        let output = room.agent_invokes(HOST, "catalogue", &Json::Null).unwrap();
+        let signatures = output.value.expect("the catalogue is the answer");
+        let text = signatures.to_string();
+        assert!(text.contains("so.tilo.letters"), "{text}");
+        assert!(text.contains("action so.tilo.letters.send"), "{text}");
+        assert!(
+            text.contains("Posts the letter"),
+            "doc comments come with it: {text}"
+        );
+    }
+
+    #[test]
+    fn a_view_block_a_value_block_and_a_bad_block_answer_an_agent() {
+        let mut room = Room::staged("chat");
+        let run = |room: &mut Room, source: &str| {
+            room.agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
+        };
+        let view = run(&mut room, "column { text(\"Hello from an agent\") }")
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(view["kind"], "view", "{view}");
+        assert!(view.to_string().contains("Hello from an agent"), "{view}");
+        let data = run(&mut room, "1 + 2").unwrap().value.unwrap();
+        assert_eq!(data, serde_json::json!({"kind": "data", "value": 3}));
+        let refused = run(&mut room, "nothing.here(").unwrap_err();
+        assert!(refused.contains("does not compile"), "{refused}");
+    }
+
+    #[test]
+    fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() {
+        let mut room = Room::staged("chat");
+        let host = room.page.current_host().expect("the host started");
+        let desk = host.root_of("so.tilo.letters").unwrap();
+        let tilolang_tilo::runtime::Value::List(drafts) =
+            host.runtime().read(&desk, "drafts").unwrap()
+        else {
+            panic!("the desk lists its drafts");
+        };
+        let tilolang_tilo::runtime::Value::Ref(draft) = &drafts[0] else {
+            panic!("a draft is a reference");
+        };
+        let source = format!("letters.send(@letters.Draft:{})", draft.target.id_string());
+        let output = room
+            .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(output["kind"], "invocation", "{output}");
+        assert_eq!(
+            output["state"], "suggested",
+            "an agent's send asks first: {output}"
+        );
+        // The invocation is a resource of the room record, so every replica shows it.
+        let id = output["invocation"].as_str().unwrap();
+        let invocation = host.invocation_ref(id).unwrap();
+        assert_eq!(
+            host.runtime().read_invocation(&invocation).unwrap().state,
+            "suggested"
+        );
+        let in_record = tilolang_tilo::action::resource_ids(&room.doc, tilolang_tilo::HOST_APP);
+        assert!(
+            in_record.iter().any(|doc| doc == &invocation.doc),
+            "{in_record:?}"
+        );
+        // A person declines it, and nothing is sent.
+        host.runtime()
+            .resolve_invocation(
+                &invocation,
+                &tilolang_tilo::runtime::Principal::new("ada"),
+                tilolang_tilo::runtime::Resolution::Decline,
+            )
+            .unwrap();
+        let decided = host.runtime().read_invocation(&invocation).unwrap();
+        assert_eq!(decided.state, "declined", "{decided:?}");
+    }
+
+    #[test]
+    fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
+        let mut room = Room::staged("board");
+        let host = room.page.current_host().expect("the host started");
+        let list = host.root_of("so.tilo.todo").unwrap().id_string();
+        let notebook = host.root_of("so.tilo.notes").unwrap().id_string();
+        let output = room
+            .agent_invokes(
+                HOST,
+                "run-flow",
+                &serde_json::json!({
+                    "flow": "so.tilo.board.morning_cleanup",
+                    "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
+                }),
+            )
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(output, serde_json::json!({"state": "done", "result": 1}));
     }
 }

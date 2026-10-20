@@ -22,6 +22,23 @@ use crate::project::{ProjectOptions, project};
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, from_json, to_json};
 
+/// What an agent's block came to, as the door answers it.
+#[derive(Debug)]
+pub enum AgentBlock {
+    /// The source did not compile or link: one line per diagnostic.
+    Rejected(Vec<String>),
+    /// The block is a view: its rendered tree.
+    View(Box<crate::view::UiNode>),
+    /// The block is a value: what an agent sees of it.
+    Data(serde_json::Value),
+    /// The block applies an action. The host ran it, or suggested it to a person, and recorded
+    /// the outcome as an `Invocation` resource that syncs like any other.
+    Invocation {
+        record: InvocationRecord,
+        resource: ResourceRef,
+    },
+}
+
 /// What the host records of an invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationRecord {
@@ -92,6 +109,61 @@ impl Core {
             vec![(q.field.clone(), Value::some(Value::resource(&inv)))],
             &note(invoker, &identity, "$settle-block", None),
         )
+    }
+
+    /// Evaluate the source of a block an agent wrote, as `agent` (implementation design 6.1).
+    ///
+    /// # Errors
+    ///
+    /// A store failure while recording an invocation, or a block that traps.
+    pub(crate) fn run_agent_block(
+        &self,
+        agent: &Principal,
+        source: &str,
+    ) -> Result<AgentBlock, RuntimeError> {
+        let block = match self.embed_block(source) {
+            Ok(block) => block,
+            Err(diagnostics) => {
+                return Ok(AgentBlock::Rejected(
+                    diagnostics
+                        .iter()
+                        .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
+                        .collect(),
+                ));
+            }
+        };
+        let identity = ModuleHash::principal(&agent.0);
+        match block.block.kind {
+            BlockKind::View => {
+                let target = crate::render::ViewTarget {
+                    module: block.pkg.hash.clone(),
+                    export: "b_main".to_owned(),
+                    params: Vec::new(),
+                };
+                let view = crate::view_instance::ViewInstance::open(
+                    self.rc().map_err(RuntimeError::Package)?,
+                    agent.clone(),
+                    target,
+                    Vec::new(),
+                )?;
+                Ok(AgentBlock::View(Box::new(view.tree().clone())))
+            }
+            BlockKind::Action => {
+                let record = self.run_posted_block(agent, &identity, &block);
+                let resource =
+                    self.create_invocation(&record, &note(agent, &identity, "$invocation", None))?;
+                Ok(AgentBlock::Invocation { record, resource })
+            }
+            BlockKind::Data => {
+                let value =
+                    self.eval_block(&block.pkg, &block.block.value_type, Some(&identity))?;
+                Ok(AgentBlock::Data(project(
+                    self,
+                    &value,
+                    ProjectOptions::default(),
+                )))
+            }
+        }
     }
 
     fn run_posted_block(

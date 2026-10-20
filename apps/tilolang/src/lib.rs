@@ -13,6 +13,7 @@
 )]
 
 pub mod i18n;
+pub mod names;
 pub mod packages;
 pub mod page;
 pub mod reconcile;

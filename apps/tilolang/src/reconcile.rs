@@ -18,7 +18,8 @@ use tilolang_tilo::runtime::{Binding, UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
-    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Page, Row, Side, Slot, Split, Stack,
+    Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Navigation, Page, Row, Side, Slot,
+    Split, Stack,
 };
 use ui::widget::{
     Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Element, ListRow, ProgressBar,
@@ -50,6 +51,8 @@ pub struct Reconciler {
     names: FieldNames,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
+    /// The handle on the split that collapses to navigate, the last one built.
+    navigation: Option<Navigation>,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -148,6 +151,28 @@ fn position(node: &UiNode) -> Option<At> {
     })
 }
 
+/// The tree as it is drawn: a `page` inside another page, or inside a block's view, is a plain
+/// stack. A page is the outermost layout of a window (gutter, readable measure); a view shown
+/// within another view's layout takes the width that layout offers and adds no second gutter.
+#[must_use]
+pub fn normalize(node: &UiNode) -> UiNode {
+    fn walk(node: &UiNode, inside: bool) -> UiNode {
+        let nested = inside || node.kind == "page" || node.kind == "embed";
+        let mut out = node.clone();
+        if inside && node.kind == "page" {
+            "stack".clone_into(&mut out.kind);
+            out.props.clear();
+        }
+        out.children = node
+            .children
+            .iter()
+            .map(|child| walk(child, nested))
+            .collect();
+        out
+    }
+    walk(node, false)
+}
+
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
 fn fit_of(node: &UiNode) -> Fit {
     let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
@@ -241,7 +266,19 @@ impl Reconciler {
             names,
             texts: HashMap::new(),
             flags: HashMap::new(),
+            navigation: None,
         }
+    }
+
+    /// The handle on the split of the view that collapses to one pane at a time, when it has one.
+    #[must_use]
+    pub fn navigation(&self) -> Option<Navigation> {
+        self.navigation.clone()
+    }
+
+    /// Forget the split of the last view built, before building another.
+    pub fn clear_navigation(&mut self) {
+        self.navigation = None;
     }
 
     /// Show `text` in the input or text node `key`, whatever widget shows it.
@@ -299,16 +336,26 @@ impl Reconciler {
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
         node.children
             .iter()
-            .map(|child| self.slot(child, None))
+            .map(|child| self.slot(node, child, None))
             .collect()
     }
 
     /// `child` as a slot of its container, with the fit its own arguments ask for. `reuse` is
     /// the widget it keeps from the previous tree.
-    fn slot(&mut self, child: &UiNode, reuse: Option<Element>) -> Slot {
+    fn slot(&mut self, parent: &UiNode, child: &UiNode, reuse: Option<Element>) -> Slot {
         let element = reuse.unwrap_or_else(|| self.build(child));
         let mut slot = Slot::new(element);
         slot.fit = fit_of(child);
+        // Beside siblings in a row, a container takes the room they leave rather than hugging
+        // its content, so what it holds lays out in the width the row offers.
+        if parent.kind == "row"
+            && (is_container(&child.kind) || child.kind == "embed")
+            && number(child, "fill").is_none()
+        {
+            slot.fit = Fit::fill(1.0);
+            slot.fit.width.min = length(child, "min");
+            slot.fit.width.max = length(child, "max");
+        }
         if child.kind == "spacer" {
             slot.fit = Fit::fill(1.0);
         }
@@ -386,6 +433,9 @@ impl Reconciler {
             .with_id(node.key.clone());
         if let Some(ratio) = number(node, "ratio") {
             split = split.ratio(ratio);
+        }
+        if token(node, "collapse") == Some("navigate") {
+            self.navigation = Some(split.navigation());
         }
         for child in &node.children {
             let mut slot = Slot::new(self.build(child));
@@ -564,7 +614,14 @@ impl Reconciler {
     /// somebody's message rather than as part of the app.
     fn embed(&mut self, node: &UiNode) -> Element {
         let inner = self.stack(node, Rhythm::Related);
-        Box::new(Container::new().with_background().with_child(inner))
+        // A view boundary: the card takes the width its column offers, up to the readable measure,
+        // and the embedded view lays itself out in what it was given.
+        Box::new(
+            Container::new()
+                .with_background()
+                .readable()
+                .with_child(inner),
+        )
     }
 
     /// What became of an action block when it was posted, drawn from the invocation record.
@@ -781,7 +838,7 @@ impl Reconciler {
                 let reuse = kept
                     .remove(child.key.as_str())
                     .map(|(element, old_child)| self.update(element, old_child, child));
-                self.slot(child, reuse)
+                self.slot(new_node, child, reuse)
             })
             .collect()
     }

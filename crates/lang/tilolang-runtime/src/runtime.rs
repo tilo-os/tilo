@@ -15,7 +15,7 @@ use crate::flow::{FlowOutcome, Resolution};
 use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
-use crate::settle::InvocationRecord;
+use crate::settle::{AgentBlock, InvocationRecord};
 use crate::store::{ChangeNote, OutboxEntry, Store};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
@@ -199,6 +199,21 @@ impl Runtime {
         }
     }
 
+    /// Evaluate the source of a block an agent wrote, as `agent`: a view renders, a value is
+    /// projected, and an action application runs or is suggested to a person, recorded as an
+    /// `Invocation` resource (implementation design 6.1, 7.4).
+    ///
+    /// # Errors
+    ///
+    /// A store failure while recording the invocation, or a block that traps.
+    pub fn run_agent_block(
+        &self,
+        agent: &Principal,
+        source: &str,
+    ) -> Result<AgentBlock, RuntimeError> {
+        self.core.run_agent_block(agent, source)
+    }
+
     /// Decide the suggestion an `Invocation` resource holds (see `Core::resolve_invocation`):
     /// approving runs the action once, on this replica, and records the outcome in the
     /// resource so every replica shows it after sync. Returns the invocation's new state.
@@ -348,6 +363,11 @@ impl Runtime {
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));
+    }
+
+    /// How views show a principal's name. Until it is set, a principal is its id.
+    pub fn set_name_host(&self, host: impl crate::core::NameHost + 'static) {
+        *self.core.names.borrow_mut() = Some(Box::new(host));
     }
 
     /// Where settled outside effects go.

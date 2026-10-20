@@ -19,7 +19,15 @@ use crate::reconcile::UiEvent;
 pub(super) type Step = Box<dyn FnOnce(&mut TilolangPage) -> Result<(), String>>;
 
 /// The scenarios a capture can name.
-pub const SCENARIOS: &[&str] = &["counter", "todo", "notes", "letters", "chat", "board"];
+pub const SCENARIOS: &[&str] = &[
+    "counter",
+    "todo",
+    "notes",
+    "notes-detail",
+    "letters",
+    "chat",
+    "board",
+];
 
 const COUNTER: &str = "so.tilo.counter";
 const TODO: &str = "so.tilo.todo";
@@ -271,7 +279,7 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
             }));
             steps.push(open(TODO));
         }
-        "notes" => {
+        "notes" | "notes-detail" => {
             steps.push(step(|page| {
                 note(
                     page,
@@ -447,6 +455,13 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
             steps.push(open(BOARD));
         }
         _ => {}
+    }
+    if name == "notes-detail" {
+        // What a person does in a narrow window: open a note from the list.
+        steps.push(step(|page| {
+            page.show_detail();
+            Ok(())
+        }));
     }
     steps.into()
 }
