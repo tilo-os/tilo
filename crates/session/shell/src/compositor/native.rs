@@ -4084,7 +4084,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         let room_sync = room_sync_json(&chrome.tree());
-        serde_json::json!({
+        let mut dump = serde_json::json!({
             // Where each workspace's room stands with its host, what its
             // apps are told (`ui::room_sync`), and which apps it lets write.
             "room_sync": room_sync,
@@ -4269,7 +4269,12 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
             "fullscreen": chrome.is_fullscreen(),
-        })
+        });
+        // Construction work counted at the workspace's factories, and the
+        // workspace whose content those factories last reconciled.
+        dump["workspace_work"] = serde_json::json!(crate::shell::work_accounting::snapshot());
+        dump["workspace_content"] = serde_json::json!(self.fb.host().workspace_content_id());
+        dump
     }
 }
 

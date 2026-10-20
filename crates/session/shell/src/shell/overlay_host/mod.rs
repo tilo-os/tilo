@@ -5616,6 +5616,12 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Workspace whose content has actually been reconciled, as opposed to
+    /// the navigation target that may still be awaiting the next layout.
+    pub(crate) fn workspace_content_id(&self) -> Option<u64> {
+        self.content_built_for_ws
+    }
+
     /// The workspaces whose content is kept while another one is shown,
     /// least recently shown first.
     #[cfg(test)]

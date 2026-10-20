@@ -45,30 +45,17 @@ impl Desktop {
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
     pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
-        Self::start_configured(tree, &[], false)
+        Self::start_configured(tree, false)
     }
 
     /// [`Self::start_with`], serving the agent door at
     /// `tilo-session/agent.sock` in its runtime directory (where a client
     /// inside the login looks) when `door`.
     pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
-        Self::start_configured(tree, &[], door)
+        Self::start_configured(tree, door)
     }
 
-    /// [`Self::start_with`] with `env` added to the compositor's
-    /// environment (`workspace_switch_cost` turns on the frame trace).
-    pub(crate) fn start_with_env(
-        tree: shell::shell::state::WorkspaceTree,
-        env: &[(&str, &std::ffi::OsStr)],
-    ) -> Self {
-        Self::start_configured(tree, env, false)
-    }
-
-    fn start_configured(
-        tree: shell::shell::state::WorkspaceTree,
-        env: &[(&str, &std::ffi::OsStr)],
-        door: bool,
-    ) -> Self {
+    fn start_configured(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
@@ -138,8 +125,7 @@ impl Desktop {
             .env(
                 "GLIBC_TUNABLES",
                 launcher::hardening::NO_HUGE_PAGES_TUNABLES,
-            )
-            .envs(env.iter().copied());
+            );
         if door {
             command.env(
                 "TILO_AGENT_DOOR",
@@ -149,7 +135,6 @@ impl Desktop {
         let mut child = command
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
-            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
