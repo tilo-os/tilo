@@ -199,11 +199,16 @@ impl ViewInstance {
 
     /// Whether rows of lists render only once shown (the default), or with the list. A host
     /// that draws the whole tree, rather than asking for rows, turns this off before the
-    /// first poll; rows already left unrendered render at once.
-    pub fn set_lazy_rows(&mut self, lazy: bool) -> Result<Vec<Patch>, RuntimeError> {
+    /// first poll; rows already left unrendered render at once, into the tree (no patches:
+    /// such a host reads [`Self::tree`] after this).
+    ///
+    /// # Errors
+    ///
+    /// As rendering.
+    pub fn set_lazy_rows(&mut self, lazy: bool) -> Result<(), RuntimeError> {
         self.live.lazy_rows = lazy;
         if lazy {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let mut lists = Vec::new();
         collect_lists(&self.live.tree, &mut lists);
@@ -213,7 +218,7 @@ impl ViewInstance {
             }
         }
         self.subscribe_new();
-        Ok(Vec::new())
+        Ok(())
     }
 
     /// How many rows the `list` with key `list` has.
