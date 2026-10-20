@@ -441,7 +441,7 @@ pub(super) async fn enqueue_state_inner(
             timed_bytes,
         },
     };
-    let completion = Box::pin(owner.submit_lane_wait(
+    let completion = Box::pin(owner.submit_commit_wait(
         lane,
         charge,
         preparation,
@@ -730,10 +730,21 @@ impl StateTurn {
             });
         if let Some((channel, seq)) = retention {
             test_point!(pause(state.store.root(), "state-persist"));
+            // A checkpoint may replace its lineage's generation whole, as
+            // listed: every record the owner's group holds is under its name
+            // first. A delta joins the group (`retained::SharedGroup`).
+            if seq.is_none() {
+                state.group.flush()?;
+            }
             let build = crate::timing::windowed("owner.commit.retain_start", || {
                 retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())
             })?
             .with_continuity(continuity.clone());
+            let build = if seq.is_some() {
+                build.deferring(state.group.records())?
+            } else {
+                build
+            };
             state.retention_scratch = Some(build.scratch().to_owned());
             self.retained_build = Some(build);
         } else {

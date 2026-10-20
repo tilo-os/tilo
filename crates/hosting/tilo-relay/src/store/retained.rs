@@ -30,7 +30,9 @@ pub(crate) use tilo_relay_store::durable::{
 use tilo_relay_store::frames::framed_envelope;
 pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
 
+mod group;
 mod tail_index;
+pub(crate) use group::SharedGroup;
 
 fn invalid(message: &str) -> StoreError {
     io::Error::new(io::ErrorKind::InvalidData, message).into()
@@ -418,6 +420,8 @@ fn barriers(
     let Some((first, rest)) = work.split_first_mut() else {
         return Ok(());
     };
+    // Helpers have no barrier hook: what it holds is due before any of them.
+    tilo_relay_store::before_barrier()?;
     std::thread::scope(|scope| {
         let others: Vec<_> = rest
             .iter_mut()
@@ -581,6 +585,8 @@ pub struct RetainBuild {
     indexed: bool,
     /// Every record digest a delta's full scan saw, to install as the index.
     collected: Option<std::collections::HashSet<u64>>,
+    /// The owner's group commit a plain append joins instead of syncing.
+    group: Option<SharedGroup>,
 }
 /// The durable stage of a lineage's next checkpoint, written outside the
 /// workspace's order ([`WorkspaceStore::stage_fresh_checkpoint`]) and not
@@ -939,8 +945,12 @@ impl RetainBuild {
                 );
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
-            durable_write(&path, &self.bytes)?;
-            remember_digest(&path, &self.digest);
+            if let Some(group) = self.group.as_ref().filter(|_| self.continuity.is_none()) {
+                group.defer(&self.lineage, &self.active, path, &self.bytes, self.digest)?;
+            } else {
+                durable_write(&path, &self.bytes)?;
+                remember_digest(&path, &self.digest);
+            }
             if let (Some(before), Some(after)) = (&self.stamp, generation_stamp(&self.active)) {
                 tail_index::appended(&self.lineage, (before, after), next, &self.digest);
             } else {
@@ -950,6 +960,18 @@ impl RetainBuild {
             self.phase = RetainPhase::Done;
         }
         Ok(())
+    }
+    /// Join a plain append to `group`, the owner's group commit, instead of
+    /// syncing it: its barriers wait for the group's flush. A build that
+    /// must list its lineage first flushes what the group holds of it, so
+    /// the listing sees every record by its name.
+    pub(crate) fn deferring(mut self, group: SharedGroup) -> Result<Self, StoreError> {
+        if matches!(self.phase, RetainPhase::Scan(_)) && group.holds(&self.lineage) {
+            group.flush()?;
+            self.rescan()?;
+        }
+        self.group = Some(group);
+        Ok(self)
     }
     /// Install what this delta's full scan found as the lineage's index.
     fn install_index(&mut self) {
@@ -1275,6 +1297,11 @@ impl RetainBuild {
                 if self.publication.is_none() {
                     if let Some(store) = &self.shell_store {
                         if self.selection.is_none() {
+                            // A selection lists retained history: every
+                            // record it may read is under its name first.
+                            if let Some(group) = &self.group {
+                                group.flush()?;
+                            }
                             let incoming = tilo_relay_store::frames::incoming_identity(
                                 &self.bytes,
                                 self.workspace,
@@ -1641,6 +1668,7 @@ impl WorkspaceStore {
             stamp: None,
             indexed: false,
             collected: None,
+            group: None,
         }))
     }
     fn start_retain_at(
@@ -1761,6 +1789,7 @@ impl WorkspaceStore {
                 .map(|_| std::collections::HashSet::new()),
             indexed: indexed.is_some(),
             stamp,
+            group: None,
         })
     }
     pub(super) fn retain_shared(
