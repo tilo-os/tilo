@@ -20,6 +20,7 @@ mod tests {
             "tilolang-home-empty",
             "tilolang-open-failed",
             "tilolang-back",
+            "tilolang-detail",
             "tilolang-ask-title",
             "tilolang-ask-confirm",
             "tilolang-ask-decline",

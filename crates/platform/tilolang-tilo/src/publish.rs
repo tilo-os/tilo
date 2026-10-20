@@ -195,9 +195,8 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
 /// The host's own resource: the commit of an action the runtime planned while a window handled a
 /// press. It is not offered in the palette; the window invokes it.
 ///
-/// Running a block, running a flow and listing the catalogue are effects an app cannot yet handle
-/// through the toolkit (the operation handler is not nameable outside it), so they are not
-/// published; `Host::runtime` carries the same operations for when they are.
+/// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, run a flow, read
+/// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
     let committer = Arc::clone(committer);
@@ -223,7 +222,12 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
         },
     )
     .programmatic();
-    Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit)
+    let mut host =
+        Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
+    for spec in <crate::effects::HostEffect as tilo_resource::Effect>::specs() {
+        host = host.with_action(spec);
+    }
+    host
 }
 
 /// The plain edit a bound control makes: set `value` into the field `field` of the resource

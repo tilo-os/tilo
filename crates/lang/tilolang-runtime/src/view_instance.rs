@@ -142,6 +142,12 @@ impl ViewInstance {
         self.boundaries.get(boundary).copied()
     }
 
+    /// Run the view again at the next poll although nothing it read changed: what it shows
+    /// without reading it (the names of principals) has changed.
+    pub fn refresh(&self) {
+        self.watch.borrow_mut().dirty = true;
+    }
+
     /// Whether a field the view read has changed since the last render.
     pub fn is_stale(&self) -> bool {
         self.watch.borrow().dirty

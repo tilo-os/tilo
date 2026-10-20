@@ -65,13 +65,15 @@ impl Package {
     }
 }
 
-struct HostInner {
+pub(crate) struct HostInner {
     handle: u64,
     runtime: Runtime,
     store: TiloStore,
     authority: TiloAuthority,
     viewer: Principal,
     packages: RefCell<Vec<Package>>,
+    /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
+    pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
 }
 
 thread_local! {
@@ -90,7 +92,7 @@ impl Drop for HostInner {
 /// The tilolang runtime on the platform. Clones share one runtime.
 #[derive(Clone)]
 pub struct Host {
-    inner: Rc<HostInner>,
+    pub(crate) inner: Rc<HostInner>,
 }
 
 /// What the door's closures hold in place of the host: see the module docs.
@@ -124,12 +126,22 @@ impl Committer for HostHandle {
     }
 }
 
-fn value_of(meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
+pub(crate) fn value_of(
+    host: &HostInner,
+    meta: &Meta,
+    json: &Json,
+    ty: &str,
+) -> Result<Value, String> {
     match parse_ty(ty, &meta.app)? {
         Ty::Record(key) => {
-            let declared = meta
+            // A parameter may be a type of another app of the room.
+            let owner = if key.app == meta.app {
+                meta.clone()
+            } else {
+                host.package_of(&key.app)?.meta
+            };
+            let declared = owner
                 .type_named(&key.name)
-                .filter(|_| key.app == meta.app)
                 .ok_or_else(|| format!("unknown type `{}`", key.name))?;
             let text = json
                 .as_str()
@@ -143,7 +155,7 @@ fn value_of(meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
 }
 
 impl HostInner {
-    fn package_of(&self, app: &str) -> Result<Package, String> {
+    pub(crate) fn package_of(&self, app: &str) -> Result<Package, String> {
         self.packages
             .borrow()
             .iter()
@@ -180,7 +192,7 @@ impl HostInner {
         }
         for param in params {
             let json = request.args.get(&param.name).cloned().unwrap_or(Json::Null);
-            args.push(value_of(&package.meta, &json, &param.ty)?);
+            args.push(value_of(self, &package.meta, &json, &param.ty)?);
         }
         let first = self.store.next_ticket();
         let outcome = self
@@ -247,6 +259,7 @@ impl Host {
             authority,
             viewer,
             packages: RefCell::new(Vec::new()),
+            suspended: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -258,6 +271,12 @@ impl Host {
         HostHandle {
             id: self.inner.handle,
         }
+    }
+
+    /// The next suggestion an agent's flow raised, for the window to ask a person about.
+    #[must_use]
+    pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
+        self.inner.suspended.borrow_mut().pop_front()
     }
 
     /// The runtime, for flows, blocks and the catalogue.

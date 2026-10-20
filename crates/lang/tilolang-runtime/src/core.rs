@@ -47,6 +47,12 @@ pub trait OutsideSink {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String>;
 }
 
+/// How a principal is called where a view shows it (`principal.name()`).
+pub trait NameHost {
+    /// The name to show for `who`.
+    fn name(&self, who: &crate::ids::Principal) -> String;
+}
+
 pub struct Core {
     me: Weak<Core>,
     pub engine: Engine,
@@ -55,6 +61,8 @@ pub struct Core {
     pub store: RefCell<Box<dyn Store>>,
     pub authority: Box<dyn Authority>,
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
+    /// What names principals; the id itself until the host says.
+    pub names: RefCell<Option<Box<dyn NameHost>>>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
@@ -144,6 +152,7 @@ impl Core {
             store: RefCell::new(store),
             authority,
             models: RefCell::new(None),
+            names: RefCell::new(None),
             sink: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
         });

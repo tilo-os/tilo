@@ -13,6 +13,7 @@
 
 pub mod action;
 pub mod authority;
+pub mod effects;
 pub mod host;
 pub mod meta;
 pub mod publish;
@@ -22,8 +23,10 @@ pub mod store;
 pub mod surface;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};
+pub use effects::HostEffect;
 pub use meta::MetaExt;
 pub use record::{DynRecord, DynValue};
 pub use schema::{FieldSchema, MergeKind, TypeSchema};
+pub use tilolang::HOST_APP;
 /// The runtime, for hosts that drive views and read values.
 pub use tilolang_runtime as runtime;

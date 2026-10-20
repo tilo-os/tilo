@@ -126,6 +126,10 @@ pub trait Layout {
         false
     }
 
+    /// How many slots the container holds, told before each layout: a layout that arranges by
+    /// count (a grid that keeps no empty columns) reads it.
+    fn items(&mut self, _count: usize) {}
+
     /// Whether slot `index` is not shown in the current arrangement.
     fn hidden(&self, _index: usize) -> bool {
         false
@@ -249,6 +253,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.resolved = Resolved::of(theme);
+        self.layout.items(self.slots.len());
         let resolved = self.resolved;
         let mut wrappers = Vec::with_capacity(self.slots.len());
         for index in 0..self.slots.len() {

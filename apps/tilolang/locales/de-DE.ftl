@@ -5,6 +5,7 @@ tilolang-home-heading = Apps
 tilolang-home-empty = Es sind keine Apps installiert.
 tilolang-open-failed = Diese App konnte nicht geöffnet werden.
 tilolang-back = Alle Apps
+tilolang-detail = Details
 tilolang-ask-title = Diese Änderung erlauben?
 tilolang-ask-by = Angefragt von { $invoker }
 tilolang-ask-action = { $action }

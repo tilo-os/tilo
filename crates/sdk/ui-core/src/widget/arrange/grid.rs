@@ -21,6 +21,9 @@ pub struct GridLayout {
     gap: Rhythm,
     /// The count the last allocation settled on.
     count: u16,
+    /// How many items the grid holds: a row never has more columns than items, so a few cards
+    /// share the whole width instead of leaving empty columns beside them.
+    items: usize,
 }
 
 impl GridLayout {
@@ -31,7 +34,8 @@ impl GridLayout {
             Columns::Fixed(count) => count.max(1),
             Columns::AtLeast(min) => {
                 let found = columns_for(width, min.resolve(resolved.rem), resolved.gap(self.gap));
-                u16::try_from(found).unwrap_or(u16::MAX)
+                let kept = found.max(1).min(self.items.max(1));
+                u16::try_from(kept).unwrap_or(u16::MAX)
             }
         }
     }
@@ -48,6 +52,10 @@ impl Layout for GridLayout {
         "Grid"
     }
 
+    fn items(&mut self, count: usize) {
+        self.items = count;
+    }
+
     fn container(&self, resolved: &Resolved) -> Style {
         let gap = length(resolved.gap(self.gap));
         Style {
@@ -57,7 +65,7 @@ impl Layout for GridLayout {
                 vec![minmax(length(0.0_f32), fr(1.0_f32))],
             )],
             grid_auto_rows: vec![taffy::style_helpers::auto()],
-            align_items: Some(taffy::AlignItems::Start),
+            align_items: Some(taffy::AlignItems::Stretch),
             gap: Size {
                 width: gap,
                 height: gap,
@@ -105,6 +113,7 @@ impl Arranged<GridLayout> {
             columns: Columns::AtLeast(min),
             gap: Rhythm::Sibling,
             count: 1,
+            items: usize::MAX,
         })
     }
 
@@ -115,6 +124,7 @@ impl Arranged<GridLayout> {
             columns: Columns::Fixed(count),
             gap: Rhythm::Sibling,
             count: count.max(1),
+            items: usize::MAX,
         })
     }
 

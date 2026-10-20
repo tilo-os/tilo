@@ -38,6 +38,45 @@ pub enum Side {
     Trailing,
 }
 
+/// The way a host steers a navigating split from outside it: which pane it shows, and whether
+/// it is collapsed to one pane at all. Clones share the state; a host keeps one beside the
+/// split, offers the way back where it draws its header, and shows the secondary pane when the
+/// person opens something there.
+#[derive(Clone, Debug, Default)]
+pub struct Navigation {
+    secondary: std::rc::Rc<std::cell::Cell<bool>>,
+    collapsed: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Navigation {
+    /// The pane the split shows while collapsed.
+    #[must_use]
+    pub fn shown(&self) -> Pane {
+        if self.secondary.get() {
+            Pane::Secondary
+        } else {
+            Pane::Primary
+        }
+    }
+
+    /// Show `pane` while collapsed.
+    pub fn show(&self, pane: Pane) {
+        self.secondary.set(pane == Pane::Secondary);
+    }
+
+    /// Whether the split is collapsed to one pane as of its last layout.
+    #[must_use]
+    pub fn collapsed(&self) -> bool {
+        self.collapsed.get()
+    }
+
+    /// Whether the person is looking at the secondary pane alone, which wants a way back.
+    #[must_use]
+    pub fn detail_alone(&self) -> bool {
+        self.collapsed() && self.shown() == Pane::Secondary
+    }
+}
+
 pub struct SplitLayout {
     primary_min: Length,
     secondary_min: Length,
@@ -52,6 +91,8 @@ pub struct SplitLayout {
     shown: Pane,
     drawer_open: bool,
     dirty: bool,
+    /// A host's handle on the pane shown and the collapse, when it asked for one.
+    navigation: Option<Navigation>,
 }
 
 impl SplitLayout {
@@ -179,9 +220,19 @@ impl Layout for SplitLayout {
             self.secondary_min.resolve(resolved.rem),
             resolved.gap(self.gap),
         );
-        let changed = arrangement != self.arrangement || self.dirty;
+        let mut changed = arrangement != self.arrangement || self.dirty;
         self.arrangement = arrangement;
         self.dirty = false;
+        if let Some(navigation) = &self.navigation {
+            let wanted = navigation.shown();
+            if wanted != self.shown {
+                self.shown = wanted;
+                changed = true;
+            }
+            navigation
+                .collapsed
+                .set(arrangement == Arrangement::Collapsed);
+        }
         changed
     }
 
@@ -217,6 +268,7 @@ impl Arranged<SplitLayout> {
             shown: Pane::Primary,
             drawer_open: false,
             dirty: false,
+            navigation: None,
         })
     }
 
@@ -237,6 +289,18 @@ impl Arranged<SplitLayout> {
     pub const fn collapse(mut self, collapse: Collapse) -> Self {
         self.layout.collapse = collapse;
         self
+    }
+
+    /// A handle the host steers the shown pane with, for a split that collapses to navigate.
+    #[must_use]
+    pub fn navigation(&mut self) -> Navigation {
+        let navigation = self
+            .layout
+            .navigation
+            .get_or_insert_with(Navigation::default)
+            .clone();
+        navigation.show(self.layout.shown);
+        navigation
     }
 
     #[must_use]
