@@ -448,7 +448,7 @@ fn idle_inbound_arrival_persists_and_wakes_the_selected_conversation() {
     go.send(()).expect("fixture arrival");
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()
@@ -510,10 +510,10 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
             native
                 .lock()
                 .expect("shutdown lock")
-                .recv_timeout(ui::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native peer"),
         );
-        let deadline = std::time::Instant::now() + ui::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while supervisor.client().account_state(&account) != AccountState::Failed
             && std::time::Instant::now() < deadline
         {
@@ -535,7 +535,7 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
     setup.join().expect("bounded native fixture");
     assert_eq!(
         observed
-            .recv_timeout(ui::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("actual ready observer"),
         AccountState::Failed
     );
@@ -795,7 +795,7 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
     go.send(()).expect("receipt arrival");
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()
