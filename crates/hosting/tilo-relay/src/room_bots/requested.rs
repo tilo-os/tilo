@@ -155,15 +155,18 @@ impl Follower {
             .connectors_for(&shortcut, &request.request.inputs, &mut bot)
             .await?;
         let certifier = HostRootCertifier::new(self.root.clone());
-        let runner = BotRunner::new(
-            self.rooms.clone(),
-            self.room.clone(),
-            self.host.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            connectors,
-            dir.join("progress.json"),
-        )?;
+        let running = tokio::spawn(
+            BotRunner::new(
+                self.rooms.clone(),
+                self.room.clone(),
+                self.host.clone(),
+                certifier.device_key(&bot.installation),
+                bot.clone(),
+                connectors,
+                dir.join("progress.json"),
+            )?
+            .run(),
+        );
         let installation = bot.installation.clone();
         let tasks = vec![
             tokio::spawn(keep_renewed(
@@ -173,7 +176,7 @@ impl Follower {
                 certifier,
                 bot,
             )),
-            tokio::spawn(runner.run()),
+            running,
         ];
         Ok(Running {
             version: request.request.version.clone(),
