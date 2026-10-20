@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub use tilo_resource::diff::{RunOp, TextRun, text_runs};
 use tilo_resource::diff::{Step, align};
+use tilo_sort::CompactSort as _;
 
 /// The full structural diff of a document between two versions (`old` → `new`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -271,7 +272,7 @@ fn diff_marks(old: &[MarkSpan], new: &[MarkSpan]) -> (Vec<MarkSpan>, Vec<MarkSpa
 fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) -> Vec<AttrChange> {
     let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
-    keys.sort();
+    keys.compact_sort();
     keys.dedup();
     for k in keys {
         let ov = old.get(k);
@@ -290,7 +291,7 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
 fn diff_props(old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Vec<PropChange> {
     let mut out = Vec::new();
     let mut keys: Vec<&String> = old.keys().chain(new.keys()).collect();
-    keys.sort();
+    keys.compact_sort();
     keys.dedup();
     for k in keys {
         let ov = old.get(k);
@@ -603,7 +604,7 @@ fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
         .collect();
 
     let mut refs: Vec<&str> = old_cells.keys().chain(new_cells.keys()).copied().collect();
-    refs.sort_unstable();
+    refs.compact_sort();
     refs.dedup();
 
     let mut cells = Vec::new();

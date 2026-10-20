@@ -120,6 +120,7 @@ workspace-members = [
     "tilo-automerge",
     "tilo-clock",
     "tilo-lock",
+    "tilo-sort",
     "tilo-content",
     "tilo-desktop-model",
     "wire-frame",

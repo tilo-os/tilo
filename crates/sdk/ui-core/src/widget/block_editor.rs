@@ -9,6 +9,7 @@ use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
@@ -4519,7 +4520,7 @@ impl BlockEditor {
             self.focused.filter(|_| self.is_focused),
             hovered,
         ];
-        shown.sort_unstable();
+        shown.compact_sort();
         let mut previous = None;
         for index in shown.into_iter().flatten() {
             if previous.replace(index) == Some(index) {

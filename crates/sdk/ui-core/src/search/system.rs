@@ -2,6 +2,7 @@
 use crate::CommandEntry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 pub mod filters;
 #[cfg(test)]
 mod tests;
@@ -566,7 +567,7 @@ pub fn order_by_kind<T>(merged: &mut [(T, f32)], kind: impl Fn(&T) -> &ResourceK
         let slot = best.entry(kind(hit).sort_key()).or_insert(f32::MIN);
         *slot = slot.max(*strength);
     }
-    merged.sort_by(|(a, a_strength), (b, b_strength)| {
+    merged.compact_sort_by(|(a, a_strength), (b, b_strength)| {
         let (a_key, b_key) = (kind(a).sort_key(), kind(b).sort_key());
         let a_group = best.get(&a_key).copied().unwrap_or(f32::MIN);
         let b_group = best.get(&b_key).copied().unwrap_or(f32::MIN);
@@ -756,7 +757,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
                 }
             }
         }
-        kinds.sort_by_key(ResourceKind::sort_key);
+        kinds.compact_sort_by_key(ResourceKind::sort_key);
         kinds
     }
     pub fn query(&self, host: &Host, query: &Query<'_>) -> Vec<Row> {

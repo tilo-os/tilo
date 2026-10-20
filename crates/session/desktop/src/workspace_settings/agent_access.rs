@@ -10,6 +10,7 @@
 use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{ActionKind, Answer, Subject, decide};
 use tilo_desktop_model::{UserId, Workspace};
+use tilo_sort::CompactSort as _;
 use ui::paint::PaintCtx;
 use ui::widget::{Button, ButtonFace, ButtonRole, ChipStyle, SegmentedFace};
 use vello::kurbo::{Point, Rect};
@@ -110,7 +111,7 @@ pub fn agent_access_rows(
                 | AnswerScope::Action { app, .. } => Some(app),
             }),
     );
-    ids.sort();
+    ids.compact_sort();
     ids.dedup();
     let mut rows: Vec<AgentAccessRow> = ids
         .into_iter()
@@ -123,7 +124,7 @@ pub fn agent_access_rows(
             }
         })
         .collect();
-    rows.sort_by_key(|row| row.label.to_lowercase());
+    rows.compact_sort_by_key(|row| row.label.to_lowercase());
     rows
 }
 
@@ -154,7 +155,7 @@ pub fn agent_exceptions(
             Some(AgentException { scope, kind, label })
         })
         .collect();
-    out.sort_by(|a, b| a.label.cmp(&b.label));
+    out.compact_sort_by(|a, b| a.label.cmp(&b.label));
     out
 }
 

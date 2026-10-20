@@ -34,6 +34,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as Atomic};
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
@@ -977,11 +978,11 @@ fn store_by_id_changed_in(
         }
     }
     // In the order `store` writes: deletes by key, then items in order.
-    stale.sort_unstable();
+    stale.compact_sort();
     for key in stale {
         doc.delete(&map, key)?;
     }
-    writes.sort_unstable();
+    writes.compact_sort();
     writes.dedup();
     for at in writes {
         let Some((id, item)) = now.item(at) else {

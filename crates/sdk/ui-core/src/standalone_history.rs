@@ -5,6 +5,7 @@
 //! to the outer app document and never commits a live edit while browsing.
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
+use tilo_sort::CompactSort as _;
 
 use crate::bound_dispatch::{BoundDispatchError, CallbackBinding};
 use crate::history_source::{
@@ -73,7 +74,7 @@ impl RestoreReview {
 }
 
 fn sorted(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 

@@ -14,6 +14,7 @@
 //! back as a [`ChromeIntent`]; it never probes or changes the system itself.
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
@@ -1459,7 +1460,7 @@ impl TopBarChrome {
             .iter()
             .map(|row| row.peer)
             .collect::<Vec<_>>();
-        peers.sort_unstable();
+        peers.compact_sort();
         peers.dedup();
         let mut controllers = snapshot
             .active_exposures
@@ -1467,14 +1468,14 @@ impl TopBarChrome {
             .filter(|row| row.can_control)
             .map(|row| row.peer)
             .collect::<Vec<_>>();
-        controllers.sort_unstable();
+        controllers.compact_sort();
         controllers.dedup();
         let mut surfaces = snapshot
             .active_exposures
             .iter()
             .map(|row| row.surface)
             .collect::<Vec<_>>();
-        surfaces.sort_unstable();
+        surfaces.compact_sort();
         surfaces.dedup();
         (peers.len(), controllers.len(), surfaces.len())
     }
@@ -1496,7 +1497,7 @@ impl TopBarChrome {
                 authority.push((row.peer, row.can_control));
             }
         }
-        authority.sort_unstable_by_key(|(peer, _)| *peer);
+        authority.compact_sort_by_key(|(peer, _)| *peer);
         let tree = chrome.tree();
         let mut viewers = Vec::new();
         for (peer, can_control) in authority {
@@ -1543,7 +1544,7 @@ impl TopBarChrome {
                 authority.push((row.surface, row.can_control));
             }
         }
-        authority.sort_unstable_by_key(|(surface, _)| *surface);
+        authority.compact_sort_by_key(|(surface, _)| *surface);
         let tree = chrome.tree();
         let controlled = authority
             .iter()
@@ -2744,7 +2745,7 @@ impl TopBarChrome {
             return rx;
         }
         let mut labels: Vec<&str> = self.status.media.iter().map(|u| u.label.as_str()).collect();
-        labels.sort_unstable();
+        labels.compact_sort();
         labels.dedup();
         let has_mic = self
             .status
@@ -6937,7 +6938,7 @@ mod fixture {
             };
         }
         pub fn set_active_exposures(&mut self, mut exposures: Vec<ActiveExposure>) {
-            exposures.sort_unstable();
+            exposures.compact_sort();
             exposures.dedup();
             self.active_exposures = exposures;
         }

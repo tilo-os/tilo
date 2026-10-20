@@ -20,6 +20,9 @@ test-support = []
 chrono = ["dep:chrono"]
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 automerge.workspace = true

@@ -28,6 +28,7 @@
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable as _;
 use automerge::{ActorId, ChangeHash, ReadDoc};
@@ -77,7 +78,7 @@ pub(crate) fn take_any(
     if heads != committed.get_heads() {
         return None;
     }
-    heads.sort();
+    heads.compact_sort();
     if heads == base && wrote.is_none() {
         return Some((record, Delta::nothing()));
     }
@@ -102,7 +103,7 @@ pub(crate) fn take_any(
         let ours = own.is_none()
             && wrote.as_ref().is_some_and(|(actor, count)| {
                 let mut deps = meta.deps.clone();
-                deps.sort();
+                deps.compact_sort();
                 meta.actor.as_ref() == actor
                     && deps == base
                     && meta.max_op.saturating_add(1).saturating_sub(meta.start_op) == *count
@@ -166,7 +167,7 @@ fn kept_base(doc: &Doc, started: &[ChangeHash]) -> Option<(Vec<ChangeHash>, Wrot
         return None;
     }
     let mut base = doc.base_heads();
-    base.sort();
+    base.compact_sort();
     let pending = doc.pending_ops();
     let wrote = if pending == 0 {
         None

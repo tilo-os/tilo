@@ -6,6 +6,7 @@
 )]
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::ModelPath;
 use vello::Scene;
@@ -381,7 +382,7 @@ impl SankeyChart {
         let content = self.content_rect();
         let _ = content;
         let mut columns: Vec<f64> = nodes.iter().map(|node| node.rect.x0).collect();
-        columns.sort_by(f64::total_cmp);
+        columns.compact_sort_by(f64::total_cmp);
         columns.dedup_by(|a, b| (*a - *b).abs() < 0.5);
         let last = columns.len().saturating_sub(1);
         let column_of = |x: f64| {
@@ -397,7 +398,7 @@ impl SankeyChart {
         };
         let min_room = 3.0 * f64::from(tr.measure_style("M", None, &style).0);
         let mut order: Vec<&NodeBox> = nodes.iter().collect();
-        order.sort_by(|a, b| {
+        order.compact_sort_by(|a, b| {
             a.rect
                 .x0
                 .total_cmp(&b.rect.x0)

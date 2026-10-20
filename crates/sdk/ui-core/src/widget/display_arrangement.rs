@@ -10,6 +10,7 @@
 //! alternative.
 
 pub use settings_store::display_placement as placement;
+use tilo_sort::CompactSort as _;
 
 use crate as ui;
 use crate::num::f32_of_f64;
@@ -565,7 +566,7 @@ impl Widget for DisplayArrangement {
         let mapping = self.mapping();
         let mut drawn = self.drawn();
         // The dragged display paints last so it rides above the others.
-        drawn.sort_by_key(|(_, dragging)| *dragging);
+        drawn.compact_sort_by_key(|(_, dragging)| *dragging);
         for (display, dragging) in &drawn {
             let rect = mapping.to_canvas(display.placement);
             Self::draw_display(

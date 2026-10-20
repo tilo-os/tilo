@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use tilo_sort::CompactSort as _;
 
 use crate::background::Background;
 use crate::time::Duration;
@@ -78,7 +79,7 @@ impl CacheState {
         // before issuing another tick, so no two cache entries become
         // indistinguishable through counter wraparound.
         let mut order: Vec<_> = self.slots.keys().cloned().collect();
-        order.sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
+        order.compact_sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
         for (tick, url) in (1_u64..).zip(order) {
             if let Some(entry) = self.slots.get_mut(&url) {
                 entry.last_used = tick;

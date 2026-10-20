@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
@@ -607,9 +608,9 @@ impl SemanticTree {
             delta.added.extend(updates.added);
             delta.removed.extend(updates.removed);
             delta.updated.extend(updates.updated);
-            delta.added.sort();
-            delta.removed.sort();
-            delta.updated.sort();
+            delta.added.compact_sort();
+            delta.removed.compact_sort();
+            delta.updated.compact_sort();
         }
 
         #[cfg(any(test, feature = "test-support"))]
@@ -798,7 +799,7 @@ impl SemanticTree {
     /// invocation with simulated clicks.
     pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
         let mut paths = self.control_paths_unranked(control_id);
-        paths.sort_by(|left, right| {
+        paths.compact_sort_by(|left, right| {
             left.len()
                 .cmp(&right.len())
                 .then_with(|| left.last().cmp(&right.last()))
@@ -1199,9 +1200,9 @@ impl Sections<'_> {
                 delta.removed.push(id.clone());
             }
         }
-        delta.added.sort();
-        delta.removed.sort();
-        delta.updated.sort();
+        delta.added.compact_sort();
+        delta.removed.compact_sort();
+        delta.updated.compact_sort();
         delta
     }
 }

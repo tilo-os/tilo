@@ -2,6 +2,7 @@
 //! permissions.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -855,7 +856,7 @@ impl Workspace {
             })
             .filter(|app| self.app_is_author_at(app, now))
             .collect();
-        authors.sort();
+        authors.compact_sort();
         authors.dedup();
         collab_types::caps::LaunchGrants {
             authors,

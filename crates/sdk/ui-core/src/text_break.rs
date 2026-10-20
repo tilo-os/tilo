@@ -5,6 +5,7 @@
 //! use this module instead of guessing at ASCII spaces.
 
 use std::sync::LazyLock;
+use tilo_sort::CompactSort as _;
 
 /// Whether a UAX #14 opportunity permits or requires a break.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,7 +351,7 @@ impl OffsetMap {
                     ch: '\u{ad}',
                 }),
         );
-        insertions.sort_unstable_by_key(|insertion| insertion.source);
+        insertions.compact_sort_by_key(|insertion| insertion.source);
         insertions.dedup_by(|a, b| {
             if a.source != b.source {
                 return false;
@@ -369,7 +370,8 @@ impl OffsetMap {
     /// position.
     pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
         self.insertions.extend_from_slice(extra);
-        self.insertions.sort_by_key(|insertion| insertion.source);
+        self.insertions
+            .compact_sort_by_key(|insertion| insertion.source);
     }
 
     /// Whether the shaped byte `shaped` lies inside a virtual `ch`.
@@ -418,7 +420,8 @@ impl OffsetMap {
                 .filter(|source| !taken.contains(source))
                 .map(|source| VirtualInsertion { source, ch: '\n' }),
         );
-        self.insertions.sort_by_key(|insertion| insertion.source);
+        self.insertions
+            .compact_sort_by_key(|insertion| insertion.source);
     }
 
     pub(crate) fn has_discretionary_hyphens(&self) -> bool {

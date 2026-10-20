@@ -1,6 +1,7 @@
 //! Damage certified by the actual retained draw, rather than consumed edit flags.
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -166,7 +167,7 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
         .flat_map(|part| part.damage.iter().copied())
         .collect();
     let bits = |rect: &Rect| [rect.x0, rect.y0, rect.x1, rect.y1].map(f64::to_bits);
-    damage.sort_unstable_by_key(bits);
+    damage.compact_sort_by_key(bits);
     damage.dedup_by_key(|rect| bits(rect));
     Some(damage)
 }

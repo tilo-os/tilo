@@ -13,6 +13,7 @@
 //! device with its person, devices of one person show once, and this page's
 //! person's other devices are this page's person, never someone else.
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use tilo_desktop_model::{Collaborator, DesktopTree, TabId, TileContent};
 use ui::permissions::UserId;
@@ -398,7 +399,7 @@ impl HereState {
                 recent: line(&l.recent, l.generated),
             });
         }
-        people.sort_by_key(|person| person.agent);
+        people.compact_sort_by_key(|person| person.agent);
         let labels = self.labels();
         for person in people.iter_mut().filter(|person| !person.agent) {
             person.label = labels.label(&person.id, &person.label);

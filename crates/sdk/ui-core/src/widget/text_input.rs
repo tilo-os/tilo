@@ -10,6 +10,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
+use tilo_sort::CompactSort as _;
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
@@ -1290,7 +1291,7 @@ impl TextInput {
                 }
             }
         }
-        colored.sort_by_key(|&(start, end, _)| (start, end));
+        colored.compact_sort_by_key(|&(start, end, _)| (start, end));
 
         let mut spans = Vec::new();
         let mut cursor = 0usize;
@@ -3861,7 +3862,7 @@ impl TextInput {
                 found.push((span.range, target));
             }
         }
-        found.sort_by_key(|(range, _)| range.start);
+        found.compact_sort_by_key(|(range, _)| range.start);
         found
     }
 
@@ -3997,7 +3998,7 @@ impl TextInput {
             return;
         }
         let mut ranges = highlight(&self.text, theme);
-        ranges.sort_by_key(|(range, _)| (range.start, range.end));
+        ranges.compact_sort_by_key(|(range, _)| (range.start, range.end));
         let mut spans = Vec::new();
         let mut cursor = 0usize;
         for (range, color) in ranges {

@@ -9,6 +9,7 @@
 //! [`apply_command`].
 
 use serde::{Deserialize, Serialize};
+use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
 use crate::ids::{MintIds, StripId};
@@ -775,7 +776,7 @@ fn apply_shortcut_command(
             }
             workspace
                 .shortcuts
-                .sort_by(|left, right| left.id.cmp(&right.id));
+                .compact_sort_by(|left, right| left.id.cmp(&right.id));
         }
         DesktopCommand::DeleteShortcut { id } => {
             let before = workspace.shortcuts.len();

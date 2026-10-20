@@ -9,6 +9,7 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
@@ -108,7 +109,7 @@ impl ActionCx {
         } else {
             hasher.update(doc.get_actor().to_bytes());
             let mut heads = automerge::transaction::Transactable::base_heads(doc);
-            heads.sort();
+            heads.compact_sort();
             for head in heads {
                 hasher.update(&head.0);
             }
@@ -301,7 +302,7 @@ pub fn minted_ids(envelope: &tilo_actions::ActionEnvelope) -> impl Iterator<Item
     hasher.update(b"tilo-resource/action-seed/v1");
     hasher.update(envelope.actor().to_bytes());
     let mut heads = envelope.base_heads.clone();
-    heads.sort_unstable();
+    heads.compact_sort();
     for head in &heads {
         hasher.update(head);
     }
@@ -328,7 +329,7 @@ pub(crate) fn seed(doc: &Doc, domain: &[u8], payload: &[u8]) -> [u8; 32] {
         // (a host stamping typing as one change) owns. With nothing pending
         // this is exactly the document's heads.
         let mut heads = doc.base_heads();
-        heads.sort();
+        heads.compact_sort();
         for head in heads {
             hasher.update(&head.0);
         }
@@ -807,13 +808,13 @@ fn reverted_change(
         .map(|hash| hash.parse())
         .collect::<Result<Vec<automerge::ChangeHash>, _>>()
         .map_err(|_| refused("a reverted change names invalid heads"))?;
-    deps.sort();
+    deps.compact_sort();
     doc.get_changes(&deps)
         .into_iter()
         .find(|change| {
             change.actor_id().to_hex_string() == actor && {
                 let mut of = change.deps().to_vec();
-                of.sort();
+                of.compact_sort();
                 of == deps
             }
         })

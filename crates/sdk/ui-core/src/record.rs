@@ -23,6 +23,7 @@
 pub mod bootstrap;
 pub mod capability;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use crate::portable_storage::PortableStorage;
 mod portable;
@@ -1104,6 +1105,7 @@ pub mod room {
         AutoCommit, INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc, RecordCheckout, RecordId,
         RecordKind, RecordSet, StringAt, Transactable, object_at, str_at, string_at,
     };
+    use tilo_sort::CompactSort as _;
 
     /// Select the room index. Malformed or conflicted metadata fails closed;
     /// only an entirely absent index is created.
@@ -1202,7 +1204,7 @@ pub mod room {
                 checkout.is_valid().then_some(checkout)
             })
             .collect();
-        out.sort();
+        out.compact_sort();
         out
     }
 
@@ -1229,7 +1231,7 @@ pub mod room {
                 checkout.is_valid().then_some(checkout)
             })
             .collect();
-        out.sort();
+        out.compact_sort();
         out.truncate(super::MAX_DISCOVERED_ROOM_RECORDS);
         out
     }
@@ -1496,7 +1498,7 @@ impl RecordSet {
             .iter()
             .map(|(id, p)| RecordCheckout::new(id.clone(), p.kind.clone()))
             .collect();
-        out.sort();
+        out.compact_sort();
         out
     }
 
@@ -3148,7 +3150,7 @@ impl RecordStore {
     pub fn content_revision(&self) -> String {
         let set = self.0.borrow();
         let mut records = set.open.iter().collect::<Vec<_>>();
-        records.sort_unstable_by_key(|(id, _)| *id);
+        records.compact_sort_by_key(|(id, _)| *id);
         let mut revision = String::new();
         for (id, parked) in records {
             use std::fmt::Write as _;
@@ -3313,7 +3315,7 @@ impl RecordStore {
             .filter(|(chain, _)| chain == base)
             .map(|(_, index)| index)
             .collect();
-        open.sort_unstable();
+        open.compact_sort();
         open
     }
 
@@ -3354,7 +3356,7 @@ impl RecordStore {
                 }
             })
             .collect::<Vec<_>>();
-        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.compact_sort_by(|a, b| a.0.cmp(&b.0));
         found
     }
     /// Explicit immutable identity only: the store namespace, package and

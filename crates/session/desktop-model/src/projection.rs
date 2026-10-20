@@ -14,6 +14,7 @@
 
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
@@ -275,7 +276,7 @@ pub fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
             tasks.push(task);
         }
     }
-    tasks.sort_by(|left, right| {
+    tasks.compact_sort_by(|left, right| {
         right
             .updated_at
             .cmp(&left.updated_at)
@@ -601,7 +602,7 @@ pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::Shortcut
             _ => None,
         })
         .collect();
-    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
     shortcuts
 }
 
@@ -669,7 +670,7 @@ pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClai
             (claim.key() == key).then_some(claim)
         })
         .collect();
-    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
     claims
 }
 
@@ -724,7 +725,7 @@ pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectRece
             serde_json::from_slice(blob).ok()
         })
         .collect::<Vec<_>>();
-    receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+    receipts.compact_sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
     receipts
 }
 
@@ -1067,14 +1068,14 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
                     tile,
                 });
             }
-            tabs.sort_by_key(|t| (t.order, t.id));
+            tabs.compact_sort_by_key(|t| (t.order, t.id));
             groups.push(ReplicatedGroup {
                 id: gid,
                 order: uint(group_entry, "order").unwrap_or(u64::MAX),
                 tabs,
             });
         }
-        groups.sort_by_key(|g| (g.order, g.id));
+        groups.compact_sort_by_key(|g| (g.order, g.id));
         strips.push(ReplicatedStrip {
             id: sid,
             order: uint(strip_entry, "order").unwrap_or(u64::MAX),
@@ -1082,7 +1083,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             groups,
         });
     }
-    strips.sort_by_key(|s| (s.order, s.id));
+    strips.compact_sort_by_key(|s| (s.order, s.id));
     strips
 }
 
@@ -1123,7 +1124,7 @@ pub fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(
             }
         }
     }
-    out.sort();
+    out.compact_sort();
     out
 }
 
@@ -1166,7 +1167,7 @@ pub fn merge_strip(
         out.push((rep.order, gid, hydrate_group(rep)));
         *changed = true;
     }
-    out.sort_by_key(|(order, id, _)| (*order, *id));
+    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
     if !prior_group_order
         .iter()
         .copied()
@@ -1222,7 +1223,7 @@ pub fn merge_group(
         out.push((rep.order, tid, hydrate_tab(rep)));
         *changed = true;
     }
-    out.sort_by_key(|(order, id, _)| (*order, *id));
+    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
     if !prior_tab_order
         .iter()
         .copied()
@@ -1425,7 +1426,7 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
         let kind = doc.str_at(&entry, "kind").unwrap_or_default();
         out.push((key, kind));
     }
-    out.sort();
+    out.compact_sort();
     out
 }
 
@@ -1513,7 +1514,7 @@ pub fn merge_room_contents(
         published.push((order, sid, hydrate_strip(rep)));
         changed = true;
     }
-    published.sort_by_key(|(order, id, _)| (*order, *id));
+    published.compact_sort_by_key(|(order, id, _)| (*order, *id));
     let mut strips: Vec<Strip> = published.into_iter().map(|(_, _, strip)| strip).collect();
     // In ascending index order, so each lands where it stood (or at the
     // end, when fewer strips precede it now) without moving one before it.

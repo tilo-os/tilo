@@ -17,6 +17,7 @@
 //! layout variants use the symbols printed on Apple keycaps (⌘ ⌥ ⌃ ⇧).
 
 use std::sync::atomic::{AtomicU8, Ordering};
+use tilo_sort::CompactSort as _;
 
 use crate::input::KeyboardModifier;
 use crate::interaction::KeyboardFamily;
@@ -275,7 +276,7 @@ impl Keycaps {
             .into_iter()
             .filter_map(canonical_modifier)
             .collect();
-        held.sort_by_key(|modifier| display_rank(*modifier));
+        held.compact_sort_by_key(|modifier| display_rank(*modifier));
         held.dedup();
         held.into_iter()
             .map(|modifier| self.modifier(modifier).to_owned())

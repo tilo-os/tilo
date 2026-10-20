@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
@@ -457,7 +458,7 @@ pub static SET_OPS: ModelOps = ModelOps {
         // left it, and so does this set: storing writes nothing there.
         let mut keys = differing;
         keys.extend(touched.keys());
-        keys.sort_unstable();
+        keys.compact_sort();
         keys.dedup();
         // What `store` writes: the stale keys deleted, then the missing
         // ones put, both in key order.

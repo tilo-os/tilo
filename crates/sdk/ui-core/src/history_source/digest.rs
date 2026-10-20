@@ -8,6 +8,7 @@
 
 use crate::time::SystemTime;
 use std::collections::HashSet;
+use tilo_sort::CompactSort as _;
 
 use crate::history_source::detail::{contains_opaque_id, human_label};
 use crate::history_source::seen::HistorySeenFrontier;
@@ -198,7 +199,7 @@ impl ActivityDigest {
                 }
             })
             .collect();
-        briefs.sort_by_key(|brief| std::cmp::Reverse(brief.last_at));
+        briefs.compact_sort_by_key(|brief| std::cmp::Reverse(brief.last_at));
         briefs.truncate(limit);
         Self {
             briefs,

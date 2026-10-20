@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, WindowWidth, Workspace,
@@ -1799,7 +1800,7 @@ fn build_row_lazily(
             built
         })
         .collect();
-    deferred.sort_by_key(|&(inactive, distance, _)| (inactive, distance));
+    deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
     let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
     (GroupRow::new(groups), order)
 }

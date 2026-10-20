@@ -13,6 +13,9 @@ homepage.workspace = true
 # present the same model. Hosts supply tab contents through `TileSource`.
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }

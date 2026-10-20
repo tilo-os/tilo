@@ -18,6 +18,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Color;
@@ -2070,7 +2071,7 @@ impl DataTableCore {
             let rows = &self.rows;
             let cmp = &s.cmp;
             let ascending = s.ascending;
-            self.view.sort_by(|&a, &b| {
+            self.view.compact_sort_by(|&a, &b| {
                 let (Some(ra), Some(rb)) = (rows.get(a), rows.get(b)) else {
                     return Ordering::Equal;
                 };
@@ -4598,7 +4599,7 @@ fn hidden_for_room<Row: ?Sized>(
     let mut order: Vec<usize> = (0..columns.len())
         .filter(|&i| columns.get(i).is_some_and(|c| c.priority > 0))
         .collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(columns.get(i).map_or(0, |c| c.priority)));
+    order.compact_sort_by_key(|&i| std::cmp::Reverse(columns.get(i).map_or(0, |c| c.priority)));
     let total = |hidden: &[bool]| -> f64 {
         floors
             .iter()

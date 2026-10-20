@@ -11,6 +11,7 @@ mod files_session;
 pub mod preview;
 pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
+use tilo_sort::CompactSort as _;
 pub(crate) mod owner;
 pub mod registration;
 pub use owner::HistoryOwner;
@@ -333,7 +334,7 @@ impl HistoryController {
             .iter()
             .map(|(crate::permissions::UserId(id), name)| (id.clone(), name.clone()))
             .collect();
-        roster.sort();
+        roster.compact_sort();
         if roster == self.roster {
             return false;
         }
@@ -582,7 +583,7 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
 }
 
 pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 

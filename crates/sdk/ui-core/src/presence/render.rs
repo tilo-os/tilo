@@ -6,6 +6,7 @@ use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use tilo_sort::CompactSort as _;
 use vello::{
     Scene,
     kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke},
@@ -579,7 +580,7 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
     // Carries each request's original index alongside itself, so the sort
     // below never needs to index back into `pills`.
     let mut order: Vec<(usize, PillRequest)> = pills.iter().copied().enumerate().collect();
-    order.sort_by(|&(a, pa), &(b, pb)| {
+    order.compact_sort_by(|&(a, pa), &(b, pb)| {
         pa.at
             .1
             .total_cmp(&pb.at.1)
@@ -2741,7 +2742,7 @@ mod tests {
                 // change cannot reorder them.
                 let order = |c: &vello::peniko::color::Rgba8| {
                     let mut v = [(c.r, 0u8), (c.g, 1), (c.b, 2)];
-                    v.sort_by_key(|(x, _)| *x);
+                    v.compact_sort_by_key(|(x, _)| *x);
                     [v[0].1, v[1].1, v[2].1]
                 };
                 assert_eq!(

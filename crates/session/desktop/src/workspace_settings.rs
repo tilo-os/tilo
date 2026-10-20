@@ -16,6 +16,7 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -2173,7 +2174,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
             apps.push(app.clone());
         }
     }
-    apps.sort();
+    apps.compact_sort();
     apps.dedup();
     out.extend(apps.into_iter().map(|id| GrantSubject {
         kind: SubjectKind::App,
@@ -2522,7 +2523,7 @@ pub fn agents_add_rect(pane_rect: Rect) -> Rect {
 /// Stable, policy-backed rows for the Agents pane.
 pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
     let mut agents = ws.agent_members_at(tilo_clock::unix_now());
-    agents.sort_by(|a, b| a.0.cmp(&b.0));
+    agents.compact_sort_by(|a, b| a.0.cmp(&b.0));
     let mut rows = Vec::new();
     let mut cursor_y = pane_rect.y0
         + PANE_PAD_TOP
@@ -2819,7 +2820,7 @@ fn draw_bot_row(
 fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
     let mut rows = ws.roster();
     let owner = ws.owner().cloned();
-    rows.sort_by(|a, b| {
+    rows.compact_sort_by(|a, b| {
         let a_owner = Some(&a.0) == owner.as_ref();
         let b_owner = Some(&b.0) == owner.as_ref();
         b_owner.cmp(&a_owner).then_with(|| a.0.cmp(&b.0))
@@ -3587,7 +3588,7 @@ pub fn default_app_rows(
         .iter()
         .flat_map(|a| a.resources.iter().cloned())
         .collect();
-    resources.sort();
+    resources.compact_sort();
     resources.dedup();
     let x0 = pane.x0 + PANE_PAD_X;
     let x1 = pane.x1 - PANE_PAD_X;
@@ -4073,7 +4074,7 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
             })
             .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
     );
-    out.sort_by(|a, b| {
+    out.compact_sort_by(|a, b| {
         a.0.kind
             .cmp(&b.0.kind)
             .then_with(|| a.0.id.cmp(&b.0.id))
@@ -5816,7 +5817,7 @@ mod permissions_pane_tests {
             assert!(kinds.contains(&SubjectKind::Member));
             assert!(kinds.contains(&SubjectKind::Role));
             let mut sorted = kinds.clone();
-            sorted.sort();
+            sorted.compact_sort();
             assert_eq!(kinds, sorted, "rows must be grouped by subject kind");
         }
 

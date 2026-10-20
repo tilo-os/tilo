@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -125,7 +126,7 @@ impl StandaloneHistoryPane {
             };
             positions.push(position);
         }
-        positions.sort_unstable();
+        positions.compact_sort();
         if positions
             .windows(2)
             .any(|pair| !matches!(pair, [left, right] if *right == left.saturating_add(1)))

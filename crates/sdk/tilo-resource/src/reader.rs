@@ -5,6 +5,7 @@ use std::any::Any;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use automerge::ChangeHash;
 use automerge::transaction::Transactable;
@@ -61,7 +62,7 @@ impl Demand {
             .iter()
             .flat_map(|range| range.start.min(len)..range.end.min(len))
             .collect();
-        positions.sort_unstable();
+        positions.compact_sort();
         positions.dedup();
         positions.into_iter()
     }

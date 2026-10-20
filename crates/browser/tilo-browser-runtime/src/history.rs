@@ -17,6 +17,7 @@ use std::future::Future;
 use std::hash::{Hash as _, Hasher as _};
 use std::pin::Pin;
 use std::rc::Rc;
+use tilo_sort::CompactSort as _;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
@@ -254,7 +255,7 @@ fn bound(
         .filter_map(|(tab, checkout)| Some((tab, apps.get(&tab)?.clone(), checkout)))
         .filter(|(_, app, checkout)| seen.insert((app.clone(), checkout.id.clone())))
         .collect();
-    bound.sort_by(|a, b| (&a.1, a.2.id.as_str()).cmp(&(&b.1, b.2.id.as_str())));
+    bound.compact_sort_by(|a, b| (&a.1, a.2.id.as_str()).cmp(&(&b.1, b.2.id.as_str())));
     bound
 }
 
@@ -374,7 +375,7 @@ pub(crate) fn own_recent_actions(
             });
         }
     }
-    actions.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then_with(|| a.id.cmp(&b.id)));
+    actions.compact_sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then_with(|| a.id.cmp(&b.id)));
     actions.dedup_by(|a, b| a.id == b.id);
     // Typing commits a step every second or so: a run of the same action on
     // the same resource is one thing the person did, named by its newest step.
@@ -473,7 +474,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
             .unwrap_or_else(|| self.log.borrow().base_heads())
             .hash(&mut hasher);
         let mut tree_records = self.shared.bound_records();
-        tree_records.sort_by_key(|(tab, _)| *tab);
+        tree_records.compact_sort_by_key(|(tab, _)| *tab);
         for (_, checkout) in tree_records {
             checkout.id.as_str().hash(&mut hasher);
             let stores = self.shared.stores.borrow();

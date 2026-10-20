@@ -12,6 +12,7 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use automerge::{ObjId, ObjType, Value};
 
@@ -3340,7 +3341,7 @@ pub static MAP_OPS: ModelOps = ModelOps {
         // map holds it as a store left it: storing it writes nothing.
         let mut keys = differing;
         keys.extend(touched.keys());
-        keys.sort_unstable();
+        keys.compact_sort();
         keys.dedup();
         // What `store` writes: the stale keys deleted, then each entry
         // written, both in key order.

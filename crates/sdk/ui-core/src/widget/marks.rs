@@ -16,6 +16,7 @@
 //! enough for round-trip stability on documents we produce.
 
 use std::ops::Range;
+use tilo_sort::CompactSort as _;
 
 use uuid::Uuid;
 
@@ -125,7 +126,7 @@ pub fn range_fully_covered(spans: &[MarkSpan], range: &Range<usize>, mark: &Mark
         .filter(|s| s.mark.same_kind(mark))
         .map(|s| &s.range)
         .collect();
-    sorted.sort_by_key(|r| r.start);
+    sorted.compact_sort_by_key(|r| r.start);
     for r in sorted {
         if r.start > covered {
             return false;
@@ -180,7 +181,7 @@ pub fn remove_mark_from_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, ma
             out.push(MarkSpan::new(range.end..s.range.end, s.mark.clone()));
         }
     }
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -205,7 +206,7 @@ pub fn add_mark_to_range(spans: &mut Vec<MarkSpan>, range: Range<usize>, mark: M
     // A merged Link span's payload is not preserved — the new payload wins.
     // Simpler, and most callers pass the same Link payload anyway.
     out.push(MarkSpan::new(start..end, mark));
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -316,7 +317,7 @@ pub fn shift_after_edit(
             out.push(MarkSpan::new(start..end, s.mark.clone()));
         }
     }
-    out.sort_by_key(|s| s.range.start);
+    out.compact_sort_by_key(|s| s.range.start);
     *spans = out;
 }
 
@@ -375,7 +376,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
             boundaries.push(s.range.end);
         }
     }
-    boundaries.sort_unstable();
+    boundaries.compact_sort();
     boundaries.dedup();
     let mut out = Vec::with_capacity(boundaries.len());
     for w in boundaries.windows(2) {

@@ -6,6 +6,7 @@
 )]
 
 use crate::widget::ModelPath;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -130,7 +131,7 @@ impl Treemap {
             .filter(|(_, item)| item.value.is_finite() && item.value > 0.0)
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        indices.sort_by(|left, right| {
+        indices.compact_sort_by(|left, right| {
             let left_item = self.items.get(*left);
             let right_item = self.items.get(*right);
             match (left_item, right_item) {

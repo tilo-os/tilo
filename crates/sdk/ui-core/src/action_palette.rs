@@ -29,6 +29,7 @@
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
 use crate::widget::ModelPath;
+use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -544,7 +545,7 @@ impl ActionPalette {
                 RowResolution::Navigate(..) | RowResolution::Bound(_) => None,
             })
             .collect::<Vec<_>>();
-        ids.sort_unstable();
+        ids.compact_sort();
         ids.dedup();
         ids
     }

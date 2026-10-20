@@ -29,6 +29,7 @@
 
 use crate::time::{Duration, UNIX_EPOCH};
 use tilo_automerge::ReadTyped as _;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
@@ -86,7 +87,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         });
     }
     // Stable order so two peers with the same document build the same forest.
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out.compact_sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 

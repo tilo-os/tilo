@@ -18,6 +18,7 @@
 
 use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -721,7 +722,7 @@ impl CodeEditor {
         );
         // Least severe first, so an error's squiggle and mark win.
         let mut order: Vec<&Diagnostic> = self.diagnostics.iter().collect();
-        order.sort_by_key(|d| d.severity);
+        order.compact_sort_by_key(|d| d.severity);
         for d in order {
             let color = d.color(theme);
             let end = d

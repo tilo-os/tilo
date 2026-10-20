@@ -3502,7 +3502,7 @@ impl RecordActionState {
             .iter()
             .map(|((author, instance), status)| (author.0.clone(), *instance, status.clone()))
             .collect::<Vec<_>>();
-        statuses.sort_unstable_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        statuses.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         statuses
     }
 

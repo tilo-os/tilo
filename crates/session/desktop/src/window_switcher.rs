@@ -16,6 +16,7 @@
 //! through [`WindowSource`] and [`WindowThumbnails`].
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 use ui::num::f32_of_f64;
 
 use vello::Scene;
@@ -414,7 +415,7 @@ impl FocusHistory {
                 (tier, along_strip, window)
             })
             .collect();
-        keyed.sort_by_key(|(tier, along, _)| (*tier, *along));
+        keyed.compact_sort_by_key(|(tier, along, _)| (*tier, *along));
         keyed.into_iter().map(|(_, _, window)| window).collect()
     }
 }

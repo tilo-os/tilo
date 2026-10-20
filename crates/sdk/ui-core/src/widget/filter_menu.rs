@@ -24,6 +24,7 @@
 //! last" convention as [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -406,7 +407,7 @@ impl<T: Clone> FilterMenu<T> {
             .filter_map(|(i, entry)| entry.rank(&needle).map(|rank| (rank, i)))
             .collect();
         // Stable: within a rank, the menu's own order.
-        ranked.sort_by_key(|&(rank, _)| rank);
+        ranked.compact_sort_by_key(|&(rank, _)| rank);
         self.visible.clear();
         self.visible.extend(ranked.into_iter().map(|(_, i)| i));
         if self.cursor >= self.visible.len() {

@@ -13,6 +13,7 @@
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
+use tilo_sort::CompactSort as _;
 
 use crate::color_compat::ColorCompat;
 use crate::richtext::RichSpan;
@@ -549,7 +550,7 @@ impl RichTextLine {
     }
 
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
-        marks.sort_by_key(|s| s.range.start);
+        marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;
         self.marks = marks;
     }
@@ -617,7 +618,7 @@ impl RichTextLine {
 
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
-        self.marks.sort_by_key(|s| s.range.start);
+        self.marks.compact_sort_by_key(|s| s.range.start);
         self.dirty.styled_layout = true;
     }
 
@@ -736,7 +737,7 @@ impl RichTextLine {
                     }
                 }
             }
-            boundaries.sort_unstable();
+            boundaries.compact_sort();
             boundaries.dedup();
             for endpoints in boundaries.windows(2) {
                 let &[start, end] = endpoints else { continue };
@@ -861,7 +862,7 @@ impl RichTextLine {
                     }
                 }
             }
-            boundaries.sort_unstable();
+            boundaries.compact_sort();
             boundaries.dedup();
             let spans = boundaries
                 .windows(2)

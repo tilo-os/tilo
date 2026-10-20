@@ -8,6 +8,7 @@
 use crate::document::MarkSpan;
 use crate::snapshot::{AttrVal, BlockView, ChangeKind};
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_sort::CompactSort as _;
 
 /// Canonical block semantics shared by format exporters.
 ///
@@ -392,7 +393,7 @@ impl<'a> InlinePlan<'a> {
                     .filter(|mark| offset >= mark.start && offset < mark.end)
                     .collect();
                 // Stable sorting preserves canonical order among same-name marks.
-                active.sort_by(|a, b| a.name.cmp(&b.name));
+                active.compact_sort_by(|a, b| a.name.cmp(&b.name));
                 let link = active
                     .iter()
                     .find(|mark| mark.name == crate::schema::MARK_LINK)
@@ -462,7 +463,7 @@ fn range_boundary<'a>(marks: &'a [MarkSpan], name: &str, offset: usize) -> Range
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort_unstable();
+        values.compact_sort();
         values
     };
     RangeBoundary {
@@ -485,7 +486,7 @@ fn change_boundary(marks: &[MarkSpan], offset: usize) -> RangeBoundary<'_> {
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort_unstable();
+        values.compact_sort();
         values
     };
     RangeBoundary {

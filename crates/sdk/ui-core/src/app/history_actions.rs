@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
@@ -381,7 +382,7 @@ fn parse_entry(value: &str) -> Result<HistoryEntryId, DoorError> {
 
 fn hex_heads(heads: &[ChangeHash]) -> Vec<String> {
     let mut heads: Vec<String> = heads.iter().map(ToString::to_string).collect();
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 

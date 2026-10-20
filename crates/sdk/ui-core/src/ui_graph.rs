@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_sort::CompactSort as _;
 use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs. When set, graph apps load and
@@ -180,15 +181,15 @@ impl UiValues {
 impl fmt::Debug for UiValues {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut paths: Vec<String> = self.texts.borrow().keys().cloned().collect();
-        paths.sort_unstable();
+        paths.compact_sort();
         let mut routes: Vec<String> = self.routes.borrow().keys().cloned().collect();
-        routes.sort_unstable();
+        routes.compact_sort();
         let mut clicks: Vec<String> = self.clicks.borrow().keys().cloned().collect();
-        clicks.sort_unstable();
+        clicks.compact_sort();
         let mut booleans: Vec<String> = self.booleans.borrow().keys().cloned().collect();
-        booleans.sort_unstable();
+        booleans.compact_sort();
         let mut bool_routes: Vec<String> = self.bool_routes.borrow().keys().cloned().collect();
-        bool_routes.sort_unstable();
+        bool_routes.compact_sort();
         formatter
             .debug_struct("UiValues")
             .field("paths", &paths)
@@ -215,7 +216,7 @@ pub struct UiBuildContext {
 impl fmt::Debug for UiBuildContext {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut components: Vec<_> = self.components.keys().collect();
-        components.sort_unstable();
+        components.compact_sort();
         formatter
             .debug_struct("UiBuildContext")
             .field("router", &self.router)

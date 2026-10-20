@@ -1,6 +1,7 @@
 use super::morning::{
     MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
+use tilo_sort::CompactSort as _;
 mod morning_sources;
 mod task_confirmation_view;
 mod task_review_view;
@@ -2085,7 +2086,7 @@ impl RoomActivityPane {
                 Some((range, start.min(end), start.max(end)))
             })
             .collect::<Vec<_>>();
-        ranges.sort_by_key(|(_, start, _)| *start);
+        ranges.compact_sort_by_key(|(_, start, _)| *start);
         ranges
     }
 
@@ -2608,7 +2609,8 @@ impl RoomActivityPane {
                     .is_none_or(ui::tilo_actions::ActionContext::is_activity)
             })
             .collect();
-        self.derived.sort_by_key(|(entry, _)| entry.timestamp);
+        self.derived
+            .compact_sort_by_key(|(entry, _)| entry.timestamp);
         // Names come out of the same document as the changes, so a peer's name
         // arrives with their edits.
         self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
@@ -2649,7 +2651,7 @@ impl RoomActivityPane {
             .filter(|task| self.task_needs_person(task))
             .map(|task| task.id.clone())
             .collect();
-        self.tasks.sort_by(|left, right| {
+        self.tasks.compact_sort_by(|left, right| {
             (!needs_person.contains(&left.id))
                 .cmp(&!needs_person.contains(&right.id))
                 .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
@@ -3048,7 +3050,7 @@ impl RoomActivityPane {
                 run,
             }));
         }
-        indexed.sort_by(|a, b| {
+        indexed.compact_sort_by(|a, b| {
             b.run
                 .at
                 .cmp(&a.run.at)
@@ -3446,7 +3448,7 @@ impl RoomActivityPane {
                 });
             }
         }
-        pointers.sort_by(|a, b| a.name.cmp(&b.name));
+        pointers.compact_sort_by(|a, b| a.name.cmp(&b.name));
         pointers.dedup_by(|a, b| a.name == b.name && a.desktop_space == b.desktop_space);
         if !pointers.is_empty() {
             frame.pointers = pointers;
@@ -5234,7 +5236,7 @@ impl RoomActivityPane {
                 .iter()
                 .flat_map(|brief| brief.authors.iter().map(|author| author.name.clone()))
                 .collect::<Vec<_>>();
-            names.sort();
+            names.compact_sort();
             names.dedup();
             let workspace = ("workspace", workspace.as_str().into());
             let mut subtitle = match names.as_slice() {

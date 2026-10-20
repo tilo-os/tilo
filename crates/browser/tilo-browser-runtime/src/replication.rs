@@ -31,6 +31,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, PoisonError};
+use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
@@ -566,7 +567,7 @@ impl Room {
             self.withdraw(&route, &changes, &reason, &mut woken);
         }
         // Records first: a desktop naming a new tab's record finds it.
-        batches.sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
+        batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
         for (route, mutations) in batches {
             if let Err(error) =
                 self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)

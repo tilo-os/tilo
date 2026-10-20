@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -2311,7 +2312,7 @@ impl CommandPalette {
             .split_whitespace()
             .filter_map(|word| tilo_search::locate(word, text))
             .collect();
-        ranges.sort_by_key(|range| range.start);
+        ranges.compact_sort_by_key(|range| range.start);
         let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
         for range in ranges {
             match merged.last_mut() {

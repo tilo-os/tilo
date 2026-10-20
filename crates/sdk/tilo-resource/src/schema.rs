@@ -15,6 +15,7 @@
 //! operation shows the whole shape and binding enforces it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionParam, ParamType};
@@ -587,7 +588,7 @@ fn sort_required(schema: &mut Value) {
                 if key == "required"
                     && let Value::Array(names) = value
                 {
-                    names.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                    names.compact_sort_by(|a, b| a.as_str().cmp(&b.as_str()));
                 } else {
                     sort_required(value);
                 }

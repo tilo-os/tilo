@@ -41,6 +41,7 @@
 pub mod private_draft;
 pub mod task_control;
 pub use task_control::{TaskDirection, TaskRunControl, TaskRunStatus, native_task_revision};
+use tilo_sort::CompactSort as _;
 
 #[cfg(feature = "client")]
 use std::rc::Rc;
@@ -3881,7 +3882,7 @@ impl LocalDocumentActionReport {
             match value {
                 serde_json::Value::Object(fields) => {
                     let mut members: Vec<_> = fields.iter().collect();
-                    members.sort_unstable_by(|left, right| left.0.cmp(right.0));
+                    members.compact_sort_by(|left, right| left.0.cmp(right.0));
                     out.push(b'{');
                     for (position, (name, member)) in members.into_iter().enumerate() {
                         if position > 0 {
@@ -4264,7 +4265,7 @@ mod local_document_action_transport_tests {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        fields.sort_unstable();
+        fields.compact_sort();
         assert_eq!(
             fields,
             vec![

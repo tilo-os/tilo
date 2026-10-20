@@ -12,6 +12,7 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use tilo_sort::CompactSort as _;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
@@ -602,7 +603,7 @@ impl SparseTreeIndex {
             }
         }
         for children in grouped.values_mut() {
-            children.sort_unstable_by_key(|(position, _)| *position);
+            children.compact_sort_by_key(|(position, _)| *position);
             children.dedup_by_key(|(position, _)| *position);
         }
         let root = if root_hidden && !expanded.contains(&root_id) {

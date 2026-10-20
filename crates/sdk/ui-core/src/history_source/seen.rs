@@ -7,6 +7,7 @@
 //! any later id is unread regardless of its clock.
 
 use std::collections::HashSet;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 use crate::widget::history_group::{from_hex16, hex16};
@@ -29,7 +30,7 @@ impl HistorySeenFrontier {
     /// Stable sorted form for private settings persistence.
     pub fn to_hex(&self) -> Vec<String> {
         let mut encoded: Vec<String> = self.ids.iter().map(hex16).collect();
-        encoded.sort();
+        encoded.compact_sort();
         encoded
     }
 
