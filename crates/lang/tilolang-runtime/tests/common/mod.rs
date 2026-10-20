@@ -80,8 +80,66 @@ impl Wat {
     }
 }
 
-pub fn meta(v: Json) -> Meta {
+/// Metadata from the JSON the tests write by hand, with the keys the compiler always emits
+/// filled in.
+pub fn meta(mut v: Json) -> Meta {
+    fill(&mut v);
     serde_json::from_value(v).unwrap()
+}
+
+fn fill(v: &mut Json) {
+    let obj = v.as_object_mut().unwrap();
+    for (key, default) in [("title", json!("")), ("module_hash", json!(""))] {
+        obj.entry(key).or_insert(default);
+    }
+    for list in ["types", "actions", "views", "flows", "fns"] {
+        obj.entry(list).or_insert(json!([]));
+    }
+    for t in obj["types"].as_array_mut().unwrap() {
+        t["doc"] = t.get("doc").cloned().unwrap_or_else(|| json!(""));
+        for f in t["fields"].as_array_mut().unwrap() {
+            let ty = f["type"].as_str().unwrap().to_owned();
+            let merge = if ty == "Text" {
+                "text"
+            } else if ["Collection<", "Set<", "Map<"]
+                .iter()
+                .any(|p| ty.starts_with(p))
+            {
+                "structural"
+            } else {
+                "register"
+            };
+            f["merge"] = f.get("merge").cloned().unwrap_or_else(|| json!(merge));
+            f["doc"] = f.get("doc").cloned().unwrap_or_else(|| json!(""));
+        }
+    }
+    for (list, class) in [
+        ("actions", None),
+        ("views", None),
+        ("flows", Some("undoable")),
+    ] {
+        for item in obj[list].as_array_mut().unwrap() {
+            for (k, d) in [
+                ("doc", json!("")),
+                ("params", json!([])),
+                ("reaches", json!([])),
+            ] {
+                item[k] = item.get(k).cloned().unwrap_or(d);
+            }
+            if list != "views" {
+                item["result"] = item.get("result").cloned().unwrap_or(Json::Null);
+            }
+            if list == "actions" {
+                item["proposal"] = item.get("proposal").cloned().unwrap_or(Json::Null);
+            }
+            if list == "views" {
+                item["anchors"] = item.get("anchors").cloned().unwrap_or_else(|| json!([]));
+            }
+            if let Some(c) = class {
+                item["class"] = item.get("class").cloned().unwrap_or_else(|| json!(c));
+            }
+        }
+    }
 }
 
 pub fn me() -> Principal {
@@ -319,11 +377,11 @@ pub fn list_wasm() -> Vec<u8> {
 }
 
 pub fn list_meta() -> Meta {
-    let l = json!({"name": "l", "type": "List"});
+    let l = json!({"name": "l", "type": "Bag"});
     meta(json!({
         "app": "so.tilo.list",
         "types": [
-            {"id": "tl", "name": "List",
+            {"id": "tl", "name": "Bag",
              "fields": [{"id": "fi", "name": "items", "type": "Collection<Item>"}]},
             {"id": "ti", "name": "Item",
              "fields": [{"id": "fl", "name": "label", "type": "Text"}]},
@@ -336,7 +394,7 @@ pub fn list_meta() -> Meta {
             {"id": "drop", "name": "drop", "class": "undoable",
              "params": [l, {"name": "it", "type": "Item"}]},
         ],
-        "views": [{"id": "vl", "name": "list", "params": [l]}],
+        "views": [{"id": "vl", "name": "bag", "params": [l]}],
     }))
 }
 
@@ -395,7 +453,7 @@ pub fn stranger_wasm() -> Vec<u8> {
 }
 
 pub fn stranger_meta() -> Meta {
-    let c = json!([{"name": "c", "type": "Counter"}]);
+    let c = json!([{"name": "c", "type": "so.tilo.counter.Counter"}]);
     meta(json!({
         "app": "x.stranger",
         "views": [{"id": "vs", "name": "strange", "params": c}],
@@ -444,4 +502,101 @@ pub fn mail_meta() -> Meta {
             {"id": "sneak", "name": "sneak", "class": "undoable", "params": m},
         ],
     }))
+}
+
+/// A package compiled from tilolang source and loaded into a runtime.
+pub struct App {
+    pub compiled: tilolang::Compiled,
+}
+
+impl App {
+    pub fn compile(src: &str, imports: &[tilolang::PackageMeta]) -> Self {
+        let compiled = tilolang::compile_package(src, &tilolang::IdsLock::new(), imports)
+            .unwrap_or_else(|d| panic!("{d:#?}"));
+        Self { compiled }
+    }
+
+    pub fn load(&self, rt: &Runtime) -> PackageId {
+        rt.load_compiled(&self.compiled).unwrap()
+    }
+
+    pub fn meta(&self) -> &tilolang::PackageMeta {
+        &self.compiled.meta
+    }
+
+    pub fn action(&self, name: &str) -> String {
+        let a = self.meta().actions.iter().find(|a| a.name == name);
+        a.unwrap_or_else(|| panic!("no action {name}")).id.clone()
+    }
+
+    pub fn view(&self, name: &str) -> String {
+        let v = self.meta().views.iter().find(|v| v.name == name);
+        v.unwrap_or_else(|| panic!("no view {name}")).id.clone()
+    }
+
+    pub fn flow(&self, name: &str) -> String {
+        let f = self.meta().flows.iter().find(|f| f.name == name);
+        f.unwrap_or_else(|| panic!("no flow {name}")).id.clone()
+    }
+
+    pub fn anchor(&self, view: &str, name: &str) -> String {
+        let v = self.meta().views.iter().find(|v| v.name == view).unwrap();
+        let a = v.anchors.iter().find(|a| a.name == name);
+        a.unwrap_or_else(|| panic!("no anchor {name}")).id.clone()
+    }
+}
+
+/// An indented dump of a tree, for assertions on its shape.
+pub fn dump(node: &tilolang_runtime::UiNode) -> String {
+    fn go(n: &tilolang_runtime::UiNode, depth: usize, out: &mut String) {
+        use std::fmt::Write as _;
+        let props: Vec<String> = n.props.iter().map(|(k, v)| format!("{k}={v:?}")).collect();
+        let events: Vec<&String> = n.events.keys().collect();
+        let pad = "  ".repeat(depth);
+        writeln!(
+            out,
+            "{pad}{} [{}] {} {events:?}",
+            n.kind,
+            n.key,
+            props.join(" ")
+        )
+        .unwrap();
+        for c in &n.children {
+            go(c, depth.saturating_add(1), out);
+        }
+    }
+    let mut out = String::new();
+    go(node, 0, &mut out);
+    out
+}
+
+/// The nodes of a tree of the given kind, in document order.
+pub fn of_kind<'a>(
+    node: &'a tilolang_runtime::UiNode,
+    kind: &str,
+) -> Vec<&'a tilolang_runtime::UiNode> {
+    let mut out = Vec::new();
+    if node.kind == kind {
+        out.push(node);
+    }
+    for c in &node.children {
+        out.extend(of_kind(c, kind));
+    }
+    out
+}
+
+/// The resource an action returned.
+pub fn returned_ref(out: tilolang_runtime::InvokeOutcome) -> tilolang_runtime::ResourceRef {
+    match out {
+        tilolang_runtime::InvokeOutcome::Done(Value::Ref(r)) => r.target,
+        other => panic!("expected a returned resource, got {other:?}"),
+    }
+}
+
+/// The text of a node's property, which must be text.
+pub fn text_prop(node: &tilolang_runtime::UiNode, name: &str) -> String {
+    match node.props.get(name) {
+        Some(Value::Text(t)) => t.clone(),
+        other => panic!("property {name} of {} is {other:?}", node.kind),
+    }
 }

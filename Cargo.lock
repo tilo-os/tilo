@@ -20139,6 +20139,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilolang",
  "wasmi",
  "wat",
  "workspace-hack",

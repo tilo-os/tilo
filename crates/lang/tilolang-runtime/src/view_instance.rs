@@ -7,11 +7,12 @@ use std::rc::Rc;
 use crate::authority::{ActionInfo, Decision};
 use crate::core::Core;
 use crate::error::RuntimeError;
-use crate::exec::{ExecCtx, InvokeOutcome, Rendered};
+use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::handles::Retained;
 use crate::host_res::to_scalar;
-use crate::ids::{DocId, Principal, ViewId};
+use crate::ids::{DocId, Principal};
 use crate::meta::{EffectClass, FieldKind};
+use crate::render::{Rendered, ViewTarget};
 use crate::space::Space;
 use crate::store::{ChangeNote, Mutation, SubId};
 use crate::value::{Value, to_json};
@@ -38,7 +39,7 @@ pub enum EditOutcome {
 pub struct ViewInstance {
     core: Rc<Core>,
     viewer: Principal,
-    view: ViewId,
+    target: ViewTarget,
     args: Vec<Value>,
     space: Space,
     boundaries: HashMap<String, Space>,
@@ -53,15 +54,15 @@ impl ViewInstance {
     pub(crate) fn open(
         core: Rc<Core>,
         viewer: Principal,
-        view: &str,
+        target: ViewTarget,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
         let space = Space::default();
-        let rendered = core.render(view, &args, space)?;
+        let rendered = core.render(&target, &args, space)?;
         let mut me = Self {
             core,
             viewer,
-            view: view.to_owned(),
+            target,
             args,
             space,
             boundaries: HashMap::new(),
@@ -157,7 +158,7 @@ impl ViewInstance {
             return Ok(Vec::new());
         }
         self.watch.borrow_mut().dirty = false;
-        let rendered = self.core.render(&self.view, &self.args, self.space)?;
+        let rendered = self.core.render(&self.target, &self.args, self.space)?;
         let core = Rc::clone(&self.core);
         let same = move |a: Retained, b: Retained| {
             let frames = core.frames.borrow();
@@ -217,11 +218,8 @@ impl ViewInstance {
             .binding
             .clone()
             .ok_or_else(|| RuntimeError::NotFound(format!("a binding on `{key}`")))?;
+        let view_module = binding.author.clone();
         let reg = self.core.registry.borrow();
-        let view_module = reg
-            .view_package(&self.view)
-            .map(|p| p.hash.clone())
-            .ok_or_else(|| RuntimeError::NotFound(format!("view {}", self.view)))?;
         let (pkg, info) = reg
             .type_info(&binding.target.ty)
             .ok_or_else(|| RuntimeError::NotFound(format!("type {}", binding.target.ty)))?;

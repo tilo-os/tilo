@@ -44,7 +44,8 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Option(_) => Value::none(),
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
-        Ty::Named(_) | Ty::Action | Ty::View => {
+        Ty::Unit => Value::Unit,
+        Ty::Record(_) | Ty::Action | Ty::View | Ty::Length(_) | Ty::Enum(_) | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
     })
@@ -88,11 +89,25 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
     }
 }
 
+/// A scalar the compiler boxed with `some_i` / `some_f` to pass it as a handle, unboxed. Any
+/// other value is returned as it is.
+pub(crate) fn unboxed(v: Value) -> Value {
+    match v {
+        Value::Opt(Some(inner))
+            if matches!(*inner, Value::Int(_) | Value::Float(_) | Value::Bool(_)) =>
+        {
+            *inner
+        }
+        other => other,
+    }
+}
+
 /// The key under which a set element or map key is stored.
 fn key_of(v: &Value) -> Result<String, String> {
     match v {
         Value::Text(s) => Ok(s.clone()),
         Value::Int(i) => Ok(i.to_string()),
+        Value::Float(f) => Ok(f.to_string()),
         Value::Ref(r) => Ok(r.target.id_string()),
         other => Err(format!(
             "a {} cannot be a set element or map key",
@@ -163,11 +178,27 @@ impl Core {
         }
     }
 
+    /// Check a reference read from a field. A target that is gone (removed, or not synced yet)
+    /// is still a reference: it compares equal and reading its fields fails then. Only a
+    /// target of another type than the reference claims is refused.
+    pub(crate) fn verify_stored_ref(&self, r: &ResourceRef) -> Result<(), String> {
+        match self.store.borrow().type_of(r) {
+            Ok(stored) if stored == r.ty => Ok(()),
+            Ok(stored) => Err(format!(
+                "reference {} is a `{stored}`, not a `{}`",
+                r.id_string(),
+                r.ty
+            )),
+            Err(crate::store::StoreError::NotFound(_)) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// Re-create the references inside a stored value as the reading module's.
     fn adopt(&self, v: Value, author: Option<&ModuleHash>) -> Result<Value, String> {
         Ok(match v {
             Value::Ref(r) => {
-                self.verify_ref(&r.target)?;
+                self.verify_stored_ref(&r.target)?;
                 Value::Ref(RefValue {
                     target: r.target,
                     author: author.cloned(),
@@ -198,17 +229,20 @@ impl Core {
         })
     }
 
-    fn item_type(&self, owner: &crate::registry::Package, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
-        let Some(Ty::Named(name)) = inner_ty(ty) else {
+    fn item_type(&self, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
+        let Some(Ty::Record(key)) = inner_ty(ty) else {
             return Err("the field's element type is not a record".to_owned());
         };
         let reg = self.registry.borrow();
-        let id = reg.resolve_type(owner, name).ok_or_else(|| {
-            format!("element type `{name}` is not declared by any loaded package")
+        let id = reg.type_for(key).ok_or_else(|| {
+            format!(
+                "element type `{}` is not declared by any loaded package",
+                key.name
+            )
         })?;
         reg.type_info(&id)
             .map(|(_, t)| t)
-            .ok_or_else(|| format!("element type `{name}` is not loaded"))
+            .ok_or_else(|| format!("element type `{}` is not loaded", key.name))
     }
 
     /// Read a field of a resource as a value of its declared type. References in it are
@@ -228,7 +262,6 @@ impl Core {
             .borrow()
             .read(target, &spec(field))
             .map_err(|e| e.to_string())?;
-        let (owner, _) = self.type_of_ref(&target.ty)?;
         match (field.kind, fv) {
             (FieldKind::Register, FieldValue::Absent) => {
                 declared_default(&field.ty, field.default.as_ref())
@@ -241,7 +274,7 @@ impl Core {
             }),
             (FieldKind::Text, FieldValue::Text(t)) => Ok(Value::Text(t)),
             (FieldKind::Collection, FieldValue::Items(ids)) => {
-                let item = self.item_type(&owner, &field.ty)?;
+                let item = self.item_type(&field.ty)?;
                 Ok(Value::List(
                     ids.iter()
                         .map(|id| {
@@ -253,9 +286,7 @@ impl Core {
                         .collect(),
                 ))
             }
-            (FieldKind::Set, FieldValue::Keys(keys)) => {
-                self.keys_value(&owner, field, keys, author)
-            }
+            (FieldKind::Set, FieldValue::Keys(keys)) => self.keys_value(field, keys, author),
             (FieldKind::Map, FieldValue::Entries(entries)) => entries
                 .into_iter()
                 .map(|(k, v)| {
@@ -275,7 +306,6 @@ impl Core {
 
     fn keys_value(
         &self,
-        owner: &crate::registry::Package,
         field: &FieldInfo,
         keys: Vec<String>,
         author: Option<&ModuleHash>,
@@ -287,14 +317,18 @@ impl Core {
                     .parse::<i64>()
                     .map(Value::Int)
                     .map_err(|e| format!("set element `{k}`: {e}")),
-                Some(Ty::Named(name)) => {
+                Some(Ty::Float) => k
+                    .parse::<f64>()
+                    .map(Value::Float)
+                    .map_err(|e| format!("set element `{k}`: {e}")),
+                Some(Ty::Record(key)) => {
                     let ty = self
                         .registry
                         .borrow()
-                        .resolve_type(owner, name)
-                        .ok_or_else(|| format!("element type `{name}` is not loaded"))?;
+                        .type_for(key)
+                        .ok_or_else(|| format!("element type `{}` is not loaded", key.name))?;
                     let target = ResourceRef::parse_id(&k, ty).ok_or("malformed set element")?;
-                    self.verify_ref(&target)?;
+                    self.verify_stored_ref(&target)?;
                     Ok(Value::Ref(RefValue {
                         target,
                         author: author.cloned(),
@@ -311,7 +345,7 @@ impl Core {
         let field = self.text(fh)?;
         let (_, f) = self.lookup_field(&r.target, &field)?;
         let author = self.module_of_frame()?;
-        let v = self.read_value(&r.target, &f, Some(&author))?;
+        let v = self.journaled_read(|| Ok(self.read_value(&r.target, &f, Some(&author))?))?;
         if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
             vs.reads.push((r.target.doc, f.id));
         }
@@ -403,8 +437,7 @@ impl Core {
         if ctx.field.kind != FieldKind::Collection {
             return trap(format!("field `{}` is not a collection", ctx.field.name));
         }
-        let (owner, _) = self.type_of_ref(&ctx.target.ty)?;
-        Ok(self.item_type(&owner, &ctx.field.ty)?)
+        Ok(self.item_type(&ctx.field.ty)?)
     }
 
     fn item_arg(&self, ctx: &MutCtx, item: i32) -> HResult<String> {
@@ -542,6 +575,7 @@ impl Core {
             Imp::SetAdd | Imp::SetRemove | Imp::MapPut | Imp::MapRemove => {
                 self.set_map_import(imp, a)
             }
+            Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => {
                 let (_app, ty, id) = (
@@ -576,7 +610,7 @@ impl Core {
                 if ctx.field.kind != FieldKind::Set {
                     return trap(format!("field `{}` is not a set", ctx.field.name));
                 }
-                let key = key_of(&self.val(a.h(2)?)?)?;
+                let key = key_of(&unboxed(self.val(a.h(2)?)?))?;
                 let field = ctx.field.id.clone();
                 let m = if imp == Imp::SetAdd {
                     Mutation::SetAdd { field, key }
@@ -595,7 +629,7 @@ impl Core {
                 let field = ctx.field.id.clone();
                 let m = if imp == Imp::MapPut {
                     let elem = inner_ty(&ctx.field.ty).cloned().unwrap_or(Ty::Text);
-                    let value = to_scalar(&self.val(a.h(3)?)?, &elem)?;
+                    let value = to_scalar(&unboxed(self.val(a.h(3)?)?), &elem)?;
                     Mutation::MapPut { field, key, value }
                 } else {
                     Mutation::MapRemove { field, key }
@@ -605,6 +639,42 @@ impl Core {
             }
             _ => trap("not a set or map import"),
         }
+    }
+
+    /// `map_get_h(r, field, key) -> Option<V>` and `map_keys(r, field) -> List<Text>`.
+    fn map_read_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let res = self.ref_arg(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        let (_, info) = self.lookup_field(&res.target, &field)?;
+        if info.kind != FieldKind::Map {
+            return trap(format!("field `{}` is not a map", info.name));
+        }
+        let author = self.module_of_frame()?;
+        let read =
+            self.journaled_read(|| Ok(self.read_value(&res.target, &info, Some(&author))?))?;
+        let Value::List(entries) = read else {
+            return trap("a map reads as a list of entries");
+        };
+        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+            vs.reads.push((res.target.doc, info.id));
+        }
+        let pairs = entries.into_iter().filter_map(|entry| match entry {
+            Value::Tuple(mut kv) if kv.len() == 2 => {
+                let val = kv.pop()?;
+                let name = kv.pop()?;
+                Some((name, val))
+            }
+            _ => None,
+        });
+        if imp == Imp::MapKeys {
+            return self.ret_h(Value::List(pairs.map(|(k, _)| k).collect()));
+        }
+        let key = self.text(a.h(2)?)?;
+        let found = pairs
+            .into_iter()
+            .find(|(k, _)| k.as_text() == Some(key.as_str()))
+            .map(|(_, v)| Box::new(v));
+        self.ret_h(Value::Opt(found))
     }
 
     fn rec_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {

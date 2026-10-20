@@ -12,7 +12,7 @@ mod cases {
     fn world() -> (World, tilolang_runtime::ResourceRef) {
         let w = World::new();
         w.rt.load_package(&list_wasm(), list_meta()).unwrap();
-        let l = w.rt.create("List").unwrap();
+        let l = w.rt.create("Bag").unwrap();
         (w, l)
     }
 
@@ -82,7 +82,7 @@ mod cases {
     #[test]
     fn an_item_from_another_collection_is_refused() {
         let (w, list) = world();
-        let other = w.rt.create("List").unwrap();
+        let other = w.rt.create("Bag").unwrap();
         add(&w, &list, "a");
         add(&w, &other, "z");
         let zed = item(&w.rt, &other, "z");

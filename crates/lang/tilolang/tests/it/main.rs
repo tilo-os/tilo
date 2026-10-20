@@ -6,6 +6,7 @@
     reason = "integration tests assert by panicking, and the helpers they share live outside `#[test]` functions"
 )]
 
+mod abi_additions;
 mod blocks;
 mod common;
 mod errors;

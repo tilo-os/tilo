@@ -18,6 +18,7 @@ use crate::project::{ProjectOptions, project};
 use crate::store::{ChangeNote, OutboxEntry, Store};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
+use tilolang::{BlockKind, Compiled, CompiledBlock};
 
 /// What settling the outbox did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -25,6 +26,13 @@ pub struct SettleReport {
     pub delivered: usize,
     /// Entries the sink refused, with its message. They stay queued.
     pub failed: Vec<(String, String)>,
+}
+
+/// What evaluating a block produced.
+pub enum BlockOutput {
+    View(Box<ViewInstance>),
+    Action(InvokeOutcome),
+    Data(Value),
 }
 
 /// An in-memory sink for tests and demos. Clones share the delivered list.
@@ -118,6 +126,73 @@ impl Runtime {
             .add(pkg)
             .map_err(RuntimeError::Package)?;
         Ok(hash)
+    }
+
+    /// Load a package the compiler produced.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::load_package`].
+    pub fn load_compiled(&self, compiled: &Compiled) -> Result<PackageId, RuntimeError> {
+        self.load_package(&compiled.wasm, compiled.meta.clone())
+    }
+
+    /// Load a package from its module alone: the metadata is read from the module's
+    /// `tilolang.meta` section.
+    ///
+    /// # Errors
+    ///
+    /// `Package` when the module carries no readable metadata; otherwise as
+    /// [`Runtime::load_package`].
+    pub fn load_wasm(&self, wasm: &[u8]) -> Result<PackageId, RuntimeError> {
+        let meta = Meta::from_wasm(wasm).ok_or_else(|| {
+            RuntimeError::Package("the module has no readable tilolang.meta".into())
+        })?;
+        self.load_package(wasm, meta)
+    }
+
+    /// Evaluate an agent block (implementation design 6.1) as `principal`. A view renders and
+    /// can be pressed; an action application is invoked, or suggested when the authority asks
+    /// (the block's module is the author, so the chain starts with it); data is returned.
+    ///
+    /// # Errors
+    ///
+    /// `Package` for a module that does not link, a trap, or a value of the wrong type.
+    pub fn run_block(
+        &self,
+        principal: &Principal,
+        block: &CompiledBlock,
+    ) -> Result<BlockOutput, RuntimeError> {
+        let pkg = self.core.load_block(&block.wasm, &block.meta)?;
+        match block.kind {
+            BlockKind::View => {
+                let target = crate::render::ViewTarget {
+                    module: pkg.hash.clone(),
+                    export: "b_main".to_owned(),
+                    params: Vec::new(),
+                };
+                let view = ViewInstance::open(
+                    Rc::clone(&self.core),
+                    principal.clone(),
+                    target,
+                    Vec::new(),
+                )?;
+                Ok(BlockOutput::View(Box::new(view)))
+            }
+            BlockKind::Action => {
+                let Value::Action(aref) = self.core.eval_block(&pkg, &block.value_type)? else {
+                    return Err(RuntimeError::Package(
+                        "the block did not produce an action".into(),
+                    ));
+                };
+                Ok(BlockOutput::Action(
+                    self.core.invoke_direct(principal, &aref)?,
+                ))
+            }
+            BlockKind::Data => Ok(BlockOutput::Data(
+                self.core.eval_block(&pkg, &block.value_type)?,
+            )),
+        }
     }
 
     /// Create a resource of a type, by id or by a name one loaded package declares.
@@ -215,7 +290,8 @@ impl Runtime {
         view: &str,
         args: Vec<Value>,
     ) -> Result<ViewInstance, RuntimeError> {
-        ViewInstance::open(Rc::clone(&self.core), principal.clone(), view, args)
+        let target = self.core.view_target(view)?;
+        ViewInstance::open(Rc::clone(&self.core), principal.clone(), target, args)
     }
 
     /// What an agent sees of a value (implementation design 6.2).
