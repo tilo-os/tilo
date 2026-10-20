@@ -114,7 +114,9 @@ pub use native::*;
 #[cfg(not(target_os = "linux"))]
 mod unsupported;
 #[cfg(not(target_os = "linux"))]
-pub use unsupported::{preflight_handoff, seal_prepared_handoff, target_for_preparation};
+pub use unsupported::{
+    preflight_handoff, read_prepared_handoff, seal_prepared_handoff, target_for_preparation,
+};
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;

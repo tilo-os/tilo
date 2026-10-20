@@ -3,8 +3,9 @@
 //!
 //! The tree is a projection of the authorities that own each decision: the
 //! three migration categories, the discovered folder/Steam tree, the reviewed
-//! browser profiles and their website sources, the mail profiles' account,
-//! folder, address-book and calendar selection, the Flatpak exclusions and the
+//! browser profiles and their website sources, the configured account sources
+//! with each account and enabled service, the mail profiles' account, folder,
+//! address-book and calendar selection, the Flatpak exclusions and the
 //! per-source website-session selections. Building it reads only
 //! already-discovered metadata; it never opens a source, and a checkbox
 //! delegates through [`Bindings`] so the caller applies the same validation and
@@ -983,6 +984,275 @@ pub(super) fn browser_sources(belongings: &super::belongings::Belongings) -> Vec
         }
     }
     sources
+}
+
+/// The configured account sources found on this computer, one source per app
+/// identity: GNOME Online Accounts, Nextcloud, rclone and a profile-only app.
+///
+/// Each account is its own row and each service the source enabled is its own
+/// child, so one account or one service can stay behind without touching the
+/// rest. Accounts are selected by default; an empty selection means "every
+/// discovered service". Only GNOME Online Accounts travel through the private
+/// source journal; the other rows keep their existing account-engine flow.
+pub(super) fn account_sources(
+    inventory: &imager_backend::account_sources::Inventory,
+    selection: &super::accounts::SourceAccountSelection,
+    included: bool,
+) -> Vec<Source> {
+    use super::accounts::{SourceAccountScope, can_connect_candidate};
+    use imager_backend::account_sources::Origin;
+
+    let recognized = |candidate: &&imager_backend::account_sources::Candidate| {
+        candidate.origin != Origin::Browser
+            && !super::accounts::source_account_services(candidate).is_empty()
+            && (candidate.origin == Origin::Gnome
+                || candidate.can_import_credentials
+                || can_connect_candidate(candidate))
+    };
+    let mut sources = Vec::new();
+
+    let gnome = inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.origin == Origin::Gnome)
+        .filter(recognized)
+        .collect::<Vec<_>>();
+    if gnome.is_empty() {
+        // The aggregate identity remains the way an older journey skips the
+        // optional Accounts step. It owns no account decisions; the exact app
+        // sources below own those.
+        sources.push(Source {
+            id: "accounts".into(),
+            test_id: "installer.your-data.source.accounts".into(),
+            label: super::t("installer-your-data-online-accounts"),
+            icon: Icon::Users,
+            summary: super::t("installer-your-data-no-accounts"),
+            detail: None,
+            note: None,
+            items: Vec::new(),
+            groups: Vec::new(),
+            state: Some(if included { Toggle::All } else { Toggle::None }),
+            selectable: true,
+            included,
+        });
+    } else {
+        sources.push(account_source(
+            &SourceAccountScope::Gnome,
+            super::t("installer-your-data-online-accounts"),
+            Icon::Users,
+            &gnome,
+            selection,
+            included,
+        ));
+    }
+
+    let nextcloud = inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.origin == Origin::Nextcloud)
+        .filter(recognized)
+        .collect::<Vec<_>>();
+    if !nextcloud.is_empty() {
+        sources.push(account_source(
+            &SourceAccountScope::Nextcloud,
+            super::t("installer-your-data-provider-nextcloud"),
+            Icon::Cloud,
+            &nextcloud,
+            selection,
+            included,
+        ));
+    }
+
+    let rclone = inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.origin == Origin::Rclone)
+        .filter(recognized)
+        .collect::<Vec<_>>();
+    if !rclone.is_empty() {
+        sources.push(account_source(
+            &SourceAccountScope::Rclone,
+            super::t("installer-your-data-source-rclone"),
+            Icon::Cloud,
+            &rclone,
+            selection,
+            included,
+        ));
+    }
+
+    let mut applications = std::collections::BTreeMap::<
+        String,
+        Vec<&imager_backend::account_sources::Candidate>,
+    >::new();
+    for candidate in inventory
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.origin == Origin::Application)
+        .filter(recognized)
+    {
+        applications
+            .entry(candidate.label.clone())
+            .or_default()
+            .push(candidate);
+    }
+    for (label, candidates) in applications {
+        sources.push(account_source(
+            &SourceAccountScope::Application(label.clone()),
+            label,
+            Icon::Cloud,
+            &candidates,
+            selection,
+            included,
+        ));
+    }
+
+    if !inventory.tilo_accounts.is_empty() {
+        sources.push(Source {
+            id: SourceAccountScope::Tilo.id(),
+            test_id: format!(
+                "installer.your-data.source.{}",
+                slug(&SourceAccountScope::Tilo.id())
+            ),
+            label: super::t("installer-your-data-provider-tilo"),
+            icon: Icon::Users,
+            summary: String::new(),
+            detail: None,
+            note: None,
+            items: inventory
+                .tilo_accounts
+                .iter()
+                .map(|account| Item {
+                    private_label: None,
+                    id: format!("tilo|{}", account.source_id),
+                    test_id: format!("installer.your-data.account.{}", slug(&account.source_id)),
+                    label: super::accounts::tilo_candidate_label(account),
+                    detail: Some(super::t("installer-your-data-account-tilo")),
+                    note: None,
+                    eligible: false,
+                    included: false,
+                })
+                .collect(),
+            groups: Vec::new(),
+            state: Some(if included { Toggle::All } else { Toggle::None }),
+            selectable: false,
+            included: false,
+        });
+    }
+
+    sources
+}
+
+fn account_source(
+    scope: &super::accounts::SourceAccountScope,
+    label: String,
+    icon: Icon,
+    candidates: &[&imager_backend::account_sources::Candidate],
+    selection: &super::accounts::SourceAccountSelection,
+    included: bool,
+) -> Source {
+    let groups = candidates
+        .iter()
+        .map(|candidate| account_group(candidate, selection, included))
+        .collect::<Vec<_>>();
+    let selected = groups.iter().any(|group| group.toggle() != Toggle::None);
+    Source {
+        id: scope.id(),
+        test_id: format!("installer.your-data.source.{}", slug(&scope.id())),
+        label,
+        icon,
+        summary: super::t("installer-your-data-no-accounts"),
+        detail: Some(count_phrase(
+            candidates.len(),
+            "installer-your-data-account-one",
+            "installer-your-data-account-count",
+        )),
+        note: matches!(scope, super::accounts::SourceAccountScope::Gnome)
+            .then(|| super::t("installer-your-data-accounts-note")),
+        items: Vec::new(),
+        groups,
+        state: if included { None } else { Some(Toggle::None) },
+        selectable: true,
+        included: included && selected,
+    }
+}
+
+fn account_group(
+    candidate: &imager_backend::account_sources::Candidate,
+    selection: &super::accounts::SourceAccountSelection,
+    included: bool,
+) -> Group {
+    let services = super::accounts::source_account_services(candidate);
+    let items = services
+        .iter()
+        .map(|service| Item {
+            private_label: None,
+            id: format!("accountservice|{}|{}", candidate.id, service_key(*service)),
+            test_id: format!(
+                "installer.your-data.account-service.{}.{}",
+                slug(&candidate.id),
+                service_key(*service)
+            ),
+            label: super::t(service_label(*service)),
+            detail: None,
+            note: None,
+            eligible: included,
+            included: included && selection.includes_service(candidate, *service),
+        })
+        .collect::<Vec<_>>();
+    Group {
+        private_label: None,
+        id: format!("account|{}", candidate.id),
+        test_id: format!("installer.your-data.account.{}", slug(&candidate.id)),
+        label: super::accounts::candidate_label(candidate),
+        summary: String::new(),
+        detail: Some(count_phrase(
+            services.len(),
+            "installer-your-data-service-one",
+            "installer-your-data-services",
+        )),
+        note: (!candidate.can_import_credentials
+            && candidate.origin == imager_backend::account_sources::Origin::Gnome)
+            .then(|| super::t("installer-your-data-account-sign-in")),
+        items,
+        groups: Vec::new(),
+        state: if included && !services.is_empty() {
+            None
+        } else {
+            Some(Toggle::None)
+        },
+        selectable: included && !services.is_empty(),
+    }
+}
+
+fn service_label(service: imager_backend::account_sources::Service) -> &'static str {
+    use imager_backend::account_sources::Service;
+    match service {
+        Service::Files => "installer-your-data-service-files",
+        Service::Mail => "installer-your-data-service-mail",
+        Service::Calendar => "installer-your-data-service-calendar",
+        Service::Contacts => "installer-your-data-service-contacts",
+    }
+}
+
+pub(super) fn service_key(service: imager_backend::account_sources::Service) -> &'static str {
+    use imager_backend::account_sources::Service;
+    match service {
+        Service::Files => "files",
+        Service::Mail => "mail",
+        Service::Calendar => "calendar",
+        Service::Contacts => "contacts",
+    }
+}
+
+pub(super) fn service_from_key(key: &str) -> Option<imager_backend::account_sources::Service> {
+    use imager_backend::account_sources::Service;
+    match key {
+        "files" => Some(Service::Files),
+        "mail" => Some(Service::Mail),
+        "calendar" => Some(Service::Calendar),
+        "contacts" => Some(Service::Contacts),
+        _ => None,
+    }
 }
 
 fn profile_group(

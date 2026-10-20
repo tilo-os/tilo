@@ -26,7 +26,7 @@ by its native path.
 | Another computer | Specific model/report/architecture selection; cross-architecture catalog selection without host fallback; private resumable target choices. Source peer handoff uses canonical device certification, explicit code approval and receipt-bound package delivery. Fresh destinations can join the package's identity; unrelated identities are refused, not overwritten. | Independent runtime-peer tests include fresh identity bootstrap, selected-mail import, wrong operation/certificate/approval and exact signed receipt. Physical media boot and native Home/apps receiving qualification remain outstanding. |
 | Unattended target installer | Private FD or no-follow private-file recipe, optional canonical account-password hash, explicit disk intent, real TPM probe and target preflight. Uses the existing published actions. Failure retains a working canonical console endpoint, including a private fallback endpoint when needed. | Installer unit/action/headless tests. Currently an explicit whole-disk erase recipe, not unattended alongside allocation or data migration. Normal interactive alongside behavior is retained. |
 | Desktop only | Existing direct package/session route, without OS-account creation, migration, naming or partition questions. Existing user/files/apps remain. | Route and compilation tests; a clean-host packaged installation and first-session switch still need release acceptance. |
-| Packaging | Pairing helper included in tar/AppImage/Flatpak/platform archives; native prepared/extraction helpers retained. Target-policy catalog/download validation added. | Packaging and catalog tests. A development checkout is not an installable released distribution. |
+| Packaging | Pairing helper included in tar/AppImage/Flatpak/platform archives; native prepared/extraction helpers retained. Target-policy producer, immutable package publication, catalog/download validation and consumer parsing added. | Packaging and catalog tests. A development checkout is not an installable released distribution. |
 
 ## Release blockers
 
@@ -154,3 +154,37 @@ live medium may carry the corresponding bundle under `/boot/tilo-target`.
 Generation, target UKI, package digest, receiver UID, TPM identity and sidecar
 binding must all agree. An absent policy artifact is not permission to invent an
 unbound TPM blob.
+
+The producer for that entry lives in the Imager release pipeline. The tag-only
+`target_policy` job in `.forgejo/workflows/release-imager.yml` resolves the
+exact child of the verified published OS index, requires the child's
+`org.opencontainers.image.revision` label to match `TILO_EXPECTED_OS_SOURCE_REVISION`,
+verifies its release signature and SLSA provenance, reads only
+`/boot/tilo-target` plus `/usr/lib/tilo/generation`, and calls
+`apps/imager/packaging/export-target-policy.py`. That producer checks the PE
+architecture and verifies the detached target-UKI signature and the
+`approved_policy || be64(generation)` prediction signature against
+`keys/tpm2-pcr-signing.public.pem`, the same authority and messages
+`sign-target-prediction.sh` and `tilo-crypto` use. It writes a deterministic tar
+whose only entries are `tilo-target.efi`,
+`predictions/generation-<N>.json`, and
+`predictions/generation-<N>.json.uki.sig`, plus the
+`target-policy-catalog-<ARCH>.json` fragment with `purpose:
+tilo-target-policy`, `layout: target-policy-bundle-v1`, `release_id`, `arch`,
+`generation`, `target_uki_sha256`, `url`, `archive_sha256`, and
+`archive_size`. The workflow uploads both as the artifact
+`tilo-target-policy-<ARCH>`, which the existing `catalog` job downloads into
+`release-assets`.
+
+`apps/imager/packaging/publish-target-policy.sh` uploads the archive and then
+the fragment to
+`https://code.tilo.so/api/packages/<owner>/generic/tilo-target-policy/<tag>/`,
+never replaces an existing file, and verifies each public download anonymously
+by digest and size. It uses the existing `internal-bundle` broker exchange, so
+no new issuer or channel is introduced; an unconfigured broker leaves the entry
+absent instead of naming an unpublished package. `build-release-catalog.sh` runs
+`export-target-policy.py verify` on each fragment and archive before merging it,
+so a catalog never carries a bundle whose bytes, generation, architecture or
+signatures do not agree. An unsigned development rehearsal may run the producer
+with `--diagnostic`, which writes only a `.diagnostic.tar` and cannot emit a
+catalog fragment.

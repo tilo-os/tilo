@@ -132,7 +132,10 @@ fn current_candidate<'a>(
                 && candidate.provider == selected.provider
                 && candidate.identity.as_deref() == Some(selected.identity.as_str())
                 && candidate.label == selected.label
-                && candidate.services == selected.services
+                && selected
+                    .services
+                    .iter()
+                    .all(|service| candidate.services.contains(service))
         })
         .ok_or(ConnectionError::AccountMissing)
 }

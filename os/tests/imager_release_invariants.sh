@@ -22,6 +22,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  "$repo/apps/imager/packaging/publish-target-policy.sh" \
   "$repo/os/dev/export-internal-bundle.sh" \
   "$repo/os/tests/internal_bundle_export.sh" \
   "$repo/os/tests/internal_bundle_catalog.sh" \
@@ -40,6 +41,23 @@ bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
 bash "$repo/os/tests/internal_bundle_catalog.sh" \
   || bad 'internal installer catalog entries are not bound to exact published manifests'
+target_job="$(sed -n '/^  target_policy:/,/^  medium:/p' "$workflow")"
+if grep -Fq "if: startsWith(github.ref, 'refs/tags/imager-v')" <<<"$target_job" \
+   && grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' <<<"$target_job" \
+   && grep -Fq 'export-target-policy.py export' <<<"$target_job" \
+   && grep -Fq -- '--expected-source "$TILO_EXPECTED_OS_SOURCE_REVISION"' <<<"$target_job" \
+   && grep -Fq 'publish-target-policy.sh dist/tilo-target-policy' <<<"$target_job" \
+   && grep -Fq 'name: tilo-target-policy-${{ matrix.arch }}' <<<"$target_job" \
+   && grep -Fq 'target-policy-catalog-${{ matrix.arch }}.json' <<<"$target_job" \
+   && grep -Fq 'needs: [plan, medium, target_policy]' "$workflow" \
+   && grep -Fq 'export-target-policy.py" verify' "$repo/apps/imager/packaging/build-release-catalog.sh" \
+   && grep -Fq 'target-policy-catalog-*.json|tilo-target-policy-*.tar' \
+      "$repo/apps/imager/packaging/publish-github-release.sh" \
+      "$repo/apps/imager/packaging/publish-forgejo-release.sh"; then
+  ok 'tag releases export and publish one signed target policy from the exact OS image'
+else
+  bad 'target policy producer, publication or catalog wiring is missing'
+fi
 [ "$(grep -Fc "startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'" "$workflow")" -eq 2 ] \
   && grep -Fq 'IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'sudo -n bash os/tests/internal_bundle_export.sh' "$workflow" \
@@ -112,7 +130,7 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 8 ] \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 9 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \

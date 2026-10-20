@@ -969,14 +969,33 @@ pub fn seal_prepared_handoff(
 
 /// Verify a sidecar and the exact package it names before first boot. This is
 /// the same canonical parser the sealing side uses, so a sidecar either passes
-/// both or neither.
+/// both or neither. The check is structural and binds the package digest; the
+/// signed target policy is authenticated only by [`unseal`] against its pinned
+/// release authority before any secret is released.
 ///
 /// # Errors
 ///
-/// The sidecar or package is not a bounded no-follow regular file, the sidecar
-/// is malformed or edited, or it names another package digest.
+/// The sidecar or package is not a bounded no-follow regular file reached
+/// through a plain path, it changes while it is read, the sidecar is malformed
+/// or edited, or it names another package digest.
 pub fn preflight_handoff(sidecar_path: &Path, package_path: &Path) -> io::Result<()> {
     tilo_handoff::prepared::preflight_handoff(sidecar_path, package_path)
+}
+
+/// Read and structurally verify the sidecar and its exact package, returning
+/// the decoded sidecar that was checked. The privileged first-boot unsealer
+/// uses this so the policy it authenticates is the one this preflight read.
+///
+/// # Errors
+///
+/// The sidecar or package is not a bounded no-follow regular file reached
+/// through a plain path, it changes while it is read, the sidecar is malformed
+/// or edited, or it names another package digest.
+pub fn read_prepared_handoff(
+    sidecar_path: &Path,
+    package_path: &Path,
+) -> io::Result<SealedPreparation> {
+    tilo_handoff::prepared::read_prepared_handoff(sidecar_path, package_path)
 }
 
 // --- acquiring the target policy --------------------------------------------

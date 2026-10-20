@@ -49,7 +49,6 @@ staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-install-helpers = { path = "../../system/install-helpers" }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 # The capacity test asks the same compiled rule that `tilo-guided-partition`
 # delegates to, so a reviewed write extent is checked against production.

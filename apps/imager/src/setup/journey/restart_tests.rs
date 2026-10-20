@@ -506,6 +506,10 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     drop(identity);
     go_to_accounts(&mut original);
     assert_eq!(read(&mut original)["page"], "accounts");
+    // The empty selection is checkpointed as soon as Accounts opens. Let it
+    // settle before replacing the live Accounts with the fixture; replacing
+    // the struct drops a worker still saving the previous selection.
+    await_checkpoint(&mut original, 0);
     let accounts = accounts::checkpoint_fixture_for_journey(&root.join("account-fixture"));
     let ids = accounts.prepared_handle().unwrap().selected_ids();
     original

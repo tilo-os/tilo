@@ -7,7 +7,10 @@
 # each shipped beside the exact manifest it names; they become
 # CatalogRelease::Internal entries after that manifest's bytes, schema and
 # identity are checked. TILO_REQUIRE_INTERNAL_BUNDLE=1 requires one internal
-# entry for every generic media architecture.
+# entry for every generic media architecture. Target policy fragments are
+# `target-policy-catalog-*.json` (apps/imager/packaging/export-target-policy.py),
+# each beside the exact signed archive it names; the producer re-verifies the
+# archive, architecture, generation and both release-authority signatures.
 set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
 release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
@@ -88,6 +91,9 @@ if type(entry['archive_size']) is not int or entry['archive_size'] <= 0:
 if not entry['url'].startswith('https://code.tilo.so/'):
     raise SystemExit(f'{fragment}: target policy URL is not on the trusted package origin')
 PY
+  python3 "$repo/apps/imager/packaging/export-target-policy.py" verify \
+    --bundle "$(dirname "$fragment")" --release-id "$GITHUB_REF_NAME" \
+    || { printf '%s: target policy archive does not match its signed fragment\n' "$fragment" >&2; exit 1; }
 done
 
 jq -s --arg tag "$GITHUB_REF_NAME" \

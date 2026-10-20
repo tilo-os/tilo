@@ -48,3 +48,13 @@ pub fn seal_prepared_handoff(
 pub fn preflight_handoff(_sidecar: &Path, _package: &Path) -> io::Result<()> {
     Err(unsupported())
 }
+
+/// Reading a verified sidecar needs the same custody this host does not
+/// provide.
+///
+/// # Errors
+///
+/// Always, with an unsupported-host refusal.
+pub fn read_prepared_handoff(_sidecar: &Path, _package: &Path) -> io::Result<SealedPreparation> {
+    Err(unsupported())
+}
