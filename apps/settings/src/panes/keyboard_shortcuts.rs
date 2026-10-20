@@ -167,7 +167,6 @@ pub struct ShortcutPane {
     /// When the shortcuts section last changed, to read it again.
     seen: ui::storage::SettingsRevision,
     controls: Followed<DesktopControls>,
-    vim_mode: LocalState<bool>,
     /// The chord each rebindable shortcut's recorder shows.
     chords: HashMap<ShortcutAction, LocalState<String>>,
     /// The last chord refused, and why.
@@ -188,7 +187,6 @@ impl ShortcutPane {
             .map(|action| (action, LocalState::new(String::new())))
             .collect();
         let pane = Self {
-            vim_mode: LocalState::new(controls.get().vim_mode),
             refused: cx.refused(),
             cx,
             config,
@@ -265,7 +263,8 @@ impl ShortcutPane {
                         self.cx
                             .row(t("settings-shortcuts-vim"))
                             .id("shortcuts.vim_mode")
-                            .toggle(&self.vim_mode, DesktopControls::paths().vim_mode),
+                            .of(&self.controls, DesktopControls::paths().vim_mode)
+                            .toggle(),
                     );
                     body.push(note(&app_tab_chords_note()));
                 }
@@ -320,9 +319,7 @@ impl Widget for ShortcutPane {
         if self.structure_dirty {
             self.show();
         }
-        if self.controls.refresh() {
-            self.vim_mode.set(self.controls.get().vim_mode);
-        }
+        self.controls.refresh();
         self.composed.sync(state, root);
     }
 
