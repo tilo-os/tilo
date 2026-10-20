@@ -294,7 +294,7 @@ fn a_collaborators_picture_is_drawn_when_its_bytes_arrive_and_not_looked_for_bef
             .image_decoded_for_test(&source),
         "the bytes are not on this device yet"
     );
-    let lane = ContentLane::of("so.tilo.notes", app.record().as_str());
+    let lane = ContentLane::of_record("so.tilo.notes", app.record());
     assert_eq!(
         lane.take_requests().wants,
         vec![digest.clone()],
