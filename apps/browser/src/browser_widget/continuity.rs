@@ -5,17 +5,22 @@ use ui::tilo_resource::Effect as _;
 use crate::resource::CATALOG;
 
 impl BrowserWidget {
+    /// Grant the continuity controller its profile and state directories,
+    /// as the picker would. Fails when this window has no controller (no
+    /// live canonical person attached), so a test says why instead of
+    /// panicking inside the surface.
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn continuity_grant_for_test(
         &mut self,
         root: std::fs::File,
         state: tilo_files::native::atomic::StorageDirectory,
-    ) {
+    ) -> Result<(), &'static str> {
         self.continuity
             .as_mut()
-            .expect("live canonical person attachment")
+            .ok_or("no live canonical person attachment")?
             .load_granted(root, state);
         self.structure_dirty = true;
+        Ok(())
     }
     pub(crate) fn attach_continuity(
         &mut self,

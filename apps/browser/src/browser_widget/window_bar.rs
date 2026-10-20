@@ -49,8 +49,8 @@ pub(super) fn site_label(uri: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BarInputs {
     uri: String,
-    back: bool,
-    forward: bool,
+    /// The bar's back and forward slots, exactly as declared.
+    navigation: ToolbarNavigation,
     loading: bool,
     bookmarked: bool,
     library: bool,
@@ -79,13 +79,20 @@ impl BrowserWidget {
     fn bar_inputs(&self) -> BarInputs {
         BarInputs {
             uri: self.current_uri.clone(),
-            back: self.can_go_back,
-            forward: self.can_go_forward,
+            navigation: self.bar_navigation(),
             loading: self.progress < 1.0,
             bookmarked: self.page_bookmarked(),
             library: self.show_library,
             favicon: self.favicon_png.clone(),
             suggestions: self.bar_suggestions(),
+        }
+    }
+
+    /// Which of back and forward can go.
+    fn bar_navigation(&self) -> ToolbarNavigation {
+        ToolbarNavigation {
+            back: self.can_go_back,
+            forward: self.can_go_forward,
         }
     }
 
@@ -131,10 +138,7 @@ impl BrowserWidget {
         let bookmarked = self.page_bookmarked();
         WindowToolbar {
             sidebar: None,
-            navigation: Some(ToolbarNavigation {
-                back: self.can_go_back,
-                forward: self.can_go_forward,
-            }),
+            navigation: Some(self.bar_navigation()),
             location: Some(ToolbarLocation {
                 label: site_label(&self.current_uri),
                 value: self.current_uri.clone(),
