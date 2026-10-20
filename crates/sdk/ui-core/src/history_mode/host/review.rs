@@ -17,6 +17,9 @@ pub(super) enum ReviewCommand {
     /// Take back just the selected change, leaving everything since: a
     /// forward change of its own, undoable, so it asks no confirmation.
     RevertChange,
+    /// Name the selected run of changes with the panel's name field, or
+    /// remove its name when the field is empty.
+    Name,
     Confirm,
     FileConfirm(uuid::Uuid),
     Cancel,
@@ -137,7 +140,10 @@ impl HistoryHost {
         }
         if matches!(
             command,
-            ReviewCommand::Open | ReviewCommand::Refresh | ReviewCommand::RevertChange
+            ReviewCommand::Open
+                | ReviewCommand::Refresh
+                | ReviewCommand::RevertChange
+                | ReviewCommand::Name
         ) {
             // Review against a finished boundary: the word still being typed
             // becomes its own step, and the review sees the frontier after it.
@@ -156,6 +162,9 @@ impl HistoryHost {
         }
         if matches!(command, ReviewCommand::RevertChange) {
             return self.revert_selected_change(state, (authority, author));
+        }
+        if matches!(command, ReviewCommand::Name) {
+            return self.name_selected_changes(state, (authority, author));
         }
         let Some(controller) = &self.controller else {
             return false;
@@ -232,7 +241,51 @@ impl HistoryHost {
     fn revert_selected_change(
         &mut self,
         state: &mut State,
+        actor: (&PermissionContext, &UserId),
+    ) -> bool {
+        let selected = self.selected.clone();
+        self.write_selected(
+            state,
+            actor,
+            crate::state::owned_restore::RestoreExtent::Changes(&selected),
+        )
+    }
+
+    /// Name the selected run of changes, from its oldest to its newest, with
+    /// what the name field holds; an empty field removes the run's name.
+    fn name_selected_changes(
+        &mut self,
+        state: &mut State,
+        actor: (&PermissionContext, &UserId),
+    ) -> bool {
+        let Some((start, end)) = self.selected_run() else {
+            return false;
+        };
+        self.name_draft_for = None;
+        self.toolbar_dirty = true;
+        let request = crate::GroupNameRequest {
+            record_id: self.selected_name().map(|named| named.id.clone()),
+            start,
+            end,
+            label: self.name_draft.get().trim().to_owned(),
+        };
+        if request.label.is_empty() && request.record_id.is_none() {
+            return false;
+        }
+        self.write_selected(
+            state,
+            actor,
+            crate::state::owned_restore::RestoreExtent::Name(&request),
+        )
+    }
+
+    /// One forward write about the selected changes through the restore
+    /// door: its authority, the live frontier and the owner's writer.
+    fn write_selected(
+        &mut self,
+        state: &mut State,
         (authority, author): (&PermissionContext, &UserId),
+        extent: crate::state::owned_restore::RestoreExtent<'_>,
     ) -> bool {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
             return false;
@@ -251,7 +304,6 @@ impl HistoryHost {
             self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
             return false;
         };
-        let selected = self.selected.clone();
         let result = crate::state::owned_restore::restore_reviewed_history(
             state,
             &crate::state::owned_restore::ReviewedRestore {
@@ -262,7 +314,7 @@ impl HistoryHost {
             },
             (authority, author),
             now,
-            crate::state::owned_restore::RestoreExtent::Changes(&selected),
+            extent,
         );
         match result {
             Ok(receipt) => {

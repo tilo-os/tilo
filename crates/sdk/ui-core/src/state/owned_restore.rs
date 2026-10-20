@@ -86,7 +86,7 @@ pub(crate) fn restore_reviewed_history(
     // its own, and leaves everything written since: no schema is consulted,
     // since nothing but those changes' own effects is touched.
     let changes = match extent {
-        RestoreExtent::Whole => None,
+        RestoreExtent::Whole | RestoreExtent::Name(_) => None,
         RestoreExtent::Changes(entries) => {
             let changes = crate::history_source::revert::changes_of_entries(&mut document, entries);
             if changes.is_empty() {
@@ -99,7 +99,7 @@ pub(crate) fn restore_reviewed_history(
     // without one the whole document returns to the selected version, the
     // way `git revert` of every later change would.
     let prepared = schema
-        .filter(|_| changes.is_none())
+        .filter(|_| changes.is_none() && !matches!(extent, RestoreExtent::Name(_)))
         .map(|schema| {
             crate::history_mode::restore::prepare_content_restore(
                 &document,
@@ -110,16 +110,23 @@ pub(crate) fn restore_reviewed_history(
             .map_err(|_| crate::i18n::I18nManager::lookup_plain("history-restore-unsupported"))
         })
         .transpose()?;
-    let write = match (&changes, prepared.as_ref()) {
-        (Some(changes), _) => RestoreWrite::Changes {
+    let write = if let RestoreExtent::Name(request) = extent {
+        RestoreWrite::Name {
             current: review.reviewed_live_heads(),
-            changes,
-        },
-        (None, Some(prepared)) => RestoreWrite::Content(prepared),
-        (None, None) => RestoreWrite::WholeDocument {
-            current: review.reviewed_live_heads(),
-            target: review.selected_heads(),
-        },
+            request,
+        }
+    } else {
+        match (&changes, prepared.as_ref()) {
+            (Some(changes), _) => RestoreWrite::Changes {
+                current: review.reviewed_live_heads(),
+                changes,
+            },
+            (None, Some(prepared)) => RestoreWrite::Content(prepared),
+            (None, None) => RestoreWrite::WholeDocument {
+                current: review.reviewed_live_heads(),
+                target: review.selected_heads(),
+            },
+        }
     };
     let context = tilo_actions::ActionContext::for_resource(
         review.resource().record_id.as_str(),
@@ -271,6 +278,32 @@ pub(crate) fn restore_reviewed_record(
         RestoreWrite::WholeDocument { current, target },
     )
 }
+/// The History action door's naming write on the app's own document: name
+/// a run of changes, or remove its name, as one forward change through the
+/// document's undo log, attributed to `author`. Undo and the history list
+/// both pass over it: a name is no step of its own. The door has already
+/// checked that its caller may write.
+pub(crate) fn name_history_run(
+    state: &mut State,
+    authority: &PermissionContext,
+    author: UserId,
+    context: tilo_actions::ActionContext,
+    request: &crate::GroupNameRequest,
+) -> Result<OwnedActionReceipt, OwnedRestoreError> {
+    let current = state.doc.base_heads();
+    let admitted = ConfirmedRestore {
+        _authority: authority,
+        author,
+        context,
+    };
+    state.restore_write_owned(
+        &admitted,
+        RestoreWrite::Name {
+            current: &current,
+            request,
+        },
+    )
+}
 #[derive(Debug)]
 pub(crate) struct OwnedActionReceipt {
     pub(crate) after: Vec<ChangeHash>,
@@ -326,12 +359,19 @@ pub(crate) enum RestoreWrite<'a> {
         current: &'a [ChangeHash],
         changes: &'a [(ChangeHash, String)],
     },
+    /// Name a run of changes, or remove its name: no content moves.
+    Name {
+        current: &'a [ChangeHash],
+        request: &'a crate::GroupNameRequest,
+    },
 }
 impl RestoreWrite<'_> {
     pub(crate) fn current_heads(&self) -> &[ChangeHash] {
         match self {
             Self::Content(prepared) => prepared.current_heads(),
-            Self::WholeDocument { current, .. } | Self::Changes { current, .. } => current,
+            Self::WholeDocument { current, .. }
+            | Self::Changes { current, .. }
+            | Self::Name { current, .. } => current,
         }
     }
 }
@@ -343,6 +383,8 @@ pub(crate) enum RestoreExtent<'a> {
     Whole,
     /// Only what these selected changes did, taken back on their own.
     Changes(&'a [crate::widget::HistoryEntryId]),
+    /// Nothing comes back: the selected run of changes is named.
+    Name(&'a crate::GroupNameRequest),
 }
 
 /// Exclusive loan of the original document and its own undo log. Its only
@@ -400,6 +442,13 @@ impl<'a> OwnedContentAction<'a> {
             RestoreWrite::WholeDocument { current, target } => {
                 super::write_revert_patches(self.doc, current, target);
                 if self.doc.pending_ops() > 0 {
+                    RestoreOutcome::Changed
+                } else {
+                    RestoreOutcome::Unchanged
+                }
+            }
+            RestoreWrite::Name { request, .. } => {
+                if crate::history_source::groups::apply_name_request(self.doc, request) {
                     RestoreOutcome::Changed
                 } else {
                     RestoreOutcome::Unchanged

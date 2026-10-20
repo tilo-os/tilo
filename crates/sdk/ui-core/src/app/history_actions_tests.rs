@@ -7,7 +7,7 @@ use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use serde_json::{Value, json};
 use tilo_actions::{ActionAddress, DoorError};
 
-use super::history_actions::{CLOSE, COMPARE, LIST, OPEN, RESOURCE, RESTORE, VIEW_AT};
+use super::history_actions::{CLOSE, COMPARE, LIST, NAME, OPEN, RESOURCE, RESTORE, VIEW_AT};
 
 fn document(values: &[&str]) -> App {
     let mut app = App::new_with_controlled_inputs(
@@ -88,7 +88,7 @@ fn write_holder_lists_previews_compares_and_restores_through_the_registry() {
     present(&mut app);
     assert_eq!(
         local_actions(&app),
-        [CLOSE, COMPARE, LIST, OPEN, RESTORE, VIEW_AT]
+        [CLOSE, COMPARE, LIST, NAME, OPEN, RESTORE, VIEW_AT]
     );
 
     let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
@@ -148,6 +148,96 @@ fn write_holder_lists_previews_compares_and_restores_through_the_registry() {
         Err(DoorError::InvalidArguments(_))
     ));
     assert!(ids.contains(&v3));
+}
+
+#[test]
+fn naming_a_run_writes_one_change_that_lists_and_undoes_as_no_step() {
+    let mut app = document(&["v1", "v2", "v3"]);
+    present(&mut app);
+    let ids = entries(&invoke(&mut app, LIST, Some(json!({}))).unwrap());
+    let (v3, v2) = (ids[0].clone(), ids[1].clone());
+    let changes = app.state.doc.get_changes(&[]).len();
+    let names = |app: &App| {
+        crate::history_source::groups::read_named_ranges(
+            &app.state.doc,
+            &crate::history_source::AuthorDirectory::default(),
+        )
+    };
+
+    // Newest first or oldest first, the run is the same.
+    let named = invoke(
+        &mut app,
+        NAME,
+        Some(json!({"first": v3, "last": v2, "label": " Second draft "})),
+    )
+    .unwrap();
+    assert_eq!(named["named"], true, "{named}");
+    assert_eq!(app.state.doc.get_changes(&[]).len(), changes + 1);
+    let [range] = names(&app).try_into().unwrap();
+    assert_eq!(range.label, "Second draft");
+    assert_eq!(
+        crate::standalone_history_host::encode_entry(range.start),
+        v2
+    );
+    assert_eq!(
+        range.end.map(crate::standalone_history_host::encode_entry),
+        Some(v3.clone())
+    );
+    assert_eq!(
+        title(&app).as_deref(),
+        Some("v3"),
+        "naming moves no content"
+    );
+    assert_eq!(
+        entries(&invoke(&mut app, LIST, Some(json!({}))).unwrap()),
+        ids,
+        "a name is not a change of its own"
+    );
+
+    // Undo walks past a name to the last edit, and the name stays: naming
+    // is undone by naming again.
+    let author = app.local_author().clone();
+    assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
+    assert_eq!(title(&app).as_deref(), Some("v2"));
+    assert_eq!(names(&app).len(), 1);
+
+    // Renaming replaces the name; an empty name removes it.
+    invoke(
+        &mut app,
+        NAME,
+        Some(json!({"first": v2, "last": v3, "label": "Draft"})),
+    )
+    .unwrap();
+    invoke(
+        &mut app,
+        NAME,
+        Some(json!({"first": v2, "last": v3, "label": "Final"})),
+    )
+    .unwrap();
+    let [range] = names(&app).try_into().unwrap();
+    assert_eq!(range.label, "Final");
+    invoke(
+        &mut app,
+        NAME,
+        Some(json!({"first": v2, "last": v3, "label": ""})),
+    )
+    .unwrap();
+    assert!(names(&app).is_empty());
+    let unnamed = invoke(
+        &mut app,
+        NAME,
+        Some(json!({"first": v2, "last": v3, "label": ""})),
+    );
+    assert_eq!(unnamed.unwrap()["named"], false, "nothing to remove");
+
+    assert!(matches!(
+        invoke(
+            &mut app,
+            NAME,
+            Some(json!({"first": "00".repeat(16), "last": v3, "label": "x"}))
+        ),
+        Err(DoorError::InvalidArguments(_))
+    ));
 }
 
 #[test]
@@ -235,7 +325,7 @@ fn published_catalogue_declares_write_so_the_broker_withholds_it() {
         .into_iter()
         .filter(|descriptor| descriptor.address.resource == RESOURCE)
         .collect();
-    assert_eq!(history.len(), 6);
+    assert_eq!(history.len(), 7);
     for descriptor in history {
         let expected = if matches!(descriptor.address.action.as_str(), OPEN | LIST) {
             tilo_actions::ActionKind::Read

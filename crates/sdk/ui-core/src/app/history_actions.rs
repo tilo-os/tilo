@@ -37,6 +37,7 @@ pub(crate) const VIEW_AT: &str = "history.view_at";
 pub(crate) const COMPARE: &str = "history.compare";
 pub(crate) const CLOSE: &str = "history.close";
 pub(crate) const RESTORE: &str = "history.restore";
+pub(crate) const NAME: &str = "history.name";
 
 const PAGE: usize = 50;
 const MAX_PREVIEWS: usize = 8;
@@ -67,6 +68,12 @@ enum Command {
         resource: Option<String>,
         entry: String,
         reviewed_live_heads: Vec<String>,
+    },
+    Name {
+        resource: Option<String>,
+        first: String,
+        last: String,
+        label: String,
     },
 }
 
@@ -136,12 +143,12 @@ fn resource_param() -> ActionParam {
 }
 
 fn entry_param() -> ActionParam {
-    ActionParam::required_owned(
-        "entry",
-        ParamType::Text,
-        lookup("history-action-param-entry"),
-    )
-    .with_schema(serde_json::json!({"pattern": "^[0-9a-f]{32}$"}))
+    entry_param_named("entry", "history-action-param-entry")
+}
+
+fn entry_param_named(name: &'static str, label: &str) -> ActionParam {
+    ActionParam::required_owned(name, ParamType::Text, lookup(label))
+        .with_schema(serde_json::json!({"pattern": "^[0-9a-f]{32}$"}))
 }
 
 fn text(args: &tilo_actions::ActionArgs, name: &str) -> Option<String> {
@@ -294,6 +301,30 @@ pub(crate) fn resource() -> Resource {
             reviewed_live_heads: strings(args, "reviewed_live_heads"),
         },
     );
+    let name = typed(
+        NAME,
+        "history-action-name",
+        vec![
+            resource_param(),
+            entry_param_named("first", "history-action-param-first"),
+            entry_param_named("last", "history-action-param-last"),
+            ActionParam::required_owned(
+                "label",
+                ParamType::Text,
+                lookup("history-action-param-label"),
+            )
+            .with_schema(serde_json::json!({
+                "maxLength": crate::history_source::groups::MAX_LABEL_LEN,
+            })),
+        ],
+        json_contract(ActionKind::Undoable, RetryPolicy::Idempotent),
+        |args| Command::Name {
+            resource: text(args, "resource"),
+            first: text(args, "first").unwrap_or_default(),
+            last: text(args, "last").unwrap_or_default(),
+            label: text(args, "label").unwrap_or_default(),
+        },
+    );
     Resource::new(RESOURCE, RESOURCE, lookup("history-action-resource"))
         .with_action(open)
         .with_action(list)
@@ -301,6 +332,7 @@ pub(crate) fn resource() -> Resource {
         .with_action(compare)
         .with_action(close)
         .with_action(restore)
+        .with_action(name)
 }
 
 /// The in-app palette already lists the History chrome's own launcher.
@@ -514,6 +546,15 @@ impl App {
                 self.require_history_document(resource.as_deref())?;
                 self.restore_history(actor, &entry, &reviewed_live_heads)
             }
+            Command::Name {
+                resource,
+                first,
+                last,
+                label,
+            } => {
+                self.require_history_document(resource.as_deref())?;
+                self.name_history(actor, (&first, &last), &label)
+            }
         }
     }
 
@@ -618,6 +659,59 @@ impl App {
         })))
     }
 
+    fn name_history(
+        &mut self,
+        actor: &str,
+        (first, last): (&str, &str),
+        label: &str,
+    ) -> Result<ActionOutput, DoorError> {
+        self.require_history_write()?;
+        let (first, last) = (parse_entry(first)?, parse_entry(last)?);
+        let request = self
+            .with_history_model(|model, context| {
+                let position =
+                    |id: HistoryEntryId| model.rows().iter().position(|row| row.id == id);
+                let (Some(a), Some(b)) = (position(first), position(last)) else {
+                    return Err(HistoryError::InvalidSelection);
+                };
+                let (start, end) = if a <= b { (first, last) } else { (last, first) };
+                let record_id = crate::history_source::groups::read_named_ranges(
+                    context.document,
+                    &AuthorDirectory::default(),
+                )
+                .into_iter()
+                .find(|named| named.start == start && named.end == Some(end))
+                .map(|named| named.id);
+                Ok(crate::GroupNameRequest {
+                    record_id,
+                    start,
+                    end,
+                    label: label.trim().to_owned(),
+                })
+            })
+            .map_err(door)?;
+        let named = if request.label.is_empty() && request.record_id.is_none() {
+            false
+        } else {
+            let author = self.history_author(actor);
+            self.apply_history_name(&request, author).map_err(door)?
+        };
+        Ok(output(serde_json::json!({
+            "named": named,
+            "resource": self.history_document_resource(),
+            "live_heads": hex_heads(&committed_heads(&self.state.doc)),
+        })))
+    }
+
+    /// Who a History write through the action door is attributed to.
+    fn history_author(&self, actor: &str) -> UserId {
+        if actor == self.collaboration.local_author.0 {
+            self.local_author().clone()
+        } else {
+            UserId(actor.to_owned())
+        }
+    }
+
     fn restore_history(
         &mut self,
         actor: &str,
@@ -645,11 +739,7 @@ impl App {
                 })
             })
             .map_err(door)?;
-        let author = if actor == self.collaboration.local_author.0 {
-            self.local_author().clone()
-        } else {
-            UserId(actor.to_owned())
-        };
+        let author = self.history_author(actor);
         let restored = self
             .apply_history_restore(&confirmed, author)
             .map_err(door)?;

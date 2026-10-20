@@ -33,7 +33,7 @@ use automerge::{AutoCommit, ChangeHash};
 use crate::history_source::{
     CompareError, HistorySource, compare_entries, groups::read_named_ranges,
 };
-use crate::{GroupingConfig, HistoryEntry, HistoryEntryId, HistoryGroup, RecordId, group_entries};
+use crate::{HistoryEntry, HistoryEntryId, NamedRange, RecordId};
 
 /// Full authority namespace for one historical resource.
 ///
@@ -179,7 +179,8 @@ pub struct HistoryController {
     resource: HistoryResource,
     source: HistorySource,
     entries: Vec<HistoryEntry>,
-    groups: Vec<HistoryGroup>,
+    /// The named runs of changes the document carries, as the timeline bands them.
+    named: Vec<NamedRange>,
     projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
     selected: Option<SelectedPreview>,
@@ -256,7 +257,7 @@ impl HistoryController {
             resource,
             source: source.with_max_entries(HISTORY_PAGE),
             entries: Vec::new(),
-            groups: Vec::new(),
+            named: Vec::new(),
             projected_heads: None,
             observed_live_heads: sorted_heads(live_heads),
             selected: None,
@@ -296,8 +297,8 @@ impl HistoryController {
         &self.entries
     }
 
-    pub fn groups(&self) -> &[HistoryGroup] {
-        &self.groups
+    pub fn named_ranges(&self) -> &[NamedRange] {
+        &self.named
     }
 
     /// Committed activity at `live`'s frontier, in causal order, leaving
@@ -365,12 +366,11 @@ impl HistoryController {
         }
         let entries = self.source.entries(&mut projection);
         let named = read_named_ranges(&projection, self.source.authors());
-        let groups = group_entries(&entries, &named, &GroupingConfig::default());
 
         self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
         self.projected_heads = Some(live_heads);
         self.entries = entries;
-        self.groups = groups;
+        self.named = named;
         Ok(())
     }
 
@@ -395,9 +395,7 @@ impl HistoryController {
         } else {
             let projected_entries = self.source.entries(&mut projection);
             let named = read_named_ranges(&projection, self.source.authors());
-            let projected_groups =
-                group_entries(&projected_entries, &named, &GroupingConfig::default());
-            Some((projected_entries, projected_groups))
+            Some((projected_entries, named))
         };
         let factual_entries = refreshed_projection
             .as_ref()
@@ -427,9 +425,9 @@ impl HistoryController {
         let live_updates = after.heads != current_live_heads;
 
         self.generation = self.generation.wrapping_add(1);
-        if let Some((entries, groups)) = refreshed_projection {
+        if let Some((entries, named)) = refreshed_projection {
             self.entries = entries;
-            self.groups = groups;
+            self.named = named;
             self.projected_heads = Some(current_live_heads.clone());
         }
         self.observed_live_heads = current_live_heads;

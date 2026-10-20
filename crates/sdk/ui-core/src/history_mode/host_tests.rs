@@ -1908,3 +1908,62 @@ fn history_is_a_side_panel_whose_change_previews_in_place_and_restores_on_its_ow
         "what came after it stays"
     );
 }
+
+// USER REQUIREMENT (2026-10-19): "grouping of actions in named groups".
+#[test]
+fn the_side_panel_names_the_selected_changes_and_bands_them_under_the_name() {
+    let (mut driver, target, _) = versioned_driver((900, 650));
+    driver.click_named("history-open").unwrap();
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    let changes = driver.state_mut().doc.get_changes(&[]).len();
+    driver.click_named("history-name").unwrap();
+    driver.click_named("history-name-field").unwrap();
+    driver.commit_text("First pass");
+    driver.key("Enter");
+    let names = |driver: &mut FrameHarness| {
+        crate::history_source::groups::read_named_ranges(
+            &driver.state_mut().doc,
+            &crate::history_source::AuthorDirectory::default(),
+        )
+    };
+    let [named] = names(&mut driver).try_into().unwrap();
+    assert_eq!(named.label, "First pass");
+    assert_eq!(
+        format!(
+            "timeline-entry:{}",
+            crate::widget::history_group::hex16(&named.start)
+        ),
+        target
+    );
+    assert_eq!(named.end, Some(named.start), "one change is a run of one");
+    assert_eq!(
+        driver.state_mut().doc.get_changes(&[]).len(),
+        changes + 1,
+        "naming is one change"
+    );
+    assert_eq!(
+        root_text(&driver.state_mut().doc, "body").as_deref(),
+        Some("second"),
+        "naming moves no content"
+    );
+    fn band(node: &crate::a11y::AccessNode, name: &str) -> bool {
+        (node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name))
+            || node.children.iter().any(|child| band(child, name))
+    }
+    fn banded(node: &crate::headless::InspectionNode, name: &str) -> bool {
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| band(access, name))
+            || node.children.iter().any(|child| banded(child, name))
+    }
+    assert!(
+        banded(&driver.inspection().root, "First pass"),
+        "the timeline bands the change under its name"
+    );
+}

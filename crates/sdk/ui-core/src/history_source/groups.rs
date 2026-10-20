@@ -35,7 +35,7 @@ use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
-use crate::widget::history_group::{NamedRange, from_hex16, hex16};
+use crate::widget::history_group::{GroupNameRequest, NamedRange, from_hex16, hex16};
 use tilo_automerge::read::int_at;
 
 /// Namespaced so it cannot collide with an app's own schema: `tilo-doc` uses
@@ -117,6 +117,23 @@ pub fn name_range(
     let _ = doc.put(&rec, "by", by);
     let _ = doc.put(&rec, "at", at);
     key
+}
+
+/// Write what a [`GroupNameRequest`] asks for: name its range, or, with an
+/// empty label, remove the name it replaces. A range named again from
+/// another first change drops the record it replaces, so one run of changes
+/// carries one name. `false` when there was nothing to write. The
+/// transaction is left open for the host to commit.
+pub fn apply_name_request(doc: &mut AutoCommit, request: &GroupNameRequest) -> bool {
+    let replaced = request.record_id.as_deref();
+    if request.label.trim().is_empty() {
+        return replaced.is_some_and(|record| clear_name(doc, record));
+    }
+    let key = name_range(doc, &request.start, Some(&request.end), &request.label);
+    if let Some(record) = replaced.filter(|record| *record != key) {
+        clear_name(doc, record);
+    }
+    true
 }
 
 /// Close an open range at `end`. `false` when no such record exists.

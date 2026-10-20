@@ -130,6 +130,37 @@ pub(crate) fn apply_restore(
     Ok(state.restore_to_heads_with_context(&review.target_heads, None, None, author, &context))
 }
 
+/// Name a run of changes in the live document, or remove its name, as one
+/// new change attributed to `author`, as an action's invoker.
+///
+/// # Errors
+/// Refuses an open edit or a document that cannot take the write.
+pub(crate) fn apply_name(
+    state: &mut crate::state::State,
+    authority: &PermissionContext,
+    request: &crate::GroupNameRequest,
+    author: crate::permissions::UserId,
+) -> Result<bool, HistoryError> {
+    use crate::state::owned_restore::{OwnedRestoreError, name_history_run};
+    if state.doc.pending_ops() > 0 {
+        return Err(HistoryError::PendingEdits);
+    }
+    let invoker =
+        crate::invocation_scope::current_invoker().filter(|invoker| author.0 == invoker.actor);
+    let context = tilo_actions::ActionContext {
+        invoker,
+        ..tilo_actions::ActionContext::default()
+    };
+    name_history_run(state, authority, author, context, request)
+        .map(|receipt| receipt.changed)
+        .map_err(|error| match error {
+            OwnedRestoreError::PendingEdits
+            | OwnedRestoreError::UnfinishedActionBoundary
+            | OwnedRestoreError::ActiveAction => HistoryError::PendingEdits,
+            _ => HistoryError::Unavailable,
+        })
+}
+
 fn apply_record_restore(
     outer: &mut AutoCommit,
     binding: &CallbackBinding,
