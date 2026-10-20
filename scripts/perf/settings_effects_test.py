@@ -23,7 +23,7 @@ class SettingsEffectsTests(unittest.TestCase):
     def test_fixture_contract_matches_current_production_catalogue(self):
         from pathlib import Path
         import re
-        source=(Path(__file__).resolve().parents[2]/'apps/settings/src/categories.rs').read_text()
+        source=(Path(__file__).resolve().parents[2]/'apps/settings-core/src/categories.rs').read_text()
         category_source=source.split('impl Category {',1)[1]
         slugs=dict(re.findall(r'Category::(\w+)\s*=>\s*"([^"\n]*)"',category_source.split('pub fn slug(',1)[1].split('#[cfg(test)]',1)[0]))
         order=re.findall(r'Category::(\w+)',category_source.split('pub const ALL:',1)[1].split('];',1)[0])

@@ -1,6 +1,7 @@
 //! Production hosted frames for the provider connection and Files import journey.
 //! Register this module in the isolated-XDG test binary, not the shared UI binary.
 
+use settings::panes::accounts::AccountsArea;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::time::Instant;
@@ -376,6 +377,11 @@ impl Profile {
     }
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic_in_result_fn,
+    reason = "a Settings window holds its Accounts area from when it is made"
+)]
 fn open_settings(
     root: &AccountRoot,
     custodian: &account_custody::Custodian,
@@ -387,7 +393,12 @@ fn open_settings(
         .surface::<settings::SettingsApp, _>(|app| {
             // Preserve the live pane's host action door while replacing only
             // its provider dependencies with deterministic local services.
-            let mut model = app.accounts().model().borrow_mut();
+            let mut model = app
+                .areas()
+                .find::<AccountsArea>()
+                .unwrap()
+                .model()
+                .borrow_mut();
             let hosted = std::mem::replace(&mut *model, AccountsPane::in_root(root.clone()));
             *model = hosted
                 .with_custodian(custodian.clone())
@@ -422,6 +433,11 @@ fn capture_provider_form(settings: &mut TestApp<SettingsShell>) -> TestResult {
     Ok(())
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic_in_result_fn,
+    reason = "a Settings window holds its Accounts area from when it is made"
+)]
 #[cfg(target_os = "linux")]
 fn sign_in(
     settings: &mut TestApp<SettingsShell>,
@@ -438,7 +454,9 @@ fn sign_in(
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
         .surface::<settings::SettingsApp, _>(|app| {
-            app.accounts()
+            app.areas()
+                .find::<AccountsArea>()
+                .unwrap()
                 .model()
                 .borrow_mut()
                 .finish_sign_in_step_for_test(tilo_test_env::hang_bound())
@@ -645,6 +663,12 @@ fn assert_mail_remaining(store: &accounts::AccountStore, inspection: &str) {
     assert!(!inspection.contains("Google Drive files"));
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic_in_result_fn,
+    clippy::too_many_lines,
+    reason = "a Settings window holds its Accounts area from when it is made; one sign-in journey reads best as one test"
+)]
 #[test]
 fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     let profile = Profile::new()?;
@@ -682,7 +706,9 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
         .surface::<settings::SettingsApp, _>(|app| {
-            app.accounts()
+            app.areas()
+                .find::<AccountsArea>()
+                .unwrap()
                 .model()
                 .borrow_mut()
                 .finish_sign_in_step_for_test(tilo_test_env::hang_bound())
@@ -734,7 +760,14 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     loop {
         settings.settle();
         let busy = settings
-            .surface::<settings::SettingsApp, _>(|app| app.accounts().model().borrow().busy())
+            .surface::<settings::SettingsApp, _>(|app| {
+                app.areas()
+                    .find::<AccountsArea>()
+                    .unwrap()
+                    .model()
+                    .borrow()
+                    .busy()
+            })
             .ok_or("mounted Settings surface")?;
         if !busy {
             break;
@@ -751,6 +784,11 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
     Ok(())
 }
 
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic_in_result_fn,
+    reason = "a Settings window holds its Accounts area from when it is made"
+)]
 #[test]
 fn google_mail_only_is_not_presented_as_drive() -> TestResult {
     let profile = Profile::new()?;
@@ -776,7 +814,9 @@ fn google_mail_only_is_not_presented_as_drive() -> TestResult {
     settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
     let finished = settings
         .surface::<settings::SettingsApp, _>(|app| {
-            app.accounts()
+            app.areas()
+                .find::<AccountsArea>()
+                .unwrap()
                 .model()
                 .borrow_mut()
                 .finish_sign_in_step_for_test(tilo_test_env::hang_bound())

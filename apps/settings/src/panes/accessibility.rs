@@ -32,6 +32,23 @@ use crate::row::SettingRow;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, error_row, note, rows, section, value_row};
 
+crate::effects::effect_family!(AccessibilityEffect => answer);
+
+crate::area::pane_area! {
+    Software;
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        statuses(self.speech.is_some())
+    }
+}
+
+/// The assistive software the window found installed.
+pub(crate) fn software(app: &crate::settings_app::SettingsApp) -> Software {
+    app.areas()
+        .find::<Software>()
+        .copied()
+        .unwrap_or(Software { speech: None })
+}
+
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {

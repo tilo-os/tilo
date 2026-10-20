@@ -180,9 +180,9 @@ fn use_shared_sources(app: &SettingsApp, scope: &str) -> EffectAnswer {
 }
 
 pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Option<EffectAnswer> {
-    let area = app.input();
+    let area = crate::panes::mouse_keyboard::area(app)?;
     if matches!(operation, InputEffect::InspectKeyboardSources) {
-        return Some(Ok(inspect_sources(app)));
+        return Some(inspect_sources(app));
     }
     if let InputEffect::UseSharedSources { scope } = operation {
         return Some(use_shared_sources(app, scope));
@@ -277,8 +277,8 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
     Some(result)
 }
 
-fn inspect_sources(app: &SettingsApp) -> Effected {
-    let area = app.input();
+fn inspect_sources(app: &SettingsApp) -> EffectAnswer {
+    let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
     let input = app.host().settings::<InputPrefs>().get();
     let scopes: Vec<_> = area
         .keyboard_scopes()
@@ -291,9 +291,9 @@ fn inspect_sources(app: &SettingsApp) -> Effected {
         })
         .collect();
     let editor = area.editor.get();
-    Effected::value(
+    Ok(Effected::value(
         serde_json::json!({"scopes": scopes, "editing": editor.scope, "selected": editor.selected, "adding": editor.adding}),
-    )
+    ))
 }
 
 fn confirm_added_source(
@@ -302,7 +302,7 @@ fn confirm_added_source(
     input: InputPrefs,
     mut profile: KeyboardProfile,
 ) -> EffectAnswer {
-    let area = app.input();
+    let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
     let source = editor
         .pending
         .clone()
@@ -1007,6 +1007,7 @@ impl MouseKeyboardPane {
             editor: self.editor.clone(),
             osk_always: false,
             document: self.cx.storage().settings_document().clone(),
+            map_cache: std::rc::Rc::default(),
         }
     }
 
@@ -1225,13 +1226,25 @@ mod tests {
     fn fixture_app(scenario: &str, viewport: (u32, u32)) -> TestApp<SettingsShell> {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         app.surface::<SettingsApp, _>(|surface| {
-            surface.input().live.set(false);
+            crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .live
+                .set(false);
             // These fixtures edit configured sources without a native seat observation.
-            let mut editor = surface.input().editor.get();
+            let mut editor = crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .editor
+                .get();
             editor.view = SourceView::Configured;
-            surface.input().editor.set(editor);
-            surface.input().devices.borrow_mut().1 =
-                crate::scenarios::keyboard_fixture(Some(scenario));
+            crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .editor
+                .set(editor);
+            crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .devices
+                .borrow_mut()
+                .1 = crate::scenarios::keyboard_fixture(Some(scenario));
         })
         .unwrap();
         app.harness().resize(viewport).unwrap();
@@ -1444,7 +1457,15 @@ mod tests {
         );
         perform(&mut app, InputEffect::CloseSourcePicker);
         app.surface::<SettingsApp, _>(|surface| {
-            assert_eq!(osk_profile(&surface.input().document).sources, ["qwerty"]);
+            assert_eq!(
+                osk_profile(
+                    &crate::panes::mouse_keyboard::area(surface)
+                        .unwrap()
+                        .document
+                )
+                .sources,
+                ["qwerty"]
+            );
         })
         .unwrap();
         perform(&mut app, InputEffect::OpenSourcePicker);
@@ -1462,7 +1483,11 @@ mod tests {
             },
         );
         app.surface::<SettingsApp, _>(|surface| {
-            let stored = osk_profile(&surface.input().document);
+            let stored = osk_profile(
+                &crate::panes::mouse_keyboard::area(surface)
+                    .unwrap()
+                    .document,
+            );
             assert_eq!(stored.sources, ["qwerty", "azerty"]);
             assert_eq!(stored.active, "azerty");
         })
@@ -1674,8 +1699,11 @@ mod tests {
         let assigned =
             app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-1"].clone();
         app.surface::<SettingsApp, _>(|surface| {
-            surface.input().devices.borrow_mut().1 =
-                crate::scenarios::keyboard_fixture(Some("keyboard-single"));
+            crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .devices
+                .borrow_mut()
+                .1 = crate::scenarios::keyboard_fixture(Some("keyboard-single"));
         })
         .unwrap();
         app.settle();
@@ -1690,8 +1718,11 @@ mod tests {
             .is_err()
         );
         app.surface::<SettingsApp, _>(|surface| {
-            surface.input().devices.borrow_mut().1 =
-                crate::scenarios::keyboard_fixture(Some("keyboard-many"));
+            crate::panes::mouse_keyboard::area(surface)
+                .unwrap()
+                .devices
+                .borrow_mut()
+                .1 = crate::scenarios::keyboard_fixture(Some("keyboard-many"));
         })
         .unwrap();
         app.settle();
@@ -1734,7 +1765,12 @@ mod tests {
         }
         let mut app = fixture_app("keyboard-osk", (440, 820));
         let document = app
-            .surface::<SettingsApp, _>(|surface| surface.input().document.clone())
+            .surface::<SettingsApp, _>(|surface| {
+                crate::panes::mouse_keyboard::area(surface)
+                    .unwrap()
+                    .document
+                    .clone()
+            })
             .unwrap();
         let settings = ui::storage::Settings::<FixtureOskPreferences>::for_app("so.tilo.osk")
             .in_document(document);
@@ -1747,7 +1783,11 @@ mod tests {
         settings.set(&preferences).unwrap();
         app.settle();
         app.surface::<SettingsApp, _>(|surface| {
-            let legacy = osk_profile(&surface.input().document);
+            let legacy = osk_profile(
+                &crate::panes::mouse_keyboard::area(surface)
+                    .unwrap()
+                    .document,
+            );
             assert_eq!(legacy.active, "azerty");
             assert_eq!(legacy.sources, ["qwerty", "azerty"]);
         })
@@ -1772,7 +1812,11 @@ mod tests {
         assert_eq!(settings.get().layouts, ["azerty", "qwerty"]);
         let mut app = app.reopen().unwrap();
         app.surface::<SettingsApp, _>(|surface| {
-            let stored = osk_profile(&surface.input().document);
+            let stored = osk_profile(
+                &crate::panes::mouse_keyboard::area(surface)
+                    .unwrap()
+                    .document,
+            );
             assert_eq!(stored.active, "azerty");
             assert_eq!(stored.sources, ["azerty", "qwerty"]);
         })

@@ -30,23 +30,23 @@ use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
-use crate::prefs::NotificationPrefs;
+use crate::prefs::{MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id};
 use crate::widgets::{
     Item, SettingsSection, StatusTone, error_row, note, row, rows, section, semantic_status_pill,
     setting_row, value_row,
 };
 
+crate::area::pane_area!(NotificationsArea);
+
+/// The window's [`NotificationsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NotificationsArea> {
+    app.areas().find()
+}
+
 const FOCUS_DAYS: &[(&str, u8)] = &[
     ("Every day", 0),
     ("Weekdays", 0b0001_1111),
     ("Weekends", 0b0110_0000),
-];
-
-const MUTE_OPTIONS: &[(&str, i64)] = &[
-    ("Not muted", 0),
-    ("For 1 hour", 60 * 60),
-    ("For 8 hours", 8 * 60 * 60),
-    ("For 24 hours", 24 * 60 * 60),
 ];
 
 /// The most apps the published tree lists; an app beyond it is still
@@ -57,14 +57,6 @@ const MAX_APP_ROWS: usize = 256;
 pub(crate) struct InstalledNotificationApp {
     id: String,
     name: String,
-}
-
-pub(crate) fn valid_app_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 160
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
 fn installed_notification_apps(
@@ -300,7 +292,7 @@ impl NotificationsArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.apps.get().is_some()
     }
@@ -394,19 +386,6 @@ fn flip(on: bool, noun: &str) -> String {
     format!("Turn {} {noun}", if on { "on" } else { "off" })
 }
 
-fn mute_ftl(english: &str) -> &'static str {
-    match english {
-        "For 1 hour" => "notif-mute-1h",
-        "For 8 hours" => "notif-mute-8h",
-        "For 24 hours" => "notif-mute-24h",
-        _ => "notif-mute-off",
-    }
-}
-
-fn mute_shown(english: &str) -> String {
-    t(mute_ftl(english))
-}
-
 fn mute_label(deadline: Option<i64>, now: i64) -> String {
     let english = match deadline.filter(|deadline| *deadline > now) {
         None => "Not muted",
@@ -422,12 +401,6 @@ fn mute_label(deadline: Option<i64>, now: i64) -> String {
         }
     };
     mute_shown(english)
-}
-
-pub(crate) fn mute_seconds(label: &str) -> Option<i64> {
-    MUTE_OPTIONS.iter().find_map(|(english, seconds)| {
-        (*english == label || mute_shown(english) == label).then_some(*seconds)
-    })
 }
 
 /// The English name of a mute duration shown in either language.

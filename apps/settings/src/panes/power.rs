@@ -40,6 +40,20 @@ use crate::widgets::{
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
 
+crate::effects::effect_family!(PowerEffect => answer);
+
+crate::area::pane_area! {
+    PowerArea;
+    fn warm(&self) {
+        PowerArea::warm(self);
+    }
+}
+
+/// The window's [`PowerArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PowerArea> {
+    app.areas().find()
+}
+
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
     ("5 minutes", 5),
@@ -569,7 +583,7 @@ pub(crate) fn answer(
     match effect {
         PowerEffect::SetPowerProfile { profile } => {
             let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
-            let area = app.power();
+            let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
             let unsupported =
                 move || format!("{} is not supported by this device", profile_label(profile));
             // What the hardware offers, as last read; the job asks it when
@@ -596,7 +610,7 @@ pub(crate) fn answer(
                     control.set_profile(profile).map(|()| profile)
                 },
                 |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
-                    let area = app.power();
+                    let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok(profile) => {
@@ -620,7 +634,7 @@ pub(crate) fn answer(
             ))
         }
         PowerEffect::SetChargeLimit { percent } => {
-            let area = app.power();
+            let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
             let offers = move |cap: Option<&ChargeCapCapability>| {
                 cap.is_some_and(|cap| cap.choices.contains(&percent))
             };
@@ -644,7 +658,7 @@ pub(crate) fn answer(
                     control.set_charge_limit(percent).map(|cap| (percent, cap))
                 },
                 |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
-                    let area = app.power();
+                    let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok((percent, cap)) => {
@@ -1384,7 +1398,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.set_power(PowerArea::over(Arc::new(StalledPower(stalled))));
+            settings.replace_area(PowerArea::over(Arc::new(StalledPower(stalled))));
         })
         .expect("the Settings window is mounted");
 

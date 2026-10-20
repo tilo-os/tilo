@@ -55,6 +55,15 @@ use crate::widgets::{
     setting_row_described,
 };
 
+crate::effects::effect_family!(AudioEffect => answer);
+
+crate::area::pane_area!(AudioArea);
+
+/// The window's [`AudioArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
+    app.areas().find()
+}
+
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
 /// appears without reopening Settings. Cheap enough for an actively-viewed
@@ -79,13 +88,6 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
         SystemSoundEvent::Error => events.error,
     }
 }
-
-impl ui::storage::SettingsSchema for AudioPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
-}
-
-#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
-impl AudioPrefs {}
 
 /// What Sound changes: this device's outputs, inputs and app streams, and
 /// the person's audio preferences.
@@ -169,7 +171,9 @@ pub(crate) fn answer(
     effect: AudioEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let model = app.audio().model();
+    let model = crate::panes::audio::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model();
     let mut model = model.borrow_mut();
     match model.plan(&effect)? {
         Plan::Local => model.apply_local(&effect).map(|_| Effected::done()),
@@ -187,7 +191,8 @@ pub(crate) fn answer(
                     let Some(result) = ran else {
                         return Ok(Effected::done());
                     };
-                    app.audio()
+                    crate::panes::audio::area(app)
+                        .ok_or_else(crate::area::missing)?
                         .model()
                         .borrow_mut()
                         .settle(settle, result)
@@ -672,7 +677,7 @@ impl AudioArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
@@ -3117,7 +3122,11 @@ Video
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.audio().model().borrow_mut().output = Arc::new(StalledOutput(stalled));
+            crate::panes::audio::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .output = Arc::new(StalledOutput(stalled));
         })
         .expect("the Settings window is mounted");
 
@@ -3136,7 +3145,14 @@ Video
         );
         let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
             app.with_widget::<SettingsApp, _>(|settings| {
-                (settings.audio().model().borrow().volume - 0.3).abs() < 0.01
+                (crate::panes::audio::area(settings)
+                    .unwrap()
+                    .model()
+                    .borrow()
+                    .volume
+                    - 0.3)
+                    .abs()
+                    < 0.01
             })
             .unwrap()
         };

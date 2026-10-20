@@ -28,6 +28,8 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, note, rows, section, setting_row};
 
+crate::effects::effect_family!(ShortcutEffect => answer);
+
 /// The shell's desktop navigation preferences, as the person's settings
 /// hold them.
 #[derive(

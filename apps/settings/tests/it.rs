@@ -75,6 +75,8 @@ mod support {
         }
 
         pub fn app(&self) -> SettingsApp {
+            // The panes register before a window over them is made.
+            settings::install();
             SettingsApp::with_config_root(self.dir.path().join("tilo"))
         }
     }

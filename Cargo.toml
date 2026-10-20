@@ -122,6 +122,8 @@ members = [
     "apps/scratchpad",
     "apps/speed-test",
     "apps/settings",
+    "apps/settings-core",
+    "apps/settings-rare",
     "apps/sheets",
     "apps/slides",
     "apps/shortcuts",

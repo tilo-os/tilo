@@ -46,6 +46,20 @@ use ui::lock::MutexRecover as _;
 pub use zone_globe::TimeZonePoint;
 use zone_globe::{SharedGlobe, TimeZoneGlobe, degrees_apart};
 
+crate::effects::effect_family!(TimeDateEffect => answer);
+
+crate::area::pane_area! {
+    TimeDateArea;
+    fn warm(&self) {
+        TimeDateArea::warm(self);
+    }
+}
+
+/// The window's [`TimeDateArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&TimeDateArea> {
+    app.areas().find()
+}
+
 /// A map-friendly model over the exact IANA ids accepted by timedated.
 /// Coordinates come from the same installed tzdata package; this deliberately
 /// has no embedded city/coordinate database. Aliases absent from the tzdata
@@ -462,16 +476,16 @@ impl TimeDateArea {
 
 /// Answer `effect`. Device changes run off the UI thread: timedated may ask
 /// for authorisation.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "every area of Settings answers its effects with one signature"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: TimeDateEffect,
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
-    let clock = Arc::clone(&app.time_date().clock);
+    let clock = Arc::clone(
+        &crate::panes::time_date::area(app)
+            .ok_or_else(crate::area::missing)?
+            .clock,
+    );
     Ok(crate::device_read::job(
         cx,
         move || match effect {
@@ -491,7 +505,7 @@ pub(crate) fn answer(
             }
         },
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
-            let area = app.time_date();
+            let area = crate::panes::time_date::area(app).ok_or_else(crate::area::missing)?;
             // What the clock took is read off the UI thread too.
             area.reading.refresh();
             match outcome {
@@ -1250,7 +1264,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.set_time_date(TimeDateArea::over(Arc::new(StalledClock(stalled))));
+            settings.replace_area(TimeDateArea::over(Arc::new(StalledClock(stalled))));
         })
         .expect("the Settings window is mounted");
 

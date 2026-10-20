@@ -29,6 +29,23 @@ use crate::widgets::{
     Item, block, error_caption, note, row, rows, section, section_action, untitled,
 };
 
+crate::effects::effect_family!(BluetoothEffect => answer);
+
+crate::area::pane_area! {
+    BluetoothArea;
+    fn poll(&self) {
+        BluetoothArea::poll(self);
+    }
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        BluetoothArea::statuses(self)
+    }
+}
+
+/// The window's [`BluetoothArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&BluetoothArea> {
+    app.areas().find()
+}
+
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
@@ -107,7 +124,9 @@ pub(crate) fn answer(
         // A dongle plugged in a moment ago is seen without waiting.
         app.host().radios().look_again();
     }
-    let model = app.bluetooth().model();
+    let model = crate::panes::bluetooth::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model();
     let (control, name) = {
         let mut model = model.borrow_mut();
         let name = effect_device(&effect).and_then(|path| model.name_of(path));
@@ -132,7 +151,9 @@ pub(crate) fn answer(
         cx,
         move || carry_out(control.as_ref(), &effect, &name),
         |app: &mut SettingsApp, outcome: Result<String, String>, _| {
-            let model = app.bluetooth().model();
+            let model = crate::panes::bluetooth::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model();
             let mut model = model.borrow_mut();
             model.pairing = None;
             model.notice = Some(outcome.clone().unwrap_or_else(|error| error));
@@ -437,7 +458,7 @@ impl BluetoothArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
@@ -1431,12 +1452,20 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
         let device_rows = |app: &mut TestApp<SettingsShell>| {
-            app.surface::<SettingsApp, _>(|settings| settings.bluetooth().rows().len())
-                .unwrap()
+            app.surface::<SettingsApp, _>(|settings| {
+                crate::panes::bluetooth::area(settings)
+                    .unwrap()
+                    .rows()
+                    .len()
+            })
+            .unwrap()
         };
         let pane = |app: &mut TestApp<SettingsShell>| {
             app.surface::<SettingsApp, _>(|settings| {
-                let model = settings.bluetooth().model().borrow();
+                let model = crate::panes::bluetooth::area(settings)
+                    .unwrap()
+                    .model()
+                    .borrow();
                 crate::widgets::announced_text(model.build_composition().as_ref())
             })
             .unwrap()
@@ -1596,7 +1625,11 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.bluetooth().model().borrow_mut().control = Arc::new(StalledAdapter(stalled));
+            crate::panes::bluetooth::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .control = Arc::new(StalledAdapter(stalled));
         })
         .expect("the Settings window is mounted");
 

@@ -47,12 +47,22 @@ use settings_store::hardware::{
     OutputTransform, logical_extent,
 };
 
-impl ui::storage::SettingsSchema for DisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
+crate::effects::effect_family!(DisplayEffect => answer);
+
+crate::area::pane_area! {
+    DisplayArea;
+    fn poll(&self) {
+        DisplayArea::poll(self);
+    }
+    fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
+        DisplayArea::take_host_intent(self)
+    }
 }
 
-#[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
-impl DisplayPrefs {}
+/// The window's [`DisplayArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DisplayArea> {
+    app.areas().find()
+}
 
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.
@@ -183,9 +193,17 @@ pub(crate) fn answer(
             | DisplayEffect::ApplyDisplayChanges
             | DisplayEffect::KeepDisplayChanges
             | DisplayEffect::RevertDisplayChanges
-    ) && app.displays().model().borrow().of_device
+    ) && crate::panes::display::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model()
+        .borrow()
+        .of_device
     {
-        let command = app.displays().model().borrow().host_command(&effect)?;
+        let command = crate::panes::display::area(app)
+            .ok_or_else(crate::area::missing)?
+            .model()
+            .borrow()
+            .host_command(&effect)?;
         let inspect = effect == DisplayEffect::InspectDisplayConfiguration;
         // Only a delivered invocation can name broker-retained original custody.
         // Physical UI effects have no remote invoker and use the certified local channel.
@@ -203,7 +221,9 @@ pub(crate) fn answer(
             cx,
             move || request_host_display(&command, original),
             move |app, result, _| {
-                let model = app.displays().model();
+                let model = crate::panes::display::area(app)
+                    .ok_or_else(crate::area::missing)?
+                    .model();
                 let mut model = model.borrow_mut();
                 model.accept_host_reply(result?);
                 let value = if inspect {
@@ -225,16 +245,26 @@ pub(crate) fn answer(
     }
     if effect == DisplayEffect::InspectSharedDisplays {
         return Ok(Effected::value(
-            app.displays().model().borrow().shared_display_inspection(),
+            crate::panes::display::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model()
+                .borrow()
+                .shared_display_inspection(),
         ));
     }
     if effect == DisplayEffect::InspectDisplayConfiguration {
         return Ok(Effected::value(
-            app.displays().model().borrow().inspection(),
+            crate::panes::display::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model()
+                .borrow()
+                .inspection(),
         ));
     }
     let staged = {
-        let model = app.displays().model();
+        let model = crate::panes::display::area(app)
+            .ok_or_else(crate::area::missing)?
+            .model();
         let mut model = model.borrow_mut();
         let staged = model.apply(&effect)?;
         if staged == STAGED {
@@ -244,8 +274,16 @@ pub(crate) fn answer(
     };
     // A change that cannot leave a screen dark applies as it is chosen;
     // only one that can is tried with Keep and Revert first.
-    if app.displays().model().borrow().of_device
-        && app.displays().model().borrow().staged_applies_at_once()
+    if crate::panes::display::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model()
+        .borrow()
+        .of_device
+        && crate::panes::display::area(app)
+            .ok_or_else(crate::area::missing)?
+            .model()
+            .borrow()
+            .staged_applies_at_once()
     {
         return answer(app, DisplayEffect::ApplyDisplayChanges, cx);
     }
@@ -758,7 +796,7 @@ impl DisplayArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
@@ -3167,22 +3205,25 @@ mod tests {
         )
         .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().device_displays =
-                vec![settings_store::device_displays::DeviceDisplay {
-                    device: "semantic-peer".into(),
-                    device_label: "Peer laptop".into(),
-                    connector: "eDP-1".into(),
-                    output_id: None,
-                    label: "Panel".into(),
-                    online: true,
-                    local: false,
-                    x: 1920,
-                    y: 0,
-                    width: 1280,
-                    height: 720,
-                    scale_milli: 1250,
-                    revision: 9,
-                }];
+            crate::panes::display::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .device_displays = vec![settings_store::device_displays::DeviceDisplay {
+                device: "semantic-peer".into(),
+                device_label: "Peer laptop".into(),
+                connector: "eDP-1".into(),
+                output_id: None,
+                label: "Panel".into(),
+                online: true,
+                local: false,
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+                scale_milli: 1250,
+                revision: 9,
+            }];
         })
         .unwrap();
         app.settle();

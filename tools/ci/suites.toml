@@ -522,7 +522,7 @@ suites = [
 name = "perf-tools"
 requirement = { cores = 4, memory = "1GiB" }
 inputs = [
-  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
+  "scripts/perf/", "apps/settings-core/src/categories.rs", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
   # benchmarks equal to the budgets' lanes and the A/B groups.
   ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
@@ -1171,9 +1171,26 @@ inputs = [
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
 ]
 readers = [
-  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings/tests/cloud_ux.rs",
-  "apps/settings/src/panes/agent_models/admin_tests.rs",
+]
+
+[[cargo]]
+package = "settings-core"
+inputs = [
+  # Its own tests compile every pane in (src/test_panes.rs): the app's and
+  # settings-rare's sources.
+  "apps/settings/src/**",
+  "apps/settings-rare/src/**",
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+]
+readers = [
+  "apps/settings-core/src/test_panes.rs",
+  "apps/settings-rare/src/panes/accounts/cloud_import_acceptance.rs",
+  "apps/settings-rare/src/panes/agent_models/admin_tests.rs",
 ]
 
 [[cargo]]

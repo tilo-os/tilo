@@ -496,7 +496,7 @@ mod tests {
         {
             // These are the non-core writers of settings.json. Core Settings
             // structs have their own schema-derived coverage test in
-            // apps/settings/src/prefs.rs. Keeping the other writer shapes here
+            // apps/settings-core/src/prefs.rs. Keeping the other writer shapes here
             // makes a new cross-crate leaf fail until its ownership is reviewed.
             let document = serde_json::json!({
                 "display_profiles": {"profiles": {}},
