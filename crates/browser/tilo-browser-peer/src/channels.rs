@@ -35,7 +35,7 @@ use collab_types::{
     ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
     MlsGovernanceFrameV1,
 };
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 use crate::document::{ContentCipher, DocumentRoute};
 
@@ -199,6 +199,9 @@ pub(crate) struct Channels {
     /// governs the rooms it hosts unless a genesis frame names another of
     /// this person's devices.
     host: Option<Ed25519PublicKey>,
+    /// Devices this page's own root revoked: none of them stewards a
+    /// channel, whatever the page learned or saved before.
+    revocations: RevocationList,
     /// Genesis frames whose sender's certificate has not arrived yet.
     candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
     /// Restored member state, waiting for its route to open.
@@ -220,6 +223,7 @@ impl Channels {
             rooms: HashMap::new(),
             pinned: HashMap::new(),
             host: None,
+            revocations: RevocationList::new(),
             candidates: Vec::new(),
             saved: HashMap::new(),
             saved_requests: HashMap::new(),
@@ -364,11 +368,68 @@ impl Channels {
         if let Some(pinned) = self.pinned.get(room) {
             return Governance::Governed(*pinned);
         }
-        match (self.rooms.get(room), self.host) {
+        let host = self.host.filter(|host| !self.revoked(host));
+        match (self.rooms.get(room), host) {
             (Some(learned), _) => *learned,
             (None, Some(host)) => Governance::Governed(host),
             (None, None) => Governance::Unknown,
         }
+    }
+
+    fn revoked(&self, device: &Ed25519PublicKey) -> bool {
+        self.revocations.is_revoked(device.as_bytes())
+    }
+
+    /// Learn revocations this page's root signed. A revoked device stewards
+    /// nothing from then on: a governor the page learned from a genesis,
+    /// saved from an earlier page or took from the host is forgotten, and
+    /// the channels it stewarded start over under whoever governs next. A
+    /// governor the room itself pinned stays: the room decides who succeeds
+    /// it. Entries of another root, or that do not verify, are ignored.
+    pub(crate) fn note_revocations(
+        &mut self,
+        entries: impl IntoIterator<Item = RevocationEntry>,
+        now_ms: u64,
+    ) -> Changes {
+        let mut learned = false;
+        for entry in entries {
+            if entry.user_public_key == self.user {
+                learned |= self.revocations.insert(entry).unwrap_or(false);
+            }
+        }
+        let mut changes = Changes::default();
+        if !learned {
+            return changes;
+        }
+        let revocations = &self.revocations;
+        let before = self.rooms.len();
+        self.rooms.retain(|_, governance| match governance {
+            Governance::Governed(governor) => !revocations.is_revoked(governor.as_bytes()),
+            Governance::Unknown => true,
+        });
+        self.dirty |= self.rooms.len() != before;
+        let channels: Vec<ChannelId> = self
+            .routes
+            .iter()
+            .filter(|(_, route)| {
+                !self.pinned.contains_key(&route.document.cluster_id)
+                    && route
+                        .member
+                        .as_ref()
+                        .is_some_and(|member| self.revoked(&member.steward()))
+            })
+            .map(|(channel, _)| *channel)
+            .collect();
+        for channel in channels {
+            if let Some(route) = self.routes.get_mut(&channel) {
+                route.member = None;
+                route.request = None;
+                route.installed_epoch = None;
+            }
+            self.dirty = true;
+            self.settle(channel, now_ms, &mut changes);
+        }
+        changes
     }
 
     /// Name `room`'s governor as the page learned it from the room itself.
@@ -415,6 +476,7 @@ impl Channels {
             cert.user_public_key == self.user
                 && cert.capabilities.can_own_workspaces
                 && !cert.capabilities.foreign
+                && !self.revocations.is_revoked(author)
         })
     }
 
@@ -914,6 +976,75 @@ mod tests {
         let changes = channels.receive_frame(device(&server), ROOM, genesis(&server, &note), 0);
         assert_eq!(requests(&changes), 1);
         assert_eq!(steward_of(&channels, &note), Some(device(&server)));
+    }
+
+    fn revoke(root: &SigningKey, device: &SigningKey) -> RevocationEntry {
+        let mut entry = RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device.verifying_key().to_bytes(),
+            revoked_at_ns: 2,
+            reason: tilo_user_identity::RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
+        entry
+    }
+
+    /// A device this person's root revoked stewards nothing: its genesis
+    /// names no governor, a governor the page already follows is dropped
+    /// when its revocation arrives (the channel asks the next governor), and
+    /// another root's revocation changes nothing.
+    #[test]
+    fn a_revoked_device_never_stewards_a_channel() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let stranger_root = SigningKey::from_bytes(&[2; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop = SigningKey::from_bytes(&[4; 32]);
+        let desktop = SigningKey::from_bytes(&[5; 32]);
+        let note = route("note-1");
+
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
+        channels.open(&note, 0);
+        let changes = channels.note_revocations([revoke(&user, &laptop)], 0);
+        assert_eq!(requests(&changes), 0);
+        channels.note_cert(
+            device(&laptop),
+            cert(&user, &laptop, DeviceCapabilities::primary()),
+            0,
+        );
+        channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
+        assert_eq!(steward_of(&channels, &note), None, "a revoked genesis");
+
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
+        channels.open(&note, 0);
+        for key in [&laptop, &desktop] {
+            channels.note_cert(
+                device(key),
+                cert(&user, key, DeviceCapabilities::primary()),
+                0,
+            );
+        }
+        channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
+        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
+        let changes = channels.note_revocations([revoke(&stranger_root, &laptop)], 0);
+        assert_eq!(requests(&changes), 0);
+        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
+
+        channels.note_revocations([revoke(&user, &laptop)], 0);
+        assert_eq!(
+            steward_of(&channels, &note),
+            None,
+            "the revoked steward is dropped"
+        );
+        assert!(
+            channels
+                .export_if_changed()
+                .is_some_and(|saved| saved.governors.is_empty()),
+            "nor is it saved as the room's governor"
+        );
+        let changes = channels.receive_frame(device(&desktop), ROOM, genesis(&desktop, &note), 0);
+        assert_eq!(requests(&changes), 1, "asks the next governor");
+        assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
     }
 
     /// A page on a node asks the node for a room's channels without waiting
