@@ -8,22 +8,34 @@ type Note {
     tags: Set<Text>
 }
 
-/// A notebook holds notes and remembers which one is open.
+/// The workspace's notes.
 type Notebook {
     notes: Collection<Note>
-    open: Option<Note>
 }
 
-/// Starts a note and opens it.
+/// The order a notebook lists its notes in.
+enum NoteOrder {
+    /// The order they were written in.
+    created
+    /// By title.
+    title
+}
+
+/// Which notes a notebook lists.
+enum NoteFilter {
+    all
+    pinned
+}
+
+root Notebook
+
+default view notebook for Notebook
+
+default view note_editor for Note
+
+/// Starts a note.
 action new_note(nb: Notebook) -> Note {
-    let n = nb.notes.insert(Note(title: "Untitled"))
-    nb.open = n
-    return n
-}
-
-/// Opens a note in the editor.
-action open_note(nb: Notebook, n: Note) {
-    nb.open = n
+    nb.notes.insert(Note(title: "Untitled"))
 }
 
 /// Pins or unpins a note.
@@ -31,14 +43,9 @@ action toggle_pin(n: Note) {
     n.pinned = not n.pinned
 }
 
-/// Deletes a note; the editor closes when it was the open one.
+/// Deletes a note.
 action delete(nb: Notebook, n: Note) {
     nb.notes.remove(n)
-    if nb.open.is_some() {
-        if nb.open.unwrap() == n {
-            nb.open = none
-        }
-    }
 }
 
 /// Renames a note.
@@ -51,49 +58,74 @@ action tag(n: Note, t: Text) {
     n.tags.add(t)
 }
 
-view main(nb: Notebook) {
-    page(full) {
-        split(side: leading, collapse: navigate) {
-            primary(min: 16rem) {
-                note_list(nb)
+/// The notes a notebook lists, in its order.
+fn listed(nb: Notebook, order: NoteOrder, filter: NoteFilter) -> List<Note> {
+    let notes: List<Note> = match filter {
+        .all => nb.notes,
+        .pinned => nb.notes.filter(n -> n.pinned),
+    }
+    match order {
+        .created => notes,
+        .title => notes.sort_by(n -> n.title),
+    }
+}
+
+/// The notebook's window: its notes, each opening in a window of its own.
+view notebook(nb: Notebook) {
+    window order: NoteOrder = .created
+    window filter: NoteFilter = .all
+    lens expanded: Option<Note> = .none
+    page {
+        stack(gap: .section) {
+            row(distribute: .between) {
+                heading("Notes")
+                button("New note", on: new_note(nb), style: .primary) as new
             }
-            secondary(min: 24rem) {
-                if nb.open.is_some() {
-                    editor(nb, nb.open.unwrap())
+            row(gap: .related) {
+                button("All", on: set(filter, .all), style: if filter == .all { .primary } else { .plain }) as all
+                button("Pinned", on: set(filter, .pinned), style: if filter == .pinned { .primary } else { .plain }) as pinned
+                spacer
+                button(if order == .title { "Sort by date" } else { "Sort by title" }, on: set(order, if order == .title { .created } else { .title })) as sort
+            }
+            scroll {
+                stack(gap: .related) {
+                    for n in listed(nb, order, filter) {
+                        note_row(nb, n, expanded == .some(n), if expanded == .some(n) { set(expanded, .none) } else { set(expanded, .some(n)) })
+                    }
                 }
             }
         }
     }
 }
 
-view note_list(nb: Notebook) {
-    stack {
-        row(distribute: between) {
-            heading("Notes")
-            button("New note", on: new_note(nb)) #new
+/// One note in the list: its title opens it; its actions show when the row is expanded.
+view note_row(nb: Notebook, n: Note, expanded: Bool, toggle: Action) {
+    stack(gap: .tight) {
+        row(distribute: .between) {
+            button(n.title, on: open(n), style: .plain)
+            button(if expanded { "Hide actions" } else { "Show actions" }, on: toggle, style: .plain)
         }
-        scroll {
-            for n in nb.notes {
-                note_row(nb, n)
+        if not space.compact {
+            text(n.body, style: .caption, truncate)
+        }
+        if expanded {
+            row(gap: .related) {
+                button(if n.pinned { "Unpin" } else { "Pin" }, on: toggle_pin(n))
+                button("Delete", on: delete(nb, n), style: .destructive)
             }
         }
     }
 }
 
-view note_row(nb: Notebook, n: Note) {
-    button(n.title, on: open_note(nb, n))
-    if not space.compact {
-        text(n.body, truncate)
-    }
-}
-
-view editor(nb: Notebook, n: Note) {
-    stack(gap: section) {
-        row {
-            input(bind: n.title, placeholder: "Title", fill)
-            button(if n.pinned then "Unpin" else "Pin", on: toggle_pin(n))
-            button("Delete", on: delete(nb, n)) #delete
+/// A note's window.
+view note_editor(n: Note) {
+    page {
+        stack(gap: .section) {
+            row {
+                input(bind: n.title, placeholder: "Title", fill)
+                button(if n.pinned { "Unpin" } else { "Pin" }, on: toggle_pin(n)) as pin
+            }
+            input(bind: n.body, placeholder: "Write something", fill)
         }
-        input(bind: n.body, placeholder: "Write something", fill)
     }
 }

@@ -25,21 +25,20 @@ type Conversation {
     draft: Text
 }
 
+/// The workspace's conversations.
 type Chat {
     conversations: Collection<Conversation>
-    open: Option<Conversation>
 }
 
-/// Starts a conversation and opens it.
+root Chat
+
+default view chats for Chat
+
+default view thread for Conversation
+
+/// Starts a conversation.
 action start(chat: Chat, title: Text) -> Conversation {
-    let c = chat.conversations.insert(Conversation(title: title))
-    chat.open = c
-    return c
-}
-
-/// Opens a conversation.
-action open_conversation(chat: Chat, c: Conversation) {
-    chat.open = c
+    chat.conversations.insert(Conversation(title: title))
 }
 
 /// Posts a message as the invoker: a text part when `text` is not empty, then a block part
@@ -55,7 +54,7 @@ action post(c: Conversation, text: Text, block: Text) -> Message {
         let p = m.parts.insert(Part(kind: "block", body: block))
         run_block(p, block)
     }
-    return m
+    m
 }
 
 /// Posts the typed text as the invoker and clears the entry.
@@ -66,65 +65,62 @@ action send_draft(c: Conversation) {
     }
 }
 
-view main(chat: Chat) {
-    page(full) {
-        split(side: leading, collapse: navigate) {
-            primary(min: 14rem) {
-                conversation_list(chat)
-            }
-            secondary(min: 24rem) {
-                if chat.open.is_some() {
-                    thread(chat.open.unwrap())
-                }
-            }
-        }
+/// The chat's window: its conversations, each opening in a window of its own.
+view chats(chat: Chat) {
+    page {
+        conversation_list(chat)
     }
 }
 
 view conversation_list(chat: Chat) {
     stack {
-        row(distribute: between) {
+        row(distribute: .between) {
             heading("Chats")
-            button("New chat", on: start(chat, "New chat")) #new
+            button("New chat", on: start(chat, "New chat"), style: .primary) as new
         }
         scroll {
-            for c in chat.conversations {
-                button(c.title, on: open_conversation(chat, c))
+            stack(gap: .related) {
+                for c in chat.conversations {
+                    button(c.title, on: open(c), style: .plain)
+                }
             }
         }
     }
 }
 
+/// A conversation's window.
 view thread(c: Conversation) {
-    stack(gap: section) {
-        input(bind: c.title, placeholder: "Title")
-        scroll(fill) {
-            stack(gap: sibling) {
-                for m in c.messages {
-                    message(m)
+    page(full) {
+        stack(gap: .section) {
+            input(bind: c.title, placeholder: "Title")
+            scroll(fill) {
+                stack(gap: .sibling) {
+                    for m in c.messages {
+                        message(m)
+                    }
                 }
             }
+            composer(c)
         }
-        composer(c)
     }
 }
 
 view message(m: Message) {
     if space.compact {
-        stack(gap: tight) {
-            text(m.author.name(), style: "caption")
+        stack(gap: .tight) {
+            text(m.author.name(), style: .caption)
             parts(m)
         }
     } else {
-        row(gap: related, align: start) {
-            text(m.author.name(), style: "caption", min: 8rem)
+        row(gap: .related, align: .start) {
+            text(m.author.name(), style: .caption, min: 8rem)
             parts(m)
         }
     }
 }
 
 view parts(m: Message) {
-    stack(gap: related) {
+    stack(gap: .related) {
         for p in m.parts {
             if p.kind == "block" {
                 embed(p.body, author: m.author, invocation: p.invocation)
@@ -138,6 +134,6 @@ view parts(m: Message) {
 view composer(c: Conversation) {
     row {
         input(bind: c.draft, placeholder: "Message", fill)
-        button("Send", on: send_draft(c)) #send
+        button("Send", on: send_draft(c), style: .primary) as send
     }
 }
