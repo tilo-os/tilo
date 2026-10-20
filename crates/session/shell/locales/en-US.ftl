@@ -2234,6 +2234,10 @@ search-action-strip-invalid-name = Enter a strip name of 1 to 48 characters with
 search-action-strip-rename-missing = There is no such strip in this workspace.
 search-action-strip-move = Move a strip
 search-action-strip-move-subtitle = Put a strip of this workspace higher or lower in its stack
+search-action-strip-remove = Remove a strip
+search-action-strip-remove-subtitle = Remove an empty strip from this workspace
+search-action-strip-remove-not-empty = This strip still has windows. Move or close them first
+search-action-strip-remove-last = A workspace keeps at least one strip
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
