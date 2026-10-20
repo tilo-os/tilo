@@ -34,7 +34,7 @@ class ModelProviderHosts(unittest.TestCase):
         panel = "crates/sdk/provider-settings-ui"
         self.assertIn(panel, workspace["workspace"]["members"])
         self.assertNotIn("crates/agent/provider-settings-ui", workspace["workspace"]["members"])
-        for app in ("settings", "model-providers"):
+        for app in ("settings-core", "settings-rare", "model-providers"):
             manifest = tomllib.loads((ROOT / f"apps/{app}/Cargo.toml").read_text())
             dependency = manifest["dependencies"]["provider-settings-ui"]
             self.assertEqual((ROOT / f"apps/{app}" / dependency["path"]).resolve(), ROOT / panel)

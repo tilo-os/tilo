@@ -1169,8 +1169,12 @@ inputs = [
   # backend and mounted tests against Settings' own mount.
   "crates/sdk/provider-settings-ui/src/fake_backend.rs",
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+  # Appearance's wallpaper-name test reads the Settings catalogues.
+  "apps/settings-core/locales/en-US.ftl",
+  "apps/settings-core/locales/de-DE.ftl",
 ]
 readers = [
+  "apps/settings/src/panes/appearance.rs",
   "apps/settings/tests/cloud_ux.rs",
 ]
 
@@ -1188,9 +1192,34 @@ inputs = [
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
 ]
 readers = [
+  "apps/settings-core/src/lib.rs",
   "apps/settings-core/src/test_panes.rs",
+]
+
+[[cargo]]
+package = "settings-rare"
+inputs = [
+  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
+  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
+  "crates/sdk/provider-settings-ui/src/fake_backend.rs",
+  "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+]
+readers = [
   "apps/settings-rare/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings-rare/src/panes/agent_models/admin_tests.rs",
+]
+
+[[cargo]]
+package = "browser"
+inputs = [
+  # Its own tests compile browser-parts in, and its views read the parts'
+  # English catalogue.
+  "apps/browser-parts/**",
+]
+readers = [
+  "apps/browser/src/lib.rs",
+  "apps/browser/src/personal_bookmark_view.rs",
 ]
 
 [[cargo]]
