@@ -1059,9 +1059,16 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let log = dir.join("launched.log");
         let bin = dir.join("tilo-launcher");
+        // Like the real launcher, it waits on its registration gate (stdin)
+        // before any work. A stand-in that exits at once races the host's
+        // release: the release then fails, and the launch, and with it the
+        // document's open note, is given up before its window arrives.
         std::fs::write(
             &bin,
-            format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+            format!(
+                "#!/bin/sh\nhead -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                log.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
