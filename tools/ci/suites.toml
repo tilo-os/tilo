@@ -386,6 +386,7 @@ requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
   "crates/session/shell/src/portal/", "crates/system/os-actions/", "crates/system/sandbox-core/",
+  "crates/platform/tilo-capture/src/scanner.rs",
 ]
 suites = ["os/tests/printing_isolation.sh"]
 
