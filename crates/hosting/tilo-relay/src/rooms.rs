@@ -1246,6 +1246,11 @@ impl Rooms {
             neighbour_wire::NeighbourMsg::IdentityHello { revocations, .. } => {
                 return self.take_revocations(revocations).await;
             }
+            neighbour_wire::NeighbourMsg::SyncResp {
+                room: ref named, ..
+            } if named == room => {
+                return self.absorb_topology(room, author, message).await;
+            }
             _ => {}
         }
         let neighbour_wire::NeighbourMsg::AppDocument {
@@ -1310,6 +1315,45 @@ impl Rooms {
                 .document(&app_id, &record_id)
                 .ok_or("created record missing")?;
             candidate.publish_document(&app_id, &record_id, written, &host.key, now)?;
+        }
+        room.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        self.settle(&mut room).await
+    }
+
+    /// Take a member's own windows into the room's governance: the changes
+    /// a member publishes to the room document within the topology namespace
+    /// the room registered to that device (`contents_owners_v1`). The room's
+    /// admission decides them exactly as every member's does (a change
+    /// outside the device's namespace is refused); the governor commits what
+    /// it admitted as the room's next generation, which every member then
+    /// takes in. Until this, a window someone opened after joining reached
+    /// nobody: members take governance only from the governor, and the
+    /// governor never took these in, so the member published them again
+    /// every few seconds for nothing.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its decision is committed, published and answered"
+    )]
+    async fn absorb_topology(
+        &self,
+        room: &str,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+    ) -> Result<(), String> {
+        let host = &self.inner.host;
+        let room = self.room(room).await.map_err(|error| error.to_string())?;
+        let mut room = room.lock().await;
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        let outcome = candidate.receive_from(
+            tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
+            message,
+            now,
+        )?;
+        if !outcome.changed {
+            return Ok(());
         }
         room.commit(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())

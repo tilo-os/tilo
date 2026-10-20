@@ -2032,3 +2032,118 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     );
     relay.shutdown().await;
 }
+
+/// A window a member opens after joining is a change to the room document in
+/// that device's own topology namespace. The governor takes it in as the
+/// room's next generation, so every other member sees the window; before,
+/// only record writes were taken in and the window reached nobody.
+#[tokio::test]
+async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let mut member = cert.clone();
+    member.device_public_key = member_key.verifying_key().to_bytes();
+    member.capabilities = DeviceCapabilities::member();
+    sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    admit_view_reader(&rooms, &created.room, &key, &member).await;
+    // The governor's own namespace has a random salt; take another.
+    let salt = {
+        let state = rooms.room(&created.room).await.unwrap();
+        let room = state.lock().await;
+        let owners = tilo_desktop_model::projection::contents_owners_of(
+            room.peer().admitted_room().unwrap(),
+        );
+        (1..=u16::MAX)
+            .find(|salt| !owners.contains_key(salt))
+            .unwrap()
+    };
+    rooms
+        .claim_topology_namespace(&created.room, &member, salt)
+        .await
+        .unwrap();
+
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    let windows = [Strip {
+        id: StripId(own(1)),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: own(2),
+            tabs: vec![Tab {
+                id: own(3),
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.chat".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: own(3),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let (generation, mut doc) = {
+        let state = rooms.room(&created.room).await.unwrap();
+        let room = state.lock().await;
+        let doc = room
+            .peer()
+            .admitted_room()
+            .expect("a created room has a room document")
+            .clone();
+        (room.record.generation, doc)
+    };
+    let heads = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        &windows,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    doc.commit();
+    let changes = doc.get_changes(&heads);
+    assert!(!changes.is_empty(), "opening a window changes the room");
+    let hashes = changes
+        .iter()
+        .map(|change| change.hash())
+        .collect::<Vec<_>>();
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+        room: created.room.clone(),
+        changes: changes
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    })
+    .unwrap();
+
+    rooms
+        .absorb(&created.room, member.device_public_key, &body)
+        .await
+        .unwrap();
+
+    {
+        let state = rooms.room(&created.room).await.unwrap();
+        let room = state.lock().await;
+        assert!(
+            room.record.generation > generation,
+            "the governor committed the window as the room's next generation"
+        );
+        let mut admitted = room.peer().admitted_room().unwrap().clone();
+        drop(room);
+        for hash in &hashes {
+            assert!(
+                admitted.get_change_by_hash(hash).is_some(),
+                "the governed room holds the member's window"
+            );
+        }
+    }
+    drop(rooms);
+    relay.shutdown().await;
+}
