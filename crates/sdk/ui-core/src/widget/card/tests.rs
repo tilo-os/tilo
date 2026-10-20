@@ -390,6 +390,43 @@ fn a_card_keeps_intrinsic_height_in_a_short_flex_parent() {
 }
 
 #[test]
+fn a_card_headed_by_a_section_header_shows_its_title_above_the_body() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            Card::new(Box::new(Text::new("body")))
+                .with_section_header(crate::widget::SectionHeader::group("Saturday").count(10)),
+        ),
+        (400, 300),
+        Theme::dark(),
+    );
+    let root = harness.inspection().root;
+    fn named<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| named(child, widget))
+    }
+    fn texts<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
+        if node.widget == "Text" {
+            out.push(node);
+        }
+        for child in &node.children {
+            texts(child, out);
+        }
+    }
+    let header =
+        rect(named(&root, "SectionHeader").expect("the card is headed by a section header"));
+    let mut all = Vec::new();
+    texts(&root, &mut all);
+    let body = rect(all.last().expect("the body"));
+    assert!(
+        header.y1 <= body.y0 + 0.5,
+        "the header stands above the body: {header:?} {body:?}"
+    );
+}
+
+#[test]
 fn a_titled_card_title_is_a_subheading_that_follows_the_text_scale() {
     fn first_text(node: &InspectionNode) -> Option<[f64; 4]> {
         if node.widget == "Text" {

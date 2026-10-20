@@ -24,6 +24,9 @@ pub struct GridLayout {
     /// How many items the grid holds: a row never has more columns than items, so a few cards
     /// share the whole width instead of leaving empty columns beside them.
     items: usize,
+    /// Each item as tall as its content rather than its row: a dashboard's cards of different
+    /// lengths, which would otherwise stand with empty space under the shorter ones.
+    hug: bool,
 }
 
 impl GridLayout {
@@ -65,7 +68,11 @@ impl Layout for GridLayout {
                 vec![minmax(length(0.0_f32), fr(1.0_f32))],
             )],
             grid_auto_rows: vec![taffy::style_helpers::auto()],
-            align_items: Some(taffy::AlignItems::Stretch),
+            align_items: Some(if self.hug {
+                taffy::AlignItems::Start
+            } else {
+                taffy::AlignItems::Stretch
+            }),
             gap: Size {
                 width: gap,
                 height: gap,
@@ -114,6 +121,7 @@ impl Arranged<GridLayout> {
             gap: Rhythm::Sibling,
             count: 1,
             items: usize::MAX,
+            hug: false,
         })
     }
 
@@ -125,7 +133,15 @@ impl Arranged<GridLayout> {
             gap: Rhythm::Sibling,
             count: count.max(1),
             items: usize::MAX,
+            hug: false,
         })
+    }
+
+    /// Items as tall as their content, each at the top of its row.
+    #[must_use]
+    pub const fn hugging(mut self) -> Self {
+        self.layout.hug = true;
+        self
     }
 
     #[must_use]

@@ -430,6 +430,14 @@ impl Card {
         )
     }
 
+    /// A section header as the card's head: its title with a count pill or a trailing action,
+    /// as a dashboard card that lists things shows how many.
+    #[must_use]
+    pub fn with_section_header(mut self, header: super::SectionHeader) -> Self {
+        self.title = Some(header.title().to_owned());
+        self.with_header_parts(header.into_element(), None)
+    }
+
     fn with_header_parts(mut self, title: Element, action: Option<Element>) -> Self {
         let mut children = vec![title];
         if let Some(action) = action {

@@ -218,6 +218,19 @@ impl SectionHeader {
         self
     }
 
+    /// The header as a widget of its own: the head of a card or a panel that is not a
+    /// [`Section`].
+    #[must_use]
+    pub fn into_element(self) -> Element {
+        Box::new(self.into_widget(None))
+    }
+
+    /// The header's title.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     fn into_widget(self, disclosure: Option<Disclosure>) -> HeaderRow {
         let has_leading = self.leading.is_some();
         let mut children: Vec<Element> = self.leading.into_iter().collect();
