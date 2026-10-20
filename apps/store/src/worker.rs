@@ -657,6 +657,10 @@ fn runtime_details(
     selected.ok_or_else(|| ui::i18n!("store-runtime-unavailable"))
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "an installed package matches an offer by its package id, which the offer names package_id"
+)]
 fn runtime_item(
     offer: app_cli::CatalogueApp,
     installed: &[app_host::client::ListedPackage],

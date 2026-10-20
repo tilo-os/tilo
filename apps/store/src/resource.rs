@@ -861,14 +861,9 @@ mod tests {
             "review"
         );
         app.harness().click_named("store.runtime.acquire").unwrap();
-        app.settle();
         // The real worker's connected fixture refuses runtime RPCs. A host
         // failure must remain actionable without a fallback download path.
-        let failed = app
-            .effect(&StoreEffect::InspectRuntime)
-            .unwrap()
-            .value
-            .unwrap();
+        let failed = runtime_after_acquiring(&mut app);
         assert_eq!(failed["phase"], "failed", "{failed}");
         assert!(
             failed["error"]
@@ -1335,6 +1330,22 @@ mod tests {
             Some("Store refreshed.".to_owned())
         );
         assert_eq!(app.versions().len(), versions, "refresh writes no document");
+    }
+
+    /// The runtime recovery once the acquisition just asked for has finished:
+    /// the worker answers on its own thread, possibly after the catalogue
+    /// reads queued before it, so the first settled frames may still show the
+    /// review or acquiring.
+    fn runtime_after_acquiring(app: &mut TestApp<StoreShell>) -> serde_json::Value {
+        tilo_test_env::wait_for("the runtime acquisition finishes", || {
+            app.settle();
+            let runtime = app
+                .effect(&StoreEffect::InspectRuntime)
+                .unwrap()
+                .value
+                .unwrap();
+            (runtime["phase"] != "review" && runtime["phase"] != "acquiring").then_some(runtime)
+        })
     }
 
     fn settle_catalogue_worker(app: &mut TestApp<StoreShell>) {

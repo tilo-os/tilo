@@ -499,6 +499,11 @@ pub struct StoreApp {
     /// backend observation, not shared document state.
     active_operation: Option<(String, ActionKind)>,
     operation_error: Option<String>,
+    /// A refusal the window gave itself, without the worker (a handed
+    /// package over the size limit). The worker never hears of it, so its
+    /// snapshots, which carry their own background errors, must not replace
+    /// it; the next effect clears it.
+    local_refusal: Option<String>,
     /// Whether `flatpak` is available on the host — drives whether
     /// Flatpak items show "Install" or the "install flatpak first"
     /// helper.
@@ -590,6 +595,7 @@ impl StoreApp {
             worker_busy: false,
             active_operation: None,
             operation_error: None,
+            local_refusal: None,
             flatpak_available: false,
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
@@ -1727,7 +1733,7 @@ impl StoreApp {
         }
         if current_detail && current_query {
             self.set_status_line(snap.status_line);
-            self.set_operation_error(snap.operation_error);
+            self.set_operation_error(self.local_refusal.clone().or(snap.operation_error));
         }
     }
 
@@ -1946,6 +1952,7 @@ impl StoreApp {
         reason = "one exhaustive match over the Store's effects keeps every capability check beside the effect it guards"
     )]
     pub fn admit(&mut self, effect: StoreEffect) -> Result<Admitted, String> {
+        self.local_refusal = None;
         if let Some((app, action)) = effect.as_package() {
             let app = app.to_owned();
             let item = self.package_operation(&app, action)?;
@@ -2108,6 +2115,7 @@ impl StoreApp {
                     .is_some_and(|size| size > crate::package_import::MAX_IMPORT_BYTES as u64)
                 {
                     let error = ui::i18n!("store-package-size-refused");
+                    self.local_refusal = Some(error.clone());
                     self.set_operation_error(Some(error.clone()));
                     return Err(error);
                 }
@@ -3251,6 +3259,34 @@ mod tests {
             "an explicitly opened reference still navigates to its app"
         );
         assert!(app.operation_error.is_none());
+    }
+
+    #[test]
+    fn a_size_refusal_outlasts_the_workers_background_errors() {
+        let mut app = seeded_app();
+        let refused = app.admit(StoreEffect::ImportPackage {
+            path: Some("/large.tapp".into()),
+            content: None,
+            reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
+        });
+        assert!(refused.is_err());
+        let size_refused = ui::i18n!("store-package-size-refused");
+        app.apply_worker_snapshot(crate::worker::Snapshot {
+            items: Vec::new(),
+            status_line: String::new(),
+            query: None,
+            detail: None,
+            remotes: Vec::new(),
+            flatpak_available: false,
+            flatpak_error: Some("App service unavailable.".into()),
+            operation_error: Some("App service unavailable.".into()),
+            unanswered_repositories: Vec::new(),
+            blocks: BlockList::empty(),
+            updating: None,
+        });
+        assert_eq!(app.operation_error.as_deref(), Some(size_refused.as_str()));
+        app.admit(StoreEffect::ShowRemotes).unwrap();
+        assert!(app.local_refusal.is_none(), "the next effect moves on");
     }
 
     #[test]
