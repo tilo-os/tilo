@@ -122,6 +122,7 @@ async fn local_report_admission(
                 peer_id: 903,
                 verified_identity: identity.clone(),
                 record_kind: None,
+                route_access: RouteAccess::Own,
                 lease: None,
             });
             let before_stale = receipt_barriers(&rig);

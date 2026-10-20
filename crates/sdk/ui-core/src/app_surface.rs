@@ -153,6 +153,20 @@ pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
         .any(|known| known == kind)
 }
 
+/// Whether `reader`'s surface declares that it reads a resource kind of
+/// `owner`'s (its `reads`): the read-only join to `owner`'s records an app
+/// may hold. False when this process holds either surface not.
+#[must_use]
+pub fn reads_app(reader: &str, owner: &str) -> bool {
+    let parse = |app: &str| {
+        bytes_of(app).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
+    };
+    match (parse(reader), parse(owner)) {
+        (Some(reader), Some(owner)) => reader.reads_any_of(&owner),
+        _ => false,
+    }
+}
+
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
