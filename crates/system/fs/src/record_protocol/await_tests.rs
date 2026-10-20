@@ -1,8 +1,11 @@
 //! Change awaits: a share recipient holds one authenticated
 //! stream, the host answers it when the record changes, a revocation ends
-//! it at once, and a host holding all the awaits it may is polled.
+//! it, and a host holding all the awaits it may is polled.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
 
 use collab_types::Ed25519PublicKey;
@@ -22,13 +25,15 @@ use crate::share_refresh::{
     fetch_shared_snapshot,
 };
 
-/// How soon an await must answer a host write: the poll it replaces
-/// answered within 5 s.
-const WRITE_BOUND: Duration = Duration::from_millis(100);
+/// Counts the wakes of a request future the test polls by hand.
+#[derive(Default)]
+struct Wakes(AtomicU64);
 
-/// How soon a revoked grant must end a held await: the bound the idle serve gate keeps
-/// for a revoked mount.
-const REVOKE_BOUND: Duration = Duration::from_secs(1);
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 /// Counts the connections a host accepts.
 #[derive(Clone, Debug)]
@@ -150,6 +155,59 @@ impl Fixture {
         SharedCredential::Bearer(self.link.clone())
     }
 
+    /// The recipient as the host authenticates it.
+    fn peer(&self) -> crate::peer_auth::AuthenticatedFsPeer {
+        let cert = self.recipient.credentials.cert().clone();
+        crate::peer_auth::AuthenticatedFsPeer {
+            user_public_key: cert.user_public_key,
+            device_public_key: cert.device_public_key,
+            device_label: cert.device_label.clone(),
+            capabilities: cert.capabilities.clone(),
+            cert,
+        }
+    }
+
+    /// The recipient's await for the record as it is now, handed to the
+    /// host's request handler and polled once: it must be held, not answered.
+    async fn held_await<'a>(
+        &self,
+        protocol: &'a RecordProtocol,
+    ) -> (
+        Pin<Box<impl Future<Output = RecordProtocolResponseV1> + 'a>>,
+        Arc<Wakes>,
+    ) {
+        let request = |operation| RecordProtocolRequestV1 {
+            protocol_version: RECORD_PROTOCOL_VERSION,
+            credential: RecordProtocolCredentialV1::BearerLinkV2(self.link.encode_uri().unwrap()),
+            operation,
+        };
+        let RecordProtocolResponseV1::Snapshot { snapshot, .. } = protocol
+            .handle_request(self.peer(), request(RecordProtocolOperationV1::Read))
+            .await
+        else {
+            panic!("the live grant must serve the record");
+        };
+        let mut pending = Box::pin(protocol.handle_request(
+            self.peer(),
+            request(RecordProtocolOperationV1::AwaitChange {
+                known: snapshot.digest().unwrap(),
+            }),
+        ));
+        let woken = Arc::new(Wakes::default());
+        let waker = Waker::from(Arc::clone(&woken));
+        assert!(
+            pending
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(
+            protocol.awaits.available_permits(),
+            MAX_RECORD_CHANGE_AWAITS - 1
+        );
+        (pending, woken)
+    }
+
     /// A recipient that holds the record as it is now.
     async fn refresher(&self) -> ShareRefresher {
         let client = self.client();
@@ -248,73 +306,93 @@ async fn until_held(protocol: &RecordProtocol) {
     }
 }
 
+/// A host write wakes the held await itself, which answers with the record
+/// on its next poll: the minute-long limit plays no part.
+#[tokio::test]
+async fn a_host_write_wakes_the_held_await() {
+    let mut fixture = Fixture::new().await;
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let (mut pending, woken) = fixture.held_await(&protocol).await;
+    fixture.write(2);
+    assert!(woken.0.load(Ordering::SeqCst) > 0, "the write must wake it");
+    let waker = Waker::from(woken);
+    let Poll::Ready(RecordProtocolResponseV1::Snapshot { snapshot, .. }) =
+        pending.as_mut().poll(&mut Context::from_waker(&waker))
+    else {
+        panic!("the woken await must answer with the record");
+    };
+    assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 2);
+    assert_eq!(
+        protocol.awaits.available_permits(),
+        MAX_RECORD_CHANGE_AWAITS
+    );
+}
+
 /// With a minute-long limit only a write can answer the held await, and
-/// it does at once.
+/// the answer reaches the recipient on its one held stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_host_write_answers_a_held_await_at_once() {
+async fn a_host_write_answers_a_held_await() {
     let mut fixture = Fixture::new().await;
     let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
     let (_router, accepted) = fixture.serve(protocol.clone());
     let mut refresher = fixture.refresher().await;
     let waiting = tokio::spawn(async move {
         let refresh = refresher.next().await;
-        (refresh, Instant::now(), refresher)
+        (refresh, refresher)
     });
     until_held(&protocol).await;
-    let wrote = Instant::now();
     fixture.write(2);
-    let (refresh, answered, refresher) = waiting.await.unwrap();
-    let latency = answered.saturating_duration_since(wrote);
-    eprintln!(
-        "a host write reached the held await in {} us",
-        latency.as_micros()
-    );
+    let (refresh, refresher) = waiting.await.unwrap();
     match refresh.unwrap() {
         ShareRefresh::Changed(snapshot) => {
             assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 2);
         }
         ShareRefresh::Unchanged => panic!("the write must answer the await with the record"),
     }
-    assert!(
-        latency <= WRITE_BOUND,
-        "the await answered {} ms after the write (bound {} ms)",
-        latency.as_millis(),
-        WRITE_BOUND.as_millis()
-    );
     assert_eq!(refresher.connections(), 1);
     // The refresh's own snapshot read, then the one stream.
     assert_eq!(accepted.load(Ordering::SeqCst), 2);
 }
 
-/// Revoking the grant wakes a held await, which is answered `Denied`, and
-/// no request after it gets the record.
+/// Revoking the grant wakes the held await itself, which answers `Denied`
+/// on its next poll. Without the wake the limit would also end in `Denied`,
+/// a minute later, so only the wake tells the two apart.
+#[tokio::test]
+async fn a_revoked_grant_wakes_the_held_await() {
+    let fixture = Fixture::new().await;
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let (mut pending, woken) = fixture.held_await(&protocol).await;
+    assert!(fixture.authority.revoke(fixture.link.invite.id).unwrap());
+    assert!(
+        woken.0.load(Ordering::SeqCst) > 0,
+        "the revocation must wake it"
+    );
+    let waker = Waker::from(woken);
+    assert!(matches!(
+        pending.as_mut().poll(&mut Context::from_waker(&waker)),
+        Poll::Ready(RecordProtocolResponseV1::Denied)
+    ));
+    assert_eq!(
+        protocol.awaits.available_permits(),
+        MAX_RECORD_CHANGE_AWAITS
+    );
+}
+
+/// A revocation reaches the recipient's held stream as `Denied`, and no
+/// request after it gets the record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_revoked_grant_ends_a_held_await_at_once() {
+async fn a_revoked_grant_ends_a_held_await() {
     let fixture = Fixture::new().await;
     let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
     let (_router, _accepted) = fixture.serve(protocol.clone());
     let mut refresher = fixture.refresher().await;
-    let waiting = tokio::spawn(async move {
-        let refresh = refresher.next().await;
-        (refresh, Instant::now())
-    });
+    let waiting = tokio::spawn(async move { refresher.next().await });
     until_held(&protocol).await;
-    let revoked = Instant::now();
     assert!(fixture.authority.revoke(fixture.link.invite.id).unwrap());
-    let (refresh, answered) = waiting.await.unwrap();
-    let latency = answered.saturating_duration_since(revoked);
-    eprintln!(
-        "a revocation ended the held await in {} us",
-        latency.as_micros()
-    );
+    let refresh = waiting.await.unwrap();
     assert!(
         matches!(refresh, Err(SharedFetchError::Denied)),
         "{refresh:?}"
-    );
-    assert!(
-        latency <= REVOKE_BOUND,
-        "the held await outlived its revocation by {} ms",
-        latency.as_millis()
     );
     assert!(matches!(
         fetch_shared_snapshot(&fixture.client(), &fixture.credential()).await,
