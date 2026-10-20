@@ -648,6 +648,8 @@ impl PeerHandle {
             StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
         }
         channels.restore_requests(saved.requests);
+        // Nothing to send yet: no route is open.
+        let _ = channels.note_revocations(config.revocations.iter().cloned(), 0);
         let task = Task {
             commands: commands.downgrade(),
             watched: crate::watching::WatchedKeys::default(),
@@ -2647,8 +2649,11 @@ impl Task {
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
         let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
-            Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
-                let changes = self.channels.note_cert(author, *cert, now);
+            Ok(neighbour_wire::NeighbourMsg::IdentityHello {
+                cert, revocations, ..
+            }) => {
+                let mut changes = self.channels.note_revocations(revocations, now);
+                changes.extend(self.channels.note_cert(author, *cert, now));
                 self.absorb(changes);
             }
             Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
