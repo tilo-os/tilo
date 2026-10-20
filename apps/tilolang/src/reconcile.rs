@@ -21,8 +21,8 @@ use ui::widget::arrange::{
     Align, At, Collapse, Distribute, Fit, Grid, Layers, Length, Page, Row, Side, Slot, Split, Stack,
 };
 use ui::widget::{
-    Button, ButtonRole, Checkbox, Divider, Element, ProgressBar, Scrollable, Spacer, Text,
-    TextInput, labeled_check,
+    Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Element, ListRow, ProgressBar,
+    Scrollable, Spacer, Text, TextInput, labeled_check,
 };
 
 /// What a person did to the view.
@@ -34,6 +34,8 @@ pub enum UiEvent {
     Edit(String, String),
     /// The checkbox `key` is now `checked`.
     Toggle(String, bool),
+    /// The suggestion in the invocation card `key` was allowed or declined.
+    Resolve(String, bool),
 }
 
 /// Where controls report what the person did.
@@ -70,6 +72,7 @@ pub fn display(value: &Value) -> String {
         }
         Value::Float(number) => formats.decimal(*number, 2),
         Value::Bool(flag) => flag.to_string(),
+        Value::Principal(who) => who.0.clone(),
         Value::Opt(Some(inner)) => display(inner),
         _ => String::new(),
     }
@@ -282,9 +285,13 @@ impl Reconciler {
             "heading" => self.text(node, Some(heading_role(node))),
             "text" => self.text(node, None),
             "button" => self.button(node),
+            "list_row" => self.list_row(node),
             "checkbox" => self.checkbox(node),
             "input" => self.input(node),
             "image" => self.image(node),
+            "embed" => self.embed(node),
+            "invocation" => self.invocation_card(node),
+            "error" => self.error_block(node),
             _ => self.text_of(node, "", TextRole::Caption),
         }
     }
@@ -314,6 +321,7 @@ impl Reconciler {
 
     fn stack(&mut self, node: &UiNode, default: Rhythm) -> Element {
         let mut stack = Stack::stack()
+            .fill_width()
             .gap(rhythm(node, "gap", default))
             .align(align(node, Align::Stretch))
             .with_id(node.key.clone());
@@ -410,6 +418,7 @@ impl Reconciler {
 
     fn scroll(&mut self, node: &UiNode) -> Element {
         let inner = Stack::stack()
+            .fill_width()
             .gap(Rhythm::Sibling)
             .with_id(format!("{}~content", node.key));
         let mut inner = inner;
@@ -419,13 +428,14 @@ impl Reconciler {
         let scroll = if token(node, "axis") == Some("horizontal") {
             Scrollable::new_horizontal()
         } else {
-            Scrollable::new_vertical()
+            Scrollable::new_vertical().fit_content_height()
         };
         Box::new(scroll.with_child(Box::new(inner)))
     }
 
     fn text(&mut self, node: &UiNode, role: Option<TextRole>) -> Element {
         let role = role.unwrap_or_else(|| match token(node, "style") {
+            Some("display") => TextRole::Display,
             Some("title") => TextRole::Title,
             Some("heading") => TextRole::Heading,
             Some("caption") => TextRole::Caption,
@@ -455,20 +465,54 @@ impl Reconciler {
         let label = prop(node, "label").map(display).unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let role = match token(node, "style") {
-            Some("primary") => ButtonRole::Primary,
-            Some("destructive") => ButtonRole::Destructive,
-            Some("plain") => ButtonRole::Plain,
-            _ => ButtonRole::Secondary,
+        let words = token(node, "style").unwrap_or_default();
+        let has = |word: &str| words.split_whitespace().any(|w| w == word);
+        let role = if has("primary") {
+            ButtonRole::Primary
+        } else if has("destructive") {
+            ButtonRole::Destructive
+        } else if has("plain") {
+            ButtonRole::Plain
+        } else {
+            ButtonRole::Secondary
+        };
+        let size = if has("large") {
+            ControlSize::Large
+        } else if has("small") {
+            ControlSize::Small
+        } else {
+            ControlSize::Regular
         };
         let enabled = prop(node, "enabled").is_none_or(|_| flag(node, "enabled"))
             && node.events.contains_key("press");
         Box::new(
             Button::new(&node.key, &label)
                 .role(role)
+                .control_size(size)
                 .with_enabled(enabled)
                 .on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone()))),
         )
+    }
+
+    /// A list row: the title with its secondary line, hover lift and selection of the design
+    /// system's row.
+    fn list_row(&self, node: &UiNode) -> Element {
+        let title = prop(node, "title").map(display).unwrap_or_default();
+        let sink = Rc::clone(&self.sink);
+        let key = node.key.clone();
+        let mut row = ListRow::new(&node.key, title).selected(flag(node, "selected"));
+        if let Some(secondary) = prop(node, "secondary").map(display)
+            && !secondary.is_empty()
+        {
+            row = row.secondary(secondary);
+        }
+        if prop(node, "checked").is_some() {
+            row = row.checked(flag(node, "checked"));
+        }
+        if node.events.contains_key("press") {
+            row = row.on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone())));
+        }
+        Box::new(row)
     }
 
     fn input(&mut self, node: &UiNode) -> Element {
@@ -516,6 +560,114 @@ impl Reconciler {
         Box::new(labeled_check(label, control))
     }
 
+    /// A block an agent or a person wrote, rendered inline: its result in a card, so it reads as
+    /// somebody's message rather than as part of the app.
+    fn embed(&mut self, node: &UiNode) -> Element {
+        let inner = self.stack(node, Rhythm::Related);
+        Box::new(Container::new().with_background().with_child(inner))
+    }
+
+    /// What became of an action block when it was posted, drawn from the invocation record.
+    fn invocation_card(&mut self, node: &UiNode) -> Element {
+        let state = token(node, "state").unwrap_or("pending");
+        let name = prop(node, "action").map(display).unwrap_or_default();
+        let mut card = Stack::stack()
+            .gap(Rhythm::Related)
+            .with_id(node.key.clone());
+        let status = crate::i18n::t(&format!("tilolang-invocation-{state}"));
+        let header = Row::row()
+            .fill_width()
+            .gap(Rhythm::Related)
+            .distribute(Distribute::Between)
+            .push_slot(self.fixed_text(&format!("{}~name", node.key), &name, TextRole::Label))
+            .push_slot(self.fixed_text(&format!("{}~state", node.key), &status, TextRole::Caption));
+        card = card.push_slot(Slot::new(Box::new(header)));
+        if let Some(app) = prop(node, "app").map(display) {
+            card = card.push_slot(self.fixed_text(
+                &format!("{}~app", node.key),
+                &app,
+                TextRole::Caption,
+            ));
+        }
+        if let Some(result) = prop(node, "result").map(display) {
+            card = card.push_slot(self.fixed_text(
+                &format!("{}~result", node.key),
+                &result,
+                TextRole::Body,
+            ));
+        }
+        for slot in self.slots(node) {
+            card = card.push_slot(slot);
+        }
+        if state == "suggested" && flag(node, "can_resolve") {
+            let answer = |reconciler: &Self, suffix: &str, label: String, approve: bool| {
+                let sink = Rc::clone(&reconciler.sink);
+                let key = node.key.clone();
+                let role = if approve {
+                    ButtonRole::Primary
+                } else {
+                    ButtonRole::Secondary
+                };
+                Slot::new(Box::new(
+                    Button::new(&format!("{}~{suffix}", node.key), &label)
+                        .role(role)
+                        .on_view(move || {
+                            sink.borrow_mut()
+                                .push(UiEvent::Resolve(key.clone(), approve));
+                        }),
+                ))
+            };
+            let choices = Row::row()
+                .gap(Rhythm::Related)
+                .push_slot(answer(
+                    self,
+                    "allow",
+                    crate::i18n::t("tilolang-ask-confirm"),
+                    true,
+                ))
+                .push_slot(answer(
+                    self,
+                    "decline",
+                    crate::i18n::t("tilolang-ask-decline"),
+                    false,
+                ));
+            card = card.push_slot(Slot::new(Box::new(choices)));
+        }
+        Box::new(card)
+    }
+
+    /// A block that did not compile or failed: the diagnostics, as text.
+    fn error_block(&mut self, node: &UiNode) -> Element {
+        let mut block = Stack::stack()
+            .gap(Rhythm::Tight)
+            .with_id(node.key.clone())
+            .push_slot(self.fixed_text(
+                &format!("{}~title", node.key),
+                &crate::i18n::t("tilolang-embed-error"),
+                TextRole::Label,
+            ));
+        for child in &node.children {
+            let line = prop(child, "value").map(display).unwrap_or_default();
+            block = block.push_slot(self.fixed_text(&child.key, &line, TextRole::Code));
+        }
+        Box::new(block)
+    }
+
+    /// A text slot of host chrome or of a record, with its own state.
+    fn fixed_text(&mut self, key: &str, value: &str, role: TextRole) -> Slot {
+        let state = self
+            .texts
+            .entry(key.to_owned())
+            .or_insert_with(|| LocalState::new(value.to_owned()))
+            .clone();
+        state.set(value.to_owned());
+        Slot::new(Box::new(
+            Text::from_state(&state, |shown: &String| shown.clone())
+                .with_role(role)
+                .with_id(key),
+        ))
+    }
+
     fn image(&mut self, node: &UiNode) -> Element {
         let alt = prop(node, "alt").or_else(|| prop(node, "src")).map(display);
         self.text_of(node, &alt.unwrap_or_default(), TextRole::Caption)
@@ -553,6 +705,18 @@ impl Reconciler {
                 {
                     let inner = std::mem::replace(content, Box::new(Spacer::fixed(0.0)));
                     *content = self.update_children(inner, old_node, new_node);
+                    return old;
+                }
+                self.build(new_node)
+            }
+            "embed" if same_shell(old_node, new_node) => {
+                if let Some(card) = old
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Container>())
+                    && let Some(inner) = card.take_child()
+                {
+                    let updated = self.update_children(inner, old_node, new_node);
+                    card.set_child(updated);
                     return old;
                 }
                 self.build(new_node)

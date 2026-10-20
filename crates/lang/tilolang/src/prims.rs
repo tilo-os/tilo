@@ -49,6 +49,12 @@ pub const PRIMS: &[Prim] = &[
     prim_of("text", &["value"], &["style"]),
     prim_of("heading", &["value"], &["level"]),
     prim_of("button", &["label"], &["on", "style", "enabled"]),
+    // A row of a list: a title, a secondary line, activation and whether it is the selected one.
+    prim_of(
+        "list_row",
+        &["title"],
+        &["secondary", "on", "selected", "checked"],
+    ),
     prim_of("checkbox", &["label"], &["bind", "on_change", "enabled"]),
     prim_of(
         "input",

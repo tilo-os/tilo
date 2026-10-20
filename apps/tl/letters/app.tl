@@ -79,11 +79,15 @@ view draft_list(desk: Desk) {
     }
 }
 
-view draft_row(desk: Desk, d: Draft) {
-    button(d.subject, on: open_draft(desk, d))
-    if not space.compact {
-        text(d.to, style: "caption", truncate)
+fn is_open(desk: Desk, d: Draft) -> Bool {
+    if desk.open.is_some() {
+        return desk.open.unwrap() == d
     }
+    return false
+}
+
+view draft_row(desk: Desk, d: Draft) {
+    list_row(d.subject, secondary: d.to, selected: is_open(desk, d), on: open_draft(desk, d))
 }
 
 view editor(desk: Desk, d: Draft) {

@@ -16,6 +16,7 @@ pub struct FlexLayout {
     wrap: bool,
     direction: Direction,
     full_width: bool,
+    full_height: bool,
 }
 
 impl Layout for FlexLayout {
@@ -55,7 +56,11 @@ impl Layout for FlexLayout {
                 } else {
                     taffy::Dimension::auto()
                 },
-                height: taffy::Dimension::auto(),
+                height: if self.full_height {
+                    taffy::style_helpers::percent(1.0_f32)
+                } else {
+                    taffy::Dimension::auto()
+                },
             },
             ..Style::default()
         }
@@ -86,6 +91,7 @@ impl Arranged<FlexLayout> {
             wrap: false,
             direction: Direction::Ltr,
             full_width: false,
+            full_height: false,
         })
     }
 
@@ -100,6 +106,7 @@ impl Arranged<FlexLayout> {
             wrap: false,
             direction: Direction::Ltr,
             full_width: false,
+            full_height: false,
         })
     }
 
@@ -132,6 +139,14 @@ impl Arranged<FlexLayout> {
     #[must_use]
     pub const fn fill_width(mut self) -> Self {
         self.layout.full_width = true;
+        self
+    }
+
+    /// Take the whole height offered too: the root of a window, whose children can then share
+    /// the height by weight.
+    #[must_use]
+    pub const fn fill_height(mut self) -> Self {
+        self.layout.full_height = true;
         self
     }
 

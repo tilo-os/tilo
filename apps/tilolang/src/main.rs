@@ -5,4 +5,8 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-ui::main!(definition = tilolang_app::definition);
+fn main() {
+    // A browser page mounts the definition itself; its binary is empty.
+    #[cfg(not(target_arch = "wasm32"))]
+    ui::launch::run_or_exit(&tilolang_app::launch_spec());
+}

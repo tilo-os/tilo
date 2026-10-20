@@ -81,6 +81,13 @@ view main(chat: Chat) {
     }
 }
 
+fn is_open(chat: Chat, c: Conversation) -> Bool {
+    if chat.open.is_some() {
+        return chat.open.unwrap() == c
+    }
+    return false
+}
+
 view conversation_list(chat: Chat) {
     stack {
         row(distribute: between) {
@@ -89,7 +96,7 @@ view conversation_list(chat: Chat) {
         }
         scroll {
             for c in chat.conversations {
-                button(c.title, on: open_conversation(chat, c))
+                list_row(c.title, selected: is_open(chat, c), on: open_conversation(chat, c))
             }
         }
     }

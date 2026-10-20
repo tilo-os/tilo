@@ -4,6 +4,16 @@
 //! shipping wasm. The ids lock sits next to the source and is committed, so every replica of a
 //! room compiles the same declaration ids.
 
+macro_rules! embedded {
+    ($dir:literal) => {
+        Embedded {
+            dir: $dir,
+            source: include_str!(concat!("../../tl/", $dir, "/app.tl")),
+            ids: include_str!(concat!("../../tl/", $dir, "/app.ids")),
+        }
+    };
+}
+
 /// One embedded package.
 pub struct Embedded {
     /// The package's directory under `apps/tl`.
@@ -14,14 +24,10 @@ pub struct Embedded {
 
 /// Every built-in package, in the order they load: a package comes after those it imports.
 pub const EMBEDDED: &[Embedded] = &[
-    Embedded {
-        dir: "counter",
-        source: include_str!("../../tl/counter/app.tl"),
-        ids: include_str!("../../tl/counter/app.ids"),
-    },
-    Embedded {
-        dir: "notes",
-        source: include_str!("../../tl/notes/app.tl"),
-        ids: include_str!("../../tl/notes/app.ids"),
-    },
+    embedded!("counter"),
+    embedded!("todo"),
+    embedded!("notes"),
+    embedded!("letters"),
+    embedded!("chat"),
+    embedded!("board"),
 ];

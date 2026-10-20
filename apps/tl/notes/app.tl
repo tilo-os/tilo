@@ -80,11 +80,15 @@ view note_list(nb: Notebook) {
     }
 }
 
-view note_row(nb: Notebook, n: Note) {
-    button(n.title, on: open_note(nb, n))
-    if not space.compact {
-        text(n.body, truncate)
+fn is_open(nb: Notebook, n: Note) -> Bool {
+    if nb.open.is_some() {
+        return nb.open.unwrap() == n
     }
+    return false
+}
+
+view note_row(nb: Notebook, n: Note) {
+    list_row(n.title, secondary: n.body, selected: is_open(nb, n), on: open_note(nb, n))
 }
 
 view editor(nb: Notebook, n: Note) {
