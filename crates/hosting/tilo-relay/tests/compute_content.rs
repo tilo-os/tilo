@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTermination};
 use tilo_clock::unix_now_ms;
+use tilo_relay::compute::MAX_COMPUTE_JOB_LIFETIME_MS;
 use tilo_relay::compute_transport::MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS;
 use tilo_relay::offload::WorkspaceContent;
 use tilo_relay::{
@@ -178,33 +179,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
         worker_client.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready { .. }
     ));
-    let issued_at_ms = unix_now_ms();
-    worker_client
-        .send(&ComputeEnvelope::Advertise {
-            workspace_id: WORKSPACE,
-            advertisement: ComputeWorkerAdvertisement {
-                version: 1,
-                worker: worker_key,
-                workspace_id: WORKSPACE,
-                apps: BTreeSet::from([APP.into()]),
-                accelerators: BTreeSet::new(),
-                assignment_capacity: 1,
-                active_assignments: 0,
-                environment_capacity: 0,
-                active_environments: 0,
-                power: PowerAvailability::External,
-                energy_saver: false,
-                issued_at_ms,
-                expires_at_ms: issued_at_ms.saturating_add(60_000),
-            },
-        })
-        .await
-        .unwrap();
-    worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
-    assert!(matches!(
-        worker_client.receive().await.unwrap().envelope,
-        ComputeEnvelope::Pong
-    ));
+    advertise(&mut worker_client, worker_key).await;
     let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
     let worker_connection = worker_client.connection();
     let serving = tokio::spawn(async move {
@@ -249,25 +224,36 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     workspace_content.put(input_digest, &input).unwrap();
     requester_client.serve_inputs(Arc::new(workspace_content.clone()));
 
-    let job = |job_id: [u8; 16], inputs: Vec<[u8; 32]>| ComputeJobSpec {
-        version: 1,
-        job_id,
-        requester: requester_key,
-        worker: worker_key,
-        workspace_id: WORKSPACE,
-        app_id: APP.into(),
-        package_digest,
-        entrypoint: ENTRYPOINT.into(),
-        arguments: Vec::new(),
-        inputs,
-        limits: ComputeResourceLimits {
-            cpu_time_ms: 5_000,
-            memory_bytes: 64 * 1024 * 1024,
-            output_bytes: 16 * 1024 * 1024,
-            gpu: false,
-        },
-        issued_at_ms,
-        expires_at_ms: issued_at_ms.saturating_add(60_000),
+    // Each job is stamped when it is made, and the worker advertises
+    // afresh before each submission: a job and an advertisement live a
+    // bounded time (at most five minutes and one minute), and this journey
+    // runs many jobs one after another, which on a loaded runner can take
+    // longer than that.
+    // A stamp from the journey's start would expire part way through: the
+    // relay would stop routing jobs, cut a running job's wall time short
+    // and refuse the requester its outputs.
+    let job = |job_id: [u8; 16], inputs: Vec<[u8; 32]>| {
+        let issued_at_ms = unix_now_ms();
+        ComputeJobSpec {
+            version: 1,
+            job_id,
+            requester: requester_key,
+            worker: worker_key,
+            workspace_id: WORKSPACE,
+            app_id: APP.into(),
+            package_digest,
+            entrypoint: ENTRYPOINT.into(),
+            arguments: Vec::new(),
+            inputs,
+            limits: ComputeResourceLimits {
+                cpu_time_ms: 5_000,
+                memory_bytes: 64 * 1024 * 1024,
+                output_bytes: 16 * 1024 * 1024,
+                gpu: false,
+            },
+            issued_at_ms,
+            expires_at_ms: issued_at_ms.saturating_add(MAX_COMPUTE_JOB_LIFETIME_MS),
+        }
     };
     let binding = ComputeJobBinding {
         workspace_id: WORKSPACE,
@@ -277,6 +263,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     };
     // Naming the input twice still moves it once.
     let specification = job(binding.job_id, vec![input_digest, input_digest]);
+    advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&specification).await.unwrap();
     assert_eq!(
         accept_job(&mut worker_client, &binding).await,
@@ -397,6 +384,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
         ] {
             let spec = job([next_job; 16], vec![digest]);
             next_job += 1;
+            advertise(&mut worker_client, worker_key).await;
             requester_client.submit(&spec).await.unwrap();
             assert_eq!(accept_job(&mut worker_client, &binding).await, spec);
             let ran = tilo_test_env::within(
@@ -445,6 +433,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     let secret_digest = *blake3::hash(&secret).as_bytes();
     held_store.put(secret_digest, &secret).unwrap();
     let probing = job([40; 16], vec![secret_digest]);
+    advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&probing).await.unwrap();
     assert_eq!(accept_job(&mut worker_client, &binding).await, probing);
     assert_eq!(
@@ -491,6 +480,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
 
     // A proof answers the worker's own challenge and nothing else.
     let listed = job([41; 16], vec![input_digest]);
+    advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&listed).await.unwrap();
     assert_eq!(accept_job(&mut worker_client, &binding).await, listed);
     let (proof, locator) = prove_job_input(
@@ -518,6 +508,7 @@ async fn compute_job_inputs_hydrate_from_the_requester_and_outputs_return_by_dig
     // a truthful code, promptly.
     let missing = *blake3::hash(b"not in this workspace").as_bytes();
     let unavailable = job([22; 16], vec![missing]);
+    advertise(&mut worker_client, worker_key).await;
     requester_client.submit(&unavailable).await.unwrap();
     assert_eq!(accept_job(&mut worker_client, &binding).await, unavailable);
     let failed = tilo_test_env::within(
@@ -692,9 +683,6 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
     let mut next_job = 60_u8;
     let mut runs = Vec::new();
     for held in [None, Some(worker_held.for_workspace(WORKSPACE))] {
-        // A fresh advertisement for each run, so a slow host never routes
-        // a job past the bounded lifetime of the last one.
-        advertise(&mut worker_client, worker_key).await;
         let started = std::time::Instant::now();
         let mut total = InputTransfer::default();
         for (chunk, inputs) in digests.chunks(BATCH_JOB_INPUTS).enumerate() {
@@ -716,9 +704,18 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
                     gpu: false,
                 },
                 issued_at_ms: unix_now_ms(),
-                expires_at_ms: unix_now_ms().saturating_add(60_000),
+                // The longest a job may live: these jobs stage dozens of
+                // files each, every one written durably, and on a loaded
+                // runner that alone has outlasted a minute. What moves is
+                // measured here, not how fast.
+                expires_at_ms: unix_now_ms().saturating_add(MAX_COMPUTE_JOB_LIFETIME_MS),
             };
             next_job += 1;
+            // A fresh advertisement for each job: an advertisement lives a
+            // bounded minute, and a run of several jobs on a loaded runner
+            // can outlast it, after which the relay routes nothing to the
+            // worker.
+            advertise(&mut worker_client, worker_key).await;
             requester_client.submit(&spec).await.unwrap();
             assert_eq!(accept_job(&mut worker_client, &binding).await, spec);
             let staged = FileComputeContentStore::open(

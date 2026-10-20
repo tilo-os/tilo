@@ -39,6 +39,22 @@ async fn subscribed_in(
     device: &TestDevice,
     workspace_id: u64,
 ) -> RelayClient {
+    let (client, ready) = subscribe(addr, user, device, workspace_id).await;
+    assert!(
+        matches!(ready, Some(Envelope::Ready { .. })),
+        "got {ready:?}"
+    );
+    client
+}
+
+/// Connect as `device`, subscribe to `workspace_id`, and return the relay's
+/// first answer, whatever it is.
+async fn subscribe(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    device: &TestDevice,
+    workspace_id: u64,
+) -> (RelayClient, Option<Envelope>) {
     let client = RelayClient::connect(
         client_endpoint().await,
         addr,
@@ -51,11 +67,7 @@ async fn subscribed_in(
     .expect("connect");
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     let ready = tilo_test_env::within("ready timeout", client.recv()).await;
-    assert!(
-        matches!(ready, Some(Envelope::Ready { .. })),
-        "got {ready:?}"
-    );
-    client
+    (client, ready)
 }
 
 fn frame(message: RemoteActionMessage) -> Vec<u8> {
@@ -306,14 +318,19 @@ async fn removed_member_remote_action_is_refused_before_audit() {
         .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
         .await
         .unwrap();
-    b_client
+    // The removal bumps the relay's authority epoch, which may end B's
+    // session before B sends, more so on a loaded runner: then the frame
+    // cannot leave B at all, which refuses it as surely as an answer does.
+    if b_client
         .send(directed(host_key, frame(invoke(InvocationId::new()))))
-        .unwrap();
-    let refused = refusal(&b_client, "B").await;
-    assert!(
-        refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
-        "got {refused:?}"
-    );
+        .is_ok()
+    {
+        let refused = refusal(&b_client, "B").await;
+        assert!(
+            refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
+            "got {refused:?}"
+        );
+    }
     assert!(
         actions.callers.lock().unwrap().is_empty(),
         "a removed member never reaches the app-serving plane"
@@ -391,7 +408,6 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
-    let client = subscribed_in(relay.relay.node_addr(), &user, &agent, ws).await;
     let to_host = |frame| Envelope::RemoteAction {
         workspace_id: ws,
         version: REMOTE_ACTION_ENVELOPE_VERSION,
@@ -400,43 +416,65 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         from_user_public_key: [0xEE; 32],
         frame,
     };
-
-    // Delegate the subscribed device briefly; until expiry it acts as the agent.
-    let lifetime = Duration::from_millis(500);
-    let issued = tilo_clock::try_unix_now_ns().unwrap();
-    let expires = issued
-        .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
-        .unwrap();
-    let delegation = Delegation::sign(
-        &user.user_sk,
-        agent.device_pubkey(),
-        tilo_relay_protocol::delegation::Delegate::Agent {
-            agent_id: "helper".into(),
-        },
-        "Helper",
-        [0x7c, 0x3a, 0xed],
-        DelegateScope {
-            rooms: vec![room.into()],
-            apps: Vec::new(),
-        },
-        issued,
-        expires,
-    )
-    .unwrap();
-    relay.relay.register_agent(delegation).unwrap();
-    client
-        .send(to_host(frame(invoke(InvocationId::new()))))
-        .unwrap();
-    assert!(
-        matches!(next(&client, "agent").await, Envelope::RemoteAction { .. }),
-        "a live delegation reaches the host"
-    );
     let delegated = [Caller::delegated_agent(
         "helper",
         user.user_pk,
         agent.device_pubkey(),
     )];
-    assert_eq!(*actions.callers.lock().unwrap(), delegated);
+
+    // Delegate the subscribed device briefly; until expiry it acts as the
+    // agent. The live half only proves something if its answer came back
+    // before the delegation ran out: a runner that stalls past a short
+    // lifetime may rightly refuse it. Then the delegation is issued again,
+    // living twice as long, on a fresh session (the expired one may already
+    // be cut off by the access audit, and subscribing under it is refused).
+    let mut lifetime = Duration::from_millis(500);
+    let (client, expires) = loop {
+        let issued = tilo_clock::try_unix_now_ns().unwrap();
+        let expires = issued
+            .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
+            .unwrap();
+        let delegation = Delegation::sign(
+            &user.user_sk,
+            agent.device_pubkey(),
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: "helper".into(),
+            },
+            "Helper",
+            [0x7c, 0x3a, 0xed],
+            DelegateScope {
+                rooms: vec![room.into()],
+                apps: Vec::new(),
+            },
+            issued,
+            expires,
+        )
+        .unwrap();
+        relay.relay.register_agent(delegation).unwrap();
+        actions.callers.lock().unwrap().clear();
+        let (client, ready) = subscribe(relay.relay.node_addr(), &user, &agent, ws).await;
+        let answer = if matches!(ready, Some(Envelope::Ready { .. })) {
+            client
+                .send(to_host(frame(invoke(InvocationId::new()))))
+                .unwrap();
+            Some(next(&client, "agent").await)
+        } else {
+            None
+        };
+        if tilo_clock::try_unix_now_ns().unwrap() < expires {
+            assert!(
+                matches!(answer, Some(Envelope::RemoteAction { .. })),
+                "a live delegation subscribes ({ready:?}) and reaches the host, got {answer:?}"
+            );
+            assert_eq!(*actions.callers.lock().unwrap(), delegated);
+            break (client, expires);
+        }
+        assert!(
+            lifetime < tilo_test_env::hang_bound(),
+            "no delegation lifetime up to {lifetime:?} outlived one round trip"
+        );
+        lifetime = lifetime.saturating_mul(2);
+    };
 
     // Just past expiry, without waiting for the access audit.
     let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
