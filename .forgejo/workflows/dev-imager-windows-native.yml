@@ -9,8 +9,6 @@
 name: Deferred native Windows imager fixtures (disabled)
 on:
   workflow_dispatch:
-permissions:
-  contents: read
 jobs:
   native-fixtures:
     if: ${{ false }}

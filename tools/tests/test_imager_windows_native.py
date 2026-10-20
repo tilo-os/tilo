@@ -36,13 +36,15 @@ class DeferredWindowsNative(unittest.TestCase):
             self.assertIn("not qualification evidence", text)
             self.assertIn("further dedicated fixtures", text)
         # Exact top-level event/job shape fails closed on new triggers or jobs.
+        # No `permissions:`: Forgejo ignores the key, so it would only suggest
+        # a token restriction the runner never applies.
         self.assertEqual(re.findall(r"(?m)^[a-z].*", self.workflow), [
             "name: Deferred native Windows imager fixtures (disabled)",
-            "on:", "permissions:", "jobs:",
+            "on:", "jobs:",
         ])
-        self.assertIn("on:\n  workflow_dispatch:\npermissions:", self.workflow)
+        self.assertIn("on:\n  workflow_dispatch:\njobs:", self.workflow)
         self.assertEqual(re.findall(r"(?m)^  ([\w-]+):", self.workflow),
-                         ["workflow_dispatch", "contents", "native-fixtures"])
+                         ["workflow_dispatch", "native-fixtures"])
         self.assertEqual(self.workflow.count("    if: ${{ false }}"), 1)
         self.assertIn("runs-on: imager-windows-x86_64", self.workflow)
         launcher = (ROOT / "tools/ci/runners/imager-ephemeral-windows.ps1").read_text()

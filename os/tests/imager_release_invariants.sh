@@ -288,7 +288,11 @@ linux_launcher="$repo/apps/imager/packaging/linux/tilo-imager"
 mac_launcher="$repo/apps/imager/packaging/macos/tilo-imager"
 windows_launcher="$repo/apps/imager/packaging/windows/Start-Tilo-Imager.ps1"
 writer="$repo/apps/imager/src/write.rs"
-if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
+# The writer's privileged half (helper, UDisks2 descriptor) lives in the backend.
+backend="$repo/crates/platform/imager-backend"
+write_helper="$backend/src/write/helper.rs"
+if grep -Fq 'host-media-writer = ["installation", "imager-backend/host-media-writer"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'host-media-writer = []' "$backend/Cargo.toml" \
   && grep -Fq 'cfg!(feature = "host-media-writer")' "$writer" \
   && [ "$(grep -Fc 'cargo test -p imager --lib --locked --features host-media-writer' "$workflow")" -eq 3 ] \
   && grep -Fq -- '--features host-media-writer' \
@@ -303,9 +307,10 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["installation", "imager-backend/flatpak-media-writer"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]' "$backend/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
-    "$repo/apps/imager/src/write.rs" \
+    "$backend/src/write/udisks.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
   && grep -Fq 'apps/imager/packaging/package-flatpak.sh' "$workflow" \
   && grep -Fq -- '--tilo-flatpak-probe-smoke' "$flatpak_package" \
@@ -319,11 +324,11 @@ if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
   bad 'a native launcher still elevates the complete Imager GUI'
 elif grep -Fq 'WriteBackend::PrivilegedHelper' "$writer" \
-  && grep -Fq 'Command::new("pkexec")' "$writer" \
-  && grep -Fq 'with administrator privileges' "$writer" \
-  && grep -Fq -- '-Verb RunAs' "$writer" \
   && grep -Fq 'without_secrets' "$writer" \
-  && grep -Fq 'write helper request changed after authorization' "$writer"; then
+  && grep -Fq 'Command::new("pkexec")' "$write_helper" \
+  && grep -Fq 'with administrator privileges' "$write_helper" \
+  && grep -Fq -- '-Verb RunAs' "$write_helper" \
+  && grep -Fq 'write helper request changed after authorization' "$write_helper"; then
   ok 'native GUIs stay unprivileged and authenticate only a digest-bound secret-free writer'
 else
   bad 'write-time least-privilege helper is incomplete for a native platform'

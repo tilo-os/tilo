@@ -420,8 +420,10 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
   && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
-  && ! grep -Fq 'branches: ["main"]' "$imager" \
-  && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
+  && awk '/^on:/ { on = 1 } on && /^  push:/ { push = 1 } push && /branches: \["main"\]/ { main = 1 }
+          main && /^    paths:/ { filtered = 1 } /^  workflow_dispatch:/ { push = 0 }
+          END { exit !(main && filtered) }' "$imager" \
+  && ok 'imager native jobs run for main pushes that touch the Installer (its signed prereleases), explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
