@@ -7,7 +7,7 @@ flow clear_done(list: todo.TodoList) -> Int {
     let n = 0
     for item in list.items {
         if item.done {
-            do todo.remove(list, item)
+            todo.remove(list, item)
             n += 1
         }
     }

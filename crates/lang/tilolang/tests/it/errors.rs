@@ -128,7 +128,7 @@ fn e024_operator_operands() {
 
 #[test]
 fn e025_cannot_infer() {
-    expect("E025", "fn f() -> Int {\n    let x = none\n    return 1\n}");
+    expect("E025", "fn f() -> Int {\n    let x = []\n    return 1\n}");
 }
 
 #[test]
@@ -211,10 +211,112 @@ fn e043_fn_calls_an_action() {
 }
 
 #[test]
-fn e044_do_outside_a_flow() {
+fn e044_try_outside_a_flow() {
     expect(
         "E044",
-        &with_c("action a(c: C) {\n}\naction b(c: C) {\n    do a(c)\n}"),
+        &with_c("action a(c: C) {\n}\naction b(c: C) {\n    let r = try a(c)\n}"),
+    );
+}
+
+#[test]
+fn e018_root_and_default_view() {
+    // A root needs a default view: it is what opening it shows.
+    expect("E018", "type T {\n    n: Int\n}\nroot T");
+    // A default view shows the resource and nothing else.
+    expect(
+        "E018",
+        "type T {\n    n: Int\n}\nview v(t: T, n: Int) {\n    text(n)\n}\ndefault view v for T",
+    );
+    // A root is a record type of the package.
+    expect("E018", "enum E {\n    a\n}\nroot E");
+}
+
+const E: &str = "enum Shape {\n    dot\n    line(len: Int)\n    box(w: Int, h: Int)\n}\n";
+
+// USER REQUIREMENT (2026-10-20): "Exhaustive `match e { .a => expr_or_block, .b(x, y) => ...,
+// }` as an expression (error with the missing variants listed)."
+#[test]
+fn e035_match_is_exhaustive_and_names_the_missing_variants() {
+    let body =
+        format!("{E}fn f(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n    }}\n}}");
+    expect("E035", &body);
+    let msg = tilolang::compile_package(&format!("app t.x \"X\"\n{body}\n"), &IdsLock::new(), &[])
+        .expect_err("fails");
+    assert!(
+        msg.iter()
+            .any(|d| d.code == "E035" && d.message.contains(".line") && d.message.contains(".box")),
+        "{msg:?}"
+    );
+}
+
+#[test]
+fn e036_unknown_variant_or_payload() {
+    expect("E036", &format!("{E}fn f() -> Shape {{\n    .circle\n}}"));
+    expect(
+        "E036",
+        &format!(
+            "{E}fn f(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n        .line(a, b) => a,\n        .box(w, h) => w,\n    }}\n}}"
+        ),
+    );
+}
+
+#[test]
+fn e037_a_variant_needs_a_known_type() {
+    expect(
+        "E037",
+        &format!("{E}fn f() -> Int {{\n    let s = .dot\n    return 1\n}}"),
+    );
+}
+
+#[test]
+fn e038_an_if_value_needs_an_else() {
+    expect(
+        "E038",
+        "fn f(b: Bool) -> Int {\n    let x = if b { 1 }\n    return x\n}",
+    );
+}
+
+// USER REQUIREMENT (2026-10-20): layout and UI options are typed enums; "bare words are no
+// longer accepted there (error suggesting the dot form)".
+#[test]
+fn e065_bare_option_words_suggest_the_dot_form() {
+    let body = "view v() {\n    stack(gap: section) {\n        spacer\n    }\n}";
+    expect("E065", body);
+    let msg = tilolang::compile_package(&format!("app t.x \"X\"\n{body}\n"), &IdsLock::new(), &[])
+        .expect_err("fails");
+    assert!(
+        msg.iter().any(|d| d.message.contains(".section")),
+        "{msg:?}"
+    );
+}
+
+#[test]
+fn e066_view_state_misuse() {
+    // `set` names view state the view declares.
+    expect(
+        "E066",
+        "view v() {\n    window n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
+    );
+    // Only views have state.
+    expect(
+        "E066",
+        "action a() {\n}\nfn f() -> Int {\n    return 1\n}\nflow g() {\n    set(x, 1)\n}",
+    );
+    // State is declared at the top of the view body.
+    expect(
+        "E066",
+        "view v() {\n    stack {\n        lens n: Int = 0\n        text(\"x\")\n    }\n}",
+    );
+}
+
+#[test]
+fn e067_open_takes_a_resource_from_a_view() {
+    expect("E067", "view v() {\n    button(\"x\", on: open(1))\n}");
+    expect(
+        "E067",
+        &with_c(
+            "view w(c: C, n: Int) {\n    text(n)\n}\nview v(c: C) {\n    button(\"x\", on: open(c, view: w))\n}",
+        ),
     );
 }
 

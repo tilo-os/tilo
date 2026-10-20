@@ -92,9 +92,19 @@ imports! {
     PrincipalEq = "principal_eq" ([H, H] -> [I32]);
     PrincipalName = "principal_name" ([H] -> [H]);
 
+    EnumNew = "enum_new" ([H, H] -> [H]);
+    EnumSetI = "enum_set_i" ([H, H, I64] -> []);
+    EnumSetF = "enum_set_f" ([H, H, F64] -> []);
+    EnumSetH = "enum_set_h" ([H, H, H] -> []);
+    EnumIs = "enum_is" ([H, H] -> [I32]);
+    EnumGetI = "enum_get_i" ([H, H] -> [I64]);
+    EnumGetF = "enum_get_f" ([H, H] -> [F64]);
+    EnumGetH = "enum_get_h" ([H, H] -> [H]);
+    ValueEq = "value_eq" ([H, H] -> [I32]);
+
     ActRef = "act_ref" ([H, H] -> [H]);
     Invoke = "invoke" ([H] -> [H]);
-    IsError = "is_error" ([H] -> [I32]);
+    TryInvoke = "try_invoke" ([H] -> [H]);
     Outside = "outside" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
     QueueBlock = "queue_block" ([H, H, H] -> []);
@@ -107,6 +117,10 @@ imports! {
     UiBind = "ui_bind" ([H, H, H] -> []);
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
+    UiBindState = "ui_bind_state" ([H, I32, H] -> []);
+    StateGet = "state_get" ([I32, H, H] -> [H]);
+    ActSet = "act_set" ([I32, H, H] -> [H]);
+    ActOpen = "act_open" ([H, H] -> [H]);
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);
