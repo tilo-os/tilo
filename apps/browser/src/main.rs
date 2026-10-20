@@ -9,6 +9,9 @@ extern crate runtime_dylib;
 // not the tapp.
 #[cfg(feature = "runtime-engine")]
 extern crate tilo_browser_import_engine;
+// Website-session custody comes from the accounts engine.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_accounts_engine;
 
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
