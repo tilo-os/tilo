@@ -24,10 +24,12 @@ use ui::widget::arrange::{
 use ui::widget::{
     Avatar, Button, ButtonRole, Card, Checkbox, Container, ControlSize, Divider, Dropdown, Element,
     EmptyState, Field, FormSection, ListRow, ProgressBar, Property, PropertyList, Scrollable,
-    Section, Segment, Spacer, Text, TextInput, Toggle, ToggleGroup, labeled_check,
+    Section, SectionHeader, Segment, Spacer, Text, TextInput, Toggle, ToggleGroup, labeled_check,
 };
 
+use crate::body::BodyEditor;
 use crate::window::pane::Pane;
+use ui::presence::PathSegment;
 
 /// What a person did to the view.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +44,8 @@ pub enum UiEvent {
     Resolve(String, bool),
     /// The node `key`'s event `event` happened: a case of a `choice` was picked.
     Fire(String, String),
+    /// A row of a resource was activated: show the resource.
+    Open(tilolang_tilo::runtime::ResourceRef),
 }
 
 /// Where controls report what the person did.
@@ -436,6 +440,10 @@ impl Reconciler {
         }
         .gap(rhythm(node, "gap", Rhythm::Sibling))
         .with_id(node.key.clone());
+        // A dashboard's cards list different things: each is as tall as what it lists.
+        if holds_cards(node) {
+            grid = grid.hugging();
+        }
         for slot in self.slots(node) {
             grid = grid.push_slot(slot);
         }
@@ -634,6 +642,9 @@ impl Reconciler {
         }
         if node.events.contains_key("press") {
             row = row.on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone())));
+        } else if let Some(Value::Ref(reference)) = prop(node, "resource") {
+            let target = reference.target.clone();
+            row = row.on_view(move || sink.borrow_mut().push(UiEvent::Open(target.clone())));
         }
         Box::new(row)
     }
@@ -647,11 +658,22 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let placeholder = prop(node, "placeholder").map(display).unwrap_or_default();
+        // In a document, a body is the block editor native Notes edits a note in.
+        if token(node, "field_role") == Some("body") {
+            return Box::new(BodyEditor::new(
+                &node.key,
+                &state,
+                &self.sink,
+                presence_path(node),
+                &placeholder,
+            ));
+        }
         let name = node
             .binding
             .as_ref()
             .map_or_else(|| placeholder.clone(), |binding| (self.names)(binding));
         let mut input = TextInput::from_state(&state)
+            .with_presence_path(presence_path(node))
             .on_change(move |text| {
                 sink.borrow_mut()
                     .push(UiEvent::Edit(key.clone(), text.to_owned()));
@@ -666,21 +688,14 @@ impl Reconciler {
                 .multiline(true)
                 .with_min_lines(lines.max(1.0) as usize);
         }
-        // In a document, the title and the body are edited in place, as running text.
-        match token(node, "field_role") {
-            Some("title") => {
-                // A long title wraps rather than running out of a narrow window; Enter still
-                // ends it.
-                input = input
-                    .with_text_role(TextRole::LargeTitle)
-                    .with_plain_chrome()
-                    .multiline(true)
-                    .with_enter_submits(true);
-            }
-            Some("body") => {
-                input = input.multiline(true).with_plain_chrome();
-            }
-            _ => {}
+        // In a document, the title is edited in place, as running text.
+        if token(node, "field_role") == Some("title") {
+            // A long title wraps rather than running out of a narrow window; Enter still ends it.
+            input = input
+                .with_text_role(TextRole::LargeTitle)
+                .with_plain_chrome()
+                .multiline(true)
+                .with_enter_submits(true);
         }
         Box::new(input)
     }
@@ -864,7 +879,17 @@ impl Reconciler {
                 let body = panes
                     .into_iter()
                     .fold(body, |body, pane| body.push_slot(Slot::new(pane)));
-                Box::new(Card::new(Box::new(body)))
+                let card = Card::new(Box::new(body));
+                let title = prop(node, "title").map(display).unwrap_or_default();
+                if title.is_empty() {
+                    return Box::new(card);
+                }
+                let header = SectionHeader::group(title);
+                let header = match prop(node, "count") {
+                    Some(Value::Int(count)) => header.count(usize::try_from(*count).unwrap_or(0)),
+                    _ => header,
+                };
+                Box::new(card.with_section_header(header))
             }
             _ => {
                 let mut section = FormSection::untitled();
@@ -1162,6 +1187,31 @@ fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
 /// key, kind and props of each part (a field's label).
 /// One part of a holder as its shape compares: its key, its kind and its props.
 type PartShape = (String, String, Vec<(String, Value)>);
+
+/// Where a bound control is for presence: the resource and the field it edits, so collaborators
+/// at the same field see each other's carets. A control bound to view state has none.
+fn presence_path(node: &UiNode) -> Vec<PathSegment> {
+    node.binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .map(|(target, field)| {
+            vec![
+                PathSegment::Field("tilolang".to_owned()),
+                PathSegment::Field(target.id_string()),
+                PathSegment::Field(field.clone()),
+            ]
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `node` holds cards, directly or through the fragments a `match` or `if` leaves.
+fn holds_cards(node: &UiNode) -> bool {
+    node.children.iter().any(|child| match child.kind.as_str() {
+        "card" => true,
+        "fragment" => holds_cards(child),
+        _ => false,
+    })
+}
 
 fn holder_shape(node: &UiNode) -> Vec<PartShape> {
     let entry = |node: &UiNode| {
