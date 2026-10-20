@@ -70,7 +70,7 @@ x86_64 = 1376256
 aarch64 = 1310720
 
 [apps."so.tilo.browser"]
-x86_64 = 2097152
+x86_64 = 1966080
 aarch64 = 1835008
 
 [apps."so.tilo.calculator"]
@@ -230,8 +230,8 @@ x86_64 = 524288
 aarch64 = 524288
 
 [apps."so.tilo.settings"]
-x86_64 = 5832704
-aarch64 = 5242880
+x86_64 = 3473408
+aarch64 = 3211264
 
 [apps."so.tilo.sheets"]
 x86_64 = 1638400

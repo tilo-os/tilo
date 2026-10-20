@@ -1,5 +1,0 @@
-reason = "Settings reads the local-model service's snapshot through the shared agent-provider-config types instead of its own copy; their serde code is generic, so it is instantiated in the Settings tapp rather than shared, and main already sat 2,560 B under the aarch64 budget. check run 108873 measured 5,244,928 B on aarch64"
-run = 108873
-
-[apps."so.tilo.settings"]
-aarch64 = 8192
