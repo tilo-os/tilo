@@ -25,6 +25,9 @@ memmap2 = "0.9.10"
 tilo-sandbox-core = { version = "0.1.0", path = "../../system/sandbox-core" }
 # Jobs: their child is born in its cgroup with clone3.
 rustix = { workspace = true, features = ["fs", "process"] }
+# The plan a job's init reads from the worker that started it.
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
 
 [dev-dependencies]
 tempfile.workspace = true
