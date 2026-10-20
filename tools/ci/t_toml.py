@@ -21,9 +21,10 @@ so t.toml carries both, generated between markers:
     external crates t derives from the manifests and the lockfile), and the
     files outside those packages they or the packages read, so a change
     elsewhere in the tree doesn't run them again;
-  * the size checks: `app-size/<app>-<arch>` for each app of the default
-    collection and `runtime-size-<arch>`, each keyed by what building and
-    measuring its subject reads (tools/apps/t-release.sh app-size, runtime-size),
+  * the size checks: `thin-runtime-<arch>`, which builds what they share once,
+    and on it `app-size/<app>-<arch>` for each app of the default collection and
+    `runtime-size-<arch>`, each keyed by what building and measuring its subject
+    reads (tools/apps/t-release.sh thin-runtime, app-size, runtime-size),
     written as matrices t expands per app and architecture.
 
   t_toml.py write   regenerate the marked blocks in t.toml
@@ -327,8 +328,12 @@ CARGO_CHECKS: dict[str, dict] = {
 }
 
 
-# The size checks (tools/apps/t-release.sh app-size and runtime-size). Each compiles in the
-# default collection's graph, as a release does (dist/apps/package-apps.sh), and reads:
+# The size checks (tools/apps/t-release.sh thin-runtime, app-size and runtime-size). Each compiles
+# in the default collection's graph, as a release does (dist/apps/package-apps.sh).
+# `thin-runtime-<arch>` compiles what every one of them shares, the runtime, its engines and the
+# packing tools, and its outputs are the build directory holding them; `app-size/<app>-<arch>` and
+# `runtime-size-<arch>` need it, so their keys hold its key, and compile only their apps on it.
+# They read:
 SIZE_ARCHES = [("x86_64", "arch=x86_64"), ("aarch64", "arch=arm64")]
 # to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
 # app's manifests and the collections), the architecture guard, package-apps.sh up to its
@@ -339,8 +344,11 @@ SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/c
                 "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh",
                 "tools/apps/app_package_isa.py", "crates/packaging/tilo-app-package/max-app-bytes",
                 "os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh",
-                "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "os/scripts/verify-elf-hardening.sh",
-                "tools/apps/release-smoke.sh", "tools/perf/tapp_size_ratchet.py", "tools/perf/record.py"]
+                "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "os/scripts/verify-elf-hardening.sh"]
+# to keep only the shared build's units in its build directory;
+SHARED_BUILD = ["tools/apps/thin_runtime_units.py"]
+# to measure: the smoke script that runs the measurements;
+SIZE_MEASURE = ["tools/apps/release-smoke.sh", "tools/perf/tapp_size_ratchet.py", "tools/perf/record.py"]
 # to package one app: the signed runtime bundle its tapp names (the font catalog, the bake, the
 # closure check), the manifest's staging and the packing of the runtime package, then its budget;
 APP_SIZE_PACKAGING = ["tools/font-catalog.py", "os/scripts/bake-runtime-bundle.sh",
@@ -354,6 +362,9 @@ RUNTIME_SIZE_MEASURE = ["tools/perf/runtime_size_ratchet.py", "tools/perf/runtim
 # bundle and so every tapp's runtime id cover them) and the packing tools.
 SIZE_PACKING_TOOLS = {"tilo-app-package-cli", "runtime-bundle"}
 RUNTIME_SIZE_BUDGET = ROOT / "tools/perf/runtime-size-budget/budget.toml"
+# What `thin-runtime-<arch>` hands the checks that need it, under its build directory: the thin
+# graph's profile directory with only its units, the list of its files, and the packing tools.
+SHARED_OUTPUTS = ["thin-app/**", "shared-files", "debug/tilo-app-package", "debug/tilo-runtime-bundle"]
 
 
 def app_release_module():
@@ -404,36 +415,42 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
     engine_names = (["tilo-*-engine"] if all(fnmatch.fnmatchcase(engine, "tilo-*-engine") for engine in engines)
                     else sorted(engines))
 
-    def check(name: str, run: str, node: str, names: set[str], inputs: list[str]) -> str:
+    def check(name: str, run: str, node: str, names: set[str], inputs: list[str], shared: str | None) -> str:
         spec = {"packages": lambda packages, root: names, "dev": False, "inputs": inputs, "drop_covered": True,
-                "cargo_packages": sorted(names - engines) + engine_names}
-        return "\n".join([
-            "[[check]]",
-            f"name = {json.dumps(name)}",
-            f"run = {json.dumps(run)}",
-            f"requires = [{json.dumps(node)}]",
-            # The runtime library's link and an app's one-unit codegen run side by side.
-            'requirement = { cores = 16, memory = "32GiB" }',
-            "timeout_secs = 5400",
-            'cost = "heavy"',
-            "default = false",
-        ]) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
+                "cargo_packages": sorted(names - engines) + (engine_names if names & engines else [])}
+        lines = ["[[check]]", f"name = {json.dumps(name)}", f"run = {json.dumps(run)}",
+                 f"requires = [{json.dumps(node)}]"]
+        if shared is None:
+            # The runtime library's link and the engines' run side by side.
+            lines += ['requirement = { cores = 16, memory = "32GiB" }',
+                      f"outputs = {array([f'/target/thin-runtime/{path}' for path in SHARED_OUTPUTS])}"]
+        else:
+            # An app's own crates, one of them compiled as one unit.
+            lines += ['requirement = { cores = 8, memory = "16GiB" }', f"needs = [{json.dumps(shared)}]"]
+        lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
+        return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
+    shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",
+                    node, runtime | SIZE_PACKING_TOOLS, [*SIZE_COMPILE, *SHARED_BUILD, *manifests], None)
+              for arch, node in SIZE_ARCHES]
     runtime_size = [check(f"runtime-size-{arch}",
                           f"bash tools/apps/t-release.sh runtime-size {arch} {' '.join(media_free)}",
-                          node, runtime | {catalog[app]["package"] for app in media_free},
-                          [*SIZE_COMPILE, *RUNTIME_SIZE_MEASURE, *(f"apps/{app}/**" for app in media_free), *manifests])
+                          node, {catalog[app]["package"] for app in media_free},
+                          [*SIZE_COMPILE, *SIZE_MEASURE, *RUNTIME_SIZE_MEASURE,
+                           *(f"apps/{app}/**" for app in media_free), *manifests], f"thin-runtime-{arch}")
                     for arch, node in SIZE_ARCHES]
     app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
-                            node, runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"]},
-                            [*SIZE_COMPILE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests])
+                            node, {catalog[app]["package"]},
+                            [*SIZE_COMPILE, *SIZE_MEASURE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests],
+                            f"thin-runtime-{arch}")
                       for arch, node in SIZE_ARCHES]
                 for app in apps}
-    return size_matrices(runtime_size, app_size, apps)
+    return size_matrices([shared, runtime_size], app_size, apps)
 
 
-def size_matrices(runtime_size: list[str], app_size: dict[str, list[str]], apps: list[str]) -> str:
-    """The size checks as matrices t expands (t's README, "Matrices"): `runtime-size-{arch}`, and
+def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], apps: list[str]) -> str:
+    """The size checks as matrices t expands (t's README, "Matrices"): each of `per_arch`
+    (`thin-runtime-{arch}`, `runtime-size-{arch}`) once over the architectures, and
     `app-size/{app}-{arch}` once for the apps that differ only by name, which `apps/*/tilo-app.toml`
     lists, and once for each set of apps whose checks differ otherwise (what their packages read
     beyond their directory). Verified to expand into exactly the checks written out one by one, so
@@ -471,8 +488,9 @@ def size_matrices(runtime_size: list[str], app_size: dict[str, list[str]], apps:
     tree = t_matrix.tree_paths(ROOT)
     listed = tree("apps/*/tilo-app.toml")
     blocks = []
-    shape = template(tomllib.loads(runtime_size[0])["check"][0], arches[0])
-    blocks.append(products.check(shape, None, {"arch": arches}))
+    for checks in per_arch:
+        shape = template(tomllib.loads(checks[0])["check"][0], arches[0])
+        blocks.append(products.check(shape, None, {"arch": arches}))
     for i, (shape, members) in enumerate(groups):
         if i == 0:
             axis = {"from": "apps/*/tilo-app.toml"}
@@ -483,7 +501,8 @@ def size_matrices(runtime_size: list[str], app_size: dict[str, list[str]], apps:
         blocks.append(products.check(shape, None, matrix))
     text = "\n".join(blocks)
     # What t reads of it must be what was written out.
-    want = [tomllib.loads(b)["check"][0] for b in runtime_size] + [c for app in apps for c in concrete[app]]
+    want = ([tomllib.loads(b)["check"][0] for checks in per_arch for b in checks]
+            + [c for app in apps for c in concrete[app]])
     got = t_matrix.expand(tomllib.loads(text), tree)["check"]
     by_name = {c["name"]: c for c in got}
     differ = sorted({c["name"] for c in want if by_name.get(c["name"]) != c} | (by_name.keys() - {c["name"] for c in want}))

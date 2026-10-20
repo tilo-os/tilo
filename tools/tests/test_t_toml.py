@@ -63,14 +63,30 @@ class TTomlTests(unittest.TestCase):
                 self.assertEqual(check["run"], f"bash tools/apps/t-release.sh app-size {arch} {app}")
                 self.assertFalse(check["default"])
                 self.assertFalse(check["cargo_dev_dependencies"])
-                self.assertIn(catalog[app]["package"], check["cargo_packages"])
-                self.assertIn("runtime-dylib", check["cargo_packages"])
-                self.assertEqual(set(check["cargo_packages"]) & packages, {catalog[app]["package"]})
+                self.assertEqual(check["cargo_packages"], [catalog[app]["package"]])
+                # The runtime, its engines and the packing tools come from the shared build, whose
+                # key t folds into this one.
+                self.assertEqual(check["needs"], [f"thin-runtime-{arch}"])
                 self.assertIn(f"apps/{app}/**", check["inputs"])
                 self.assertNotIn("apps/**", check["inputs"])
                 self.assertNotIn("crates/**", check["inputs"])
         for arch, _ in t_toml.SIZE_ARCHES:
-            self.assertFalse(checks[f"runtime-size-{arch}"]["default"])
+            shared = checks[f"thin-runtime-{arch}"]
+            self.assertEqual(shared["run"], f"bash tools/apps/t-release.sh thin-runtime {arch}")
+            self.assertFalse(shared["default"])
+            self.assertFalse(shared["cargo_dev_dependencies"])
+            self.assertIn("runtime-dylib", shared["cargo_packages"])
+            self.assertIn("tilo-app-package-cli", shared["cargo_packages"])
+            self.assertIn("runtime-bundle", shared["cargo_packages"])
+            self.assertEqual(set(shared["cargo_packages"]) & packages, set())
+            self.assertIn("/target/thin-runtime/thin-app/**", shared["outputs"])
+            self.assertIn("/target/thin-runtime/shared-files", shared["outputs"])
+            self.assertNotIn("apps/**", shared["inputs"])
+            self.assertFalse(any(path.startswith("apps/") and path.endswith("/**") for path in shared["inputs"]),
+                             "an app's sources don't change the shared build")
+            runtime = checks[f"runtime-size-{arch}"]
+            self.assertFalse(runtime["default"])
+            self.assertEqual(runtime["needs"], [f"thin-runtime-{arch}"])
             whole = checks[f"app-sizes-{arch}"]
             self.assertFalse(whole["default"])
             self.assertEqual(whole["on"], ["stable", "dispatch"])

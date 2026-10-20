@@ -121,6 +121,12 @@ crate-type = ["dylib"]
 name = "tilo-fixture-engine-check"
 path = "src/check.rs"
 required-features = ["thin"]
+# build-thin-apps.sh builds the runtime's account probe with every selection, as the accounts
+# engine ships it.
+[[bin]]
+name = "tilo-runtime-account-capability"
+path = "src/probe.rs"
+required-features = ["thin"]
 [features]
 thin = ["dep:runtime-dylib"]
 [dependencies]
@@ -129,6 +135,8 @@ runtime-dylib = { path = "../../../../runtime", optional = true }
         self.write("crates/runtime/engines/fixture/src/lib.rs", """#[cfg(feature = "thin")]
 pub fn engine_value() -> usize { runtime_dylib::value() + 40 }
 """)
+        self.write("crates/runtime/engines/fixture/src/probe.rs",
+                   'fn main() { println!("{}", tilo_fixture_engine::engine_value()); }\n')
         self.write("crates/runtime/engines/fixture/src/check.rs",
                    'fn main() { assert_eq!(tilo_fixture_engine::engine_value() & 1, 0); '
                    'println!("engine-runs-against-runtime"); }\n')
@@ -190,7 +198,7 @@ app-sdk = { path = "../../app_sdk" }
         env = dict(os.environ)
         for key in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
                     "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "APP_FEATURES", "EXCLUDE_PACKAGES",
-                    "INCLUDE_PACKAGES", "BUILD_PACKAGES",
+                    "INCLUDE_PACKAGES", "BUILD_PACKAGES", "BUILD_RUNTIME_ONLY",
                     "CARGO_PROFILE_RELEASE_CODEGEN_UNITS", "CARGO_PROFILE_RELEASE_LTO"):
             env.pop(key, None)
         env["REPO"] = str(self.root)
@@ -341,6 +349,66 @@ app-sdk = { path = "../../app_sdk" }
                 f"extra/bloat must enlarge the shared runtime .text; "
                 f"ci_rt={ci_rt} image_rt={image_rt}",
             )
+
+    def test_shared_runtime_build_is_handed_to_app_builds(self):
+        """tools/apps/t-release.sh thin-runtime builds the runtime and its engines once and t
+        hands its build directory to each size check, which compiles only its app on it."""
+        units = ["python3", "-I", str(ROOT / "tools/apps/thin_runtime_units.py")]
+        target = self.root / "target"
+        profile = target / "thin-app"
+        listing = target / "shared-files"
+        refused = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_RUNTIME_ONLY="1",
+                                   BUILD_PACKAGES="calculator")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("BUILD_RUNTIME_ONLY builds no app", refused.stderr)
+        # An app built earlier in the same build directory leaves units the shared build doesn't use.
+        earlier = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator",
+                                   APP_FEATURES="other/runtime-engine")
+        self.assertEqual(earlier.returncode, 0, earlier.stdout + earlier.stderr)
+        self.assertTrue((profile / "calculator").is_file())
+        marked = self.run_command(*units, "mark", str(profile))
+        self.assertEqual(marked.returncode, 0, marked.stdout + marked.stderr)
+        shared = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_RUNTIME_ONLY="1",
+                                  APP_FEATURES="other/runtime-engine")
+        self.assertEqual(shared.returncode, 0, shared.stdout + shared.stderr)
+        self.assertIn("built 0 thin tapp apps", shared.stdout)
+        self.assertEqual((profile / "runtime-engines").read_text(), "libtilo_fixture_engine.so\n")
+        kept = self.run_command(*units, "keep", str(profile), "--list", str(listing),
+                                *(f"--top={name}" for name in (
+                                    "libruntime_dylib.so", "libruntime_dylib.d", "runtime-engines",
+                                    "libtilo_fixture_engine.so", "libtilo_fixture_engine.d",
+                                    "tilo-fixture-engine-check", "tilo-fixture-engine-check.d")))
+        self.assertEqual(kept.returncode, 0, kept.stdout + kept.stderr)
+        listed = listing.read_text().splitlines()
+        self.assertIn("thin-app/libruntime_dylib.so", listed)
+        self.assertIn("thin-app/libtilo_fixture_engine.so", listed)
+        self.assertFalse((profile / "calculator").exists(), "the app an earlier build left is not handed on")
+        self.assertFalse(any("calculator" in path for path in listed), listed)
+        self.assertFalse(list((profile / ".fingerprint").glob("calculator-*")))
+        # What t does with outputs: each file written anew, one after another in path order.
+        saved = self.root / "saved"
+        target.rename(saved)
+        for path in sorted(listed):
+            (target / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(saved / path, target / path)
+        stamped = self.run_command(*units, "stamp", str(target), "--list", str(saved / "shared-files"))
+        self.assertEqual(stamped.returncode, 0, stamped.stdout + stamped.stderr)
+        app = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator",
+                               APP_FEATURES="other/runtime-engine")
+        self.assertEqual(app.returncode, 0, app.stdout + app.stderr)
+        self.assertIn("Compiling calculator", app.stderr)
+        self.assertNotIn("Compiling runtime-dylib", app.stderr)
+        self.assertNotIn("Compiling shared", app.stderr)
+        self.assertNotIn("Compiling tilo-fixture-engine", app.stderr)
+        rustlib = self.run_command("rustc", "--print", "target-libdir").stdout.strip()
+        started = self.run_command(str(profile / "calculator"), LD_LIBRARY_PATH=f"{profile}:{rustlib}")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertIn("unified-runtime-ok", started.stdout)
+        # A file the shared build listed that never arrived fails the check that needs it.
+        (profile / "libruntime_dylib.so").unlink()
+        lost = self.run_command(*units, "stamp", str(target), "--list", str(saved / "shared-files"))
+        self.assertNotEqual(lost.returncode, 0)
+        self.assertIn("libruntime_dylib.so", lost.stderr)
 
 
 if __name__ == "__main__":
