@@ -67,9 +67,10 @@ pub struct MediaFrameSource {
     /// Sessions for sources whose frames cannot be painted GPU-resident.
     software: SessionPool,
     demoted: HashSet<MediaId>,
-    /// Decodable media in the project: where the bytes are and how fast the
-    /// source runs, so the frame cache buckets line up with real frames.
-    sources: HashMap<MediaId, (media::Source, f64)>,
+    /// Decodable media in the project: where the bytes are, how fast the
+    /// source runs (so the frame cache buckets line up with real frames), and
+    /// the instant of its last frame in milliseconds when its length is known.
+    sources: HashMap<MediaId, (media::Source, f64, Option<u64>)>,
     /// One converter per layer slot. Every converter owns its output texture
     /// and reuses it across frames, so two layers converting in the same
     /// composite must not share one — otherwise the second would overwrite
@@ -99,6 +100,13 @@ pub struct MediaFrameSource {
     attempts: u64,
     fetch: Fetch,
     timeout: Duration,
+    /// Set for an export: a source is never written off and never stood in
+    /// for by an older picture, because the caller decides when to give up.
+    strict: bool,
+    /// Indexed media the current composite asked for and got no picture of
+    /// at the requested instant, with the source time asked for. Reset by
+    /// `begin_frame`.
+    missing: Vec<(MediaId, f64)>,
 }
 
 /// How far ahead of the last request an `Exact` fetch will roll the pipeline
@@ -131,6 +139,8 @@ impl MediaFrameSource {
             attempts: 0,
             fetch,
             timeout: media::DEFAULT_FRAME_TIMEOUT,
+            strict: false,
+            missing: Vec::new(),
         }
     }
 
@@ -163,7 +173,7 @@ impl MediaFrameSource {
 
     /// Which of `project`'s media this source can decode, and how fast each
     /// runs — the frame cache buckets by real frames, so the rate matters.
-    fn index(project: &Project) -> HashMap<MediaId, (media::Source, f64)> {
+    fn index(project: &Project) -> HashMap<MediaId, (media::Source, f64, Option<u64>)> {
         let mut sources = HashMap::new();
         for item in &project.media {
             // A title's picture is generated, not decoded, so it never wants
@@ -178,9 +188,17 @@ impl MediaFrameSource {
                 continue;
             }
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
+            // A clip trimmed to run past its source's end holds the last
+            // frame there: that is the picture, so it is what is asked for.
+            let last_frame_ms = (item.duration > 0.0)
+                .then(|| ((item.duration - 1.0 / fps).max(0.0) * 1000.0) as u64);
             sources.insert(
                 item.id,
-                (crate::media::engine_source(&resolved.abs_path), fps),
+                (
+                    crate::media::engine_source(&resolved.abs_path),
+                    fps,
+                    last_frame_ms,
+                ),
             );
         }
         sources
@@ -232,6 +250,23 @@ impl MediaFrameSource {
         self
     }
 
+    /// For an export: a source that has not answered yet is never written
+    /// off and never shown as the last picture it produced. The caller reads
+    /// [`missing_pictures`](Self::missing_pictures) after each composite and
+    /// asks again, or gives up, itself.
+    #[must_use]
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// The media the last composite asked for and got no picture of at the
+    /// requested instant (with the source time), so its layers drew a
+    /// stand-in. Empty when every decoded layer is the real frame.
+    pub fn missing_pictures(&self) -> &[(MediaId, f64)] {
+        &self.missing
+    }
+
     /// Whether the last composite this source served actually resolved a
     /// decoded picture, rather than leaving every layer to its representative
     /// fill.
@@ -252,7 +287,7 @@ impl MediaFrameSource {
 
     /// What the pipeline plugged for `media`, for a diagnostic overlay.
     pub fn hw_report(&mut self, media: MediaId) -> Option<media::HwReport> {
-        let (source, _) = self.sources.get(&media)?.clone();
+        let (source, _, _) = self.sources.get(&media)?.clone();
         let session = self.pool_for(media).session(&source);
         let report = session.lock().ok()?.hw_report();
         Some(report)
@@ -338,6 +373,7 @@ impl FrameSource for MediaFrameSource {
     fn begin_frame(&mut self) {
         self.slot = 0;
         self.served_real = false;
+        self.missing.clear();
     }
 
     fn resolve(
@@ -350,11 +386,13 @@ impl FrameSource for MediaFrameSource {
         // Written off: never open a pipeline for it again. The compositor
         // falls back to the representative fill, exactly as it does for a
         // reference whose bytes have not hydrated.
+        let (source, fps, last_frame_ms) = self.sources.get(&media).cloned()?;
         if self.undecodable.contains(&media) {
+            self.missing.push((media, source_time));
             return None;
         }
-        let (source, fps) = self.sources.get(&media)?.clone();
         let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+        let target_ms = last_frame_ms.map_or(target_ms, |last| target_ms.min(last));
         self.attempts += 1;
         let fetch = self.fetch;
         let timeout = self.timeout;
@@ -363,8 +401,10 @@ impl FrameSource for MediaFrameSource {
         let previously_served = self.served.insert(media, target_ms);
 
         let session = self.pool_for(media).session(&source);
-        let frame = {
-            let mut s = session.lock().ok()?;
+        let frame = 'fetched: {
+            let Ok(mut s) = session.lock() else {
+                break 'fetched None;
+            };
             s.set_fps(fps);
             match fetch {
                 // An export walks the timeline forward, so a clip's source
@@ -434,8 +474,15 @@ impl FrameSource for MediaFrameSource {
             }
             let painted = self.paint(device, queue, media, &f);
             self.served_real |= painted.is_some();
+            if painted.is_none() {
+                self.missing.push((media, source_time));
+            }
             painted
         } else {
+            self.missing.push((media, source_time));
+            if self.strict {
+                return None;
+            }
             // Nothing decoded yet. Hold the last picture this source produced
             // so a scrub does not flash the representative fill between
             // seeks; with nothing at all, the compositor falls back.
