@@ -382,5 +382,32 @@ class EngineRuntimeShips(unittest.TestCase):
                                                 fetch=lambda *_: None)
 
 
+
+class RuntimeFonts(unittest.TestCase):
+    """The packaging namespaces have no network and an empty /tmp: the fonts are fetched before
+    them, into a cache they can read."""
+
+    def fetch(self, environ):
+        calls = []
+        with patch.dict(os.environ, environ, clear=True), \
+                patch.object(ASSEMBLER, 'run', lambda argv, **_: calls.append(argv)):
+            ASSEMBLER.fetch_runtime_fonts(Path('/src'), Path('/target'))
+            return calls, os.environ.get('TILO_FONT_ASSET_CACHE')
+
+    def test_without_a_cache_the_build_directory_holds_the_fetched_fonts(self):
+        calls, cache = self.fetch({'HOME': '/tmp'})
+        self.assertEqual(cache, '/target/font-artifacts')
+        self.assertEqual(calls, [['python3', '/src/tools/font-catalog.py', 'root',
+                                  '/src/crates/sdk/ui-core/assets/fonts', '--scope', 'product']])
+
+    def test_a_cache_the_caller_names_is_kept(self):
+        self.assertEqual(self.fetch({'TILO_FONT_ASSET_CACHE': '/cache'})[1], '/cache')
+        calls, cache = self.fetch({'TILO_TEST_CACHE_DIR': '/tests'})
+        self.assertIsNone(cache)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_supplied_catalog_needs_no_fetch(self):
+        self.assertEqual(self.fetch({'TILO_FONT_CATALOG_ROOT': '/fonts'}), ([], None))
+
 if __name__ == '__main__':
     unittest.main()
