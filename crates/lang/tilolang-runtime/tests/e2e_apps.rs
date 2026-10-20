@@ -13,7 +13,8 @@ mod cases {
     use tilolang::IdsLock;
     use tilolang_runtime::{
         AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Resolution, ResourceRef, Runtime, SimpleAuthority, Space, UiNode, Value, ViewInstance,
+        Principal, Resolution, ResourceRef, Runtime, RuntimeError, SimpleAuthority, Space, UiNode,
+        Value, ViewInstance,
     };
 
     macro_rules! app_source {
@@ -122,24 +123,40 @@ mod cases {
         Value::resource(r)
     }
 
+    /// Post as `who`: the runtime authenticates the invoker, the message records it.
     fn post(
         w: &World,
         apps: &Apps,
         conv: &ResourceRef,
-        author: &str,
+        who: &str,
         text: &str,
         block: &str,
     ) -> ResourceRef {
-        returned_ref(w.call(
-            &apps.chat,
-            "post",
-            vec![
-                res(conv),
-                Value::text(author),
-                Value::text(text),
-                Value::text(block),
-            ],
-        ))
+        let id = apps.chat.action("post");
+        let args = vec![res(conv), Value::text(text), Value::text(block)];
+        returned_ref(
+            w.rt.invoke_action(&Principal::new(who), (id.as_str(), args))
+                .unwrap(),
+        )
+    }
+
+    fn author_of(w: &World, message: &ResourceRef) -> String {
+        match w.rt.read(message, "author").unwrap() {
+            Value::Principal(p) => p.0,
+            other => panic!("the author is a principal, not {other:?}"),
+        }
+    }
+
+    fn invocation_of(w: &World, apps: &Apps, message: &ResourceRef) -> ResourceRef {
+        let _ = apps;
+        let part = items(w, message, "parts").pop().expect("a block part");
+        match w.rt.read(&part, "invocation").unwrap() {
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Ref(r) => r.target,
+                other => panic!("not a reference: {other:?}"),
+            },
+            other => panic!("the host has recorded no invocation: {other:?}"),
+        }
     }
 
     fn start_chat(w: &World, apps: &Apps) -> (ResourceRef, ResourceRef) {
@@ -175,7 +192,7 @@ mod cases {
                     .iter()
                     .map(|p| (text_of(w, p, "kind"), text_of(w, p, "body")))
                     .collect();
-                (text_of(w, m, "author"), parts)
+                (author_of(w, m), parts)
             })
             .collect()
     }
@@ -286,7 +303,11 @@ mod cases {
         assert_eq!(thread(&w, &conv).len(), 1);
         assert_eq!(text_of(&w, &conv, "draft"), "");
         view.poll_patches().unwrap();
-        assert_eq!(captions(view.tree()), ["person"]);
+        assert_eq!(
+            captions(view.tree()),
+            ["me"],
+            "the composer posts as whoever is looking, as the runtime knows them"
+        );
     }
 
     #[test]
@@ -445,7 +466,12 @@ mod cases {
         let found = embeds(view.tree());
         assert_eq!(state(found[0]), "invocation", "{}", dump(view.tree()));
         let inv = of_kind(found[0], "invocation")[0];
+        let Some(Value::Ref(card)) = inv.props.get("invocation") else {
+            panic!("the card names its invocation resource: {}", dump(inv));
+        };
+        let record = card.target.clone();
         assert_eq!(text_prop(inv, "state"), "suggested");
+        assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
         assert_eq!(text_prop(inv, "action"), "send");
         assert_eq!(text_prop(inv, "app"), "so.tilo.letters");
         let run = text_prop(inv, "run");
@@ -463,11 +489,13 @@ mod cases {
         let again = of_kind(view.tree(), "invocation")[0];
         assert_eq!(text_prop(again, "run"), run);
 
-        let out = w.rt.resolve(&run, &me(), Resolution::Approve).unwrap();
-        assert!(matches!(out, FlowOutcome::Done(_)), "{out:?}");
+        let state =
+            w.rt.resolve_invocation(&record, &me(), Resolution::Approve)
+                .unwrap();
+        assert_eq!(state, "done");
         assert!(
             view.is_stale(),
-            "deciding a suggestion refreshes the message"
+            "the invocation resource changed, so the message refreshes"
         );
         view.poll_patches().unwrap();
         assert_eq!(
@@ -509,10 +537,14 @@ mod cases {
         let desk = w.create("Desk");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
-        post(&w, &apps, &conv, "agent:helper", "", &src);
+        let message = post(&w, &apps, &conv, "agent:helper", "", &src);
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let run = text_prop(of_kind(view.tree(), "invocation")[0], "run");
-        w.rt.resolve(&run, &me(), Resolution::Decline).unwrap();
+        let record = invocation_of(&w, &apps, &message);
+        assert_eq!(
+            w.rt.resolve_invocation(&record, &me(), Resolution::Decline)
+                .unwrap(),
+            "declined"
+        );
         view.poll_patches().unwrap();
         assert_eq!(
             text_prop(of_kind(view.tree(), "invocation")[0], "state"),
@@ -577,30 +609,223 @@ mod cases {
         w.auth.revoke_principal("person:stranger");
     }
 
+    fn adds(w: &World, apps: &Apps, list: &ResourceRef) -> usize {
+        w.rt.history(&list.doc)
+            .unwrap()
+            .iter()
+            .filter(|n| n.action == apps.todo.action("add"))
+            .count()
+    }
+
     #[test]
-    fn a_trusted_agents_action_block_runs_once_however_often_the_message_renders() {
+    fn a_trusted_agents_action_block_runs_when_posted_and_never_again_on_render() {
+        let apps = apps();
+        let (mut a, mut b) = (AmStore::new(), AmStore::new());
+        let (wa, wb) = (world(&apps, &a), world(&apps, &b));
+        let (_, conv) = start_chat(&wa, &apps);
+        let list = wa.create("TodoList");
+        wa.auth.trust_principal("agent:helper");
+        let src = format!("todo.add(@todo.TodoList:{}, \"bread\")", list.id_string());
+        let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
+
+        assert_eq!(
+            items(&wa, &list, "items").len(),
+            1,
+            "it ran when the message was posted, before anything rendered it"
+        );
+        let record = wa
+            .rt
+            .read_invocation(&invocation_of(&wa, &apps, &message))
+            .unwrap();
+        assert_eq!(record.state, "done");
+        assert_eq!(record.name, "add");
+        assert_eq!(record.author, Principal::new("agent:helper"));
+
+        let card_state = |w: &World| {
+            let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            text_prop(of_kind(view.tree(), "invocation")[0], "state")
+        };
+        let mut view = wa.view(&apps.chat, "thread", vec![res(&conv)]);
+        for width in [20.0, 90.0, 20.0] {
+            view.set_space("", Space::from_rem(width, 40.0));
+            view.poll_patches().unwrap();
+        }
+        assert_eq!(card_state(&wa), "done");
+
+        // A restart: a new runtime over the same documents.
+        let restarted = world(&apps, &a);
+        assert_eq!(card_state(&restarted), "done");
+
+        // Another replica renders what the first one recorded.
+        a.sync_with(&mut b).unwrap();
+        assert_eq!(card_state(&wb), "done");
+        assert_eq!(items(&wb, &list, "items").len(), 1);
+        for w in [&wa, &restarted, &wb] {
+            assert_eq!(adds(w, &apps, &list), 1, "rendering never runs the action");
+        }
+    }
+
+    #[test]
+    fn a_caller_cannot_post_as_an_agent_so_it_cannot_borrow_the_agents_authority() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("TodoList");
         w.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.TodoList:{}, \"bread\")", list.id_string());
-        post(&w, &apps, &conv, "agent:helper", "", &src);
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let inv = of_kind(view.tree(), "invocation")[0];
-        assert_eq!(text_prop(inv, "state"), "done");
-        assert_eq!(items(&w, &list, "items").len(), 1);
-        for width in [20.0, 90.0, 20.0] {
-            view.set_space("", Space::from_rem(width, 40.0));
-            view.poll_patches().unwrap();
+        let src = format!("todo.add(@todo.TodoList:{}, \"spam\")", list.id_string());
+
+        let mallory = Principal::new("person:mallory");
+        let message = post(&w, &apps, &conv, "person:mallory", "", &src);
+        assert_eq!(author_of(&w, &message), "person:mallory");
+        let record =
+            w.rt.read_invocation(&invocation_of(&w, &apps, &message))
+                .unwrap();
+        assert_eq!(record.author, mallory);
+        assert_eq!(record.state, "suggested", "her code has no grants");
+        assert!(items(&w, &list, "items").is_empty());
+
+        // The action has no author to fill in, and a principal is not something a caller
+        // can pass in place of text either.
+        let id = apps.chat.action("post");
+        let forged = Value::Principal(Principal::new("agent:helper"));
+        let attempts = [
+            vec![
+                res(&conv),
+                forged.clone(),
+                Value::text(""),
+                Value::text(&src),
+            ],
+            vec![res(&conv), forged, Value::text(&src)],
+        ];
+        for args in attempts {
+            let err =
+                w.rt.invoke_action(&mallory, (id.as_str(), args))
+                    .unwrap_err();
+            assert!(matches!(err, RuntimeError::BadArgs(_)), "{err}");
         }
-        let again = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        drop(again);
+        assert_eq!(thread(&w, &conv).len(), 1, "no forged message was posted");
+
+        // The agent's own post carries the agent's authority.
+        let real = post(&w, &apps, &conv, "agent:helper", "", &src);
         assert_eq!(
-            items(&w, &list, "items").len(),
-            1,
-            "rendering again repeats nothing"
+            w.rt.read_invocation(&invocation_of(&w, &apps, &real))
+                .unwrap()
+                .state,
+            "done"
         );
+        assert_eq!(items(&w, &list, "items").len(), 1);
+    }
+
+    #[test]
+    fn confirming_a_suggestion_on_another_replica_runs_it_once_and_both_replicas_show_done() {
+        let apps = apps();
+        let (mut a, mut b) = (AmStore::new(), AmStore::new());
+        let (wa, wb) = (world(&apps, &a), world(&apps, &b));
+        let (_, conv) = start_chat(&wa, &apps);
+        let desk = wa.create("Desk");
+        let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
+        let editor = wa.view(&apps.letters, "editor", vec![res(&desk), res(&draft)]);
+        let inputs: Vec<String> = of_kind(editor.tree(), "input")
+            .iter()
+            .map(|i| i.key.clone())
+            .collect();
+        for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
+            editor.edit(key, &Value::text(text)).unwrap();
+        }
+        let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
+        let message = post(&wa, &apps, &conv, "agent:helper", "Shall I?", &src);
+        let record = invocation_of(&wa, &apps, &message);
+        let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
+        a.sync_with(&mut b).unwrap();
+
+        // On B, a viewer the authority gives no say sees the suggestion but cannot run it.
+        let (bo, guest) = (Principal::new("person:bo"), Principal::new("person:guest"));
+        wb.auth.deny_invoker(&guest);
+        let card_for = |who: &Principal| {
+            let view = wb
+                .rt
+                .open_view(who, &apps.chat.view("thread"), vec![res(&conv)])
+                .unwrap();
+            let card = of_kind(view.tree(), "invocation")[0];
+            (
+                text_prop(card, "state"),
+                card.props.get("can_resolve").cloned(),
+            )
+        };
+        assert_eq!(
+            card_for(&guest),
+            ("suggested".to_owned(), Some(Value::Bool(false)))
+        );
+        assert_eq!(
+            card_for(&bo),
+            ("suggested".to_owned(), Some(Value::Bool(true)))
+        );
+        let err = wb
+            .rt
+            .resolve_invocation(&record, &guest, Resolution::Approve)
+            .unwrap_err();
+        assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
+        assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "suggested");
+        assert!(wb.rt.pending_outbox().is_empty());
+
+        // Someone with authority confirms on B: it runs there, once.
+        assert_eq!(
+            wb.rt
+                .resolve_invocation(&record, &bo, Resolution::Approve)
+                .unwrap(),
+            "done"
+        );
+        assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+        assert_eq!(wb.rt.pending_outbox().len(), 1);
+        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "suggested");
+        assert!(wa.rt.pending_outbox().is_empty(), "A has not heard yet");
+
+        a.sync_with(&mut b).unwrap();
+        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "done");
+        assert_eq!(wa.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+        assert!(
+            view_a.is_stale(),
+            "the synced invocation refreshes the card"
+        );
+        view_a.poll_patches().unwrap();
+        assert_eq!(
+            text_prop(of_kind(view_a.tree(), "invocation")[0], "state"),
+            "done"
+        );
+        for w in [&wa, &wb] {
+            assert_eq!(w.rt.pending_outbox().len(), 1, "the letter was queued once");
+            let sends =
+                w.rt.history(&draft.doc)
+                    .unwrap()
+                    .iter()
+                    .filter(|n| n.action == apps.letters.action("send"))
+                    .count();
+            assert_eq!(sends, 1);
+        }
+        assert_eq!(wa.rt.settle().unwrap().delivered, 1);
+        assert_eq!(wa.sink.delivered().len(), 1);
+
+        let again = wa
+            .rt
+            .resolve_invocation(&record, &bo, Resolution::Approve)
+            .unwrap_err();
+        assert!(matches!(again, RuntimeError::NotPending(_)), "{again}");
+    }
+
+    #[test]
+    fn the_composer_posts_as_the_person_looking_not_as_a_name_in_the_view() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let (_, conv) = start_chat(&w, &apps);
+        let ada = Principal::new("person:ada");
+        let view =
+            w.rt.open_view(&ada, &apps.chat.view("thread"), vec![res(&conv)])
+                .unwrap();
+        let draft = of_kind(view.tree(), "input")[1].key.clone();
+        view.edit(&draft, &Value::text("hello")).unwrap();
+        let send = button_labelled(view.tree(), "Send").key.clone();
+        assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
+        assert_eq!(thread(&w, &conv)[0].0, "person:ada");
     }
 
     // ----- board ------------------------------------------------------------------------------

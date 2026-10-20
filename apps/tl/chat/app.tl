@@ -5,12 +5,16 @@ type Part {
     /// `text` or `block`.
     kind: Text merge register
     body: Text
+    /// For a block that applies an action: what became of it, recorded by the host when the
+    /// message was posted. The embed draws it; rendering never runs the action.
+    invocation: Option<host.Invocation>
 }
 
 /// A message is a list of parts and the principal that wrote it: a person, or an agent task.
-/// The author is also the code author of the message's blocks.
+/// The host records the author, so it cannot be claimed. It is also the code author of the
+/// message's blocks.
 type Message {
-    author: Text merge register
+    author: Principal
     parts: Collection<Part>
 }
 
@@ -38,23 +42,26 @@ action open_conversation(chat: Chat, c: Conversation) {
     chat.open = c
 }
 
-/// Posts a message as `author`: a text part when `text` is not empty, then a block part
-/// holding `block` as source when it is not empty. People and agents post the same way.
-action post(c: Conversation, author: Text, text: Text, block: Text) -> Message {
-    let m = c.messages.insert(Message(author: author))
+/// Posts a message as the invoker: a text part when `text` is not empty, then a block part
+/// holding `block` as source when it is not empty. People and agents post the same way. A
+/// block that applies an action is run once, by the host right after the post commits, as the
+/// invoker; the outcome is recorded in the part.
+action post(c: Conversation, text: Text, block: Text) -> Message {
+    let m = c.messages.insert(Message(author: invoker))
     if text != "" {
         m.parts.insert(Part(kind: "text", body: text))
     }
     if block != "" {
-        m.parts.insert(Part(kind: "block", body: block))
+        let p = m.parts.insert(Part(kind: "block", body: block))
+        run_block(p, block)
     }
     return m
 }
 
-/// Posts the typed text and clears the entry.
-action send_draft(c: Conversation, author: Text) {
+/// Posts the typed text as the invoker and clears the entry.
+action send_draft(c: Conversation) {
     if c.draft != "" {
-        post(c, author, c.draft, "")
+        post(c, c.draft, "")
         c.draft = ""
     }
 }
@@ -105,12 +112,12 @@ view thread(c: Conversation) {
 view message(m: Message) {
     if space.compact {
         stack(gap: tight) {
-            text(m.author, style: "caption")
+            text(m.author.name(), style: "caption")
             parts(m)
         }
     } else {
         row(gap: related, align: start) {
-            text(m.author, style: "caption", min: 8rem)
+            text(m.author.name(), style: "caption", min: 8rem)
             parts(m)
         }
     }
@@ -120,7 +127,7 @@ view parts(m: Message) {
     stack(gap: related) {
         for p in m.parts {
             if p.kind == "block" {
-                embed(p.body, author: m.author)
+                embed(p.body, author: m.author, invocation: p.invocation)
             } else {
                 text(p.body)
             }
@@ -131,6 +138,6 @@ view parts(m: Message) {
 view composer(c: Conversation) {
     row {
         input(bind: c.draft, placeholder: "Message", fill)
-        button("Send", on: send_draft(c, "person")) #send
+        button("Send", on: send_draft(c)) #send
     }
 }
