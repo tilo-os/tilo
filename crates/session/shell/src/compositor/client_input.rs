@@ -82,8 +82,14 @@ pub struct ClientInput {
     cursor: Option<(f64, f64)>,
     /// Implicit pointer grab owner, latched on the first button press and released on the last button up — without this a drag leaving its tile would silently switch to the chrome mid-gesture.
     grab: Option<PointerOwner>,
-    /// Number of physical pointer buttons currently held.
-    buttons_down: u32,
+    /// The pointer buttons currently held, by button. A set, not a count:
+    /// a source can lose a release (a pen lifted over another app, a release
+    /// made while the session was locked), and a count that missed one never
+    /// came back to zero, so the grab it latched stayed for good and every
+    /// later wheel and click went to it instead of the window under the
+    /// pointer. By button, the next press of that button tells the release
+    /// was lost ([`route_mouse_input`]).
+    held_buttons: HashSet<MouseButton>,
     /// Foreign toplevels announced by the xdg-shell handler but not yet mirrored into the chrome's workspace tree.
     pending_adoptions: Vec<PendingAdoption>,
     /// Surfaces whose toplevel was destroyed but whose chrome tab has not been reaped yet.
@@ -309,7 +315,8 @@ impl ClientInput {
             Some(PointerOwner::Chrome) => ("chrome", None),
             Some(PointerOwner::Client(surface)) => ("client", Some(surface)),
         };
-        (kind, surface, self.buttons_down)
+        let held = u32::try_from(self.held_buttons.len()).unwrap_or(u32::MAX);
+        (kind, surface, held)
     }
 
     /// Whether `surface_id` is a live foreign toplevel this compositor can route input to.
@@ -1679,7 +1686,7 @@ fn route_cursor_left(state: &mut State) -> bool {
     let global = state.client_input.cursor();
     state.forward_client_pointer_motion(global, None);
     state.client_input.grab = None;
-    state.client_input.buttons_down = 0;
+    state.client_input.held_buttons.clear();
     false
 }
 
@@ -1693,8 +1700,14 @@ fn route_mouse_input(
     button: MouseButton,
 ) -> bool {
     let pressed = element == ElementState::Pressed;
+    // A press of a button already held: its release never reached the
+    // router. End that press the way its release would have, so the grab it
+    // latched lets go and this press starts a gesture of its own.
+    if pressed && state.client_input.held_buttons.contains(&button) {
+        let _ = route_mouse_input(state, fb, captured, ElementState::Released, button);
+    }
     if pressed {
-        if state.client_input.buttons_down == 0 {
+        if state.client_input.held_buttons.is_empty() {
             // Latch the implicit grab from a fresh hit test, so a drag that leaves the tile stays with its owner.
             let hit = current_pointer_target(state, fb, captured);
             // An xdg popup grab is a protocol modal boundary: the first
@@ -1727,9 +1740,9 @@ fn route_mouse_input(
                 focus_pressed(state, fb, h);
             }
         }
-        state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
+        state.client_input.held_buttons.insert(button);
     } else {
-        state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
+        state.client_input.held_buttons.remove(&button);
     }
     // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
     let chrome_drag = state.selection.chrome_drag.is_some();
@@ -1759,7 +1772,7 @@ fn route_mouse_input(
     } else {
         false
     };
-    if state.client_input.buttons_down == 0 {
+    if state.client_input.held_buttons.is_empty() {
         state.client_input.grab = None;
         if !pressed {
             // Re-resolve focus now the grab is gone — the release may have happened over a different tile (or over chrome).
@@ -3192,10 +3205,10 @@ mod tests {
             let mut state = seat_state();
             assert!(state.remote_seats.local_button_transition(LEFT, true));
             assert!(!state.remote_seats.button_transition(PEER, LEFT, true));
-            state.client_input.buttons_down = 1;
+            state.client_input.held_buttons.insert(MouseButton::Left);
 
             assert!(!route_cursor_left(&mut state));
-            assert_eq!(state.client_input.buttons_down, 0);
+            assert!(state.client_input.held_buttons.is_empty());
             assert_eq!(
                 state.remote_seats.button_holder_count(LEFT),
                 1,
