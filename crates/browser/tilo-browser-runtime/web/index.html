@@ -34,6 +34,13 @@ if(bad)found.malformed=true;
 Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found),configurable:true});
 })();
 </script>
+<script>
+// The page's first graphics adapter request starts the browser's GPU
+// process, which takes seconds. It is asked for here, while the modules
+// load, and the renderer check (webgpu-safety.mjs) takes the answer.
+// ?unsafeWebKitGPU=0 asks for nothing: the check may refuse WebGPU then.
+if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis.__tiloAdapter=navigator.gpu.requestAdapter().catch(function(){return null;});
+</script>
   <style>
     html, body { margin: 0; height: 100%; overscroll-behavior: none; background: #121214; color: #ddd; font: 14px system-ui, sans-serif; }
     #surface { height: 100%; }
