@@ -50,6 +50,7 @@ default-members = [
     "crates/packaging/tilo-app-package",
 ]
 members = [
+    "crates/lang/tilolang",
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
@@ -215,6 +216,9 @@ members = [
     "crates/doc/tilo-doc-pdf",
     "crates/doc/tilo-automerge",
     "crates/doc/tilo-automerge-isolate",
+
+    # Language
+    "crates/lang/tilolang-runtime",
 
     # Hosting
     "crates/hosting/tilo-delivery-protocol",
