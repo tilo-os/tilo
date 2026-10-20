@@ -98,6 +98,25 @@ filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_ta
 threads-required = "num-cpus"
 priority = 100
 
+# The idle-work counts build a whole fixture desktop for each of their 64
+# repetitions (several seconds each in a debug build on a busy node) and run
+# its real pump and park selector on virtual instants; they finish in seven to
+# nine minutes, past the CI profile's eight-minute hang bound.
+[[profile.default.overrides]]
+filter = 'package(shell) and test(/^compositor::native::idle_work_tests::/)'
+slow-timeout = { period = "60s", terminate-after = 16 }
+
+# The native voice round trip paces 50 Opus frames a second for real and
+# holds each received frame 200 ms (the voice receive budget) before it counts
+# as late. Beside the parallel suite the drain loop stalls past that budget
+# under scheduler contention (208 of 250 delivered, 33-42 late, none lost),
+# which measures the runner, not the transport; its delivery, tone and latency
+# assertions stay as they are and it runs with the pool to itself.
+[[profile.default.overrides]]
+filter = 'package(shell) and test(=network::native_media::audio_tests::native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency)'
+threads-required = "num-cpus"
+priority = 100
+
 # These four mounted Code journeys fsync a growing retained selection. Under
 # concurrent native journeys, the owner queue passed four seconds and a real
 # checkpoint refresh hit its existing deadline; serial focused runs pass.

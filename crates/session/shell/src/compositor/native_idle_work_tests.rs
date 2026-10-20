@@ -106,8 +106,12 @@ impl Desktop {
                 work: work.clone(),
             }));
         }
+        let mut frame = FrameBuilder::with_fixture_content(Box::new(content));
+        // The desk's widgets appear with the first update, a change of the
+        // shell's own; these tests count what an app's deadline costs.
+        frame.host_mut().force_desk_settled(Instant::now());
         Self {
-            frame: FrameBuilder::with_fixture_content(Box::new(content)),
+            frame,
             doc: AutoCommit::new(),
             now: deadline,
             apps: apps.to_vec(),
