@@ -188,8 +188,9 @@ type Notebook {
 
 enum NoteFilter {
     /// All notes
-    all
-    pinned
+    all (icon: .file_text)
+    pinned (icon: .pin)
+    recent
 }
 
 root Notebook

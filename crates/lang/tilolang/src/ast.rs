@@ -83,6 +83,8 @@ pub struct VariantDecl {
     pub name: Ident,
     /// The payload fields, in order; empty for a variant without payload.
     pub fields: Vec<Param>,
+    /// `(icon: .pin)` after the name and payload, as written.
+    pub opts: Vec<ActionOpt>,
     pub span: Span,
 }
 
@@ -183,7 +185,7 @@ impl ActionRole {
     }
 }
 
-/// One option of an action's `(icon: .x, label: "y")` list.
+/// One option of an action's `(icon: .x, label: "y")` list, or of an enum variant's `(icon: .x)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionOpt {
     pub name: Ident,
