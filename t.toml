@@ -4387,6 +4387,29 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
+# A Tilo computer joins a real site's home workspace through its door, the acceptance of "a
+# workspace is its room" (dist/dev/site-door-acceptance.py): two headless nested sessions of fresh
+# identities and the site's web view (headless Chrome) check that the workspace is the room the
+# door names, that a post reaches the other session and the web view, and that joining again keeps
+# the same workspace. Against the test site on eu1, never the production Lounge: it posts for real.
+[[check]]
+name = "site-door-acceptance"
+run = """
+mkdir -p target
+ln -sfn /target/nested-session target/nested-session
+bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --out /target/site-door-acceptance
+"""
+env = { TILO_ACCEPTANCE_SITE = "https://acceptance.tilo.coffee/" }
+needs = ["nested-session"]
+inputs = ["dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/site-web-view.mjs", "crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/test-env.sh", "tools/with-test-environment.sh"]
+outputs = ["/target/site-door-acceptance/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "16GiB" }
+cost = "heavy"
+timeout_secs = 3600
+on = ["idle"]
+default = false
+
 # Screenshots of every app of the default collection in the situations its plan sets up through
 # the app's own actions (tools/screenshots/<app>.toml), dark and light, wide and compact, rendered
 # headless on the software renderer: `t outputs app-screenshots` puts them in
