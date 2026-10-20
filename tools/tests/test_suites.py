@@ -415,6 +415,20 @@ class CargoReaderTests(unittest.TestCase):
             manifest = READER_MANIFEST + '[[cargo-exempt]]\nfile = "apps/calc/src/lib.rs"\nreason = "ignored test"\n'
             self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}, manifest), [])
 
+    def test_a_file_the_checked_change_deletes_is_not_tracked(self):
+        # t checks a commit its server has not seen as uncommitted changes on
+        # the commit it branched from: what the change deletes stays indexed.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
+            subprocess.run([*git, "init", "-q"], cwd=root, check=True)
+            (root / "kept.rs").write_text("fn kept() {}\n")
+            (root / "gone.rs").write_text("fn gone() {}\n")
+            subprocess.run([*git, "add", "."], cwd=root, check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "base"], cwd=root, check=True)
+            (root / "gone.rs").unlink()
+            self.assertEqual(suites.tracked_files(root), ["kept.rs"])
+
 
 class GroupSelectionTests(unittest.TestCase):
     def test_run_group_selects_that_groups_suites_and_rejects_unknown_names(self):
