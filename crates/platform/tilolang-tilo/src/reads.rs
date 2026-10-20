@@ -1,14 +1,15 @@
 //! Reading one field of one resource straight from the room record, and naming the fields a
-//! set of Automerge patches changed.
+//! set of Automerge changes wrote.
 //!
 //! A read walks from the record's root to the resource's map (`tl/<app>/<id>`), down one
 //! collection entry per step of the reference, and reads the one field: its cost does not grow
 //! with the size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
 //! would read every item of every collection in it for each field a view reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use automerge::{ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue, Value as AmValue};
+use automerge::legacy::Key as LegacyKey;
+use automerge::{Change, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_resource::{Counter, Map, Set, read_key, stored_ids, stored_item};
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
@@ -221,37 +222,71 @@ pub struct Changed {
     /// Whether a resource was created or removed, or the record's layout above the resources
     /// changed: the index of resources must be read again.
     pub structure: bool,
+    /// Whether an op's object could not be placed in the record: every document must be read
+    /// again.
+    pub unplaced: bool,
 }
 
-/// Name the (resource, field) pairs the patches changed. `index` gives each document's app and
-/// type, so the walk knows which fields are collections whose items are resources of their own.
+/// Name the (resource, field) pairs `changes` wrote, once `doc` holds them. `index` gives each
+/// document's app and type, so the walk knows which fields are collections whose items are
+/// resources of their own.
+///
+/// Each op names its object and key; the object's place in the record is found by walking up
+/// its parents, one lookup per level. (Automerge's own patches would name the same places, but
+/// building one walks every entry of each map above the change, which in a collection of 10,000
+/// items costs milliseconds per keystroke.) Ops overwritten by a concurrent op are named as
+/// well: a view re-reading a field that did not change shows the same thing.
 #[must_use]
-pub fn changed_fields(patches: &[Patch], index: &BTreeMap<DocId, (AppId, TypeId)>) -> Changed {
-    let mut out = ChangedBuilder::default();
-    for patch in patches {
-        let mut props: Vec<&Prop> = patch.path.iter().map(|(_, prop)| prop).collect();
-        let own = match &patch.action {
-            PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => {
-                Some(Prop::Map(key.clone()))
-            }
-            PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => {
-                Some(prop.clone())
-            }
-            _ => None,
-        };
-        if let Some(own) = own.as_ref() {
-            props.push(own);
+pub fn changed_by(
+    changes: &[Change],
+    doc: &Doc,
+    index: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> Changed {
+    let mut writes: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
+    for change in changes {
+        for op in change.decode().operations {
+            let key = match op.key {
+                LegacyKey::Map(key) => Some(key.to_string()),
+                LegacyKey::Seq(_) => None,
+            };
+            writes.entry(op.obj.to_string()).or_default().insert(key);
         }
-        out.patch(&props, index);
+    }
+    let mut out = ChangedBuilder::default();
+    for (obj, keys) in writes {
+        let Some(path) = path_of(doc, &obj) else {
+            out.unplaced = true;
+            continue;
+        };
+        for key in keys {
+            let mut props: Vec<&Prop> = path.iter().collect();
+            let own = key.map(Prop::Map);
+            if let Some(own) = own.as_ref() {
+                props.push(own);
+            }
+            out.patch(&props, index);
+        }
     }
     out.finish()
+}
+
+/// The keys from the record's root down to the object `obj` (as Automerge prints its id).
+fn path_of(doc: &Doc, obj: &str) -> Option<Vec<Prop>> {
+    let obj = doc.import_obj(obj).ok()?;
+    if obj == automerge::ROOT {
+        return Some(Vec::new());
+    }
+    let mut path: Vec<Prop> = doc.parents(&obj).ok()?.map(|parent| parent.prop).collect();
+    path.reverse();
+    Some(path)
 }
 
 #[derive(Default)]
 struct ChangedBuilder {
     docs: BTreeMap<DocId, Vec<FieldKey>>,
-    whole: std::collections::BTreeSet<DocId>,
+    whole: BTreeSet<DocId>,
     structure: bool,
+    unplaced: bool,
 }
 
 fn key_of(prop: &Prop) -> Option<&str> {
@@ -357,6 +392,7 @@ impl ChangedBuilder {
         Changed {
             docs,
             structure: self.structure,
+            unplaced: self.unplaced,
         }
     }
 }
