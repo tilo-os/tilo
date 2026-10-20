@@ -3116,7 +3116,7 @@ mod two_sessions {
         };
         assert_eq!(cleared, key, "a pointer that left the window is taken away");
         hosted.frame(&mut presence, &shared.snapshot(), &hosted_handle);
-        assert!(hosted_cmds.try_recv().is_err(), "and not taken away again",);
+        assert!(hosted_cmds.try_recv().is_err(), "and not taken away again");
 
         hosted_net.handle_presence_message(
             handle_of(&other_peer),
