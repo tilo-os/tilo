@@ -566,6 +566,16 @@ impl Journal {
     }
 }
 
+/// One entry of a batch's intent ([`PendingReceipt::batch_intent`]).
+pub(super) struct BatchIntent<'a> {
+    pub(super) source: &'a Source,
+    /// The synced staged copy, by its stable path.
+    pub(super) staged: &'a Path,
+    pub(super) seal: Seal,
+    /// For a Cut: the hidden name the source moves to, by its stable path.
+    pub(super) quarantine: Option<&'a Path>,
+}
+
 pub(super) struct PendingReceipt {
     directory: Option<SecureNearbyDestination>,
     receipt: Mutex<Receipt>,
@@ -713,22 +723,46 @@ impl PendingReceipt {
         source: &Source,
         change: impl FnOnce(&mut Item) -> Result<(), String>,
     ) -> Result<(), String> {
+        let mut change = Some(change);
+        self.batch_change(&[source], |_, item| {
+            change
+                .take()
+                .ok_or_else(|| "clipboard journal step applied twice".to_owned())
+                .and_then(|change| change(item))
+        })
+    }
+
+    /// Change the items of `sources` as one step: every item's new state is
+    /// appended in one write and made durable by one sync, so a batch of
+    /// entries costs one durable write whatever its size. A write cut short
+    /// keeps the whole lines before the cut, which name only items whose
+    /// sources are still untouched.
+    fn batch_change(
+        &self,
+        sources: &[&Source],
+        mut change: impl FnMut(usize, &mut Item) -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut receipt = self
             .receipt
             .lock()
             .map_err(|_| "clipboard journal unavailable")?;
-        let index = self.position(&receipt, source)?;
         let active = pending_active(&receipt);
-        change(
-            receipt
-                .items
-                .get_mut(index)
-                .ok_or("clipboard journal item unavailable")?,
-        )?;
-        self.dirty
-            .lock()
-            .map_err(|_| "clipboard journal unavailable")?
-            .insert(index / CHUNK_ITEMS);
+        let mut indices = Vec::with_capacity(sources.len());
+        for (position, source) in sources.iter().enumerate() {
+            let index = self.position(&receipt, source)?;
+            change(
+                position,
+                receipt
+                    .items
+                    .get_mut(index)
+                    .ok_or("clipboard journal item unavailable")?,
+            )?;
+            self.dirty
+                .lock()
+                .map_err(|_| "clipboard journal unavailable")?
+                .insert(index / CHUNK_ITEMS);
+            indices.push(index);
+        }
         let logged = self.logged.load(Ordering::Acquire);
         let directory = match &self.directory {
             Some(directory) if self.published.load(Ordering::Acquire) && logged < LOG_COMPACT => {
@@ -738,17 +772,23 @@ impl PendingReceipt {
         };
         let name = receipt.filename()?;
         let log = log_name(&name).ok_or("invalid clipboard receipt name")?;
-        let mut line = serde_json::to_vec(&LogLine {
-            generation: receipt.generation,
-            index,
-            item: receipt
-                .items
-                .get(index)
-                .cloned()
-                .ok_or("clipboard journal item unavailable")?,
-        })
-        .map_err(|error| error.to_string())?;
-        line.push(b'\n');
+        let mut line = Vec::new();
+        for index in indices {
+            serde_json::to_writer(
+                &mut line,
+                &LogLine {
+                    generation: receipt.generation,
+                    index,
+                    item: receipt
+                        .items
+                        .get(index)
+                        .cloned()
+                        .ok_or("clipboard journal item unavailable")?,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            line.push(b'\n');
+        }
         let result = (|| {
             let mut file = fs::OpenOptions::new()
                 .append(true)
@@ -848,28 +888,49 @@ impl PendingReceipt {
         Ok(())
     }
 
-    pub(super) fn staged(&self, source: &Source, path: &Path, seal: Seal) -> Result<(), String> {
-        self.item_change(source, |item| {
-            item.staged = Some((path.as_os_str().as_bytes().into(), seal));
+    /// A batch's intent, before any of its sources or destinations is
+    /// touched: each entry's synced staged copy and that copy's identity,
+    /// and for a Cut the hidden name its source moves to before removal.
+    pub(super) fn batch_intent(&self, entries: &[BatchIntent<'_>]) -> Result<(), String> {
+        let sources: Vec<&Source> = entries.iter().map(|entry| entry.source).collect();
+        self.batch_change(&sources, |position, item| {
+            let entry = entries
+                .get(position)
+                .ok_or("clipboard batch entry unavailable")?;
+            item.staged = Some((
+                entry.staged.as_os_str().as_bytes().into(),
+                entry.seal.clone(),
+            ));
+            item.quarantine = entry
+                .quarantine
+                .map(|path| path.as_os_str().as_bytes().into());
             Ok(())
         })
     }
-    pub(super) fn quarantine(&self, source: &Source, path: &Path) -> Result<(), String> {
-        self.item_change(source, |item| {
-            item.quarantine = Some(path.as_os_str().as_bytes().into());
-            Ok(())
-        })
-    }
-    pub(super) fn publishing(&self, source: &Source, path: &Path) -> Result<(), String> {
-        self.item_change(source, |item| {
-            item.destination = Some(path.as_os_str().as_bytes().into());
-            Ok(())
-        })
-    }
-    pub(super) fn published(&self, source: &Source, path: &Path) -> Result<(), String> {
-        self.item_change(source, |item| {
-            item.destination = Some(path.as_os_str().as_bytes().into());
-            item.published = true;
+
+    /// A batch's completion, once its receiving folder is synced: where each
+    /// published entry is, and for each entry that failed before publication
+    /// with its copy gone, that nothing of it is left to recover.
+    pub(super) fn batch_complete(
+        &self,
+        published: &[(&Source, &Path)],
+        discarded: &[&Source],
+    ) -> Result<(), String> {
+        let sources: Vec<&Source> = published
+            .iter()
+            .map(|(source, _)| *source)
+            .chain(discarded.iter().copied())
+            .collect();
+        if sources.is_empty() {
+            return Ok(());
+        }
+        self.batch_change(&sources, |position, item| {
+            if let Some((_, destination)) = published.get(position) {
+                item.destination = Some(destination.as_os_str().as_bytes().into());
+                item.published = true;
+            } else {
+                item.staged = None;
+            }
             Ok(())
         })
     }
@@ -1538,7 +1599,33 @@ fn recovery_material(
         material = Some((directory, name.to_os_string(), path));
         break;
     }
+    if material.is_none() {
+        material = published_before_completion(root, destination, seal)?;
+    }
     material.ok_or_else(|| "saved transfer material is unavailable".into())
+}
+
+/// An entry its batch published before the batch's completion was written:
+/// no destination is recorded, and its staged copy is now in the receiving
+/// folder under the name it was published as. It is the same object as the
+/// staged copy, so it is found by that copy's identity.
+fn published_before_completion(
+    root: &Path,
+    destination: &SecureNearbyDestination,
+    seal: &Seal,
+) -> Result<Option<(SecureNearbyDestination, OsString, PathBuf)>, String> {
+    for entry in fs::read_dir(destination.anchored_root()).map_err(|error| error.to_string())? {
+        let name = entry.map_err(|error| error.to_string())?.file_name();
+        let Some(found) = optional_entry(destination, &name)? else {
+            continue;
+        };
+        if seal.matches(&found.metadata().map_err(|error| error.to_string())?) {
+            let directory = SecureNearbyDestination::open_beneath(root, root)?;
+            let path = root.join(&name);
+            return Ok(Some((directory, name, path)));
+        }
+    }
+    Ok(None)
 }
 
 /// Only ENOENT means absent. Permission, descriptor and storage failures must

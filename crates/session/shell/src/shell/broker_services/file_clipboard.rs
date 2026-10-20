@@ -1,4 +1,52 @@
 //! Local, descriptor-bound Files offers. No offer is a sharing grant.
+//!
+//! # Pasting: group commit
+//!
+//! A paste copies (Copy) or moves (Cut) the offer's entries into the
+//! receiving folder. Every step that matters after a crash is in the
+//! operation's durable receipt ([`journal`]) before the step is taken, and
+//! recovery rolls an interrupted paste back from that receipt. The receipt
+//! is written per *batch* of entries ([`BATCH_ITEMS`], [`BATCH_BYTES`]), not
+//! per entry, so its cost does not grow with the paste's entry count: a
+//! paste of many small files used to pay four durable writes per file, one
+//! after another.
+//!
+//! One batch goes through five phases:
+//!
+//! 1. **Stage.** Each entry is copied into the batch's private staging
+//!    folder in the receiving folder (`.tilo-transfer-<id>`, one leaf per
+//!    entry), its live admission checked as it is read. Nothing is synced
+//!    and nothing is journaled between entries. A staged copy is hidden and
+//!    never presented as a pasted object.
+//! 2. **Sync.** The staged copies are synced in parallel, one `fsync` per
+//!    file on a few threads so the filesystem commits them together, then
+//!    the staging folder and the receiving folder.
+//! 3. **Intent.** One journal entry names the whole batch: for every entry,
+//!    its staged copy and that copy's identity, and for a Cut the hidden
+//!    name its source will be moved to before it is removed. The entry is
+//!    durable before any source or destination is touched.
+//! 4. **Publish.** Entry by entry, its admission is checked again; a Cut's
+//!    source is moved to its recorded hidden name and removed; a Replace
+//!    sends the clashing item to Trash; the staged copy is renamed into
+//!    place under its own name (or the first free numbered one). Nothing is
+//!    journaled between entries.
+//! 5. **Completion.** The receiving folder (and a Cut's source folders) are
+//!    synced, then one journal entry records where each entry was
+//!    published, and drops the staged record of an entry that failed before
+//!    publication and whose copy is gone.
+//!
+//! Recovery replays per batch. A batch whose completion is missing is
+//! checked entry by entry against its intent: a staged copy is found at its
+//! staged path or, once published, by its identity in the receiving
+//! folder, and is moved back to a Cut's source name or to Trash; a hidden
+//! Cut source is put back. An entry staged but not yet in an intent is a
+//! hidden copy whose source was never touched.
+//!
+//! The guarantees are the per-entry protocol's: a half-written file is never
+//! presented as complete, because only synced copies named in a durable
+//! intent are renamed into place; and a moved source is never lost, because
+//! it is removed only after its synced copy is named in a durable intent,
+//! so recovery always holds either the source or the copy.
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -26,6 +74,13 @@ const OFFER_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_OPERATIONS: usize = 256;
 const MAX_WORKERS: usize = 4;
 const MAX_RETAINED_DESCRIPTORS: usize = 4096;
+/// The most entries one batch of a paste stages before it is made durable.
+const BATCH_ITEMS: usize = 64;
+/// The most bytes one batch stages before it is made durable, so large
+/// files are published as they arrive rather than a batch at a time.
+const BATCH_BYTES: u64 = 256 * 1024 * 1024;
+/// Threads that sync one batch's staged copies.
+const SYNC_THREADS: usize = 8;
 /// The most clashing names a [`Reply::Conflicts`] lists (it also counts).
 const MAX_CONFLICT_NAMES: usize = 8;
 
@@ -481,12 +536,19 @@ enum SelectedObject {
     Destination(Arc<Destination>),
 }
 
-/// What a paste does about one entry's name.
-enum Room {
-    /// The name is taken and the person chose Skip.
-    Skip,
-    /// Paste it; the item it replaces went to Trash at this path.
-    Paste(Option<PathBuf>),
+/// One entry of a batch, staged and not yet published.
+struct Staged {
+    source: Arc<Source>,
+    transfer: file_explorer::fileops::StagedTransfer,
+    /// The staged copy, held while it is synced and published.
+    entry: Arc<File>,
+    identity: Identity,
+    seal: journal::Seal,
+    bytes: u64,
+    /// The staged copy by its stable path, as the intent records it.
+    stable: PathBuf,
+    /// For a Cut: the hidden name its source moves to, anchored and stable.
+    quarantine: Option<(PathBuf, PathBuf)>,
 }
 
 /// Writable grants and folders opened for Cut, one per source folder.
@@ -1404,72 +1466,10 @@ impl Operation {
             return;
         }
         let mut error = None;
-        for (index, source) in self.offer.entries.iter().enumerate() {
-            let consumed = self
-                .offer
-                .consumed
-                .lock()
-                .map_or(true, |items| items.get(index).copied().unwrap_or(true));
-            if consumed {
-                continue;
-            }
-            let replaced = match self.make_room(tree, source) {
-                Ok(Room::Paste(replaced)) => replaced,
-                Ok(Room::Skip) => continue,
-                Err(reason) => {
-                    error = Some(reason);
-                    break;
-                }
-            };
-            let result = match self.transfer_one(tree, source) {
-                Ok(mut record) => {
-                    record.replaced = replaced;
-                    Ok(record)
-                }
-                // The replacement didn't arrive: put the original back.
-                Err(reason) => Err(match replaced {
-                    Some(slot) => match self.restore_replaced(&slot, &source.name) {
-                        Ok(()) => reason,
-                        Err(restore) => format!("{reason}; {restore}"),
-                    },
-                    None => reason,
-                }),
-            };
-            match result {
-                Ok(record) => {
-                    let destination = record.destination.clone();
-                    if let Ok(mut records) = self.records.lock() {
-                        records.push(record);
-                    }
-                    if self.offer.public.cut
-                        && let Ok(mut items) = self.offer.consumed.lock()
-                        && let Some(consumed) = items.get_mut(index)
-                    {
-                        *consumed = true;
-                    }
-                    if let Err(reason) = File::open(self.destination.directory.anchored_root())
-                        .and_then(|file| file.sync_all())
-                        .map_err(|error| error.to_string())
-                        .and_then(|()| self.receipt())
-                        .and_then(|receipt| receipt.published(source, &destination))
-                        .and_then(|()| {
-                            self.receipt()?
-                                .consume_restore_info(source, tree, &self.context)
-                        })
-                    {
-                        error = Some(reason);
-                        break;
-                    }
-                    #[cfg(test)]
-                    if let Err(reason) = test_support::pause(&self.destination.path, "after-item") {
-                        error = Some(reason.to_string());
-                        break;
-                    }
-                }
-                Err(reason) => {
-                    error = Some(reason);
-                    break;
-                }
+        let mut next = 0;
+        while error.is_none() && next < self.offer.entries.len() {
+            if let Err(reason) = self.run_batch(tree, &mut next) {
+                error = Some(reason);
             }
         }
         let completed = self.records.lock().map_or(0, |records| records.len());
@@ -1489,6 +1489,354 @@ impl Operation {
             });
         }
     }
+    /// Paste the next batch of the offer's entries from `next` on, through
+    /// the five phases of the module docs. Entries published before an
+    /// error stay recorded and undoable.
+    fn run_batch(&self, tree: &WorkspaceTreeHandle, next: &mut usize) -> Result<(), String> {
+        let mut batch =
+            file_explorer::fileops::TransferBatch::new(&self.destination.directory.anchored_root())
+                .map_err(|error| error.to_string())?;
+        // 1. Stage, with nothing synced or journaled between entries.
+        let (staged, mut failure) = self.stage_batch(tree, &mut batch, next);
+        if staged.is_empty() {
+            return failure.map_or(Ok(()), Err);
+        }
+        // 2. Sync the copies together, then their folders.
+        self.sync_batch(tree, &batch, &staged)?;
+        #[cfg(test)]
+        interrupt_test_process("batch-staged");
+        // 3. One intent for the batch.
+        let intent: Vec<_> = staged
+            .iter()
+            .map(|entry| journal::BatchIntent {
+                source: &entry.source,
+                staged: &entry.stable,
+                seal: entry.seal.clone(),
+                quarantine: entry
+                    .quarantine
+                    .as_ref()
+                    .map(|(_, stable)| stable.as_path()),
+            })
+            .collect();
+        self.receipt()?.batch_intent(&intent)?;
+        drop(intent);
+        #[cfg(test)]
+        interrupt_test_process("batch-intent");
+        // 4. Publish entry by entry.
+        let mut published: Vec<Record> = Vec::new();
+        let mut discarded: Vec<Arc<Source>> = Vec::new();
+        for entry in staged {
+            if failure.is_some() {
+                // Unpublished and its source untouched: its copy goes.
+                let source = entry.source.clone();
+                drop(entry);
+                discarded.push(source);
+                continue;
+            }
+            match self.publish(tree, entry) {
+                Ok(record) => {
+                    published.push(record);
+                    #[cfg(test)]
+                    if published.len() == 1 {
+                        interrupt_test_process("batch-midway");
+                    }
+                    #[cfg(test)]
+                    if let Err(reason) = test_support::pause(&self.destination.path, "after-item") {
+                        failure = Some(reason.to_string());
+                    }
+                }
+                Err((reason, source, copy_gone)) => {
+                    if copy_gone {
+                        discarded.push(source);
+                    }
+                    failure = Some(reason);
+                }
+            }
+        }
+        drop(batch);
+        // 5. Sync what moved, then one completion for the batch.
+        self.sync_published(&published)?;
+        #[cfg(test)]
+        interrupt_test_process("batch-published");
+        self.complete_batch(tree, published, &discarded)?;
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Phase 1: copy entries from `next` on into `batch`, unsynced, until
+    /// the batch is full. What was staged, and why staging stopped early.
+    fn stage_batch(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        batch: &mut file_explorer::fileops::TransferBatch,
+        next: &mut usize,
+    ) -> (Vec<Staged>, Option<String>) {
+        let mut staged: Vec<Staged> = Vec::new();
+        let mut bytes = 0_u64;
+        let mut failure = None;
+        while *next < self.offer.entries.len() && staged.len() < BATCH_ITEMS && bytes < BATCH_BYTES
+        {
+            let index = *next;
+            *next = index.saturating_add(1);
+            let Some(source) = self.offer.entries.get(index) else {
+                break;
+            };
+            let consumed = self
+                .offer
+                .consumed
+                .lock()
+                .map_or(true, |items| items.get(index).copied().unwrap_or(true));
+            if consumed || self.skips(source) {
+                continue;
+            }
+            match self.stage(tree, batch, source) {
+                Ok(entry) => {
+                    bytes = bytes.saturating_add(entry.bytes);
+                    staged.push(entry);
+                }
+                Err(reason) => {
+                    failure = Some(reason);
+                    break;
+                }
+            }
+        }
+        (staged, failure)
+    }
+
+    /// Phase 5's journal: one completion for the batch, then the published
+    /// entries become this paste's records.
+    fn complete_batch(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        published: Vec<Record>,
+        discarded: &[Arc<Source>],
+    ) -> Result<(), String> {
+        let completed: Vec<(&Source, &Path)> = published
+            .iter()
+            .map(|record| (record.source.as_ref(), record.destination.as_path()))
+            .collect();
+        let gone: Vec<&Source> = discarded.iter().map(AsRef::as_ref).collect();
+        let recorded = self.receipt()?.batch_complete(&completed, &gone);
+        drop(completed);
+        for record in published {
+            if self.offer.public.cut
+                && let Some(index) = self
+                    .offer
+                    .entries
+                    .iter()
+                    .position(|source| Arc::ptr_eq(source, &record.source))
+                && let Ok(mut items) = self.offer.consumed.lock()
+                && let Some(consumed) = items.get_mut(index)
+            {
+                *consumed = true;
+            }
+            let source = record.source.clone();
+            if let Ok(mut records) = self.records.lock() {
+                records.push(record);
+            }
+            if recorded.is_ok() {
+                self.receipt()?
+                    .consume_restore_info(&source, tree, &self.context)?;
+            }
+        }
+        recorded
+    }
+
+    /// Whether `source` is skipped: its name is taken and the person chose
+    /// Skip.
+    fn skips(&self, source: &Source) -> bool {
+        matches!(self.conflict, Conflict::Skip)
+            && self.destination_name.is_none()
+            && self.destination.directory.entry(&source.name).is_ok()
+    }
+
+    /// Phase 1 for one entry: copy it into the batch, unsynced.
+    fn stage(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        batch: &mut file_explorer::fileops::TransferBatch,
+        source: &Arc<Source>,
+    ) -> Result<Staged, String> {
+        self.check(tree, source)?;
+        let mut admission = Admission {
+            operation: self,
+            source,
+            tree,
+            staged: None,
+        };
+        let transfer = batch.stage(
+            &source.anchored(),
+            self.destination_name.as_deref().unwrap_or(&source.name),
+            self.offer.public.cut,
+            &mut admission,
+        )?;
+        let (entry, identity) = admission
+            .staged
+            .ok_or("staged transfer receipt unavailable")?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        let relative = transfer
+            .path()
+            .strip_prefix(self.destination.directory.anchored_root())
+            .map_err(|error| error.to_string())?;
+        let stable = self.destination.path.join(relative);
+        let quarantine = if self.offer.public.cut {
+            let leaf = format!(".tilo-transfer-source-{}", uuid::Uuid::new_v4());
+            let parent = source.path.parent().ok_or("source parent unavailable")?;
+            Some((
+                source.parent.anchored_root().join(&leaf),
+                parent.join(&leaf),
+            ))
+        } else {
+            None
+        };
+        Ok(Staged {
+            source: source.clone(),
+            transfer,
+            entry,
+            identity,
+            seal: journal::Seal::of(&metadata),
+            bytes: metadata.len(),
+            stable,
+            quarantine,
+        })
+    }
+
+    /// Phase 2: sync the batch's staged copies on a few threads, so the
+    /// filesystem commits them together, then their folders; then check
+    /// each entry's admission again before its intent is written.
+    fn sync_batch(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        batch: &file_explorer::fileops::TransferBatch,
+        staged: &[Staged],
+    ) -> Result<(), String> {
+        let entries: Vec<Arc<File>> = staged.iter().map(|entry| entry.entry.clone()).collect();
+        let claimed = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<String>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..SYNC_THREADS.min(entries.len()) {
+                scope.spawn(|| {
+                    while let Some(entry) = entries.get(claimed.fetch_add(1, Ordering::Relaxed)) {
+                        let synced = journal::sync_staged(entry, &mut || {
+                            if self.cancelled.load(Ordering::Acquire) {
+                                Err(io::Error::other("clipboard transfer cancelled"))
+                            } else {
+                                Ok(())
+                            }
+                        });
+                        if let Err(error) = synced {
+                            *failed.lock_recover() = Some(error.to_string());
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(error) = failed
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(error);
+        }
+        File::open(batch.container())
+            .and_then(|folder| folder.sync_all())
+            .and_then(|()| File::open(self.destination.directory.anchored_root()))
+            .and_then(|folder| folder.sync_all())
+            .map_err(|error| error.to_string())?;
+        for entry in staged {
+            self.check(tree, &entry.source)?;
+        }
+        Ok(())
+    }
+
+    /// Phase 4 for one entry. On failure: why, its source, and whether its
+    /// copy is gone (so nothing of it is left to recover).
+    fn publish(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        entry: Staged,
+    ) -> Result<Record, (String, Arc<Source>, bool)> {
+        let Staged {
+            source,
+            transfer,
+            entry: staged_entry,
+            identity,
+            quarantine,
+            ..
+        } = entry;
+        let staged_path = transfer.path().to_path_buf();
+        let replaced = match self.make_room(tree, &source) {
+            Ok(replaced) => replaced,
+            Err(reason) => {
+                drop(transfer);
+                return Err((reason, source, true));
+            }
+        };
+        let mut admission = Admission {
+            operation: self,
+            source: &source,
+            tree,
+            staged: Some((staged_entry.clone(), identity)),
+        };
+        let finished = transfer.finish(
+            quarantine.as_ref().map(|(anchored, _)| anchored.as_path()),
+            &mut admission,
+        );
+        match finished {
+            Ok(destination) => {
+                let seal = staged_entry
+                    .metadata()
+                    .map(|metadata| journal::Seal::of(&metadata))
+                    .map_err(|error| (error.to_string(), source.clone(), false))?;
+                let name = destination
+                    .file_name()
+                    .ok_or_else(|| ("destination has no name".to_owned(), source.clone(), false))?;
+                Ok(Record {
+                    destination: self.destination.path.join(name),
+                    source,
+                    seal,
+                    identity,
+                    replaced,
+                    undone: false,
+                })
+            }
+            Err(reason) => {
+                // The replacement didn't arrive: put the original back.
+                let reason = match replaced {
+                    Some(slot) => match self.restore_replaced(&slot, &source.name) {
+                        Ok(()) => reason,
+                        Err(restore) => format!("{reason}; {restore}"),
+                    },
+                    None => reason,
+                };
+                let gone = fs::symlink_metadata(&staged_path)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+                Err((reason, source, gone))
+            }
+        }
+    }
+
+    /// Phase 5's sync: the receiving folder, and each Cut source folder once.
+    fn sync_published(&self, published: &[Record]) -> Result<(), String> {
+        if published.is_empty() {
+            return Ok(());
+        }
+        File::open(self.destination.directory.anchored_root())
+            .and_then(|folder| folder.sync_all())
+            .map_err(|error| error.to_string())?;
+        if self.offer.public.cut {
+            let mut synced = HashSet::new();
+            for record in published {
+                let folder = record.source.parent.anchored_root();
+                if synced.insert(folder.clone()) {
+                    File::open(&folder)
+                        .and_then(|folder| folder.sync_all())
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// What the destination's entry `name` is now.
     fn destination_metadata(&self, name: &std::ffi::OsStr) -> Result<fs::Metadata, String> {
         self.destination
@@ -1498,20 +1846,21 @@ impl Operation {
             .map_err(|error| error.to_string())
     }
 
-    /// What to do with `source` given the name may be taken in the
-    /// destination: skip it, or paste it, after the item it replaces (if
-    /// any) went to Trash.
-    fn make_room(&self, tree: &WorkspaceTreeHandle, source: &Source) -> Result<Room, String> {
+    /// Make room for `source` just before it is published: when its name is
+    /// taken and the person chose Replace, the item there goes to Trash.
+    /// Where it went, to put it back if the paste fails.
+    fn make_room(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        source: &Source,
+    ) -> Result<Option<PathBuf>, String> {
         let taken = self.destination_name.is_none()
             && self.destination.directory.entry(&source.name).is_ok();
-        Ok(match (taken, self.conflict) {
-            (true, Conflict::Skip) => Room::Skip,
-            (true, Conflict::Replace) => {
-                self.check(tree, source)?;
-                Room::Paste(Some(self.trash_existing(&source.name)?))
-            }
-            _ => Room::Paste(None),
-        })
+        if taken && matches!(self.conflict, Conflict::Replace) {
+            self.check(tree, source)?;
+            return Ok(Some(self.trash_existing(&source.name)?));
+        }
+        Ok(None)
     }
 
     /// Move the destination's own item called `name` to Trash, so a Replace
@@ -1552,40 +1901,6 @@ impl Operation {
             .get()
             .map(Arc::as_ref)
             .ok_or_else(|| "clipboard durable receipt unavailable".into())
-    }
-
-    fn transfer_one(
-        &self,
-        tree: &WorkspaceTreeHandle,
-        source: &Arc<Source>,
-    ) -> Result<Record, String> {
-        self.check(tree, source)?;
-        let mut admission = Admission {
-            operation: self,
-            source,
-            tree,
-            staged: None,
-        };
-        let destination = file_explorer::fileops::transfer_into_named_with(
-            &source.anchored(),
-            &self.destination.directory.anchored_root(),
-            self.destination_name.as_deref().unwrap_or(&source.name),
-            self.offer.public.cut,
-            &mut admission,
-        )?;
-        let name = destination.file_name().ok_or("destination has no name")?;
-        let (entry, identity) = admission
-            .staged
-            .ok_or("staged transfer receipt unavailable")?;
-        let seal = journal::Seal::of(&entry.metadata().map_err(|error| error.to_string())?);
-        Ok(Record {
-            source: source.clone(),
-            destination: self.destination.path.join(name),
-            seal,
-            identity,
-            replaced: None,
-            undone: false,
-        })
     }
 
     fn undo(
@@ -1891,44 +2206,14 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
         }
         // SAFETY: successful open returned this newly owned descriptor.
         let entry = unsafe { File::from_raw_fd(fd) };
-        let metadata = entry.metadata()?;
-        let identity = Identity::of(&metadata);
-        journal::sync_staged(&entry, &mut || self.check())?;
-        let staged_path = Path::new(std::ffi::OsStr::from_bytes(path.as_bytes()));
-        File::open(
-            staged_path
-                .parent()
-                .ok_or_else(|| io::Error::other("staging parent unavailable"))?,
-        )?
-        .sync_all()?;
-        File::open(self.operation.destination.directory.anchored_root())?.sync_all()?;
-        self.check()?;
-        let relative = Path::new(std::ffi::OsStr::from_bytes(path.as_bytes()))
-            .strip_prefix(self.operation.destination.directory.anchored_root())
-            .map_err(io::Error::other)?;
-        let stable = self.operation.destination.path.join(relative);
-        self.operation
-            .receipt()
-            .and_then(|receipt| receipt.staged(self.source, &stable, journal::Seal::of(&metadata)))
-            .map_err(io::Error::other)?;
+        let identity = Identity::of(&entry.metadata()?);
+        // Its batch syncs it with the others and names it in one intent.
         self.staged = Some((Arc::new(entry), identity));
         Ok(())
     }
-    fn before_source_quarantine(&mut self, _: &Path, path: &Path) -> io::Result<()> {
-        self.check()?;
-        let relative = path
-            .strip_prefix(self.source.parent.anchored_root())
-            .map_err(io::Error::other)?;
-        let stable = self
-            .source
-            .path
-            .parent()
-            .ok_or_else(|| io::Error::other("source parent unavailable"))?
-            .join(relative);
-        self.operation
-            .receipt()
-            .and_then(|receipt| receipt.quarantine(self.source, &stable))
-            .map_err(io::Error::other)
+    fn before_source_quarantine(&mut self, _: &Path, _: &Path) -> io::Result<()> {
+        // The hidden name is in the batch's durable intent already.
+        self.check()
     }
     fn allow_direct_rename(&self) -> bool {
         false
@@ -1962,14 +2247,6 @@ impl file_explorer::fileops::TransferObserver for Admission<'_> {
             info.check(self.tree, &self.operation.context)
                 .map_err(io::Error::other)?;
         }
-        let relative = path
-            .strip_prefix(self.operation.destination.directory.anchored_root())
-            .map_err(io::Error::other)?;
-        let stable = self.operation.destination.path.join(relative);
-        self.operation
-            .receipt()
-            .and_then(|receipt| receipt.publishing(self.source, &stable))
-            .map_err(io::Error::other)?;
         if self.operation.offer.public.cut {
             // The source has already been sequestered/deleted; revalidate
             // authority and destination, without reopening the old leaf name.
