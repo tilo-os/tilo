@@ -141,8 +141,8 @@ fn standing_code(role: tilo_action_policy::Role) -> u8 {
     STANDINGS
         .iter()
         .position(|held| *held == role)
-        .and_then(|at| u8::try_from(at + 1).ok())
-        .unwrap_or(0)
+        .and_then(|at| u8::try_from(at).ok())
+        .map_or(0, |at| at.saturating_add(1))
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -398,9 +398,14 @@ impl Room {
                             return;
                         }
                     };
-                    let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
-                    answers[index] = Some(may);
-                    let [Some(writes), Some(moderating), Some(governs)] = *answers else {
+                    let answered = {
+                        let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(slot) = answers.get_mut(index) {
+                            *slot = Some(may);
+                        }
+                        *answers
+                    };
+                    let [Some(writes), Some(moderating), Some(governs)] = answered else {
                         return;
                     };
                     let role =
