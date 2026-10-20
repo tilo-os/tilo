@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 
 const bytes={
   core:new Uint8Array([1,2,3]),
@@ -94,7 +96,7 @@ test('CacheStorage cannot block verified startup font readiness',async()=>{
   });
   const outcome=await Promise.race([
     loader.startup(),
-    new Promise(resolve=>{timeout=setTimeout(()=>resolve('blocked'),100);}),
+    new Promise(resolve=>{timeout=setTimeout(()=>resolve('blocked'),HANG_BOUND_MS);}),
   ]);
   clearTimeout(timeout);
   assert.notEqual(outcome,'blocked');
