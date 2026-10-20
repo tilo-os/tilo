@@ -117,6 +117,10 @@ fn wait_for_terminal(
     caller: &Caller,
     invocation: tilo_actions::InvocationId,
 ) -> InvocationState {
+    // The broker spawns each change waiter on the ambient runtime and answers
+    // `None` without one, as it does for an invocation the caller does not own.
+    let runtime = tilo_rt::try_app().unwrap();
+    let _entered = runtime.handle().enter();
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let change = host
