@@ -921,18 +921,11 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
     pub(super) fn peer(mode: &str, pid: &std::path::Path) -> Runtime {
         Runtime::spawn(peer_command(mode, pid), "en").unwrap()
     }
+    /// The actor's next event. The wait is a hang bound, not a budget: the
+    /// actor's own start and finish windows are what the product promises,
+    /// and a loaded runner can take seconds just to start the python peer.
     pub(super) fn next(runtime: &Runtime) -> RuntimeEvent {
-        next_within(runtime, Duration::from_secs(5))
-    }
-    fn next_within(runtime: &Runtime, wait: Duration) -> RuntimeEvent {
-        let deadline = later(wait);
-        loop {
-            if let Some(event) = runtime.poll() {
-                return event;
-            }
-            assert!(Instant::now() < deadline, "actor must report a result");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_for("the dictation actor to report a result", || runtime.poll())
     }
 
     #[test]
@@ -1035,7 +1028,7 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         runtime.finish().unwrap();
         assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
         assert!(matches!(
-            next_within(&runtime, Duration::from_secs(30)),
+            next(&runtime),
             RuntimeEvent::Done(text) if text == "Corrected 👋"
         ));
         reaped(&mut runtime, &pid);
@@ -1086,11 +1079,9 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
         assert!(child.0.wait().unwrap().success());
     }
     fn reaped(runtime: &mut Runtime, pid: &std::path::Path) {
-        let deadline = later(Duration::from_secs(5));
-        while !runtime.is_stopped() {
-            assert!(Instant::now() < deadline, "owner must stop and reap");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        tilo_test_env::wait_until("the owner to stop and reap its worker", || {
+            runtime.is_stopped()
+        });
         let pid = std::fs::read_to_string(pid).unwrap();
         assert!(
             !std::path::Path::new("/proc").join(pid).exists(),
