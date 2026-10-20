@@ -336,8 +336,44 @@ def check_production_containerfiles(repo: Path) -> list[Finding]:
     return findings
 
 
+def check_dev_inputs(repo: Path) -> list[Finding]:
+    """Every checked-in input (`from = "@manifest/..."`) of a component the dev image installs is
+    staged in the dev-inputs stage, where install-components.py --dev looks for it."""
+    path = repo / DEV_CONTAINERFILE
+    if not path.is_file():
+        return []
+    installer = load("install_components_for_dev_inputs", repo / "os/scripts/install-components.py")
+    manifest = installer.load_manifest(repo / "os/components.toml")
+    staged: set[str] = set()
+    in_inputs = False
+    for _, text in logical_lines(path):
+        if re.match(r"FROM\s", text, re.I):
+            in_inputs = bool(re.search(r"\sAS\s+dev-inputs\b", text, re.I))
+            continue
+        if in_inputs and text.startswith("COPY "):
+            words = [w for w in text.split()[1:] if not w.startswith("--")]
+            staged.update(words[:-1])
+    findings: list[Finding] = []
+    for component in manifest.dev_image_components():
+        for entry in component.files:
+            source = entry.source or ""
+            if not source.startswith("@manifest/"):
+                continue
+            wanted = "os/" + source.removeprefix("@manifest/")
+            if wanted not in staged:
+                findings.append(Finding(
+                    DEV_CONTAINERFILE,
+                    f"the dev-inputs stage does not stage {wanted}, which component "
+                    f"'{component.name}' installs ({source})",
+                    "install-components.py --dev finds checked-in inputs only in that stage, so the dev image "
+                    "build fails at its install step",
+                    f"add `COPY {wanted} /tilo/{str(Path(wanted).parent)}/` to the dev-inputs stage."))
+    return findings
+
+
 def audit(repo: Path = REPO) -> list[Finding]:
-    return [*check_dev_containerfile(repo), *check_builder_packages(repo), *check_dev_image_names(repo),
+    return [*check_dev_containerfile(repo), *check_dev_inputs(repo), *check_builder_packages(repo),
+            *check_dev_image_names(repo),
             *check_production_policy(repo),
             *check_production_containerfiles(repo)]
 

@@ -47,6 +47,16 @@ class DevImageContractTests(unittest.TestCase):
     def line_of(self, path: Path, needle: str) -> int:
         return next(n for n, t in enumerate(path.read_text().splitlines(), 1) if needle in t)
 
+    def test_every_checked_in_input_of_a_dev_component_is_staged(self):
+        # The shell installs os/usr/share/tilo/system-interfaces.toml; a dev-inputs stage
+        # without it failed the dev image at its install step, after the whole compile.
+        root = self.fixture()
+        self.edit(root / "os/Containerfile.dev",
+                  "COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/\n", "")
+        found = "\n".join(self.findings(root))
+        self.assertIn("does not stage os/usr/share/tilo/system-interfaces.toml", found)
+        self.assertIn("component 'shell'", found)
+
     def test_repository_and_fixture_pass_with_one_snapshot_pin_and_labelled_dev_image(self):
         with self.subTest(phase='repository passes'):
             self.assertEqual(self.findings(REPO), [])

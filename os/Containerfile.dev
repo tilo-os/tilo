@@ -91,6 +91,7 @@ FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
 COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
+COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
