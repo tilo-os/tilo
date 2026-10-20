@@ -9134,3 +9134,25 @@ fn ui_scaling_grows_the_writing_beside_the_review_cards() {
         );
     }
 }
+
+/// Insertion comes before the specialist character formats, so a narrow or
+/// scaled toolbar moves strikethrough, superscript and subscript into More
+/// before it moves the table or the image.
+#[test]
+fn insertion_precedes_specialist_formats_in_the_toolbar() {
+    let (state, wp) = populated();
+    let framed = mount(state, wp, 1100, 760);
+    let entries = framed.toolbar_entries();
+    let index = |wanted| {
+        entries
+            .iter()
+            .position(
+                |entry| matches!(entry, ToolEntry::Command { action, .. } if *action == wanted),
+            )
+            .unwrap_or_else(|| panic!("{wanted:?} is offered"))
+    };
+    for format in [ToolAction::Strike, ToolAction::Super, ToolAction::Sub] {
+        assert!(index(ToolAction::InsertTable) < index(format));
+        assert!(index(ToolAction::InsertImage) < index(format));
+    }
+}

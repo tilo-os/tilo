@@ -1372,10 +1372,9 @@ impl WordProcessorWidget {
     }
 
     /// The toolbar's commands for this frame, grouped: New; bold, italic
-    /// and underline; type and colour; the rarer character formats;
-    /// insertion (the table group turns into
-    /// table editing inside a cell); then, at the trailing edge, the view
-    /// toggles. Commands that do not fit go to the toolbar's More menu.
+    /// and underline; type and colour; insertion (the table group turns into
+    /// table editing inside a cell); the rarer character formats; then, at
+    /// the trailing edge, the view toggles. Commands that do not fit go to the toolbar's More menu.
     pub(super) fn toolbar_entries(&self) -> Vec<ToolEntry> {
         let mut entries = vec![
             ToolEntry::command(ToolAction::NewMenu, t("toolbar-new")),
@@ -1402,22 +1401,6 @@ impl WordProcessorWidget {
             ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
             ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
             ToolEntry::Separator,
-            ToolEntry::toggle(
-                ToolAction::Strike,
-                t("toolbar-strikethrough"),
-                self.mark_active_in_selection("strike"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Super,
-                t("toolbar-superscript"),
-                self.mark_active_in_selection("super"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Sub,
-                t("toolbar-subscript"),
-                self.mark_active_in_selection("sub"),
-            ),
-            ToolEntry::Separator,
         ];
         if !self.selection_blocks_cached().is_empty() {
             entries.push(ToolEntry::command(ToolAction::Hyperlink, t("toolbar-link")));
@@ -1439,6 +1422,24 @@ impl WordProcessorWidget {
         entries.extend([
             ToolEntry::command(ToolAction::InsertImage, t("toolbar-image")),
             ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
+            // The specialist character formats come after insertion, so a
+            // narrow or scaled toolbar moves them into More first.
+            ToolEntry::Separator,
+            ToolEntry::toggle(
+                ToolAction::Strike,
+                t("toolbar-strikethrough"),
+                self.mark_active_in_selection("strike"),
+            ),
+            ToolEntry::toggle(
+                ToolAction::Super,
+                t("toolbar-superscript"),
+                self.mark_active_in_selection("super"),
+            ),
+            ToolEntry::toggle(
+                ToolAction::Sub,
+                t("toolbar-subscript"),
+                self.mark_active_in_selection("sub"),
+            ),
             ToolEntry::Spacer,
             ToolEntry::toggle(
                 ToolAction::ToggleRuler,
