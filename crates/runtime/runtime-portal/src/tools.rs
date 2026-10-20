@@ -325,27 +325,46 @@ fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
         .parse()
         .map_err(|_| "The shell supplied an invalid tool service descriptor".to_string())?;
 
-    // Duplicate the inherited descriptor: dropping the per-request stream must
-    // not close the process-wide service connection retained by the sandbox.
-    // SAFETY: the launcher keeps the service descriptor open for the
-    // process's lifetime; it is only borrowed long enough to duplicate it.
-    let owned = unsafe { BorrowedFd::borrow_raw(raw_fd) }
-        .try_clone_to_owned()
-        .map_err(|e| format!("opening the shell tool service: {e}"))?;
-    let mut stream = UnixStream::from(owned);
     let request = ToolRequest {
         protocol: TOOL_PROTOCOL_VERSION,
         workspace_id,
         intent,
     };
-    let encoded =
-        serde_json::to_vec(&request).map_err(|e| format!("encoding tool request: {e}"))?;
+    // SAFETY: the launcher keeps the service descriptor open for the
+    // process's lifetime; it is only borrowed for this exchange.
+    let reply = exchange(unsafe { BorrowedFd::borrow_raw(raw_fd) }, &request)?;
+    if reply.accepted {
+        Ok(reply)
+    } else {
+        Err(reply.message)
+    }
+}
+
+/// One request and its reply over the process-wide service stream.
+///
+/// Every caller shares that one stream and replies carry no request id, so
+/// the whole exchange is one critical section: otherwise concurrent callers
+/// interleave frames or read each other's replies.
+#[cfg(unix)]
+fn exchange(service: BorrowedFd<'_>, request: &ToolRequest) -> Result<ToolReply, String> {
+    use tilo_lock::MutexRecover as _;
+    static EXCHANGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    let mut encoded =
+        serde_json::to_vec(request).map_err(|e| format!("encoding tool request: {e}"))?;
     if encoded.len() > MAX_WIRE_BYTES {
         return Err("tool request is too large".into());
     }
+    encoded.push(b'\n');
+    let _exchange = EXCHANGE.lock_recover();
+    // Duplicate the inherited descriptor: dropping the per-request stream must
+    // not close the process-wide service connection retained by the sandbox.
+    let owned = service
+        .try_clone_to_owned()
+        .map_err(|e| format!("opening the shell tool service: {e}"))?;
+    let mut stream = UnixStream::from(owned);
     stream
         .write_all(&encoded)
-        .and_then(|()| stream.write_all(b"\n"))
         .map_err(|e| format!("sending tool request: {e}"))?;
 
     let mut reply = String::new();
@@ -356,13 +375,7 @@ fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
     if reply.len() > MAX_REPLY_BYTES {
         return Err("tool reply is too large".into());
     }
-    let reply: ToolReply =
-        serde_json::from_str(&reply).map_err(|e| format!("decoding tool reply: {e}"))?;
-    if reply.accepted {
-        Ok(reply)
-    } else {
-        Err(reply.message)
-    }
+    serde_json::from_str(&reply).map_err(|e| format!("decoding tool reply: {e}"))
 }
 
 /// Context passed by the trusted launcher to a newly opened tool.
@@ -379,6 +392,45 @@ pub fn tool_intent_from_env() -> Option<ToolIntent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_callers_each_get_their_own_reply() {
+        use std::os::fd::AsFd as _;
+        let (client, server) = UnixStream::pair().unwrap();
+        let shell = std::thread::spawn(move || {
+            let mut answer = server.try_clone().unwrap();
+            for line in BufReader::new(server).lines() {
+                let request: ToolRequest = serde_json::from_str(&line.unwrap()).unwrap();
+                let reply = ToolReply {
+                    accepted: true,
+                    message: request.workspace_id,
+                    drives: Vec::new(),
+                };
+                let mut encoded = serde_json::to_vec(&reply).unwrap();
+                encoded.push(b'\n');
+                answer.write_all(&encoded).unwrap();
+            }
+        });
+        std::thread::scope(|scope| {
+            for caller in 0..8 {
+                let client = &client;
+                scope.spawn(move || {
+                    for turn in 0..200 {
+                        let request = ToolRequest {
+                            protocol: TOOL_PROTOCOL_VERSION,
+                            workspace_id: format!("{caller}-{turn}"),
+                            intent: ToolIntent::Drives,
+                        };
+                        let reply = exchange(client.as_fd(), &request).unwrap();
+                        assert_eq!(reply.message, request.workspace_id);
+                    }
+                });
+            }
+        });
+        drop(client);
+        shell.join().unwrap();
+    }
 
     #[test]
     fn tool_intents_name_only_typed_routes_never_executables() {
