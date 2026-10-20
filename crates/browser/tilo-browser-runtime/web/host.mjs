@@ -522,6 +522,8 @@ export async function mountDesktop(target,options={}) {
       people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
       // The room's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
       pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
+      // Name the room's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
+      setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),

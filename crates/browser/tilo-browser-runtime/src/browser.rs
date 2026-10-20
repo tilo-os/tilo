@@ -3152,6 +3152,40 @@ pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
     })
 }
 
+/// Name the people of the mount's room, `[{id, name}]`, `id` each person's
+/// key as their actions record it (what `cx.me()` and `ActionCx::author`
+/// answer). Live presence names devices; a page that knows who belongs to
+/// the room (its door admitted them) names the people, so an app shows
+/// `cx.people().name(author)` as the person's name rather than their key.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a closed mount.
+#[wasm_bindgen]
+pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct Person {
+        id: String,
+        name: String,
+    }
+    let people: Vec<Person> =
+        serde_json::from_str(people).map_err(|error| JsValue::from_str(&error.to_string()))?;
+    with_mount(id, |m| {
+        let presence = m.frame.presence_mut();
+        for person in people {
+            let name = person.name.trim();
+            if !person.id.is_empty() && !name.is_empty() {
+                presence.set_display_name(UserId(person.id), name);
+            }
+        }
+        m.apply_here();
+        m.frame.relayout();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// Take accepted writes for the page to commit (`[{key, bytes, actor,
 /// revision}]`).
 ///
