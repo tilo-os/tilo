@@ -819,9 +819,10 @@ impl VideoEditorApp {
                 // is a selection gesture, not the start of a move.
                 return;
             }
-            if (p.x - cr.x0).abs() <= TRIM_HIT {
+            let trim_hit = TRIM_HIT * self.chrome_scale();
+            if (p.x - cr.x0).abs() <= trim_hit {
                 self.drag = Some(Drag::TrimIn { id: cid });
-            } else if (p.x - cr.x1).abs() <= TRIM_HIT {
+            } else if (p.x - cr.x1).abs() <= trim_hit {
                 self.drag = Some(Drag::TrimOut { id: cid });
             } else {
                 if self.edit_targets().is_empty() {

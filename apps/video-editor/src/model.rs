@@ -1933,7 +1933,17 @@ impl Project {
     /// estimate and the on-screen band cannot disagree about what will be
     /// rendered.
     pub fn export_range(&self) -> (f64, f64) {
-        let dur = self.duration();
+        // `duration()` keeps the editor's ruler at least one second wide.
+        // That UI minimum is not footage: a shorter cut must not acquire a
+        // black/silent tail in its exported file. Keep the empty-project
+        // fallback, but otherwise stop at the actual last clip edge.
+        let dur = self
+            .clips
+            .iter()
+            .map(Clip::end)
+            .reduce(f64::max)
+            .unwrap_or_else(|| self.duration())
+            .max(0.0);
         let a = self.mark_in.unwrap_or(0.0).clamp(0.0, dur);
         let b = self.mark_out.map_or(dur, |o| o.clamp(0.0, dur));
         if b > a { (a, b) } else { (0.0, dur) }

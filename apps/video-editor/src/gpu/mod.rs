@@ -1779,10 +1779,11 @@ mod tests {
             let mut sources = MediaFrameSource::new(&p, Fetch::Responsive)
                 .with_timeout(std::time::Duration::from_millis(50));
 
-            // Ask past the threshold, then keep asking.
-            let rounds = crate::thumbnail::FAILURES_BEFORE_GIVING_UP + 3;
-            for i in 0..rounds {
-                let _ = c.frame(&p, f64::from(i) * 0.5, w, h, &mut sources);
+            // Responsive misses are timed decode windows, not repaints.
+            // Keep polling a paused target until the real give-up deadline.
+            let deadline = tilo_test_env::hang_deadline();
+            while !sources.is_undecodable(mid) && ui::time::now() < deadline {
+                let _ = c.frame(&p, 0.5, w, h, &mut sources);
             }
 
             assert!(
