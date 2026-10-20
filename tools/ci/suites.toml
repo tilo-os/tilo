@@ -800,6 +800,30 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilolang-app"
+# The host embeds the built-in tilolang packages (source and ids lock) in its binary.
+inputs = ["apps/tl/"]
+readers = ["apps/tilolang/src/packages.rs"]
+
+[[cargo]]
+package = "tilolang-runtime"
+# The end-to-end tests compile the built-in packages from their sources.
+inputs = ["apps/tl/"]
+readers = [
+  "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
+]
+
+[[cargo]]
+package = "tilolang-tilo"
+# The collaboration tests compile the spec's counter package from its source.
+inputs = ["apps/tl/counter/app.tl"]
+readers = ["crates/platform/tilolang-tilo/tests/fixtures.rs"]
+
+[[cargo]]
 package = "discord-worker"
 # The bridge test and the live example install the bridge bot from its
 # program file, beside the worker in the connector app.
