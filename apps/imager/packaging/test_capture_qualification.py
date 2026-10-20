@@ -65,8 +65,8 @@ class StagedSourceClosure(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'official public asset manifest'):
                 qualifier.source_assets(manifest)
         for path in ('/usr/bin', '/owned/candidate', '/run/assets', '/var/../etc',
-                     '/srv/rcargo', '/srv/rcargo/tasks', '/srv/rcargo/tasks-other/assets',
-                     '/srv/rcargo/p/source'):
+                     '/srv/tilo', '/srv/tilo/tasks', '/srv/tilo/tasks-other/assets',
+                     '/srv/tilo/p/source'):
             with self.assertRaisesRegex(ValueError, 'mount escapes'):
                 qualifier.asset_mounts({'assets': {'app': {'source_root': path}}, 'archives': {}})
 
@@ -83,7 +83,7 @@ class StagedSourceClosure(unittest.TestCase):
         helper.validate.assert_not_called()
 
     def test_durable_public_task_asset_coordinates_are_admitted(self):
-        path = '/srv/rcargo/tasks/installer-public-source/target/capture-public-assets/app'
+        path = '/srv/tilo/tasks/installer-public-source/target/capture-public-assets/app'
         self.assertEqual(qualifier.asset_mounts({
             'assets': {'app': {'source_root': path}}, 'archives': {}}),
             ['--volume', path + ':' + path + ':ro'])

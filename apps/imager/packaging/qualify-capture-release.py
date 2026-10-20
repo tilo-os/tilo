@@ -496,7 +496,7 @@ def asset_mounts(assets):
         require(path.is_absolute() and '..' not in path.parts and ':' not in str(path)
                 and len(path.parts) > 2
                 and (path.parts[1] in ('tmp', 'var', 'home')
-                     or (path.is_relative_to('/srv/rcargo/tasks')
+                     or (path.is_relative_to('/srv/tilo/tasks')
                          and len(path.parts) > 4))
                 and not path.is_symlink(), 'public asset mount escapes input namespace')
         result.extend(['--volume', str(path) + ':' + str(path) + ':ro'])
