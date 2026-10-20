@@ -3400,6 +3400,17 @@ impl crate::app_serving::AppServingPlane for CountingPlane {
 
 #[tokio::test]
 async fn revoked_device_remote_action_is_refused() {
+    invalidated_device_remote_action_is_refused(false).await;
+}
+
+#[tokio::test]
+async fn removed_member_remote_action_is_refused() {
+    invalidated_device_remote_action_is_refused(true).await;
+}
+
+/// No access audit runs here: the handler itself refuses the next frame of
+/// a device revoked or removed while its subscription is still registered.
+async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
     let (a, _) = certified_device(&root, user.public_key, "a");
@@ -3479,16 +3490,29 @@ async fn revoked_device_remote_action_is_refused() {
     );
     assert_eq!(served(), 1);
 
-    // Revoked while its session (and its `subscribed` list) is still live.
-    let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: user.public_key,
-        revoked_device_public_key: a.device_public_key,
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-    revocations.write().unwrap().insert(entry).unwrap();
+    if remove_membership {
+        let workspace = registry.lock().await[&id].clone();
+        crate::workspace_io::replace_membership(&workspace, Vec::new())
+            .await
+            .unwrap();
+        assert!(
+            workspace
+                .lock()
+                .await
+                .subscribers
+                .contains_key(&a.device_public_key)
+        );
+    } else {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: user.public_key,
+            revoked_device_public_key: a.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.write().unwrap().insert(entry).unwrap();
+    }
     let refused = handle_remote_action(&a, &session, &[id], route(), frame).await;
     let Some(Envelope::RemoteActionUndeliverable {
         reason,
@@ -3496,7 +3520,7 @@ async fn revoked_device_remote_action_is_refused() {
         ..
     }) = refused
     else {
-        panic!("a revoked device is answered as undeliverable, got {refused:?}");
+        panic!("an invalidated device is answered as undeliverable, got {refused:?}");
     };
     assert_eq!(to_device_public_key, host.device_public_key);
     assert_eq!(
@@ -3504,7 +3528,7 @@ async fn revoked_device_remote_action_is_refused() {
         Some(UnavailableReason::NotAuthorised),
         "{reason}"
     );
-    assert_eq!(served(), 1, "a revoked device never reaches the plane");
+    assert_eq!(served(), 1, "an invalidated device never reaches the plane");
 }
 
 /// An action the host runs for a member spends that member's change
