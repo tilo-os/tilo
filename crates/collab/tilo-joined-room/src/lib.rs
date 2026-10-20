@@ -21,7 +21,6 @@ pub mod enroll;
 mod enrollment;
 mod file_store;
 mod governed;
-mod governed_joins;
 mod history_content;
 mod limits;
 mod private_direct_conversations;
@@ -46,7 +45,6 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
-pub use governed_joins::{GovernedInvitation, GovernedJoins};
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
