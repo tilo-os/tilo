@@ -7,7 +7,7 @@ use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, RelayTrust, ReplayCatchup,
     ReplayPendingTarget, RoomOperation, SessionCtx, SharedWorkspace,
     checkpoint_prefix_recovery_allowed, current_session, enqueue_checkpoint_prefix, enqueue_state,
-    mpsc, over_change_limit, room_access, trace_native_publication,
+    lost_session, mpsc, over_change_limit, room_access, trace_native_publication,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -626,9 +626,7 @@ pub(super) async fn handle_delta(
         // subscriber; a follow-up write must close rather than refuse twice.
         let runtime = ws.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(PeerError::Protocol(
-                "subscriber authorization changed".into(),
-            ));
+            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
@@ -779,9 +777,7 @@ pub(super) async fn handle_delta_prefix(
         }
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
-            return Err(PeerError::Protocol(
-                "subscriber authorization changed".into(),
-            ));
+            return Err(lost_session(&runtime, peer, session, RoomOperation::State));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
