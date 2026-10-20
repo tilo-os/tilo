@@ -44,7 +44,9 @@ const CONTEXT_CHARS: usize = 160;
 pub(crate) fn desktop_area(bounds: Option<[f64; 4]>, window: Option<Rect>) -> Option<Rect> {
     let local = ui::floating_surface::protocol_rect(bounds?).ok()?;
     let window = window?;
-    let area = (local + window.origin().to_vec2()).intersect(window);
+    let area = vello::kurbo::Affine::translate(window.origin().to_vec2())
+        .transform_rect_bbox(local)
+        .intersect(window);
     (area.width() > 0.0 && area.height() > 0.0).then_some(area)
 }
 

@@ -75,14 +75,16 @@ fn render_lock_screen_matrix() {
     let root = shot_dir();
     let quick = std::env::var("TILO_LOCK_SHOT_QUICK").is_ok_and(|value| value == "1");
     std::fs::create_dir_all(&root).expect("create lock screenshot directory");
-    for (theme_label, theme) in [
+    for (theme_label, theme) in vec![
         ("normal", Theme::dark()),
         ("light", Theme::light()),
         ("reduced-motion", Theme::dark().with_reduce_motion(true)),
         ("large-text", Theme::dark().with_text_scale(1.3)),
         ("maximum-text", Theme::dark().with_text_scale(4.0)),
         ("high-contrast", Theme::high_contrast()),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         for (width, height, scale, label) in [
             (1600, 900, 1.0, ""),
             (1366, 768, 1.0, ""),

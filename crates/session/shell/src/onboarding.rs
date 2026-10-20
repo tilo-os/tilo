@@ -562,7 +562,7 @@ mod tests {
         let paths = crate::firstboot::collaboration_identity_paths();
         for path in [
             paths.device_cert_for_user(&person),
-            paths.device_privkey.clone(),
+            paths.device_privkey,
             minted.path.clone(),
         ] {
             let held = path.with_extension("readiness-held");

@@ -177,6 +177,7 @@ fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionEr
             .map(|s| s.id)
             .filter(|id| *id != strip)
             .collect();
+        drop(tree);
         (strip, others.get(to).copied())
     };
     state
@@ -420,14 +421,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         // Its host stops the bot and uninstalls it; adding it again is a
         // new request.
-        BOT_REMOVE_ID => {
-            contract.kind = ActionKind::Outside;
-            contract.risk = RiskLevel::Destructive;
-            contract.confirmation = ConfirmationPolicy::Confirm;
-            contract.retry = RetryPolicy::AtMostOnce;
-        }
-        // Ends the agent's access at once; undone only by admitting it again.
-        "agent.remove" => {
+        // Ends the bot's or the agent's access at once; undone only by
+        // admitting it again.
+        BOT_REMOVE_ID | "agent.remove" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Destructive;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -5689,7 +5685,7 @@ mod tests {
             "nothing is asked of the workspace before the person confirms"
         );
         assert!(chrome.borrow_mut().take_peer_sync_requests().is_empty());
-        let mut confirmed = standup.clone();
+        let mut confirmed = standup;
         confirmed["confirm"] = true.into();
         invoke_shell_action(&chrome, BOT_ADD_ID, &confirmed).unwrap();
         assert_eq!(
@@ -6266,6 +6262,7 @@ mod tests {
         use settings_store::hardware::{
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
+        use std::os::unix::fs::PermissionsExt as _;
         for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
@@ -6280,7 +6277,6 @@ mod tests {
             // The copy stays readable (an unreadable copy may hold another
             // process's edit and blocks the write), but its directory takes
             // no new file, so only the copy's replacement fails.
-            use std::os::unix::fs::PermissionsExt as _;
             let copy_dir = paths.copy.parent().unwrap().to_path_buf();
             assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
             let writable = std::fs::metadata(&copy_dir).unwrap().permissions();

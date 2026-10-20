@@ -253,10 +253,12 @@ mod tests {
     fn a_rows_buttons_stay_inside_it_and_apart() {
         let row = Rect::new(0.0, 0.0, 320.0, 52.0);
         let (a, b) = pair_rects(row);
-        assert!(a.x1 <= b.x0 && b.x1 <= row.x1 && a.y0 >= row.y0 && a.y1 <= row.y1);
+        assert!(a.x1 <= b.x0, "the buttons stand apart");
+        assert!(b.x1 <= row.x1 && a.y0 >= row.y0 && a.y1 <= row.y1);
         let (arrows, control) = placement_rects(row);
         for arrow in arrows {
-            assert!(arrow.x1 <= control.x0 && arrow.y0 >= row.y0 && arrow.y1 <= row.y1);
+            assert!(arrow.x1 <= control.x0, "an arrow stands before the control");
+            assert!(arrow.y0 >= row.y0 && arrow.y1 <= row.y1);
         }
         let select = select_rect(row);
         assert!(select.x0 > row.x0 && select.x1 <= row.x1);

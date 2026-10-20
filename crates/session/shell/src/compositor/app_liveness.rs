@@ -231,12 +231,14 @@ pub fn is_hung(surface_id: u64) -> bool {
 
 /// Publish the windows whose app is not responding; `true` when that
 /// changed (the tiles repaint).
-pub fn publish_hung(surfaces: HashSet<u64>) -> bool {
+pub fn publish_hung(surfaces: impl IntoIterator<Item = u64>) -> bool {
+    let surfaces: HashSet<u64> = surfaces.into_iter().collect();
     let mut shared = shared();
     if shared.hung == surfaces {
         return false;
     }
     shared.hung = surfaces;
+    drop(shared);
     true
 }
 

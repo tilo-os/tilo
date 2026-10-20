@@ -37,6 +37,13 @@ pub(crate) struct ActionSessionSource {
     opens: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[cfg_attr(
+    test,
+    allow(
+        clippy::large_enum_variant,
+        reason = "only tests add the smaller variants; outside tests the certified session is the only one"
+    )
+)]
 pub(crate) enum DesktopActionSession {
     Certified(CertifiedActionSession),
     #[cfg(test)]

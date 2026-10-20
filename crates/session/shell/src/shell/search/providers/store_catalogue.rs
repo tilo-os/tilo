@@ -263,12 +263,12 @@ impl StoreCatalogueProvider {
                     CatalogueSnapshot::from_parts(&installed, &state.tilo, &state.shared)
                 }
                 Scope::Installed => CatalogueSnapshot::installed(
-                    state
+                    &state
                         .tilo
                         .iter()
                         .filter(|app| state.installed.contains(&app.package_id))
                         .cloned()
-                        .collect(),
+                        .collect::<Vec<_>>(),
                     &state.shared,
                 ),
             };
@@ -277,7 +277,7 @@ impl StoreCatalogueProvider {
         let (installed_generation, installed_apps) = launcher::gui_apps_snapshot();
         if scope == Scope::Installed {
             let (shared_generation, shared) = catalogue::shared_snapshot();
-            let here = installed_apps
+            let here: Vec<CatalogueApp> = installed_apps
                 .iter()
                 .filter(|app| app_catalogue::fleet::metadata(&app.package_id).is_some())
                 .map(|app| CatalogueApp {
@@ -289,7 +289,7 @@ impl StoreCatalogueProvider {
                 .collect();
             return (
                 (installed_generation, 0, shared_generation, 0),
-                CatalogueSnapshot::installed(here, &shared),
+                CatalogueSnapshot::installed(&here, &shared),
             );
         }
         let (tilo_generation, tilo) = catalogue::available_apps_snapshot();
@@ -412,7 +412,7 @@ impl CatalogueSnapshot {
     /// The documents and closed actions of `here`, the Tilo apps this
     /// device has, as the fleet's manifest metadata describes them; a
     /// blocked app offers none.
-    fn installed(here: Vec<CatalogueApp>, shared: &SharedCatalogue) -> Self {
+    fn installed(here: &[CatalogueApp], shared: &SharedCatalogue) -> Self {
         let entries: Vec<CatalogueEntry> = here
             .iter()
             .map(app_catalogue::tilo::entry)
@@ -591,7 +591,7 @@ fn document_row(
     scope: Scope,
     entry: &CatalogueEntry,
     kind: &app_catalogue::ResourceType,
-    score: i32,
+    rank: i32,
 ) -> SearchResult {
     let id = entry.id.clone();
     let name = entry.name.clone();
@@ -604,7 +604,7 @@ fn document_row(
             "search-catalogue-document-subtitle",
             &[("app", entry.name.as_str().into())],
         )),
-        score,
+        rank,
         move |_doc, _root, chrome: &Chrome| match scope {
             Scope::Installed => super::applications::launch_installed_app(chrome, &id, &name),
             Scope::Offered => open_tilo_app(chrome, &id, &name),
@@ -617,7 +617,7 @@ fn action_row(
     entry: &CatalogueEntry,
     action: &app_catalogue::CatalogueAction,
     sessions: Option<ActionSessionSource>,
-    score: i32,
+    rank: i32,
 ) -> SearchResult {
     let offered = OfferedAction {
         package_id: entry.id.clone(),
@@ -632,7 +632,7 @@ fn action_row(
         action_row_id(&entry.id, &action.resource, &action.action),
         action.label.clone(),
         Some(entry.name.clone()),
-        score,
+        rank,
         move |_doc, _root, chrome: &Chrome| run_offered_action(chrome, sessions.as_ref(), &offered),
     )
 }
@@ -743,6 +743,7 @@ fn install_flathub_app(
             .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string());
+        drop(tree);
         (placement, workspace)
     };
     {
@@ -888,6 +889,10 @@ fn run_offered_action(
 /// Invoke `resource`'s `action` of `package_id` through the action host. A
 /// refusal is reported as the app's failure to open, since that is what the
 /// person sees not happen.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the action session stays open until its pending install has its answer handler"
+)]
 fn invoke_offered(
     sessions: &ActionSessionSource,
     room: &str,
@@ -1181,6 +1186,10 @@ mod tests {
     // unlocked passwords, the app store for flatpaks – i cannot search
     // ANYTHING."
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn spotify_from_the_cached_flathub_catalogue_is_found_and_installs() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
             state(&[], &[]),
@@ -1222,6 +1231,10 @@ mod tests {
     // USER REQUIREMENT (2026-10-19): "directly opening tapps without explicit
     // installation" — and an app this device has is never offered again.
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn installed_apps_are_never_offered_and_tilo_apps_just_open() {
         let source = StoreCatalogueTestSource::new(state(&[], &[]));
         let provider = StoreCatalogueProvider::with_test_source(Arc::clone(&source));
@@ -1279,6 +1292,10 @@ mod tests {
     // USER REQUIREMENT (2026-10-19): "all resource types and actions must
     // also be searchable, even if app not installed"
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn an_uninstalled_tilo_apps_documents_and_actions_are_found() {
         let provider = StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(
             state(&[], &[]),
@@ -1362,6 +1379,10 @@ mod tests {
     // the app and runs it.
     #[test]
     #[serial_test::serial(process_env)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn choosing_an_uninstalled_apps_action_gets_the_app_then_runs_the_action() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().expect("a scratch directory");
@@ -1441,6 +1462,10 @@ mod tests {
     // also be searchable, even if app not installed" — and those of the
     // apps this device has, whether or not they ever ran.
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn the_documents_and_closed_actions_of_installed_apps_are_found_and_run_at_once() {
         let host = Arc::new(RecordingHost::default());
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();

@@ -478,6 +478,6 @@ mod tests {
                     > 0
             );
             crate::shell::launcher::clear_pending_placements();
-        })
+        });
     }
 }

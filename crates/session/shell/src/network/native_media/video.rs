@@ -442,12 +442,16 @@ pub(crate) fn fitted(
     } else if u64::from(width).saturating_mul(u64::from(box_height))
         >= u64::from(height).saturating_mul(u64::from(box_width))
     {
-        let scaled =
-            u64::from(height).saturating_mul(u64::from(box_width)) / u64::from(width.max(1));
+        let scaled = u64::from(height)
+            .saturating_mul(u64::from(box_width))
+            .checked_div(u64::from(width.max(1)))
+            .unwrap_or(0);
         (box_width, u32::try_from(scaled).unwrap_or(box_height))
     } else {
-        let scaled =
-            u64::from(width).saturating_mul(u64::from(box_height)) / u64::from(height.max(1));
+        let scaled = u64::from(width)
+            .saturating_mul(u64::from(box_height))
+            .checked_div(u64::from(height.max(1)))
+            .unwrap_or(0);
         (u32::try_from(scaled).unwrap_or(box_width), box_height)
     };
     ((w & !1).max(2), (h & !1).max(2))
@@ -581,10 +585,9 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
                     continue;
                 };
                 match client.send_picture(source, &object) {
-                    Ok(()) => {}
                     // Nobody shows this layer any more.
                     Err(ClientError::Muted) if own != Some(*layer) => unwanted.push(*layer),
-                    Err(ClientError::Muted) => {}
+                    Ok(()) | Err(ClientError::Muted) => {}
                     // The layer starts (again) at a keyframe.
                     Err(ClientError::Expired | ClientError::Capacity) => {
                         encoder.encoder.force_keyframe();

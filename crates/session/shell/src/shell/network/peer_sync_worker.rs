@@ -130,48 +130,13 @@ impl ShellNetwork {
                         expires_at_ms: invite.expires_at_ms,
                     })
             }
-            PeerSyncRequest::DevicesAsking => self.devices_asking().map(|asking| {
-                PeerSyncResponse::DevicesAsking(
-                    asking
-                        .into_iter()
-                        .map(
-                            |device| crate::shell::peer_sync_overlay::DeviceAskingSummary {
-                                digest: device.digest,
-                                label: device.label,
-                                code: device.code,
-                                requested_at_ms: device.requested_at_ms,
-                                country: device.country,
-                            },
-                        )
-                        .collect(),
-                )
-            }),
+            PeerSyncRequest::DevicesAsking => self.devices_asking_response(),
             PeerSyncRequest::AnswerDevice { digest, approve } => self
                 .answer_device(digest, approve)
                 .map(|()| PeerSyncResponse::Message(String::new())),
             PeerSyncRequest::PollEnrollment(id) => self.poll_enrollment(id),
             PeerSyncRequest::CancelEnrollment(id) => self.cancel_enrollment(id),
-            PeerSyncRequest::ListPendingInvitations => {
-                let room = self
-                    .replica
-                    .lock()
-                    .map_err(|_| "peer-sync replica lock poisoned".to_string())?
-                    .tree
-                    .read()
-                    .room_of(workspace)
-                    .ok_or_else(|| "no active workspace".to_string())?;
-                Ok(PeerSyncResponse::PendingInvitations(
-                    self.pending_invitations(room)
-                        .into_iter()
-                        .map(|invite| PendingInvitationSummary {
-                            id: invite.id,
-                            name: invite.name,
-                            role: invite.role,
-                            expiry_unix_seconds: invite.expiry_unix_seconds,
-                        })
-                        .collect(),
-                ))
-            }
+            PeerSyncRequest::ListPendingInvitations => self.pending_invitations_response(workspace),
             PeerSyncRequest::Directory { site } => self
                 .directory(site.as_deref())
                 .map(PeerSyncResponse::Directory),
@@ -214,6 +179,52 @@ impl ShellNetwork {
                 }
             }
         }
+    }
+
+    /// The devices asking to join this person, as the sheet lists them.
+    fn devices_asking_response(&self) -> Result<PeerSyncResponse, String> {
+        self.devices_asking().map(|asking| {
+            PeerSyncResponse::DevicesAsking(
+                asking
+                    .into_iter()
+                    .map(
+                        |device| crate::shell::peer_sync_overlay::DeviceAskingSummary {
+                            digest: device.digest,
+                            label: device.label,
+                            code: device.code,
+                            requested_at_ms: device.requested_at_ms,
+                            country: device.country,
+                        },
+                    )
+                    .collect(),
+            )
+        })
+    }
+
+    /// The invitations of `workspace`'s room still waiting for an answer.
+    fn pending_invitations_response(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Result<PeerSyncResponse, String> {
+        let room = self
+            .replica
+            .lock()
+            .map_err(|_| "peer-sync replica lock poisoned".to_string())?
+            .tree
+            .read()
+            .room_of(workspace)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        Ok(PeerSyncResponse::PendingInvitations(
+            self.pending_invitations(room)
+                .into_iter()
+                .map(|invite| PendingInvitationSummary {
+                    id: invite.id,
+                    name: invite.name,
+                    role: invite.role,
+                    expiry_unix_seconds: invite.expiry_unix_seconds,
+                })
+                .collect(),
+        ))
     }
 
     /// Run `job` on the peer-sync worker; handed back when there is none.

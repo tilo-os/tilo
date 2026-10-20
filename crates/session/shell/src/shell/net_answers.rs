@@ -86,8 +86,8 @@ fn helper() -> Option<PathBuf> {
 #[must_use]
 pub fn rates() -> Option<Kept<Rates>> {
     let (kept, fetch) = {
-        let mut store = STORE.lock_recover();
-        let store = store.get_or_insert_with(Store::default);
+        let mut held = STORE.lock_recover();
+        let store = held.get_or_insert_with(Store::default);
         if !store.loaded_from_disk {
             store.loaded_from_disk = true;
             store.rates = cache_path(Source::Rates).and_then(|path| read_kept(&path));
@@ -99,7 +99,9 @@ pub fn rates() -> Option<Kept<Rates>> {
         let resting = store
             .failed_at
             .is_some_and(|failed| failed.elapsed() < RETRY_AFTER);
-        (store.rates.clone(), stale && !resting)
+        let kept = (store.rates.clone(), stale && !resting);
+        drop(held);
+        kept
     };
     if fetch {
         fetch_in_background(Source::Rates);
@@ -138,14 +140,15 @@ fn keep(source: Source, answer: Answer, fetched_at: u64) {
         }
     }
     {
-        let mut store = STORE.lock_recover();
-        let store = store.get_or_insert_with(Store::default);
+        let mut held = STORE.lock_recover();
+        let store = held.get_or_insert_with(Store::default);
         let Answer::Rates(rates) = answer;
         store.rates = Some(Kept {
             fetched_at,
             value: rates,
         });
         store.failed_at = None;
+        drop(held);
     }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }
@@ -198,13 +201,14 @@ fn fetch_in_background(source: Source) {
 #[cfg(test)]
 pub(crate) fn keep_rates_for_test(rates: Rates, fetched_at: u64) {
     {
-        let mut store = STORE.lock_recover();
-        let store = store.get_or_insert_with(Store::default);
+        let mut held = STORE.lock_recover();
+        let store = held.get_or_insert_with(Store::default);
         store.loaded_from_disk = true;
         store.rates = Some(Kept {
             fetched_at,
             value: rates,
         });
+        drop(held);
     }
     REVISION.fetch_add(1, Ordering::AcqRel);
 }

@@ -102,7 +102,9 @@ impl Panel {
     /// Frames until the windows stop moving: a slide under a bar that shows
     /// or hides runs on the wall clock.
     fn settle_motion(&mut self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(3))
+            .expect("a deadline");
         let mut last = None;
         loop {
             self.settle();
@@ -333,6 +335,10 @@ fn a_hidden_top_bar_gives_the_window_its_strip_and_shows_over_it_when_reached_fo
 /// it instead of landing in the window under it; beside it, the window
 /// keeps the pointer.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_banner_over_a_window_takes_the_pointer() {
     use shell::shell::input_policy::chrome_captures_pointer;
     use vello::kurbo::Point;

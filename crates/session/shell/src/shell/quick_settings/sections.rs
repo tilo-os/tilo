@@ -9,7 +9,7 @@
 //! ([`ui::motion::Disclose`]). Paint, hit-testing, keyboard focus and the
 //! accessibility tree all read the same items, so they cannot disagree.
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;
 use ui::paint::PaintCtx;
@@ -315,11 +315,7 @@ fn wifi(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
 }
 
 fn bluetooth(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
-    if !state.bluetooth {
-        b.push(ItemKind::Message(t("qs-bluetooth-off")), m.row);
-        b.push(ItemKind::TurnOn(t("qs-bluetooth-turn-on")), m.control);
-        b.gap();
-    } else {
+    if state.bluetooth {
         // Connected first, then by name: what is in use is what a person
         // came to change.
         let mut order: Vec<(usize, &crate::shell::quick_settings::BtDevice)> =
@@ -335,6 +331,10 @@ fn bluetooth(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
         if state.bt_devices.is_empty() {
             b.push(ItemKind::Message(t("qs-bluetooth-empty")), m.row);
         }
+    } else {
+        b.push(ItemKind::Message(t("qs-bluetooth-off")), m.row);
+        b.push(ItemKind::TurnOn(t("qs-bluetooth-turn-on")), m.control);
+        b.gap();
     }
     b.push(ItemKind::Settings(t("qs-bluetooth-pair")), m.row);
 }
@@ -572,7 +572,7 @@ pub(crate) struct SectionPaint<'a> {
 
 /// Paint `layout`'s items.
 pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionPaint<'_>) {
-    let xform = ctx.transform * Affine::translate(p.origin.to_vec2());
+    let xform = ctx.transform.pre_translate(p.origin.to_vec2());
     let mut ctx = PaintCtx::new(&mut *ctx.scene, xform, &mut *ctx.text, ctx.theme);
     let hovered = |rect: Rect| p.cursor.is_some_and(|point| rect.contains(point));
     let focused = |stop: SectionStop| p.focused == Some(stop);
@@ -605,39 +605,7 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             }
             ItemKind::Password => paint_password_status(&mut ctx, rect, p),
             ItemKind::PasswordButtons => {
-                let (cancel, connect) = password_buttons(rect);
-                let connecting = p
-                    .state
-                    .wifi_password
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.connecting);
-                Button::paint(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    ctx.theme,
-                    &ButtonFace::new(cancel, &t("portal-cancel"))
-                        .hovered(hovered(cancel))
-                        .focused(focused(SectionStop::PasswordCancel)),
-                );
-                Button::paint(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    ctx.theme,
-                    &ButtonFace::new(
-                        connect,
-                        &t(if connecting {
-                            "qs-connecting"
-                        } else {
-                            "portal-connect"
-                        }),
-                    )
-                    .role(ButtonRole::Primary)
-                    .disabled(!p.password_ready)
-                    .hovered(hovered(connect))
-                    .focused(focused(SectionStop::PasswordConnect)),
-                );
+                paint_password_buttons(&mut ctx, rect, p, (hovered, focused));
             }
             ItemKind::Settings(label) => {
                 let mut face =
@@ -684,6 +652,49 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             }
         }
     }
+}
+
+/// The Wi-Fi password prompt's Cancel and Connect, Connect waiting on a
+/// password it can send.
+fn paint_password_buttons(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    p: &SectionPaint<'_>,
+    (hovered, focused): (impl Fn(Rect) -> bool, impl Fn(SectionStop) -> bool),
+) {
+    let (cancel, connect) = password_buttons(rect);
+    let connecting = p
+        .state
+        .wifi_password
+        .as_ref()
+        .is_some_and(|prompt| prompt.connecting);
+    Button::paint(
+        ctx.scene,
+        ctx.transform,
+        ctx.text,
+        ctx.theme,
+        &ButtonFace::new(cancel, &t("portal-cancel"))
+            .hovered(hovered(cancel))
+            .focused(focused(SectionStop::PasswordCancel)),
+    );
+    Button::paint(
+        ctx.scene,
+        ctx.transform,
+        ctx.text,
+        ctx.theme,
+        &ButtonFace::new(
+            connect,
+            &t(if connecting {
+                "qs-connecting"
+            } else {
+                "portal-connect"
+            }),
+        )
+        .role(ButtonRole::Primary)
+        .disabled(!p.password_ready)
+        .hovered(hovered(connect))
+        .focused(focused(SectionStop::PasswordConnect)),
+    );
 }
 
 /// The keyboard ring of a row-shaped stop.
@@ -973,7 +984,7 @@ fn paint_battery(
         rect.x1 - bleed - gauge_h * 2.0,
         rect.y0 + (m.title - gauge_h) / 2.0,
         rect.x1 - bleed,
-        rect.y0 + (m.title + gauge_h) / 2.0,
+        rect.y0 + f64::midpoint(m.title, gauge_h),
     );
     ui::widget::primitives::paint_level_gauge(
         ctx.scene,

@@ -168,6 +168,7 @@ fn wait_for_membership_surface(
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn desktop_action_session_retains_the_selected_certified_person_and_original_custody() {
     use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
     use tilo_actions::remote::PendingPoll;
@@ -248,6 +249,11 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
     use tilo_actions::remote::{
         ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -381,6 +387,10 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn native_facade_admits_workspace_actions_under_certified_ownership() {
     use tilo_actions::remote::{
         ActionHost as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget,

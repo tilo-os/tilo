@@ -144,6 +144,10 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
 /// Focus on a dropped strip moves to the workspace's first strip.
 ///
 /// [`RESERVED_SALT`]: tilo_desktop_model::ids::RESERVED_SALT
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
+)]
 fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     use serde_json::Value;
     use tilo_desktop_model::ids::{RESERVED_SALT, peer_salt_of};
@@ -234,6 +238,10 @@ fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 /// the reserved namespace, derived from `seed`; with `touched_by`, a window
 /// under that device's salt that the person put into it.
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixture ids: a seed below a million, times eight, plus a counter below eight"
+)]
 fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
     use tilo_desktop_model::ids::RESERVED_SALT;
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, compose_id};
@@ -267,6 +275,10 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
 /// A file the previous version of [`STATE_FORMAT`] wrote, which its step
 /// is tested against: version 3, whose every workspace had a Lounge first.
 #[cfg(test)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a format at its first version has no previous file, which the test reads as None"
+)]
 fn previous_state_file() -> Option<Vec<u8>> {
     let mut tree = WorkspaceTree::bootstrap_default();
     let workspace = &mut tree.desktop.workspaces[0];

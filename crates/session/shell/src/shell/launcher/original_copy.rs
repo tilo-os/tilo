@@ -14,7 +14,7 @@ pub(crate) fn start(
     // Capture this session's launcher globals before entering the worker.
     spawn_reporting(
         std::thread::Builder::new().name("tilo-original-copy-bootstrap".into()),
-        super::super::launch_readiness::inherit(move || run(request, tree, opening, wake)),
+        super::super::launch_readiness::inherit(move || run(&request, &tree, &opening, &wake)),
     )?;
     Ok(())
 }
@@ -46,9 +46,9 @@ fn prepare(
     if certificate != current {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    match native_app_open_access(&owner, room, &certificate, &app.package_id)
-        .map_err(io::Error::other)?
-    {
+    let access = native_app_open_access(&owner, room, &certificate, &app.package_id)
+        .map_err(io::Error::other)?;
+    match access {
         NativeAppOpenAccess::Viewer => return Err(io::ErrorKind::PermissionDenied.into()),
         NativeAppOpenAccess::Author => (),
         NativeAppOpenAccess::Delegate => {
@@ -102,11 +102,15 @@ fn prepare(
         &app, command, owner, native, room,
     )?))
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "the copy owner's one event loop: every branch moves the same custody, retry and cleanup state between ticks"
+)]
 fn run(
-    request: OriginalCopyRequest,
-    tree: super::super::state::WorkspaceTreeHandle,
-    opening: NativeAppOpening,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    request: &OriginalCopyRequest,
+    tree: &super::super::state::WorkspaceTreeHandle,
+    opening: &NativeAppOpening,
+    wake: &Arc<dyn Fn() + Send + Sync>,
 ) {
     let emit = |event| {
         let result = request.events.send(event);
@@ -122,10 +126,10 @@ fn run(
     let mut retry_requested = false;
     loop {
         if custody.is_none() && !terminal {
-            let result = prepare(&tree, &opening).and_then(|prepared| {
+            let result = prepare(tree, opening).and_then(|prepared| {
                 prepared.bootstrap_original_copy(
                     &operation,
-                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    &Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 )
             });
             match result {
@@ -148,24 +152,24 @@ fn run(
                 retry_requested = true;
             }
             Ok(command) => {
-                if let Some(custody) = custody.as_mut() {
-                    if let Err(error) = custody.send_owner_command(&command) {
-                        terminal = true;
-                        let event = if transfer_complete {
-                            CopyOwnerEvent::CleanupPending {
-                                operation: operation.clone(),
-                                message: t("onboarding-copy-cleanup-unavailable"),
-                                resumable: false,
-                            }
-                        } else {
-                            CopyOwnerEvent::Failed {
-                                operation: operation.clone(),
-                                message: error.to_string(),
-                            }
-                        };
-                        if !emit(event) {
-                            return;
+                if let Some(custody) = custody.as_mut()
+                    && let Err(error) = custody.send_owner_command(&command)
+                {
+                    terminal = true;
+                    let event = if transfer_complete {
+                        CopyOwnerEvent::CleanupPending {
+                            operation: operation.clone(),
+                            message: t("onboarding-copy-cleanup-unavailable"),
+                            resumable: false,
                         }
+                    } else {
+                        CopyOwnerEvent::Failed {
+                            operation: operation.clone(),
+                            message: error.to_string(),
+                        }
+                    };
+                    if !emit(event) {
+                        return;
                     }
                 }
             }
@@ -191,7 +195,9 @@ fn run(
                 let retirement = custody
                     .as_mut()
                     .ok_or_else(|| io::Error::other("Copy retirement custody unavailable"))
-                    .and_then(|owned| owned.try_observe_cleanup());
+                    .and_then(
+                        super::retained_home::OriginalCopyBootstrapCustody::try_observe_cleanup,
+                    );
                 let stopped = match retirement {
                     Ok(stopped) => stopped,
                     Err(error) => {
@@ -210,7 +216,9 @@ fn run(
                     }
                 };
                 if stopped.is_some_and(|status| status.success()) {
-                    if !emit(cleanup_finished.take().unwrap()) {
+                    if let Some(finished) = cleanup_finished.take()
+                        && !emit(finished)
+                    {
                         return;
                     }
                     cleanup_finished_at = None;
@@ -285,12 +293,11 @@ fn run(
                     operation,
                     metadata_quarantined,
                 } = &event
+                    && admitted.send_owner_command(&launcher::retained_view::installed_copy::CopyOwnerCommand::AcknowledgeCleanup { operation: operation.clone(), metadata_quarantined: *metadata_quarantined }).is_err()
                 {
-                    if admitted.send_owner_command(&launcher::retained_view::installed_copy::CopyOwnerCommand::AcknowledgeCleanup { operation: operation.clone(), metadata_quarantined: *metadata_quarantined }).is_err() {
-                        terminal = true;
-                        if !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: t("onboarding-copy-cleanup-confirmation-unavailable"), resumable: false }) { return; }
-                        continue;
-                    }
+                    terminal = true;
+                    if !emit(CopyOwnerEvent::CleanupPending { operation: operation.clone(), message: t("onboarding-copy-cleanup-confirmation-unavailable"), resumable: false }) { return; }
+                    continue;
                 }
                 terminal = matches!(
                     &event,

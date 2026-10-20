@@ -125,7 +125,7 @@ fn whoever_joined_the_community_in_settings_stays_in_it_and_it_is_in_the_directo
     crate::shell::persist::wait_for_saves();
 
     // After the update the switch is gone; the workspace is not.
-    let (net, tree) = computer(&computer_dir, ada.clone(), "Ada's computer");
+    let (net, tree) = computer(&computer_dir, ada, "Ada's computer");
     assert!(!net.left_site(&site.entry));
     held(&net, &tree, room);
     let community = net
@@ -148,7 +148,7 @@ fn whoever_left_the_community_in_settings_joins_it_again_from_the_directory() {
     community_is(&mut home, dir.path(), &site.entry);
     let room = RoomId::parse(&site.room).unwrap();
     let ada = key(1);
-    let (net, tree) = computer(&dir.path().join("computer"), ada.clone(), "Ada's computer");
+    let (net, tree) = computer(&dir.path().join("computer"), ada, "Ada's computer");
     assert_eq!(
         net.keep_community(&site.entry),
         super::community::Pass::Held

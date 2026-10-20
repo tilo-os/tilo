@@ -182,7 +182,7 @@ fn a_declined_device_is_admitted_nowhere_and_an_expired_link_shows_nothing() {
     let site = Site::start(dir.path());
     let ada = key(1);
     let (net, tree) = computer(&dir.path().join("computer"), ada.clone(), "Ada's MacBook");
-    net.set_pairing_root(Arc::new(TestRoot(ada.clone())));
+    net.set_pairing_root(Arc::new(TestRoot(ada)));
     let room = RoomId::parse(&site.room).unwrap();
     net.join_site(&site.entry).unwrap();
     held(&net, &tree, room);

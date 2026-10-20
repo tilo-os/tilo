@@ -250,11 +250,12 @@ impl RoomRecords {
     /// `root`, as an app's sandbox writes it.
     #[cfg(test)]
     pub(crate) fn room_document_path_for_test(
-        root: &Path,
+        data_root: &Path,
         package_id: &str,
         room: RoomId,
     ) -> PathBuf {
-        root.join(launcher::appdir::ROOMS_DIR)
+        data_root
+            .join(launcher::appdir::ROOMS_DIR)
             .join(room.to_string())
             .join(package_id)
             .join(&*SANDBOX_DATA_SUBDIR)
@@ -776,15 +777,15 @@ impl LocalRecordReader {
     /// undo see what was done in it. Lists the disk: never on the
     /// compositor loop.
     pub(crate) fn room_documents(&self, room: RoomId) -> Vec<RoomDocument> {
-        let Some(root) = self.scan.lock().ok().and_then(|scan| scan.root.clone()) else {
+        let Some(data_root) = self.scan.lock().ok().and_then(|scan| scan.root.clone()) else {
             return Vec::new();
         };
-        let Ok(scan_root) = root.canonicalize() else {
+        let Ok(scan_root) = data_root.canonicalize() else {
             return Vec::new();
         };
         let room_key = room.to_string();
         let Ok(packages) =
-            std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
+            std::fs::read_dir(data_root.join(launcher::appdir::ROOMS_DIR).join(&room_key))
         else {
             return Vec::new();
         };

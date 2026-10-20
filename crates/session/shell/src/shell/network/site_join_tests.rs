@@ -162,12 +162,10 @@ fn start_host(
     (relay, web, host_cert, lounge)
 }
 
-fn json(status: u16, value: &serde_json::Value) -> Option<test_http::Reply> {
-    Some(
-        test_http::Reply::status(status)
-            .header("content-type", "application/json")
-            .body(value.to_string()),
-    )
+fn json(status: u16, value: &serde_json::Value) -> test_http::Reply {
+    test_http::Reply::status(status)
+        .header("content-type", "application/json")
+        .body(value.to_string())
 }
 
 /// The door's `/join`: pre-admit the person the request names to the room
@@ -190,7 +188,7 @@ fn door_join(
         role: RoomRole::Editor,
         token_sha256: sha2::Sha256::digest(token.as_bytes()).into(),
         label: asked["displayName"].as_str().unwrap_or("Guest").into(),
-        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         owner_user_public_key: root.verifying_key().to_bytes(),
         signature: [0; 64],
     };
@@ -218,14 +216,14 @@ fn door_join(
             ))
             .unwrap();
     }
-    json(
+    Some(json(
         200,
         &serde_json::json!({
             "invitation": tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation),
             "admissionToken": token,
             "origin": behind.origin,
         }),
-    )
+    ))
 }
 
 impl Site {
@@ -261,7 +259,7 @@ impl Site {
                         if open.load(std::sync::atomic::Ordering::SeqCst) {
                             home["admission"] = "door/".into();
                         }
-                        json(200, &serde_json::json!({ "home": home }))
+                        Some(json(200, &serde_json::json!({ "home": home })))
                     }
                     ("POST", "/door/join") => door_join(
                         &handle,

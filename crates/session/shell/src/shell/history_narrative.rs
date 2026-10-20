@@ -195,6 +195,9 @@ fn ask(prompt: &Prompt, max_tokens: u32) -> Option<(String, String)> {
     Some((text, format!("{}:{model}", profile.id)))
 }
 
+/// Descriptions ready to send, each with the request it answers.
+type Answers = Arc<std::sync::Mutex<Vec<(u64, Vec<HistoryChangeDescription>)>>>;
+
 /// Descriptions of apps' changes, for their History panels: asked by an
 /// app over its shell-ui connection, answered off the UI thread by the model
 /// on this device, one request at a time. Apps hold no model; the text they
@@ -202,7 +205,7 @@ fn ask(prompt: &Prompt, max_tokens: u32) -> Option<(String, String)> {
 pub struct HistoryDescriber {
     enabled: bool,
     queue: std::collections::VecDeque<(u64, Vec<HistoryChangeFacts>)>,
-    answers: Arc<std::sync::Mutex<Vec<(u64, Vec<HistoryChangeDescription>)>>>,
+    answers: Answers,
     running: Arc<AtomicBool>,
     /// Wakes the loop that sends answers, when one is ready.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -550,7 +553,7 @@ mod tests {
             "http://127.0.0.1:8000/v1",
         );
         let mut config = ProviderConfig {
-            profiles: vec![hosted.clone(), lan.clone(), local.clone()],
+            profiles: vec![hosted, lan, local.clone()],
             default_profile: Some("hosted".into()),
         };
         assert_eq!(

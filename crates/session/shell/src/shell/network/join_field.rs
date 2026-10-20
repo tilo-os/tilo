@@ -219,7 +219,9 @@ impl ShellNetwork {
                 room
             }
         };
-        let deadline = std::time::Instant::now() + LINK_JOIN_WAIT;
+        let deadline = std::time::Instant::now()
+            .checked_add(LINK_JOIN_WAIT)
+            .unwrap_or_else(std::time::Instant::now);
         loop {
             let held = self.replica.lock().is_ok_and(|replica| {
                 replica

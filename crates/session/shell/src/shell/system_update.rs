@@ -439,7 +439,7 @@ mod tests {
         );
         let kernel = LiveState {
             reboot_required: true,
-            ..applied.clone()
+            ..applied
         };
         assert!(restart_needed(true, Some(&kernel)));
         assert!(

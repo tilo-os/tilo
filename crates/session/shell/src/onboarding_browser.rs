@@ -64,9 +64,8 @@ fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid reads current process credentials.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.len() > bound
     {
@@ -113,9 +112,10 @@ fn completion_projection(
     )
     .map_err(|_| failure())?;
     tilo_user_identity::verify_device_cert_at(&proof_cert, now).map_err(|_| failure())?;
-    if proof_cert.user_public_key != metadata.group_public_key
-        || proof_cert.device_public_key != cert.device_public_key
-    {
+    // The proof is the group's own certificate for this very device.
+    let group_signed = proof_cert.user_public_key == metadata.group_public_key;
+    let this_device = proof_cert.device_public_key == cert.device_public_key;
+    if !group_signed || !this_device {
         return Err(failure());
     }
     let fleet = crate::device_fleet::DeviceFleetStore::at(identity, paths)
@@ -364,9 +364,8 @@ impl Pending {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&package)?;
         let metadata = file.metadata()?;
-        // SAFETY: geteuid reads current process credentials.
         if !metadata.is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != rustix::process::geteuid().as_raw()
             || metadata.mode() & 0o077 != 0
             || metadata.len() != self.declaration.payload.sealed_bytes
         {
@@ -464,7 +463,7 @@ impl Pending {
                     .map_err(|_| failure())?;
             }
             Err(error) => return Err(error),
-        };
+        }
         pin.sync_all()
     }
     pub(crate) fn poll(&mut self) -> bool {
@@ -683,7 +682,9 @@ pub(crate) mod tests {
         projection
     }
     fn wait(pending: &mut Pending) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .expect("a deadline");
         while pending.busy() {
             assert!(std::time::Instant::now() < deadline);
             pending.poll();

@@ -240,6 +240,10 @@ impl FrameClock {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn e2e_open_close_overview() {
     let _guard = TEST_LOCK.lock_recover();
     let mut clock = FrameClock::new();

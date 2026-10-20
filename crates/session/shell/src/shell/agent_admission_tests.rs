@@ -375,6 +375,7 @@ fn prompt_for(chrome: &Chrome, client: &str) -> uuid::Uuid {
 /// repeated, stale, unknown or out-of-turn answer admits nobody, and the
 /// other client stays waiting until its own prompt is answered.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt() {
     let chrome = chrome_with_room();
     let (sender, mut consent) = channel(None, None);

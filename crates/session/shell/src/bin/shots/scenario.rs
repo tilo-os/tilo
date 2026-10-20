@@ -1130,7 +1130,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::SeedNoteHistory`: an afternoon of work on the long note by Ada
 /// and the agent working for her, merged as their replicas send it.
-fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
+fn seed_note_history(driver: &ShellDriver, group_idx: usize) {
     let target = {
         let chrome = driver.chrome();
         let tree = chrome.tree();
@@ -1149,7 +1149,7 @@ fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
 
 /// An afternoon of work by Ada and her agent on the note tab `tab` of
 /// `room` shows, merged as their replicas send it.
-fn seed_note_history_of_tab(driver: &mut ShellDriver, room: &str, tab: u64) {
+fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
     // The agent writes as its own device key, which the session verified as
     // delegated by Ada: its changes read as the agent's, for Ada.
     let agent_device = [0x5a_u8; 32];
@@ -1293,6 +1293,10 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
 /// short. The windows are adopted the way a client's toplevel is, titled
 /// the way its client titles them, gathered into one group as dragging
 /// their bars together would, and stood in for with a plain frame.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one screenshot fixture staged top to bottom"
+)]
 fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     use shell::shell::state::TileContent;
     if let Action::DeclareBarSlots { surface_id, slots } = action {
@@ -1330,7 +1334,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
         TileContent::Foreign { surface_id, .. } => Some(*surface_id),
         _ => None,
     };
-    for tab in tabs.iter() {
+    for tab in *tabs {
         // Opened as any window is: placed, adopted, stood in for.
         apply_open_window(
             driver,
@@ -1387,7 +1391,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
                     if let Some(group) = strip.window_groups.first_mut() {
                         group.active_tab = gathered
                             .get(*active)
-                            .or(gathered.first())
+                            .or_else(|| gathered.first())
                             .map_or(group.active_tab, |tab| tab.id);
                         group.tabs = gathered;
                         target = Some((strip.id, group.id));
@@ -1403,7 +1407,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     driver.relayout();
     apply_make_space_sample_and_widths(driver, &Action::SetWindowWidths(*width), &mut NullSink);
     driver.relayout();
-    let ids: Vec<(u64, Option<fn() -> ui::window_toolbar::WindowToolbar>)> = {
+    let ids: Vec<(u64, Option<ToolbarOf>)> = {
         let chrome = driver.chrome();
         let tree = chrome.tree();
         tabs.iter()
@@ -1427,7 +1431,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     driver.relayout();
     // The stand-in frames are drawn at the size the windows have now that
     // their bars show the apps' slots.
-    for tab in tabs.iter() {
+    for tab in *tabs {
         if let Some((w, h)) = shell::compositor::foreign::store().viewport(tab.surface_id)
             && w > 0
             && h > 0
@@ -1701,6 +1705,10 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
 
 /// `Action::SeedStatus`, `Action::SeedOsd` and `Action::SeedFilePicker` —
 /// split out of [`apply`] to keep that dispatcher short.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one screenshot fixture staged top to bottom"
+)]
 fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) {
     match action {
         #[cfg(target_os = "linux")]
@@ -5357,6 +5365,10 @@ fn build_scenarios() -> Vec<Scenario> {
 
 /// A stand-in favicon: a 16 px orange disc with a white centre, as PNG
 /// bytes, the way the engine hands a page's icon over.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel arithmetic on a 16 by 16 image"
+)]
 fn favicon_png() -> Vec<u8> {
     let mut rgba = Vec::with_capacity(16 * 16 * 4);
     for y in 0..16_i32 {
@@ -5695,6 +5707,9 @@ pub fn lookup(name: &str) -> Option<Scenario> {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use shell::shell::state::WorkspaceExt as _;
+
+/// A window's own toolbar, as its app declares it.
+type ToolbarOf = fn() -> ui::window_toolbar::WindowToolbar;
 
 #[cfg(test)]
 #[allow(

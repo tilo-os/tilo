@@ -870,7 +870,6 @@ fn topbar_with_workspace_pill_hit() -> (
 /// One cursor-move + left-press at `hit`, mirroring how a real click event
 /// pair reaches the widget tree. Split out of
 /// [`full_root_click_toggles_the_workspace_menu`] to keep it under
-
 /// the line limit.
 fn click_full_root(
     root: &mut Box<dyn Widget>,

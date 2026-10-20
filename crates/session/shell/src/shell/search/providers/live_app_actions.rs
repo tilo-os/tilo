@@ -1557,6 +1557,10 @@ impl LiveAppActionsProvider {
         clippy::too_many_lines,
         reason = "one bounded remote-directory continuation is assembled atomically so cache, scope, actor, and cursor semantics cannot diverge"
     )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the entries gathered are moved into the snapshot at the end"
+    )]
     fn prepare_auxiliary_snapshot(
         &self,
         ctx: &SearchContext<'_>,

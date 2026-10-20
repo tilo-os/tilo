@@ -160,6 +160,7 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
 fn app_tab_chords_reach_a_foreign_client_and_their_super_spelling_never_does() {
     let mut h = Harness::new();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);

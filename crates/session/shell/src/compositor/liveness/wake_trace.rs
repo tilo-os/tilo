@@ -42,13 +42,15 @@ impl Trace {
 
     fn record(&mut self, event: &'static str, detail: u64, micros: u64) {
         self.sequence = self.sequence.saturating_add(1);
-        self.entries[self.next] = Entry {
-            sequence: self.sequence,
-            micros,
-            event,
-            detail,
-        };
-        self.next = (self.next + 1) % CAPACITY;
+        if let Some(slot) = self.entries.get_mut(self.next) {
+            *slot = Entry {
+                sequence: self.sequence,
+                micros,
+                event,
+                detail,
+            };
+        }
+        self.next = self.next.saturating_add(1) % CAPACITY;
     }
 }
 

@@ -564,7 +564,7 @@ impl PortalDialogQueue {
             PendingDialog::Authentication {
                 request: Arc::new(request),
                 generation: uuid::Uuid::new_v4(),
-                owner_uid: unsafe { libc::geteuid() },
+                owner_uid: rustix::process::geteuid().as_raw(),
                 reply,
             }
         })

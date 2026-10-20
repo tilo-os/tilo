@@ -449,13 +449,11 @@ impl ShellNetwork {
         // The enrollment's own exchange decides when it is done or failed;
         // the room is administered here once it is installed.
         if let Some(id) = moved.enrollment {
-            loop {
-                match self.poll_enrollment(id)? {
-                    crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
-                        ..
-                    } => std::thread::sleep(MOVE_POLL),
-                    _ => break,
-                }
+            while let crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
+                ..
+            } = self.poll_enrollment(id)?
+            {
+                std::thread::sleep(MOVE_POLL);
             }
         }
         tracing::info!(from = %room, to = %moved.room, "a workspace moved to its person's host to be made public");

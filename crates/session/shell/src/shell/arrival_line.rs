@@ -17,6 +17,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 
 use crate::shell::i18n::t_args;
 
@@ -203,35 +204,16 @@ impl ArrivalLine {
         let others_w = others.as_deref().map_or(0.0, |others| {
             f64::from(text.measure_style(others, None, &caption).0)
         });
-        let max_w = (host_rect.width() - 2.0 * f64::from(tokens.spacing.s4)).max(0.0);
+        let change_label = crate::shell::i18n::t("presence-arrival-change");
+        let intro_size = shown
+            .intro
+            .as_deref()
+            .map(|intro| intro_size(text, theme, intro, &change_label));
         let content = name_w
             + if faces_w > 0.0 { gap + faces_w } else { 0.0 }
             + if others_w > 0.0 { gap + others_w } else { 0.0 };
-        let change_label = crate::shell::i18n::t("presence-arrival-change");
-        let intro_size = shown.intro.as_deref().map(|intro| {
-            let (w, h) =
-                text.measure_style(intro, Some(INTRO_WRAP), &theme.text(TextRole::Caption));
-            let (cw, _) = text.measure_style(
-                &change_label,
-                None,
-                &theme.text(TextRole::Label).with_weight(TextWeight::Medium),
-            );
-            (
-                f64::from(w),
-                f64::from(h).max(CONTROL),
-                f64::from(cw) + 2.0 * f64::from(tokens.spacing.s4),
-            )
-        });
         let content = content.max(intro_size.map_or(0.0, |(w, _, cw)| w + gap + cw));
-        let w = (content + 2.0 * pad).min(max_w);
-        let h = FACE + 2.0 * pad + intro_size.map_or(0.0, |(_, h, _)| gap + h);
-        let top = host_rect.y0 + f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + BELOW_BAR;
-        let rect = Rect::new(
-            host_rect.center().x - w / 2.0,
-            top,
-            host_rect.center().x + w / 2.0,
-            top + h,
-        );
+        let rect = line_rect(host_rect, theme, content, intro_size.map(|(_, h, _)| h));
         let pose = self
             .appearing
             .pose(rect, Point::new(rect.center().x, rect.y0));
@@ -257,27 +239,7 @@ impl ArrivalLine {
         x += f64::from(text.measure_style(&name, None, &title).0) + gap;
         let ground = ui::chrome::shell::panel_ground(theme);
         let mut paint = PaintCtx::new(scene, drawn, text, theme);
-        // The same faces as the top bar's: a colour ring, one initial.
-        let faces: Vec<ui::presence::Face<'_>> = shown
-            .people
-            .iter()
-            .take(FACES_SHOWN)
-            .map(|person| ui::presence::Face {
-                is_agent: person.is_agent,
-                ..ui::presence::Face::new(
-                    &person.name,
-                    &person.id,
-                    colors.presence.of_rgb(
-                        person
-                            .colour
-                            .unwrap_or_else(|| ui::presence::user_color(&person.id)),
-                    ),
-                )
-            })
-            .collect();
-        if !faces.is_empty() {
-            FACES.paint(&mut paint, (x + faces_w, cy), (&faces, 0), ground);
-        }
+        paint_faces(&mut paint, &shown, (x + faces_w, cy), ground);
         if faces_w > 0.0 {
             x += faces_w + gap;
         }
@@ -298,35 +260,118 @@ impl ArrivalLine {
         }
         self.change = Rect::ZERO;
         if let (Some(intro), Some((_, row_h, cw))) = (shown.intro.as_deref(), intro_size) {
-            let top = rect.y0 + pad + FACE + gap;
-            let caption = theme.text(TextRole::Caption);
-            let (_, ih) = paint.text.measure_style(intro, Some(INTRO_WRAP), &caption);
-            paint.text.draw_style(
-                paint.scene,
-                intro,
-                colors.text_dim,
-                drawn.pre_translate((rect.x0 + pad, top + (row_h - f64::from(ih)) / 2.0).into()),
-                Some(INTRO_WRAP),
-                &caption,
-            );
-            let change = Rect::new(
-                rect.x1 - pad - cw,
-                top + (row_h - CONTROL) / 2.0,
+            let row = Rect::new(
+                rect.x0 + pad,
+                rect.y0 + pad + FACE + gap,
                 rect.x1 - pad,
-                top + (row_h + CONTROL) / 2.0,
+                rect.y0 + pad + FACE + gap + row_h,
             );
-            ui::widget::Button::paint(
-                paint.scene,
-                drawn,
-                paint.text,
-                theme,
-                &ui::widget::ButtonFace::new(change, &change_label)
-                    .role(ui::widget::ButtonRole::Plain),
-            );
-            self.change = change;
+            self.change = paint_intro(&mut paint, row, intro, (&change_label, cw));
         }
         pose.end(scene);
     }
+}
+
+/// How big the introduction under the line is: its text's width and the
+/// row's height, and its "Change" link's width.
+fn intro_size(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    intro: &str,
+    change_label: &str,
+) -> (f64, f64, f64) {
+    let (w, h) = text.measure_style(intro, Some(INTRO_WRAP), &theme.text(TextRole::Caption));
+    let (cw, _) = text.measure_style(
+        change_label,
+        None,
+        &theme.text(TextRole::Label).with_weight(TextWeight::Medium),
+    );
+    (
+        f64::from(w),
+        f64::from(h).max(CONTROL),
+        f64::from(cw) + 2.0 * f64::from(theme.tokens.spacing.s4),
+    )
+}
+
+/// Where the line goes: `content` wide (within `host_rect`), centred under
+/// the top bar, with an introduction row `intro_h` tall below if any.
+fn line_rect(host_rect: Rect, theme: &Theme, content: f64, intro_h: Option<f64>) -> Rect {
+    let tokens = &theme.tokens;
+    let pad = f64::from(tokens.spacing.s3);
+    let gap = f64::from(tokens.spacing.s2);
+    let max_w = (host_rect.width() - 2.0 * f64::from(tokens.spacing.s4)).max(0.0);
+    let w = (content + 2.0 * pad).min(max_w);
+    let h = FACE + 2.0 * pad + intro_h.map_or(0.0, |h| gap + h);
+    let top = host_rect.y0 + f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + BELOW_BAR;
+    Rect::new(
+        host_rect.center().x - w / 2.0,
+        top,
+        host_rect.center().x + w / 2.0,
+        top + h,
+    )
+}
+
+/// The faces of the people `shown` names, as the top bar draws them (a
+/// colour ring, one initial), the stack ending at `at`.
+fn paint_faces(paint: &mut PaintCtx<'_>, shown: &Shown, at: (f64, f64), ground: Color) {
+    let colors = &paint.theme.tokens.colors;
+    let faces: Vec<ui::presence::Face<'_>> = shown
+        .people
+        .iter()
+        .take(FACES_SHOWN)
+        .map(|person| ui::presence::Face {
+            is_agent: person.is_agent,
+            ..ui::presence::Face::new(
+                &person.name,
+                &person.id,
+                colors.presence.of_rgb(
+                    person
+                        .colour
+                        .unwrap_or_else(|| ui::presence::user_color(&person.id)),
+                ),
+            )
+        })
+        .collect();
+    if !faces.is_empty() {
+        FACES.paint(paint, at, (&faces, 0), ground);
+    }
+}
+
+/// The sentence about what people see, along `row`, and its "Change" link
+/// (`change_w` wide) at the row's end; returns the link.
+fn paint_intro(
+    paint: &mut PaintCtx<'_>,
+    row: Rect,
+    intro: &str,
+    (change_label, change_w): (&str, f64),
+) -> Rect {
+    let theme = paint.theme;
+    let caption = theme.text(TextRole::Caption);
+    let (_, ih) = paint.text.measure_style(intro, Some(INTRO_WRAP), &caption);
+    paint.text.draw_style(
+        paint.scene,
+        intro,
+        theme.tokens.colors.text_dim,
+        paint
+            .transform
+            .pre_translate((row.x0, row.y0 + (row.height() - f64::from(ih)) / 2.0).into()),
+        Some(INTRO_WRAP),
+        &caption,
+    );
+    let change = Rect::new(
+        row.x1 - change_w,
+        row.y0 + (row.height() - CONTROL) / 2.0,
+        row.x1,
+        row.y0 + f64::midpoint(row.height(), CONTROL),
+    );
+    ui::widget::Button::paint(
+        paint.scene,
+        paint.transform,
+        paint.text,
+        theme,
+        &ui::widget::ButtonFace::new(change, change_label).role(ui::widget::ButtonRole::Plain),
+    );
+    change
 }
 
 /// Widest the sentence about what people see runs before it wraps.

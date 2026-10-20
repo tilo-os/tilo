@@ -8,9 +8,9 @@
 //!   the engine. With no browser that takes the scheme, the query opens on
 //!   [`FALLBACK_ENGINE`] in whatever opens web addresses.
 //! - **Known services** ([`SERVICES`], one table) answer a query that starts
-//!   with their name or a keyword: "youtube cats" offers "Search YouTube for
+//!   with their name or a keyword: "youtube cats" offers "Search `YouTube` for
 //!   cats", which ranks like an exact name, so among the first rows. A
-//!   service a Tilo app serves (Tube for YouTube) searches in that app when
+//!   service a Tilo app serves (Tube for `YouTube`) searches in that app when
 //!   it is installed, and on the web otherwise. The service named alone
 //!   ("youtube") offers the service row, which opens its site; a service
 //!   with an app of its own yields to that app's row.
@@ -55,12 +55,12 @@ const QUERY: &str = "{query}";
 const SERVICE_SCORE: i32 = 60;
 
 /// What a service row gives way at the merge when an app serves the same
-/// service (Tube for YouTube, Spotify on Flathub): enough that the app's row,
+/// service (Tube for `YouTube`, Spotify on Flathub): enough that the app's row,
 /// installed or installable, leads the service named alone.
 const SERVED_SERVICE_YIELD: f32 = -1.5;
 
 /// The shortest typed name prefix that offers a service ("you" for
-/// YouTube); a shorter one is too many things.
+/// `YouTube`); a shorter one is too many things.
 const MIN_PREFIX_SCALARS: usize = 3;
 
 /// An app that serves a known service on this desktop.
@@ -356,23 +356,22 @@ impl WebProvider {
             .app_search(query)
             .and_then(|(uri, scheme)| Some((uri, (self.app_for_scheme)(scheme)?)));
         let web = service.web_search(query);
-        let (subtitle, open): (String, Box<dyn Fn(&Chrome) -> Result<(), ActionError>>) =
-            match in_app {
-                Some((uri, app)) => (
-                    app,
-                    Box::new(move |chrome: &Chrome| {
-                        match uri_open::open_in_workspace(&uri, chrome) {
-                            // Removed since the row was built: the web serves.
-                            Err(UriOpenError::NoHandler { .. }) => open_uri(&web, chrome),
-                            result => result.map(drop).map_err(uri_refusal),
-                        }
-                    }),
-                ),
-                None => (
-                    service.domain.to_owned(),
-                    Box::new(move |chrome: &Chrome| open_uri(&web, chrome)),
-                ),
-            };
+        let (subtitle, open): (String, OpenRow) = match in_app {
+            Some((uri, app)) => (
+                app,
+                Box::new(move |chrome: &Chrome| {
+                    match uri_open::open_in_workspace(&uri, chrome) {
+                        // Removed since the row was built: the web serves.
+                        Err(UriOpenError::NoHandler { .. }) => open_uri(&web, chrome),
+                        result => result.map(drop).map_err(uri_refusal),
+                    }
+                }),
+            ),
+            None => (
+                service.domain.to_owned(),
+                Box::new(move |chrome: &Chrome| open_uri(&web, chrome)),
+            ),
+        };
         row(
             self.service_kind(),
             format!("{QUERY_ID}:{}:{query}", service.id),
@@ -537,6 +536,9 @@ impl SearchProvider for WebProvider {
         self.rows(ctx.needle, ctx.wanted)
     }
 }
+
+/// What choosing a row does.
+type OpenRow = Box<dyn Fn(&Chrome) -> Result<(), ActionError>>;
 
 #[cfg(test)]
 mod tests {

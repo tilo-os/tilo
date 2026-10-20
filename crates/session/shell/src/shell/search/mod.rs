@@ -672,7 +672,7 @@ pub trait SearchProvider {
 
     /// What `needle` says about `result` beyond the lexical fit of its title,
     /// added to its strength at the merge: a row the query names by another
-    /// word ("youtube cats" for "Search YouTube for cats") ranks like an
+    /// word ("youtube cats" for "Search `YouTube` for cats") ranks like an
     /// exact name, and a row that stands in for an app's own (a web service
     /// an app serves) gives way to it. Zero for most rows.
     fn intent_strength(&self, _result: &SearchResult, _needle: &str) -> f32 {

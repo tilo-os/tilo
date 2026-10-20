@@ -274,7 +274,7 @@ impl ShellNetwork {
                 self.export_personal_rooms();
             }
             Err(why) => {
-                tracing::info!(target: LOG, %why, "kept every workspace repeated site joins left")
+                tracing::info!(target: LOG, %why, "kept every workspace repeated site joins left");
             }
         }
     }
@@ -308,8 +308,8 @@ impl ShellNetwork {
                 slot: pending.and_then(|pending| pending.target_workspace()),
             });
         }
-        let data_home =
-            launcher::appdir::host_data_home().ok_or("the data home is unknown".to_owned())?;
+        let data_home = launcher::appdir::host_data_home()
+            .ok_or_else(|| "the data home is unknown".to_owned())?;
         let tree = self
             .replica
             .lock()
@@ -338,7 +338,10 @@ impl ShellNetwork {
                 Ok(()) => {
                     cleared.insert((workspace, room));
                 }
-                Err(why) => *kept.entry(why).or_default() += 1,
+                Err(why) => {
+                    let count = kept.entry(why).or_default();
+                    *count = count.saturating_add(1);
+                }
             }
         }
         let retired = if cleared.is_empty() {

@@ -90,7 +90,7 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
                 payload: collab_types::PeerPresencePayload::Pointer { x: 0.5, y: 0.5 },
             },
         );
-        network.live_participant()
+        ShellNetwork::live_participant()
     });
     assert_eq!(participant.label, "Ada");
     drop(network);

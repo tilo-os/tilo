@@ -4294,6 +4294,24 @@ impl ScanoutEntry {
         self.scanout.set_software_dim(light);
     }
 
+    /// The dimming this output needs on its CPU copy, keeping its CPU
+    /// dimmer in step. An ICC profile describes the panel's SDR response;
+    /// while the output runs in HDR the PQ encode replaces it. Software
+    /// dimming the CRTC cannot carry is done on this copy too, before the
+    /// profile.
+    pub(super) fn sync_cpu_dim(&mut self, hdr: bool) -> Option<f32> {
+        let dim = self.final_pass_dim().filter(|_| !hdr);
+        if self
+            .cpu_dim
+            .as_ref()
+            .map(crate::shell::software_dim::CpuDim::light)
+            != dim
+        {
+            self.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
+        }
+        dim
+    }
+
     /// The dimming this output's final pass applies: only where the CRTC
     /// cannot dim it itself.
     pub fn final_pass_dim(&self) -> Option<f32> {

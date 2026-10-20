@@ -356,6 +356,7 @@ thread_local! {
 
 /// What one look at a room is about: `device`'s own legacy tabs `windows`,
 /// with ids minted in `salt`.
+#[derive(Clone, Copy)]
 struct Look<'a> {
     device: [u8; 32],
     windows: &'a [Strip],
@@ -383,6 +384,7 @@ fn plan(
     pending: &mut Vec<Vec<u8>>,
 ) -> Result<Option<Plan>, String> {
     use automerge::transaction::Transactable as _;
+    use tilo_automerge::ApplyIncoming as _;
     let Look {
         device,
         windows,
@@ -423,7 +425,7 @@ fn plan(
             unadmitted.push((bytes, change));
         }
     }
-    doc.apply_changes(unadmitted.iter().map(|(_, change)| change.clone()))
+    doc.apply_incoming(unadmitted.iter().map(|(_, change)| change.clone()))
         .map_err(|error| error.to_string())?;
     pending.extend(unadmitted.into_iter().map(|(bytes, _)| bytes));
     let heads = doc.get_heads();
@@ -754,6 +756,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn unchanged_legacy_windows_do_not_copy_the_room() {
         use automerge::transaction::Transactable as _;
         let salt = 0x0042;
@@ -941,6 +944,7 @@ mod tests {
     /// Counted, not timed: without the memo of the last look every look
     /// copies the room, and with it no look does while nothing moved.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn a_settled_room_is_looked_at_without_copying_it() {
         use automerge::transaction::Transactable as _;
         const LOOKS: u64 = 50;
@@ -1079,6 +1083,7 @@ mod tests {
     /// numbered both as the device's first change, which nobody can take
     /// once they hold one of them.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn a_window_opened_before_the_last_is_admitted_builds_on_it() {
         use automerge::transaction::Transactable as _;
         let salt = 0x0042;

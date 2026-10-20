@@ -29,6 +29,8 @@ use ui::Widget;
 
 use taffy::prelude::NodeId;
 
+mod search_seed;
+
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
 /// read real wall time off `Instant::now()` inside the host so we still
@@ -897,138 +899,6 @@ impl ShellDriver {
         self.scene_palette_query(query);
     }
 
-    /// What universal search reaches beyond the apps here: Flathub's cached
-    /// apps, Tilo apps the registries offer that this device lacks, and a
-    /// vault Passwords indexed and left unlocked before it closed.
-    fn seed_search_sources(&mut self) {
-        // One device across the scenes: staged once, so each scene's query
-        // meets indexes already built, as every keystroke after the first
-        // does.
-        static SEEDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if SEEDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        use app_catalogue::{CatalogueEntry, Installation, Source};
-        use shell::shell::catalogue::CatalogueApp;
-        use ui::search::index_publication::{IndexDelta, IndexEntry, IndexWeight};
-        let flathub = |id: &str, name: &str, tagline: &str, category: &str| CatalogueEntry {
-            id: id.to_owned(),
-            source: Source::Flathub {
-                remote: "flathub".to_owned(),
-                installation: Installation::System,
-            },
-            name: name.to_owned(),
-            other_names: Vec::new(),
-            tagline: tagline.to_owned(),
-            description: String::new(),
-            keywords: Vec::new(),
-            category: Some(category.to_owned()),
-            icon_file: None,
-            icon_url: None,
-            resource_types: Vec::new(),
-            actions: Vec::new(),
-        };
-        let offered = |id: &str, name: &str, category: &str| CatalogueApp {
-            package_id: id.to_owned(),
-            display_name: name.to_owned(),
-            category: Some(category.to_owned()),
-            version: "1.4.0".to_owned(),
-            registry: "Tilo".to_owned(),
-            trust: "publisher-signed".to_owned(),
-            ..CatalogueApp::default()
-        };
-        shell::shell::catalogue::stage_for_shots(
-            vec![
-                offered("so.tilo.sheets", "Sheets", "Office"),
-                offered("so.tilo.calendar", "Calendar", "Office"),
-                offered("so.tilo.file-explorer", "Files", "System"),
-            ],
-            vec![
-                flathub(
-                    "com.spotify.Client",
-                    "Spotify",
-                    "Online music streaming service",
-                    "Audio",
-                ),
-                flathub(
-                    "dev.alextren.Spot",
-                    "Spot",
-                    "Listen to music on Spotify",
-                    "Audio",
-                ),
-                flathub(
-                    "org.gimp.GIMP",
-                    "GNU Image Manipulation Program",
-                    "Create images and edit photographs",
-                    "Graphics",
-                ),
-                flathub(
-                    "io.github.shiftey.Desktop",
-                    "GitHub Desktop",
-                    "Simple collaboration from your desktop",
-                    "Development",
-                ),
-            ],
-        );
-        let room = {
-            let handle = self.chrome_handle();
-            let st = handle.borrow();
-            st.tree()
-                .desktop
-                .active_workspace()
-                .map(|workspace| workspace.room.to_string())
-        };
-        // A live session's broker answers apps' content (its search) and
-        // opens a hit; the capture's stands in for it.
-        #[cfg(feature = "test-support")]
-        self.fb.host_mut().attach_app_action_broker(
-            shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-        );
-        // A device has its catalogue indexed long before anyone types: ask
-        // once so the background index builds, and let it land, so the
-        // scene's query is answered from it as a keystroke is.
-        // A frame with the palette open refreshes the indexes; the builds
-        // land on a later one.
-        self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_query("a");
-        let _ = self.paint_settled();
-        std::thread::sleep(Duration::from_millis(400));
-        let _ = self.paint_settled();
-        let Some(room) = room else { return };
-        let login = |key: &str, site: &str, user: &str| IndexEntry {
-            key: key.to_owned(),
-            resource: key.to_owned(),
-            action: None,
-            title: site.to_owned(),
-            subtitle: Some(user.to_owned()),
-            group: Some("Passwords".to_owned()),
-            icon: Some("globe".to_owned()),
-            boost: 0,
-            fields: vec![
-                (site.to_ascii_lowercase(), IndexWeight::Identity),
-                (user.to_owned(), IndexWeight::Identity),
-            ],
-            secret: true,
-        };
-        shell::shell::search::app_content_index::session().apply(
-            shell::shell::search::app_content_index::SlotKey::new(
-                "so.tilo.passwords",
-                &room,
-                "passwords:vault",
-            ),
-            IndexDelta {
-                reset: true,
-                upsert: vec![
-                    login("passwords.entry:github", "github.com", "ana.kowalski"),
-                    login("passwords.entry:gitlab", "gitlab.com", "ana@kowalski.dev"),
-                    login("passwords.entry:mail", "mail.example.org", "ana"),
-                ],
-                remove: Vec::new(),
-                secrets_unlocked: Some(true),
-            },
-        );
-    }
-
     fn seed_records_in_other_rooms(&self) {
         use ui::record::{RecordId, RecordKind};
         let rooms: Vec<_> = {
@@ -1513,6 +1383,10 @@ impl ShellDriver {
     /// Three people and an agent here, as the live shell folds them: Ada
     /// and the agent pointing over windows, Ben idle with his pointer
     /// resting, Chioma in the voice channel.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one screenshot fixture, top to bottom"
+    )]
     pub fn seed_presence_room_for_shots(&mut self) {
         use shell::shell::state::Collaborator;
         let handle = self.chrome_handle();
@@ -1587,7 +1461,8 @@ impl ShellDriver {
                     entry_kind: ui::widget::EntryKind::Text,
                     artifact_kind: collab_types::ArtifactKind::File,
                     timestamp: std::time::SystemTime::now()
-                        - std::time::Duration::from_secs(4 * 60),
+                        .checked_sub(std::time::Duration::from_secs(4 * 60))
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
                     summary: "Rewrote the launch notes intro".into(),
                     text_delta: Some((214, 96)),
                     diff_payload: None,
@@ -1603,7 +1478,7 @@ impl ShellDriver {
             ui::permissions::UserId("scribe".into()),
             ui::presence::ParticipantKind::Agent,
         );
-        let key = ui::presence::PresenceKey::Workspace { id: room.clone() };
+        let key = ui::presence::PresenceKey::Workspace { id: room };
         for (id, (x, y)) in [
             ("ada", at(0, 240.0, 210.0)),
             ("ben", at(0, 520.0, 380.0)),
@@ -1642,7 +1517,7 @@ impl ShellDriver {
     }
 
     /// Nobody else in the active workspace.
-    pub fn only_you_for_shots(&mut self) {
+    pub fn only_you_for_shots(&self) {
         let handle = self.chrome_handle();
         {
             let st = handle.borrow();
@@ -2085,6 +1960,10 @@ impl ShellDriver {
 
     /// Applies the named "scene" mutation set (the legacy `--scenes`
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table from a scene's name to its setup"
+    )]
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" | "offline" => Self::scene_desktop(),
@@ -2227,7 +2106,9 @@ impl ShellDriver {
     /// The community workspace a computer is in by default, among the
     /// person's own: the overview offers to leave it, and to join another.
     fn scene_overview_lounge(&mut self) {
-        let lounge = self.seed_lounge();
+        let Some(lounge) = self.seed_lounge() else {
+            return;
+        };
         self.fb
             .host_mut()
             .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
@@ -2253,7 +2134,7 @@ impl ShellDriver {
 
     /// Append the community workspace, as joining it through its site does,
     /// and answer its room.
-    fn seed_lounge(&mut self) -> shell::shell::state::RoomId {
+    fn seed_lounge(&mut self) -> Option<shell::shell::state::RoomId> {
         let mut lounge = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
@@ -2265,7 +2146,7 @@ impl ShellDriver {
                 .find(|workspace| workspace.id == id)
                 .map(|workspace| workspace.room);
         });
-        lounge.expect("the Lounge was appended")
+        lounge
     }
 
     /// "Join a workspace…" with a site typed in it.
@@ -2276,7 +2157,9 @@ impl ShellDriver {
 
     /// "Pair a new device": the link as a QR code, the link and what to do.
     fn scene_pairing_sheet(&mut self) {
-        let lounge = self.seed_lounge();
+        let Some(lounge) = self.seed_lounge() else {
+            return;
+        };
         self.fb.host_mut().show_pairing_for_shots(&format!(
             "https://tilo.coffee/#/@eu1.tilo.coffee/w/{lounge}?pair={}{}",
             "a1".repeat(32),
@@ -2302,7 +2185,9 @@ impl ShellDriver {
 
     /// The community workspace in front, as opening one of its links does.
     fn scene_lounge_open(&mut self) {
-        let lounge = self.seed_lounge();
+        let Some(lounge) = self.seed_lounge() else {
+            return;
+        };
         self.fb
             .host_mut()
             .set_site_rooms_for_shots(vec![lounge_site(lounge)]);
@@ -4045,6 +3930,21 @@ pub fn key_press_event(key: &Key) -> WindowEvent {
 )]
 use shell::shell::state::WorkspaceExt as _;
 
+/// The community workspace as the network names it: tilo.coffee's.
+fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::SiteRoom {
+    shell::shell::network::SiteRoom {
+        room,
+        site: Some("tilo.coffee".into()),
+        community: true,
+        public: false,
+    }
+}
+
+/// Tell the chrome its tree changed, so the next frame reads it.
+fn st_bump(handle: &shell::shell::chrome_state::Chrome) {
+    handle.borrow_mut().bump();
+}
+
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
@@ -4465,19 +4365,4 @@ mod tests {
         );
         (files_tab_id, files_rect)
     }
-}
-
-/// The community workspace as the network names it: tilo.coffee's.
-fn lounge_site(room: shell::shell::state::RoomId) -> shell::shell::network::SiteRoom {
-    shell::shell::network::SiteRoom {
-        room,
-        site: Some("tilo.coffee".into()),
-        community: true,
-        public: false,
-    }
-}
-
-/// Tell the chrome its tree changed, so the next frame reads it.
-fn st_bump(handle: &shell::shell::chrome_state::Chrome) {
-    handle.borrow_mut().bump();
 }

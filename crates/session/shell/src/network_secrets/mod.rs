@@ -145,6 +145,7 @@ impl CannotJoin {
             return;
         }
         told.push(self.connection_path.clone());
+        drop(told);
         CANNOT_JOIN.lock_recover().push(self);
     }
 

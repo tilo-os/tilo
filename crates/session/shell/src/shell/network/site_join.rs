@@ -97,6 +97,79 @@ impl ShellNetwork {
         self.join_site_workspace(&site, background)
     }
 
+    /// Join again the site workspace `room` this device knows: held still,
+    /// a membership left here, an enrollment under way or a retained proof.
+    /// `None` when there is nothing to come back to.
+    fn rejoin_site_room(
+        &self,
+        site: &SiteWorkspace,
+        room: RoomId,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        background: bool,
+    ) -> Result<Option<SiteJoin>, SiteError> {
+        if tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
+        {
+            return Ok(Some(SiteJoin::Held { room }));
+        }
+        if let Ok(owner) = self.native_owner()
+            && owner.with_current(room, |_| Ok(())).is_ok()
+        {
+            tree.write().append_workspace_for_room(&site.name, room);
+            self.connect_native_room(owner, room)
+                .map_err(SiteError::Refused)?;
+            tracing::info!(%room, "back in a site's workspace this device left");
+            return Ok(Some(SiteJoin::Held { room }));
+        }
+        if let Some((local, enrollment)) = self.enrolling_site_room(room) {
+            return Ok(Some(SiteJoin::Enrolling {
+                room,
+                local,
+                enrollment,
+            }));
+        }
+        // A join whose exchange or installation failed keeps its proof
+        // in its slot, and the host has admitted that proof: it is
+        // retried exactly, never by a second admission into a second
+        // slot, which the retained proof refuses.
+        let retained = self
+            .pending_host_room(room)
+            .map_err(SiteError::Refused)?
+            .filter(|(local, _)| {
+                tree.read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == *local)
+            });
+        if let Some((local, invitation)) = retained {
+            let origin = self
+                .hosted_sites
+                .origin(room)
+                .ok_or_else(|| SiteError::Refused("the workspace's host is unknown".into()))?;
+            let http = HostHttp::new(&origin).map_err(SiteError::Unreachable)?;
+            tracing::info!(%room, name = %site.name, "joining a site's workspace again with its retained proof");
+            return self
+                .enroll_site(
+                    site,
+                    SiteEnrollment {
+                        room,
+                        local,
+                        invitation: &invitation,
+                        via: Via::Https { http, door: None },
+                        placeholder: false,
+                    },
+                    background,
+                )
+                .map(Some);
+        }
+        Ok(None)
+    }
+
     /// Join the workspace a site's entry named; its enrollment installs in
     /// the `background`, else by its caller.
     pub(super) fn join_site_workspace(
@@ -121,59 +194,10 @@ impl ShellNetwork {
         // The site's workspace held already needs no door; one this device
         // still holds a membership of (the person left it here and came
         // back) gets its place back.
-        if let Some(room) = self.hosted_sites.room_of_site(&site.entry) {
-            if holds(room) {
-                return Ok(SiteJoin::Held { room });
-            }
-            if let Ok(owner) = self.native_owner()
-                && owner.with_current(room, |_| Ok(())).is_ok()
-            {
-                tree.write().append_workspace_for_room(&site.name, room);
-                self.connect_native_room(owner, room)
-                    .map_err(SiteError::Refused)?;
-                tracing::info!(%room, "back in a site's workspace this device left");
-                return Ok(SiteJoin::Held { room });
-            }
-            if let Some((local, enrollment)) = self.enrolling_site_room(room) {
-                return Ok(SiteJoin::Enrolling {
-                    room,
-                    local,
-                    enrollment,
-                });
-            }
-            // A join whose exchange or installation failed keeps its proof
-            // in its slot, and the host has admitted that proof: it is
-            // retried exactly, never by a second admission into a second
-            // slot, which the retained proof refuses.
-            let retained = self
-                .pending_host_room(room)
-                .map_err(SiteError::Refused)?
-                .filter(|(local, _)| {
-                    tree.read()
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.id == *local)
-                });
-            if let Some((local, invitation)) = retained {
-                let origin = self
-                    .hosted_sites
-                    .origin(room)
-                    .ok_or_else(|| SiteError::Refused("the workspace's host is unknown".into()))?;
-                let http = HostHttp::new(&origin).map_err(SiteError::Unreachable)?;
-                tracing::info!(%room, name = %site.name, "joining a site's workspace again with its retained proof");
-                return self.enroll_site(
-                    site,
-                    SiteEnrollment {
-                        room,
-                        local,
-                        invitation: &invitation,
-                        via: Via::Https { http, door: None },
-                        placeholder: false,
-                    },
-                    background,
-                );
-            }
+        if let Some(room) = self.hosted_sites.room_of_site(&site.entry)
+            && let Some(join) = self.rejoin_site_room(site, room, &tree, background)?
+        {
+            return Ok(join);
         }
         let (user, name) = self.site_person()?;
         let answer = runtime.block_on(hosted_sites::admit(site, user, &name))?;
@@ -363,6 +387,7 @@ impl ShellNetwork {
                 group.activate_tab(tab);
             }
             tree.queue_save();
+            drop(tree);
             return Ok(());
         }
         let launcher = crate::shell::broker_services::NativeLauncher(Some(tree), None);

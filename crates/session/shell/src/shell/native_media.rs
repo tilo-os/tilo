@@ -261,11 +261,51 @@ struct Entry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Seen {
     state: State,
-    muted: bool,
     issue: Option<Issue>,
+    speaking: u64,
+    microphone: SeenMicrophone,
+    pictures: SeenPictures,
+}
+impl Seen {
+    /// What a watcher sees of the call `entry` now.
+    fn of(entry: &Entry) -> Self {
+        let speaking = entry
+            .backend
+            .as_ref()
+            .and_then(|backend| {
+                backend
+                    .lock()
+                    .ok()
+                    .map(|backend| backend.speaking_revision())
+            })
+            .unwrap_or_default();
+        Self {
+            state: entry.snapshot.state,
+            issue: entry.snapshot.issue,
+            speaking,
+            microphone: SeenMicrophone {
+                muted: entry.snapshot.muted,
+                capturing: entry.capture.is_some(),
+                asking: entry.pending.is_some(),
+            },
+            pictures: SeenPictures {
+                camera: entry.video.contains_key(&PictureSource::Camera),
+                screen: entry.video.contains_key(&PictureSource::Screen),
+            },
+        }
+    }
+}
+/// The microphone as a watcher sees it: muted, capturing, or asking the
+/// person first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SeenMicrophone {
+    muted: bool,
     capturing: bool,
     asking: bool,
-    speaking: u64,
+}
+/// The pictures a call sends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SeenPictures {
     camera: bool,
     screen: bool,
 }
@@ -876,10 +916,12 @@ impl NativeMediaService {
                         .lock()
                         .map_err(|_| "native media unavailable")?;
                     let entry = calls.entries.get(&key);
-                    (
+                    let seen = (
                         entry.map_or(State::Idle, |entry| entry.snapshot.state),
                         entry.and_then(|entry| entry.backend.clone()),
-                    )
+                    );
+                    drop(calls);
+                    seen
                 };
                 let signal = backend
                     .as_ref()
@@ -1611,8 +1653,34 @@ impl Shared {
             .get_mut(key)
             .filter(|entry| entry.generation == generation && entry.unmute_due)?;
         entry.unmute_due = false;
-        Some(entry.intent)
+        let intent = entry.intent;
+        drop(calls);
+        Some(intent)
     }
+    /// Bring capture and video in line with the call's `state`: paused
+    /// while it reconnects, flowing while it is live, stopped otherwise.
+    fn follow_state(&self, entry: &mut Entry, state: State, now: Instant) {
+        match state {
+            State::Reconnecting => {
+                Self::pause_capture(entry);
+                self.tend_video(entry, now);
+            }
+            State::Live => {
+                self.tend_video(entry, now);
+                self.resume_capture(entry);
+                if entry.microphone_on_join && entry.capture.is_none() && entry.pending.is_none() {
+                    entry.microphone_on_join = false;
+                    entry.unmute_due = true;
+                }
+            }
+            _ => {
+                self.stop_capture(entry);
+                self.stop_video(entry, PictureSource::Camera);
+                self.stop_video(entry, PictureSource::Screen);
+            }
+        }
+    }
+
     fn tick(&self, key: &Key, generation: u64) -> bool {
         // Expiry callbacks stop backend capture while the broker still owns
         // revocation. Never hold a backend mutex while resolving the broker.
@@ -1682,49 +1750,9 @@ impl Shared {
             .unwrap_or(Err(Issue::SessionEnded));
         match result {
             Ok(state) => {
-                match state {
-                    State::Reconnecting => {
-                        Self::pause_capture(entry);
-                        self.tend_video(entry, now);
-                    }
-                    State::Live => {
-                        self.tend_video(entry, now);
-                        self.resume_capture(entry);
-                        if entry.microphone_on_join
-                            && entry.capture.is_none()
-                            && entry.pending.is_none()
-                        {
-                            entry.microphone_on_join = false;
-                            entry.unmute_due = true;
-                        }
-                    }
-                    _ => {
-                        self.stop_capture(entry);
-                        self.stop_video(entry, PictureSource::Camera);
-                        self.stop_video(entry, PictureSource::Screen);
-                    }
-                }
+                self.follow_state(entry, state, now);
                 entry.snapshot.state = state;
-                let speaking = entry
-                    .backend
-                    .as_ref()
-                    .and_then(|backend| {
-                        backend
-                            .lock()
-                            .ok()
-                            .map(|backend| backend.speaking_revision())
-                    })
-                    .unwrap_or_default();
-                let seen = Some(Seen {
-                    state,
-                    muted: entry.snapshot.muted,
-                    issue: entry.snapshot.issue,
-                    capturing: entry.capture.is_some(),
-                    asking: entry.pending.is_some(),
-                    speaking,
-                    camera: entry.video.contains_key(&PictureSource::Camera),
-                    screen: entry.video.contains_key(&PictureSource::Screen),
-                });
+                let seen = Some(Seen::of(entry));
                 if entry.seen != seen {
                     entry.seen = seen;
                     self.changed.notify_waiters();

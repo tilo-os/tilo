@@ -1659,7 +1659,7 @@ fn on_screen_rects(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<vello:
 }
 
 fn widths_of(rects: &[vello::kurbo::Rect]) -> Vec<f64> {
-    rects.iter().map(|r| r.width()).collect()
+    rects.iter().map(vello::kurbo::Rect::width).collect()
 }
 
 /// What one drag did: the windows before it, while the pointer was still

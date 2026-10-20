@@ -11,7 +11,7 @@ use std::{
 };
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Binding {
+struct PreparedRecord {
     schema: u32,
     uid: u32,
     gid: u32,
@@ -96,16 +96,17 @@ fn bounded(file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
         return Err(refusal());
     }
     let mut bytes = Vec::new();
-    Read::by_ref(file).take(limit + 1).read_to_end(&mut bytes)?;
+    Read::by_ref(file)
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 != before.len() || stamp(&before) != stamp(&file.metadata()?) {
         return Err(refusal());
     }
     Ok(bytes)
 }
-/// This fixed root-controlled record was issued by firstboot after the real
-/// account received the exact ciphertext authenticated by the native installer.
-pub(super) fn check(identity_dir: &Path) -> io::Result<()> {
-    let uid = unsafe { libc::geteuid() };
+/// The home directory and group of account `uid`, from the password
+/// database.
+fn account(uid: u32) -> io::Result<(std::path::PathBuf, u32)> {
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
     let mut result = std::ptr::null_mut();
     let mut buffer = vec![0u8; 16384];
@@ -128,6 +129,13 @@ pub(super) fn check(identity_dir: &Path) -> io::Result<()> {
             .map_err(|_| refusal())?,
     )
     .to_owned();
+    Ok((home, pwd.pw_gid))
+}
+/// This fixed root-controlled record was issued by firstboot after the real
+/// account received the exact ciphertext authenticated by the native installer.
+pub(super) fn check(identity_dir: &Path) -> io::Result<()> {
+    let uid = rustix::process::geteuid().as_raw();
+    let (home, gid) = account(uid)?;
     let system = root_directory(Path::new("/var/lib/tilo/prepared-first-use"))?;
     let name = format!("{uid}.json");
     let mut record = open(&system, std::ffi::OsStr::new(&name), false)?;
@@ -135,18 +143,18 @@ pub(super) fn check(identity_dir: &Path) -> io::Result<()> {
         return Err(refusal());
     }
     let record_before = record.metadata()?;
-    let body: Binding =
+    let body: PreparedRecord =
         serde_json::from_slice(&bounded(&mut record, 8192)?).map_err(|_| refusal())?;
     if body.schema != 1
         || body.uid != uid
-        || body.gid != pwd.pw_gid
+        || body.gid != gid
         || Path::new(&body.home) != home
         || !identity_dir.starts_with(&home)
         || body.identity_public_key == [0; 32]
         || body.setup_binding.is_empty()
         || body.setup_binding.len() > 256
         || body.setup_binding.chars().any(char::is_control)
-        || !(48..=33570816).contains(&body.sealed_bytes)
+        || !(48..=33_570_816).contains(&body.sealed_bytes)
     {
         return Err(refusal());
     }

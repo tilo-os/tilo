@@ -1014,6 +1014,48 @@ impl PeerSyncOverlay {
         text_renderer.set_text_scale(renderer_scale);
     }
 
+    /// The sheet's title at `at`, elided to `avail`; returns how far the
+    /// body starts below it.
+    fn draw_title(&self, ctx: &mut PaintCtx<'_>, at: Point, avail: f64) -> f64 {
+        let theme = ctx.theme;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let title = t(if self.state.pairing_open {
+            "pairing-title"
+        } else if self.state.invite_review_open {
+            "peer-sync-title-review"
+        } else if self.state.invite_name.is_some() {
+            "peer-sync-title-invite"
+        } else if self.state.connect_input.is_some() {
+            "peer-sync-title-join"
+        } else {
+            "peer-sync-title-workspace-invite"
+        });
+        // Pairing is a guided sheet of its own, under a heading.
+        let title_role = if self.state.pairing_open {
+            TextRole::Heading
+        } else {
+            TextRole::Body
+        };
+        let title =
+            ctx.text
+                .elide_to_width_style(&title, f32_of_f64(avail), &theme.text(title_role));
+        ctx.text.draw_style(
+            ctx.scene,
+            &title,
+            colors.text_primary,
+            ctx.transform.pre_translate(at.to_vec2()),
+            None,
+            &theme.text(title_role),
+        );
+        if self.state.pairing_open {
+            f64::from(theme.text(TextRole::Heading).line_height_px()) + f64::from(tokens.spacing.s4)
+        } else {
+            f64::from(theme.tokens.typography.size(TextRole::Body).max(14.0))
+                + f64::from(tokens.spacing.s3)
+        }
+    }
+
     fn draw_at_theme_scale(
         &mut self,
         host_rect: Rect,
@@ -1039,7 +1081,6 @@ impl PeerSyncOverlay {
         // Panel padding (HIG §9.6).
         let pad = f64::from(tokens.spacing.s4);
         let mut y = rect.y0 + pad;
-        let title_size = tokens.typography.size(TextRole::Body).max(14.0);
         let body_size = tokens.typography.size(TextRole::Caption).max(10.0);
         let m = SheetMetrics {
             rect,
@@ -1048,41 +1089,11 @@ impl PeerSyncOverlay {
             body: body_size,
             name: tokens.typography.size(TextRole::Caption).max(12.0),
         };
-        let title = t(if self.state.pairing_open {
-            "pairing-title"
-        } else if self.state.invite_review_open {
-            "peer-sync-title-review"
-        } else if self.state.invite_name.is_some() {
-            "peer-sync-title-invite"
-        } else if self.state.connect_input.is_some() {
-            "peer-sync-title-join"
-        } else {
-            "peer-sync-title-workspace-invite"
-        });
-        // Pairing is a guided sheet of its own, under a heading.
-        let title_role = if self.state.pairing_open {
-            TextRole::Heading
-        } else {
-            TextRole::Body
-        };
-        let title = text_renderer.elide_to_width_style(
-            &title,
-            f32_of_f64(m.avail),
-            &theme.text(title_role),
+        y += self.draw_title(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            Point::new(rect.x0 + pad, y),
+            m.avail,
         );
-        text_renderer.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &theme.text(title_role),
-        );
-        y += if self.state.pairing_open {
-            f64::from(theme.text(TextRole::Heading).line_height_px()) + f64::from(tokens.spacing.s4)
-        } else {
-            f64::from(title_size) + f64::from(tokens.spacing.s3)
-        };
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         // The footer first: its buttons stay anchored to the sheet's bottom
         // edge, wrapping onto more rows on a narrow sheet, and the body
@@ -2105,7 +2116,7 @@ fn draw_pairing_safe(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
             x0,
             y + (caption_h - shield) / 2.0,
             x0 + shield,
-            y + (caption_h + shield) / 2.0,
+            y + f64::midpoint(caption_h, shield),
         ),
         ui::icons::Icon::Shield,
         tokens.colors.text_dim,
@@ -2428,29 +2439,12 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
     };
     if understood {
         // What was typed, in a field, so the person sees what joins.
-        let field_h = f64::from(theme.tokens.metrics.min_pointer_target);
-        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            rest_floor(theme),
-            None,
-            &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
+        y = draw_typed_field(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            Rect::new(rect.x0 + pad, y, rect.x1 - pad, y),
+            avail,
+            typed,
         );
-        let style = theme.text(TextRole::Body);
-        let shown = text.elide_to_width_style(typed, f32_of_f64(avail - 24.0), &style);
-        let (_, shown_h) = text.measure_style(&shown, None, &style);
-        text.draw_style(
-            scene,
-            &shown,
-            colors.text_primary,
-            transform.pre_translate(
-                (field.x0 + 12.0, field.center().y - f64::from(shown_h) / 2.0).into(),
-            ),
-            None,
-            &style,
-        );
-        y = field.y1 + 8.0;
     }
     let line = text.elide_to_width_style(&line, f32_of_f64(avail), &theme.text(TextRole::Caption));
     text.draw_style(
@@ -2483,6 +2477,36 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
         y += f64::from(body) + 8.0;
     }
     y
+}
+
+/// What was typed, in a field along `row`'s top edge, elided to `avail`;
+/// returns where the next line starts.
+fn draw_typed_field(ctx: &mut PaintCtx<'_>, row: Rect, avail: f64, typed: &str) -> f64 {
+    let (scene, transform, text, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let colors = &theme.tokens.colors;
+    let field_h = f64::from(theme.tokens.metrics.min_pointer_target);
+    let field = Rect::new(row.x0, row.y0, row.x1, row.y0 + field_h);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        rest_floor(theme),
+        None,
+        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
+    );
+    let style = theme.text(TextRole::Body);
+    let shown = text.elide_to_width_style(typed, f32_of_f64(avail - 24.0), &style);
+    let (_, shown_h) = text.measure_style(&shown, None, &style);
+    text.draw_style(
+        scene,
+        &shown,
+        colors.text_primary,
+        transform
+            .pre_translate((field.x0 + 12.0, field.center().y - f64::from(shown_h) / 2.0).into()),
+        None,
+        &style,
+    );
+    field.y1 + 8.0
 }
 
 /// A person row: the panel row height (HIG §9.6).

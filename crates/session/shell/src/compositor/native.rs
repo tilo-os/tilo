@@ -4287,8 +4287,16 @@ impl ControlState for FrameBuilderControlState<'_> {
         });
         // Construction work counted at the workspace's factories, and the
         // workspace whose content those factories last reconciled.
-        dump["workspace_work"] = serde_json::json!(crate::shell::work_accounting::snapshot());
-        dump["workspace_content"] = serde_json::json!(self.fb.host().workspace_content_id());
+        if let Some(fields) = dump.as_object_mut() {
+            fields.insert(
+                "workspace_work".into(),
+                serde_json::json!(crate::shell::work_accounting::snapshot()),
+            );
+            fields.insert(
+                "workspace_content".into(),
+                serde_json::json!(self.fb.host().workspace_content_id()),
+            );
+        }
         dump
     }
 }
@@ -14750,13 +14758,10 @@ pub fn run() {
                     Ok((stream, _addr)) => {
                         match crate::compositor::admin_control::authorize(&stream) {
                             Ok(()) => {
-                                if let Some(mut conn) = TestControlConn::admin(
-                                    stream,
-                                    identity_store
-                                        .path()
-                                        .parent()
-                                        .expect("identity store parent was reviewed"),
-                                ) {
+                                if let Some(identity_dir) = identity_store.path().parent()
+                                    && let Some(mut conn) =
+                                        TestControlConn::admin(stream, identity_dir)
+                                {
                                     conn.watch(&event_loop.handle());
                                     test_control_conns.push(conn);
                                 }
@@ -15265,13 +15270,13 @@ fn sync_quick_settings_from_osd(
         crate::shell::osd::OsdKind::Brightness { display: None } => {
             quick_settings.brightness = osd.level;
         }
-        // A named display's slider follows the brightness service's levels,
-        // read back after the key.
-        crate::shell::osd::OsdKind::Brightness { display: Some(_) } => {}
         crate::shell::osd::OsdKind::AirplaneMode { on } => {
             quick_settings.radios.airplane_mode = on;
         }
-        crate::shell::osd::OsdKind::MicMute { .. }
+        // A named display's slider follows the brightness service's levels,
+        // read back after the key.
+        crate::shell::osd::OsdKind::Brightness { display: Some(_) }
+        | crate::shell::osd::OsdKind::MicMute { .. }
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
