@@ -244,8 +244,8 @@ impl Core {
                     params: Vec::new(),
                 };
                 let nested = self.render_at(&target, &[], cx.offer.deeper(), Some(&identity))?;
-                acc.absorb(nested.reads, nested.space_reads, nested.retained);
-                Ok(("view", vec![scope(key, nested.root)]))
+                let root = acc.absorb(nested);
+                Ok(("view", vec![scope(key, root)]))
             }
             BlockKind::Action => {
                 let child = self.invocation_card(cx, key, invocation, acc)?;
@@ -351,8 +351,8 @@ impl Core {
             {
                 let target = self.view_target(&view)?;
                 let nested = self.render_at(&target, &view_args, cx.offer.deeper(), None)?;
-                acc.absorb(nested.reads, nested.space_reads, nested.retained);
-                children.push(scope(&card_key, nested.root));
+                let root = acc.absorb(nested);
+                children.push(scope(&card_key, root));
             }
         }
         Ok(node("invocation", card_key, &props, children))

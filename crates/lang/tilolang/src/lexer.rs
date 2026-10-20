@@ -6,10 +6,15 @@ use crate::diag::{Diagnostic, Span};
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
-    "app", "use", "as", "type", "action", "flow", "view", "fn", "let", "if", "else", "for", "in",
-    "return", "and", "or", "not", "then", "true", "false", "none", "do", "try", "merge",
+    "app", "use", "as", "type", "enum", "action", "flow", "view", "fn", "let", "if", "else",
+    "match", "for", "in", "return", "and", "or", "not", "true", "false", "try", "merge",
     "proposal",
 ];
+
+/// Words that are keywords only where a declaration starts: `window` and `lens` at the start
+/// of a statement of a view body, `root` and `default` at the start of an item. Elsewhere they
+/// are ordinary names.
+pub const CONTEXTUAL: &[&str] = &["window", "lens", "root", "default"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPiece {
@@ -44,6 +49,8 @@ pub enum Tok {
     Colon,
     Dot,
     Arrow,
+    /// `=>`, between a match pattern and its arm.
+    FatArrow,
     Assign,
     PlusAssign,
     MinusAssign,
@@ -83,6 +90,7 @@ impl Tok {
             Self::Colon => "`:`".into(),
             Self::Dot => "`.`".into(),
             Self::Arrow => "`->`".into(),
+            Self::FatArrow => "`=>`".into(),
             Self::Assign => "`=`".into(),
             Self::PlusAssign => "`+=`".into(),
             Self::MinusAssign => "`-=`".into(),
@@ -227,7 +235,11 @@ impl Lexer<'_> {
         if matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Newline)) {
             return;
         }
-        if self.next_line_continues() {
+        // A line that starts `.name` continues the previous one as a method call, unless the
+        // previous line ended a block or the new line is a match arm (`.name(..) =>`).
+        if !matches!(self.toks.last().map(|t| &t.tok), Some(Tok::RBrace))
+            && self.next_line_continues()
+        {
             return;
         }
         self.push(Tok::Newline, start);
@@ -248,10 +260,50 @@ impl Lexer<'_> {
                         i += 1;
                     }
                 }
-                Some(b'.') => return self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b)),
+                Some(b'.') => {
+                    return self.bytes.get(i + 1).is_some_and(|b| is_ident_start(*b))
+                        && !self.is_match_arm(i + 1);
+                }
                 _ => return false,
             }
         }
+    }
+
+    /// Whether the name starting at `from` is followed (after an optional parenthesised list)
+    /// by `=>`: the line is a match arm, not a method call.
+    fn is_match_arm(&self, from: usize) -> bool {
+        let at = |i: usize| self.bytes.get(i).copied();
+        let mut i = from;
+        while at(i).is_some_and(is_ident_char) {
+            i += 1;
+        }
+        let skip_ws = |mut i: usize| {
+            while matches!(at(i), Some(b' ' | b'\t')) {
+                i += 1;
+            }
+            i
+        };
+        i = skip_ws(i);
+        if at(i) == Some(b'(') {
+            let mut depth = 0usize;
+            loop {
+                match at(i) {
+                    Some(b'(') => depth += 1,
+                    Some(b')') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    Some(b'\n') | None => return false,
+                    _ => {}
+                }
+                i += 1;
+            }
+            i = skip_ws(i);
+        }
+        at(i) == Some(b'=') && at(i + 1) == Some(b'>')
     }
 
     fn comment(&mut self, start: usize) {
@@ -368,6 +420,7 @@ impl Lexer<'_> {
             (b'-', Some(b'=')) => (Tok::MinusAssign, 2),
             (b'+', Some(b'=')) => (Tok::PlusAssign, 2),
             (b'=', Some(b'=')) => (Tok::EqEq, 2),
+            (b'=', Some(b'>')) => (Tok::FatArrow, 2),
             (b'!', Some(b'=')) => (Tok::NotEq, 2),
             (b'<', Some(b'=')) => (Tok::Le, 2),
             (b'>', Some(b'=')) => (Tok::Ge, 2),

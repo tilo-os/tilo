@@ -9,13 +9,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.aarch64.json}
 apps=("$@")
-[ ${#apps[@]} -gt 0 ] || apps=(counter todo notes notes-detail letters chat board)
+[ ${#apps[@]} -gt 0 ] || apps=(counter todo board notes notes-detail letters letters-detail chat chat-detail)
 tdev cargo build -p tilolang-app
 for app in "${apps[@]}"; do
-  sizes=(420x860 1280x800 2560x1200)
-  # The detail pane of a collapsed split is only worth a look in a narrow window.
-  [ "$app" = notes-detail ] && sizes=(420x860)
-  for size in "${sizes[@]}"; do
+  for size in 420x860 1280x800 2560x1200; do
     tdev cargo run -q -p tilolang-app -- --shots "shots/${app}-${size}.png" --viewport "$size" --scenario "$app"
   done
 done

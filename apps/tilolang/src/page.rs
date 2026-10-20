@@ -1,4 +1,9 @@
-//! The host's window: a home view listing the packages, and any package's `main` view.
+//! The host's window: a home view listing the packages, and the window of any package's root
+//! resource, shown through the default view of its type.
+//!
+//! `open(r)` in a view goes to the window of `r`. Until the workspace's window model lands this
+//! window shows it in place, through the default view of `r`'s type, and its back button
+//! returns to the view it was opened from.
 //!
 //! The widget owns a [`Host`] (the runtime on the platform), the open [`ViewInstance`] and the
 //! retained widgets of its tree. Each frame it
@@ -25,8 +30,8 @@ use tilolang_tilo::publish::{
     publish_record, publish_tree,
 };
 use tilolang_tilo::runtime::{
-    ActionInfo, Decision, EditOutcome, InvokeOutcome, OutsideSink, Principal, Resolution,
-    Suggestion, UiNode, Value, ViewInstance,
+    ActionInfo, BindTarget, Decision, EditOutcome, InvokeOutcome, OutsideSink, Principal,
+    Resolution, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
 };
 use tilolang_tilo::sink::LogSink;
 use tilolang_tilo::{HostEffect, OpenEffect};
@@ -61,6 +66,8 @@ enum Mode {
         app: String,
         view: Box<ViewInstance>,
         title: String,
+        /// The views `open(r)` left, the most recent last: back returns to them.
+        trail: Vec<ViewInstance>,
     },
 }
 
@@ -69,7 +76,7 @@ enum Mode {
 enum Nav {
     Open(String),
     Home,
-    /// From the detail pane of a view collapsed to one pane back to its list.
+    /// To the view an `open(r)` left, or home from the first one.
     Back,
 }
 
@@ -121,6 +128,43 @@ impl OutsideSink for BoxedSink {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
         self.0.deliver(capability, payload)
     }
+}
+
+/// The two vocabularies the window answers on the door: what an agent asks of the host, and
+/// showing what a search hit names.
+fn door_endpoints(
+    host: &Rc<RefCell<Option<Host>>>,
+    door_work: &Rc<std::cell::Cell<bool>>,
+    outgoing: &Outgoing,
+    open_requests: &Rc<RefCell<Vec<String>>>,
+) -> (Element, Element) {
+    let answering = (Rc::clone(host), Rc::clone(door_work), Rc::clone(outgoing));
+    let endpoint = ui::framework::EffectEndpoint::new(
+        move |effect: HostEffect, caller: &ui::framework::EffectCaller| {
+            let host = answering
+                .0
+                .borrow()
+                .clone()
+                .ok_or_else(|| "the tilolang host has not started".to_owned())?;
+            let who = caller.invoker.as_ref().map(caller_of);
+            let first = host.next_ticket();
+            let answered = host.answer(effect, who.as_ref());
+            // What the effect committed is applied for its invoker as soon as the host
+            // answers, the way the framework applies what an effect's handler submits.
+            queue_commits(&host, &answering.2, first, Some(caller.invocation));
+            answering.1.set(true);
+            answered
+        },
+    );
+    let opening = Rc::clone(open_requests);
+    let open_endpoint = ui::framework::EffectEndpoint::new(
+        move |effect: OpenEffect, _: &ui::framework::EffectCaller| {
+            let OpenEffect::Open { anchor } = effect;
+            opening.borrow_mut().push(anchor);
+            Ok(ui::tilo_actions::ActionOutput::default())
+        },
+    );
+    (Box::new(endpoint), Box::new(open_endpoint))
 }
 
 /// The window. See the module docs.
@@ -205,8 +249,12 @@ impl TilolangPage {
         let events: EventSink = Rc::default();
         let host: Rc<RefCell<Option<Host>>> = Rc::default();
         let shared = Rc::clone(&host);
-        // A bound control is announced by the name of the field it edits.
+        // A bound control is announced by the name of the field or view state it edits.
         let names = Rc::new(move |binding: &tilolang_tilo::runtime::Binding| {
+            let (target, field) = match &binding.target {
+                BindTarget::State { name, .. } => return name.clone(),
+                BindTarget::Field { target, field } => (target, field),
+            };
             shared
                 .borrow()
                 .as_ref()
@@ -216,12 +264,12 @@ impl TilolangPage {
                             .meta
                             .types
                             .iter()
-                            .find(|declared| declared.id == binding.target.ty)?;
+                            .find(|declared| declared.id == target.ty)?;
                         declared
                             .fields
                             .iter()
-                            .find(|field| field.id == binding.field)
-                            .map(|field| field.name.clone())
+                            .find(|declared| declared.id == *field)
+                            .map(|declared| declared.name.clone())
                     })
                 })
                 .unwrap_or_default()
@@ -229,36 +277,8 @@ impl TilolangPage {
         let open_requests: Rc<RefCell<Vec<String>>> = Rc::default();
         let door_work: Rc<std::cell::Cell<bool>> = Rc::default();
         let outgoing: Outgoing = Rc::default();
-        let answering = (
-            Rc::clone(&host),
-            Rc::clone(&door_work),
-            Rc::clone(&outgoing),
-        );
-        let endpoint = ui::framework::EffectEndpoint::new(
-            move |effect: HostEffect, caller: &ui::framework::EffectCaller| {
-                let host = answering
-                    .0
-                    .borrow()
-                    .clone()
-                    .ok_or_else(|| "the tilolang host has not started".to_owned())?;
-                let who = caller.invoker.as_ref().map(caller_of);
-                let first = host.next_ticket();
-                let answered = host.answer(effect, who.as_ref());
-                // What the effect committed is applied for its invoker as soon as the host
-                // answers, the way the framework applies what an effect's handler submits.
-                queue_commits(&host, &answering.2, first, Some(caller.invocation));
-                answering.1.set(true);
-                answered
-            },
-        );
-        let opening = Rc::clone(&open_requests);
-        let open_endpoint = ui::framework::EffectEndpoint::new(
-            move |effect: OpenEffect, _: &ui::framework::EffectCaller| {
-                let OpenEffect::Open { anchor } = effect;
-                opening.borrow_mut().push(anchor);
-                Ok(ui::tilo_actions::ActionOutput::default())
-            },
-        );
+        let (endpoint, open_endpoint) =
+            door_endpoints(&host, &door_work, &outgoing, &open_requests);
         let root = Stack::stack()
             .fill_width()
             .fill_height()
@@ -266,8 +286,8 @@ impl TilolangPage {
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::fill(1.0)))
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
-            .push_slot(slot(Box::new(endpoint), Fit::hug()))
-            .push_slot(slot(Box::new(open_endpoint), Fit::hug()));
+            .push_slot(slot(endpoint, Fit::hug()))
+            .push_slot(slot(open_endpoint, Fit::hug()));
         Self {
             names: Names::new(&me),
             me,
@@ -509,15 +529,20 @@ impl TilolangPage {
     fn rebuild_header(&mut self) {
         let header: Element = match self.mode {
             Mode::Home => Box::new(Spacer::fixed(0.0)),
-            Mode::Open { ref title, .. } => {
+            Mode::Open {
+                ref title,
+                ref trail,
+                ..
+            } => {
                 let nav = Rc::clone(&self.inbox.nav);
+                let detailed = self.detail_shown || !trail.is_empty();
                 let mut segments = vec![t("tilolang-back"), title.clone()];
-                if self.detail_shown {
+                if detailed {
                     segments.push(t("tilolang-detail"));
                 }
                 let crumbs = Breadcrumb::new(segments).on_navigate(move |index| match index {
                     0 => nav.borrow_mut().push(Nav::Home),
-                    1 => nav.borrow_mut().push(Nav::Back),
+                    1 if detailed => nav.borrow_mut().push(Nav::Back),
                     _ => {}
                 });
                 Box::new(
@@ -683,7 +708,6 @@ impl TilolangPage {
         };
         match host.open_main(app) {
             Ok(view) => {
-                let tree = crate::reconcile::normalize(view.tree());
                 let title = host
                     .packages()
                     .into_iter()
@@ -694,24 +718,96 @@ impl TilolangPage {
                     app: app.to_owned(),
                     title,
                     view: Box::new(view),
+                    trail: Vec::new(),
                 };
-                self.class = None;
-                self.last_size = None;
-                self.reconciler.clear_navigation();
-                let body = self.reconciler.build(&tree);
-                self.body_tree = Some(tree);
-                self.navigation = self.reconciler.navigation();
-                self.detail_shown = false;
-                self.pending_detail = false;
-                self.set_slot(1, scrolling(body), Fit::fill(1.0));
-                self.rebuild_header();
-                self.commit_planned();
-                self.refresh_bound();
+                self.show_view();
             }
             Err(error) => {
                 tracing::warn!(app, %error, "an app did not open");
                 self.notice = Some(t("tilolang-open-failed"));
                 self.rebuild_chrome();
+            }
+        }
+    }
+
+    /// Build the body from the open view's whole tree.
+    fn show_view(&mut self) {
+        let Mode::Open { view, .. } = &self.mode else {
+            return;
+        };
+        let tree = crate::reconcile::normalize(view.tree());
+        self.class = None;
+        self.last_size = None;
+        self.reconciler.clear_navigation();
+        let body = self.reconciler.build(&tree);
+        self.body_tree = Some(tree);
+        self.navigation = self.reconciler.navigation();
+        self.detail_shown = false;
+        self.pending_detail = false;
+        self.set_slot(1, scrolling(body), Fit::fill(1.0));
+        self.rebuild_header();
+        self.commit_planned();
+        self.refresh_bound();
+    }
+
+    /// Go to the window of `target` (what `open(r)` asked for): shown here, in place of the
+    /// open view, which back returns to.
+    fn open_resource(&mut self, target: &tilolang_tilo::runtime::ResourceRef, with: Option<&str>) {
+        let Some(host) = self.current_host() else {
+            return;
+        };
+        match host.open_resource(target, with) {
+            Ok(next) => {
+                if let Mode::Open { view, trail, .. } = &mut self.mode {
+                    let left = std::mem::replace(view, Box::new(next));
+                    trail.push(*left);
+                }
+                self.show_view();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a resource did not open");
+                self.notice = Some(t("tilolang-open-failed"));
+                self.rebuild_chrome();
+            }
+        }
+    }
+
+    /// Back: to the view an `open(r)` left, or home.
+    fn back(&mut self) {
+        // A split showing its detail alone goes back to its list first.
+        if let Some(navigation) = &self.navigation
+            && navigation.detail_alone()
+        {
+            navigation.show(Pane::Primary);
+            self.structure_dirty = true;
+            return;
+        }
+        let previous = match &mut self.mode {
+            Mode::Open { view, trail, .. } => {
+                trail.pop().map(|p| std::mem::replace(view, Box::new(p)))
+            }
+            Mode::Home => None,
+        };
+        if previous.is_some() {
+            if let Mode::Open { view, .. } = &mut self.mode {
+                // It missed what changed while it was away.
+                let _ = view.poll_patches();
+            }
+            self.show_view();
+        } else {
+            self.show_home();
+        }
+    }
+
+    /// Windows the open view asked to open.
+    fn follow_opens(&mut self) {
+        let opens = match &mut self.mode {
+            Mode::Open { view, .. } => view.poll_events(),
+            Mode::Home => Vec::new(),
+        };
+        for event in opens {
+            match event {
+                ViewEvent::Open { target, view } => self.open_resource(&target, view.as_deref()),
             }
         }
     }
@@ -787,12 +883,12 @@ impl TilolangPage {
         }
     }
 
-    /// Show what the bound fields hold now in the controls that edit them.
+    /// Show what the bound fields and view state hold now in the controls that edit them.
     fn refresh_bound(&self) {
-        let (Some(host), Some(tree)) = (self.current_host(), self.body_tree.clone()) else {
+        let (Mode::Open { view, .. }, Some(tree)) = (&self.mode, self.body_tree.as_ref()) else {
             return;
         };
-        visit_bound(self, &host, &tree);
+        visit_bound(self, view, tree);
     }
 
     /// What the door asked of the host since the last frame: the commits it made go to the door
@@ -828,15 +924,9 @@ impl TilolangPage {
                     if !showing {
                         self.open(&plan.app);
                     }
-                    for (action, args) in plan.steps {
-                        if let Err(error) = host
-                            .runtime()
-                            .invoke_action(host.viewer(), (action.as_str(), args))
-                        {
-                            tracing::warn!(%error, "a search hit could not be selected");
-                        }
+                    if let Some(target) = plan.target {
+                        self.open_resource(&target, None);
                     }
-                    self.show_detail();
                     self.commit_planned();
                 }
                 Err(error) => {
@@ -890,12 +980,7 @@ impl TilolangPage {
             match nav {
                 Nav::Open(app) => self.open(&app),
                 Nav::Home => self.show_home(),
-                Nav::Back => {
-                    if let Some(navigation) = &self.navigation {
-                        navigation.show(Pane::Primary);
-                        self.structure_dirty = true;
-                    }
-                }
+                Nav::Back => self.back(),
             }
         }
         let answers = std::mem::take(&mut *self.inbox.answers.borrow_mut());
@@ -947,6 +1032,7 @@ impl TilolangPage {
             }
         }
         self.commit_planned();
+        self.follow_opens();
     }
 
     /// Allow or decline the suggestion an invocation card shows, as this person.
@@ -977,16 +1063,7 @@ impl TilolangPage {
         let Mode::Open { view, .. } = &self.mode else {
             return Ok(());
         };
-        let bound_to_number = view
-            .tree()
-            .find(key)
-            .and_then(|node| node.binding.as_ref())
-            .and_then(|binding| {
-                self.current_host()?
-                    .runtime()
-                    .read(&binding.target, &binding.field)
-                    .ok()
-            });
+        let bound_to_number = view.bound_value(key);
         let value = match (&value, bound_to_number) {
             (Value::Text(text), Some(Value::Int(_))) => {
                 Value::Int(text.trim().parse().map_err(|_| String::new())?)
@@ -1092,9 +1169,9 @@ impl TilolangPage {
     }
 }
 
-fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
-    if let Some(binding) = &node.binding
-        && let Ok(value) = host.runtime().read(&binding.target, &binding.field)
+fn visit_bound(page: &TilolangPage, view: &ViewInstance, node: &UiNode) {
+    if node.binding.is_some()
+        && let Some(value) = view.bound_value(&node.key)
     {
         match value {
             Value::Bool(flag) => page.reconciler.set_flag(&node.key, flag),
@@ -1110,7 +1187,7 @@ fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
         }
     }
     for child in &node.children {
-        visit_bound(page, host, child);
+        visit_bound(page, view, child);
     }
 }
 
@@ -1614,6 +1691,83 @@ mod tests {
             .find_map(|child| labelled_button(child, label))
     }
 
+    /// The control labelled `label`: a button by its label, a row of a list by its title.
+    fn button_labelled(node: &UiNode, label: &str) -> Option<String> {
+        let named = match node.kind.as_str() {
+            "button" => node.props.get("label") == Some(&Value::text(label)),
+            "list_row" => node.props.get("title") == Some(&Value::text(label)),
+            _ => false,
+        };
+        if named {
+            return Some(node.key.clone());
+        }
+        node.children
+            .iter()
+            .find_map(|child| button_labelled(child, label))
+    }
+
+    fn has_placeholder(node: &UiNode, placeholder: &str) -> bool {
+        node.props.get("placeholder") == Some(&Value::text(placeholder))
+            || node
+                .children
+                .iter()
+                .any(|child| has_placeholder(child, placeholder))
+    }
+
+    impl Room {
+        fn press(&mut self, label: &str) {
+            let tree = self.page.body_tree.as_ref().expect("a view is open");
+            let key = button_labelled(tree, label)
+                .unwrap_or_else(|| panic!("no button {label} in {tree:#?}"));
+            self.page.act(UiEvent::Press(key));
+            self.frame();
+            self.door();
+            self.frame();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as
+    // push-navigation to the resource's default view with back".
+    #[test]
+    fn a_notes_row_opens_the_note_in_place_and_back_returns_to_the_list() {
+        let mut room = Room::new();
+        room.open("so.tilo.notes");
+        room.press("New note");
+        room.press("Untitled");
+        let shown = room.page.shown().expect("a view is open");
+        assert!(
+            has_placeholder(shown, "Title"),
+            "the note's editor: {shown:#?}"
+        );
+
+        let title = {
+            fn find(node: &UiNode) -> Option<String> {
+                if node.props.get("placeholder") == Some(&Value::text("Title")) {
+                    return Some(node.key.clone());
+                }
+                node.children.iter().find_map(find)
+            }
+            find(shown).expect("the title input")
+        };
+        room.page.act(UiEvent::Edit(title, "Plans".to_owned()));
+        room.frame();
+        room.door();
+        room.frame();
+
+        room.page.inbox.nav.borrow_mut().push(Nav::Back);
+        room.frame();
+        let list = room.page.shown().expect("the notebook again");
+        assert!(!has_placeholder(list, "Title"));
+        assert!(
+            button_labelled(list, "Plans").is_some(),
+            "the list shows what the editor changed: {list:#?}"
+        );
+
+        room.page.inbox.nav.borrow_mut().push(Nav::Back);
+        room.frame();
+        assert_eq!(room.page.open_app(), None, "back from the root goes home");
+    }
+
     #[test]
     fn the_home_lists_the_built_in_packages() {
         let room = Room::new();
@@ -1886,7 +2040,7 @@ mod tests {
 
     #[test]
     fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
-        let mut room = Room::staged("letters");
+        let mut room = Room::staged("letters-detail");
         let send = room.button("Send");
         room.page.events.borrow_mut().push(UiEvent::Press(send));
         room.settle();
@@ -2141,20 +2295,25 @@ mod tests {
             .body_tree
             .as_ref()
             .expect("the hit opened the app");
-        let mut titles = Vec::new();
-        rows(tree, &mut titles);
-        assert_eq!(titles.len(), 3);
+        // The window shown is the note's own, over the note the hit named.
         let host = room.page.current_host().unwrap();
-        let notebook = host.root_of("so.tilo.notes").unwrap();
-        let open = host.runtime().read(&notebook, "open").unwrap();
-        let tilolang_tilo::runtime::Value::Opt(Some(selected)) = open else {
-            panic!("a note is open");
+        let title_input = {
+            fn find(node: &UiNode) -> Option<&UiNode> {
+                if node.props.get("placeholder") == Some(&Value::text("Title")) {
+                    return Some(node);
+                }
+                node.children.iter().find_map(find)
+            }
+            find(tree).expect("the note's editor")
         };
-        let tilolang_tilo::runtime::Value::Ref(selected) = *selected else {
-            panic!("a reference");
+        let binding = title_input.binding.as_ref().expect("the title is bound");
+        let BindTarget::Field { target, field } = &binding.target else {
+            panic!("the title is a field of the note");
         };
-        let title = host.runtime().read(&selected.target, "title").unwrap();
-        assert_eq!(title, tilolang_tilo::runtime::Value::text("Groceries"));
+        assert_eq!(
+            host.runtime().read(target, field).unwrap(),
+            tilolang_tilo::runtime::Value::text("Groceries")
+        );
         // Chat messages are found too, and a hit opens its conversation.
         let chat = Room::staged("chat");
         let messages = found(&chat, "packing list");

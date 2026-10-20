@@ -32,6 +32,10 @@ action move_first(l: TodoList, i: Item) { l.items.move(i, 0) }
 
 action tag(l: TodoList, t: Text) { l.tags.add(t) }
 
+root TodoList
+
+default view main for TodoList
+
 view main(l: TodoList) {
   stack {
     input(bind: l.title, placeholder: "Title")

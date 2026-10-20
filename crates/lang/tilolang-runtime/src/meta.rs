@@ -3,8 +3,8 @@
 //! type become a [`FieldKind`], and how a type travels through wasm.
 
 pub use tilolang::meta::{
-    ActionMeta, AnchorMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta, ParamMeta, ProposalMeta,
-    Reach, TypeMeta, ViewMeta,
+    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
+    ParamMeta, ProposalMeta, Reach, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
 
@@ -42,7 +42,7 @@ pub fn parse_ty(text: &str, app: &str) -> Result<Ty, String> {
 
 pub fn repr(ty: &Ty) -> Repr {
     match ty {
-        Ty::Int | Ty::Enum(_) => Repr::I64,
+        Ty::Int | Ty::Choice(_) => Repr::I64,
         Ty::Float | Ty::Length(_) => Repr::F64,
         Ty::Bool => Repr::Bool,
         _ => Repr::Handle,

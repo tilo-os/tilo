@@ -30,6 +30,11 @@ pub struct AppHeader {
 pub enum Item {
     Use(UseDecl),
     Type(TypeDecl),
+    Enum(EnumDecl),
+    /// `root T`: a type with one resource per workspace, which the launcher opens.
+    Root(RootDecl),
+    /// `default view v for T`: the view a window of a `T` uses unless changed.
+    DefaultView(DefaultViewDecl),
     Action(ActionDecl),
     Flow(FlowDecl),
     View(ViewDecl),
@@ -50,6 +55,41 @@ pub struct TypeDecl {
     pub doc: Vec<String>,
     pub name: Ident,
     pub fields: Vec<FieldDecl>,
+    pub span: Span,
+}
+
+/// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnumDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    pub variants: Vec<VariantDecl>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    /// The payload fields, in order; empty for a variant without payload.
+    pub fields: Vec<Param>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RootDecl {
+    pub node: NodeId,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefaultViewDecl {
+    pub node: NodeId,
+    pub view: Ident,
+    pub ty: TypeExpr,
     pub span: Span,
 }
 
@@ -180,12 +220,6 @@ pub struct Place {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Else {
-    Block(Block),
-    If(Box<Stmt>),
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
     Let {
         name: Ident,
@@ -196,11 +230,6 @@ pub enum StmtKind {
         place: Place,
         op: AssignOp,
         value: Expr,
-    },
-    If {
-        cond: Expr,
-        then: Block,
-        els: Option<Else>,
     },
     For {
         var: Ident,
@@ -299,16 +328,28 @@ pub enum ExprKind {
     /// `11rem`, `4dp`, `1fr`.
     Length(f64, crate::types::LengthUnit),
     Bool(bool),
-    None,
     Str(Vec<StrPart>),
     Ref(RefLit),
     Ident(String),
     Tuple(Vec<Expr>),
     List(Vec<Expr>),
-    IfExpr {
+    /// `if cond { ... } else { ... }`: the value of the branch taken, or a statement.
+    If {
         cond: Box<Expr>,
-        then: Box<Expr>,
-        els: Box<Expr>,
+        then: Block,
+        els: Option<Box<Expr>>,
+    },
+    /// `{ stmts; expr }`: the value of the last expression.
+    Block(Block),
+    /// `match e { .a => x, .b(p, q) => y }`.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    /// `.name` or `.name(field: value, ...)`: a variant of the enum the context expects.
+    Variant {
+        name: Ident,
+        args: Option<Vec<Arg>>,
     },
     Lambda {
         param: Ident,
@@ -331,9 +372,23 @@ pub enum ExprKind {
         callee: Box<Expr>,
         args: Vec<Arg>,
     },
-    Do(Box<Expr>),
-    /// `try act(args)`: invokes in a flow and says whether it worked.
+    /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
+    /// it failed.
     Try(Box<Expr>),
+}
+
+/// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pattern {
+    pub variant: Ident,
+    pub binds: Vec<Ident>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -353,12 +408,63 @@ pub enum UiKind {
     If {
         cond: Expr,
         then: Vec<UiStmt>,
+        /// The `else` branch; an `else if` is a branch holding one `If`.
         els: Option<Vec<UiStmt>>,
+    },
+    Match {
+        scrutinee: Expr,
+        arms: Vec<UiArm>,
     },
     Let {
         name: Ident,
         value: Expr,
     },
+    /// `window name: T = default` or `lens name: T = default`.
+    State(StateDecl),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiArm {
+    pub pattern: Pattern,
+    pub body: Vec<UiStmt>,
+    /// Whether the body was written as a `{ }` block rather than one UI call.
+    pub braced: bool,
+}
+
+/// Which layer of view state a declaration lives in (workspace-model.md section 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StateLayer {
+    /// Shared by everyone looking at the window.
+    Window,
+    /// One per person per window.
+    Lens,
+}
+
+impl StateLayer {
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::Lens => "lens",
+        }
+    }
+
+    /// The layer as the host ABI passes it.
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::Window => 0,
+            Self::Lens => 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StateDecl {
+    pub node: NodeId,
+    pub layer: StateLayer,
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub default: Option<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]

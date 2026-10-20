@@ -111,6 +111,16 @@ pub struct RecordInit {
     pub fields: BTreeMap<FieldId, Value>,
 }
 
+/// A value of an enum: the enum's type id, the variant's id and its payload fields by id.
+/// Declared enums use their declaration ids; the built-in `Result` uses
+/// `tilolang::RESULT_TYPE` and its variant and field ids.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EnumValue {
+    pub ty: TypeId,
+    pub variant: String,
+    pub fields: BTreeMap<FieldId, Value>,
+}
+
 /// A resource reference together with the module that created the handle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefValue {
@@ -129,6 +139,8 @@ pub enum Value {
     List(Vec<Value>),
     Tuple(Vec<Value>),
     Opt(Option<Box<Value>>),
+    /// A value of an enum (declared, or the built-in `Result`).
+    Enum(EnumValue),
     Ref(RefValue),
     /// Who did something. Only the host makes one (`invoker`, or read back from a field it
     /// wrote); the language has no way to build one from text.
@@ -189,6 +201,7 @@ impl Value {
             Self::List(_) => "list",
             Self::Tuple(_) => "tuple",
             Self::Opt(_) => "option",
+            Self::Enum(_) => "enum value",
             Self::Ref(_) => "resource reference",
             Self::Principal(_) => "principal",
             Self::Action(_) => "action reference",
@@ -217,6 +230,17 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         Value::Tuple(items) => tagged("tuple", items_to_json(items)?),
         Value::Opt(Some(inner)) => tagged("some", to_json(inner)?),
         Value::Opt(None) => tagged("none", Json::Null),
+        Value::Enum(e) => {
+            let mut fields = Map::new();
+            for (id, v) in &e.fields {
+                fields.insert(id.clone(), to_json(v)?);
+            }
+            let mut m = Map::new();
+            m.insert("enum".into(), Json::String(e.ty.clone()));
+            m.insert("variant".into(), Json::String(e.variant.clone()));
+            m.insert("fields".into(), Json::Object(fields));
+            Json::Object(m)
+        }
         Value::Ref(r) => {
             let mut m = Map::new();
             m.insert("ref".into(), Json::String(r.target.id_string()));
@@ -303,6 +327,20 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     if m.contains_key("none") {
         return Ok(Value::none());
     }
+    if let (Some(Json::String(ty)), Some(Json::String(variant))) = (m.get("enum"), m.get("variant"))
+    {
+        let mut fields = BTreeMap::new();
+        if let Some(Json::Object(f)) = m.get("fields") {
+            for (id, v) in f {
+                fields.insert(id.clone(), from_json(v)?);
+            }
+        }
+        return Ok(Value::Enum(EnumValue {
+            ty: ty.clone(),
+            variant: variant.clone(),
+            fields,
+        }));
+    }
     if let Some(Json::String(id)) = m.get("principal") {
         return Ok(Value::Principal(Principal(id.clone())));
     }
@@ -326,6 +364,47 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     Err("an object that is not an encoded value".into())
 }
 
+/// Whether two values are equal as the language compares them: by value, payloads included,
+/// and references by their target alone (not by the module that made the handle).
+pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
+    let all = |left: &[Value], right: &[Value]| {
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(one, other)| same_value(one, other))
+    };
+    match (lhs, rhs) {
+        (Value::Ref(left), Value::Ref(right)) => left.target == right.target,
+        (Value::List(left), Value::List(right)) | (Value::Tuple(left), Value::Tuple(right)) => {
+            all(left, right)
+        }
+        (Value::Opt(left), Value::Opt(right)) => match (left, right) {
+            (Some(one), Some(other)) => same_value(one, other),
+            (None, None) => true,
+            _ => false,
+        },
+        (Value::Enum(left), Value::Enum(right)) => {
+            left.ty == right.ty
+                && left.variant == right.variant
+                && left.fields.len() == right.fields.len()
+                && left.fields.iter().all(|(id, value)| {
+                    right
+                        .fields
+                        .get(id)
+                        .is_some_and(|other| same_value(value, other))
+                })
+        }
+        (Value::Int(int), Value::Bool(flag)) | (Value::Bool(flag), Value::Int(int)) => {
+            *int == i64::from(*flag)
+        }
+        (Value::Action(left), Value::Action(right)) => {
+            left.action == right.action && all(&left.args, &right.args)
+        }
+        _ => lhs == rhs,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +422,11 @@ mod tests {
                 author: Some(ModuleHash("m".into())),
             }),
             Value::Action(ActionRef::new("a", vec![Value::Int(1)])),
+            Value::Enum(EnumValue {
+                ty: "e1".into(),
+                variant: "v1".into(),
+                fields: BTreeMap::from([("f1".to_owned(), Value::text("payload"))]),
+            }),
         ]);
         let json = to_json(&v).unwrap();
         let text = serde_json::to_string(&json).unwrap();

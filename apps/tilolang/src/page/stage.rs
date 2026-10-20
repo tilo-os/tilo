@@ -25,7 +25,9 @@ pub const SCENARIOS: &[&str] = &[
     "notes",
     "notes-detail",
     "letters",
+    "letters-detail",
     "chat",
+    "chat-detail",
     "board",
 ];
 
@@ -303,20 +305,11 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
                     "Ask Maria whether the studio is free on the 14th, and send Tomas the revised plan.",
                 )?;
                 let me = page.me.clone();
-                call(page, &me, NOTES, "toggle_pin", vec![Value::resource(&first)])?;
-                let notebook = root(page, NOTES)?;
-                call(
-                    page,
-                    &me,
-                    NOTES,
-                    "open_note",
-                    vec![Value::resource(&notebook), Value::resource(&first)],
-                )
-                .map(|_| ())
+                call(page, &me, NOTES, "toggle_pin", vec![Value::resource(&first)]).map(|_| ())
             }));
             steps.push(open(NOTES));
         }
-        "letters" => {
+        "letters" | "letters-detail" => {
             steps.push(step(|page| {
                 let desk = root(page, LETTERS)?;
                 let me = page.me.clone();
@@ -332,18 +325,11 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
                 let older = reference(call(page, &me, LETTERS, "new_draft", vec![Value::resource(&desk)])?)?;
                 type_into(page, &older, "to", "maria@example.org")?;
                 type_into(page, &older, "subject", "Studio on the 14th")?;
-                call(
-                    page,
-                    &me,
-                    LETTERS,
-                    "open_draft",
-                    vec![Value::resource(&desk), Value::resource(&draft)],
-                )
-                .map(|_| ())
+                Ok(())
             }));
             steps.push(open(LETTERS));
         }
-        "chat" => {
+        "chat" | "chat-detail" => {
             steps.push(step(|page| {
                 let me = page.me.clone();
                 // The note and the draft the agent will point at.
@@ -352,7 +338,6 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
                     "Packing list",
                     "Passport, charger, the blue notebook.",
                 )?;
-                let notebook = root(page, NOTES)?;
                 let desk = root(page, LETTERS)?;
                 let draft = reference(call(
                     page,
@@ -389,11 +374,7 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
                     AGENT,
                     &conversation,
                     "Here is the packing list you started.",
-                    &format!(
-                        "notes.editor(@notes.Notebook:{}, @notes.Note:{})",
-                        notebook.id_string(),
-                        packing.id_string()
-                    ),
+                    &format!("notes.note_editor(@notes.Note:{})", packing.id_string()),
                 )?;
                 say(
                     page,
@@ -456,10 +437,24 @@ pub(super) fn script(name: &str) -> VecDeque<Step> {
         }
         _ => {}
     }
-    if name == "notes-detail" {
-        // What a person does in a narrow window: open a note from the list.
-        steps.push(step(|page| {
-            page.show_detail();
+    // What a person does from a list: open an item, which pushes its own window.
+    let shown = match name {
+        "notes-detail" => Some((NOTES, "notes", usize::MAX)),
+        "letters-detail" => Some((LETTERS, "drafts", 0)),
+        "chat-detail" => Some((CHAT, "conversations", 0)),
+        _ => None,
+    };
+    if let Some((app, field, index)) = shown {
+        steps.push(step(move |page| {
+            let list = root(page, app)?;
+            let all = items(page, &list, field)?;
+            let item = if index == usize::MAX {
+                all.last()
+            } else {
+                all.get(index)
+            };
+            let item = item.ok_or("nothing to open")?;
+            page.open_resource(item, None);
             Ok(())
         }));
     }

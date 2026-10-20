@@ -24,7 +24,7 @@ fn sort_by_needs_a_scalar_or_text_key() {
 #[test]
 fn a_map_field_is_read_with_get_and_keys() {
     let c = compile(
-        "type M {\n    m: Map<Int>\n}\nfn one(c: M) -> Int {\n    return c.m.get(\"a\").unwrap_or(0)\n}\nfn names(c: M) -> List<Text> {\n    return c.m.keys()\n}\nview v(c: M) {\n    for k in c.m.keys() {\n        text(k)\n    }\n}",
+        "type M {\n    m: Map<Int>\n}\nfn one(c: M) -> Int {\n    match c.m.get(\"a\") {\n        .some(n) => n,\n        .none => 0,\n    }\n}\nfn names(c: M) -> List<Text> {\n    return c.m.keys()\n}\nview v(c: M) {\n    for k in c.m.keys() {\n        text(k)\n    }\n}",
     );
     validate(&c.wasm);
 }
@@ -44,9 +44,11 @@ fn sets_and_maps_of_scalars_are_written_with_boxed_values() {
 
 #[test]
 fn try_reports_whether_an_invocation_worked() {
-    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    return l.n\n}\nflow f(l: L) -> Int {\n    let ok = try bump(l)\n    let got = try size(l)\n    if ok {\n        return got.unwrap_or(0)\n    }\n    return -1\n}";
+    let src = "type L {\n    n: Int merge counter\n}\naction bump(l: L) {\n    l.n += 1\n}\naction size(l: L) -> Int {\n    return l.n\n}\nflow f(l: L) -> Int {\n    let ok = try bump(l)\n    let got = try size(l)\n    match ok {\n        .ok => match got {\n            .ok(n) => n,\n            .err(_) => 0,\n        },\n        .err(_) => -1,\n    }\n}";
     let c = compile(src);
     validate(&c.wasm);
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("try_invoke") && has("enum_is") && has("enum_get_i"));
 }
 
 #[test]

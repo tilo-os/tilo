@@ -50,7 +50,9 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Action
         | Ty::View
         | Ty::Length(_)
+        | Ty::Choice(_)
         | Ty::Enum(_)
+        | Ty::Result(..)
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
@@ -75,6 +77,7 @@ fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
             .as_str()
             .map(Value::text)
             .ok_or_else(|| "default is not text".into()),
+        (Ty::Enum(_), Some(j)) => from_json(j),
         _ => type_default(ty),
     }
 }
@@ -213,6 +216,12 @@ impl Core {
             Value::List(items) => Value::List(self.adopt_all(items, author)?),
             Value::Tuple(items) => Value::Tuple(self.adopt_all(items, author)?),
             Value::Opt(Some(x)) => Value::some(self.adopt(*x, author)?),
+            Value::Enum(mut e) => {
+                for v in e.fields.values_mut() {
+                    *v = self.adopt(std::mem::replace(v, Value::Unit), author)?;
+                }
+                Value::Enum(e)
+            }
             other => other,
         })
     }

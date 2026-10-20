@@ -13,10 +13,10 @@ mod cases {
 type Album {\n    title: Text\n    artist: Text\n}\n\
 type Library {\n    albums: Collection<Album>\n}\n\
 action add(l: Library, title: Text, artist: Text) {\n    l.albums.insert(Album(title: title, artist: artist))\n}\n\
-view album_card(a: Album) {\n    layers {\n        image(a.title, aspect: 16/9)\n        text(a.artist, at: bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
+view album_card(a: Album) {\n    layers {\n        image(a.title, aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
 view library(l: Library) {\n    page {\n        heading(\"Albums\")\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
-view detail(a: Album) {\n    page(full) {\n        split(side: leading, collapse: drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
-view bar(a: Album) {\n    if space.compact {\n        row(distribute: between) { text(a.title); spacer }\n    } else {\n        row(gap: section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n}";
+view detail(a: Album) {\n    page(full) {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
+view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n}";
 
     fn setup() -> (Runtime, App, tilolang_runtime::ResourceRef) {
         let app = App::compile(SOURCE, &[]);

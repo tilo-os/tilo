@@ -66,6 +66,8 @@ pub struct Core {
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
+    /// The `window` and `lens` state of every view.
+    pub view_states: RefCell<crate::view_state::ViewStates>,
 }
 
 /// Typed access to the wasm arguments of one import call.
@@ -155,6 +157,7 @@ impl Core {
             names: RefCell::new(None),
             sink: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
+            view_states: RefCell::new(crate::view_state::ViewStates::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -217,15 +220,16 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActRef, CollInsert, CollMove, CollRemove, FloatToStr, IntToStr, Invoke, Invoker,
-            IsError, IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
-            ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV,
-            Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI,
-            RefEq, RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH,
-            ResSetI, ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp,
-            StrConcat, StrEq, StrLen, StrLit, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAnchor, UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UnwrapF, UnwrapH, UnwrapI,
+            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, EnumGetF, EnumGetH,
+            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
+            Invoker, IsError, IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
+            ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall,
+            NoneV, Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH,
+            RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
+            ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI,
+            StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH,
+            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState,
+            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -235,14 +239,16 @@ impl Core {
             | ListSortByKey | ListGetH | TupleNew | TupleSetI | TupleSetF | TupleSetH
             | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
             | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
+            | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | SetAdd | SetRemove | MapPut
             | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
             | RefEq | RefId => self.resource_import(imp, a),
-            ActRef | Invoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
+            ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
             | PrincipalName | QueueBlock => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF => self.ui_import(imp, a),
+            | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

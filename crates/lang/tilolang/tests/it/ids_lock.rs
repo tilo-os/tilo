@@ -97,7 +97,10 @@ fn a_removed_declaration_is_retired_and_its_id_is_never_reused() {
         .replace("action increment(c: Counter) {\n    c.value += 1\n}\n", "")
         .replace("on: increment(c)", "on: increment2(c)");
     // Drop the action: the source no longer declares it.
-    let src = src.replace("button(\"+1\", on: increment2(c)) #plus", "text(\"none\")");
+    let src = src.replace(
+        "button(\"+1\", on: increment2(c)) as plus",
+        "text(\"none\")",
+    );
     let after =
         tilolang::compile_package_with(&src, &first, &[], &mut SeededEntropy(3)).expect("compiles");
     assert!(after.ids.get("increment").is_none());

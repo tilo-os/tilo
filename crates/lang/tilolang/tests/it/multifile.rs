@@ -12,7 +12,7 @@ use crate::common::fixture;
 const HEAD: &str = "app so.tilo.counter \"Counter\"\n\n/// A counter that several people can bump at once.\ntype Counter {\n    /// The current value.\n    value: Int merge counter\n}\n";
 const ACTIONS: &str =
     "/// Add one to the counter.\naction increment(c: Counter) {\n    c.value += 1\n}\n";
-const VIEWS: &str = "view counter(c: Counter) {\n    column {\n        text(c.value)\n        button(\"+1\", on: increment(c)) #plus\n    }\n}\n";
+const VIEWS: &str = "view counter(c: Counter) {\n    column {\n        text(c.value)\n        button(\"+1\", on: increment(c)) as plus\n    }\n}\n";
 
 fn files(list: &[(&str, &str)]) -> PackageSource {
     PackageSource::new(
