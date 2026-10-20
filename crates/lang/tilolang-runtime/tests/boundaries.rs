@@ -61,6 +61,18 @@ view eager(bag: Bag) {
     }
 }
 
+view inline(bag: Bag) {
+    column {
+        heading(bag.name)
+        for item in bag.items {
+            row {
+                text(item.title)
+                checkbox("Done", bind: item.done)
+            }
+        }
+    }
+}
+
 view lazy(bag: Bag) {
     column {
         heading(bag.name)
@@ -150,6 +162,27 @@ view lazy(bag: Bag) {
             view.stats().renders - opened.renders,
             1,
             "only the retitled item's row ran"
+        );
+        assert!(
+            matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
+            "{patches:?}"
+        );
+        assert_eq!(texts(view.tree())[17], "seventeen");
+    }
+
+    #[test]
+    fn an_inline_loop_body_is_a_boundary_per_item() {
+        // No view factored out: the loop's body is a row of its own all the same.
+        let rows = Rows::new(50);
+        let mut view = rows.view("inline");
+        let opened = view.stats();
+        assert_eq!(opened.boundaries, 51, "the view and one boundary per row");
+        rows.retitle(17, "seventeen");
+        let patches = view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders - opened.renders,
+            1,
+            "only that row ran"
         );
         assert!(
             matches!(patches.as_slice(), [Patch::SetProp { name, .. }] if name == "value"),
