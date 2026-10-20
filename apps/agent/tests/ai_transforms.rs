@@ -82,7 +82,7 @@ struct AgentHost {
     rows: Vec<CatalogueRow>,
     model: Scripted,
     answering: Answering,
-    content: tilo_content::ContentStore,
+    content: ui::content::ContentStore,
     ledger: Mutex<InvocationLedger<InvocationUpdate>>,
 }
 
@@ -109,7 +109,7 @@ impl AgentHost {
             rows,
             model: Scripted::new(answers),
             answering: Answering::AsTheAgent,
-            content: tilo_content::ContentStore::memory(),
+            content: ui::content::ContentStore::memory(),
             ledger: Mutex::new(InvocationLedger::default()),
         }
     }

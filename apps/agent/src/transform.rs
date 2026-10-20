@@ -592,10 +592,10 @@ fn check_schema(schema: &Value) -> Result<(), Failure> {
     }
 }
 
-fn read_content(address: &str, content: &tilo_content::ContentStore) -> Result<String, Failure> {
+fn read_content(address: &str, content: &ui::content::ContentStore) -> Result<String, Failure> {
     let hash = address
         .strip_prefix(CONTENT_PREFIX)
-        .filter(|hash| tilo_content::valid_hash(hash))
+        .filter(|hash| ui::content::valid_hash(hash))
         .ok_or_else(|| invalid("`resource` must be a `tilo.content:<hash>` address"))?;
     let bytes = content.read(hash).ok_or_else(|| {
         failure(
@@ -665,7 +665,7 @@ fn respond(args: &Arguments) -> Result<Transform, Failure> {
 pub fn bind(
     action: &str,
     arguments: &Map<String, Value>,
-    content: &tilo_content::ContentStore,
+    content: &ui::content::ContentStore,
 ) -> Result<Call, Failure> {
     if !ACTIONS.iter().any(|(known, _, _)| *known == action) {
         return Err(failure(
@@ -789,7 +789,7 @@ fn classify(args: &Arguments) -> Result<Transform, Failure> {
 pub fn bind_wire(
     action: &str,
     argument: Option<&str>,
-    content: &tilo_content::ContentStore,
+    content: &ui::content::ContentStore,
 ) -> Result<Call, Failure> {
     let arguments = match argument {
         None => Map::new(),
@@ -963,7 +963,7 @@ pub struct Directed {
 /// and hands their terminal updates back for the loop to send.
 pub struct TransformService {
     model: Arc<dyn TransformModel>,
-    content: tilo_content::ContentStore,
+    content: ui::content::ContentStore,
     finished_tx: Sender<(u64, InvocationUpdate)>,
     finished_rx: Receiver<(u64, InvocationUpdate)>,
     /// Invocations whose worker has not reported yet, with the invocation
@@ -975,7 +975,7 @@ pub struct TransformService {
 
 impl TransformService {
     #[must_use]
-    pub fn new(model: Arc<dyn TransformModel>, content: tilo_content::ContentStore) -> Self {
+    pub fn new(model: Arc<dyn TransformModel>, content: ui::content::ContentStore) -> Self {
         let (finished_tx, finished_rx) = channel();
         Self {
             model,
@@ -1117,8 +1117,8 @@ mod tests {
         }
     }
 
-    fn store() -> tilo_content::ContentStore {
-        tilo_content::ContentStore::memory()
+    fn store() -> ui::content::ContentStore {
+        ui::content::ContentStore::memory()
     }
 
     #[test]

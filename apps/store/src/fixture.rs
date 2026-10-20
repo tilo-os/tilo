@@ -302,11 +302,11 @@ fn fixture_bot() -> StoreItem {
             apps: vec!["so.tilo.notes".into(), "so.tilo.chat".into()],
             connectors: Vec::new(),
             appearance: false,
-            artifact: registry_types::BotArtifact {
+            artifact: ui::registry::BotArtifact {
                 program_url: "https://apps.tilo.so/blobs/notes-digest".into(),
                 program_blake3_hex: "5e".repeat(32),
                 program_size_bytes: 2_048,
-                requires: registry_types::BotRequirements {
+                requires: ui::registry::BotRequirements {
                     connectors: Vec::new(),
                     apps: vec!["so.tilo.chat".into(), "so.tilo.notes".into()],
                     appearance: false,

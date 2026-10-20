@@ -7,10 +7,10 @@ use std::io::Read as _;
 use std::time::Duration;
 
 use app_cli::config::RegistryConfig;
-use registry_types::{
+use thiserror::Error;
+use ui::registry::{
     ModerationCase, ModerationMutation, SignedModerationMutation, TransparencyPage,
 };
-use thiserror::Error;
 
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -57,14 +57,13 @@ fn validate_submission_projection(
 ) -> Result<(), ModerationClientError> {
     let valid = match &request.mutation {
         ModerationMutation::FileReport { package_id, .. } => {
-            case.case_id == registry_types::moderation_case_id(package_id, &request.request_id)
+            case.case_id == ui::registry::moderation_case_id(package_id, &request.request_id)
                 && case.package_id == *package_id
-                && case.status == registry_types::ModerationCaseStatus::Open
+                && case.status == ui::registry::ModerationCaseStatus::Open
         }
         ModerationMutation::PublisherReply { case_id, .. } => case.case_id == *case_id,
         ModerationMutation::PublisherAppeal { case_id, .. } => {
-            case.case_id == *case_id
-                && case.status == registry_types::ModerationCaseStatus::Appealed
+            case.case_id == *case_id && case.status == ui::registry::ModerationCaseStatus::Appealed
         }
         ModerationMutation::ReviewerDecision {
             case_id, decision, ..
@@ -109,7 +108,7 @@ pub fn fetch_verified_case(
             None => break,
         }
     }
-    registry_types::derive_verified_case(
+    ui::registry::derive_verified_case(
         &events,
         case_id,
         &registry.owner_pubkey_hex,
@@ -261,12 +260,12 @@ mod tests {
         {
             // Only the request id and the mutation are read here; signing is
             // the registry's concern and tested there.
-            let request = registry_types::SignedModerationMutation {
-                protocol: registry_types::MODERATION_PROTOCOL,
+            let request = ui::registry::SignedModerationMutation {
+                protocol: ui::registry::MODERATION_PROTOCOL,
                 request_id: "request-one".into(),
                 issued_at_unix: 10,
                 expires_at_unix: 20,
-                actor_role: registry_types::ModerationActorRole::Reporter,
+                actor_role: ui::registry::ModerationActorRole::Reporter,
                 actor_pubkey_hex: String::new(),
                 mutation: ModerationMutation::FileReport {
                     package_id: "so.tilo.notes".into(),
@@ -287,13 +286,13 @@ mod tests {
                 case_id: format!("case-{short_hash}"),
                 package_id: "so.tilo.notes".into(),
                 publisher_pubkey_hex: "bb".repeat(32),
-                status: registry_types::ModerationCaseStatus::Open,
+                status: ui::registry::ModerationCaseStatus::Open,
                 opened_at_unix: 11,
                 updated_at_unix: 11,
                 latest_sequence: 1,
             };
             validate_submission_projection(&request, &case).unwrap();
-            case.status = registry_types::ModerationCaseStatus::ClosedNoAction;
+            case.status = ui::registry::ModerationCaseStatus::ClosedNoAction;
             assert!(validate_submission_projection(&request, &case).is_err());
         }
     }

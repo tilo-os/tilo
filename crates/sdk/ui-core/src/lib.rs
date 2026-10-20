@@ -147,6 +147,7 @@ pub mod collection_transition;
 pub mod color;
 pub mod color_compat;
 pub mod component_lifecycle;
+pub mod content;
 pub mod content_layout;
 mod damage;
 pub mod date;

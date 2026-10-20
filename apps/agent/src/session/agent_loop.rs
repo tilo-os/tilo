@@ -3649,7 +3649,7 @@ mod tests {
                     &[],
                     ui::permissions::KindSet::READ_UNDOABLE,
                 ),
-                content: tilo_content::ContentStore::memory(),
+                content: ui::content::ContentStore::memory(),
                 companions: Vec::new(),
                 provider: None,
             },

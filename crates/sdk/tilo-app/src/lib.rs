@@ -165,6 +165,10 @@ pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// The package registry's vocabulary (entries, artifacts, moderation cases)
+/// that the SDK's moderation and package APIs speak, re-exported so an app
+/// names those types without a dependency of its own.
+pub use registry_types as registry;
 /// JSON values for action arguments, component props and native-input
 /// snapshots, re-exported so an app needs no dependency of its own.
 pub use serde_json;
