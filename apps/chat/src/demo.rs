@@ -7,7 +7,7 @@
 
 use automerge::AutoCommit;
 use ui::tilo_actions::DoorError;
-use ui::tilo_resource::{Atom, Edit, Id, Invoke, ModelError, Replica, Set};
+use ui::tilo_resource::{Atom, Id, Invoke, ModelError, Replica, Set};
 
 use crate::messages::{Messages, chat_part};
 use crate::model::{Attachment, ChannelKind, EditRecord, Presence};
@@ -452,54 +452,79 @@ pub fn demo_part(me: &str) -> ChatPart {
     part
 }
 
-/// `part` written into an empty part, message by message: what a capture's
-/// scenario and a test start from.
-#[must_use]
-pub fn part_edits(part: &ChatPart) -> Vec<Edit<ChatPart>> {
-    let paths = ChatPart::paths();
-    part.messages
-        .iter()
-        .enumerate()
-        .map(|(at, (id, item))| paths.messages.insert_as(id, at, item))
-        .collect()
+// A fixture is no one's edit: the people, channels and messages it starts
+// a test or a tool with are written into the document as they stand, not
+// through the record's actions. The channels and messages refuse every
+// generic edit (`#[model(readonly)]`): only the record's actions make them,
+// so no edit names someone else as a message's author or rearranges a
+// room behind its moderators.
+
+/// `item` added under `id` to `items`; refused when it holds `id` already,
+/// as an insert of an existing item is.
+fn add<T>(
+    items: &mut ui::tilo_resource::Collection<T>,
+    id: &Id,
+    item: T,
+) -> Result<(), ModelError> {
+    if items.contains(id) {
+        return Err(ModelError::invalid(format!("an item `{id}` exists")));
+    }
+    items.push(id.clone(), item);
+    Ok(())
 }
 
-/// `chat` written into an empty record, item by item: what a capture's
-/// scenario and a test start from.
-#[must_use]
-pub fn edits(chat: &Chat) -> Vec<Edit<Chat>> {
-    let paths = Chat::paths();
-    let mut edits = Vec::new();
-    for (at, (id, item)) in chat.categories.iter().enumerate() {
-        edits.push(paths.categories.insert_as(id, at, item));
-    }
-    for (at, (id, item)) in chat.channels.iter().enumerate() {
-        edits.push(paths.channels.insert_as(id, at, item));
-    }
-    for person in &chat.people {
-        edits.push(paths.people.insert(person));
-    }
-    for (at, (id, report)) in chat.feedback.iter().enumerate() {
-        edits.push(paths.feedback.insert_as(id, at, report));
-    }
-    if !chat.agent_names.is_empty() {
-        edits.push(paths.agent_names.set(chat.agent_names.clone()));
-    }
-    if !chat.read.is_empty() {
-        edits.push(paths.read.set(chat.read.clone()));
-    }
-    edits
+/// The chat record `doc` holds, changed by `change` and written back as it
+/// stands, uncommitted.
+fn change_chat(
+    doc: &mut AutoCommit,
+    change: impl FnOnce(&mut Chat) -> Result<(), ModelError>,
+) -> Result<(), ModelError> {
+    use ui::tilo_resource::Fields as _;
+    let before = Chat::read_fields(doc, &automerge::ROOT)?;
+    let mut after = before.clone();
+    change(&mut after)?;
+    after.write_changed_fields(
+        &before,
+        doc,
+        &automerge::ROOT,
+        &ui::tilo_resource::Delta::default(),
+    )
 }
 
-/// Write `chat` into `doc`, a document holding no chat yet, as one change.
+/// Write `chat` into `doc`, a document holding no chat yet, as one change:
+/// its items added to what `doc` holds, refused for an item it holds
+/// already.
 ///
 /// # Errors
-/// When `chat` does not fit the record's model.
+/// When `chat` does not fit the record's model or names an item `doc`
+/// holds.
 pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
     initialized(doc)?;
-    for edit in edits(chat) {
-        edit.apply_local(doc)?;
-    }
+    change_chat(doc, |held| {
+        for (id, category) in chat.categories.iter() {
+            add(&mut held.categories, id, category.clone())?;
+        }
+        for (id, channel) in chat.channels.iter() {
+            add(&mut held.channels, id, channel.clone())?;
+        }
+        for person in &chat.people {
+            let id = Id::from_raw(person.id.0.clone());
+            if held.people.find(&id).is_some() {
+                return Err(ModelError::invalid(format!("an item `{id}` exists")));
+            }
+            held.people.push(person.clone());
+        }
+        for (id, report) in chat.feedback.iter() {
+            add(&mut held.feedback, id, report.clone())?;
+        }
+        if !chat.agent_names.is_empty() {
+            held.agent_names.clone_from(&chat.agent_names);
+        }
+        if !chat.read.is_empty() {
+            held.read.clone_from(&chat.read);
+        }
+        Ok(())
+    })?;
     commit_genesis(doc);
     Ok(())
 }
@@ -510,12 +535,21 @@ pub fn write(doc: &mut AutoCommit, chat: &Chat) -> Result<(), ModelError> {
 /// # Errors
 /// When `part` does not fit the part's model.
 pub fn write_part(doc: &mut AutoCommit, part: &ChatPart) -> Result<(), ModelError> {
+    use ui::tilo_resource::Fields as _;
     <ChatPart as ui::tilo_resource::Resource>::initialize(doc)?;
     commit_genesis(doc);
-    for edit in part_edits(part) {
-        edit.apply_local(doc)?;
+    let before = ChatPart::read_fields(doc, &automerge::ROOT)?;
+    let mut after = before.clone();
+    for (id, message) in part.messages.iter() {
+        add(&mut after.messages, id, message.clone())?;
     }
-    doc.commit();
+    after.write_changed_fields(
+        &before,
+        doc,
+        &automerge::ROOT,
+        &ui::tilo_resource::Delta::default(),
+    )?;
+    commit_genesis(doc);
     Ok(())
 }
 
@@ -553,12 +587,7 @@ pub fn seed(doc: &mut AutoCommit) -> Result<(), ModelError> {
 /// When `room` already holds a chat the demo does not fit into.
 pub fn seed_room(room: &mut Room) -> Result<(), DoorError> {
     seed(&mut room.chat).map_err(|error| DoorError::Failed(error.to_string()))?;
-    for edit in part_edits(&demo_part(crate::model::ME)) {
-        let insert =
-            Invoke::edit(&edit).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-        room.apply_part_as(crate::model::ME, insert)?;
-    }
-    Ok(())
+    room.write_part(0, &demo_part(crate::model::ME))
 }
 
 /// A chat as a tool or a test holds it without a window: the room's chat
@@ -728,6 +757,20 @@ impl Room {
         chain
             .stage_at(&invoke, author, now_ms)
             .map_err(|error| DoorError::Failed(error.to_string()))
+    }
+
+    /// Write `part` into part `index` of the messages as it stands: a test's
+    /// or a tool's fixture of messages by several people, which no one
+    /// person's verb makes ([`ui::framework::Chain::write_start`]).
+    ///
+    /// # Errors
+    /// When the room holds no messages, or the part does not take `part`.
+    pub fn write_part(&mut self, index: u64, part: &ChatPart) -> Result<(), DoorError> {
+        self.parts
+            .as_ref()
+            .ok_or_else(|| DoorError::Failed("the room holds no messages".into()))?
+            .write_start(index, part)
+            .map_err(DoorError::Failed)
     }
 
     /// Post `text` in `channel` as `author`; the new message's id.
@@ -913,50 +956,52 @@ pub fn say(room: &mut Room, author: &str, channel: &str, text: &str) -> Result<S
     room.say(author, channel, text)
 }
 
-/// Add the category `id` named `name` to `doc`, as `author`.
+/// Add the category `id` named `name` to `doc`, as a fixture writes it:
+/// under the id a test names, which the moderators' `create-category`
+/// mints itself.
 ///
 /// # Errors
-/// As [`apply_as`].
-pub fn insert_category(
-    doc: &mut AutoCommit,
-    author: &str,
-    id: &str,
-    name: &str,
-) -> Result<(), DoorError> {
-    let at = crate::projection::read(doc).categories.len();
+/// When `doc` holds the category already, or does not read as a chat.
+pub fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) -> Result<(), DoorError> {
     let category = Category { name: name.into() };
-    let insert = Chat::paths()
-        .categories
-        .insert_as(&Id::from_raw(id), at, &category);
-    let insert =
-        Invoke::edit(&insert).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    apply_as(doc, author, insert)
+    write_fixture(doc, |chat| {
+        add(&mut chat.categories, &Id::from_raw(id), category)
+    })
 }
 
-/// Add the channel `id` named `name` under `category` (none when empty) of
-/// `doc`, as `author`.
+/// Add the channel `id` named `name` under `category` (none when empty) to
+/// `doc`, as a fixture writes it: under the id a test names, which the
+/// moderators' `create-channel` mints itself.
 ///
 /// # Errors
-/// As [`apply_as`].
+/// When `doc` holds the channel already, or does not read as a chat.
 pub fn insert_channel(
     doc: &mut AutoCommit,
-    author: &str,
     id: &str,
     category: &str,
     name: &str,
     kind: ChannelKind,
 ) -> Result<(), DoorError> {
-    let at = crate::projection::read(doc).channels.len();
     let channel = Channel {
         category: (!category.is_empty()).then(|| Id::from_raw(category)),
         name: name.into(),
         kind,
         ..Channel::default()
     };
-    let insert = Chat::paths()
-        .channels
-        .insert_as(&Id::from_raw(id), at, &channel);
-    let insert =
-        Invoke::edit(&insert).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    apply_as(doc, author, insert)
+    write_fixture(doc, |chat| {
+        add(&mut chat.channels, &Id::from_raw(id), channel)
+    })
+}
+
+/// `change` of the chat in `doc` (started with its genesis when empty),
+/// written as it stands and committed as what the chat starts with.
+fn write_fixture(
+    doc: &mut AutoCommit,
+    change: impl FnOnce(&mut Chat) -> Result<(), ModelError>,
+) -> Result<(), DoorError> {
+    initialized(doc)
+        .and_then(|()| change_chat(doc, change))
+        .map_err(|error| DoorError::Failed(error.to_string()))?;
+    commit_genesis(doc);
+    Ok(())
 }

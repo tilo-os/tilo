@@ -249,43 +249,36 @@ impl ResourceApp for ChatShell {
         }
     }
 
-    /// The agent scenarios are the demo workspace and what the agent did
-    /// in it, each change written by whoever made it; their messages are
-    /// staged in the chat's parts ([`part_scenario`]).
+    /// Every scenario but `starter` starts from the demo workspace, read by
+    /// the capture's own person: its people and its channels under the
+    /// fixed ids the scenarios name, which only the moderators' actions
+    /// make, minting their own. `agent-work` adds the agent introducing
+    /// itself and being named, each change written by whoever made it.
+    /// Their messages are staged in the chat's parts ([`part_scenario`]).
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
-        if matches!(
-            fixture.scenario(),
-            Some("agent-streaming" | "agent-failed" | "agent-reasoning" | "agent-long-thread")
-        ) {
-            for invoke in demo_invokes() {
-                fixture.version(crate::model::ME, crate::demo::NOW * 1000, invoke);
-            }
+        if fixture.scenario() == Some("starter") {
+            return;
         }
+        fixture.start(crate::demo::demo(crate::model::ME));
         if fixture.scenario() == Some("agent-work") {
-            for (author, invoke) in agent_work_scenario() {
+            for (author, invoke) in agent_work_steps() {
                 fixture.version(author, crate::demo::NOW * 1000, invoke);
             }
         }
     }
 
-    /// The first-run workspace for `starter`, the demo conversation for
-    /// every other scenario, both read by the capture's own person.
+    /// The first-run workspace for `starter`, read by the capture's own
+    /// person; every other scenario starts from its [`Self::fixture`].
     fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
-        match name {
-            Some(
-                "agent-work" | "agent-streaming" | "agent-failed" | "agent-reasoning"
-                | "agent-long-thread",
-            ) => Vec::new(),
-            Some("starter") => {
-                let you = LocalIdentity::demo();
-                vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
-                    name: you.name,
-                    initials: you.initials,
-                    color: u32::try_from(you.color_idx).unwrap_or_default(),
-                })]
-            }
-            _ => demo_invokes(),
+        if name != Some("starter") {
+            return Vec::new();
         }
+        let you = LocalIdentity::demo();
+        vec![Chat::BEGIN_CHAT.with(chat::BeginChat {
+            name: you.name,
+            initials: you.initials,
+            color: u32::try_from(you.color_idx).unwrap_or_default(),
+        })]
     }
 
     /// A new record's creator, and the room's first channels, `#chat` and
@@ -306,36 +299,45 @@ impl ResourceApp for ChatShell {
     }
 }
 
-/// The messages a capture of `scenario` shows, each with who wrote it: the
-/// demo conversation and what the scenario adds to it, staged in the chat's
-/// parts once the window holds its chain ([`ChatApp::stage_parts`]). The
-/// first-run workspace has none.
-pub(crate) fn part_scenario(scenario: Option<&str>) -> Vec<(&'static str, Invoke<ChatPart>)> {
+/// The messages a capture of `scenario` shows, staged in the chat's parts
+/// once the window holds its chain ([`ChatApp::stage_parts`]): the first
+/// part's messages as it starts, by several people under the fixed ids the
+/// scenario names, which no one person's post makes; then what is done
+/// with them, each by who did it. The first-run workspace has none.
+pub(crate) fn part_scenario(
+    scenario: Option<&str>,
+) -> (Option<ChatPart>, Vec<(&'static str, Invoke<ChatPart>)>) {
     let me = crate::model::ME;
     if scenario == Some("starter") {
-        return Vec::new();
+        return (None, Vec::new());
     }
-    let mut staged: Vec<(&'static str, Invoke<ChatPart>)> = demo_part_invokes()
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .collect();
+    let mut start = crate::demo::demo_part(me);
+    let mut steps = Vec::new();
     match scenario {
-        Some("bridged") => staged.extend(Invoke::edit(&bridged_post()).map(|invoke| (me, invoke))),
+        Some("bridged") => {
+            let (id, message) = bridged_post();
+            start.messages.push(id, message);
+        }
         Some("channels") => {
-            staged.extend(Invoke::edit(&mention_post()).map(|invoke| (me, invoke)));
+            let (id, message) = mention_post();
+            start.messages.push(id, message);
         }
         Some(
             scenario @ ("agent-streaming" | "agent-failed" | "agent-reasoning"
             | "agent-long-thread"),
-        ) => staged.extend(
+        ) => steps.extend(
             provider_stream_scenario(scenario)
                 .into_iter()
                 .map(|invoke| (me, invoke)),
         ),
-        Some("agent-work") => staged.extend(agent_work_part_steps()),
+        Some("agent-work") => {
+            let (id, message) = agent_summons();
+            start.messages.push(id, message);
+            steps.extend(agent_work_part_steps());
+        }
         _ => {}
     }
-    staged
+    (Some(start), steps)
 }
 
 /// Provider output fixtures use the same durable action as a live host stream.
@@ -383,27 +385,9 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
         .collect()
 }
 
-/// The demo workspace's chat record, read by [`crate::model::ME`], as a
-/// scenario writes it.
-fn demo_invokes() -> Vec<Invoke<Chat>> {
-    crate::demo::edits(&crate::demo::demo(crate::model::ME))
-        .iter()
-        .filter_map(|edit| Invoke::edit(edit).ok())
-        .collect()
-}
-
-/// The demo conversation, read by [`crate::model::ME`], as a scenario
-/// writes it into the first part of the chat's messages.
-pub(crate) fn demo_part_invokes() -> Vec<Invoke<ChatPart>> {
-    crate::demo::part_edits(&crate::demo::demo_part(crate::model::ME))
-        .iter()
-        .filter_map(|edit| Invoke::edit(edit).ok())
-        .collect()
-}
-
 /// `channels`: a message elsewhere that mentions the reader, which the
 /// sidebar badges on its channel.
-fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
+fn mention_post() -> (Id, crate::record::Message) {
     let text = "@You could you check the hover states on the new sidebar before standup?";
     let post = crate::record::Message {
         channel: Id::from_raw("c_frontend"),
@@ -418,10 +402,7 @@ fn mention_post() -> ui::tilo_resource::Edit<ChatPart> {
         }],
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(crate::model::ME).messages.len();
-    ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw("m_mention"), at, &post)
+    (Id::from_raw("m_mention"), post)
 }
 
 /// The bridge the `bridged` scenario's post is by.
@@ -429,7 +410,7 @@ pub(crate) const DEMO_BRIDGE: &str = "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
 
 /// `bridged`: a bridge's post of a line someone wrote on Discord, shown
 /// under their name and picture while it stays the bridge's.
-fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
+fn bridged_post() -> (Id, crate::record::Message) {
     let post = crate::record::Message {
         channel: Id::from_raw("c_crit"),
         author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
@@ -445,28 +426,13 @@ fn bridged_post() -> ui::tilo_resource::Edit<ChatPart> {
         }),
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(crate::model::ME).messages.len();
-    ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw("m_bridged"), at, &post)
+    (Id::from_raw("m_bridged"), post)
 }
 
 /// The agent the `agent-work` scenario summons.
 pub(crate) const DEMO_AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
 /// The message summoning it.
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
-
-/// `agent-work`'s chat record: the demo workspace and the agent introducing
-/// itself and being named, each by its author. Its messages are
-/// [`agent_work_part_steps`].
-pub(crate) fn agent_work_scenario() -> Vec<(&'static str, Invoke<Chat>)> {
-    let me = crate::model::ME;
-    demo_invokes()
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .chain(agent_work_steps())
-        .collect()
-}
 
 /// On the demo workspace: the agent introducing itself and being named,
 /// each by its author.
@@ -491,13 +457,12 @@ pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
     ]
 }
 
-/// On the demo conversation: a person summoning the agent, and the agent's
-/// record of the work it took on, each by its author.
-pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
-    let me = crate::model::ME;
+/// In the demo conversation: the reader summoning the agent, under the id
+/// [`DEMO_SUMMONS`] the agent's record of its work names.
+pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
     let summons = crate::record::Message {
         channel: Id::from_raw("c_crit"),
-        author: ui::tilo_resource::Atom(me.to_owned()),
+        author: ui::tilo_resource::Atom(crate::model::ME.to_owned()),
         ts: crate::demo::NOW - 120,
         text: "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
         mentions: vec![crate::mention::Mention {
@@ -508,16 +473,13 @@ pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
         }],
         ..crate::record::Message::default()
     };
-    let at = crate::demo::demo_part(me).messages.len();
-    let ask = ChatPart::paths()
-        .messages
-        .insert_as(&Id::from_raw(DEMO_SUMMONS), at, &summons);
-    let mut steps: Vec<(&'static str, Invoke<ChatPart>)> = Invoke::edit(&ask)
-        .into_iter()
-        .map(|invoke| (me, invoke))
-        .collect();
-    steps.push((DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS))));
-    steps
+    (Id::from_raw(DEMO_SUMMONS), summons)
+}
+
+/// On the demo conversation holding [`agent_summons`]: the agent's record
+/// of the work it took on, by the agent.
+pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
+    vec![(DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
 /// The demo agent's record of the work `summons` asked of it.

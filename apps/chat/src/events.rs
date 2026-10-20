@@ -4201,6 +4201,10 @@ mod tests {
         for (author, invoke) in crate::resource::agent_work_steps() {
             crate::testing::apply_as(doc, author, invoke).unwrap();
         }
+        let mut head = crate::parts::ChatPart::clone(&doc.messages().parts()[0].1);
+        let (summons, message) = crate::resource::agent_summons();
+        head.messages.push(summons, message);
+        doc.write_part(0, &head).unwrap();
         for (author, invoke) in crate::resource::agent_work_part_steps() {
             crate::testing::apply_part_as(doc, author, invoke).unwrap();
         }

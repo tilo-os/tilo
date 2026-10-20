@@ -191,7 +191,7 @@ pub(crate) fn operation(invoke: &Invoke<Chat>) -> serde_json::Value {
 
 /// Add the category `id` named `name` to `doc`.
 pub(crate) fn insert_category(doc: &mut AutoCommit, id: &str, name: &str) {
-    crate::demo::insert_category(doc, crate::model::ME, id, name).unwrap();
+    crate::demo::insert_category(doc, id, name).unwrap();
 }
 
 /// Add the channel `id` named `name` under `category` of `doc`.
@@ -202,7 +202,7 @@ pub(crate) fn insert_channel(
     name: &str,
     kind: crate::model::ChannelKind,
 ) {
-    crate::demo::insert_channel(doc, crate::model::ME, id, category, name, kind).unwrap();
+    crate::demo::insert_channel(doc, id, category, name, kind).unwrap();
 }
 
 /// The published report `id`, carrying the reads a window offers on it.

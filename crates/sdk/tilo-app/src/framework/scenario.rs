@@ -223,17 +223,23 @@ struct Version<R: Resource> {
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
     values: HashMap<TypeId, Rc<dyn Any>>,
+    /// What the record starts with, written before the versions.
+    start: Option<Start>,
     history: Vec<Version<R>>,
     collaborators: Vec<(String, ResourceSelection)>,
     content: Option<tilo_content::ContentStore>,
     directory: Option<tempfile::TempDir>,
 }
 
+/// Writes a capture's starting state into the record.
+type Start = Box<dyn Fn(&mut Doc) -> Result<(), String>>;
+
 impl<R: Resource> Fixture<R> {
     pub(crate) fn new(scenario: Option<&str>, content: Option<tilo_content::ContentStore>) -> Self {
         Self {
             scenario: scenario.map(str::to_owned),
             values: HashMap::new(),
+            start: None,
             history: Vec::new(),
             collaborators: Vec::new(),
             content,
@@ -281,6 +287,39 @@ impl<R: Resource> Fixture<R> {
             .get_or_insert_with(tilo_content::ContentStore::memory)
     }
 
+    /// What the record holds when the capture starts: `state`, written into
+    /// it directly as the record's first content, before the versions. For
+    /// a scene whose starting content no single action makes as it stands
+    /// (items under fixed ids the scenario names, written by several
+    /// people) in fields the record keeps to its own actions
+    /// (`#[model(readonly)]`), which refuse every generic edit, a
+    /// scenario's or a version's alike. It is nobody's change: committed as
+    /// the record's genesis and checked by no door, so only ever a
+    /// capture's.
+    pub fn start(&mut self, state: R::State)
+    where
+        R::State: tilo_resource::Fields,
+    {
+        self.start = Some(Box::new(move |doc| {
+            let root = ui_core::automerge::ROOT;
+            let before = <R::State as tilo_resource::Fields>::read_fields(doc, &root)
+                .map_err(|error| format!("read the record: {error}"))?;
+            tilo_resource::Fields::write_changed_fields(
+                &state,
+                &before,
+                doc,
+                &root,
+                &tilo_resource::Delta::default(),
+            )
+            .map_err(|error| format!("write the record's start: {error}"))?;
+            doc.commit_with(
+                ui_core::automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+            );
+            Ok(())
+        }));
+    }
+
     /// A version of the resource `author` wrote at `at_ms` (milliseconds
     /// since the Unix epoch), before the capture: it arrives as their
     /// change does over sync, attributed to them in history and on no one's
@@ -301,12 +340,15 @@ impl<R: Resource> Fixture<R> {
         self.collaborators.push((name.to_owned(), at));
     }
 
-    /// Write the other people's versions into `doc`.
+    /// Write the record's start and the other people's versions into `doc`.
     pub(crate) fn write_history(
         &self,
         doc: &mut Doc,
         registry: &tilo_actions::ActionRegistry,
     ) -> Result<(), String> {
+        if let Some(start) = &self.start {
+            start(doc)?;
+        }
         for version in &self.history {
             write_version::<R>(doc, registry, version)?;
         }
@@ -314,7 +356,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     pub(crate) fn has_history(&self) -> bool {
-        !self.history.is_empty()
+        self.start.is_some() || !self.history.is_empty()
     }
 
     /// What the capture's views read.

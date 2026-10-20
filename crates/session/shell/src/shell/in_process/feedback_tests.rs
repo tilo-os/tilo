@@ -178,11 +178,9 @@ fn destination_owner(apps: &mut InProcessApps) -> Rc<RefCell<DestinationOwner>> 
         .initialize(|doc| {
             let failed = |error: ui::tilo_actions::DoorError| error.to_string();
             chat::demo::start(doc, AUTHOR, "Fixture", "F").map_err(failed)?;
-            chat::demo::insert_category(doc, AUTHOR, "feedback-category", "Feedback")
-                .map_err(failed)?;
+            chat::demo::insert_category(doc, "feedback-category", "Feedback").map_err(failed)?;
             chat::demo::insert_channel(
                 doc,
-                AUTHOR,
                 "feedback",
                 "feedback-category",
                 "Feedback",
