@@ -168,10 +168,10 @@ runtime_wayland="$(sed -n '/# The frozen snapshot already resolves these develop
   "$repo/os/Containerfile")"
 if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' <<<"$runtime_wayland" \
   && inventory_cleanup "$runtime_wayland" \
-    '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
+    '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$' \
     'xargs -r rpm -e --nodeps' \
-    '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$'; then
-  ok 'immutable runtime erases Wayland/input development and pkg-config payloads after resolving libraries'
+    '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$'; then
+  ok 'immutable runtime erases Wayland/input development, pkg-config and transitive build tools after resolving libraries'
 else
   bad 'runtime rootfs retains Wayland/input development payloads'
 fi
