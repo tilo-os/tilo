@@ -805,15 +805,23 @@ fn plain_changes_are_field_edits_at_their_paths() {
     .unwrap();
     assert!(talk.messages().get(&message).unwrap().pinned);
     let mut ada = talk.chat;
+    ada.apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+        channel: id("c_chat"),
+        name: "#lobby".into(),
+    }))
+    .unwrap();
+    ada.apply(Chat::ARCHIVE_CHANNEL.with(chat::ArchiveChannel {
+        channel: id("c_voice"),
+        archived: true,
+    }))
+    .unwrap();
     let paths = Chat::paths();
     for edit in [
-        paths.channels.item(&id("c_chat")).name.set("lobby".into()),
         paths
             .channels
             .item(&id("c_chat"))
             .topic
             .set("Say hi".into()),
-        paths.channels.item(&id("c_voice")).archived.set(true),
         paths
             .people
             .item(&id(ADA))
@@ -1017,6 +1025,42 @@ fn removing_a_message_sits_under_the_moderation_node() {
         Some(Some(ui::tilo_actions::MODERATION_FIELD))
     );
     assert_eq!(field("delete-message"), Some(None));
+}
+
+#[test]
+fn the_rooms_layout_is_kept_by_its_moderators() {
+    let field = |id: &str| {
+        Chat::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map(|decl| decl.field)
+    };
+    for id in [
+        "create-channel",
+        "create-category",
+        "rename-channel",
+        "rename-category",
+        "archive-channel",
+        "move-channel",
+        "set-channel-category",
+        "delete-channel",
+        "delete-category",
+    ] {
+        assert_eq!(
+            field(id),
+            Some(Some(ui::tilo_actions::MODERATION_FIELD)),
+            "{id}"
+        );
+    }
+    // Talking in a channel is every member's.
+    assert_eq!(field("mark-read"), Some(None));
+    let mut talk = Talk::new();
+    talk.chat
+        .apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+            channel: id("c_chat"),
+            name: "  ".into(),
+        }))
+        .unwrap_err();
 }
 
 #[test]

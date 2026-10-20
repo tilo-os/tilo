@@ -1235,6 +1235,22 @@ impl ChatApp {
         self.perms.can_participate()
     }
 
+    /// Whether the local peer keeps the room's layout: makes, renames,
+    /// moves, archives and deletes its channels and categories. A member
+    /// who may not is not offered it.
+    pub(crate) fn keeps_layout(&self) -> bool {
+        self.perms.can_moderate()
+    }
+
+    /// `items` as the local peer may use them: a member still collapses a
+    /// category, and the rest of the layout is kept by those who keep it.
+    pub(crate) fn layout_menu(&self, mut items: Vec<MenuAction>) -> Vec<MenuAction> {
+        if !self.keeps_layout() {
+            items.retain(|action| *action == MenuAction::ToggleCollapse);
+        }
+        items
+    }
+
     /// Whether the local peer may hydrate + render an attachment blob. An
     /// ungranted embed shows a locked card and never requests shared bytes.
     pub(crate) fn embed_allowed(&self, blob: &str) -> bool {

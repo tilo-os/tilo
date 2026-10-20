@@ -548,7 +548,7 @@ impl ChatApp {
             toggle.x1 + f64::from(sp.s2)
         };
         let mut right = band.x1 - f64::from(sp.s3);
-        if self.can_participate() {
+        if self.keeps_layout() {
             let add = Rect::new(
                 right - target,
                 band.center().y - target / 2.0,
@@ -694,7 +694,7 @@ impl ChatApp {
             let mut face = NavSectionFace::new(band, if renaming { "" } else { &cat.name })
                 .collapsible(!cat.collapsed)
                 .hovered(self.hovered(band));
-            if self.can_participate() {
+            if self.keeps_layout() {
                 face = face.action(Icon::Plus);
             }
             let layout = nav_section_layout(theme, &face);

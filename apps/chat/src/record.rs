@@ -230,8 +230,10 @@ pub struct Chat {
 /// A collapsible group of the room's channels.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Category {
-    /// The category's name.
-    #[model(label)]
+    /// The category's name: changed by renaming it
+    /// ([`Chat::rename_category`]), which only those who keep the room's
+    /// layout may.
+    #[model(label, readonly)]
     pub name: String,
 }
 
@@ -240,15 +242,20 @@ pub struct Category {
 pub struct Channel {
     /// The category it is listed under; none for uncategorised.
     pub category: Option<Id>,
-    /// The channel's name.
-    #[model(label)]
+    /// The channel's name: changed by renaming it
+    /// ([`Chat::rename_channel`]), which only those who keep the room's
+    /// layout may.
+    #[model(label, readonly)]
     pub name: String,
     /// What the channel is about.
     pub topic: String,
     /// A text channel has a conversation; a voice channel has a call.
     #[model(readonly)]
     pub kind: ChannelKind,
-    /// Archived channels leave the sidebar and stay in the record.
+    /// Archived channels leave the sidebar and stay in the record: changed
+    /// by archiving it ([`Chat::archive_channel`]), which only those who
+    /// keep the room's layout may.
+    #[model(readonly)]
     pub archived: bool,
     /// Bare authenticated Agent id for a direct conversation; ordinary
     /// channels leave it empty and remain in the navigation list.
@@ -988,8 +995,13 @@ impl Chat {
         Ok(())
     }
 
+    // The room's channels and categories are its layout, kept by those who
+    // moderate it (as a server's channels are kept by those who may manage
+    // them): a member talks in the channels, and does not make, rename,
+    // move or delete them.
+
     /// New category.
-    #[action]
+    #[action(moderation)]
     pub fn create_category(
         &mut self,
         cx: &mut ActionCx,
@@ -1009,7 +1021,7 @@ impl Chat {
     }
 
     /// New channel.
-    #[action]
+    #[action(moderation)]
     pub fn create_channel(
         &mut self,
         cx: &mut ActionCx,
@@ -1050,7 +1062,7 @@ impl Chat {
     ///
     /// Its channels stay, uncategorised. A category that no longer reads
     /// (held out of the chat, [`Collection::quarantined`]) is deleted too.
-    #[action(item = categories, destructive)]
+    #[action(item = categories, destructive, moderation)]
     pub fn delete_category(&mut self, category: &Id) -> Result<(), Refusal> {
         if self.categories.remove(category).is_none() && !self.categories.discard(category) {
             return Err(Refusal::new("there is no such category"));
@@ -1066,7 +1078,7 @@ impl Chat {
     /// Move a channel.
     ///
     /// One place up or down among the channels of its category.
-    #[action(item = channels)]
+    #[action(item = channels, moderation)]
     pub fn move_channel(&mut self, channel: &Id, up: bool) -> Result<(), Refusal> {
         let moving = self
             .channels
@@ -1098,7 +1110,7 @@ impl Chat {
     /// File a channel.
     ///
     /// Lists it under another category, or under none.
-    #[action(item = channels)]
+    #[action(item = channels, moderation)]
     pub fn set_channel_category(
         &mut self,
         channel: &Id,
@@ -1118,12 +1130,66 @@ impl Chat {
         Ok(())
     }
 
+    /// Rename channel.
+    #[action(item = channels, moderation)]
+    pub fn rename_channel(
+        &mut self,
+        channel: &Id,
+        #[param("The channel's new name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim().trim_start_matches('#').trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a channel needs a name"));
+        }
+        let renamed = self
+            .channels
+            .get_mut(channel)
+            .ok_or_else(|| Refusal::new("there is no such channel"))?;
+        name.clone_into(&mut renamed.name);
+        Ok(())
+    }
+
+    /// Archive channel.
+    ///
+    /// Or bring an archived one back to the sidebar.
+    #[action(item = channels, moderation)]
+    pub fn archive_channel(
+        &mut self,
+        channel: &Id,
+        #[param("Whether it leaves the sidebar")] archived: bool,
+    ) -> Result<(), Refusal> {
+        self.channels
+            .get_mut(channel)
+            .ok_or_else(|| Refusal::new("there is no such channel"))?
+            .archived = archived;
+        Ok(())
+    }
+
+    /// Rename category.
+    #[action(item = categories, moderation)]
+    pub fn rename_category(
+        &mut self,
+        category: &Id,
+        #[param("The category's new name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a category needs a name"));
+        }
+        let renamed = self
+            .categories
+            .get_mut(category)
+            .ok_or_else(|| Refusal::new("there is no such category"))?;
+        name.clone_into(&mut renamed.name);
+        Ok(())
+    }
+
     /// Delete channel.
     ///
     /// With its read marks. Its messages stay in the parts that
     /// hold them, shown nowhere. A channel that no longer reads (held out of
     /// the chat, [`Collection::quarantined`]) is deleted too.
-    #[action(item = channels, destructive)]
+    #[action(item = channels, destructive, moderation)]
     pub fn delete_channel(&mut self, channel: &Id) -> Result<(), Refusal> {
         if self.channels.remove(channel).is_none() && !self.channels.discard(channel) {
             return Err(Refusal::new("there is no such channel"));
