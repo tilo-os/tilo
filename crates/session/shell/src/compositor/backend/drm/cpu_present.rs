@@ -4,7 +4,10 @@
 //! page-faults and a frame takes seconds, with black tiles where work was
 //! lost. Such a device renders the scene with [`tilo_cpu_raster`] into one
 //! premultiplied RGBA canvas held in cached memory, and the scanout copies
-//! the changed rectangles into its dumb buffers.
+//! the changed rectangles into its dumb buffers. Where its GLES driver comes
+//! up, a lone output is composited with GLES instead, from a canvas per layer
+//! of the desktop ([`super::gl_present`]): a strip pan then rasterizes
+//! nothing.
 //!
 //! The canvas keeps the desktop between frames. Which of its tiles hold the
 //! current scene is tracked per 16 pixel tile. The shell's damage regions

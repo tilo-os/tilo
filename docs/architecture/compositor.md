@@ -491,6 +491,24 @@ output's pixels on the CPU: rotate and swizzle or PQ encode, and an ICC
 profile's copy and qcms pass) are both zero while every output renders
 direct, rotated and ICC-profiled outputs included.
 
+### GPUs that cannot run vello
+
+On a Mali Bifrost (`cpu_present::cpu_render_reason`: vello's compute
+pipeline faults under panvk) the scene is rasterized on the CPU
+(`tilo_cpu_raster`). Where the GPU's GLES driver comes up on the render
+node, frames come as layers on every frame (`FrameBuilder::keep_strip_canvases`,
+`LayerPolicy::Always`): `cpu_layers::CpuLayers` keeps the backdrop, the
+workspace, each strip in canvas coordinates and the chrome in canvases of
+their own, and rasterizes only what changed in them, where it is shown.
+`gl_compose::GlCompositor` uploads what changed and composites the layers
+and the pointer into GBM scanout buffers (`gl_present`), skipping tiles that
+hold no ink; a strip pan only moves where its canvas is read. The present
+thread is not realtime there: rasterizing runs on it for longer than a
+realtime thread may run without blocking. `GL-PRESENT` lines in the session
+log give the frames' layer update, composite and flip wait (p50/p90), and
+`CPU-FRAME … layers_px=` what each layer rasterized. `TILO_DRM_GL_COMPOSE=0`
+keeps the dumb-buffer copies of one screen canvas.
+
 ### Fullscreen client scanout
 
 A fullscreen client whose buffer is the only thing visible on its output is
