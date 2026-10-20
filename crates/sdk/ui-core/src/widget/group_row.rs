@@ -2609,6 +2609,23 @@ impl GroupRow {
         moved
     }
 
+    /// Hold the strip under a pan that reports where it is, not fingers:
+    /// at `requested`, an offset that may lie past either end, shown 1:1
+    /// within the strip and against the rubber band beyond it, at once and
+    /// with nothing to resample. A wheel gesture calls this with each event's
+    /// total and lets go with [`Self::cancel_strip_pan`], so a pull past an
+    /// end springs back as a released trackpad pan does.
+    pub fn hold_strip_pull(&mut self, requested: f64, at: Instant) -> bool {
+        let pan = self.pan_of_lane_mut(self.focus_lane);
+        pan.begin_strip_pan();
+        pan.strip_pan_origin = Some(0.0);
+        let moved = pan.update_strip_pan(requested, at);
+        if moved {
+            self.scroll_dirty = true;
+        }
+        moved
+    }
+
     /// Release direct manipulation at `now`. A strip released at rest
     /// stays exactly where the fingers left it; a thrown one coasts on with
     /// their velocity (not under reduced motion); elastic overpull settles

@@ -464,6 +464,11 @@ struct Swipe {
     /// The gesture panned the strip, so its end focuses the window it was
     /// panned to.
     panned: bool,
+    /// Where the gesture has asked the strip to be since it took hold of
+    /// it ([`GroupRow::hold_strip_pull`]), past either end included, so
+    /// there it pulls against the rubber band and its end lets the strip
+    /// settle.
+    pan: Option<f64>,
     last: Instant,
 }
 
@@ -1392,8 +1397,9 @@ impl DesktopSurface {
 
     /// Whether the strip takes this wheel event. A sideways gesture, a
     /// trackpad's swipe or a mouse wheel's spin alike, moves the strip by its
-    /// travel: it pans the strip under the pointer, 1:1, while the strip can
-    /// move that way, and when the gesture ends focus goes to the window
+    /// travel: it pans the strip under the pointer as one direct pan, 1:1
+    /// within the strip and against the rubber band past either end, and
+    /// when the gesture ends the strip settles and focus goes to the window
     /// panned to ([`Self::end_idle_swipe`]). A strip whose windows all fit
     /// cannot pan, so there the travel steps focus a window per
     /// [`STEP_TRAVEL_PX`], the first event of a gesture stepping at once so
@@ -1401,9 +1407,10 @@ impl DesktopSurface {
     ///
     /// A gesture arrives as many events and all of them follow the decision
     /// its first one made: the strip takes it when it can pan or there is a
-    /// window that way, and then keeps the rest of it at the strip's ends so
-    /// the app under the pointer does not scroll sideways at the end of a
-    /// flick; else the content under the pointer has it.
+    /// window that way, and then keeps the rest of it at the strip's ends,
+    /// pulling the rubber band, so the app under the pointer does not scroll
+    /// sideways at the end of a flick; else the content under the pointer
+    /// has it first ([`Self::pull_unhandled_swipe`]).
     fn route_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) -> bool {
         self.end_idle_swipe(now);
         let Some(travel) = self.strip_travel(delta, scale_factor) else {
@@ -1427,17 +1434,14 @@ impl DesktopSurface {
                     0.0
                 },
                 panned: false,
+                pan: None,
                 last: now,
             }
         });
         swipe.last = now;
         if swipe.taken {
-            if pans {
-                if let Some(row) = self.shown_row() {
-                    let offset = row.scroll_x() + travel;
-                    swipe.panned |= pan_row(row, offset);
-                }
-            } else if fits {
+            let stepping = fits && swipe.pan.is_none() && self.neighbour(forward).is_some();
+            if stepping {
                 // A reversal starts its travel afresh.
                 if swipe.travel * travel < 0.0 {
                     swipe.travel = 0.0;
@@ -1454,10 +1458,44 @@ impl DesktopSurface {
                     }
                     swipe.travel -= f64::from(step) * STEP_TRAVEL_PX;
                 }
+            } else {
+                self.pull_strip(&mut swipe, travel, now);
             }
         }
         self.swipe = Some(swipe);
         swipe.taken
+    }
+
+    /// Move the shown strip by `travel` as part of `swipe`'s direct pan,
+    /// beginning it on the gesture's first pull. A strip showing a
+    /// maximized window stays at home.
+    fn pull_strip(&mut self, swipe: &mut Swipe, travel: f64, now: Instant) {
+        let Some(row) = self.shown_row() else {
+            return;
+        };
+        if row.groups.iter().any(|g| g.maximized) {
+            return;
+        }
+        let requested = swipe.pan.unwrap_or_else(|| row.scroll_x()) + travel;
+        swipe.pan = Some(requested);
+        swipe.panned |= row.hold_strip_pull(requested, now);
+    }
+
+    /// A sideways gesture neither the strip took nor the content under the
+    /// pointer scrolled by, such as one over the only window on a strip:
+    /// the strip takes it from here and pulls against its rubber band, as
+    /// it does past either end of a strip that pans.
+    fn pull_unhandled_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) {
+        let Some(travel) = sideways(delta, scale_factor) else {
+            return;
+        };
+        let Some(mut swipe) = self.swipe.filter(|swipe| !swipe.taken) else {
+            return;
+        };
+        swipe.taken = true;
+        swipe.last = now;
+        self.pull_strip(&mut swipe, travel, now);
+        self.swipe = Some(swipe);
     }
 
     /// The strip travel of a wheel event: its sideways travel, or over
@@ -1505,6 +1543,17 @@ impl DesktopSurface {
             return;
         }
         self.swipe = None;
+        if swipe.pan.is_some()
+            && let Some(row) = self.shown_row()
+        {
+            // The platform already coasted the gesture (a trackpad's
+            // momentum, a spun wheel's notches), so the strip is thrown
+            // nowhere: a pull past an end springs back, and a strip left
+            // within its range stays there through later geometry changes.
+            if !row.cancel_strip_pan(now) {
+                row.hold_strip_pan();
+            }
+        }
         if !swipe.panned {
             return;
         }
@@ -2084,6 +2133,12 @@ impl Widget for DesktopSurface {
             let path = ctx.path.clone();
             row.handle_event(event, &mut ctx.reborrow(&path, child));
         }
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && !*ctx.handled
+        {
+            self.pull_unhandled_swipe(*delta, ctx.scale_factor, ui::time::now());
+            *ctx.handled = self.swipe.is_some_and(|swipe| swipe.taken);
+        }
     }
 
     /// A sideways pan of the shown strip moves windows and changes nothing
@@ -2187,11 +2242,12 @@ impl Widget for DesktopSurface {
                 .any(Widget::needs_animation_frame)
     }
 
-    /// A pan's end, when focus goes to the window panned to.
+    /// A pan's end, when the strip settles and focus goes to the window
+    /// panned to.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let ends = self
             .swipe
-            .filter(|swipe| swipe.panned)
+            .filter(|swipe| swipe.panned || swipe.pan.is_some())
             .and_then(|swipe| swipe.last.checked_add(SWIPE_GAP));
         self.children()
             .into_iter()
@@ -3097,6 +3153,65 @@ mod tests {
     }
 
     #[test]
+    fn a_swipe_nothing_scrolls_pulls_the_strip_against_its_rubber_band() {
+        // Toward the strip's start, where a lone window at home cannot pan.
+        for (kind, delta) in [("trackpad", pixels(40.0, 0.0)), ("wheel", notch(-1.0))] {
+            let (surface, handle) = desktop(1);
+            let mut frame = ui::headless::FrameHarness::for_root_with(
+                ui::state::State::new(),
+                surface,
+                (1280, 800),
+                ui::headless::FrameOptions::default(),
+            );
+            for _ in 0..4 {
+                frame.relayout();
+            }
+            let surface = frame.root_mut::<DesktopSurface>();
+            let home = surface.shown_row_ref().unwrap().scroll_x();
+            let t = ui::time::now();
+            for i in 0..10 {
+                let at = ms(t, 16 * i);
+                if i == 0 {
+                    assert!(
+                        !surface.route_swipe(delta, 1.0, at),
+                        "{kind}: the lone window's content has the swipe first"
+                    );
+                    // It did not scroll by it, so the strip takes it.
+                    surface.pull_unhandled_swipe(delta, 1.0, at);
+                } else {
+                    assert!(
+                        surface.route_swipe(delta, 1.0, at),
+                        "{kind}: and the rest of the gesture is the strip's"
+                    );
+                }
+            }
+            let pulled = home - surface.shown_row_ref().unwrap().scroll_x();
+            assert!(
+                pulled > 20.0,
+                "{kind}: the strip gives past its start, by {pulled} px"
+            );
+            let travel = if kind == "trackpad" { 400.0 } else { 2400.0 };
+            assert!(
+                pulled < travel / 2.0,
+                "{kind}: against resistance, {pulled} px of {travel}"
+            );
+            assert_eq!(focused(surface, &handle), 0);
+
+            surface.end_idle_swipe(ms(t, 16 * 9 + 250));
+            assert!(frame.settle_for_capture(Duration::from_secs(3)), "{kind}");
+            let rest = frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .unwrap()
+                .scroll_x();
+            assert!(
+                (rest - home).abs() < 0.5,
+                "{kind}: let go, it springs back home ({home}), not {rest}"
+            );
+        }
+    }
+
+    #[test]
     fn a_mouse_pans_the_strip_from_empty_canvas() {
         /// Point the mouse at canvas no window covers.
         fn find_canvas(frame: &mut ui::headless::FrameHarness) -> (f64, f64) {
@@ -3142,12 +3257,11 @@ mod tests {
                 .root_mut::<DesktopSurface>()
                 .route_swipe(pixels(-240.0, 0.0), 1.0, ms(t, 17 * i));
         }
+        // Let go past the end, the strip springs back onto it.
         frame
             .root_mut::<DesktopSurface>()
             .end_idle_swipe(ms(t, 17 * 40 + 250));
-        for _ in 0..4 {
-            frame.relayout();
-        }
+        assert!(frame.settle_for_capture(Duration::from_secs(3)));
 
         find_canvas(&mut frame);
         let start = scroll(&frame);
