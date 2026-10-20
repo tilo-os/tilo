@@ -30,12 +30,16 @@ python3 tools/dev/install-git-hooks.py
 
 - **`main`** is where changes integrate: push straight to it, no pull request, no queue. A push
   that isn't a fast-forward is refused; rebase on `main` and push again.
-- **The push gate.** The pre-push hook runs t on exactly the commit being pushed: the fast checks
+- **The push gate.** The pre-push hook runs t on exactly the commit being pushed, as committed
+  (`--rev`: uncommitted changes and untracked files don't count, and no checkout is made): the
+  checks of what the commit touches (`t scope --rev <commit>`: clippy and tests of the packages
+  whose files it changes, and the command checks whose inputs it changes), plus the fast checks
   that verify formatting and generated files (`fmt`, `lockfile`, `hakari`, `t-toml`, `codemap`,
   `sdk-policy`, `deny`). A failure the change causes refuses the push; one that `main` has too
-  doesn't. A failure that a check's `fix` repairs is fixed into your working tree for you to
-  commit. Inputs the change doesn't touch are cached, so a push after a rebase costs little.
-  `git push --no-verify` skips the gate.
+  doesn't. A failure that a check's `fix` repairs is fixed for you to commit, never amended: into
+  your working tree when you push `HEAD` (files you edited since are left alone), else as a patch
+  in `.git/t-fix.patch`. Inputs the change doesn't touch are cached, so a push after a rebase
+  costs little. `git push --no-verify` skips the gate.
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.
@@ -69,14 +73,18 @@ t test <check|package|family|glob>      # exactly that, on your working tree
 t test test/tilo-fs --test parser::empty   # one test
 t test                                  # what failed for you last time
 t suggest                               # what your change reaches, and the heavy checks it touches
+t scope                                 # the checks your change touches (--names for $(...))
+t test --rev HEAD $(t scope --rev HEAD --names)   # the last commit as committed
 t fix                                   # apply the `fix` of what fails (fmt, hakari, lockfile, …)
 ```
 
-Test what you changed before pushing: the packages you touched (`t test clippy/<package>
-test/<package>`) and anything heavy your change reaches. Heavy checks run for you only when named:
-`t suggest` lists those your change touches (their key differs from your base commit's), with the
-`t test <check>` that runs each. Skip one and `main` still runs it when it has room, and tells you
-if your commit broke it. Results nobody's change could have affected come back at
+While you work, test what you change: `t scope` names the checks your change touches (the
+packages you touched, the command checks whose inputs changed), and `t test $(t scope --names)`
+runs them; the push gate runs them again on the pushed commit, cached where nothing changed.
+Heavy checks run for you only when named: `t suggest` lists those your change touches (their key
+differs from your base commit's), with the `t test <check>` that runs each. Skip one and `main`
+still runs it when it has room, and tells you if your commit broke it. Results nobody's change
+could have affected come back at
 once from the cache.
 
 Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also

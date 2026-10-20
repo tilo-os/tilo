@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# A push to main runs t's push gate on exactly the commit being pushed (docs/t.md, "Testing a
-# change"). Failures that main has too pass; a failure the change causes refuses the push, and a
-# failure t can fix is fixed into the working tree for you to commit. Pushes to other branches
-# run nothing. Bypass with `git push --no-verify`.
+# A push to main runs t's push gate on exactly the commit being pushed (docs/t.md, "How changes
+# reach a release"): the checks of what the commit touches, plus the fast whole-tree checks.
+# Failures that main has too pass; a failure the change causes refuses the push, and a failure t
+# can fix is fixed for you to commit (never amended). Pushes to other branches run nothing.
+# Bypass with `git push --no-verify`.
 set -euo pipefail
 note() { printf 'pre-push: %s\n' "$*" >&2; }
 
@@ -34,42 +35,40 @@ if ! command -v t >/dev/null; then
   note "t is not installed, so the push gate can't run (docs/t.md, Setting up)"
   exit 1
 fi
-# t compares failures with main at the commit the change branched from.
+if ! t test --help 2>/dev/null | grep -q -- '--rev'; then
+  note "this t can't test a commit by itself (\`t test --rev\`): run \`t self-update\`, then push again"
+  exit 1
+fi
+# t compares the commit with main where it branched off.
 git fetch --quiet "$remote" main 2>/dev/null || true
 
-# Test the commit itself: the working tree when it is exactly that commit, else a checkout of it
-# kept for this worktree's pushes, so the next one updates only the files that changed.
+# t takes the commit's files from git's objects (`--rev`): uncommitted changes and untracked
+# files never reach the gate, and no checkout of the commit is needed.
+top=$(git rev-parse --show-toplevel)
 short=$(git rev-parse --short "$pushed")
-if [ "$pushed" = "$(git rev-parse HEAD)" ] && [ -z "$(git status --porcelain --untracked-files=normal)" ]; then
-  dir=$(git rev-parse --show-toplevel)
-  own=1
-else
-  own=0
-  cache="${XDG_CACHE_HOME:-$HOME/.cache}/tilo/pre-push"
-  mkdir -p "$cache"
-  dir="$cache/$(git rev-parse --absolute-git-dir | sha256sum | cut -c1-16)"
-  exec 9>"$dir.lock"
-  if command -v flock >/dev/null; then flock 9; fi
-  if [ ! -f "$dir/.git" ]; then
-    rm -rf "$dir"
-    git worktree prune
-    git worktree add --quiet --detach --no-checkout "$dir" "$pushed"
-  fi
-  git -C "$dir" checkout --quiet --detach --force "$pushed"
-  git -C "$dir" clean --quiet -fd
-  note "testing $short in a clean checkout ($dir): the working tree is not that commit"
-fi
-
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 started=$SECONDS
-status=0
-t test -C "$dir" --priority high --json "${gate[@]}" >"$out/run.jsonl" 2>"$out/stderr" || status=$?
-took=$((SECONDS - started))
 
-# The run's id, its fixable failures that may be the change's, and t's errors.
+# What the commit touches: the default checks of the packages whose files it changes (clippy,
+# tests) and of the command checks whose inputs it changes. t runs nothing it isn't named.
+touched=()
+if names=$(t scope -C "$top" --rev "$pushed" --names 2>"$out/scope"); then
+  read -r -a touched <<<"$names"
+else
+  note "t can't tell what $short touches, so only the whole-tree checks run:"
+  sed 's/^/    /' "$out/scope" >&2
+fi
+
+status=0
+t test -C "$top" --rev "$pushed" --priority high --json "${gate[@]}" "${touched[@]}" \
+  >"$out/run.jsonl" 2>"$out/stderr" || status=$?
+took=$((SECONDS - started))
+what="${#touched[@]} touched + ${#gate[@]} whole-tree checks"
+
+# The run's id, its fixable failures that may be the change's, t's errors, and what a fix changed.
 read_run() {
-  python3 -I - "$out/run.jsonl" "$1" <<'EOF'
+  python3 -I - "$1" "$2" <<'EOF'
 import json, sys
 path, want = sys.argv[1], sys.argv[2]
 for line in open(path, encoding="utf-8", errors="replace"):
@@ -89,50 +88,60 @@ for line in open(path, encoding="utf-8", errors="replace"):
         print(event.get("message", ""))
         if event.get("hint"):
             print(event["hint"])
+    if want in ("changed", "skipped") and kind == "fixed":
+        for path in event.get(want, []):
+            print(path)
 EOF
 }
-run=$(read_run run)
+run=$(read_run "$out/run.jsonl" run)
 show_run() {
   if [ -n "$run" ]; then t show "$run" >&2 || true; else cat "$out/stderr" >&2; fi
 }
 
 case $status in
-  0) note "t passed $short in ${took}s"; exit 0 ;;
-  3) note "t passed $short in ${took}s: what fails also fails on main (t main)"; exit 0 ;;
+  0) note "t passed $short in ${took}s ($what)"; exit 0 ;;
+  3) note "t passed $short in ${took}s ($what): what fails also fails on main (t main)"; exit 0 ;;
   1) ;;
   *)
     note "t could not run the push gate on $short (exit $status):"
-    { read_run error; tail -n 5 "$out/stderr"; } | sed 's/^/    /' >&2
-    note "if t is down, push with --no-verify and run the checks once it is back: t test ${gate[*]}"
+    { read_run "$out/run.jsonl" error; tail -n 5 "$out/stderr"; } | sed 's/^/    /' >&2
+    note "if t is down, push with --no-verify and run the checks once it is back: t test ${gate[*]} ${touched[*]}"
     exit 1
     ;;
 esac
 
 show_run
 fixable=()
-while read -r check; do fixable+=("$check"); done < <(read_run fixable)
+while read -r check; do fixable+=("$check"); done < <(read_run "$out/run.jsonl" fixable)
 if [ "${#fixable[@]}" -eq 0 ]; then
   note "refused: $short fails the checks above (${took}s); fix it, commit, and push again"
   exit 1
 fi
 
-# Never amend: what t fixes lands in the working tree for the pusher to commit.
-t fix -C "$dir" "${fixable[@]}" >"$out/fix" 2>&1 || true
-fixed=()
-while read -r file; do fixed+=("$file"); done < <(git -C "$dir" status --porcelain --untracked-files=normal | cut -c4-)
-if [ "${#fixed[@]}" -eq 0 ]; then
-  cat "$out/fix" >&2
-  note "refused: $short fails the checks above, and \`t fix ${fixable[*]}\` changed nothing"
-  exit 1
-fi
-if [ "$own" = 1 ]; then
-  note "t fixed ${fixed[*]}: commit them and push again"
+# Never amend. Pushing HEAD: t writes the fixes into the working tree (leaving alone any file
+# edited since the commit). Pushing another commit: they come as a patch on top of it.
+patch=""
+if [ "$pushed" = "$(git rev-parse HEAD)" ]; then
+  t fix -C "$top" --rev "$pushed" --json "${fixable[@]}" >"$out/fix.jsonl" 2>"$out/fix.err" || true
 else
   patch="$(git rev-parse --absolute-git-dir)/t-fix.patch"
-  git -C "$dir" add --all
-  git -C "$dir" diff --cached --binary >"$patch"
-  git -C "$dir" reset --quiet --hard
-  note "t fixed ${fixed[*]} in $short; your working tree is not that commit, so the fix is in"
+  t fix -C "$top" --rev "$pushed" --patch="$patch" --json "${fixable[@]}" >"$out/fix.jsonl" 2>"$out/fix.err" || true
+fi
+fixed=()
+while read -r file; do fixed+=("$file"); done < <(read_run "$out/fix.jsonl" changed)
+skipped=()
+while read -r file; do skipped+=("$file"); done < <(read_run "$out/fix.jsonl" skipped)
+if [ "${#fixed[@]}" -eq 0 ]; then
+  cat "$out/fix.err" >&2
+  note "refused: $short fails the checks above, and \`t fix ${fixable[*]}\` changed nothing"
+  [ "${#skipped[@]}" -eq 0 ] || note "  left alone (edited since the commit, or outside the checks' inputs): ${skipped[*]}"
+  exit 1
+fi
+if [ -z "$patch" ]; then
+  note "t fixed ${fixed[*]}: commit them and push again"
+else
+  note "t fixed ${fixed[*]} in $short, which is not your HEAD; the fix is in"
   note "  $patch: git apply it, commit, and push again"
 fi
+[ "${#skipped[@]}" -eq 0 ] || note "left alone (edited since the commit, or outside the checks' inputs): ${skipped[*]}"
 exit 1
