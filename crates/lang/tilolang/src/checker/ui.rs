@@ -5,7 +5,7 @@ use super::{Checker, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
-use crate::ir::{Ek, LocalId, Stmt};
+use crate::ir::{Conv, Ek, LocalId, Stmt};
 use crate::prims::{self, Prim};
 use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
@@ -772,25 +772,52 @@ impl Checker<'_> {
         node
     }
 
-    fn view_node(&mut self, v: &Callable, bound: Vec<Ex>, key: Ex, span: Span) -> LocalId {
+    /// A view call is its own boundary: a node of kind `view:<app>:<view id>` whose arguments
+    /// are properties named `arg.<name>`, which the host renders by calling the view, and renders
+    /// again only when what that view read changed or its arguments did. A view that takes a
+    /// `View` (content built by the caller) is inlined instead: a node handle does not outlive
+    /// the caller's run.
+    fn view_node(&mut self, v: &Callable, bound: Vec<Ex>, key: Ex, _span: Span) -> LocalId {
+        let takes_content = v.params.iter().any(|p| matches!(p.ty, Ty::View));
         if let (true, Some(f)) = (v.own, v.func) {
-            let wrapper = self.new_node("fragment", key);
             self.st.facts.views.insert(f);
-            let inner = Ex::new(Ek::Call(f, bound), Ty::View);
-            self.emit(Stmt::Eval(Ex::host(
-                Imp::UiChild,
-                vec![Ex::local(wrapper, Ty::View), inner],
-                Ty::Unit,
-            )));
-            return wrapper;
+            if takes_content {
+                let wrapper = self.new_node("fragment", key);
+                let inner = Ex::new(Ek::Call(f, bound), Ty::View);
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiChild,
+                    vec![Ex::local(wrapper, Ty::View), inner],
+                    Ty::Unit,
+                )));
+                return wrapper;
+            }
         }
-        // A view of another package is applied by the host: a node of kind
-        // `view:<app>:<view id>` whose parameters are properties named `arg.<name>`.
         let n = self.new_node(&format!("view:{}:{}", v.app, v.id), key);
         for (p, val) in v.params.iter().zip(bound) {
             let prop = format!("arg.{}", p.name);
-            self.prop(Ex::local(n, Ty::View), &prop, val, span);
+            self.arg_prop(Ex::local(n, Ty::View), &prop, val);
         }
         n
+    }
+
+    /// An argument of a view call, as a property of its node: any value a parameter takes.
+    fn arg_prop(&mut self, node: Ex, name: &str, v: Ex) {
+        let imp = match v.ty.repr() {
+            None => return,
+            Some(crate::types::Vt::I64) => Imp::UiPropI,
+            Some(crate::types::Vt::F64) => Imp::UiPropF,
+            Some(crate::types::Vt::I32) if v.ty == Ty::Bool => Imp::UiPropI,
+            Some(crate::types::Vt::I32) => Imp::UiPropH,
+        };
+        let v = if v.ty == Ty::Bool {
+            conv(Some(Conv::BoolToInt), v, Ty::Int)
+        } else {
+            v
+        };
+        self.emit(Stmt::Eval(Ex::host(
+            imp,
+            vec![node, Ex::str(name), v],
+            Ty::Unit,
+        )));
     }
 }

@@ -49,6 +49,9 @@ pub const PRIMS: &[Prim] = &[
     prim_of("text", &["value"], &["style"]),
     prim_of("heading", &["value"], &["level"]),
     prim_of("button", &["label"], &["on", "style", "size", "enabled"]),
+    // A list of rows: each child is a row. A row that is a view call is evaluated only when the
+    // host shows it (visible rows plus overscan); `empty` is what an empty list says.
+    prim_of("list", &[], &["empty"]),
     // A row of a list: a title, a secondary line, activation and whether it is the selected one.
     prim_of(
         "list_row",
