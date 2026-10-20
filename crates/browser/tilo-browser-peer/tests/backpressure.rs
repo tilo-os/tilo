@@ -132,6 +132,7 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
             DocumentMutation::Incremental(body)
         })
         .collect();
+    let fsyncs = tilo_relay::store::fsyncs();
     for mutation in &tail {
         author.publish(route(), mutation).unwrap();
     }
@@ -151,7 +152,11 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         .unwrap()
         .expect("the commits to be durable")
         .unwrap();
-    eprintln!("{COMMITS} x 64 KiB durable in {:?}", published.elapsed());
+    eprintln!(
+        "{COMMITS} x 64 KiB durable in {:?}, {} host fsyncs",
+        published.elapsed(),
+        tilo_relay::store::fsyncs() - fsyncs
+    );
 
     let resumed = Instant::now();
     paused.store(false, Ordering::Relaxed);

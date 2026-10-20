@@ -8,9 +8,9 @@ use crate::peer::observe_reader_backlog;
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery,
-    audit_subscriber_access, buffered_retention_prefix, eligible_checkpoint_prefix,
-    handle_delta_prefix, handle_envelope, handle_private, mpsc, resume_record, send_private_reply,
-    trace_native_publication,
+    audit_subscriber_access, buffered_retention_prefix, commit_run_key, eligible_checkpoint_prefix,
+    handle_commit_run, handle_delta_prefix, handle_envelope, handle_private, mpsc, resume_record,
+    send_private_reply, trace_native_publication,
 };
 use std::collections::VecDeque;
 
@@ -21,6 +21,10 @@ const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// How many frames the reader reads ahead of a state frame in progress.
 const READ_AHEAD: usize = 32;
+
+/// Most commits one run queues before the first is answered
+/// ([`SessionReaderLoop::handle_commit_run`]).
+const COMMIT_RUN: usize = READ_AHEAD;
 
 /// The delivery budget an inbound frame holds while it waits.
 type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
@@ -406,6 +410,9 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         cx: SessionLoop<'_, '_>,
     ) -> Result<(), PeerError> {
         trace_native_publication("server_received", &env, None);
+        if matches!(env, Envelope::Commit { .. }) {
+            return self.handle_commit_run(env, inbound_budget, cx).await;
+        }
         let (mut prefix, prefix_budgets) = self.inbound.checkpoint_prefix(env, inbound_budget)?;
         let env = prefix.remove(0);
         let replaying = matches!(
@@ -459,6 +466,57 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         ticket,
                         reply,
                         replaying,
+                    },
+                    cx,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Handle `env`, a `Commit`, with the commits read ahead behind it:
+    /// all are queued with their owners before the first is waited for, so
+    /// they become durable under shared barriers; their answers go to the
+    /// writer in the order sent.
+    async fn handle_commit_run(
+        &mut self,
+        env: Envelope,
+        inbound_budget: Option<Budget>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError> {
+        let mut keys = vec![commit_run_key(&env)];
+        let mut commits = vec![env];
+        let mut budgets = vec![inbound_budget];
+        while commits.len() < COMMIT_RUN {
+            let Some((EnvelopeV2::State(next @ Envelope::Commit { .. }), _)) =
+                self.inbound.backlog.front()
+            else {
+                break;
+            };
+            let key = commit_run_key(next);
+            if keys.contains(&key) {
+                break;
+            }
+            let Some((EnvelopeV2::State(next), budget)) = self.inbound.backlog.pop_front() else {
+                break;
+            };
+            trace_native_publication("server_received", &next, None);
+            keys.push(key);
+            commits.push(next);
+            budgets.push(Some(budget));
+        }
+        let subscribed = &*self.subscribed;
+        let operation = Box::pin(handle_commit_run(cx.peer, cx.session, subscribed, commits));
+        let replies = self.inbound.overtake_while(operation, None, cx).await?;
+        drop(budgets);
+        for reply in replies.into_iter().flatten() {
+            self.inbound
+                .hand_off_reply(
+                    self.replies,
+                    ReplayWrite {
+                        ticket: None,
+                        reply: Some(reply),
+                        replaying: false,
                     },
                     cx,
                 )

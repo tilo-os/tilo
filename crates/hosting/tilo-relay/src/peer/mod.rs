@@ -89,7 +89,7 @@ use actions::{
     RemoteActionRoute, enable_actions, enable_broker_client, handle_remote_action, register_broker,
     route_private, route_signed_directed, write_private_delivery,
 };
-use commit::{handle_commit, over_change_limit};
+use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
