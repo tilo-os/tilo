@@ -841,6 +841,39 @@ fn wasm_bindgen(project: &Project) -> Result<PathBuf> {
     }
 }
 
+/// The C compiler and archiver for the wasm build's C dependencies (zstd,
+/// ring), as `CC_wasm32_unknown_unknown` and `AR_wasm32_unknown_unknown`,
+/// when the build has to name them on macOS: nothing when the caller set
+/// them or an LLVM archiver (`llvm-ar`) is on PATH, else Zig's clang and
+/// archiver through the SDK's wrappers. Apple's `ar` cannot index
+/// WebAssembly objects, and `cc` does not notice: those crates archive no
+/// symbols and the build fails only at the final link, with undefined
+/// `ZSTD_*` symbols, after the whole runtime compiled.
+fn wasm_c_compiler(sdk_root: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
+    let runs = |program: &str, arg: &str| {
+        ProcessCommand::new(program)
+            .arg(arg)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    if !cfg!(target_os = "macos")
+        || std::env::var_os("AR_wasm32_unknown_unknown").is_some()
+        || runs("llvm-ar", "--version")
+    {
+        return Ok(None);
+    }
+    let zig = std::env::var("TILO_ZIG").unwrap_or_else(|_| "zig".to_owned());
+    if !runs(&zig, "version") {
+        bail!(
+            "the web build archives C dependencies for WebAssembly, which this system's ar cannot\n  help: brew install zig (or put LLVM's llvm-ar on PATH), or set AR_wasm32_unknown_unknown"
+        );
+    }
+    let scripts = sdk_root.join("crates/hosting/tilo-relay/scripts");
+    let cc = std::env::var_os("CC_wasm32_unknown_unknown")
+        .map_or_else(|| scripts.join("wasm-cc.sh"), PathBuf::from);
+    Ok(Some((cc, scripts.join("wasm-ar.sh"))))
+}
+
 /// `wasm-release` when the workspace defines it (small, for shipping),
 /// otherwise `release`; `dev` for iteration.
 fn web_profile(project: &Project, release: bool) -> Result<String> {
@@ -887,6 +920,11 @@ fn cargo_wasm_command(
     }
     if let Some(target_dir) = &web_crate.target_dir {
         command.arg("--target-dir").arg(target_dir);
+    }
+    if let Some((cc, ar)) = wasm_c_compiler(&project.sdk_root)? {
+        command
+            .env("CC_wasm32_unknown_unknown", cc)
+            .env("AR_wasm32_unknown_unknown", ar);
     }
     Ok(command)
 }
