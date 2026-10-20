@@ -289,11 +289,6 @@ impl CalcModel {
             None
         }
     }
-
-    /// The currently-active 2D function expression, if any.
-    pub fn active_expr(&self) -> Option<&str> {
-        self.funcs.get(self.active_fn).map(|f| f.expr.as_str())
-    }
 }
 
 /// A pressable key on the calculator pad.

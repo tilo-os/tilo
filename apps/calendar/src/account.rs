@@ -63,27 +63,6 @@ impl std::fmt::Debug for CalDavConfig {
 }
 
 impl CalDavConfig {
-    /// Heuristic autofill: given a username/email, guess a well-known `CalDAV`
-    /// endpoint for the big providers. Mirrors what a desktop client's
-    /// autoconfig does. Returns true if it recognised the domain.
-    pub fn autofill_from_username(&mut self) -> bool {
-        let Some((_, domain)) = self.username.split_once('@') else {
-            return false;
-        };
-        let url = match domain.to_ascii_lowercase().as_str() {
-            "gmail.com" | "googlemail.com" => "https://apidata.googleusercontent.com/caldav/v2",
-            "icloud.com" | "me.com" => "https://caldav.icloud.com",
-            "fastmail.com" | "fastmail.fm" => "https://caldav.fastmail.com/dav/calendars",
-            "yahoo.com" => "https://caldav.calendar.yahoo.com",
-            other => {
-                self.server_url = format!("https://{other}/.well-known/caldav");
-                return false;
-            }
-        };
-        self.server_url = url.to_string();
-        true
-    }
-
     /// Field-level validation for the setup form: returns `(field, reason)`
     /// pairs for anything missing or malformed. Empty vec == valid.
     pub fn validate(&self) -> Vec<(&'static str, String)> {
