@@ -54,6 +54,7 @@ mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;
+mod room_layout;
 mod room_name;
 mod succession;
 pub use native_publication::NativePublicationCut;

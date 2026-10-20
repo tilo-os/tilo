@@ -6,6 +6,26 @@ use std::collections::BTreeMap;
 /// The root entries topology admission reads.
 const TOPOLOGY_KEYS: [&str; 2] = ["contents", "contents_owners_v1"];
 
+/// Whether `after` puts anything into the room's topology that `before`
+/// does not hold as it is: an entry (strip, group or tab) that is new,
+/// changed or moved, or a change to the ownership registry. Taking entries
+/// out adds nothing.
+///
+/// # Errors
+///
+/// A topology entry does not read.
+pub fn adds_to(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<bool, String> {
+    let before = json(before)?;
+    let after = json(Some(after))?;
+    if owners(&before)? != owners(&after)? {
+        return Ok(true);
+    }
+    let old = entries(&before)?;
+    Ok(entries(&after)?
+        .iter()
+        .any(|(id, entry)| old.get(id) != Some(entry)))
+}
+
 /// The document's topology entries as JSON, written the way
 /// [`automerge::AutoSerde`] writes a document. Only these entries are read:
 /// writing the whole room made each admission cost as much as the roster

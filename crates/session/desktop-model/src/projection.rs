@@ -1654,6 +1654,189 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
         .collect()
 }
 
+/// Key of the room's layout scope in its governance document
+/// ([`RoomLayout`]), which only the room's governor writes.
+pub const ROOM_LAYOUT_KEY: &str = "layout_v1";
+
+/// Whether a room shares its members' strips and windows: a field of the
+/// room's governance, written by its governor alone, that every member reads.
+///
+/// A room admitted through a public door (a community site's) or with open
+/// admission (listed in a public directory) is [`Self::Personal`]; an
+/// invite-only room is [`Self::Shared`]. The governor may change it.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomLayout {
+    /// The namespaced layout model: each member's windows are published into
+    /// the room, and every member shows everyone's.
+    #[default]
+    Shared,
+    /// Each member's strips and windows stay on their device. Only the
+    /// room's records (its apps' documents) and its people are shared: the
+    /// governor takes in no member's layout, and devices send none.
+    Personal,
+}
+
+impl RoomLayout {
+    /// The word the governance document stores.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Personal => "personal",
+        }
+    }
+
+    /// The layout `id` names; `None` for any other word.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "shared" => Some(Self::Shared),
+            "personal" => Some(Self::Personal),
+            _ => None,
+        }
+    }
+
+    /// Whether each member's layout stays on their device.
+    #[must_use]
+    pub const fn is_personal(self) -> bool {
+        matches!(self, Self::Personal)
+    }
+}
+
+/// The layout scope `doc`'s governor chose, `None` when it chose none (a
+/// room from before the field, or an invite-only room left at the
+/// default). A value this build does not read is personal: what a room may
+/// not share is never shared by a device that misreads it.
+#[must_use]
+pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_LAYOUT_KEY).ok().flatten()? {
+        (Value::Scalar(value), _) => match value.as_ref() {
+            ScalarValue::Str(id) => Some(RoomLayout::from_id(id).unwrap_or(RoomLayout::Personal)),
+            _ => Some(RoomLayout::Personal),
+        },
+        _ => Some(RoomLayout::Personal),
+    }
+}
+
+/// The layout scope of the room `doc` governs: its governor's choice, else
+/// [`RoomLayout::Shared`], an invite-only room's default.
+#[must_use]
+pub fn room_layout(doc: &AutoCommit) -> RoomLayout {
+    room_layout_choice(doc).unwrap_or_default()
+}
+
+/// Delete from `doc`'s `contents` every strip, group and tab whose id `keep`
+/// refuses, with everything under it; what `keep` keeps is walked for what it
+/// holds. Returns how many entries were deleted. Nothing else of the
+/// document is touched.
+pub fn drop_contents_except(doc: &mut AutoCommit, keep: &impl Fn(u64) -> bool) -> usize {
+    let contents = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
+    drop_contents_level(doc, &contents, 0, keep)
+}
+
+/// [`drop_contents_except`] over one level of `contents`: strips (`0`),
+/// groups (`1`) or tabs (`2`).
+fn drop_contents_level(
+    doc: &mut AutoCommit,
+    containers: &[automerge::ObjId],
+    level: u8,
+    keep: &impl Fn(u64) -> bool,
+) -> usize {
+    use automerge::transaction::Transactable as _;
+    let child = match level {
+        0 => Some("groups"),
+        1 => Some("tabs"),
+        _ => None,
+    };
+    let mut dropped: usize = 0;
+    for container in containers {
+        let keys: Vec<String> = doc.keys(container).collect();
+        for key in keys {
+            let Some(id) = contents_key_id(&key) else {
+                continue;
+            };
+            if !keep(id) {
+                if doc.delete(container, key.as_str()).is_ok() {
+                    dropped = dropped.saturating_add(1);
+                }
+                continue;
+            }
+            if let Some(child) = child {
+                let entries = map_candidates(doc, container, key.as_str());
+                let nested = child_candidates(doc, &entries, child);
+                dropped = dropped.saturating_add(drop_contents_level(
+                    doc,
+                    &nested,
+                    level.saturating_add(1),
+                    keep,
+                ));
+            }
+        }
+    }
+    dropped
+}
+
+/// In the workspace addressing `room`, remove every window `foreign` names
+/// (someone else's, mirrored here while the room shared its layout), then
+/// the window groups left with none, and the strips left with none that this
+/// machine (`local_salt`) did not make. Every window of this machine's own
+/// stays where it is. Reports whether anything changed.
+pub fn drop_windows_of_others(
+    desktop: &mut DesktopTree,
+    room: RoomId,
+    local_salt: u16,
+    foreign: &impl Fn(&Tab) -> bool,
+) -> bool {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+        return false;
+    };
+    let mut changed = false;
+    let mut vanished: Vec<StripId> = Vec::new();
+    for strip in &mut ws.strips {
+        for group in &mut strip.window_groups {
+            let before = group.tabs.len();
+            group.tabs.retain(|tab| !foreign(tab));
+            if group.tabs.len() == before {
+                continue;
+            }
+            changed = true;
+            group
+                .focus_history
+                .retain(|id| group.tabs.iter().any(|tab| tab.id == *id));
+            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+                && let Some(first) = group.tabs.first()
+            {
+                group.active_tab = first.id;
+            }
+        }
+        strip.window_groups.retain(|group| !group.tabs.is_empty());
+    }
+    ws.strips.retain(|strip| {
+        let keep = !strip.window_groups.is_empty() || peer_salt_of(strip.id.raw()) == local_salt;
+        if !keep {
+            vanished.push(strip.id);
+        }
+        keep
+    });
+    changed |= !vanished.is_empty();
+    let ws_id = ws.id;
+    if desktop
+        .active_strip
+        .get(&ws_id)
+        .is_some_and(|active| vanished.contains(active))
+    {
+        desktop.active_strip.remove(&ws_id);
+    }
+    for strip in vanished {
+        desktop.active_group.remove(&strip);
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1896,6 +2079,128 @@ mod tests {
         assert!(
             strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
             "B's own strip stays"
+        );
+    }
+
+    /// The layout scope is the governor's word in the room document: absent,
+    /// an invite-only room's default (shared); a word this build does not
+    /// read is personal, never shared.
+    #[test]
+    fn a_rooms_layout_is_what_its_governor_wrote_and_shared_by_default() {
+        use automerge::transaction::Transactable as _;
+        let mut doc = AutoCommit::new();
+        assert_eq!(room_layout_choice(&doc), None);
+        assert_eq!(room_layout(&doc), RoomLayout::Shared);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "personal")
+            .unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "shared").unwrap();
+        assert_eq!(room_layout_choice(&doc), Some(RoomLayout::Shared));
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "by-invitation")
+            .unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, 3_u64).unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        for layout in [RoomLayout::Shared, RoomLayout::Personal] {
+            assert_eq!(RoomLayout::from_id(layout.id()), Some(layout));
+        }
+    }
+
+    /// What another namespace put into the room's contents goes, down to a
+    /// window it opened in someone else's strip, and everything of the kept
+    /// namespace stays.
+    #[test]
+    fn dropping_contents_keeps_only_what_keep_admits_at_every_level() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let mut a_strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        a_strip.window_groups.push(canvas_group(A, 2, "Board"));
+        let mut b_view = a_strip.clone();
+        b_view
+            .window_groups
+            .push(canvas_group(B, 3, "Alacritty: ~/secret"));
+        let b_strip = {
+            let mut strip = Strip::new(StripId(compose_id(B, 4)), "Mine");
+            strip.window_groups.push(canvas_group(B, 5, "htop"));
+            strip
+        };
+        let mut doc = AutoCommit::new();
+        project_owned_contents(&mut doc, &[a_strip], A, None, EmptyStrips::Skip).unwrap();
+        project_owned_contents(&mut doc, &[b_view, b_strip], B, None, EmptyStrips::Skip).unwrap();
+        assert_eq!(contents_of(&doc).len(), 2);
+
+        let dropped = drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A);
+        assert_eq!(dropped, 2, "B's strip, and B's group in A's strip");
+        let after = contents_of(&doc);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, compose_id(A, 1));
+        let titles: Vec<&str> = after[0]
+            .groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+            .collect();
+        assert_eq!(titles, ["Board"]);
+        assert_eq!(
+            drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A),
+            0,
+            "nothing left to drop"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+    /// A device's local copy of a workspace whose room became personal loses
+    /// the windows it mirrored of others, and keeps every window of its own,
+    /// wherever it stands.
+    #[test]
+    fn dropping_others_windows_keeps_every_window_of_ones_own() {
+        const MINE: u16 = 0x1111;
+        const THEIRS: u16 = 0x2222;
+        let room = RoomId::new();
+        // My strip, holding my window and one of theirs side by side; their
+        // strip, holding only theirs; their strip I moved a window of mine
+        // into.
+        let mut mine = Strip::new(StripId(compose_id(MINE, 1)), "Mine");
+        mine.window_groups.push(canvas_group(MINE, 2, "Board"));
+        mine.window_groups
+            .push(canvas_group(THEIRS, 3, "ssh prod-db"));
+        let mut theirs = Strip::new(StripId(compose_id(THEIRS, 4)), "Terminals");
+        theirs
+            .window_groups
+            .push(canvas_group(THEIRS, 5, "~/private"));
+        let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
+        shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
+        let mut tree = room_desktop(room, 1, vec![mine, theirs, shared]);
+        let ws = tree.workspaces[0].id;
+        tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
+
+        let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
+        assert!(drop_windows_of_others(&mut tree, room, MINE, &foreign));
+        let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| {
+                (
+                    strip.name.as_str(),
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            [("Mine", vec!["Board"]), ("Shared", vec!["Notes"])],
+            "every window of mine stays, none of theirs"
+        );
+        assert!(
+            !tree.active_strip.contains_key(&ws),
+            "no pointer at a strip that went"
+        );
+        assert!(
+            !drop_windows_of_others(&mut tree, room, MINE, &foreign),
+            "nothing more to drop"
         );
     }
 }

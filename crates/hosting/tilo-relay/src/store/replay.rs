@@ -63,9 +63,9 @@ pub(crate) struct CaptureLeases {
     /// channel's steward reads. A lineage's route names its kind of message
     /// for good, so the answer never changes: each is read once.
     steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
-    /// The governor of a public room this store holds: captures leave out
-    /// every other author's lineages of the room's layout
-    /// ([`WorkspaceStore::replay_without_member_layout`]).
+    /// The governor of a room whose layout is personal, which this store
+    /// holds: captures leave out every other author's lineages of the room's
+    /// layout ([`WorkspaceStore::replay_member_layout`]).
     layout_governor: std::sync::Mutex<Option<[u8; 32]>>,
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
@@ -124,17 +124,18 @@ impl WorkspaceStore {
             .store(true, Ordering::SeqCst);
     }
 
-    /// From now on, leave out of every capture what members other than
-    /// `governor` wrote of the room's layout: their changes to the room
-    /// document (its topology and windows) and to its shared desktop record.
-    /// The room is public, and shares no member's windows. They stay
-    /// retained; no one is replayed them.
-    pub(crate) fn replay_without_member_layout(&self, governor: [u8; 32]) {
-        *self.capture_leases.layout_governor.lock_recover() = Some(governor);
+    /// From now on, with `Some(governor)`, leave out of every capture what
+    /// members other than `governor` wrote of the room's layout: their
+    /// changes to the room document (its topology and windows) and to its
+    /// shared desktop record. The room's layout is personal, and shares no
+    /// member's windows. They stay retained; no one is replayed them. With
+    /// `None` (the room shares its layout) every capture holds them again.
+    pub(crate) fn replay_member_layout(&self, governor: Option<[u8; 32]>) {
+        *self.capture_leases.layout_governor.lock_recover() = governor;
     }
 
     /// Whether a capture leaves the retained lineage `name` out because it
-    /// is a member's part of a public room's layout.
+    /// is a member's part of a personal room's layout.
     fn leaves_out_member_layout(&self, name: &std::ffi::OsStr) -> bool {
         let Some(governor) = *self.capture_leases.layout_governor.lock_recover() else {
             return false;
@@ -2109,7 +2110,7 @@ fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
 mod member_layout_tests {
     use super::member_layout_lineage;
 
-    /// The lineages a public room replays to nobody: a member's room
+    /// The lineages a personal room replays to nobody: a member's room
     /// document and shared desktop writes, never the governor's, and no
     /// record's.
     #[test]

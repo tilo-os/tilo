@@ -2276,7 +2276,10 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     let rooms = relay.rooms().unwrap().clone();
     let created = rooms.create("Lounge").await.unwrap();
     let room = created.room.clone();
-    rooms.make_public(&room).await.unwrap();
+    rooms
+        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .await
+        .unwrap();
     assert!(rooms.is_public(&room));
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
     let (_b, _) = member_with_namespace(&rooms, &room, &key, &cert, 4).await;
@@ -2355,8 +2358,12 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     relay.shutdown().await;
 }
 
-/// A room listed in the directory is public again when the relay opens it:
-/// its doors keep refusing members' windows across a restart.
+// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+/// A room listed in the directory (open admission) whose governor chose no
+/// layout scope becomes personal when the relay opens it: the windows the
+/// governor committed of a member while it shared them are removed, its
+/// governance says it is personal for every member's device to read, and its
+/// doors refuse members' windows from then on.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
@@ -2370,6 +2377,16 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
     let room = rooms.create("Lounge").await.unwrap().room;
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(
+        titles_shared(&rooms, &room).await.len(),
+        2,
+        "committed while the relay still took members' windows in"
+    );
+    // Listed by a relay from before rooms carried their layout scope.
     rooms
         .inner
         .listings
@@ -2388,6 +2405,19 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
     let rooms = relay.rooms().unwrap().clone();
     assert!(rooms.is_public(&room));
     assert!(
+        titles_shared(&rooms, &room).await.is_empty(),
+        "what was committed of A's windows is gone"
+    );
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(
+            governed.peer().governance().room_layout(),
+            tilo_desktop_model::projection::RoomLayout::Personal,
+            "every member's device reads that the room is personal"
+        );
+    }
+    assert!(
         rooms
             .decide_layout_write(&room, a.device_public_key, &body)
             .await
@@ -2398,6 +2428,75 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
         .await
         .unwrap();
     assert!(titles_shared(&rooms, &room).await.is_empty());
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+// USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+/// The governor decides the layout scope, and the room holds to its word
+/// across a restart: made personal, what the room committed of a member's
+/// windows goes at once; made shared again, members' windows are taken in
+/// as in any invite-only room; and a listed room whose governor chose to
+/// share its layout keeps sharing it.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
+    use tilo_desktop_model::projection::RoomLayout;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    assert_eq!(rooms.layout(&room), RoomLayout::Shared, "invite-only");
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
+
+    rooms.set_layout(&room, RoomLayout::Personal).await.unwrap();
+    assert!(titles_shared(&rooms, &room).await.is_empty());
+
+    rooms.set_layout(&room, RoomLayout::Shared).await.unwrap();
+    assert!(!rooms.is_public(&room));
+    // A's device publishes its windows again, now that the room shares them.
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    rooms
+        .decide_layout_write(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    rooms
+        .absorb(&room, a.device_public_key, &body)
+        .await
+        .unwrap();
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
+    rooms
+        .inner
+        .listings
+        .set(
+            &room,
+            Some(tilo_relay_protocol::directory::Listing {
+                description: "Come in".into(),
+                default_role: tilo_relay_protocol::rooms::RoomRole::Editor,
+            }),
+        )
+        .unwrap();
+    drop(rooms);
+    relay.shutdown().await;
+
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    assert_eq!(
+        rooms.layout(&room),
+        RoomLayout::Shared,
+        "the governor's choice, not the listing's default"
+    );
+    assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
     drop(rooms);
     relay.shutdown().await;
 }
