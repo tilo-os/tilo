@@ -151,7 +151,7 @@ pub fn stage<A: ResourceApp>(
         harness,
         scenario,
         &Staging {
-            title: A::TITLE,
+            title: super::app::hooks::<A>().title(),
             kind: <A::Resource as Resource>::KIND,
             stage_root,
             input: A::scenario_input,
