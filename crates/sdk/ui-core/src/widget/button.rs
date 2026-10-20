@@ -2764,7 +2764,8 @@ mod tests {
                     );
                     let rgba = OffscreenRenderer::new(128, 64)
                         .render(&scene, theme.tokens.colors.surfaces.content);
-                    let (ring, inside, fill) = (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
+                    let (ring, inside, fill) =
+                        (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
                     let contrast = crate::a11y::contrast_ratio;
                     assert!(
                         contrast(ring, inside) >= NON_TEXT_MIN_CONTRAST,
