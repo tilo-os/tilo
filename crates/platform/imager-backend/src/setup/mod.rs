@@ -33,7 +33,6 @@ pub mod live_selection;
 pub mod media_setup;
 pub mod migration_handoff;
 pub mod migration_intent;
-pub mod model;
 pub mod native_host;
 pub use tilo_handoff as other_device;
 #[cfg(target_os = "linux")]
