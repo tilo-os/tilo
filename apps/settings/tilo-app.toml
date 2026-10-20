@@ -91,6 +91,9 @@ tools = "optional@2"
 # opening at all.
 models = "optional@2"
 model-gateway = "optional@2"
+# The person's languages: which language packs the repositories offer, and
+# installing the one chosen. The host answers Settings that and nothing else.
+app-host = "optional@2"
 
 [entrypoint]
 bin             = "bin/settings"

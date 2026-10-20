@@ -14,6 +14,12 @@
 //! from, whom it is verified against and where it lands stay the host's
 //! decision; the app supplies no URL, key or path.
 //!
+//! Settings is the one other caller, for the person's languages: it may ask
+//! which language packs the device's repositories offer and to install one
+//! of them, which is all the host answers it ([`Request::LanguagePacks`],
+//! [`Request::InstallLanguagePack`]). The pack, its signature and where it
+//! lands are the host's decision as for a runtime.
+//!
 //! Wire format: a big-endian `u32` length, then JSON, per message; one
 //! [`Response`] per [`Request`], on a connection the app keeps.
 
@@ -37,6 +43,22 @@ pub enum Request {
     /// starts, so an app whose runtime has just been installed reopens to
     /// have it. The host launches only the caller's own package.
     Relaunch { uri: Option<String> },
+    /// Which language packs the repositories offer, by locale, and whether
+    /// each is installed. Settings only.
+    LanguagePacks,
+    /// Make the language pack of `locale` (`de-DE`) installed, starting the
+    /// install when none runs, and report where it stands, as
+    /// [`Request::Ensure`] does for a runtime. Settings only.
+    InstallLanguagePack { locale: String },
+}
+
+/// A language the repositories offer a pack for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfferedLanguage {
+    /// The locale, a BCP 47 tag (`de-DE`).
+    pub locale: String,
+    /// Whether its pack is installed.
+    pub installed: bool,
 }
 
 /// Where an install is.
@@ -66,6 +88,8 @@ pub enum Response {
     },
     /// The fresh instance was started.
     Relaunched,
+    /// The language packs the repositories offer.
+    LanguagePacks { offered: Vec<OfferedLanguage> },
     /// The install stopped; asking again retries it.
     Failed { message: String },
     /// The host will not answer for this runtime (the app does not declare it).
@@ -166,6 +190,27 @@ impl Client {
     pub fn ensure(&mut self, runtime: &str) -> io::Result<Response> {
         self.exchange(&Request::Ensure {
             runtime: runtime.to_owned(),
+        })
+    }
+
+    /// Ask the host which language packs the repositories offer.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure`].
+    pub fn language_packs(&mut self) -> io::Result<Response> {
+        self.exchange(&Request::LanguagePacks)
+    }
+
+    /// Ask the host to install the language pack of `locale`; asking again
+    /// follows the install.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::ensure`].
+    pub fn install_language_pack(&mut self, locale: &str) -> io::Result<Response> {
+        self.exchange(&Request::InstallLanguagePack {
+            locale: locale.to_owned(),
         })
     }
 

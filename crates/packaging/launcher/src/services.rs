@@ -191,6 +191,10 @@ const STORE_APP_ID: &str = "so.tilo.store";
 /// package-management interface: the host decides by the app id stamped on
 /// the connection.
 const BROWSER_APP_ID: &str = "so.tilo.browser";
+/// Settings holds `app-host` for the person's languages alone: the host
+/// answers it which language packs are offered and installs one, nothing
+/// else.
+const SETTINGS_APP_ID: &str = "so.tilo.settings";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
 /// handoff.
@@ -271,7 +275,9 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
-    #[error("service `app-host` is restricted to the signed Tilo Store package")]
+    #[error(
+        "service `app-host` is restricted to the Store, and to Browser and Settings for their own narrow requests"
+    )]
     AppHostUnauthorized,
 }
 
@@ -892,7 +898,7 @@ fn resolve_service_binds_inner(
 
         if name == APP_HOST_SERVICE
             && context.is_none_or(|launch| {
-                launch.app_id != STORE_APP_ID && launch.app_id != BROWSER_APP_ID
+                ![STORE_APP_ID, BROWSER_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id)
             })
         {
             return Err(ServiceError::AppHostUnauthorized);
