@@ -388,7 +388,8 @@ impl GridMetrics {
     /// Margin round a scrollbar's thumb inside its gutter.
     #[must_use]
     pub fn bar_margin(&self) -> f64 {
-        self.s1 / 2.0
+        // Keep a generous input gutter, but only 5–6 logical pixels of ink.
+        (self.gutter - self.s1.clamp(5.0, 6.0)).max(0.0) / 2.0
     }
 }
 
@@ -1033,12 +1034,25 @@ impl Grid {
 
     /// The cell area: inside the headers and the scroll bar gutters, so the
     /// last row and the last column are never covered by a bar.
-    fn body_rect(&self) -> Rect {
+    pub(crate) fn body_rect(&self) -> Rect {
+        let width = (self.rect.x1 - self.grid_x0()).max(0.0);
+        let height = (self.rect.y1 - self.grid_y0()).max(0.0);
+        let gutter = self.metrics.gutter;
+        let mut horizontal = self.total_width() > width + ui::widget::scrollbar::FIT_EPS;
+        let mut vertical = self.total_height() > height + ui::widget::scrollbar::FIT_EPS;
+        // Either gutter can make the other axis overflow; settle both before
+        // reserving space, without recursive body/scroll-metric queries.
+        for _ in 0..2 {
+            horizontal |= self.total_width()
+                > width - if vertical { gutter } else { 0.0 } + ui::widget::scrollbar::FIT_EPS;
+            vertical |= self.total_height()
+                > height - if horizontal { gutter } else { 0.0 } + ui::widget::scrollbar::FIT_EPS;
+        }
         Rect::new(
             self.grid_x0(),
             self.grid_y0(),
-            self.rect.x1 - self.metrics.gutter,
-            self.rect.y1 - self.metrics.gutter,
+            self.rect.x1 - if vertical { gutter } else { 0.0 },
+            self.rect.y1 - if horizontal { gutter } else { 0.0 },
         )
     }
 
@@ -1129,7 +1143,7 @@ impl Grid {
     }
 
     /// Screen rect for a cell, in absolute coords (may lie outside the body).
-    fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
+    pub(crate) fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
         let x = self.grid_x0() + self.col_left(c) - self.scroll_x;
         let y = self.grid_y0() + self.row_top(r) - self.scroll_y;
         Rect::new(x, y, x + self.col_w(c), y + self.row_h(r))
@@ -2283,6 +2297,18 @@ impl Grid {
                 theme.tokens.colors.surfaces.content,
             );
         }
+        if rows
+            .last()
+            .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5)
+        {
+            ui::surface::content_edge_fade(
+                scene,
+                transform,
+                body,
+                ui::surface::ContentEdge::Bottom,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
         scene.pop_layer();
 
         // --- headers (painted on top, never clipped by the body) ---
@@ -3125,6 +3151,39 @@ mod tests {
             reference_color(&other, 0),
             "the first slot is grown from the theme, not a fixed hue"
         );
+    }
+
+    #[test]
+    fn scrollbars_are_thin_and_only_reserve_space_for_overflow() {
+        let mut tr = TextRenderer::new();
+        for scale in [1.0, 1.5, 2.0] {
+            let theme = Theme::dark().with_ui_scale(scale);
+            let mut grid = grid_with(&[]);
+            grid.set_metrics(GridMetrics::resolve(&mut tr, &theme));
+            grid.rect = Rect::new(0.0, 0.0, 260.0, 180.0);
+            let body = grid.body_rect();
+            let horizontal = grid.scrollbar_thumb(ScrollAxis::Horizontal).unwrap();
+            let vertical = grid.scrollbar_thumb(ScrollAxis::Vertical).unwrap();
+            assert!((5.0..=6.0).contains(&horizontal.height()));
+            assert!((5.0..=6.0).contains(&vertical.width()));
+            assert!(horizontal.y0 >= body.y1 && vertical.x0 >= body.x1);
+            grid.rect = Rect::new(
+                0.0,
+                0.0,
+                grid.total_width() + grid.metrics.row_header_w() + 1.0,
+                grid.total_height() + grid.metrics.col_header_h() + 1.0,
+            );
+            assert!(grid.scrollbar_thumb(ScrollAxis::Horizontal).is_none());
+            assert!(grid.scrollbar_thumb(ScrollAxis::Vertical).is_none());
+            assert_eq!(grid.body_rect().x1, grid.rect.x1);
+            assert_eq!(grid.body_rect().y1, grid.rect.y1);
+            // Only the vertical axis overflows: no horizontal gutter.
+            grid.rect.y1 = 180.0;
+            grid.rect.x1 += grid.metrics.gutter;
+            assert!(grid.scrollbar_thumb(ScrollAxis::Horizontal).is_none());
+            assert!(grid.scrollbar_thumb(ScrollAxis::Vertical).is_some());
+            assert_eq!(grid.body_rect().y1, grid.rect.y1);
+        }
     }
 
     /// Measured metrics and draggable scrollbar thumbs.
