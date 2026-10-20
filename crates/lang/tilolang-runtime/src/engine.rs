@@ -123,25 +123,22 @@ impl HostError for TrapMessage {}
 
 /// Compiles, caches and calls modules.
 pub struct Engine {
-    engine: wasmi::Engine,
+    inner: wasmi::Engine,
     linker: Linker<Slot>,
     limits: EngineLimits,
     modules: RefCell<HashMap<ModuleHash, Compiled>>,
 }
 
-fn val_type(c: char) -> ValType {
+fn val_type(c: u8) -> ValType {
     match c {
-        'l' => ValType::I64,
-        'f' => ValType::F64,
+        b'l' => ValType::I64,
+        b'f' => ValType::F64,
         _ => ValType::I32,
     }
 }
 
 fn signature(params: &str, result: &str) -> FuncType {
-    FuncType::new(
-        params.chars().map(val_type).collect::<Vec<_>>(),
-        result.chars().map(val_type).collect::<Vec<_>>(),
-    )
+    FuncType::new(params.bytes().map(val_type), result.bytes().map(val_type))
 }
 
 fn to_wasm(v: &Val) -> Result<Wasm, wasmi::Error> {
@@ -225,7 +222,7 @@ impl Engine {
                 .map_err(|e| format!("defining import {name}: {e}"))?;
         }
         Ok(Self {
-            engine,
+            inner: engine,
             linker,
             limits,
             modules: RefCell::new(HashMap::new()),
@@ -242,8 +239,7 @@ impl Engine {
         if self.modules.borrow().contains_key(&hash) {
             return Ok(hash);
         }
-        let module =
-            Module::new(&self.engine, bytes).map_err(|e| CallError::Link(e.to_string()))?;
+        let module = Module::new(&self.inner, bytes).map_err(|e| CallError::Link(e.to_string()))?;
         let first = self.instantiate(&module)?;
         self.modules.borrow_mut().insert(
             hash.clone(),
@@ -275,7 +271,7 @@ impl Engine {
             .memory_size(self.limits.max_memory_bytes)
             .trap_on_grow_failure(true)
             .build();
-        let mut store = Store::new(&self.engine, Slot { host: None, limits });
+        let mut store = Store::new(&self.inner, Slot { host: None, limits });
         store.limiter(|slot| &mut slot.limits);
         store
             .set_fuel(self.limits.fuel_per_call)
@@ -318,10 +314,10 @@ impl Engine {
         pooled.store.data_mut().host = Some(host);
         let outcome = self.run(&mut pooled, export, args);
         pooled.store.data_mut().host = None;
-        if outcome.is_ok() {
-            if let Some(c) = self.modules.borrow_mut().get_mut(module) {
-                c.idle.push(pooled);
-            }
+        if outcome.is_ok()
+            && let Some(c) = self.modules.borrow_mut().get_mut(module)
+        {
+            c.idle.push(pooled);
         }
         outcome
     }

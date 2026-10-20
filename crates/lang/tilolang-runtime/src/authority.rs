@@ -36,7 +36,7 @@ struct Grants {
     trusted: HashSet<ModuleHash>,
     denied_modules: HashSet<ModuleHash>,
     denied_actions: HashSet<ActionId>,
-    outside_grants: HashSet<ActionId>,
+    granted_outside: HashSet<ActionId>,
 }
 
 /// The reference authority (spec 4.3):
@@ -82,25 +82,24 @@ impl SimpleAuthority {
 
     /// An explicit grant for an outside action.
     pub fn grant_outside(&self, action: &str) {
-        self.lock().outside_grants.insert(action.to_owned());
+        self.lock().granted_outside.insert(action.to_owned());
     }
 
     pub fn revoke_outside(&self, action: &str) {
-        self.lock().outside_grants.remove(action);
+        self.lock().granted_outside.remove(action);
     }
 }
 
-impl Authority for SimpleAuthority {
-    fn decide(&self, _invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        let g = self.lock();
-        if g.denied_actions.contains(&action.action)
-            || chain.iter().any(|m| g.denied_modules.contains(m))
+impl Grants {
+    fn decide(&self, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        if self.denied_actions.contains(&action.action)
+            || chain.iter().any(|m| self.denied_modules.contains(m))
         {
             return Decision::Deny;
         }
-        let all_trusted = chain.iter().all(|m| g.trusted.contains(m));
+        let all_trusted = chain.iter().all(|m| self.trusted.contains(m));
         if action.class == EffectClass::Outside {
-            return if g.outside_grants.contains(&action.action) && all_trusted {
+            return if self.granted_outside.contains(&action.action) && all_trusted {
                 Decision::Allow
             } else {
                 Decision::Ask
@@ -108,11 +107,18 @@ impl Authority for SimpleAuthority {
         }
         // An own invocation is free for the declaring module; every other author in the
         // chain still needs trust (the minimum along the whole chain, spec 4.3).
-        let covered = |m: &ModuleHash| g.trusted.contains(m) || (action.own && *m == action.module);
+        let covered =
+            |m: &ModuleHash| self.trusted.contains(m) || (action.own && *m == action.module);
         if chain.iter().all(covered) {
             Decision::Allow
         } else {
             Decision::Ask
         }
+    }
+}
+
+impl Authority for SimpleAuthority {
+    fn decide(&self, _invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        self.lock().decide(chain, action)
     }
 }

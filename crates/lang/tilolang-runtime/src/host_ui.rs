@@ -1,9 +1,10 @@
 //! Imports that build a view's UI tree. Views only.
 
 use crate::abi::Imp;
-use crate::core::{Args, Core, HResult, ret_void, trap};
+use crate::core::{Args, Core, HResult, ret_f64, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
+use crate::space::Space;
 use crate::value::Value;
 use crate::view::{Binding, NodeBuild};
 
@@ -118,7 +119,38 @@ impl Core {
                 })?;
                 ret_void()
             }
+            Imp::SpaceI | Imp::SpaceF => {
+                let name = self.text(a.h(0)?)?;
+                let size = Space::is_size(&name);
+                if size != (imp == Imp::SpaceF) {
+                    return trap(format!(
+                        "`space.{name}` is read with {}",
+                        if size { "space_f" } else { "space_i" }
+                    ));
+                }
+                let v = self.with_view(|vs| {
+                    let v = vs
+                        .space
+                        .field(&name)
+                        .ok_or_else(|| format!("`space` has no field `{name}`"))?;
+                    vs.space_reads.push((name.clone(), v));
+                    Ok(v)
+                })?;
+                if size {
+                    ret_f64(v)
+                } else {
+                    ret_i64(float_to_class(v))
+                }
+            }
             _ => trap("not a ui import"),
         }
     }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "class indexes and flags are small whole numbers"
+)]
+fn float_to_class(v: f64) -> i64 {
+    v as i64
 }

@@ -1,7 +1,7 @@
 //! A live view: its tree, the fields it depends on, and the events it can take.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::authority::{ActionInfo, Decision};
@@ -12,6 +12,7 @@ use crate::handles::Retained;
 use crate::host_res::to_scalar;
 use crate::ids::{DocId, Principal, ViewId};
 use crate::meta::{EffectClass, FieldKind};
+use crate::space::Space;
 use crate::store::{ChangeNote, Mutation, SubId};
 use crate::value::{Value, to_json};
 use crate::view::{Patch, UiNode, diff};
@@ -20,6 +21,8 @@ use crate::view::{Patch, UiNode, diff};
 #[derive(Default)]
 struct Watch {
     reads: HashSet<(String, String)>,
+    /// `space` fields read, with the values they had.
+    space_reads: Vec<(String, f64)>,
     dirty: bool,
 }
 
@@ -37,6 +40,8 @@ pub struct ViewInstance {
     viewer: Principal,
     view: ViewId,
     args: Vec<Value>,
+    space: Space,
+    boundaries: HashMap<String, Space>,
     tree: UiNode,
     retained: Vec<Retained>,
     watch: Rc<RefCell<Watch>>,
@@ -51,12 +56,15 @@ impl ViewInstance {
         view: &str,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
-        let rendered = core.render(view, &args)?;
+        let space = Space::default();
+        let rendered = core.render(view, &args, space)?;
         let mut me = Self {
             core,
             viewer,
             view: view.to_owned(),
             args,
+            space,
+            boundaries: HashMap::new(),
             tree: rendered.root.clone(),
             retained: Vec::new(),
             watch: Rc::new(RefCell::new(Watch::default())),
@@ -92,7 +100,11 @@ impl ViewInstance {
                 self.subs.push(id);
             }
         }
-        self.watch.borrow_mut().reads = reads;
+        {
+            let mut w = self.watch.borrow_mut();
+            w.reads = reads;
+            w.space_reads = rendered.space_reads;
+        }
         self.retained = rendered.retained;
         self.tree = rendered.root;
     }
@@ -100,6 +112,33 @@ impl ViewInstance {
     /// The current tree.
     pub fn tree(&self) -> &UiNode {
         &self.tree
+    }
+
+    /// Set the space offered at a boundary: the root (key `""` or the root node's key), or a
+    /// nested view call by its node key. In v1 nested view calls are inlined by the compiler
+    /// and inherit the root's space, so only the root's value is consulted; other keys are
+    /// kept for the host's layout pass. Returns whether the view now needs to re-run: it read
+    /// a `space` value that differs from the one it saw. Crossing no class boundary it read
+    /// leaves the view untouched.
+    pub fn set_space(&mut self, boundary: &str, space: Space) -> bool {
+        self.boundaries.insert(boundary.to_owned(), space);
+        if !boundary.is_empty() && boundary != self.tree.key {
+            return false;
+        }
+        self.space = space;
+        let mut w = self.watch.borrow_mut();
+        if w.space_reads
+            .iter()
+            .any(|(name, seen)| space.field(name) != Some(*seen))
+        {
+            w.dirty = true;
+        }
+        w.dirty
+    }
+
+    /// The space last set for a boundary.
+    pub fn space(&self, boundary: &str) -> Option<Space> {
+        self.boundaries.get(boundary).copied()
     }
 
     /// Whether a field the view read has changed since the last render.
@@ -118,7 +157,7 @@ impl ViewInstance {
             return Ok(Vec::new());
         }
         self.watch.borrow_mut().dirty = false;
-        let rendered = self.core.render(&self.view, &self.args)?;
+        let rendered = self.core.render(&self.view, &self.args, self.space)?;
         let core = Rc::clone(&self.core);
         let same = move |a: Retained, b: Retained| {
             let frames = core.frames.borrow();
@@ -228,7 +267,7 @@ impl ViewInstance {
                 )));
             }
         };
-        let note = ChangeNote {
+        let change = ChangeNote {
             action: "$edit".into(),
             args: serde_json::json!([field.id, to_json(&value).map_err(RuntimeError::BadArgs)?]),
             invoker: self.viewer.0.clone(),
@@ -242,7 +281,7 @@ impl ViewInstance {
             store.rollback(txn);
             return Err(e.into());
         }
-        store.commit(txn, &note)?;
+        store.commit(txn, &change)?;
         Ok(EditOutcome::Applied)
     }
 }

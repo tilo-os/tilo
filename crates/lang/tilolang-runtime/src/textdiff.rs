@@ -96,30 +96,31 @@ fn lcs_table(a: &[char], b: &[char]) -> Option<Table> {
     Some(t)
 }
 
-fn lcs_splices(a: &[char], b: &[char], base: usize) -> Option<Vec<Splice>> {
-    let t = lcs_table(a, b)?;
+fn lcs_splices(from: &[char], to: &[char], base: usize) -> Option<Vec<Splice>> {
+    let table = lcs_table(from, to)?;
     let (mut i, mut j) = (0usize, 0usize);
     let mut out = Vec::new();
     let mut open: Option<Splice> = None;
-    while i < a.len() || j < b.len() {
-        if i < a.len() && j < b.len() && a.get(i) == b.get(j) {
+    while i < from.len() || j < to.len() {
+        if i < from.len() && j < to.len() && from.get(i) == to.get(j) {
             out.extend(open.take());
             i = i.saturating_add(1);
             j = j.saturating_add(1);
             continue;
         }
-        let delete = j >= b.len()
-            || (i < a.len() && t.get(i.saturating_add(1), j) >= t.get(i, j.saturating_add(1)));
-        let s = open.get_or_insert_with(|| Splice {
+        let delete = j >= to.len()
+            || (i < from.len()
+                && table.get(i.saturating_add(1), j) >= table.get(i, j.saturating_add(1)));
+        let run = open.get_or_insert_with(|| Splice {
             at: base.saturating_add(i),
             delete: 0,
             insert: String::new(),
         });
         if delete {
-            s.delete = s.delete.saturating_add(1);
+            run.delete = run.delete.saturating_add(1);
             i = i.saturating_add(1);
         } else {
-            s.insert.extend(b.get(j));
+            run.insert.extend(to.get(j));
             j = j.saturating_add(1);
         }
     }

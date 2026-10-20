@@ -530,18 +530,14 @@ impl Inner {
                 let set = require_child(doc, &obj, field)?;
                 doc.put(&set, key.as_str(), true).map_err(backend)?;
             }
-            Mutation::SetRemove { field, key } => {
-                let set = require_child(doc, &obj, field)?;
-                delete_key(doc, &set, key)?;
+            Mutation::SetRemove { field, key } | Mutation::MapRemove { field, key } => {
+                let container = require_child(doc, &obj, field)?;
+                delete_key(doc, &container, key)?;
             }
             Mutation::MapPut { field, key, value } => {
                 let map = require_child(doc, &obj, field)?;
                 doc.put(&map, key.as_str(), to_am(value)?)
                     .map_err(backend)?;
-            }
-            Mutation::MapRemove { field, key } => {
-                let map = require_child(doc, &obj, field)?;
-                delete_key(doc, &map, key)?;
             }
             Mutation::OutboxPush {
                 capability,
@@ -756,9 +752,8 @@ fn read_outbox_entry(
         return None;
     }
     let capability = str_at(doc, &obj, "capability")?;
-    let payload = match scalar_at(doc, &obj, "payload").ok()?? {
-        Scalar::Json(j) => j,
-        _ => return None,
+    let Scalar::Json(payload) = scalar_at(doc, &obj, "payload").ok()?? else {
+        return None;
     };
     Some(OutboxEntry {
         doc: doc_id.to_owned(),

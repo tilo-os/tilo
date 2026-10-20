@@ -84,18 +84,34 @@ impl Args<'_> {
     }
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every import returns through the same result shape"
+)]
 pub fn ret_i32(v: i32) -> HResult<Option<Wasm>> {
     Ok(Some(Wasm::I32(v)))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every import returns through the same result shape"
+)]
 pub fn ret_i64(v: i64) -> HResult<Option<Wasm>> {
     Ok(Some(Wasm::I64(v)))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every import returns through the same result shape"
+)]
 pub fn ret_f64(v: f64) -> HResult<Option<Wasm>> {
     Ok(Some(Wasm::F64(v)))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "every import returns through the same result shape"
+)]
 pub fn ret_void() -> HResult<Option<Wasm>> {
     Ok(None)
 }
@@ -174,7 +190,7 @@ impl Host for Core {
         self.dispatch(imp, memory, &Args(args))
             .map_err(|e| match e {
                 HostFail::Trap(m) => HostFail::Trap(format!("{}: {m}", abi::name(id))),
-                suspend => suspend,
+                suspend @ HostFail::Suspend => suspend,
             })
     }
 }
@@ -186,10 +202,10 @@ impl Core {
             ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI,
             MapPut, MapRemove, ModelCall, NoneV, Outside, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
             RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, StrCmp, StrConcat, StrEq, StrLen,
-            StrLit, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAnchor, UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH,
-            UnwrapI,
+            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp, StrConcat,
+            StrEq, StrLen, StrLit, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            TupleSetI, UiAnchor, UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF,
+            UnwrapH, UnwrapI,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -206,9 +222,8 @@ impl Core {
                 self.resource_import(imp, a)
             }
             ActRef | Invoke | Outside | ModelCall => self.effect_import(imp, a),
-            UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor => {
-                self.ui_import(imp, a)
-            }
+            UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
+            | SpaceF => self.ui_import(imp, a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

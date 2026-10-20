@@ -23,7 +23,6 @@ use crate::value::{RecordInit, RefValue, ResourceRef, Value, from_json, to_json}
 /// Everything a mutation import needs to know before it touches the store.
 struct MutCtx {
     target: ResourceRef,
-    info: Rc<TypeInfo>,
     field: FieldInfo,
     txn: Txn,
 }
@@ -339,7 +338,6 @@ impl Core {
         }
         Ok(MutCtx {
             target: r.target,
-            info,
             field: f,
             txn,
         })

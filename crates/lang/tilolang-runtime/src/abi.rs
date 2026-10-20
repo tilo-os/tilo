@@ -95,6 +95,8 @@ imports! {
     (UiBind, "ui_bind", "iii", ""),
     (UiOn, "ui_on", "iii", ""),
     (UiAnchor, "ui_anchor", "ii", ""),
+    (SpaceI, "space_i", "i", "l"),
+    (SpaceF, "space_f", "i", "f"),
 
     (Abort, "abort", "i", ""),
 }
