@@ -18,11 +18,22 @@ enforces the budgets in four places:
   branch's `check.yml`, so a branch older than this job affecting an app
   fails `select` and asks for main to be merged in, rather than landing
   unmeasured.
-- **The size gate on main** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) runs on every
-  commit of `main` that changes what an app is built from: it compiles the default collection as
-  a release does, packages it with throwaway keys (`tools/apps/t-release.sh sizes`) and holds
-  every tapp and the runtime to its budget. t names the commit a failure began with, so the
-  change that took an app over hears of it the day it lands, not at the next release.
+- **One app's size, when a change concerns it** (`app-size/<app>-<arch>` in t, for example
+  `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
+  release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
+  its tapp to its budget. Its key is what the app is built from: its own crate and the local
+  crates it reaches, the shared runtime and its engines (the tapp names the signed runtime
+  bundle, which covers them), the packing tools, the manifests and lockfile Cargo resolves the
+  collection's graph from, and the packaging scripts. A change elsewhere, another app's code
+  included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
+  runtime (docs/measurements/runtime-size.md). None of these runs on main's commits by default:
+  run the ones for the apps your change touches, before you push. `tools/ci/t_toml.py`
+  generates one per app of the default collection, so a new app has its own.
+- **The whole collection** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) compiles the
+  default collection as a release does, packages it with throwaway keys
+  (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It reads
+  every app, so it runs on each new head of `stable` and when dispatched
+  (`t dispatch app-sizes-x86_64 --ref main`), not on every commit of `main`.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.

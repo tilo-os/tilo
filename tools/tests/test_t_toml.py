@@ -50,6 +50,42 @@ class TTomlTests(unittest.TestCase):
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=False), {"top", "lib", "base"})
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=True), {"top", "lib", "base", "helper"})
 
+    def test_each_default_app_has_a_size_check_keyed_by_its_own_build(self):
+        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
+        checks = {check["name"]: check for check in config["check"]}
+        module = t_toml.app_release_module()
+        catalog = module.app_catalog(ROOT)
+        apps = module.resolve_collection("default", catalog, module.config(ROOT / "dist/apps/app-collections.toml"))
+        packages = {catalog[app]["package"] for app in apps}
+        for app in apps:
+            for arch, _ in t_toml.SIZE_ARCHES:
+                check = checks[f"app-size/{app}-{arch}"]
+                self.assertEqual(check["run"], f"bash tools/apps/t-release.sh app-size {arch} {app}")
+                self.assertFalse(check["default"])
+                self.assertFalse(check["cargo_dev_dependencies"])
+                self.assertIn(catalog[app]["package"], check["cargo_packages"])
+                self.assertIn("runtime-dylib", check["cargo_packages"])
+                self.assertEqual(set(check["cargo_packages"]) & packages, {catalog[app]["package"]})
+                self.assertIn(f"apps/{app}/**", check["inputs"])
+                self.assertNotIn("apps/**", check["inputs"])
+                self.assertNotIn("crates/**", check["inputs"])
+        for arch, _ in t_toml.SIZE_ARCHES:
+            self.assertFalse(checks[f"runtime-size-{arch}"]["default"])
+            whole = checks[f"app-sizes-{arch}"]
+            self.assertFalse(whole["default"])
+            self.assertEqual(whole["on"], ["stable", "dispatch"])
+
+    def test_a_read_inside_a_reached_package_is_already_counted(self):
+        root = Path("/w")
+        packages = {name: {"manifest_path": f"/w/{path}/Cargo.toml"} for name, path in
+                    (("ui", "crates/ui"), ("ui-fuzz", "crates/ui/fuzz"), ("other", "crates/other"))}
+        self.assertTrue(t_toml.covered("crates/ui/assets/fonts/**", packages, {"ui"}, root))
+        self.assertTrue(t_toml.covered("crates/ui/src/a_tests.rs", packages, {"ui"}, root))
+        self.assertFalse(t_toml.covered("crates/ui/fuzz/x.rs", packages, {"ui"}, root))
+        self.assertFalse(t_toml.covered("crates/ui/**", packages, {"ui"}, root))
+        self.assertFalse(t_toml.covered("crates/other/x.rs", packages, {"ui"}, root))
+        self.assertFalse(t_toml.covered("tools/x.py", packages, {"ui"}, root))
+
     def test_suite_inputs_cover_directories(self):
         self.assertEqual(t_toml.glob("os/"), "os/**")
         self.assertEqual(t_toml.glob("apps/*.rs"), "apps/*.rs")

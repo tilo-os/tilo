@@ -147,10 +147,29 @@ requires = ["arch=arm64", "/dev/kvm"]   # also "os=macos", or a label a node was
 [README](https://code.tilo.so/tilo/t#declaring-checks).
 
 Some of `t.toml` is generated: the `package_inputs` of the cargo families and the `suite-*`
-checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), and the `goldens` family from
-`.config/nextest-filters.toml` and `.config/visual-goldens-image`. After changing those, run
+checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), the `goldens` family from
+`.config/nextest-filters.toml` and `.config/visual-goldens-image`, and the size checks below
+from the default collection's apps and the runtime's budget. After changing those, run
 `t fix t-toml` (or `python3 tools/ci/t_toml.py write`); `t-toml` fails while `t.toml` is out of
 date.
+
+## App and runtime sizes
+
+Each app of the default collection has a size check per architecture, keyed only by what that
+app's tapp is built from (its own crates, the shared runtime and engines it links, the manifests
+and lockfile Cargo resolves the graph from, the packaging scripts):
+
+```
+t test app-size/notes-aarch64          # Notes' tapp against its budget
+t test app-size/notes-x86_64
+t test runtime-size-aarch64            # the shared runtime against its budget
+```
+
+They don't run on `main`'s commits by default, so run the ones for the apps your change
+concerns: an app you rewrote, or `runtime-size-*` and a few apps for a change to the toolkit.
+The whole collection's gate, `app-sizes-x86_64` and `app-sizes-aarch64`, runs on each new head
+of `stable` and when dispatched. Budgets and how to raise one:
+[app package size](measurements/app-package-size.md), [runtime size](measurements/runtime-size.md).
 
 ## Publishing
 

@@ -585,6 +585,9 @@ default = false
 # whole collection, 10 to 16 minutes on 16 cores, and on main it cost 17 job-hours a day while
 # failing on every run. A candidate over budget is held back, and the commit that took an app
 # over is found among those the candidate adds.
+# Between candidates, a change that concerns an app runs that app's own size check
+# (`t test app-size/<app>-<arch>`, or `runtime-size-<arch>` for the runtime), keyed by what it is
+# built from; t_toml.py generates them.
 [[matrix.check]]
 name = "app-sizes-{arch}"
 run = "bash tools/apps/t-release.sh sizes {arch}"
