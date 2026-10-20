@@ -40,6 +40,24 @@ const TEST_ROOM: &str = "test-workspace";
 /// The device a test app runs on unless it names another.
 const TEST_DEVICE: &str = "test-device";
 
+/// A fresh directory for a test's or a capture's private profile, removed
+/// with it. On Linux it is in memory (`/dev/shm`) where the system has one:
+/// the store still syncs every write as it does for a person, but a sync of
+/// a profile that is deleted moments later then costs nothing, where on a
+/// shared disk it waits for every other writer's data to reach it, and a
+/// capture syncs on each staged edit. Elsewhere it is the system's
+/// temporary directory.
+fn profile_directory() -> std::io::Result<tempfile::TempDir> {
+    #[cfg(target_os = "linux")]
+    if let Ok(directory) = tempfile::Builder::new()
+        .prefix("tilo-profile-")
+        .tempdir_in("/dev/shm")
+    {
+        return Ok(directory);
+    }
+    tempfile::tempdir()
+}
+
 enum Profile {
     /// A private temporary profile, removed with the app, the room the app
     /// opens in and the device it runs on.
@@ -175,7 +193,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn on_device(device: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), device.to_owned()),
             Role::Owner,
@@ -199,7 +217,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The app as `person` with `role` opens it on a fresh private profile,
     /// in `room`.
     fn fresh(room: &str, role: Role, person: &str) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
             Profile::Temporary(profile, room.to_owned(), TEST_DEVICE.to_owned()),
             role,
@@ -229,7 +247,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn for_person_with_lent<S: 'static>(person: &str, service: S) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -307,7 +325,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         viewport: (u32, u32),
         arguments: &[String],
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         let mut app = Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -331,7 +349,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn launched(arguments: &[&str]) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -355,7 +373,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         arguments: &[&str],
         document: &mut tilo_resource::Doc,
     ) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         let native =
             ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
         ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
@@ -381,7 +399,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns invalid record scope, storage or launch failures.
     pub fn with_window_records(documents: &mut [tilo_resource::Doc]) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
@@ -414,7 +432,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns storage or launch failures.
     pub fn with_room_record(document: &mut tilo_resource::Doc) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
@@ -449,7 +467,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn handed_off(arguments: &[&str], handoff: PlaybackHandoff) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -470,7 +488,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure, and the refusal
     /// of a file of a type the app does not [open](ResourceApp::OPENS).
     pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
-        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let profile = Rc::new(profile_directory().map_err(operation)?);
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
             Role::Owner,
@@ -1716,7 +1734,7 @@ pub fn inspect_live_window<A: ResourceApp, T>(
 pub fn drive_live_window<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::App) -> T,
 ) -> Result<T, LaunchError> {
-    let profile = tempfile::tempdir().map_err(operation)?;
+    let profile = profile_directory().map_err(operation)?;
     let mut host = ApplicationHost::new(
         profile.path().join("state"),
         "test-device".into(),
@@ -1781,7 +1799,7 @@ pub fn window_record<A: ResourceApp>(
 pub fn drive_live_embedded<A: ResourceApp, T>(
     drive: impl FnOnce(&mut ui_core::app::EmbeddedApp) -> T,
 ) -> Result<T, LaunchError> {
-    let profile = tempfile::tempdir().map_err(operation)?;
+    let profile = profile_directory().map_err(operation)?;
     let mut host = ApplicationHost::new(
         profile.path().join("state"),
         "test-device".into(),
@@ -2095,7 +2113,7 @@ fn private_launch(
             Profile::DataDir(_) => TEST_DEVICE.to_owned(),
         };
         Profile::Temporary(
-            Rc::new(tempfile::tempdir().map_err(operation)?),
+            Rc::new(profile_directory().map_err(operation)?),
             "private".into(),
             device,
         )
@@ -2185,7 +2203,7 @@ fn report_surface(
     published: &dyn Fn(&mut FrameHarness) -> PublishedIds,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
-    let profile = tempfile::tempdir().map(Rc::new).map_err(operation);
+    let profile = profile_directory().map(Rc::new).map_err(operation);
     let built = profile.and_then(|profile| {
         open_app(
             opening,
