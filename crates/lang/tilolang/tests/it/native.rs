@@ -636,6 +636,15 @@ fn e097_lists_and_rows() {
     ok(&with_t(
         "view v(x: T) {\n    list(x.items, empty: \"Nothing\") { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",
     ));
+    ok(&with_t(
+        "view v(x: T) {\n    page {\n        text(x.t)\n        composer {\n            input(bind: x.t)\n        }\n    }\n}",
+    ));
+    expect(
+        "E095",
+        &with_t(
+            "view v(x: T) {\n    page {\n        stack {\n            composer {\n                text(x.t)\n            }\n        }\n    }\n}",
+        ),
+    );
 }
 
 #[test]
