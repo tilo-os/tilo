@@ -969,7 +969,7 @@ impl PublishedAnswers<'_> {
         mut resource: tilo_actions::Resource,
     ) -> Option<tilo_actions::Resource> {
         let mut node = self.resource(app_id, &resource.kind, resource.id.as_str());
-        resource.actions.retain(|action| {
+        resource.retain_actions(|action| {
             let need = action.contract.need();
             self.action(&mut node, need.field.as_deref(), &action.id, &need) != Answer::Deny
         });
@@ -991,9 +991,7 @@ fn keep_permitted(
 ) -> Option<tilo_actions::Resource> {
     let id = resource.id.as_str().to_owned();
     let kind = resource.kind.clone();
-    resource
-        .actions
-        .retain(|action| permits(&kind, &id, action));
+    resource.retain_actions(|action| permits(&kind, &id, action));
     resource.children = resource
         .children
         .into_iter()

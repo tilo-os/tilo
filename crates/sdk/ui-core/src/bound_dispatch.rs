@@ -1692,7 +1692,7 @@ fn filter_shared_node(
         Filtered::Pruned => SharedChildren::default(),
     };
     let mut head = head.clone();
-    head.actions.retain(|action| {
+    head.retain_actions(|action| {
         decider.permits(&resource.head().kind, resource.head().id.as_str(), action)
     });
     if head.actions.is_empty() && children.is_empty() {

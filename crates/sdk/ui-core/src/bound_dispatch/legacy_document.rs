@@ -316,7 +316,7 @@ fn filter_legacy_resource(
     broker: bool,
 ) -> Option<Resource> {
     let current = current_authority(authority).ok()?;
-    resource.actions.retain(|spec| {
+    resource.retain_actions(|spec| {
         operation_allowed(&current, app, spec)
             && (spec.kind != OperationKind::Document
                 || (!broker && authorize_legacy_owner(owner, &current, author).is_ok()))
