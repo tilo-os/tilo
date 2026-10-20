@@ -277,6 +277,31 @@ impl ShellNetwork {
         envelope.encryption.is_some()
             && RoomId::parse(cluster_id).is_some_and(|room| self.native_room_seals_records(room))
     }
+    /// The other member devices the governance of enrolled `room` admits
+    /// now: neither this device nor the room's governor. `None` for a room
+    /// this device holds no native owner for.
+    pub(super) fn governed_member_devices(&self, room: RoomId) -> Option<Vec<iroh::EndpointId>> {
+        let owner = self.opened_native_owner()?;
+        owner
+            .with_current(room, |view| {
+                let now = SystemTime::now();
+                let own = view.device().device_public_key;
+                let governor = view.governor().device_public_key;
+                Ok(view
+                    .peer()
+                    .certificates()
+                    .into_iter()
+                    .filter(|cert| {
+                        cert.device_public_key != own
+                            && cert.device_public_key != governor
+                            && view.peer().permissions(cert.device_public_key, now).is_ok()
+                    })
+                    .filter_map(|cert| iroh::EndpointId::from_bytes(&cert.device_public_key).ok())
+                    .collect())
+            })
+            .ok()
+    }
+
     /// The identity the governance of the enrolled room on topic `ws`
     /// admitted for `device`, a member's device the room's relay
     /// authenticated: a browser of the room announces no identity of its

@@ -2410,6 +2410,13 @@ impl ShellNetwork {
     /// labelled with its own handle.
     /// The other devices `room` names, which may keep its records.
     pub fn room_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
+        // An enrolled room's devices are the members its governance admits;
+        // its document names none.
+        if self.native_topic_required(room_topic_id(room))
+            && let Some(devices) = self.governed_member_devices(room)
+        {
+            return devices;
+        }
         let Ok(replica) = self.replica.lock() else {
             return Vec::new();
         };
