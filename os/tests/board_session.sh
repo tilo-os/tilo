@@ -94,6 +94,16 @@ seat() {
     "$@" "$libexec/tilo-seat-session" you /usr/libexec/tilo-session
 }
 
+# Wait until the supervisor has started COUNT sessions, rather than for a
+# fixed time a loaded runner may not keep to; give up after the shared hang
+# bound.
+wait_runs() {
+  local count="$1" deadline=$((SECONDS + ${TILO_TEST_HANG_BOUND_SECS:-120}))
+  while [ "$(awk '$1 == "run"' "$work/seat.log" | wc -l)" -lt "$count" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    sleep 0.1
+  done
+}
+
 : >"$work/seat.log"; echo off >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 &
 pid=$!
@@ -147,7 +157,7 @@ fi
 : >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 DRM_TENTHS=3 TILO_SEAT_DRM_RETRY_SEC=1 &
 pid=$!
-sleep 2.5
+wait_runs 4
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 case "$backends" in
@@ -164,7 +174,7 @@ esac
 : >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
 seat SESSION_TENTHS=600 DRM_TENTHS=15 TILO_SEAT_DRM_STABLE_SEC=1 &
 pid=$!
-sleep 2.5
+wait_runs 2
 kill -TERM "$pid"; wait "$pid"
 backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'drm drm ' ]; then
