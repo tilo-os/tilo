@@ -2,6 +2,7 @@
 //! owns the resulting document mutation and operation settlement.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
@@ -118,6 +119,8 @@ pub struct CameraWorker {
     /// as it is admitted, on the caller's thread, and its jobs' queue is
     /// drained there.
     inline: Option<Mutex<(WorkerLoop, Receiver<WorkerJob>)>>,
+    /// Photos submitted whose result has not been taken yet.
+    photos_outstanding: AtomicUsize,
 }
 
 /// Results a thread-free worker may hold before the UI drains them; each
@@ -295,6 +298,7 @@ impl CameraWorker {
                 recording,
                 scan_rx,
                 inline: Some(Mutex::new((worker, jobs))),
+                photos_outstanding: AtomicUsize::new(0),
             };
         }
         let started = ui::rt::spawn_thread("camera-bounded-worker", move || {
@@ -319,6 +323,7 @@ impl CameraWorker {
             recording,
             scan_rx,
             inline: None,
+            photos_outstanding: AtomicUsize::new(0),
         }
     }
 
@@ -349,6 +354,7 @@ impl CameraWorker {
             .try_send(WorkerJob::Photo(job))
         {
             Ok(()) => {
+                self.photos_outstanding.fetch_add(1, Ordering::AcqRel);
                 self.run_inline();
                 Ok(())
             }
@@ -360,7 +366,18 @@ impl CameraWorker {
     }
 
     pub fn try_recv(&self) -> Option<PhotoResult> {
-        self.rx.try_recv().ok()
+        let result = self.rx.try_recv().ok();
+        if result.is_some() {
+            self.photos_outstanding.fetch_sub(1, Ordering::AcqRel);
+        }
+        result
+    }
+
+    /// Whether a submitted photo's result has not been taken yet: it is
+    /// still being encoded and saved, or waits to be drained.
+    #[cfg(test)]
+    pub fn saving_photo(&self) -> bool {
+        self.photos_outstanding.load(Ordering::Acquire) > 0
     }
 
     /// # Errors

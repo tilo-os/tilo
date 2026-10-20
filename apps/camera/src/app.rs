@@ -4189,7 +4189,7 @@ mod tests {
                 .unwrap();
             app.camera = Some(crate::capture::Capture::watch(video));
             asked_rx
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("the host asks the person");
             app.drain_camera();
             assert!(app.camera.is_some(), "the prompt is open");
@@ -4209,7 +4209,7 @@ mod tests {
 
             answer_tx.send(allow).unwrap();
             woke_rx
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("the answer wakes the window");
             app.drain_camera();
             if allow {
@@ -4629,8 +4629,20 @@ mod tests {
             app.cancel_effect(invocation),
             Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(2), |_| false);
+        // The photo's save runs on, at the disk's pace; its arrival is when
+        // it is dropped.
+        let deadline = tilo_test_env::hang_deadline();
+        while app
+            .with_surface::<CameraApp, _>(|camera| camera.worker.saving_photo())
+            .expect("the window shows Camera")
+        {
+            assert!(
+                ui::time::now() < deadline,
+                "the cancelled photo's save never answered"
+            );
+            app.harness()
+                .wait_until(ui::time::Duration::from_millis(20), |_| false);
+        }
         assert!(app.state().recent.is_none(), "nothing is registered");
         let photos =
             std::fs::read_dir(&dir).map_or(0, |entries| entries.filter_map(Result::ok).count());
