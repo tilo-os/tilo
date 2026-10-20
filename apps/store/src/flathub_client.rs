@@ -173,89 +173,6 @@ fn client() -> Result<Client, FlathubError> {
         .map_err(|e| FlathubError::Http(e.to_string()))
 }
 
-/// Fetch the popular set. `max_apps` bounds the total returned so we
-/// don't over-populate the list — the task caps around 200.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if a page request fails or comes back
-/// with a non-success status, or [`FlathubError::Decode`] if a page's body
-/// isn't the expected JSON shape.
-pub fn fetch_popular(max_apps: usize) -> Result<Vec<AppStreamRecord>, FlathubError> {
-    if max_apps == 0 {
-        return Ok(Vec::new());
-    }
-    let text = client()?
-        .get(format!(
-            "{}/collection/popular?page=1&per_page={}",
-            api_base(),
-            max_apps.min(200)
-        ))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    let mut records = decode_records(&text)?;
-    records.truncate(max_apps);
-    Ok(records)
-}
-
-/// Fetch one appstream record.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if the request fails or comes back with a
-/// non-success status, or [`FlathubError::Decode`] if the body isn't the
-/// expected JSON shape.
-pub fn fetch_appstream(app_id: &str) -> Result<AppStreamRecord, FlathubError> {
-    let url = format!("{}/appstream/{}", api_base(), app_id);
-    let c = client()?;
-    let text = c
-        .get(&url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| FlathubError::Decode(e.to_string()))?;
-    // `/appstream/<id>` has shipped responses both with and without a repeated
-    // id field. The path remains authoritative, so don't reject the latter.
-    if let Some(object) = value.as_object_mut()
-        && !object.contains_key("flatpakAppId")
-        && !object.contains_key("app_id")
-        && !object.contains_key("id")
-    {
-        object.insert("id".into(), serde_json::Value::String(app_id.into()));
-    }
-    let mut record = record_from_value(&value)?;
-    record.app_id = app_id.to_string();
-    Ok(record)
-}
-
-/// Full-text search. Flathub's response has changed between a bare array and
-/// a `{ "hits": [...] }` envelope; accept both and normalize summary records
-/// into the same shape used by collection/detail enrichment.
-///
-/// # Errors
-///
-/// Returns [`FlathubError::Http`] if the request fails or comes back with a
-/// non-success status, or [`FlathubError::Decode`] if the body isn't the
-/// expected JSON shape.
-pub fn search(query: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
-    if query.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let url = format!("{}/search", api_base());
-    let text = client()?
-        .post(url)
-        .json(&serde_json::json!({ "query": query }))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .map_err(|e| FlathubError::Http(e.to_string()))?;
-    decode_records(&text)
-}
-
 fn decode_records(text: &str) -> Result<Vec<AppStreamRecord>, FlathubError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| FlathubError::Decode(e.to_string()))?;
@@ -711,10 +628,12 @@ mod tests {
             .unwrap();
             request
         });
-        let rows = fetch_popular(200).unwrap();
+        let rows = fetch_collection("popular", 200, "en").unwrap();
         let request = server.join().unwrap();
         assert!(
-            request.starts_with("GET /api/v2/collection/popular?page=1&per_page=200 HTTP/1.1"),
+            request.starts_with(
+                "GET /api/v2/collection/popular?page=1&per_page=200&locale=en HTTP/1.1"
+            ),
             "{request}"
         );
         assert_eq!(rows[0].app_id, "org.gnome.Calculator");
