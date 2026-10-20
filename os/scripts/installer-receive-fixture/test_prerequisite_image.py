@@ -17,7 +17,7 @@ class ImmutableBaseTests(unittest.TestCase):
         for base in ('sha256:' + 'a' * 64,
                      'registry.fedoraproject.org/fedora@sha256:' + 'b' * 64):
             with self.subTest(base=base), tempfile.TemporaryDirectory(
-                dir=IMAGE.ROOT / 'target', prefix='prerequisite-image-test-'
+                prefix='prerequisite-image-test-'
             ) as scratch:
                 context = Path(scratch) / 'context'
                 manifest = IMAGE.assemble(context, base)
@@ -30,8 +30,7 @@ class ImmutableBaseTests(unittest.TestCase):
                 self.assertFalse(manifest['candidate_executables_included'])
 
     def test_mutable_or_injected_base_is_rejected_before_context_creation(self):
-        with tempfile.TemporaryDirectory(dir=IMAGE.ROOT / 'target',
-                                         prefix='prerequisite-image-test-') as scratch:
+        with tempfile.TemporaryDirectory(prefix='prerequisite-image-test-') as scratch:
             context = Path(scratch) / 'context'
             for base in ('fedora:44', 'sha256:' + 'a' * 63,
                          'sha256:' + 'A' * 64, 'sha256:' + 'a' * 64 + '\nRUN true',
