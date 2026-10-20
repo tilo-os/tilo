@@ -855,6 +855,118 @@ mod files_clipboard_tests {
         }
     }
 
+    /// A paste of several files killed at each phase of its batch (staged,
+    /// intent written, partly published, published but not completed) is
+    /// rolled back by recovery: nothing pasted or half-written is shown in
+    /// the receiving folder, and every source is back with its bytes, for
+    /// Copy and for Cut.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one kill-and-recover scenario per phase, read top to bottom"
+    )]
+    fn mounted_files_recovers_a_batch_killed_at_each_phase() {
+        use std::os::unix::process::ExitStatusExt as _;
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_recovers_a_batch_killed_at_each_phase";
+        const SOURCES: [(&str, &[u8]); 3] = [
+            ("report", b"original source"),
+            ("second", b"second source"),
+            ("third", b"third source"),
+        ];
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        if let Some(action) = std::env::var_os("TILO_CLIPBOARD_TEST_ACTION") {
+            let mut fixture = Fixture::new(&profile);
+            for (name, bytes) in &SOURCES[1..] {
+                std::fs::write(fixture.folders[0].join(name), bytes).unwrap();
+            }
+            fixture.succeeds(0, "refresh");
+            fixture.succeeds(0, "select-all");
+            fixture.succeeds(0, action.to_str().unwrap());
+            fixture.succeeds(1, "paste");
+            drop(fixture);
+            panic!("the batch phase was not reached");
+        }
+        let shown = |folder: &Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+            names.sort();
+            names
+        };
+        let hidden = |folder: &Path, prefix: &str| -> bool {
+            std::fs::read_dir(folder).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(prefix)
+            })
+        };
+        for action in ["copy-selection", "cut-selection"] {
+            for phase in [
+                "batch-staged",
+                "batch-intent",
+                "batch-midway",
+                "batch-published",
+            ] {
+                let root = profile.join(action).join(phase);
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env("TILO_IN_PROCESS_TEST_ROOT", &root)
+                    .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
+                    .env("TILO_CLIPBOARD_TEST_ACTION", action)
+                    .status()
+                    .unwrap();
+                assert_eq!(
+                    status.signal(),
+                    Some(libc::SIGKILL),
+                    "must kill the paste at {action} {phase}: {status}"
+                );
+                let mut fixture = Fixture::resume(&root);
+                let result = fixture.succeeds(1, "recover-clipboard-transfers");
+                // Before its intent, a batch has touched no source and
+                // published nothing; there is nothing to roll back.
+                let expected = u64::from(phase != "batch-staged");
+                assert_eq!(
+                    result["completed"], expected,
+                    "recovery settles the interrupted paste: {action} {phase}: {result}"
+                );
+                assert_eq!(
+                    shown(&root.join("receiving")),
+                    ["other"],
+                    "nothing pasted or half-written is shown: {action} {phase}"
+                );
+                for (name, bytes) in SOURCES {
+                    assert_eq!(
+                        std::fs::read(root.join("source").join(name)).unwrap(),
+                        bytes,
+                        "every source is back with its bytes: {action} {phase} {name}"
+                    );
+                }
+                assert!(
+                    !hidden(&root.join("source"), ".tilo-transfer-source-"),
+                    "no hidden source quarantine is left: {action} {phase}"
+                );
+                if phase != "batch-staged" {
+                    assert!(
+                        !hidden(&root.join("receiving"), ".tilo-transfer-"),
+                        "recovery leaves no staging behind: {action} {phase}"
+                    );
+                }
+                assert_eq!(
+                    fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
+                    0,
+                    "recovery is idempotent: {action} {phase}"
+                );
+                drop(fixture);
+            }
+        }
+    }
+
     // Tests that pause a transfer midway use the Linux file clipboard's
     // transfer hook (`TestTransferPause`), so they exist only on Linux.
     #[cfg(target_os = "linux")]
@@ -945,15 +1057,28 @@ mod files_clipboard_tests {
             );
         }
         let receiving = fixture.folders[1].clone();
-        let first = std::fs::read_dir(&receiving)
-            .unwrap()
-            .map(Result::unwrap)
-            .map(|entry| entry.path())
+        // What a person sees in the folder: the batch's private staging
+        // folder is hidden and holds nothing published.
+        let shown = |folder: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    !path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".tilo-transfer-")
+                })
+                .collect()
+        };
+        let first = shown(&receiving)
+            .into_iter()
             .find(|path| path.file_name().unwrap() != "other")
             .unwrap();
         let first_bytes = std::fs::read(&first).unwrap();
         assert_eq!(
-            std::fs::read_dir(&receiving).unwrap().count(),
+            shown(&receiving).len(),
             2,
             "only one clipboard object is actually published at this phase"
         );
