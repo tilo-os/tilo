@@ -795,6 +795,7 @@ pub fn governance_events(
             after: None,
             caused_by: None,
             incoming_message: false,
+            housekeeping: false,
             shortcut: None,
             run: None,
         });

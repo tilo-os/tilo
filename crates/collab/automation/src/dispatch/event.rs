@@ -37,6 +37,11 @@ pub struct RecordEvent {
     /// The change carries the incoming-message facet.
     #[serde(default)]
     pub incoming_message: bool,
+    /// The change is housekeeping about the record (marking a channel
+    /// read, a person introducing themselves), not a change to what it
+    /// holds.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub housekeeping: bool,
     /// The Shortcut whose run made the change (the `shortcut` facet a run
     /// writes), so that Shortcut never fires on its own output: its
     /// changes carry the person's id as actor, not the Shortcut's.
@@ -106,6 +111,7 @@ pub fn event_of(
         after: None,
         caused_by: context.caused_by.clone(),
         incoming_message: facet(tilo_actions::INCOMING_MESSAGE_FACET).is_some(),
+        housekeeping: context.is_housekeeping(),
         shortcut: facet("shortcut"),
         run: context
             .group

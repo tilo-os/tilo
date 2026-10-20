@@ -2008,6 +2008,7 @@ mod tests {
             after: None,
             caused_by: None,
             incoming_message: true,
+            housekeeping: false,
             shortcut: None,
             run: None,
         }
