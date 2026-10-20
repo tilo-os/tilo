@@ -96,11 +96,12 @@ see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
 targets, which is how test files have silently stopped building for days at a time.
 
-Before pushing, test the packages you touched: `t test clippy/<package> test/<package>`
-([docs/t.md](docs/t.md)). Then:
+While working, test what your change touches: `t test $(t scope --names)` ([docs/t.md](docs/t.md)).
+The push gate runs those checks again on the pushed commit, with the whole-tree ones. Then:
 
 1. Commit (once per clone, `python3 tools/dev/install-git-hooks.py` turns on the hooks).
-2. `git push origin HEAD:main`, in the background: the pre-push hook runs t's push gate.
+2. `git push origin HEAD:main`, in the background: the pre-push hook runs t's push gate (the
+   checks the commit touches plus the fast whole-tree ones, on the commit as committed).
 3. If it refuses, fix and commit (it says when `t fix` already fixed files for you to commit),
    or `git fetch origin && git rebase origin/main` when main moved, then push again.
 4. Watch `t inbox`; fix forward what your commit broke on main.
