@@ -460,6 +460,33 @@ def is_compute_package(app_dir: Path) -> bool:
     )
 
 
+def owning_app(root: Path, crate_dir: Path) -> str | None:
+    """The app a part crate belongs to, or None.
+
+    A part crate (`apps/browser-parts`, `apps/settings-rare`) is a library
+    split out of one app so the app's engine library can load it: it has no
+    `tilo-app.toml` of its own and is never launched. It publishes through
+    the app that links it, so that app's contract covers it. The owner is
+    the one launched app (with a `tilo-app.toml`) that depends on it by
+    path at runtime.
+    """
+    if (crate_dir / "tilo-app.toml").is_file():
+        return None
+    owners = []
+    for manifest_path in sorted((root / "apps").glob("*/Cargo.toml")):
+        app_dir = manifest_path.parent
+        if app_dir == crate_dir or not (app_dir / "tilo-app.toml").is_file():
+            continue
+        with manifest_path.open("rb") as handle:
+            manifest = tomllib.load(handle)
+        for table in runtime_dependency_tables(manifest):
+            for specification in table.values():
+                path = specification.get("path") if isinstance(specification, dict) else None
+                if isinstance(path, str) and (app_dir / path).resolve() == crate_dir.resolve():
+                    owners.append(app_dir.name)
+    return owners[0] if len(owners) == 1 else None
+
+
 def is_ui_core_dependency(alias: str, specification: object) -> bool:
     if package_name(alias, specification) == "ui":
         return True
@@ -1528,12 +1555,14 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         # depend on it), not an app: the apps embedding it publish its actions.
         # A compute package runs for the action of the app that requested it.
         # A headless service has no widget tree to publish from; it publishes
-        # its action descriptors to the broker directly.
+        # its action descriptors to the broker directly. A part crate
+        # publishes through the one app that links it (`owning_app`).
         if (
             app_name != "agent"
             and not app_name.endswith("-model")
             and not compute_package
             and not headless_action_service(manifest_path.parent, combined)
+            and owning_app(root, manifest_path.parent) is None
         ):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
