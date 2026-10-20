@@ -24,6 +24,11 @@ fn an_early_seek_under_load_always_produces_a_picture() {
     // A healthy open lands its picture in well under a second even under
     // this load; a stalled one never does.
     const PER_OPEN: Duration = Duration::from_secs(15);
+    // How much longer a miss is watched before it counts as a stall. On a
+    // runner whose cores other jobs also hold, a starved open can outlast
+    // PER_OPEN; the stall this test exists for never produces its picture,
+    // so only an open that stays silent this long is one.
+    const STALL: Duration = Duration::from_secs(120);
 
     // Encode the fixture before the load starts.
     let _ = fixture_path();
@@ -52,10 +57,28 @@ fn an_early_seek_under_load_always_produces_a_picture() {
                     e.open(fixture_source());
                     let target = if (w + open) % 2 == 0 { 5_000 } else { 1_000 };
                     if let Err(error) = e.seek_and_wait(target, PER_OPEN) {
-                        stalls.push(format!(
-                            "worker {w} open {open} seek {target}ms: {error}; {}",
-                            e.hw_report().describe()
-                        ));
+                        // Keep pumping the engine without asking again: a
+                        // second seek could unstick the very stall sought.
+                        let deadline = std::time::Instant::now() + STALL;
+                        let mut late = false;
+                        while std::time::Instant::now() < deadline {
+                            let _ = e.poll();
+                            if e.frame_is_current() {
+                                late = true;
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        if late {
+                            eprintln!(
+                                "worker {w} open {open} seek {target}ms: picture arrived after {PER_OPEN:?} ({error}): slow, not stalled"
+                            );
+                        } else {
+                            stalls.push(format!(
+                                "worker {w} open {open} seek {target}ms: {error}, and nothing for {STALL:?} more; {}",
+                                e.hw_report().describe()
+                            ));
+                        }
                     }
                 }
                 stalls
