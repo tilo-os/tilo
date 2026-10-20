@@ -22,9 +22,12 @@ use ui::widget::arrange::{
     Split, Stack,
 };
 use ui::widget::{
-    Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Element, ListRow, ProgressBar,
-    Scrollable, Spacer, Text, TextInput, labeled_check,
+    Avatar, Button, ButtonRole, Card, Checkbox, Container, ControlSize, Divider, Dropdown, Element,
+    EmptyState, Field, FormSection, ListRow, ProgressBar, Property, PropertyList, Scrollable,
+    Section, Segment, Spacer, Text, TextInput, Toggle, ToggleGroup, labeled_check,
 };
+
+use crate::window::pane::Pane;
 
 /// What a person did to the view.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,6 +40,8 @@ pub enum UiEvent {
     Toggle(String, bool),
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve(String, bool),
+    /// The node `key`'s event `event` happened: a case of a `choice` was picked.
+    Fire(String, String),
 }
 
 /// Where controls report what the person did.
@@ -44,6 +49,12 @@ pub type EventSink = Rc<RefCell<Vec<UiEvent>>>;
 
 /// The name a bound field is announced by.
 pub type FieldNames = Rc<dyn Fn(&Binding) -> String>;
+
+/// The cases of an enum (by id) with what a control shows for each.
+pub type Cases = Rc<dyn Fn(&str) -> Vec<(String, String)>>;
+
+/// What the room calls a participant (by id).
+pub type People = Rc<dyn Fn(&str) -> String>;
 
 /// Builds and reconciles the widgets of a view tree.
 pub struct Reconciler {
@@ -53,6 +64,8 @@ pub struct Reconciler {
     flags: HashMap<String, LocalState<bool>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
+    cases: Cases,
+    people: People,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -267,7 +280,17 @@ impl Reconciler {
             texts: HashMap::new(),
             flags: HashMap::new(),
             navigation: None,
+            cases: Rc::new(|_| Vec::new()),
+            people: Rc::new(str::to_owned),
         }
+    }
+
+    /// Read enum cases and participants' names through `cases` and `people`.
+    #[must_use]
+    pub fn with_lookups(mut self, cases: Cases, people: People) -> Self {
+        self.cases = cases;
+        self.people = people;
+        self
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -321,6 +344,13 @@ impl Reconciler {
             "progress" => Box::new(ProgressBar::new(number(node, "value").unwrap_or(0.0))),
             "heading" => self.text(node, Some(heading_role(node))),
             "text" => self.text(node, None),
+            "section" | "card" | "form" | "field" => self.holder(node),
+            "facts" => self.facts(node),
+            "toggle" => self.toggle(node),
+            "choice" => self.choice(node),
+            "avatar" => self.avatar(node),
+            "list" => self.rows(node),
+            "item" => self.stack(node, Rhythm::Tight),
             "button" => self.button(node),
             "list_row" => self.list_row(node),
             "checkbox" => self.checkbox(node),
@@ -484,15 +514,22 @@ impl Reconciler {
     }
 
     fn text(&mut self, node: &UiNode, role: Option<TextRole>) -> Element {
-        let role = role.unwrap_or_else(|| match token(node, "style") {
-            Some("display") => TextRole::Display,
-            Some("title") => TextRole::Title,
-            Some("heading") => TextRole::Heading,
-            Some("caption") => TextRole::Caption,
-            Some("label") => TextRole::Label,
-            Some("code") => TextRole::Code,
-            _ => TextRole::Body,
-        });
+        if role.is_none() && token(node, "role") == Some("numeric") {
+            let value = prop(node, "value").map(display).unwrap_or_default();
+            return self.numeric_text(node, &value);
+        }
+        let role =
+            role.unwrap_or_else(
+                || match token(node, "role").or_else(|| token(node, "style")) {
+                    Some("display") => TextRole::Display,
+                    Some("title") => TextRole::Title,
+                    Some("heading") => TextRole::Heading,
+                    Some("caption") => TextRole::Caption,
+                    Some("label") => TextRole::Label,
+                    Some("code") => TextRole::Code,
+                    _ => TextRole::Body,
+                },
+            );
         let value = prop(node, "value").map(display).unwrap_or_default();
         self.text_of(node, &value, role)
     }
@@ -515,7 +552,7 @@ impl Reconciler {
         let label = prop(node, "label").map(display).unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
-        let role = match token(node, "style") {
+        let role = match token(node, "role").or_else(|| token(node, "style")) {
             Some("primary") => ButtonRole::Primary,
             Some("destructive") => ButtonRole::Destructive,
             Some("plain") => ButtonRole::Plain,
@@ -528,8 +565,14 @@ impl Reconciler {
         };
         let enabled = prop(node, "enabled").is_none_or(|_| flag(node, "enabled"))
             && node.events.contains_key("press");
+        let mut button = Button::new(&node.key, &label);
+        if let Some(icon) =
+            token(node, "icon").and_then(|name| ui::icons::Icon::from_name(&name.replace('_', "-")))
+        {
+            button = button.with_icon(icon);
+        }
         Box::new(
-            Button::new(&node.key, &label)
+            button
                 .role(role)
                 .control_size(size)
                 .with_enabled(enabled)
@@ -549,8 +592,45 @@ impl Reconciler {
         {
             row = row.secondary(secondary);
         }
+        let shown = |name: &str| {
+            prop(node, name)
+                .map(display)
+                .filter(|text| !text.is_empty())
+        };
+        if let Some(meta) = shown("meta") {
+            row = row.meta(meta);
+        }
+        if let Some(value) = shown("value") {
+            row = row.value(value);
+        }
+        if let Some(badge) = shown("badge") {
+            row = row.badge(badge);
+        }
+        if let Some(icon) = icon_prop(node, "mark") {
+            row = row.mark(icon);
+        }
+        if let Some(icon) = icon_prop(node, "icon") {
+            row = row.icon(icon);
+        }
+        if let Some(Value::Principal(who)) = prop(node, "avatar") {
+            row = row.avatar((self.people)(&who.0), who.0.clone());
+        }
         if prop(node, "checked").is_some() {
             row = row.checked(flag(node, "checked"));
+        }
+        if node.binding.is_some() {
+            let state = self
+                .flags
+                .get(&node.key)
+                .cloned()
+                .unwrap_or_else(|| LocalState::new(false));
+            let toggles = Rc::clone(&self.sink);
+            let key = node.key.clone();
+            row = row.checkbox(state.get(), move |checked| {
+                toggles
+                    .borrow_mut()
+                    .push(UiEvent::Toggle(key.clone(), checked));
+            });
         }
         if node.events.contains_key("press") {
             row = row.on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone())));
@@ -728,6 +808,205 @@ impl Reconciler {
         self.text_of(node, &alt.unwrap_or_default(), TextRole::Caption)
     }
 
+    /// A text that shows a number: tabular figures, so a changing count does not jitter.
+    fn numeric_text(&mut self, node: &UiNode, value: &str) -> Element {
+        let state = self
+            .texts
+            .entry(node.key.clone())
+            .or_insert_with(|| LocalState::new(value.to_owned()))
+            .clone();
+        state.set(value.to_owned());
+        Box::new(
+            Text::from_state(&state, |shown: &String| shown.clone())
+                .with_role(TextRole::Title)
+                .numeric()
+                .with_id(node.key.clone()),
+        )
+    }
+
+    /// A section, card, form or field: the native widget, with each part of its content in a
+    /// [`Pane`] the reconciler reaches again, so content that runs again keeps its widgets.
+    fn holder(&mut self, node: &UiNode) -> Element {
+        let mut panes: Vec<Element> = holder_parts(node)
+            .into_iter()
+            .map(|part| Box::new(Pane::new(self.build(part))) as Element)
+            .collect();
+        match node.kind.as_str() {
+            "section" => {
+                let title = prop(node, "title").map(display).unwrap_or_default();
+                if title.is_empty() {
+                    Box::new(Section::new(panes))
+                } else {
+                    Box::new(Section::titled(title, panes))
+                }
+            }
+            "card" => {
+                let body = Stack::stack()
+                    .fill_width()
+                    .gap(Rhythm::Related)
+                    .with_id(node.key.clone());
+                let body = panes
+                    .into_iter()
+                    .fold(body, |body, pane| body.push_slot(Slot::new(pane)));
+                Box::new(Card::new(Box::new(body)))
+            }
+            _ => {
+                let mut section = FormSection::untitled();
+                let fields: Vec<&UiNode> = if node.kind == "field" {
+                    vec![node]
+                } else {
+                    node.children.iter().collect()
+                };
+                panes.reverse();
+                for child in fields {
+                    let Some(pane) = panes.pop() else {
+                        break;
+                    };
+                    if child.kind == "field" {
+                        let label = prop(child, "label").map(display).unwrap_or_default();
+                        section = section.field(Field::custom(label, pane));
+                    } else {
+                        section = section.content(pane);
+                    }
+                }
+                Box::new(section)
+            }
+        }
+    }
+
+    fn update_holder(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
+        if holder_shape(old_node) != holder_shape(new_node) {
+            return self.build(new_node);
+        }
+        let old_parts = holder_parts(old_node);
+        let new_parts = holder_parts(new_node);
+        let mut panes = Vec::new();
+        collect_panes(old.as_mut(), &mut panes);
+        if panes.len() != new_parts.len() {
+            return self.build(new_node);
+        }
+        for ((pane, before), after) in panes.into_iter().zip(old_parts).zip(new_parts) {
+            let inner = pane.take();
+            let updated = self.update(inner, before, after);
+            pane.set(updated);
+        }
+        old
+    }
+
+    /// Facts: the native property list, a label and a value per fact.
+    fn facts(&self, node: &UiNode) -> Element {
+        let properties = node
+            .children
+            .iter()
+            .filter(|child| child.kind == "fact")
+            .map(|fact| {
+                Property::new(
+                    prop(fact, "label").map(display).unwrap_or_default(),
+                    prop(fact, "value").map(display).unwrap_or_default(),
+                )
+            })
+            .collect();
+        Box::new(PropertyList::new(properties))
+    }
+
+    /// A switch bound to a `Bool`, with its label: a row of a form.
+    fn toggle(&mut self, node: &UiNode) -> Element {
+        let state = self
+            .flags
+            .entry(node.key.clone())
+            .or_insert_with(|| LocalState::new(false))
+            .clone();
+        let sink = Rc::clone(&self.sink);
+        let key = node.key.clone();
+        let label = prop(node, "label").map(display).unwrap_or_default();
+        let control = Toggle::from_state(&state).on_change(move |checked| {
+            sink.borrow_mut()
+                .push(UiEvent::Toggle(key.clone(), checked));
+        });
+        Box::new(FormSection::untitled().field(Field::new(label, control)))
+    }
+
+    /// A choice of an enum's cases: segments for a few, a menu for more.
+    fn choice(&mut self, node: &UiNode) -> Element {
+        let cases = token(node, "enum")
+            .map(|id| (self.cases)(id))
+            .unwrap_or_default();
+        let selected = match prop(node, "selected") {
+            Some(Value::Text(case)) => Some(case.clone()),
+            Some(Value::Enum(value)) => Some(value.variant.clone()),
+            _ => None,
+        };
+        let at = selected
+            .as_ref()
+            .and_then(|case| cases.iter().position(|(name, _)| name == case));
+        let sink = Rc::clone(&self.sink);
+        let key = node.key.clone();
+        let names: Vec<String> = cases.iter().map(|(name, _)| name.clone()).collect();
+        if cases.len() <= 4 {
+            let segments = cases
+                .iter()
+                .map(|(_, label)| Segment::new(label.clone()))
+                .collect();
+            Box::new(
+                ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
+                    if let Some(case) = names.get(index) {
+                        sink.borrow_mut()
+                            .push(UiEvent::Fire(key.clone(), format!("pick.{case}")));
+                    }
+                }),
+            )
+        } else {
+            let labels: Vec<String> = cases.iter().map(|(_, label)| label.clone()).collect();
+            let state = LocalState::new(
+                at.and_then(|index| labels.get(index).cloned())
+                    .unwrap_or_default(),
+            );
+            let chosen = labels.clone();
+            Box::new(
+                Dropdown::from_state(labels, &state).on_change(move |label| {
+                    if let Some(case) = chosen
+                        .iter()
+                        .position(|shown| shown == label)
+                        .and_then(|index| names.get(index))
+                    {
+                        sink.borrow_mut()
+                            .push(UiEvent::Fire(key.clone(), format!("pick.{case}")));
+                    }
+                }),
+            )
+        }
+    }
+
+    fn avatar(&self, node: &UiNode) -> Element {
+        let (name, identity) = match prop(node, "who") {
+            Some(Value::Principal(who)) => ((self.people)(&who.0), who.0.clone()),
+            Some(other) => (display(other), display(other)),
+            None => (String::new(), String::new()),
+        };
+        Box::new(Avatar::person(name, identity))
+    }
+
+    /// A list inside content: its rows, as a section of the page.
+    fn rows(&mut self, node: &UiNode) -> Element {
+        let rows: Vec<Element> = node
+            .children
+            .iter()
+            .map(|item| {
+                let row = find(item, "list_row").unwrap_or(item);
+                if row.kind == "list_row" {
+                    self.list_row(row)
+                } else {
+                    self.build(row)
+                }
+            })
+            .collect();
+        if rows.is_empty() {
+            let empty = prop(node, "empty").map(display).unwrap_or_default();
+            return Box::new(EmptyState::new(empty).inline());
+        }
+        Box::new(Section::new(rows))
+    }
+
     /// Bring `old`, the widget built for `old_node`, up to date with `new_node`.
     pub fn update(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
         if old_node == new_node {
@@ -745,6 +1024,7 @@ impl Reconciler {
                 }
                 self.build(new_node)
             }
+            "section" | "card" | "form" | "field" => self.update_holder(old, old_node, new_node),
             "input" | "checkbox" => {
                 if same_shell(old_node, new_node) {
                     old
@@ -840,6 +1120,91 @@ impl Reconciler {
             })
             .collect()
     }
+}
+
+/// The nodes a holder shows each in a pane: a section's or card's children, a form's fields'
+/// controls (or its other content), a field's control.
+fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
+    match node.kind.as_str() {
+        "field" => node.children.first().into_iter().collect(),
+        "form" => node
+            .children
+            .iter()
+            .filter_map(|child| {
+                if child.kind == "field" {
+                    child.children.first()
+                } else {
+                    Some(child)
+                }
+            })
+            .collect(),
+        _ => node.children.iter().collect(),
+    }
+}
+
+/// What a holder's widget is built from besides its parts' contents: its own props, and the
+/// key, kind and props of each part (a field's label).
+fn holder_shape(node: &UiNode) -> Vec<(String, String, Vec<(String, Value)>)> {
+    let entry = |node: &UiNode| {
+        (
+            node.key.clone(),
+            node.kind.clone(),
+            node.props
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let mut shape = vec![entry(node)];
+    for child in &node.children {
+        shape.push(entry(child));
+        if node.kind == "form" && child.kind == "field" {
+            shape.extend(
+                child
+                    .children
+                    .iter()
+                    .map(|control| (control.key.clone(), control.kind.clone(), Vec::new())),
+            );
+        }
+    }
+    shape
+}
+
+/// Every [`Pane`] under `widget`, in order, not looking inside a pane.
+fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a mut Pane>) {
+    if widget.as_any().is_some_and(|any| any.is::<Pane>()) {
+        if let Some(pane) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Pane>())
+        {
+            out.push(pane);
+        }
+        return;
+    }
+    for child in widget.children_mut() {
+        collect_panes(child, out);
+    }
+}
+
+/// The first node of `kind` under `node`.
+fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+    node.children.iter().find_map(|child| {
+        (child.kind == kind)
+            .then_some(child)
+            .or_else(|| find(child, kind))
+    })
+}
+
+fn icon_prop(node: &UiNode, name: &str) -> Option<ui::icons::Icon> {
+    let name = match prop(node, name)? {
+        Value::Text(name) => name.clone(),
+        Value::Opt(Some(inner)) => match inner.as_ref() {
+            Value::Text(name) => name.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    ui::icons::Icon::from_name(&name.replace('_', "-"))
 }
 
 fn same_shell_without_value(a: &UiNode, b: &UiNode) -> bool {

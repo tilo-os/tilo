@@ -160,14 +160,21 @@ pub fn action_spec(
                 payload: message.into_bytes(),
             })
     };
-    let placeholder = if action.doc.is_empty() {
+    // What the platform calls the action, as the compiler derived it; a package compiled before
+    // labels existed is named by its action.
+    let label = if action.label.is_empty() {
         action.name.clone()
+    } else {
+        action.label.clone()
+    };
+    let placeholder = if action.doc.is_empty() {
+        label.clone()
     } else {
         action.doc.clone()
     };
     let mut spec = ActionSpec::typed(
         action.id.clone(),
-        action.name.clone(),
+        label,
         placeholder,
         ExecutionLocus::ClientLocal,
         params,
