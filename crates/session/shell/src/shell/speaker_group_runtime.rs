@@ -18,9 +18,7 @@
 //!   capability bound to that exact source and session. Losing the source,
 //!   the consent, the group, or media continuity ends the session.
 //!
-//! The timed audio path consumes [`outbound_playback_plans`] on the playing
-//! device and [`member_grant`] on each member. `PipeWire` identities stay
-//! inside [`resolve_local_output`].
+//! `PipeWire` identities stay inside [`resolve_local_output`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
@@ -987,7 +985,7 @@ impl SpeakerGroupCore {
 
     /// Presentation rows for the Devices surface and Settings. `playout`
     /// answers, per member route, whether that member can play in time (see
-    /// [`crate::shell::remote_audio::group_route_playout`]).
+    /// [`crate::shell::remote_audio::group_route_playouts`]).
     #[must_use]
     #[expect(
         clippy::too_many_lines,
@@ -2494,31 +2492,6 @@ pub fn view(network: &crate::shell::network::ShellNetwork) -> SpeakerGroupsView 
         |_| SpeakerGroupsView::default(),
         |core| core.view(&fabric, &local, &|route| playouts.get(&route).copied()),
     )
-}
-
-/// Sessions this device is playing to groups, with each member it may send
-/// to. The timed audio path renders exactly these.
-#[must_use]
-pub fn outbound_playback_plans() -> Vec<GroupPlaybackPlan> {
-    core()
-        .lock()
-        .map_or_else(|_| Vec::new(), |core| core.playback_plans())
-}
-
-/// What this device plays for `session_id` from `source`, or `None` when it
-/// has not admitted that exact session.
-#[must_use]
-pub fn member_grant(
-    network: &crate::shell::network::ShellNetwork,
-    session_id: [u8; 16],
-    source: &DeviceId,
-) -> Option<MemberPlaybackGrant> {
-    let local = local_device(network).ok()?;
-    let fabric = network.device_fabric();
-    core()
-        .lock()
-        .ok()?
-        .grant(&fabric, &local, session_id, source)
 }
 
 /// Resolve one of this device's published selectors to its local output.

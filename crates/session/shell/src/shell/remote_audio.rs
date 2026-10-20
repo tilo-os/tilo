@@ -370,7 +370,6 @@ impl PlaybackSource for SharedPlayout {
 }
 
 struct InboundPlayback {
-    role: ChannelRole,
     shared: SharedPlayout,
     stream: Box<dyn PlaybackStream>,
 }
@@ -420,11 +419,7 @@ fn start_playback_on(
     let stream = streams
         .open_playback(&config, Box::new(shared.clone()))
         .map_err(|error| format!("start remote audio playback: {error}"))?;
-    Ok(InboundPlayback {
-        role,
-        shared,
-        stream,
-    })
+    Ok(InboundPlayback { shared, stream })
 }
 
 /// One authenticated frame as the receiver sees it.
@@ -1217,7 +1212,7 @@ pub fn request(
 
 /// Resolve one target-local consent row. Approval starts the local playback
 /// stream before minting and sending the capability, so false readiness is
-/// impossible. The route plays both channels until [`set_role`] picks one.
+/// impossible. The route plays both channels.
 ///
 /// # Errors
 ///
@@ -1288,56 +1283,6 @@ pub fn authorize(
         state.inbound.remove(&session_id);
     }
     result.map(|_| ())
-}
-
-/// Choose which part of the stereo stream this device plays for an inbound
-/// route: one side of a stereo pair, a mono, centre or LFE feed, or both
-/// channels. The route's playback stream restarts with the role's channel
-/// count, so the switch costs one group latency of audio.
-///
-/// # Errors
-///
-/// Returns a message when the route is no longer active or the new playback
-/// stream cannot start.
-pub fn set_role(session_id: [u8; 16], role: ChannelRole) -> Result<(), String> {
-    set_role_with(
-        state(),
-        media::pw_stream::native_streams(),
-        session_id,
-        role,
-    )
-}
-
-fn set_role_with(
-    state: &Mutex<RemoteAudioState>,
-    streams: &dyn AudioStreams,
-    session_id: [u8; 16],
-    role: ChannelRole,
-) -> Result<(), String> {
-    let inactive = || crate::shell::i18n::t("remote-audio-error-route-inactive");
-    let current = state.lock_recover();
-    let route = current.inbound.get(&session_id).map(|route| {
-        (
-            route.label.clone(),
-            route.playback.as_ref().map(|playback| playback.role),
-        )
-    });
-    drop(current);
-    let (label, playing) = route.ok_or_else(inactive)?;
-    if playing == Some(role) {
-        return Ok(());
-    }
-    // Opening a stream talks to the daemon; never while holding the state.
-    let playback = start_playback(streams, &label, role)?;
-    let mut state = state.lock_recover();
-    let route = state.inbound.get_mut(&session_id).ok_or_else(inactive)?;
-    if let Some(previous) = route.playback.as_ref() {
-        let clock = previous.shared.lock().clock;
-        playback.shared.lock().clock = clock;
-    }
-    route.playback = Some(playback);
-    drop(state);
-    Ok(())
 }
 
 fn tap_for(
@@ -1502,29 +1447,9 @@ pub fn end_group_route(route: [u8; 16]) {
     state.local.remove(&route);
 }
 
-/// Whether a running group route can play in time: for a member this device
-/// sends to, what it last reported; for a member playing here, this device's
-/// own clock of the source. `None` once the route is gone.
-#[must_use]
-pub fn group_route_playout(route: [u8; 16]) -> Option<ClockSyncState> {
-    let state = state().lock_recover();
-    if let Some(outbound) = state.outbound.get(&route)
-        && outbound.tap.is_some()
-    {
-        return Some(outbound.playout());
-    }
-    if let Some(inbound) = state.inbound.get(&route)
-        && inbound.group
-    {
-        return Some(inbound.playout());
-    }
-    state
-        .local
-        .contains_key(&route)
-        .then_some(ClockSyncState::Ready)
-}
-
-/// [`group_route_playout`] for every running group route at once.
+/// Whether each running group route can play in time: for a member this
+/// device sends to, what it last reported; for a member playing here, this
+/// device's own clock of the source. A route that is gone is absent.
 #[must_use]
 pub fn group_route_playouts() -> BTreeMap<[u8; 16], ClockSyncState> {
     let state = state().lock_recover();
@@ -2536,48 +2461,6 @@ mod tests {
             (level(2_000.0) - 0.5).abs() < 0.02,
             "the midrange is untouched"
         );
-    }
-
-    #[test]
-    fn a_route_switches_role_and_keeps_its_clock() {
-        let streams = FakeStreams::default();
-        let source = DeviceId::new("source").unwrap();
-        let target = DeviceId::new("target").unwrap();
-        let mut route = inbound(&source, &target, Instant::now());
-        let playback = start_playback(&streams, "Podcast", ChannelRole::Stereo).unwrap();
-        playback.shared.lock().clock = Some(source_clock());
-        route.playback = Some(playback);
-        let state = Mutex::new(RemoteAudioState::default());
-        state.lock().unwrap().inbound.insert([1; 16], route);
-
-        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
-        let guard = state.lock().unwrap();
-        let playback = guard.inbound[&[1; 16]].playback.as_ref().unwrap();
-        let role = playback.role;
-        let shared = playback.shared.clone();
-        drop(guard);
-        let playout = shared.lock();
-        let playout_role = playout.playout.config().role;
-        let clock = playout.clock;
-        drop(playout);
-        assert_eq!(role, ChannelRole::Left);
-        assert_eq!(playout_role, ChannelRole::Left);
-        assert_eq!(clock, Some(source_clock()));
-        let channels = streams
-            .opened
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(config, _)| config.channels)
-            .collect::<Vec<_>>();
-        assert_eq!(channels, vec![2, 1], "a one-sided role plays mono");
-        set_role_with(&state, &streams, [1; 16], ChannelRole::Left).unwrap();
-        assert_eq!(
-            streams.opened.lock().unwrap().len(),
-            2,
-            "choosing the current role changes nothing"
-        );
-        assert!(set_role_with(&state, &streams, [9; 16], ChannelRole::Right).is_err());
     }
 
     #[test]
