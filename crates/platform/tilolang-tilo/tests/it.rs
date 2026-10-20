@@ -15,3 +15,4 @@ mod fixtures;
 mod outbox;
 mod records;
 mod surface;
+mod sync;

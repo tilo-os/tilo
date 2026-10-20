@@ -18,6 +18,7 @@ pub mod effects;
 pub mod host;
 pub mod meta;
 pub mod publish;
+pub mod reads;
 pub mod record;
 pub mod schema;
 pub mod search;

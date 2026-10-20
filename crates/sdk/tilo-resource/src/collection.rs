@@ -1104,6 +1104,32 @@ pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
     entries
 }
 
+/// The ids of the items of the collection map `map`, in stored order, without reading any
+/// item: what a reader that needs a collection's membership and order, and not its items,
+/// walks.
+#[must_use]
+pub fn stored_ids(doc: &Doc, map: &ObjId) -> Vec<Id> {
+    stored_entries(doc, map)
+        .into_iter()
+        .map(|stored| stored.id)
+        .collect()
+}
+
+/// The value map of the item `id` of the collection map `map`: `None` when there is no such
+/// item, `Some(None)` for an item stored as its order key alone (it reads as its type's
+/// default), so one item is reached without reading the others.
+#[must_use]
+pub fn stored_item(doc: &Doc, map: &ObjId, id: &str) -> Option<Option<ObjId>> {
+    match doc.get(map, id).ok()?? {
+        (Value::Scalar(_), _) => Some(None),
+        (Value::Object(ObjType::Map), entry) => match doc.get(&entry, VALUE).ok().flatten() {
+            Some((Value::Object(_), value)) => Some(Some(value)),
+            _ => Some(None),
+        },
+        (Value::Object(_), _) => None,
+    }
+}
+
 /// An order key placing an item at `at` among `stored` (which may hold the
 /// item itself, `moving`, which does not count).
 pub(crate) fn key_at(stored: &[Stored], at: usize, moving: Option<&Id>) -> String {

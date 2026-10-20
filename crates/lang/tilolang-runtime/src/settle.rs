@@ -361,14 +361,14 @@ impl Core {
         })
     }
 
-    /// The `(document, field)` pairs an invocation card reads, for a view's read recorder.
+    /// The `(resource, field)` pairs an invocation card reads, for a view's read recorder.
     pub(crate) fn invocation_reads(&self, inv: &ResourceRef) -> Vec<(String, String)> {
         let Some((_, info)) = self.registry.borrow().type_info(&inv.ty) else {
             return Vec::new();
         };
         info.fields
             .iter()
-            .map(|f| (inv.doc.clone(), f.id.clone()))
+            .map(|f| (inv.id_string(), f.id.clone()))
             .collect()
     }
 

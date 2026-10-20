@@ -67,7 +67,8 @@ pub struct ViewState {
     pub state_seen: Vec<(StateKey, Value)>,
     /// Every `space` field read, with the value it had.
     pub space_reads: Vec<(String, f64)>,
-    /// Every `(document, field)` read, the view's dependencies.
+    /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
+    /// dependencies.
     pub reads: Vec<(String, String)>,
     pub nodes: Vec<NodeBuild>,
 }
