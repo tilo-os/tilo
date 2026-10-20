@@ -1,15 +1,14 @@
 # CI tooling
 
 This directory owns the implementation used only to plan, execute, measure,
-and report continuous-integration work. It includes affected-package
-selection, compiler-cache setup, lint ratchets, builder resolution, and CI
-receipts.
+and report continuous-integration work: the scripts t's checks run (t.toml),
+compiler-cache setup, lint ratchets, builder resolution, and CI receipts.
 
 Repository policy and release utilities remain in `tools/`; their behavior is
 useful outside CI. Tests for both groups remain in `tools/tests/` so the single
 repository-policy discovery command exercises the complete tooling surface.
 
-Workflows should invoke these files through `tools/ci/...`. When adding a new
+Checks invoke these files through `tools/ci/...`. When adding a new
 CI helper, place it here and add focused coverage under `tools/tests/` rather
 than growing the flat `tools/` namespace again.
 
@@ -43,39 +42,38 @@ not listed here.
 | `imager-macos-aarch64` | aarch64 | Imager and runtime builds on Apple silicon with Xcode | macos-15 |
 | `macos-aarch64` | aarch64 | Development builds and tests on a persistent Apple-silicon Mac; never release signing | macos-15 |
 
-## Running pull-request CI locally
+## Running t's checks locally
 
-Each pull-request job runs commands from this repository; the workflow only
-chooses the runner and container and passes the event. Run them from the checkout on Linux, in
-the builder image (`os/Containerfile.builder`) or a developer image with the
-same tools (`dist/dev/Containerfile.fedora44`). Lint and planning jobs run in
-the smaller `os/Containerfile.ci-fast`.
+Each check runs commands from this repository; t.toml only chooses the node and
+image. Run them from the checkout on Linux, in the builder image
+(`os/Containerfile.builder`) or a developer image with the same tools
+(`dist/dev/Containerfile.fedora44`). Lint checks run in the smaller
+`os/Containerfile.ci-fast`.
 
-| Workflow / job | Local command |
+| t check | Local command |
 |---|---|
-| `check.yml` select | `python3 tools/ci/affected_packages.py --metadata "$TILO_CURRENT_WORKTREE_METADATA" --base origin/main` previews the plan: packages per shard, suites, examples |
-| `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
-| `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
-| `check.yml` test | `scripts/test-local.sh -p <package>...` (gateway selections enable `local-models,host-backend`, including server tests) (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
-| `check.yml` check | `cargo check --locked --all-targets -p <package>...` |
-| `check.yml` clippy | `tools/ci/clippy-check.sh -p <package>...` or `--workspace` |
-| `check.yml` android | `bash tools/ci/install-android-ndk.sh`, then `cargo clippy --locked -p <app> --examples --features android --target aarch64-linux-android -- -D warnings` |
-| `check.yml` vendored | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `affected_packages.py`; `ci-nightly.yml` runs all) |
-| `check.yml` wasm | `tools/ci/check-wasm.sh`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples |
-| `lint.yml` | `tools/policy/run.sh`, `bash tools/ci/check-changed-rustfmt.sh origin/main`, `python3 tools/ci/check_changed_rust_allows.py origin/main`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh --changed origin/main ''` |
-| `t test sdk-policy sdk-web-budget` | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |
-| `t test sdk-linux` | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
-| `t test sdk-web` | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
-| `t test sdk-web-size` | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; then qualifies the release private image worker in headless Chromium. |
-| t `runtime-macos` | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
-| t `sdk-macos` | the `sdk-linux` check's commands with `--target macos`, on macOS |
-| t `apps-macos` | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS |
-| `t test real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
-| `t test native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
-| `t test render-counters` | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
-| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
+| `security` | `bash tools/run-security-boundary-invariants.sh` |
+| `suite-<group>` | `python3 tools/ci/suites.py run --group <group>` (`suites.py list` names the suites) |
+| `test/<package>` | `scripts/test-local.sh -p <package>...` (gateway selections enable `local-models,host-backend`, including server tests) (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
+| `check/<package>` | `cargo check --locked --all-targets -p <package>...` |
+| `clippy/<package>` | `cargo clippy --locked --all-targets -p <package>... -- -D warnings` |
+| `android` | `bash tools/ci/install-android-ndk.sh`, then `tools/ci/clippy-android.sh` |
+| `vendored` | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `package_sets.py`) |
+| `wasm`, `web-examples` | `tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples |
+| `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based gates `changes` lists against `origin/main` |
+| `sdk-policy`, `sdk-web-budget` | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |
+| `sdk-linux` | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
+| `sdk-web` | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
+| `sdk-web-size` | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; then qualifies the release private image worker in headless Chromium. |
+| `runtime-macos` | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
+| `sdk-macos` | the `sdk-linux` check's commands with `--target macos`, on macOS |
+| `apps-macos` | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS |
+| `real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the check's other named tests |
+| `native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
+| `render-counters` | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
+| `perf-<group>`, `perf-scheduled` (nightly) | `bash tools/ci/perf-scheduled.sh <group>`; `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
 
-`scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
+`scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap some check commands,
 only label and time a command; leave them out locally.
 
 ## Forks on GitHub Actions or stock Forgejo
@@ -116,80 +114,7 @@ Jobs that need more than an unprivileged container:
 | Job | Needs |
 |---|---|
 | `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
-| `ci-staging-loop.yml`, `build-env-tools.yml` | a privileged container |
+| `build-env-tools.yml` | a privileged container |
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | Image, kernel and buildroot builds | Docker with Buildx |
-
-## Planning without local Cargo
-
-`affected_packages.py` invokes local `cargo metadata` by default. On a machine
-where local Cargo is prohibited, pass an existing metadata export explicitly:
-
-```sh
-python3 tools/ci/affected_packages.py \
-  --metadata "${TILO_CURRENT_WORKTREE_METADATA:?validated current-worktree export required}" \
-  --base origin/main --shards 2
-```
-
-Use a complete `cargo metadata --locked --no-deps --format-version 1` export
-from the existing remote builder or CI, verified against this checkout's
-workspace manifest, lockfile and every member manifest. Package manifest,
-dependency and target paths in the export must refer to this checkout; a
-remote absolute path cannot be consumed unchanged. A stale or incomplete
-export is not selection evidence. Do not substitute a hand-written partial
-graph. Bind the export to the exact source revision and compare every root/member
-manifest and the lockfile with the producing worktree before setting
-`TILO_CURRENT_WORKTREE_METADATA`. Keep that validation evidence beside the export;
-refresh it after any source, manifest, lockfile or target-inventory change. The
-invocation below fails before starting Python when the validated
-export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
-
-Use the stable runtime guard when invoking a selector from an older worktree.
-It validates the bundle before running that worktree's historical selector and
-allows only Git subprocesses during selection; Cargo, alternate executable
-launchers and shell fallbacks are rejected even if old selector code ignores
-the metadata argument. No source files in the caller worktree are changed.
-Set `TILO_CI_TOOLS` to `tools/ci` in a current trusted checkout, then run:
-
-```sh
-python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" \
-  --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" \
-  --base origin/main --shards 2
-```
-
-This is the canonical caller (tools/tests/test_guarded_affected_plan.py runs
-it as written). The direct selector's current
-version rejects its local default before Cargo starts. Old relative entrypoints
-do not inherit that change automatically: migrate their callers to this stable
-launcher, rather than relying on prose in an old branch. The normal CI selector
-retains its Cargo-backed default in the Forgejo job environment.
-
-For a clean worktree whose commit is pushed, t's `source-metadata` check
-provides this supported path without local Cargo:
-
-```sh
-t outputs source-metadata   # runs it if needed; writes target/ci/current-source-metadata.json
-mkdir -p /tmp/source-metadata-export
-mv target/ci/current-source-metadata.json /tmp/source-metadata-export/
-python3 tools/ci/current_source_metadata.py validate --root . \
-  --input /tmp/source-metadata-export/current-source-metadata.json \
-  --output target/ci/current-source-metadata.json
-export TILO_CURRENT_WORKTREE_METADATA="$PWD/target/ci/current-source-metadata.json"
-export TILO_CURRENT_WORKTREE_METADATA_BUNDLE=/tmp/source-metadata-export/current-source-metadata.json
-```
-
-The bundle records the producing commit, tree and hashes of all tracked Cargo
-manifests, the lockfile and Cargo configuration. Validation rejects dirty or
-uncommitted source, mismatched source or manifests, incomplete workspace package
-inventories, external paths and absent targets. It preserves every dependency
-record, including optional, build and target-specific dependencies, and remaps
-package IDs and paths to the validated caller worktree. Keep the bundle beside
-its validated export. Refresh after a source change.
-
-A Cargo drop-in may execute `metadata` locally because it is a noncompiling
-subcommand. Verify where it runs instead of assuming a remote export. Until a
-verified export is available, leave the affected plan to the normal CI selector. The regression
-`tools/tests/test_ci_plan_without_cargo.py` exercises the real metadata-file
-CLI with a Cargo blocker and retains target, optional and build dependency
-selection plus the security gate.

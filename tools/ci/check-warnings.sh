@@ -8,7 +8,7 @@
 # emits one. This reads the JSON diagnostics instead and keeps only those whose
 # source file is inside this repository.
 #
-# Clippy lints are handled separately by tools/ci/clippy-check.sh.
+# Clippy lints are t's clippy family's.
 
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

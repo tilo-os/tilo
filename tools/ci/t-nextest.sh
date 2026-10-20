@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The wrapper of t's `test` family (t.toml): runs the cargo nextest command t
-# hands it as check.yml's test shards do.
+# hands it.
 #
 #   t-nextest.sh cargo nextest run ... -p NAME ... [-E FILTER]
 #
-# It prepares what tools/ci/prepare-test-shard.sh prepares for the packages
-# under test that a read-only image allows, then runs the command under
+# It prepares what the packages under test need beyond the builder image,
+# then runs the command under
 # tools/test-env.sh. Without an -E of its own, the run leaves out the visual
 # goldens (the `goldens` check runs them alone, on their image) and the
 # quarantined tests, as .config/nextest-filters.toml says. With one (`t test

@@ -36,25 +36,6 @@ def section(text, key, indent=0):
 
 class QueueReliefTests(unittest.TestCase):
     def test_pr_gates_stay_light_while_contract_coverage_is_kept(self):
-        with self.subTest(phase='builder resolution keeps native context fixture in control lane'):
-            builder = section(workflow("check"), "builder", 2)
-            self.assertIn("runs-on: runner-quality", builder)
-            container = section(builder, "container", 4)
-            self.assertRegex(container, r"image: registry\.tilo\.so/tilo/ci-control@sha256:[0-9a-f]{64}")
-            # Public image: a forge credential would only fail the pull.
-            self.assertNotIn("credentials:", container)
-            self.assertIn("image: ${{ steps.resolve.outputs.image }}", builder)
-            self.assertIn('DOCKER_BUILDKIT: "1"', builder)
-            self.assertIn("run: bash os/tests/named_public_trust_context.sh docker", builder)
-        with self.subTest(phase='final gates use qualified lightweight image'):
-            quality = section(workflow("lint"), "quality", 2)
-            expected = section(quality, "container", 4)
-            self.assertRegex(expected, r"image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}")
-            for name in ("select", "checks"):
-                with self.subTest(job=name):
-                    job = section(workflow("check"), name, 2)
-                    self.assertEqual(section(job, "container", 4), expected)
-                    self.assertIn("runs-on: runner-quality", job)
         with self.subTest(phase='os full build is not a pr gate'):
             events = section(workflow("build-image"), "on")
             self.assertNotRegex(events, r"(?m)^  pull_request(?:_target)?:")
@@ -149,19 +130,6 @@ class QueueReliefTests(unittest.TestCase):
             self.assertFalse(copied.exists(), "An older source moved main-ci backward")
 
     def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
-        with self.subTest(phase='fast checks replace only a superseded run of the same pull request'):
-            for name in ("check", "lint"):
-                with self.subTest(workflow=name):
-                    text = workflow(name)
-                    events = section(text, "on")
-                    self.assertRegex(events, r"(?m)^  push:")
-                    self.assertRegex(events, r"(?m)^  pull_request:")
-                    concurrency = section(text, "concurrency")
-                    self.assertIn(f"  group: {name}-${{{{ github.event_name }}}}-"
-                                  "${{ github.event.pull_request.number || github.sha }}", concurrency)
-                    self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-                                  concurrency)
-                    self.assertNotRegex(section(text, "jobs"), r"(?m)^\s+concurrency:")
         with self.subTest(phase='component release tags and manual runs remain'):
             for name, tags in (("build-image", '["v*"]'),
                                ("release-desktop", '["desktop-v*"]'),

@@ -356,7 +356,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
 | `build-image.yml` (Release / OS) | `v*` tags; dispatch (release, boards, firmware, app collection, desktop payload); called by `os-dev*.yml` for development builds | Cosign via OIDC; `RUNTIME_BUNDLE_SIGNING_KEY`, `TAPP_PUBLISHER_IDENTITY`, `DEV_APP_PUBLISHER_IDENTITY` (raw keys); `REGISTRY_TOKEN`; the EFI/PCR signer program `TILO_PCR_PREDICTION_SIGNER` on release runners; repository variables for the app collection and desktop payload | x86_64 and arm64 natively, buildx, root podman, loop and FUSE, KVM for the install and boot gates, 100 GiB scratch | development: `tilo-ci`, `tilo-vm` tags and disks; release: `tilo:gen<N>`, `:<semver>`, `:latest`, signed with SBOM, SLSA and freshness attestations, board images | development builds on main (`on = ["main"]`, no secrets but a development push token); releases on `stable` and `tag:v*`: per-arch builds (`privileged`, `/dev/kvm`, `disk-100g`), a signing check for Cosign, and one for EFI/PCR that uses the KMS keys instead of a program on the runner |
-| `os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml` | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | `t test` of the development build check; no wrapper workflows |
+| ~~`os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml`~~ | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | retired: `os-dev-image-<arch>` builds the development image |
 | `dev-disk.yml` | dispatch, also from build-image | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | a dispatch check |
 | `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | `dev-installer-medium-<arch>` builds the self-install medium without capture or signing inputs (`t outputs`); the Windows-direct variants still need their own checks |
 | ~~`extension-manifests.yml`~~ | daily, dispatch from Release / OS | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | moved to t (above) |
@@ -372,7 +372,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | ~~`release-verifier-bundles.yml`~~ | dispatch | none | x86_64 and arm64 | artifacts | ported: `verifier-bundle-<arch>` (above) |
 | `perf-scheduled.yml`, `vm-acceptance.yml` (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | scheduled checks with `cache = false` and a token that may only write that package |
 | ~~`cloud-promotion.yml`~~ | weekly drift report, dispatch | `INFRA_PROMOTION_TOKEN` | Git history | a promotion pull request on the infra repository | replaced by `cloud-deploy`, which deploys every new stable head through the forge's API, so it pushes nothing itself |
-| `check.yml` (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
+| ~~`check.yml`~~ (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
 
 ### The imager
 
@@ -384,13 +384,20 @@ fixed credentials in the server config, limited by reference and node, only wher
 
 ### Not publishing
 
-These only build or test and become ordinary or `default = false` checks (several already are,
-see `t.toml`): `check.yml`, `lint.yml`, `browser-auth-e2e.yml`, `ci-filesystem.yml`
-(its live cloud tests use credentials for test servers: secrets on `main` without `nodes`),
-`ci-legacy-apps.yml`, `ci-nightly.yml`, `ci-staging-loop.yml`,
-`ci-weekly-quality.yml`, `ci-development-signing.yml`, `dev-*.yml`, `inspect-rpm-signing.yml`,
-`sdk-native-envelope.yml`, `standalone-app.yml`,
-`wasm-check-qualification.yml`, `web-size-native-envelope.yml`, `resolve-builder.yml`.
+These only build or test, and become ordinary or `default = false` checks. Retired, since
+t's checks run what they ran: `check.yml`, `lint.yml`, `app-sdk.yml`, `browser-auth-e2e.yml`,
+`ci-nightly.yml`, `ci-render-counters.yml`, `ci-staging-loop.yml`, `ci-weekly-quality.yml`,
+`security-isolation.yml`, `standalone-app.yml`, `sdk-native-envelope.yml`,
+`web-size-native-envelope.yml`, `wasm-check-qualification.yml`, `perf-room-capacity.yml`, and
+the developer diagnostics `dev-apps-macos.yml`, `dev-runtime-macos.yml`, `dev-focused-test.yml`
+(`t test <check> --test`), `dev-mounted-reopen.yml`, `dev-policy-profile.yml`,
+`dev-source-blobs.yml`, `dev-visual-baselines.yml`, `dev-source-metadata.yml` (whose plan
+went with check.yml's), `dev-ci-checkout.yml` and `dev-imager-windows-native.yml` (Forgejo
+runner qualifications). Still here: `ci-filesystem.yml` (its cloud-server tests need service
+containers, and its live cloud tests credentials for test servers: secrets on `main` without
+`nodes`), `ci-legacy-apps.yml` (the legacy app caret test has no check yet),
+`dev-disk-boot-diagnostic.yml`, `dev-windows-arm64.yml` (see [Windows](#windows)),
+`inspect-rpm-signing.yml` and `resolve-builder.yml`.
 
 ## Identity tokens and secrets
 

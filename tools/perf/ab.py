@@ -14,7 +14,7 @@ round's two runs cancels it.
 
 1. **Build.** The tree must have no tracked changes. For each side the
    checkout is detached at that side's commit, the group's existing build
-   commands run (the same ones as `.forgejo/workflows/perf-scheduled.yml`),
+   commands run (the same ones as `tools/ci/perf-scheduled.sh`),
    and the binaries are copied to `OUT/bin/<side>/<group>/`. Test executables
    are found through `cargo test --no-run --message-format=json`. Both sides
    share the one target directory, so the second build recompiles only what
@@ -350,7 +350,7 @@ class Group:
     name: str
     profile: str
     renderer: str
-    # Build commands, from the repository root, as perf-scheduled.yml runs them.
+    # Build commands, from the repository root, as tools/ci/perf-scheduled.sh runs them.
     builds: tuple[tuple[str, ...], ...]
     # Artifact name -> path below the repository after the builds.
     binaries: dict[str, str]
@@ -476,7 +476,7 @@ def run_browser(ctx: RunContext) -> list[record.Record]:
     report = ctx.dir / "browser.json"
     call(["node", "scripts/perf/browser_qualification.mjs", ctx.bins["browser-bundle"], "--out", report,
           "--renderer", ctx.env["renderer"], "--expect-revision", ctx.env["commit"],
-          # As the nightly job on SwiftShader (perf-scheduled.yml).
+          # As the nightly group on SwiftShader (tools/ci/perf-scheduled.sh).
           "--demo-seconds", "0", "--rounds", "1", "--activations", "10", "--viewport", "960x540"],
          ctx.dir / "bench.log", ctx.repo)
     return adapters.browser_qualification(json.loads(report.read_text(encoding="utf-8")), ctx.env,
@@ -496,7 +496,7 @@ BROWSER_BUILD = ("bash", "-c",
                  "GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no "
                  f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle desktop')
 
-# The groups of perf-scheduled.yml that measure a build of the repository.
+# The groups of tools/ci/perf-scheduled.sh that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",

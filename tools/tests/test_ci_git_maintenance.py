@@ -10,7 +10,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-JOBS = (("lint.yml", "quality"), ("release-apps.yml", "plan"))
+JOBS = (("release-apps.yml", "plan"),)
 
 
 class CiGitMaintenanceTests(unittest.TestCase):

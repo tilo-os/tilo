@@ -92,7 +92,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install --locked cargo-deny cargo-machete \
     && cargo deny --version && cargo machete --version
 
-# Android NDK and Rust targets for check.yml's Android lane (docs/android.md).
+# Android NDK and Rust targets for the Android lint (t.toml's `android`, docs/android.md).
 # The NDK ships Linux host tools for x86_64 only, so the ARM builder, whose
 # jobs never run that lane, does not carry it. API 29 is the host's minimum.
 RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install-android-ndk.sh,ro \
@@ -100,7 +100,7 @@ RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install
       TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" bash /tmp/install-android-ndk.sh \
       && dnf clean all && rm -rf /var/cache/dnf; \
     fi
-# The browser target for check.yml's wasm lane.
+# The browser target for the wasm lint (t.toml's `wasm`).
 RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
 # The web build's toolchain (`tilo-app build --platform web`, the web core's
 # scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,

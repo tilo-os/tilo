@@ -37,7 +37,7 @@ provide one before the library loads.
 - **Perf / scheduled** (footprint group) fetches the newest published
   `so.tilo.runtime` of each architecture, holds it to the budgets and records
   `footprint.runtime.<metric>.<arch>`.
-- **CI / fast quality** fails when a budget grows without a raise file new in
+- **t's `changes` check** fails when a budget grows without a raise file new in
   the same change.
 
 To raise a budget for an intended growth, add one file per change:

@@ -2,8 +2,8 @@
 """Select and run the hermetic test suites that live outside Cargo.
 
 tools/ci/suites.toml declares each suite with the repository paths it reads.
-affected_packages.py selects the suites whose inputs a change touches; the
-check workflow's "suites" job runs them with `run`. The same manifest declares
+t.toml has one `suite-<group>` check per group, which runs it with `run` when
+the group's inputs change (tools/ci/t_toml.py writes them). The same manifest declares
 the Cargo packages whose code reads repository files outside the package, so
 a change to those files selects the package's checks and tests. `check` is the
 repository policy that keeps every test-shaped file and every cross-package
@@ -30,12 +30,7 @@ SECURITY_MANIFEST = "tools/security-boundary-invariants.txt"
 # Files whose change can alter which suites run or how, so every suite runs.
 CONTROL_INPUTS = frozenset({MANIFEST, "tools/ci/suites.py", "tools/tests/test_suites.py"})
 # Always-run gates: a suite referenced here already runs on every applicable change.
-ALWAYS_RUN_SOURCES = (
-    "tools/policy/run.sh",
-    "tools/policy/steps.toml",
-    ".forgejo/workflows/check.yml",
-    ".forgejo/workflows/lint.yml",
-)
+ALWAYS_RUN_SOURCES = ("tools/policy/run.sh", "tools/policy/steps.toml")
 # Test-shaped files outside these directories must be classified. Python tests
 # in tools/tests and .codex/hooks are discovered by tools/policy/run.sh.
 DISCOVERED_PYTHON_DIRS = ("tools/tests", ".codex/hooks")

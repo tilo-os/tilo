@@ -320,7 +320,7 @@ name = "inspect-peer-archive"
 test = true
 
 # What an active collaborator costs a relay in CPU, memory and egress:
-# the scheduled lane's `hosting` group (.forgejo/workflows/perf-scheduled.yml).
+# the scheduled lane's `hosting` group (tools/ci/perf-scheduled.sh).
 # An example, not a binary, so relay images that build `--bins` leave it out.
 [[example]]
 name = "relay_load"

@@ -6,7 +6,7 @@
 # packages then compiles each shared dependency identically, so CI slots and
 # sccache reuse one build instead of one per package set. After changing a
 # dependency or its features, run `cargo hakari generate` and
-# `cargo hakari manage-deps`; CI / fast quality fails until both are clean.
+# `cargo hakari manage-deps`; t's `hakari` check fails until both are clean.
 
 hakari-package = "workspace-hack"
 dep-format-version = "4"

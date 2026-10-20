@@ -9,8 +9,7 @@ fail-fast = false
 # the visual goldens (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
 # A test still running after 30 s prints a SLOW line each period, so a log
-# shows where shard time goes while it runs; tools/ci/nextest_report.py lists
-# the slowest tests from the JUnit report. The hang bound stays 30 s x 16 = 8 min.
+# shows where shard time goes while it runs. The hang bound stays 30 s x 16 = 8 min.
 slow-timeout = { period = "30s", terminate-after = 16 }
 failure-output = "immediate-final"
 fail-fast = false

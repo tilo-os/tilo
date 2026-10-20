@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Print the `-p NAME` arguments of a package set check.yml selects from.
+"""The workspace's package sets that t's checks lint and build.
 
   package_sets.py android   apps with an `<app>-android` example
   package_sets.py browser   crates that build for the browser (wasm-bindgen)
 
-The sets are those of tools/ci/affected_packages.py, over every workspace
-package, so a whole-workspace run (a t check) lints what an affected-package
-run would select.
+prints the `-p NAME` arguments of one set, over every workspace package.
+tools/ci/t_toml.py keys the checks of t.toml by the same sets.
 """
 from __future__ import annotations
 
@@ -15,10 +14,43 @@ from pathlib import Path
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import affected_packages  # noqa: E402
+# Example apps (tools/ci/build-web-examples.sh builds the web-capable ones).
+EXAMPLE_APPS = "examples/apps/"
+# Patched vendored crates with test suites of their own. The workspace builds
+# them only as path dependencies, so its tests never run theirs;
+# tools/ci/test-vendored-crates.sh does (t.toml's `vendored` check).
+VENDORED_TEST_CRATES = ("vendor/automerge",)
 
-SETS = {"android": affected_packages.android_apps, "browser": affected_packages.browser_crates}
+
+def android_apps(packages: dict[str, dict]) -> set[str]:
+    """Apps that opt into the Android host by declaring an `<app>-android` example."""
+    return {
+        name for name, package in packages.items()
+        if any(target.get("name") == f"{name}-android" and "example" in target.get("kind", ())
+               for target in package.get("targets", ()))
+    }
+
+
+def browser_crates(packages: dict[str, dict]) -> set[str]:
+    """Crates that build for the browser: they depend on `wasm-bindgen`."""
+    return {
+        name for name, package in packages.items()
+        if any(dependency.get("name") == "wasm-bindgen" and dependency.get("kind") is None
+               for dependency in package.get("dependencies", ()))
+    }
+
+
+def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
+    """Packages under examples/apps/."""
+    base = root.resolve()
+    return {
+        name for name, package in packages.items()
+        if Path(package["manifest_path"]).resolve().parent.relative_to(base).as_posix()
+        .startswith(EXAMPLE_APPS)
+    }
+
+
+SETS = {"android": android_apps, "browser": browser_crates}
 
 
 def main(argv: list[str]) -> int:

@@ -67,11 +67,6 @@ class GatewayFeaturesTests(unittest.TestCase):
                 ["bash", str(ci / "t-nextest.sh"), *command],
                 capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), command)
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
-        self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests "
-                      "${{ matrix.test_packages }}", workflow)
-        self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run",
-                      (ROOT / "tools/ci/local-affected.sh").read_text())
         config = t_matrix.load(ROOT)
         test = next(family for family in config["cargo"] if family["name"] == "test")
         self.assertEqual(test["wrapper"], ["bash", "tools/ci/t-nextest.sh"])

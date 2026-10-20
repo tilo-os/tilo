@@ -13,12 +13,11 @@ Where a rule is described in more depth elsewhere (`AGENTS.md`, `DEVELOPMENT.md`
 this page links there instead of repeating it. A rule listed here as a check
 and described differently elsewhere is defined by the check.
 
-Most checks run in three places: `.githooks/pre-commit` and `.githooks/commit-msg`
+Most checks run in two places: `.githooks/pre-commit` and `.githooks/commit-msg`
 locally (enable them with `python3 tools/dev/install-git-hooks.py`), and
-**CI / fast quality** (`.forgejo/workflows/lint.yml`), whose policy suite is
-[`tools/policy/run.sh`](../tools/policy/run.sh). Clippy, rustfmt over whole
-targets and the tests run in **CI / affected packages**
-(`.forgejo/workflows/check.yml`). The same checks are declared for [`t`](t.md) in `t.toml`.
+[`t`](t.md)'s checks (`t.toml`): `policy` runs the policy suite
+[`tools/policy/run.sh`](../tools/policy/run.sh), `changes` the diff-based gates,
+and `fmt`, `deny`, `app-lints` and the `clippy` and `test` families the rest.
 
 ## Exceptions
 
@@ -80,9 +79,9 @@ this page depends on review having happened.
 
 | Rule | Why | Enforced by |
 |---|---|---|
-| Formatted with rustfmt (edition 2024). Vendored and `@generated` sources are skipped. | No formatting noise in diffs. | Check: pre-commit; `tools/ci/check-changed-rustfmt.sh` in `lint.yml` |
-| Clippy's `pedantic` group and the panic lints (`unwrap_used`, `expect_used`, `indexing_slicing`, `panic`, `todo`, …) are errors; tests may unwrap, expect, panic and index. | Production code returns errors instead of crashing the session. | Check: `[workspace.lints]` in `Cargo.toml`, `clippy.toml`; `tools/ci/clippy-check.sh` (`-D warnings`, all targets) in `check.yml` |
-| Every `#[allow]` carries a `reason`, names Clippy lints with their `clippy::` prefix and sits where it takes effect. | An unexplained exception is unreviewable; a misplaced one silences nothing. | Check: [`tools/ci/check_changed_rust_allows.py`](../tools/ci/check_changed_rust_allows.py) (pre-commit and `lint.yml`); prefix and placement in pre-commit only |
+| Formatted with rustfmt (edition 2024). Vendored and `@generated` sources are skipped. | No formatting noise in diffs. | Check: pre-commit; `cargo fmt --check` in t's `fmt` |
+| Clippy's `pedantic` group and the panic lints (`unwrap_used`, `expect_used`, `indexing_slicing`, `panic`, `todo`, …) are errors; tests may unwrap, expect, panic and index. | Production code returns errors instead of crashing the session. | Check: `[workspace.lints]` in `Cargo.toml`, `clippy.toml`; t's `clippy` family (`-D warnings`, all targets) |
+| Every `#[allow]` carries a `reason`, names Clippy lints with their `clippy::` prefix and sits where it takes effect. | An unexplained exception is unreviewable; a misplaced one silences nothing. | Check: [`tools/ci/check_changed_rust_allows.py`](../tools/ci/check_changed_rust_allows.py) (pre-commit and t's `changes`); prefix and placement in pre-commit only |
 | A Rust file stays under 3000 lines; a longer one may not outgrow its ceiling. Split it into cohesive modules rather than raise the ceiling. Vendored and `@generated` sources are skipped. | A file that long has no one subject left, conflicts with every change in flight and is no longer read whole. | Check: [`check_source_file_size.py`](../tools/policy/check_source_file_size.py) (ratchet): pre-commit for the files a commit touches, the policy suite for all; ceilings in [`source_file_size_baseline.toml`](../tools/policy/source_file_size_baseline.toml) only fall (`--write-baseline` lowers them) |
 | A function takes at most eight parameters (aim for five or fewer), and nothing excuses it. | Long parameter lists hide a missing type. | Check: `clippy::too_many_arguments` at threshold 8; [`check_too_many_arguments.py`](../tools/policy/check_too_many_arguments.py) rejects every way to silence it |
 | Banned calls name their replacement in `clippy.toml`: no `std::env::set_var`/`remove_var` (inject the path, or `tilo_test_env` in tests), no raw `reqwest` constructors (`tilo_net::http`), no raw file locks (`advisory_lock::FileLock`), no raw `AutoCommit` apply (`tilo_automerge::ApplyIncoming`). | Each replacement fixes a defect the raw call has. | Check: `disallowed_methods` in each `clippy.toml`; [`check_automerge_apply_contract.py`](../tools/policy/check_automerge_apply_contract.py) keeps the Automerge ban from being switched off |
@@ -117,7 +116,7 @@ can change without editing its callers.
 
 | Rule | Why | Enforced by |
 |---|---|---|
-| Dependency licences are compatible with distributing the system under AGPL-3.0: permissive and weak-copyleft licences, plus listed exceptions. | We must be able to ship the binary we build. | Check: `[licenses]` in [`deny.toml`](../deny.toml), `cargo deny` in `lint.yml` |
+| Dependency licences are compatible with distributing the system under AGPL-3.0: permissive and weak-copyleft licences, plus listed exceptions. | We must be able to ship the binary we build. | Check: `[licenses]` in [`deny.toml`](../deny.toml), `cargo deny` in t's `deny` |
 | Known security advisories fail the build; an acknowledged one carries its reasoning in `deny.toml`. | A vulnerable dependency is a vulnerable Tilo. | Check: `[advisories]` in `deny.toml` |
 | Crates come from crates.io or the few forks listed in `deny.toml`; no wildcard versions. | Every input is pinned and attributable. | Check: `[sources]` and `[bans]` in `deny.toml` |
 | A changed manifest declares no unused dependency. | Each one costs compile time and attack surface. | Check: `cargo machete` through `tools/ci/check-unused-dependencies.sh --changed` |
@@ -129,7 +128,7 @@ can change without editing its callers.
 | No image Tilo ships carries Cisco's OpenH264 binary or its GStreamer plugin; a device gets them only as the owner's own download (the media-codecs extension). Only the CI and developer build environments listed in the check may install them. | Cisco's patent licence covers only binaries the user downloads from Cisco ([codec-pack.md](../os/usr/share/doc/tilo/codec-pack.md)). | Check: [`check_media_stack.py`](../tools/policy/check_media_stack.py) (no Containerfile, `os/` package list or script installs them by name, enables `fedora-cisco-openh264`, runs `install-build-deps.sh` or builds its final stage on the CI builder) and [`verify-no-cisco-openh264.sh`](../os/scripts/verify-no-cisco-openh264.sh) (the resolved frozen RPM snapshot and the finished OS rootfs) |
 | No interpreted language (Python, JavaScript) on the runtime path of the OS or an app where a compiled alternative exists. Build and CI tooling may use Python. The one Python program the image ships on purpose is umu-launcher (Proton); python3 is otherwise there only for the reviewed distribution packages that require it. | Startup time, footprint and one fewer runtime to secure. | Check: [`check_image_interpreters.py`](../tools/policy/check_image_interpreters.py) refuses a new Python, Node, Deno, Bun or Perl script, or a shell script that runs Python, under `os/usr`, `os/etc` or the host payload `dist/session`, and Python a Containerfile or `os/components.toml` installs; the [baseline](../tools/policy/image_interpreter_baseline.txt) only shrinks. In the finished rootfs [`verify-no-python-runtime.sh`](../os/scripts/verify-no-python-runtime.sh) fails the image on any file outside an RPM that is or runs Python except umu-launcher, and on any package depending on Python outside its reasoned list. Apps are review |
 | Inputs are pinned: the Rust toolchain in `rust-toolchain.toml`, crates in `Cargo.lock`, actions by SHA, and image packages by snapshot. Builds of apps and images are reproducible from a commit. | A build that cannot be reproduced cannot be verified. | Partly: `--locked`, the action and image checks above, [`check_dev_image_contract.py`](../tools/policy/check_dev_image_contract.py); reproducibility itself is review |
-| Apps are small: each shipped app and the shared runtime have size budgets that only fall without a raise file. | Apps download on demand and are not installed. | Check: `tools/perf/tapp_size_ratchet.py` and `tools/perf/runtime_size_ratchet.py` in `lint.yml` ([measurements](measurements/app-package-size.md)) |
+| Apps are small: each shipped app and the shared runtime have size budgets that only fall without a raise file. | Apps download on demand and are not installed. | Check: `tools/perf/tapp_size_ratchet.py` and `tools/perf/runtime_size_ratchet.py` in t's `changes` ([measurements](measurements/app-package-size.md)) |
 
 ## UI and apps
 
@@ -148,7 +147,7 @@ The product reasoning behind these is in `AGENTS.md` ("Project Scope") and the
 | Search, undo, history, device sync and theming are system services. Apps register search providers and never draw a search field (HIG §4a). | Review |
 | The OS owns window chrome: apps draw no title bar. Windows never overlap or float. | Review |
 | Apps start empty: no seeded data on the live path; sample data only behind `--shots` or a demo flag. | Review |
-| Apps hold no platform code and declare every capability their code uses. | Check: [`check_app_portability.py`](../tools/policy/check_app_portability.py), [`check_app_capabilities.py`](../tools/policy/check_app_capabilities.py), `tilo-app check --lint --all` in `lint.yml` |
+| Apps hold no platform code and declare every capability their code uses. | Check: [`check_app_portability.py`](../tools/policy/check_app_portability.py), [`check_app_capabilities.py`](../tools/policy/check_app_capabilities.py), `tilo-app check --lint --all` in t's `app-lints` |
 | UX dictates the code: a change starts from what the person sees and does. | Review |
 | Input and accessibility parity: keyboard, pointer, touch and assistive technology all reach every function; layouts survive enlarged text, high contrast and small displays; looking good does not need an expensive GPU. | Review; check light, dark and high-contrast shots (`TILO_SHOTS_THEME`) |
 | Durable user state is never lost silently: formats stay readable across versions, and a failed write or migration is reported and recoverable. | Review |

@@ -5,19 +5,8 @@ downloads, per architecture. The KPI targets are a median of at most 2 MB, a
 p90 of at most 4 MB and a max of at most 6 MB (decimal). Each app has its own
 budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
-enforces the budgets in four places:
+enforces the budgets in these places:
 
-- **CI / affected packages** (`tapps / <arch>`, pull requests only) packages
-  the tapps of up to eight apps the change affects, on x86_64 and aarch64,
-  and holds each to its budget. `tools/ci/select.sh` picks them with
-  `tapp_size_ratchet.py select`: apps of the default collection, those
-  closest to a budget in the registry first, so a toolkit change measures the
-  apps it pushes over first without packaging the whole collection. It
-  packages as Release / apps does, from the same compiler cache. A change
-  that affects no app runs no such job. A pull request runs its own
-  branch's `check.yml`, so a branch older than this job affecting an app
-  fails `select` and asks for main to be merged in, rather than landing
-  unmeasured.
 - **One app's size, when a change concerns it** (`app-size/<app>-<arch>` in t, for example
   `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
   release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
@@ -46,11 +35,11 @@ enforces the budgets in four places:
   (`tools/apps/check-reproducible-tapp.sh`, the second time compiled again
   past the compiler cache) and fails on any byte that differs: an app whose
   package changes without its source re-sends itself in every OS update.
-- **Perf / scheduled** (footprint group, nightly) holds every published app to
+- **t's `perf-footprint` check** (nightly) holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
   meet a target yet.
-- **CI / fast quality** runs `check-budget`, a text check. A budget or ceiling
+- **t's `changes` check** runs `check-budget`, a text check. A budget or ceiling
   may only grow by what a raise file new in the same change adds. The budgeted
   apps must be exactly the default collection, so an app added to `apps/`
   brings its budget. A new app may start at the 6 MB max target until it is

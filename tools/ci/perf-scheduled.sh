@@ -209,12 +209,25 @@ case $group in
     cargo test --locked --release -p tilo-relay --features stream-source --example legacy_stream_source
     chrome
     env_json release swiftshader kvm > "$out/env.json"
-    node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/stream.json" \
-      --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
-      --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
-      | tee "$out/stream-summary.txt"
-    python3 tools/perf/adapters.py native-stream --env-json "$out/env.json" "$out/stream.json" > "$out/stream.jsonl"
+    # H.264, then software VP9 (vp9enc), which a session with no H.264 encoder
+    # (a stock device) streams and every browser decodes: its own series
+    # (stream.vp9.*), so neither codec's numbers judge the other's. Both run
+    # whatever the other's verdict.
+    status=0
+    for codec in h264 vp9; do
+      name=stream codec_args=()
+      [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
+      if node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/$name.json" \
+        --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
+        --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+        "${codec_args[@]}" | tee "$out/$name-summary.txt"; then
+        python3 tools/perf/adapters.py native-stream --env-json "$out/env.json" "$out/$name.json" > "$out/$name.jsonl"
+      else
+        status=1
+      fi
+    done
     rm -rf "$out/bundle"
+    exit "$status"
     ;;
   *)
     echo "unknown KPI group: $group" >&2

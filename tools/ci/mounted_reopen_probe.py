@@ -70,15 +70,10 @@ def execute(root, source):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('validate', 'run'))
+    parser.add_argument('operation', choices=('run',))
     parser.add_argument('--root', type=Path, default=Path('.'))
     args = parser.parse_args()
-    source = request(os.environ)
-    if args.operation == 'validate':
-        with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
-            output.write('source=' + source + '\n')
-        return 0
-    return execute(args.root, source)
+    return execute(args.root, request(os.environ))
 
 
 if __name__ == '__main__':

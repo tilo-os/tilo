@@ -64,13 +64,6 @@ class BuilderResolutionTests(unittest.TestCase):
             def unexpected_fetch():
                 self.fail('manual immutable override queried mutable latest')
             self.assertEqual(resolver.resolve(image, fetch=unexpected_fetch), image)
-        with self.subTest(phase='workflow routes native consumers through resolved output'):
-            workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
-            self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
-            self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 7)
-            security = workflow.split('\n  security:', 1)[1].split('\n  suites:', 1)[0]
-            self.assertIn('image: registry.tilo.so/tilo/ci-fast@sha256:', security)
-            self.assertNotIn('image=registry.tilo.so/tilo/tilo-builder:latest', workflow)
 
     def test_identical_builder_lookups_share_one_workflow(self) -> None:
         shared = (ROOT / '.forgejo/workflows/resolve-builder.yml').read_text()
@@ -87,11 +80,9 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertNotIn('credentials:', shared)
         self.assertNotIn('enable-openid-connect:', shared)
         callers = (
-            'ci-weekly-quality.yml',
-            'ci-nightly.yml',
             'ci-legacy-apps.yml',
             'ci-filesystem.yml',
-            'ci-staging-loop.yml',
+            'vm-acceptance.yml',
         )
         for name in callers:
             workflow = (ROOT / '.forgejo/workflows' / name).read_text()
