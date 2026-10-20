@@ -103,6 +103,18 @@ impl ContentLane {
         )
     }
 
+    /// The lane of a window's record `record` of app `app`: the one its
+    /// route carries. A package's primary record travels as the route
+    /// without a record, so its lane is that route's.
+    pub fn of_record(app: &str, record: &crate::record::RecordId) -> Arc<Self> {
+        let wire = if record.is_package_primary() {
+            ""
+        } else {
+            record.as_str()
+        };
+        Self::of(app, wire)
+    }
+
     /// The content store of the record `route` names, when it is not the
     /// window's own: what it references is read from and kept by the host
     /// under that record's scope, and travels on its route alone. This

@@ -777,7 +777,7 @@ impl Tiles {
             &self.shared.image_owners,
             first_loader..self.shared.images.borrow().len(),
             definition.app_id,
-            component.record().id.as_str(),
+            &component.record().id,
         );
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);

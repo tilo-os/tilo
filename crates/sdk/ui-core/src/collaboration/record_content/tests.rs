@@ -98,3 +98,17 @@ fn content_reaching_a_store_moves_the_arrival_count() {
     store.put(b"stored here").unwrap();
     assert!(arrivals() > arrived, "content an app stored counts");
 }
+
+#[test]
+fn a_package_primary_window_asks_on_its_route_without_a_record() {
+    let app = "so.tilo.record-content-primary-test";
+    let window = ContentLane::of_record(app, &crate::record::RecordId::package_primary());
+    assert!(
+        Arc::ptr_eq(&window, &ContentLane::of(app, "")),
+        "the route of a package's primary record carries no record",
+    );
+    let store = RecordContent::store(ContentStore::memory(), window);
+    let hash = tilo_content::hash_bytes(b"a posted picture");
+    assert_eq!(store.read(&hash), None);
+    assert_eq!(ContentLane::of(app, "").take_requests().wants, vec![hash]);
+}
