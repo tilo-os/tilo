@@ -444,11 +444,6 @@ mod tests {
                 name: "chat".into(),
             },
         );
-        adopted
-            .channels
-            .get_mut(&Id::from_raw("c_general"))
-            .unwrap()
-            .category = Some(Id::from_raw("k_chat"));
         adopted.channels.push(
             Id::from_raw("c_goal"),
             chat::record::Channel {
@@ -460,6 +455,15 @@ mod tests {
         {
             edit.apply_local(&mut doc).unwrap();
         }
+        chat::demo::apply_as(
+            &mut doc,
+            "host",
+            chat::Chat::SET_CHANNEL_CATEGORY.with(chat::record::chat::SetChannelCategory {
+                channel: Id::from_raw("c_general"),
+                category: Some(Id::from_raw("k_chat")),
+            }),
+        )
+        .unwrap();
         settle_chat(&mut doc, &channels).unwrap();
         let chat = chat::Chat::read(&doc).unwrap();
         assert_eq!(channel_names(&doc), ["chat", "voice", "general", "goal"]);

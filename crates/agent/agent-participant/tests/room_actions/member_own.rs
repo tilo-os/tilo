@@ -18,10 +18,10 @@ fn on_guild(room: &str, action: &str, arguments: serde_json::Value) -> InvokeReq
     request(
         &guild(room),
         ActionAddress::new("", action),
-        arguments
-            .as_object()
-            .cloned()
-            .map_or(InvokeArgument::None, InvokeArgument::Json),
+        match arguments {
+            serde_json::Value::Object(arguments) => InvokeArgument::Json(arguments),
+            _ => InvokeArgument::None,
+        },
     )
 }
 

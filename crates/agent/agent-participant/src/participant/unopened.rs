@@ -436,9 +436,9 @@ mod tests {
         };
         let mut workspace = Workspace::new(WorkspaceId(1), "Room");
         let mut strip = Strip::new(StripId(2), "Main");
-        let tabs: Vec<Tab> = (0..20)
+        let tabs: Vec<Tab> = (0..20_u64)
             .map(|id| Tab {
-                id: 100 + id,
+                id: id.saturating_add(100),
                 title: "Notes".into(),
                 tile: TileContent::LocalApp {
                     app_id: "so.tilo.notes".into(),
@@ -461,7 +461,9 @@ mod tests {
                 workspaces: vec![workspace],
                 ..tilo_desktop_model::DesktopTree::default()
             },
-            records: (0..20).map(|id| (100 + id, records(id))).collect(),
+            records: (0..20_u64)
+                .map(|id| (id.saturating_add(100), records(id)))
+                .collect(),
             authors: std::collections::BTreeMap::new(),
         }
     }

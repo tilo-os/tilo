@@ -741,7 +741,9 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
         );
     }
     #[cfg(feature = "test-support")]
-    if let Err(error) = run_own_process_app(driver, *app, &window[0]) {
+    if let Some(tab) = window.first()
+        && let Err(error) = run_own_process_app(driver, *app, tab)
+    {
         eprintln!("scenario: {app:?} did not run as a window of its own: {error}");
     }
 }
@@ -830,7 +832,7 @@ fn apply_motion_frames<S: SnapshotSink>(driver: &mut ShellDriver, action: &Actio
         let start = ui::time::now();
         let every = std::time::Duration::from_millis(*every_ms);
         for i in 0..*frames {
-            let at = start + every * i;
+            let at = start.checked_add(every.saturating_mul(i)).unwrap_or(start);
             ui::time::testing::with_monotonic_time(at, || {
                 if i == 0 {
                     apply_motion_cue(driver, cue);
@@ -851,7 +853,7 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
     match cue {
         MotionCue::OpenQuickSettings => driver.with_chrome(ShellDriver::seed_laptop_quick_settings),
         MotionCue::CloseQuickSettings => {
-            driver.with_chrome(|st| st.overlays.quick_settings = false)
+            driver.with_chrome(|st| st.overlays.quick_settings = false);
         }
         MotionCue::QuickSettingsSection(section) => {
             let section = *section;
