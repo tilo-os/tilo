@@ -91,6 +91,7 @@ FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
 COPY os/usr/libexec/tilo-session /tilo/os/usr/libexec/
 COPY os/usr/lib/systemd/user/tilo-ush.service /tilo/os/usr/lib/systemd/user/
+COPY os/usr/share/tilo/system-interfaces.toml /tilo/os/usr/share/tilo/
 COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh /tilo/os/scripts/
@@ -315,13 +316,15 @@ RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/
 RUN /build/os/scripts/verify-elf-hardening.sh /out
 
 # ---- Dev components, placed by the manifest ---------------------------------
+# What a component installs from its final path (the shell's fonts) comes from
+# the base, the production image of the same commit.
 FROM dev-toolchain AS dev-component-files
 RUN --network=none \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-builder,source=/out,target=/out,ro \
     python3 /run/tilo-dev/os/scripts/install-components.py \
       --manifest /run/tilo-dev/os/components.toml \
-      --from /out --dest /image --dev
+      --from /out --build-root / --dest /image --dev
 
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
