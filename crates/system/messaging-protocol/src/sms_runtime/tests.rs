@@ -344,6 +344,12 @@ impl Drop for DeadlineFixture {
     }
 }
 
+/// Budget for a send the fixture answers at once, when the test needs it to
+/// reach the modem. The budget also covers the durable reservation, whose
+/// fsync takes seconds on a loaded host, so give the runtime's maximum: only
+/// a hang uses it up.
+const ANSWERED_BUDGET: Duration = Duration::from_secs(60);
+
 fn owner() -> Owner {
     Owner {
         principal: "11".repeat(32),
@@ -421,7 +427,7 @@ async fn revocation_during_create_never_sends_or_rewrites_the_private_journal() 
                 &route(),
                 "interrupted",
                 "private fixture text",
-                Duration::from_secs(2)
+                ANSWERED_BUDGET
             )
             .await,
         Err(CheckedSendError::Transport(SendError::Uncertain))
@@ -448,7 +454,7 @@ async fn actual_dbus_send_is_submitted_and_durable_operation_never_retries() {
             &route(),
             "op",
             "private fixture text",
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();
@@ -561,7 +567,7 @@ async fn sim_switch_wrong_recipient_or_cross_modem_object_after_create_never_sen
                     &route(),
                     "op",
                     "fixture text",
-                    Duration::from_secs(2)
+                    ANSWERED_BUDGET
                 )
                 .await,
             Err(CheckedSendError::Transport(SendError::Uncertain))
