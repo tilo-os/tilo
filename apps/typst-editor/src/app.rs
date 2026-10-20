@@ -528,8 +528,11 @@ impl TypstApp {
             self.preview.set_pages_with_text(&out.pages, &out.page_text);
         }
         self.diagnostics.set_diagnostics(out.diagnostics);
-        if self.err_count > 0 {
-            // Surface the failure: pop the panel open so the message is visible.
+        if self.err_count > 0 && self.compile_feedback {
+            // An explicit Compile that fails opens Problems. While typing, a
+            // half-written expression fails on every keystroke: the inline
+            // marks and the Problems count say so without the panel taking
+            // the source's room each time.
             self.show_diagnostics = true;
         }
         if std::mem::take(&mut self.compile_feedback) {
@@ -2571,8 +2574,20 @@ mod tests {
                 "the retained render is flagged stale"
             );
             assert!(
-                app.err_count >= 1 && app.show_diagnostics,
-                "the error is surfaced"
+                app.err_count >= 1 && !app.show_diagnostics,
+                "a failure while typing is counted, not popped open"
+            );
+
+            // An explicit Compile that fails opens Problems.
+            app.compile_feedback = true;
+            app.apply_output(compile::compile_source(
+                &app.parts,
+                "Body #undefined_var end.\n",
+                PPP,
+            ));
+            assert!(
+                app.show_diagnostics,
+                "an explicit Compile shows why it failed"
             );
 
             // A subsequent clean compile clears the stale flag and refreshes pages.
