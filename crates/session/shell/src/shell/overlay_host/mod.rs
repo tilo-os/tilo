@@ -4127,6 +4127,7 @@ impl ShellOverlayHost {
             {
                 st.quick_settings.volume = volume.level;
             }
+            st.quick_settings.link.clone_from(&next.link);
             st.status = next;
             st.bump();
         }
