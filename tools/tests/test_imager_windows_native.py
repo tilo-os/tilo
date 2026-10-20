@@ -125,7 +125,9 @@ class DeferredWindowsNative(unittest.TestCase):
 
     def test_contract_runs_through_required_unittest_discovery(self):
         policy = (ROOT / "tools/policy/run.sh").read_text()
-        self.assertIn("python3 -m unittest discover -s tools/tests -p 'test_*.py'", policy)
+        self.assertIn("python3 tools/policy/run_unit_tests.py tools/tests", policy)
+        runner = (ROOT / "tools/policy/run_unit_tests.py").read_text()
+        self.assertIn('PATTERN = "test_*.py"', runner)
         groups = tomllib.loads((ROOT / "tools/ci/suites.toml").read_text())["group"]
         self.assertFalse(any(
             "tools/tests/test_imager_windows_native.py" in group["suites"]
