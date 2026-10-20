@@ -44,12 +44,15 @@ introduced.
 ## iroh idle timers
 
 `iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
-checksum-verified registry releases in the lock, each with one small patch
+checksum-verified registry releases in the lock, each with small patches
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
 kernel cancels on resume or a clock step replaces it), and no gossip cache
 sweep once a topic's caches are empty or membership shuffle without an active
-neighbor. A returning neighbor rearms the shuffle once. Network changes still arrive through
+neighbor. A returning neighbor rearms the shuffle once. With relays, a net
+report that keeps finding the same addresses waits longer before the next, up
+to five minutes, and paths may keep alive less often than every 5 s, which
+tilo-fs uses for its held connections. Network changes still arrive through
 netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
 waking the process to ignore them. Its monitor also re-reads the interfaces
