@@ -1,0 +1,23 @@
+# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Todo = 75ojxgs3
+Todo.done = fgvmlm5n
+Todo.title = oidkt4g5
+TodoList = fjqi4yze
+TodoList.draft = mepnjapb
+TodoList.items = lg5gedbh
+TodoList.name = dxlpmzqd
+TodoList.tags = 6cr3fu6w
+add = dypqwvdm
+add_draft = ntz4xyn5
+item_row = w63ba6ad
+main = i2mhsb3h
+main#add = yaup36hk
+move_to = wxplauih
+open_count = a7ctj3zp
+remove = ojzyzzxu
+rename = kjbukd2o
+title_of = qsg6zvoh
+toggle = vwgro4iv
+
+# retired
+item_row#remove = yrf46hvj
