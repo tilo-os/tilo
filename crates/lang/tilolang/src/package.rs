@@ -157,7 +157,7 @@ fn join_files(
         diags.push(Diagnostic::new(
             "E010",
             crate::diag::Span::new(at, at),
-            "one file of the package starts with `app <app id> \"<title>\"`, for example `app so.tilo.counter \"Counter\"`",
+            "one file of the package starts with `app <app id> \"<title>\"`, for example `app so.tilo.lang.counter \"Counter\"`",
         ));
         return None;
     };
@@ -320,6 +320,8 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
     let mut meta = PackageMeta {
         app: app.to_string(),
         title: module.app.title.clone(),
+        icon: module.app.icon.clone(),
+        category: module.app.category.clone(),
         ..PackageMeta::default()
     };
     let type_id =

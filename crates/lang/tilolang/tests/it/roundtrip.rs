@@ -172,3 +172,30 @@ fn every_declaration_and_ui_call_has_an_id_and_a_span() {
     }
     assert!(ids.len() > 8);
 }
+
+#[test]
+fn the_app_header_names_its_icon_and_category_and_they_reach_the_metadata() {
+    let src = "app so.tilo.lang.notes \"Notes\" (icon: .note, category: .office)\n\ntype N {\n    a: Int\n}\n";
+    let module = parse(src).expect("parses");
+    assert_eq!(module.app.icon.as_deref(), Some("note"));
+    assert_eq!(module.app.category.as_deref(), Some("office"));
+    assert_eq!(
+        print_module(&module),
+        src,
+        "the canonical form keeps the options"
+    );
+    let compiled = crate::common::compile_with(src, &[]).expect("compiles");
+    assert_eq!(compiled.meta.icon.as_deref(), Some("note"));
+    assert_eq!(compiled.meta.category.as_deref(), Some("office"));
+    let plain = crate::common::compile_with("app t.x \"X\"\ntype N {\n    a: Int\n}\n", &[])
+        .expect("compiles");
+    assert_eq!((plain.meta.icon, plain.meta.category), (None, None));
+    for bad in [
+        "app t.x \"X\" (category: .weird)\n",
+        "app t.x \"X\" (colour: .red)\n",
+        "app t.x \"X\" (icon: .a, icon: .b)\n",
+        "app t.x \"X\" (icon: \"a.svg\")\n",
+    ] {
+        assert!(parse(bad).is_err(), "{bad}");
+    }
+}
