@@ -146,6 +146,7 @@ impl ShellOverlayHost {
 
         let flags = self.overlay_flags();
         let unbaked = ui::retained_present::unbake_scroll();
+        let mut phase_at = std::time::Instant::now();
         // Strips drawn in canvas coordinates are each drawn on their own:
         // the column skips them and they are drawn below, top to bottom.
         let apart = if unbaked {
@@ -168,6 +169,7 @@ impl ShellOverlayHost {
             presence,
         );
         let mut panned = PannedSections::default();
+        phase_at = scene_phase("scene/sections/workspace", phase_at);
         for &(strip, row) in &apart {
             let mut scene = Scene::new();
             // A blurred surface drawn into a strip is recorded as drawn into
@@ -185,6 +187,7 @@ impl ShellOverlayHost {
             panned.strips.push((strip, scene));
             panned.strip_parts.push(parts);
         }
+        phase_at = scene_phase("scene/sections/strips", phase_at);
         ui::backdrop::layer_scene(workspace, backdrop_layer::WORKSPACE);
         if unbaked {
             self.draw_real_peers(
@@ -204,6 +207,7 @@ impl ShellOverlayHost {
         } else {
             self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
         }
+        phase_at = scene_phase("scene/sections/extras", phase_at);
         let rows: Vec<_> = self
             .group_row_ptrs
             .iter()
@@ -239,6 +243,7 @@ impl ShellOverlayHost {
             panned.floating_drawn |= unbaked && scene.encoding().draw_tags.len() != before;
         }
         *panned_slot = panned;
+        phase_at = scene_phase("scene/sections/floating", phase_at);
         let overview_scene = if ui::retained_present::unbake_scroll() {
             &mut *workspace_overlays
         } else {
@@ -256,6 +261,7 @@ impl ShellOverlayHost {
         self.prepare_strip_indicators(Instant::now());
         self.sync_top_bar_presence(Instant::now());
         let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
+        phase_at = scene_phase("scene/sections/overlays", phase_at);
         // The panel, the ribbon and the rail are each a damage part of the
         // section: a change to one repaints that one.
         let mut quick_settings_bounds = None;
@@ -285,6 +291,7 @@ impl ShellOverlayHost {
             .into_iter()
             .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
             .reduce(|current, rect| current.union(rect));
+        scene_phase("scene/sections/quick-settings", phase_at);
         // Every overlay above Quick Settings is a damage part of its own,
         // there whether or not the overlay is open: opening, animating or
         // closing one repaints that overlay, not the desktop.
@@ -872,4 +879,12 @@ impl ShellOverlayHost {
             || self.directory_sheet.needs_animation_frame()
             || self.arrival_line.needs_animation_frame()
     }
+}
+
+/// Record one part of the section drawing in a running compositor profile;
+/// the next part starts now.
+fn scene_phase(name: &'static str, since: std::time::Instant) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    crate::compositor::metrics::profile::record_phase(name, now.duration_since(since), None);
+    now
 }
