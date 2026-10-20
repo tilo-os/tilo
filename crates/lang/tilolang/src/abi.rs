@@ -99,5 +99,8 @@ imports! {
     UiOn = "ui_on" ([H, H, H] -> []);
     UiAnchor = "ui_anchor" ([H, H] -> []);
 
+    SpaceI = "space_i" ([H] -> [I64]);
+    SpaceF = "space_f" ([H] -> [F64]);
+
     Abort = "abort" ([H] -> []);
 }

@@ -248,13 +248,107 @@ impl Checker<'_> {
     fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let n = self.new_node(p.name, key);
-        for (i, a) in args.iter().enumerate() {
-            self.prim_arg(p, n, i, a);
+        let mut pos = 0usize;
+        for a in args {
+            if a.name.is_none() && self.is_flag(Some(p), &a.value) {
+                self.flag_arg(n, &a.value);
+                continue;
+            }
+            self.prim_arg(p, n, pos, a);
+            if a.name.is_none() {
+                pos += 1;
+            }
         }
         if let Some(block) = &c.block {
             self.ui_stmts(block, n);
         }
         n
+    }
+
+    /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of
+    /// the primitive's own (`page(full)`).
+    fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
+        let name = match &e.kind {
+            ExprKind::Ident(n) => n,
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Ident(n) if n == "fill" => n,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        if self.lookup(name).is_some() {
+            return false;
+        }
+        prims::NODE_FLAGS.contains(&name.as_str())
+            || p.is_some_and(|p| p.flags.contains(&name.as_str()))
+    }
+
+    fn flag_arg(&mut self, n: LocalId, e: &ast::Expr) {
+        let node = Ex::local(n, Ty::View);
+        match &e.kind {
+            ExprKind::Ident(name) if name == "fill" => {
+                let one = Ex::new(Ek::Float(1.0), Ty::Float);
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropF,
+                    vec![node, Ex::str("fill"), one],
+                    Ty::Unit,
+                )));
+            }
+            ExprKind::Ident(name) => {
+                let on = Ex::new(Ek::Int(1), Ty::Int);
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropI,
+                    vec![node, Ex::str(name), on],
+                    Ty::Unit,
+                )));
+            }
+            ExprKind::Call { args, .. } => {
+                let [a] = args.as_slice() else {
+                    self.err(
+                        "E022",
+                        e.span,
+                        "`fill(n)` takes one weight, such as `fill(2)`",
+                    );
+                    return;
+                };
+                let w = self.float_value(&a.value);
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropF,
+                    vec![node, Ex::str("fill"), w],
+                    Ty::Unit,
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    /// A number as a Float: an Int is converted, and `16/9` of two Int literals is the ratio.
+    fn float_value(&mut self, e: &ast::Expr) -> Ex {
+        if let ExprKind::Binary {
+            op: ast::BinOp::Div,
+            lhs,
+            rhs,
+        } = &e.kind
+        {
+            if let (ExprKind::Int(a), ExprKind::Int(b)) = (&lhs.kind, &rhs.kind) {
+                if *b != 0 {
+                    return Ex::new(Ek::Float(*a as f64 / *b as f64), Ty::Float);
+                }
+            }
+        }
+        let v = self.expr(e, None);
+        match &v.ty {
+            Ty::Float | Ty::Error => v,
+            Ty::Int => Ex::new(
+                Ek::Conv(crate::ir::Conv::IntToFloat, Box::new(v)),
+                Ty::Float,
+            ),
+            other => {
+                let t = self.show(other);
+                self.err("E020", e.span, format!("expected a number, found {t}"));
+                Ex::error()
+            }
+        }
     }
 
     fn prim_arg(&mut self, p: &Prim, n: LocalId, index: usize, a: &ast::Arg) {
@@ -269,26 +363,45 @@ impl Checker<'_> {
                 }
             },
         };
-        let allowed = p.positional.contains(&name.as_str()) || p.named.contains(&name.as_str());
+        let allowed = p.positional.contains(&name.as_str())
+            || p.named.contains(&name.as_str())
+            || prims::NODE_ARGS.contains(&name.as_str());
         if !allowed {
-            let props: Vec<&str> = p.positional.iter().chain(p.named.iter()).copied().collect();
+            let props: Vec<&str> = p
+                .positional
+                .iter()
+                .chain(p.named.iter())
+                .chain(prims::NODE_ARGS.iter())
+                .copied()
+                .collect();
             self.err(
                 "E063",
                 a.value.span,
                 format!(
-                    "`{}` has no property `{name}`; properties: {}",
+                    "`{}` has no argument `{name}`; arguments: {}; flags: {}",
                     p.name,
-                    props.join(", ")
+                    props.join(", "),
+                    prims::NODE_FLAGS
+                        .iter()
+                        .chain(p.flags.iter())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ),
             );
             let _ = self.expr(&a.value, None);
             return;
         }
+        self.apply_arg(n, &name, &a.value);
+    }
+
+    /// Lowers one named argument of a UI call to its host call.
+    fn apply_arg(&mut self, n: LocalId, name: &str, value: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if name == "bind" {
-            self.bind_arg(&node, &a.value);
+            self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {
-            let act = self.expr_as(&a.value, &Ty::Action);
+            let act = self.expr_as(value, &Ty::Action);
             let event = if name == "on" {
                 "press"
             } else {
@@ -299,16 +412,59 @@ impl Checker<'_> {
                 vec![node, Ex::str(event), act],
                 Ty::Unit,
             )));
+        } else if let Some(token) = self.token_of(value) {
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiPropH,
+                vec![node, Ex::str(name), Ex::str(&token)],
+                Ty::Unit,
+            )));
+        } else if name == "aspect" {
+            let v = self.float_value(value);
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiPropF,
+                vec![node, Ex::str(name), v],
+                Ty::Unit,
+            )));
         } else {
-            let v = self.expr(&a.value, None);
-            self.prop(node, &name, v, a.value.span);
+            let v = self.expr(value, None);
+            if matches!(name, "min" | "max") && !matches!(v.ty, Ty::Length(_) | Ty::Error) {
+                self.err(
+                    "E063",
+                    value.span,
+                    format!(
+                        "`{name}` is a length with a unit: write `{name}: 11rem` or `{name}: 4dp`"
+                    ),
+                );
+                return;
+            }
+            self.prop(node, name, v, value.span);
+        }
+    }
+
+    /// A bare layout token (`related`, `center`, `bottom_trailing`) given as an argument value.
+    fn token_of(&self, e: &ast::Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(t)
+                if self.lookup(t).is_none() && prims::TOKENS.contains(&t.as_str()) =>
+            {
+                Some(t.clone())
+            }
+            _ => None,
         }
     }
 
     fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
         match &v.ty {
             Ty::Error => {}
-            Ty::Action | Ty::View | Ty::Unit => {
+            Ty::Length(u) => {
+                let prop = format!("{name}.{}", u.text());
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropF,
+                    vec![node, Ex::str(&prop), v],
+                    Ty::Unit,
+                )));
+            }
+            Ty::Action | Ty::View | Ty::Unit | Ty::Enum(_) => {
                 let t = self.show(&v.ty);
                 self.err("E063", span, format!("the property `{name}` cannot hold {t}; events are written `on: action(...)`"));
             }
@@ -398,8 +554,31 @@ impl Checker<'_> {
             );
         }
         let sig = v.signature(&self.env.app);
-        let bound = self.bind_args(&v.name, &v.params, args, span, &sig);
+        // Sizing and placement arguments (`fill`, `min:`, `at:`, ...) belong to the node the
+        // call is wrapped in; the rest are the view's parameters.
+        let is_node_arg = |this: &Self, a: &ast::Arg| match &a.name {
+            Some(n) => {
+                prims::NODE_ARGS.contains(&n.name.as_str())
+                    && !v.params.iter().any(|p| p.name == n.name)
+            }
+            None => this.is_flag(None, &a.value),
+        };
+        let (node_args, param_args): (Vec<&ast::Arg>, Vec<&ast::Arg>) =
+            args.iter().partition(|a| is_node_arg(self, a));
+        let param_args: Vec<ast::Arg> = param_args.into_iter().cloned().collect();
+        let bound = self.bind_args(&v.name, &v.params, &param_args, span, &sig);
         let key = self.node_key(c);
+        let node = self.view_node(v, bound, key, span);
+        for a in node_args {
+            match &a.name {
+                Some(n) => self.apply_arg(node, &n.name, &a.value),
+                None => self.flag_arg(node, &a.value),
+            }
+        }
+        node
+    }
+
+    fn view_node(&mut self, v: &Callable, bound: Vec<Ex>, key: Ex, span: Span) -> LocalId {
         if let (true, Some(f)) = (v.own, v.func) {
             let wrapper = self.new_node("fragment", key);
             self.st.facts.views.insert(f);

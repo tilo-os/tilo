@@ -937,6 +937,15 @@ impl<'a> Parser<'a> {
                 self.bump();
                 ExprKind::Float(v)
             }
+            Tok::Length(v, u) => {
+                self.bump();
+                let unit = match u {
+                    "rem" => crate::types::LengthUnit::Rem,
+                    "dp" => crate::types::LengthUnit::Dp,
+                    _ => crate::types::LengthUnit::Fr,
+                };
+                ExprKind::Length(v, unit)
+            }
             Tok::Kw("true") => {
                 self.bump();
                 ExprKind::Bool(true)
