@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -72,7 +73,14 @@ sys.exit(37 if sys.argv[1] == os.environ.get('FAIL_ARCHIVE') else 0)
             with self.subTest(probe=probe):
                 self.assertIn(probe, fast)
         self.assertIn("for tool in git python3 jq rg node gpg curl diff which; do", fast)
-        self.assertIn("for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match bwrap; do", fast)
+        # The native fixture tools the security invariants run, the guided partitioning
+        # helper's among them; a list that keeps them may grow.
+        native = re.search(r"for tool in (cc modinfo [^;]*); do", fast)
+        self.assertIsNotNone(native, fast)
+        self.assertLessEqual(
+            {"cc", "modinfo", "clang", "ld.lld", "rpmbuild", "rpmkeys", "systemd-escape", "fc-match", "bwrap",
+             "mkfs.vfat", "udevadm", "sfdisk", "partx", "blkid", "blockdev", "findmnt", "flock", "lsblk", "losetup"},
+            set(native.group(1).split()))
         self.assertEqual(fast.count('command -v "$tool"'), 2)
         for probe in ("docker --version", "docker buildx version", "cargo --version"):
             self.assertIn(probe, control)
