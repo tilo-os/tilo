@@ -18,7 +18,10 @@
 //! live, needs a restart of the machine, and the person is asked for it. A
 //! desktop restart and a request to restart share one clock: neither comes
 //! more often than every [`ASK_INTERVAL`], so the updates of those days apply
-//! together (docs/architecture/compatibility.md). An app or a collaborator
+//! together (docs/architecture/compatibility.md). An always-on host (a board,
+//! [`tilo_power_mgmt::MachineDuty::Host`]) has nobody to ask and no work to
+//! batch the restarts around: it finishes the update, restarting the desktop
+//! or the machine, whenever it is away. An app or a collaborator
 //! that needs a newer system than this one starts the update at once
 //! ([`update_now_and_ask`]): what applies live applies before it returns, the
 //! desktop finishes it at the next moment the person is away, and a restart
@@ -107,18 +110,34 @@ pub(crate) fn restart_needed(staged: bool, live: Option<&LiveState>) -> bool {
 /// Whether to restart the desktop now to finish the live update: part of it
 /// waits for the desktop (and none for the machine, whose restart covers
 /// it), the person is away, and the last restart or request is at least
-/// [`ASK_INTERVAL`] old, unless something needs the update now (`urgent`).
+/// [`ASK_INTERVAL`] old, unless something needs the update now (`urgent`)
+/// or the machine is an always-on host (`host`).
 pub(crate) fn desktop_restart_due(
     live: Option<&LiveState>,
     last: Option<SystemTime>,
     now: SystemTime,
     presence: Presence,
     urgent: bool,
+    host: bool,
 ) -> bool {
     live.is_some_and(|state| state.desktop_pending && !state.reboot_required)
-        && presence.away
-        && presence.idle >= AWAY_FOR
-        && (urgent || interval_passed(last, now))
+        && away(presence)
+        && (urgent || host || interval_passed(last, now))
+}
+
+/// Whether an always-on host restarts itself now into the staged update:
+/// the machine needs a restart and nobody is at it.
+pub(crate) fn host_restart_due(needed: bool, presence: Option<Presence>) -> bool {
+    needed && presence.is_some_and(away)
+}
+
+fn away(presence: Presence) -> bool {
+    presence.away && presence.idle >= AWAY_FOR
+}
+
+fn host() -> bool {
+    static HOST: OnceLock<bool> = OnceLock::new();
+    *HOST.get_or_init(|| tilo_power_mgmt::this_machine_duty() == tilo_power_mgmt::MachineDuty::Host)
 }
 
 /// When the person was last asked, or the desktop last restarted, as
@@ -234,6 +253,17 @@ fn look() {
         Some(state) => restart_needed(false, Some(state)),
         None => restart_needed(staged(), None),
     };
+    if host() {
+        if host_restart_due(needed, presence()) {
+            tracing::info!("finishing the system update: restarting this always-on host");
+            if let Err(error) =
+                os_actions::session::perform_session_action(os_actions::SessionAction::Restart)
+            {
+                tracing::warn!(%error, "the host could not restart into the system update");
+            }
+        }
+        return;
+    }
     if !due(needed, last_asked_at(&path), now) {
         return;
     }
@@ -254,6 +284,7 @@ fn finish_live_update_if_due() {
         now,
         presence,
         urgent,
+        host(),
     ) {
         return;
     }
@@ -442,10 +473,11 @@ mod tests {
             None,
             start,
             away,
+            false,
             false
         ));
         assert!(
-            !desktop_restart_due(Some(&pending), None, start, working, false),
+            !desktop_restart_due(Some(&pending), None, start, working, false, false),
             "never while the person works"
         );
         assert!(
@@ -457,6 +489,7 @@ mod tests {
                     idle: Duration::from_secs(30 * 60),
                     away: false
                 },
+                false,
                 false
             ),
             "idle with the screen on (a video) is not away"
@@ -470,12 +503,13 @@ mod tests {
                     idle: Duration::from_secs(10),
                     away: true
                 },
+                false,
                 false
             ),
             "a lock the person just set is not yet away"
         );
         assert!(
-            !desktop_restart_due(Some(&pending), Some(start), hours(47), away, false),
+            !desktop_restart_due(Some(&pending), Some(start), hours(47), away, false, false),
             "one restart or request every two days at most"
         );
         assert!(desktop_restart_due(
@@ -483,26 +517,42 @@ mod tests {
             Some(start),
             hours(48),
             away,
+            false,
             false
         ));
         assert!(
-            desktop_restart_due(Some(&pending), Some(start), hours(1), away, true),
+            desktop_restart_due(Some(&pending), Some(start), hours(1), away, true, false),
             "an update something needs now finishes at the next chance"
+        );
+        assert!(
+            desktop_restart_due(Some(&pending), Some(start), hours(1), away, false, true),
+            "an always-on host finishes whenever it is away"
+        );
+        assert!(
+            !desktop_restart_due(Some(&pending), Some(start), hours(1), working, false, true),
+            "and never while someone works at it"
         );
         let done = LiveState {
             desktop_pending: false,
             ..pending.clone()
         };
-        assert!(!desktop_restart_due(Some(&done), None, start, away, false));
+        assert!(!desktop_restart_due(
+            Some(&done),
+            None,
+            start,
+            away,
+            false,
+            false
+        ));
         let kernel = LiveState {
             reboot_required: true,
             ..pending
         };
         assert!(
-            !desktop_restart_due(Some(&kernel), None, start, away, false),
+            !desktop_restart_due(Some(&kernel), None, start, away, false, false),
             "the restart of the machine covers it"
         );
-        assert!(!desktop_restart_due(None, None, start, away, false));
+        assert!(!desktop_restart_due(None, None, start, away, false, false));
     }
 
     #[test]
@@ -540,5 +590,21 @@ mod tests {
         ));
         assert!(!staged_in(r#"{"status":{"staged":null,"booted":{}}}"#));
         assert!(!staged_in("not json"));
+    }
+
+    #[test]
+    fn an_always_on_host_restarts_into_an_update_only_while_nobody_is_at_it() {
+        let away = Presence {
+            idle: Duration::from_secs(10 * 60),
+            away: true,
+        };
+        let working = Presence {
+            idle: Duration::from_secs(1),
+            away: false,
+        };
+        assert!(host_restart_due(true, Some(away)));
+        assert!(!host_restart_due(true, Some(working)));
+        assert!(!host_restart_due(true, None), "presence not yet known");
+        assert!(!host_restart_due(false, Some(away)), "nothing staged");
     }
 }
