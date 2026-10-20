@@ -393,9 +393,6 @@ fn a_key_in_a_markdown_tables_source_damages_its_line_and_cell_not_the_table() {
     assert_damage_pixels(&before, &fixture, true);
 }
 
-/// How far a channel may move between two GPU renders of one scene.
-const GPU_ROUNDING: u8 = 1;
-
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
     let mut retained = crate::offscreen::OffscreenRenderer::new(1200, 1100);
@@ -418,21 +415,12 @@ fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) 
     let actual = retained.readback_current();
     assert_eq!(actual.len(), expected.len());
     // Where they differ, as pixel bounds, rather than two framebuffers. The
-    // GPU rasterizer itself rounds a pixel's channel one unit either way
-    // between two renders of the very same scene, so a difference that small
-    // is the rasterizer's, not retained paint's.
-    let differing: Vec<(usize, usize)> = actual
-        .chunks_exact(4)
-        .zip(expected.chunks_exact(4))
-        .enumerate()
-        .filter(|(_, (actual, expected))| {
-            actual
-                .iter()
-                .zip(expected.iter())
-                .any(|(a, e)| a.abs_diff(*e) > GPU_ROUNDING)
-        })
-        .map(|(index, _)| (index % 1200, index / 1200))
-        .collect();
+    // rasterizer renders a pixel ±1 depending on the rest of the encoding,
+    // so retained paint (undamaged pixels kept from the earlier scene) is
+    // compared as the GPU helper compares frames (see `crate::offscreen`).
+    let differing = crate::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+        &actual, &expected, 1200,
+    );
     let spread = differing.iter().fold(None, |spread, &(x, y)| {
         Some(spread.map_or(
             (x, y, x, y),
