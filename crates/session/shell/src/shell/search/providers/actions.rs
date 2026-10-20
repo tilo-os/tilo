@@ -411,10 +411,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.kind = ActionKind::Outside;
         }
         // Who may walk in is the room's business on its host; a report
-        // reaches the people who run a workspace.
+        // reaches the people who run a workspace. Each is asked first, as
+        // every privileged action is.
         WORKSPACE_PUBLISH_ID | WORKSPACE_UNPUBLISH_ID | WORKSPACE_REPORT_ID | BOT_ADD_ID => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
+            contract.confirmation = ConfirmationPolicy::Confirm;
         }
         // Its host stops the bot and uninstalls it; adding it again is a
         // new request.
@@ -7795,13 +7797,13 @@ mod tests {
         for (locale, title, subtitle) in [
             (
                 "en-US",
-                "Toggle workspace overview",
-                "Show all workspaces in the wheel view",
+                "Show workspace overview",
+                "Show all workspaces and their windows",
             ),
             (
                 "de-DE",
-                "Arbeitsbereichsübersicht ein- oder ausblenden",
-                "Alle Arbeitsbereiche in der Radansicht zeigen",
+                "Arbeitsbereichsübersicht zeigen",
+                "Alle Arbeitsbereiche und ihre Fenster zeigen",
             ),
         ] {
             ui::i18n::I18nManager::set_locale(locale);

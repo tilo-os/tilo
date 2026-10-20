@@ -102,7 +102,7 @@ use shortcuts::{
     shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
     shortcut_navigation_columns, shortcut_navigation_height, shortcut_navigation_step,
     shortcut_note_lines, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_rows, shortcut_reference_step,
+    shortcut_reference_groups, shortcut_reference_rows, shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -1664,8 +1664,8 @@ fn collaborators_screen_exposure(
                             if workspace.id == tree.desktop.active {
                                 tab.title.clone()
                             } else {
-                                tilo_desktop::i18n::t_args(
-                                    "topbar-sharing-window-in-workspace",
+                                t_args(
+                                    "host-exposure-window-in-workspace",
                                     &[
                                         ("window", tab.title.as_str().into()),
                                         ("workspace", workspace.name.as_str().into()),
@@ -10114,8 +10114,15 @@ impl ShellOverlayHost {
         if !self.active_kind_filter.is_empty() {
             return;
         }
-        let mut present: Vec<(usize, crate::shell::search::ResourceKind)> =
-            groups.iter().map(|g| (g.total, g.kind.clone())).collect();
+        // Ranking can split one kind into runs apart (a web row from two
+        // providers): it is one chip, counting every hit it holds.
+        let mut present: Vec<(usize, crate::shell::search::ResourceKind)> = Vec::new();
+        for group in groups {
+            match present.iter_mut().find(|(_, kind)| *kind == group.kind) {
+                Some((total, _)) => *total = total.saturating_add(group.total),
+                None => present.push((group.total, group.kind.clone())),
+            }
+        }
         present.sort_by_key(|(total, _)| std::cmp::Reverse(*total));
         self.present_kinds = present.into_iter().map(|(_, kind)| kind).collect();
     }
@@ -25648,7 +25655,7 @@ impl ShellOverlayHost {
                     KeyboardBinding::new(modifiers, key)
                 };
                 let rows = SHORTCUT_GUIDE_ROWS;
-                let references = shortcut_reference_rows(shortcuts);
+                let references = shortcut_reference_groups(shortcuts);
                 let summary = shortcut_action_summary(shortcuts);
                 let vim_mode = self.desktop_controls.config().vim_mode;
                 let note_lines = shortcut_note_lines(summary.is_some(), vim_mode);
@@ -25852,10 +25859,7 @@ impl ShellOverlayHost {
                 let label_gap =
                     f64::from(text_renderer.measure_style("Ag", None, &chord_style).1) + 4.0;
                 let mut groups_bottom = reference_top;
-                for (group_index, group_rows) in references
-                    .chunks(shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
-                    .enumerate()
-                {
+                for (group_index, group_rows) in references.iter().enumerate() {
                     let column = group_index
                         .checked_rem(reference_columns)
                         .unwrap_or_default();
