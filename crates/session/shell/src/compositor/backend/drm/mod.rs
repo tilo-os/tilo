@@ -12,14 +12,11 @@
 
 pub mod access_keys;
 mod client_scanout;
-mod cpu_layers;
 pub mod cpu_present;
 mod cursor_plane;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
-mod gl_compose;
-mod gl_present;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
@@ -27,7 +24,6 @@ mod output_link;
 mod output_signal;
 pub mod outputs;
 pub mod paint;
-mod retained_canvas;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -2935,27 +2931,6 @@ fn paint_scanouts_cpu(
         previous_revision: damage.and_then(|damage| damage.previous_revision),
         regions: damage.and_then(|damage| damage.regions),
     };
-    // A frame drawn as layers is composited from the layers' own canvases
-    // where GLES presents; the screen canvas then waits for a frame that
-    // is not.
-    if single
-        && let Some(cache) = frame.layers
-        && let Some(entry) = scanouts.first_mut()
-        && !entry.dark()
-        && !entry.sync_hdr_readback()
-    {
-        renderer.start_frame(cpu_frame.revision, cpu_frame.previous_revision);
-        if gl_present::present(
-            entry,
-            renderer,
-            gl_present::Content::Layers(cache),
-            pointer,
-            CPU_FLIP_TIMEOUT,
-        ) {
-            renderer.finish_frame();
-            return;
-        }
-    }
     renderer.update(cpu_frame, target_size);
 
     if single
@@ -2963,16 +2938,6 @@ fn paint_scanouts_cpu(
         && !entry.dark()
         && !entry.sync_hdr_readback()
     {
-        if gl_present::present(
-            entry,
-            renderer,
-            gl_present::Content::Screen,
-            pointer,
-            CPU_FLIP_TIMEOUT,
-        ) {
-            renderer.finish_frame();
-            return;
-        }
         match entry.scanout.wait_cpu_flip(CPU_FLIP_TIMEOUT) {
             Ok((wait, latency)) => renderer.record_flip_wait(wait, latency),
             Err(wait) => {
@@ -3845,15 +3810,7 @@ impl Backend for DrmBackend {
     /// The GPU presenter composites a lone unmagnified output's strip pans
     /// from retained layers (`RetainedGpuTarget::render_layers_until`).
     fn composites_strip_layers(&self) -> bool {
-        cpu_present::cpu_render_reason().is_none() || gl_present::available()
-    }
-
-    /// The CPU renderer composited with GLES keeps every layer in a canvas
-    /// of its own, strips in canvas coordinates
-    /// ([`cpu_layers::CpuLayers`]), so every frame comes as layers.
-    fn strip_layer_canvas(&self) -> Option<u32> {
-        (cpu_present::cpu_render_reason().is_some() && gl_present::available())
-            .then_some(cpu_layers::MAX_STRIP_CANVAS)
+        cpu_present::cpu_render_reason().is_none()
     }
 
     /// The GPU presenter moves pixels within its retained target before it

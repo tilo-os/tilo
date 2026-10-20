@@ -391,10 +391,8 @@ pub(super) enum Flip {
 
 /// Imported Vulkan aliases must drop before their GBM allocation and KMS
 /// framebuffer IDs.  Field order makes that teardown relationship explicit.
-pub struct DirectScanoutTargets<T = ui::dmabuf_import::ImportedRenderTarget> {
-    /// Each scanout buffer as the renderer draws into it: vello's import,
-    /// or the GLES compositor's ([`super::gl_compose`]).
-    imported: [T; DIRECT_SLOTS],
+pub struct DirectScanoutTargets {
+    imported: [ui::dmabuf_import::ImportedRenderTarget; DIRECT_SLOTS],
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
@@ -470,12 +468,23 @@ impl DirectScanoutTargets {
         format: ScanoutFormat,
         output_size: (u32, u32),
     ) -> Result<Self, String> {
+        let mode = scanout.size();
+        if mode != output_size {
+            return Err(format!(
+                "scanout mode {}x{} is not the output's {}x{} extent",
+                mode.0, mode.1, output_size.0, output_size.1
+            ));
+        }
+        let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
         let fourcc = match format {
             ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
             ScanoutFormat::Xbgr2101010 => media::dmabuf::DRM_FORMAT_XBGR2101010,
             ScanoutFormat::Abgr16161616f => media::dmabuf::DRM_FORMAT_ABGR16161616F,
         };
-        Self::build(scanout, format, output_size, |slot| {
+        let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
+            let slot = buffers
+                .slot(index)
+                .ok_or_else(|| format!("GBM scanout slot[{index}] is unavailable"))?;
             let plane = ui::dmabuf_import::PlaneRef {
                 fd: slot.fd,
                 offset: slot.offset,
@@ -490,38 +499,7 @@ impl DirectScanoutTargets {
                     height: slot.height,
                     colorimetry: media::dmabuf::Colorimetry::RGB,
                 })
-                .map_err(|error| error.to_string())
-        })
-    }
-}
-
-impl<T> DirectScanoutTargets<T> {
-    /// [`DirectScanoutTargets::new`] for any renderer: `import` makes each
-    /// scanout buffer something it draws into.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the output's extent is not the scanout mode, GBM cannot
-    /// allocate the scanout buffers, or `import` fails for one of them.
-    pub fn build(
-        scanout: &DrmScanout,
-        format: ScanoutFormat,
-        output_size: (u32, u32),
-        mut import: impl FnMut(GbmScanoutSlot<'_>) -> Result<T, String>,
-    ) -> Result<Self, String> {
-        let mode = scanout.size();
-        if mode != output_size {
-            return Err(format!(
-                "scanout mode {}x{} is not the output's {}x{} extent",
-                mode.0, mode.1, output_size.0, output_size.1
-            ));
-        }
-        let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
-        let mut import = |index: usize| -> Result<T, String> {
-            let slot = buffers
-                .slot(index)
-                .ok_or_else(|| format!("GBM scanout slot[{index}] is unavailable"))?;
-            import(slot).map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
+                .map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
         };
         let imported = [import(0)?, import(1)?, import(2)?];
         Ok(Self {
@@ -579,7 +557,7 @@ impl<T> DirectScanoutTargets<T> {
         }
     }
 
-    pub fn render_slot(&self) -> Option<(usize, &T)> {
+    pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
         let index = self.state.render_slot()?;
         self.imported.get(index).map(|target| (index, target))
     }
@@ -596,25 +574,13 @@ impl<T> DirectScanoutTargets<T> {
 
     /// The slot neither shown nor pending, to render while a flip is pending.
     /// It may be queued once that flip retired ([`DirectScanoutState::submit`]).
-    pub fn overlap_slot(&self) -> Option<(usize, &T)> {
+    pub fn overlap_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
         let index = self.state.overlap_slot()?;
         self.imported.get(index).map(|target| (index, target))
     }
 
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
-    }
-
-    /// The queued flip retired: what it replaced is free again.
-    pub fn retire_flip(&mut self) {
-        // The buffer the retired flip replaced is no longer read: a client
-        // buffer goes back to its client once nothing else holds it.
-        match self.state.complete_flip() {
-            Some(Flip::Client) => self.client.client_flip_retired(),
-            Some(Flip::Slot(_)) => self.client.target_flip_retired(),
-            None => {}
-        }
-        self.flip_queued_at = None;
     }
 }
 
@@ -2331,7 +2297,7 @@ impl DrmScanout {
         self.repaint_hw_cursor();
     }
 
-    pub(crate) fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
+    fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
         self.pointer_image.bitmap(self.cursor_pixel_size())
     }
 
@@ -3536,9 +3502,9 @@ impl DrmScanout {
 
     /// Queue one already-completed imported target. The direct state advances
     /// only after the kernel accepted the flip.
-    pub fn submit_direct_target<T>(
+    pub fn submit_direct_target(
         &mut self,
-        targets: &mut DirectScanoutTargets<T>,
+        targets: &mut DirectScanoutTargets,
         index: usize,
     ) -> DirectSubmit {
         if !self.use_pageflip
@@ -3590,9 +3556,9 @@ impl DrmScanout {
 
     /// Show the first frame of HDR direct targets: signal on, then a modeset
     /// onto the 10-bit (or half-float) framebuffer. Undone on any refusal.
-    fn bind_hdr_target<T>(
+    fn bind_hdr_target(
         &mut self,
-        targets: &mut DirectScanoutTargets<T>,
+        targets: &mut DirectScanoutTargets,
         index: usize,
     ) -> DirectSubmit {
         let Some(framebuffer) = targets.framebuffer(index) else {
@@ -3643,15 +3609,22 @@ impl DrmScanout {
     }
 
     /// Retire the imported target for this output after its page-flip event.
-    pub fn mark_direct_flip_complete<T>(
+    pub fn mark_direct_flip_complete(
         &mut self,
-        targets: &mut DirectScanoutTargets<T>,
+        targets: &mut DirectScanoutTargets,
         crtc: crtc::Handle,
     ) {
         if crtc == self.crtc {
             self.log_flip_completion();
             self.flip_pending = false;
-            targets.retire_flip();
+            // The buffer the retired flip replaced is no longer read: a client
+            // buffer goes back to its client once nothing else holds it.
+            match targets.state.complete_flip() {
+                Some(Flip::Client) => targets.client.client_flip_retired(),
+                Some(Flip::Slot(_)) => targets.client.target_flip_retired(),
+                None => {}
+            }
+            targets.flip_queued_at = None;
         }
     }
 
@@ -3711,9 +3684,9 @@ impl DrmScanout {
     /// Queue a flip onto a client's buffer in place of the targets. The
     /// targets hold the buffer from here until the flip that replaces it
     /// retires.
-    pub(super) fn submit_client_framebuffer<T>(
+    pub(super) fn submit_client_framebuffer(
         &mut self,
-        targets: &mut DirectScanoutTargets<T>,
+        targets: &mut DirectScanoutTargets,
         client: ClientScanout,
     ) -> DirectSubmit {
         if !self.use_pageflip || self.flip_pending || targets.state.pending.is_some() {
