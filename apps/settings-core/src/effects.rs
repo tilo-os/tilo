@@ -153,14 +153,6 @@ pub use crate::effect_family;
 /// [module docs](self).
 pub struct SettingsEffect(Box<dyn AreaEffect>);
 
-impl SettingsEffect {
-    /// The area's effect, as its own type, when it is of `E`.
-    #[must_use]
-    pub fn as_area<E: AreaVocabulary>(&self) -> Option<&E> {
-        self.0.as_any().downcast_ref()
-    }
-}
-
 impl Clone for SettingsEffect {
     fn clone(&self) -> Self {
         Self(self.0.clone_effect())
