@@ -2546,22 +2546,35 @@ mod tests {
     #[test]
     fn projection_sheet_owns_its_geometry_options_and_close_intent() {
         /// HIG §9.5: the sheet's Panel border on its ground, and the derived edge
-        /// of its lift-floor rows, must register on every palette.
+        /// of its lift-floor rows, must register on every palette: the border as
+        /// a hairline in high contrast, where it alone separates the panel, and
+        /// as the quieter floating edge elsewhere.
         fn sheet_cells_keep_an_edge_on_every_palette() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let ground = ui::chrome::shell::panel_ground(&theme);
                 let floor = theme.tokens.colors.lift(0.35);
-                for (what, edge, fill) in [
+                let panel_min = if theme.tokens.colors.palette.high_contrast {
+                    ui::tokens::colors::HAIRLINE_MIN_DELTA
+                } else {
+                    ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+                };
+                for (what, edge, fill, min) in [
                     (
                         "panel border",
                         ui::chrome::shell::panel_border(&theme),
                         ground,
+                        panel_min,
                     ),
-                    ("layout / device row", ui::surface::edge_on(floor), floor),
+                    (
+                        "layout / device row",
+                        ui::surface::edge_on(floor),
+                        floor,
+                        ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    ),
                 ] {
                     let delta = ui::surface::edge_delta(edge, fill);
                     assert!(
-                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        delta >= min,
                         "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
                         theme.name
                     );

@@ -124,19 +124,6 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     out
 }
 
-/// A colour channel scaled by an alpha-wash factor in `0.0..=1.0` (a
-/// premultiplied-alpha approximation), rounded back to `u8`. `wash` is
-/// always a small literal fraction here, so `channel * wash` never leaves
-/// `0.0..=255.0`.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "channel is u8 (0..=255) and wash is a 0.0..=1.0 literal, so the product always fits u8"
-)]
-fn washed_channel(channel: u8, wash: f32) -> u8 {
-    (f32::from(channel) * wash).round() as u8
-}
-
 /// True if any of `colors` is within `tol` per rgb channel of `target`.
 #[must_use]
 fn contains_color_close(colors: &[(u8, u8, u8, u8)], target: (u8, u8, u8), tol: u8) -> bool {
@@ -629,43 +616,10 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
 
 #[test]
 fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
-    // Phase `quick_settings_renders_a_danger_marked_power_utility`.
-    // Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
-    // Session destinations stay one gesture away without displacing the live
-    // controls people opened Quick Settings to use.
-    {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        open_quick_settings(&chrome);
-        let theme = Theme::dark();
-        lay_out(&mut host, W, H);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let fills = collect_solid_colors(&scene);
-
-        // Power utility must use the theme's danger colour (not the mockup's literal
-        // red-500, which no palette has) as a low-alpha wash — accept the
-        // premultiplied form — plus a marked glyph so a bare wash doesn't pass.
-        let danger = theme.tokens.colors.semantic.danger.to_rgba8();
-        let wash = 0.20_f32;
-        let premul = (
-            washed_channel(danger.r, wash),
-            washed_channel(danger.g, wash),
-            washed_channel(danger.b, wash),
-        );
-        let has_danger_wash = contains_color_close(&fills, (danger.r, danger.g, danger.b), 4)
-            || contains_color_close(&fills, premul, 4);
-        assert!(
-            has_danger_wash,
-            "QuickSettings utility rail must include a Power action marked \
-             with the theme's danger colour, nominal ({}, {}, {}) or \
-             premultiplied {premul:?}. Observed solid-colour fills: {fills:?}.",
-            danger.r, danger.g, danger.b
-        );
-    }
+    // Power is a named footer button beside Settings and Lock, as quiet as
+    // they are: a red wash marked it as danger when opening the session menu
+    // destroys nothing. `qs_actions_click_routing` covers that it is there,
+    // reached by keyboard and opens the session menu.
 
     // Phase `quick_settings_slider_fill_is_white_not_indigo`.
     // Audit `concept-coverage.md:22,132-139` (`QuickSettings.tsx:204-215`):

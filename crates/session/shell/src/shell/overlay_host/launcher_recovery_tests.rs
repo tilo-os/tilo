@@ -394,9 +394,11 @@ fn palette_progress_notice_does_not_mask_a_failed_activation() {
         Some(crate::shell::i18n::t("host-action-try-again").as_str())
     );
     assert!(!entry.description.as_deref().unwrap().contains("Preparing"));
+    // The failure is told once, on the row that failed (above): the
+    // progress card stays the only notice, and never stands in for it.
     assert_eq!(
         h.chrome.borrow().notifications().len(),
-        2,
-        "a progress acknowledgement must not suppress the failure notice"
+        1,
+        "the palette posts no second notice for a failure its row tells"
     );
 }

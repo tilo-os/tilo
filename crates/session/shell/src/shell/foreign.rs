@@ -6580,10 +6580,17 @@ mod tests {
         store().publish_rgba(id, &vec![0; 500 * 800 * 4], 500, 800);
         assert_eq!(widget.fit_rect(500, 800), Some(narrowed));
         store().publish_rgba(id, &vec![0; 600 * 800 * 4], 600, 800);
-        assert_eq!(
-            widget.fit_rect(600, 800),
-            Some(Rect::new(0.0, 0.0, 500.0, 800.0 * 500.0 / 600.0)),
-            "with no drag in flight a stray frame is fitted as before"
+        // Fitted by its aspect: the height is a ratio, equal to a rounding.
+        let fitted = widget
+            .fit_rect(600, 800)
+            .expect("with no drag in flight a stray frame is fitted as before");
+        let expected = Rect::new(0.0, 0.0, 500.0, 800.0 * 500.0 / 600.0);
+        assert!(
+            (fitted.x0 - expected.x0).abs() < 1e-9
+                && (fitted.y0 - expected.y0).abs() < 1e-9
+                && (fitted.x1 - expected.x1).abs() < 1e-9
+                && (fitted.y1 - expected.y1).abs() < 1e-9,
+            "with no drag in flight a stray frame is fitted as before: {fitted:?}"
         );
         store().forget(id);
     }

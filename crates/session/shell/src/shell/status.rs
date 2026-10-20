@@ -613,7 +613,7 @@ mod tests {
             };
             assert_eq!(
                 s.summary(),
-                "Wi-Fi: Cafe WiFi · Volume 35% · Battery 64%, charging"
+                "Wi-Fi: Cafe WiFi, Volume 35%, Battery 64%, charging"
             );
         }
 
