@@ -545,6 +545,60 @@ mod tests {
         );
     }
 
+    /// On 2026-10-19 one chord press started the workspace agent 87 times in
+    /// a second: the start counted as done once the agent subscribed for
+    /// tasks, the composer then found no agent it may ask (no certified
+    /// identity yet) and started another, every frame. Frame by frame as
+    /// `ShellOverlayHost::follow_agent_start` and `open_ask_agent` run, with
+    /// the one test both use (`askable`): an agent that never becomes
+    /// askable is started once, waited for, and given up on once.
+    #[test]
+    fn a_started_agent_that_never_takes_asks_is_started_once_and_given_up_on() {
+        let start = Instant::now();
+        let seed = SelectionSeed::new("so.tilo.notes", "Notes", Some(writer_selection()));
+        let members = vec!["claude-code".to_owned()];
+        // Subscribed for tasks, but not certified: not askable.
+        let askable = |_room: &str, _agent: &str| false;
+        let mut requests = SelectionRequests::default();
+        let mut starts = 0;
+        let mut gave_up = 0;
+        // The chord: nobody askable, so the admitted agent starts.
+        let live: Vec<String> = members
+            .iter()
+            .filter(|agent| askable("room", agent))
+            .cloned()
+            .collect();
+        assert_eq!(requests.choose_agent("room", &live), None);
+        let agent = requests
+            .choose_agent("room", &members)
+            .expect("an admitted agent");
+        starts += 1;
+        requests.starting("room", &agent, seed.clone(), start);
+        // Every frame for longer than the wait, at 90 Hz.
+        for frame in 1..=(AGENT_START_WAIT.as_millis() / 11 + 10) {
+            let now = start + Duration::from_millis(u64::try_from(frame * 11).unwrap_or(u64::MAX));
+            match requests.started(now, askable) {
+                Some(AgentStart::Ready(_)) => {
+                    // `open_ask_agent` asks among the askable members: with
+                    // the same test there is always one here.
+                    let live: Vec<String> = members
+                        .iter()
+                        .filter(|agent| askable("room", agent))
+                        .cloned()
+                        .collect();
+                    if requests.choose_agent("room", &live).is_none() {
+                        starts += 1;
+                        requests.starting("room", &agent, seed.clone(), now);
+                    }
+                }
+                Some(AgentStart::GaveUp) => gave_up += 1,
+                None => {}
+            }
+        }
+        assert_eq!(starts, 1, "started once");
+        assert_eq!(gave_up, 1, "and given up on once, when the wait ran out");
+    }
+
     /// The chord asks a Tilo app for its selection over the app's shell-ui
     /// connection, and an app holds one only when its manifest asks for the
     /// service. An app that shares its selection without it is never asked:
