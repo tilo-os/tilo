@@ -6180,7 +6180,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         let path = home.display().to_string();
         let mut app = TestApp::<ImagerShell>::launched(&["--installer-preview"]).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             let completed = app
                 .with_widget::<InstallerPreview, _>(|preview| {
@@ -6325,6 +6325,19 @@ mod tests {
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
     }
+    /// Identity Continue refuses while the saved preparation is still being
+    /// written ("please wait"); a person waits for that, and so do the tests.
+    fn wait_for_restart_idle(app: &mut TestApp<ImagerShell>) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let snapshot = status(app);
+            if snapshot["restart"]["checking"] == false {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "{snapshot}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     fn password(app: &mut TestApp<ImagerShell>) {
         app.effect(&InstallerPreviewEffect::SetPreviewPassword {
             value: "preview-secret-only".into(),
@@ -6334,6 +6347,7 @@ mod tests {
             value: "preview-secret-only".into(),
         })
         .unwrap();
+        wait_for_restart_idle(app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
     }
@@ -10351,6 +10365,7 @@ mod tests {
             .unwrap();
             assert_eq!(std::fs::read(&record).unwrap(), original_bytes);
             if save {
+                wait_for_restart_idle(&mut app);
                 // Invoke the same production effect before polling completion.
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     preview
@@ -10402,6 +10417,7 @@ mod tests {
         // Unsafe canonical metadata makes the actual owned writer refuse. The
         // framework must retain Profile and its edit snapshot instead of Review.
         std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644)).unwrap();
+        wait_for_restart_idle(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         let failed = wait_for_personal(&mut app);
