@@ -2234,6 +2234,15 @@ impl WorkspaceTree {
         )
     }
 
+    /// The changes `room`'s document lacks under changes it holds back
+    /// unapplied. Empty for a complete room, or one this machine is not in.
+    pub fn room_missing_deps(&self, room: RoomId) -> Vec<ChangeHash> {
+        self.room_docs
+            .get(&room)
+            .map(|doc| automerge::ReadDoc::get_missing_deps(doc, &[]))
+            .unwrap_or_default()
+    }
+
     /// Whether `heads`, a peer's heads of `room`, name a change this
     /// machine does not hold.
     pub fn room_lacks_any(&mut self, room: RoomId, heads: &[ChangeHash]) -> bool {

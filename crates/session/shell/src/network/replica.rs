@@ -14,7 +14,8 @@
 //! peer-join kick) → exports nothing, instead requests each of our own
 //! rooms individually. `SyncResp{changes,room}` →
 //! `tree.apply_room_changes`, which refuses a room we're not in before
-//! storing anything. Other variants are ignored here.
+//! storing anything; a batch whose predecessors never arrived asks the room
+//! back for them. Other variants are ignored here.
 //!
 //! [`Hub`]: crate::network::hub::Hub
 //! [`Hub::broadcast`]: crate::network::hub::Hub::broadcast
@@ -276,6 +277,13 @@ impl WorkspaceTreeReplica {
                 }
                 // Recorded only once accepted — a refused document must not leave a participant behind it.
                 self.note_participant(room_id, sender);
+                // A batch whose predecessors never arrived (a push this
+                // machine missed) waits in the document unapplied. Ask the
+                // room for them now rather than at the next safety pull.
+                let missing = self.tree.read().room_missing_deps(room_id);
+                if !missing.is_empty() && self.pull_back_due(room_id, &missing) {
+                    self.request_sync_of(&[room_id]);
+                }
             }
             _ => {}
         }
@@ -1038,6 +1046,91 @@ mod tests {
                 "a sync round that carried no change must not announce one"
             );
         }
+    }
+
+    #[test]
+    fn a_push_missing_its_predecessors_asks_the_room_back() {
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let room = host_tree.room_of(a).expect("room A");
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_ws = guest_tree.append_empty_workspace("Placeholder");
+        assert!(guest_tree.set_room(guest_ws, room));
+        assert!(guest_tree.pin_room_authority(room, PeerOrigin::hub(1)));
+        let host = host_tree.shared();
+        let guest = guest_tree.shared();
+        let mut host_rep = WorkspaceTreeReplica::new(1, host.clone());
+        let mut guest_rep = WorkspaceTreeReplica::new(2, guest.clone());
+        let deliver = |from: &WorkspaceTreeReplica, to: &mut WorkspaceTreeReplica, id: u64| {
+            for msg in from.drain_outgoing() {
+                to.handle_from(&PeerOrigin::hub(id), &msg);
+            }
+        };
+        guest_rep.request_sync();
+        deliver(&guest_rep, &mut host_rep, 2);
+        deliver(&host_rep, &mut guest_rep, 1);
+        assert_eq!(
+            host.write().room_heads(room),
+            guest.write().room_heads(room)
+        );
+
+        let rename = |name: &str| {
+            let mut tree = host.write();
+            let since = tree.room_heads(room);
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == a)
+                .expect("workspace")
+                .name = name.into();
+            tree.seed_doc_from_cache();
+            tree.sync_room_doc(room);
+            tree.export_room_changes_since(room, &since)
+                .expect("the host is in the room")
+        };
+        let _missed = rename("First rename");
+        let latest = rename("Second rename");
+        guest_rep.handle_from(
+            &PeerOrigin::hub(1),
+            &NeighbourMsg::SyncResp {
+                changes: latest,
+                room: room.to_string(),
+            },
+        );
+        let asks: Vec<_> = guest_rep
+            .drain_outgoing()
+            .into_iter()
+            .filter(
+                |m| matches!(m, NeighbourMsg::SyncReq { room: r, .. } if *r == room.to_string()),
+            )
+            .collect();
+        assert_eq!(
+            asks.len(),
+            1,
+            "a push whose predecessors never arrived asks the room for them at once"
+        );
+        for ask in &asks {
+            host_rep.handle_from(&PeerOrigin::hub(2), ask);
+        }
+        deliver(&host_rep, &mut guest_rep, 1);
+        assert_eq!(
+            host.write().room_heads(room),
+            guest.write().room_heads(room),
+            "the answer fills the gap"
+        );
+        let name = guest
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == guest_ws)
+            .expect("workspace")
+            .name
+            .clone();
+        assert_eq!(name, "Second rename");
+        assert!(
+            guest_rep.drain_outgoing().is_empty(),
+            "a complete room asks nothing more"
+        );
     }
 
     #[test]
