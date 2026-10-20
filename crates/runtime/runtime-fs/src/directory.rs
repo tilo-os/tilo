@@ -1154,7 +1154,7 @@ mod terminal_receipt_tests {
             replacement_pin: Mutex::new(None),
             terminal: Mutex::new(NativeTerminal::default()),
         };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let mut observed = vec![];
         let operation;
         loop {
