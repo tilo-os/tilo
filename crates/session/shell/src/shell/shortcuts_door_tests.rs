@@ -953,7 +953,10 @@ fn press(
 #[test]
 fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     let mut door = Door::open();
-    let session = Caller::local_person(session_person());
+    // The person is read while the door's host identity is installed:
+    // dropping the door restores the environment it replaced.
+    let person = session_person();
+    let session = Caller::local_person(person.clone());
     let chord = TriggerSpec::Keyboard {
         chord: "Super+Shift+Y".into(),
     };
@@ -1001,7 +1004,7 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     drop(door);
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].report.trigger, "keyboard");
-    assert_eq!(finished[0].invoker, session_person());
+    assert_eq!(finished[0].invoker, person);
 }
 
 #[test]
