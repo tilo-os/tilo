@@ -7,7 +7,7 @@
 #                                  OUT/digest and OUT/revision
 #   os-image.sh dev ARCH IN OUT    the dev image (os/Containerfile.dev: tilo-vmd, sshd, the toolchain,
 #                                  the dev-overrides components) FROM the image `build` left in IN,
-#                                  into OUT as `build` writes it
+#                                  from the same RPM snapshot, into OUT as `build` writes it
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, into OUT as `build` writes it, with OUT/board
@@ -208,6 +208,14 @@ case ${1:-} in
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     load_image "$in" localhost/tilo:ci "$revision"
+    # The dev image installs its packages from the RPM snapshot the OS image was built from
+    # (its org.tilo.rpms.ref label). While no snapshot of this package set is published that is
+    # this run's image-rpms-ARCH, under the local name `build` gave it: load it here too, or
+    # the stage that names it cannot be pulled (podman then crashes, in buildah 5.8).
+    rpms_snapshot "$arch"
+    export RPMS_REF
+    [[ $(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' localhost/tilo:ci) == "$RPMS_REF" ]] \
+      || die "the OS image was built from another RPM snapshot than this run resolves ($RPMS_REF)"
     # About 3 GiB a job, as `build`: the shell's dev build links the same large binaries.
     jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 / 1024 / 3 ))
     (( jobs > $(nproc) )) && jobs=$(nproc)

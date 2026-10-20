@@ -5124,7 +5124,7 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-dev-image-{arch}"
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/publish/os/{arch} /target/publish/os-dev/{arch}"
 inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
-needs = ["os-image-{arch}"]
+needs = ["os-image-{arch}", "image-rpms-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
 git = true
 requires = ["{node}", "disk-100g"]

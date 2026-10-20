@@ -1095,7 +1095,9 @@ The dev image a development VM runs (os/Containerfile.dev: tilo-vmd, sshd, the t
 components with their dev features, compiled again) on os-image-{arch}."""
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/publish/os/{arch} /target/publish/os-dev/{arch}"
 inputs = ["os/**", "crates/**", "apps/**", "vendor/**", "examples/**", "dist/**", "docs/developers/tasks/**", "tools/policy/**", "tools/protocols/airdrop_sender.py", "tools/test-assets.py", "tools/test-assets-build.rs", "tools/ci/measure.sh", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".containerignore"]
-needs = ["os-image-{arch}"]
+# The RPM set the OS image was built from, which the dev image installs from too while no
+# snapshot of it is published.
+needs = ["os-image-{arch}", "image-rpms-{arch}"]
 outputs = ["/target/publish/os-dev/{arch}/image.oci.tar", "/target/publish/os-dev/{arch}/digest", "/target/publish/os-dev/{arch}/revision"]
 git = true
 requires = ["{node}", "disk-100g"]
