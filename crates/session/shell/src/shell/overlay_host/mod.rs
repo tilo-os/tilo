@@ -1420,10 +1420,6 @@ fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersStat
     ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
 
-/// The tab right-click menu: request harvest, routing, actions, semantics
-/// and paint. Everything a person, a script or a reader does with the
-/// menu passes through here, so the three routes cannot disagree.
-
 // Overview layout constants. Module-level so the draw path,
 // `hit_test_overview` and the unit tests share one geometry oracle.
 
