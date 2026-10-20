@@ -256,6 +256,25 @@ impl TopBarChrome {
         );
     }
 
+    /// Where the strip name and the strips as places were painted this
+    /// frame: each target's span, at the bar's height. Their part's bounds.
+    pub(super) fn strips_painted(&self) -> Vec<Rect> {
+        std::iter::once(self.ws_strip_rect)
+            .chain(self.strips.chips.iter().map(|(_, rect)| *rect))
+            .chain(self.strips.more.iter().map(|(_, _, rect)| *rect))
+            .chain(std::iter::once(self.strips.field_rect))
+            .filter(|rect| !rect.is_zero_area())
+            .map(|rect| {
+                Rect::new(
+                    rect.x0 - 4.0,
+                    self.rect.y0 - 2.0,
+                    rect.x1 + 4.0,
+                    self.rect.y1 + 2.0,
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn strips_key(&self) -> StripsKey {
         let Some(places) = self.strip_places() else {
             return StripsKey::default();

@@ -547,6 +547,9 @@ struct ProducedSections {
 struct OpaqueParts {
     workspace: Option<ui::scene_parts::SectionParts>,
     workspace_overlays: Option<ui::scene_parts::SectionParts>,
+    /// The top bar's own pieces (the strip it names): the bar is bounded as
+    /// a whole too, so its parts only narrow it.
+    topbar: Option<ui::scene_parts::SectionParts>,
     /// The Quick Settings panel, the strip ribbon and the strip rail: that
     /// section is bounded as a whole too, so its parts only narrow it.
     quick_settings: Option<ui::scene_parts::SectionParts>,
@@ -561,6 +564,7 @@ impl OpaqueParts {
         Self {
             workspace: recorded.of(&sections.workspace),
             workspace_overlays: recorded.of(&sections.workspace_overlays),
+            topbar: recorded.of(&sections.topbar),
             quick_settings: recorded.of(&sections.quick_settings),
             above_quick_settings: recorded.of(&sections.above_quick_settings),
         }
@@ -3665,9 +3669,13 @@ impl FrameBuilder {
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         let mut regions = Vec::new();
         if topbar_changed {
-            let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
-            let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
-            regions.extend([old, new]);
+            if let Some(changed) = self.topbar_part_damage(previous, current, parts) {
+                regions.extend(changed);
+            } else {
+                let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
+                let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
+                regions.extend([old, new]);
+            }
         }
         if quick_settings_changed
             && let Some(changed) = self.quick_settings_part_damage(previous, current, parts)
@@ -3708,6 +3716,29 @@ impl FrameBuilder {
             return None;
         }
         self.native_damage_rect(bounds)
+    }
+
+    /// Damage in the top bar proven by its parts: each changed part's old and
+    /// new bounds. `None` when the parts cannot prove it (a change outside
+    /// every part); the bar's whole extent then bounds it.
+    fn topbar_part_damage(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+    ) -> Option<Vec<FineDamageRect>> {
+        let rects = ui::scene_parts::damage(
+            &previous.topbar,
+            previous.parts.topbar.as_ref()?,
+            &current.topbar,
+            parts.topbar.as_ref()?,
+        )
+        .ok()?;
+        let regions: Vec<FineDamageRect> = rects
+            .into_iter()
+            .filter_map(|rect| self.native_damage_rect(Some(rect)))
+            .collect();
+        (!regions.is_empty()).then_some(regions)
     }
 
     /// Damage in the Quick Settings section proven by its parts (the panel,

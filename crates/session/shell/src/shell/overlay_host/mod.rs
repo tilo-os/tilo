@@ -1149,6 +1149,7 @@ impl ShellSceneSections {
     pub fn track_damage_parts(&self) {
         ui::scene_parts::track(&self.workspace);
         ui::scene_parts::track(&self.workspace_overlays);
+        ui::scene_parts::track(&self.topbar);
         ui::scene_parts::track(&self.quick_settings);
         ui::scene_parts::track(&self.above_quick_settings);
     }

@@ -571,6 +571,9 @@ pub struct TopBarChrome {
     /// Most of the bar is stable across frames, so caching cuts the
     /// draw budget at rest by an order of magnitude.
     cached: Scene,
+    /// The parts [`Self::cached`] was drawn with, carried into the bar's
+    /// section each time it is appended: a change damages its part only.
+    cached_parts: Option<ui::scene_parts::SectionParts>,
     cache_theme: Option<Theme>,
     /// Reused iff every field matches `self.*` at draw time. See
     /// [`TopBarChrome::current_fingerprint`].
@@ -909,6 +912,7 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             cached: Scene::new(),
+            cached_parts: None,
             cache_theme: None,
             cache_fp: CacheFingerprint::default(),
             collaborator_initials: Vec::new(),
@@ -4338,7 +4342,12 @@ impl Widget for TopBarChrome {
         self.read_face_looks(presence, theme.motion());
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
-            out_scene.append(&self.cached, Some(out_transform));
+            ui::scene_parts::append(
+                out_scene,
+                &self.cached,
+                self.cached_parts.as_ref(),
+                Some(out_transform),
+            );
             return;
         }
 
@@ -4349,65 +4358,81 @@ impl Widget for TopBarChrome {
         // Cache miss — encode at IDENTITY, then splice with `out_transform`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        let scene = &mut local;
-        let transform = Affine::IDENTITY;
-        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
-        if self.presence() == TopBarPresence::Shown {
-            self.draw_overlay_surface(scene, transform, theme);
-        }
+        let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
+            let transform = Affine::IDENTITY;
+            let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+            if self.presence() == TopBarPresence::Shown {
+                self.draw_overlay_surface(scene, transform, theme);
+            }
 
-        // The workspace's name leads, after the mark when there is one:
-        // where its label starts, past its capsule's `s2` leading pad.
-        let label_x = self.draw_tilo_mark(
-            scene,
-            transform,
-            theme,
-            center_y,
-            self.rect.x0 + f64::from(theme.tokens.spacing.s3),
-        ) + f64::from(theme.tokens.spacing.s2);
-        self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-        let center_left =
-            f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
-        // The strip shown, named after the workspace it is in where no
-        // strip chips stand: the frequent level, where the person looks for
-        // "where am I".
-        self.draw_strip_name(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            (
+            // The workspace's name leads, after the mark when there is one:
+            // where its label starts, past its capsule's `s2` leading pad.
+            let label_x = self.draw_tilo_mark(
+                scene,
+                transform,
+                theme,
+                center_y,
+                self.rect.x0 + f64::from(theme.tokens.spacing.s3),
+            ) + f64::from(theme.tokens.spacing.s2);
+            self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
+            let center_left =
+                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            // The strip shown and the strips as places change as the person
+            // moves between strips: they are one part of the bar, so that change
+            // damages where they are painted rather than the whole bar.
+            let strip_span = (
                 self.ws_pill_rect.x1,
                 center_left - f64::from(theme.tokens.spacing.s4),
-            ),
-        );
-        self.draw_strip_places(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            (
-                self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
-                center_left - f64::from(theme.tokens.spacing.s4),
-            ),
-        );
+            );
+            ui::scene_parts::part_drawn(
+                scene,
+                ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
+                |scene| {
+                    // The strip shown, named after the workspace it is in where
+                    // no strip chips stand: the frequent level, where the person
+                    // looks for "where am I".
+                    self.draw_strip_name(
+                        scene,
+                        transform,
+                        theme,
+                        text_renderer,
+                        center_y,
+                        strip_span,
+                    );
+                    self.draw_strip_places(
+                        scene,
+                        transform,
+                        theme,
+                        text_renderer,
+                        center_y,
+                        (
+                            self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
+                            strip_span.1,
+                        ),
+                    );
+                    self.strips_painted()
+                        .into_iter()
+                        .map(|rect| transform.transform_rect_bbox(rect))
+                        .collect()
+                },
+            );
 
-        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-        if !self.is_compact() {
-            self.draw_session_clusters(scene, theme, text_renderer, center_y);
-        }
-        self.draw_focus_indicator(scene, transform, theme);
-        let clock_activity = self.chrome.as_ref().and_then(|chrome| {
-            let snapshot = chrome.snapshot();
-            snapshot.overlays.clock.then_some(snapshot.clock_activity)?
+            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+            if !self.is_compact() {
+                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            }
+            self.draw_focus_indicator(scene, transform, theme);
+            let clock_activity = self.chrome.as_ref().and_then(|chrome| {
+                let snapshot = chrome.snapshot();
+                snapshot.overlays.clock.then_some(snapshot.clock_activity)?
+            });
+            if let Some(activity) = clock_activity {
+                self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
+            }
         });
-        if let Some(activity) = clock_activity {
-            self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
-        }
-        out_scene.append(&local, Some(out_transform));
+        ui::scene_parts::append(out_scene, &local, parts.as_ref(), Some(out_transform));
         self.cached = local;
+        self.cached_parts = parts;
         self.cache_fp = fp;
         self.cache_theme = Some(theme.clone());
         text_renderer.set_text_scale(renderer_scale);
