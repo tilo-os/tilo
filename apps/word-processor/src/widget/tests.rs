@@ -9040,3 +9040,51 @@ fn the_shared_selection_is_the_place_its_actions_read() {
     wp.set_focus(false);
     assert!(ui::shared_selection::selection_of(wp).is_none());
 }
+
+/// A collaborator's caret, name and selection scrolled across the canvas
+/// edge stay inside the canvas: none of it paints over the toolbar.
+#[test]
+fn collaborator_presence_cannot_escape_the_canvas() {
+    let framed = drawn_focused();
+    let block = framed.laid.last().expect("a laid block").clone();
+    let mut presence = PresenceCtx::empty();
+    let user = UserId("ada".into());
+    let key = block_presence_key(&block.id);
+    presence.set_display_name(user.clone(), "Ada");
+    presence.carets.insert(key.clone(), vec![(user.clone(), 0)]);
+    presence
+        .selections
+        .insert(key, vec![(user, SelectionRange { start: 0, end: 9 })]);
+    let base = framed.content_transform(Affine::IDENTITY);
+    let canvas = framed.zoom_viewport;
+    let top = (base * Point::new(block.text_x, block.y_top)).y;
+    // Scroll the line, with the name hanging above its caret, across the
+    // canvas's top edge.
+    let ctf = Affine::translate((0.0, canvas.y0 - top - 5.0)) * base;
+    let mut scene = Scene::new();
+    framed.draw_remote_overlays(
+        &mut scene,
+        ctf,
+        canvas,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        &presence,
+    );
+    let (width, height) = (1100_u32, 760_u32);
+    let pixels = ui::offscreen::OffscreenRenderer::new(width, height)
+        .render(&scene, vello::peniko::Color::TRANSPARENT);
+    let mut inside = 0;
+    let mut pixel = pixels.chunks_exact(4);
+    for y in 0..height {
+        for x in 0..width {
+            let alpha = pixel.next().expect("a pixel per point")[3];
+            let point = Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            if canvas.contains(point) {
+                inside += usize::from(alpha > 0);
+            } else {
+                assert_eq!(alpha, 0, "presence painted outside the canvas at {point:?}");
+            }
+        }
+    }
+    assert!(inside > 50, "the partly visible selection is painted");
+}
