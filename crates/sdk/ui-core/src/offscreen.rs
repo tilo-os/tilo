@@ -10,7 +10,15 @@
 //! float addition isn't associative, so coverage on a quantisation
 //! boundary can land ±1 in a channel. Measured here: ≤4/57 600 pixels,
 //! always ±1, ink-count unchanged — a race between concurrent renders in
-//! one process, not a single-frame artifact. Compare with
+//! one process, not a single-frame artifact. The order also follows the
+//! encoding: two scenes that differ only in a path far away render a pixel
+//! one unit apart, though each renders bit-identically every time. Measured
+//! in the block editor's retained-paint test: moving a 2 px caret in the
+//! heading (x 76.5 to 91.2, y 8 to 40.5) changed one paragraph pixel 170 px
+//! away, (246, 77), from blue 51 to 52, with every glyph, draw and transform
+//! of the paragraph unchanged and repeated renders of either scene equal.
+//! Retained paint, which keeps undamaged pixels from the earlier scene,
+//! therefore matches a full render only within ±1. Compare with
 //! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality. The
 //! stored pixels use straight alpha: RGB in fully transparent pixels is
 //! invisible, while if either pixel has nonzero alpha, every channel keeps the
@@ -2056,16 +2064,31 @@ impl OffscreenRenderer {
         let overlapping = a
             .chunks_exact(4)
             .zip(b.chunks_exact(4))
-            .filter(|(x, y)| {
-                if x.get(3) == Some(&0) && y.get(3) == Some(&0) {
-                    return false;
-                }
-                x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1)
-            })
+            .filter(|(x, y)| differs_beyond_aa(x, y))
             .count();
         let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
         overlapping.saturating_add(unmatched)
     }
+
+    /// Where [`Self::pixels_differing_beyond_aa`] finds two equally long
+    /// frames `width` pixels wide differ, as `(x, y)`.
+    pub fn positions_differing_beyond_aa(a: &[u8], b: &[u8], width: usize) -> Vec<(usize, usize)> {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .enumerate()
+            .filter(|(_, (x, y))| differs_beyond_aa(x, y))
+            .map(|(index, _)| (index % width.max(1), index / width.max(1)))
+            .collect()
+    }
+}
+
+/// Whether two stored straight-alpha pixels differ beyond the ±1 the module
+/// docs describe; RGB under zero alpha on both sides is invisible.
+fn differs_beyond_aa(a: &[u8], b: &[u8]) -> bool {
+    if a.get(3) == Some(&0) && b.get(3) == Some(&0) {
+        return false;
+    }
+    a.iter().zip(b.iter()).any(|(p, q)| p.abs_diff(*q) > 1)
 }
 
 #[cfg(test)]
