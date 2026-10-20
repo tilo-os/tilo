@@ -252,65 +252,6 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
     assert!(authored().is_empty(), "an app no longer named is withdrawn");
 }
 
-/// The room starts with a welcome note and a canvas, and a reset keeps a
-/// snapshot of each before putting the starting content back.
-#[cfg(feature = "agents")]
-#[test]
-fn a_persistent_room_seeds_a_welcome_note_and_snapshots_it_on_reset() {
-    use tilo_resource::Resource as _;
-    let scratch = tempfile::tempdir().unwrap();
-    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
-    std::fs::create_dir_all(&state).unwrap();
-    let root_file = scratch.path().join("root");
-    std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let room = start_with(
-        &state,
-        &root_file,
-        &secrets,
-        &[
-            "--seed-app",
-            "so.tilo.notes",
-            "--seed-app",
-            "so.tilo.canvas",
-            "--reset-every",
-            "2",
-        ],
-    )
-    .unwrap();
-    room.next(|e| matches!(e, RoomEvent::Started { .. }));
-    let snapshots = state.join("relay/snapshots");
-    let newest = |app: &str| -> Option<std::path::PathBuf> {
-        std::fs::read_dir(snapshots.join(app))
-            .ok()?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .max()
-    };
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    while (newest("so.tilo.notes").is_none() || newest("so.tilo.canvas").is_none())
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::park_timeout(Duration::from_millis(200));
-    }
-    let bytes = std::fs::read(newest("so.tilo.notes").expect("no notes snapshot")).unwrap();
-    let notebook = notes::Notebook::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
-    let text = notebook
-        .pages
-        .iter()
-        .flat_map(|(_, page)| page.blocks().into_iter().map(|block| block.text))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("Try this:"), "{text}");
-    let bytes = std::fs::read(newest("so.tilo.canvas").expect("no canvas snapshot")).unwrap();
-    let art = canvas::Artwork::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap();
-    assert!(art.marks.iter().any(|mark| mark.id == "welcome-text"));
-    assert!(
-        !snapshots.join("so.tilo.chat").exists(),
-        "chat is never reset"
-    );
-    room.stop();
-}
-
 /// Plain HTTP/1.1 to the room's loopback listener: the page's `fetch`.
 struct Plain(std::net::SocketAddr);
 
@@ -419,17 +360,16 @@ fn spectate(room: &mut Room) -> (ed25519_dalek::SigningKey, tilo_user_identity::
     }
 }
 
-/// The text of every block of the notebook in `doc`, if it holds one.
-fn notebook_text(doc: &automerge::AutoCommit) -> Option<String> {
+/// The names of the chat's channels in `doc`, if it holds a chat.
+fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
     use tilo_resource::Resource as _;
     Some(
-        notes::Notebook::read(doc)
+        chat::Chat::read(doc)
             .ok()?
-            .pages
-            .iter()
-            .flat_map(|(_, page)| page.blocks().into_iter().map(|block| block.text))
-            .collect::<Vec<_>>()
-            .join("\n"),
+            .channels
+            .values()
+            .map(|channel| channel.name.clone())
+            .collect(),
     )
 }
 
@@ -452,7 +392,7 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
     (sibling_key, sibling_cert)
 }
 
-async fn assert_page_reads_welcome(
+async fn assert_page_reads_the_chat(
     watcher: &tilo_browser_peer::PeerHandle,
     workspace_id: u64,
     route: &tilo_browser_peer::DocumentRoute,
@@ -465,14 +405,14 @@ async fn assert_page_reads_welcome(
     let mut doc = automerge::AutoCommit::new();
     let events = std::sync::Mutex::new(Vec::new());
     wait_for(
-        "the watching page to read the welcome note",
+        "the watching page to read the chat's starting channel",
         || {
             for event in watcher.drain() {
                 match &event {
                     PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
                         ready = true;
                     }
-                    // The room's other apps arrive too; only the note is read.
+                    // The room's other records arrive too; only the chat is read.
                     PeerEvent::Document(document) if document.route == *route => {
                         match document.mutation() {
                             Some(DocumentMutation::Snapshot(bytes)) => {
@@ -491,7 +431,7 @@ async fn assert_page_reads_welcome(
                     other => format!("{other:?}"),
                 });
             }
-            (ready && notebook_text(&doc)?.contains("Try this:")).then_some(())
+            (ready && chat_channels(&doc)?.iter().any(|name| name == "general")).then_some(())
         },
         || {
             format!(
@@ -507,15 +447,15 @@ async fn assert_page_reads_welcome(
 }
 
 /// The homepage embed's path through the real room process: a page whose
-/// device the room certified as its spectator person subscribes, receives
-/// the room's welcome note, and has every write refused; the owner's root
+/// device the room certified as its spectator person subscribes, reads the
+/// room's chat with its starting channel, and has every write refused; the owner's root
 /// still admits none of its other devices by itself.
 #[test]
 fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothing() {
     use collab_types::DocumentMutation;
     use tilo_browser_peer::{DocumentRoute, PeerEvent};
 
-    const NOTES: &str = "so.tilo.notes";
+    const CHAT: &str = "so.tilo.chat";
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -525,11 +465,12 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         .unwrap()
         .local_addr()
         .unwrap();
+    let web_plain = plain.to_string();
     let mut room = start_with(
         &state,
         &root_file,
         &secrets,
-        &["--seed-app", NOTES, "--web-plain", &plain.to_string()],
+        &["--chat-channel", "general", "--web-plain", &web_plain],
     )
     .unwrap();
     let RoomEvent::Started { room: Some(id), .. } =
@@ -549,16 +490,16 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
             .host_cert;
         let catalogue = tilo_agent_participant::AppCatalogue::native();
         let route = DocumentRoute {
-            app_id: NOTES.into(),
+            app_id: CHAT.into(),
             cluster_id: id.clone(),
-            record: tilo_relay::room_bots::room_record(&catalogue, NOTES),
+            record: tilo_relay::room_bots::room_record(&catalogue, CHAT),
         };
 
-        // The watching page is admitted and reads the room's welcome note.
+        // The watching page is admitted and reads the room's chat.
         let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
         watcher.join(workspace_id).unwrap();
         watcher.open_route(route.clone()).unwrap();
-        assert_page_reads_welcome(&watcher, workspace_id, &route).await;
+        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
 
         // A page of the spectator person that does not say it only watches
         // still writes nothing: the host refuses it.

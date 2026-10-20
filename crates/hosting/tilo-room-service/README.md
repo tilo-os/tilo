@@ -220,12 +220,11 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
 | `TILO_ROOMS_ROLES_FILE` | none | more owners and moderators, `{"owners": [hex], "moderators": [hex]}`, taken in within seconds of each change, no restart |
-| `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
+| `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; each starts empty, as in any other workspace |
 | `TILO_ROOMS_AUTHOR_APPS` | the seeded apps | apps the room's members write through, comma-separated: each authors the room's content (so a guest, an Editor, can talk in its Chat), settled at every start; an app taken out of the list stops authoring the room. `none`: guests read the room only |
 | `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
 | `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days (1–3650) a member may go without a session before their membership ends; until then a person who joined stays a member (going offline removes nobody: who is here now is presence, not membership). One who comes back later joins through the door again as the same person, and their address is not cooled down. Owners and moderators are never removed this way. `TILO_ROOMS_PRUNE_AFTER_MINS` is refused |
-| `TILO_ROOMS_RESET_SECS` | `21600` | every this many seconds, snapshot the seeded notes and canvas (last 10 kept under `<state>/relay/snapshots/<app>/`) and reset them to their starting content; chat is never reset; `0` disables |
 
 Every guest and every spectator holds a web session on the child relay, so
 the service sizes the relay's caps from the room's: `TILO_RELAY_MAX_WEB_SESSIONS`
@@ -306,8 +305,7 @@ join window exactly, checks every refusal's status, wording and
 `Retry-After`, that a refused visitor holds no seat and that one told "full"
 gets in once an unused seat's hold ends, the caps and refusal counters on
 `/metrics`; then it restarts the service and checks the room, its spectator
-person, the guest ledger and each address's join window survive, that each
-seeded app keeps exactly its ten newest reset snapshots (chat none), and
+person, the guest ledger and each address's join window survive, and
 that SIGTERM stops the service and its relay within 20 seconds (eu1's
 grace period). The same workflow runs it before the browser check.
 

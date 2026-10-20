@@ -419,8 +419,6 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         command.arg("--roles-file").arg(roles);
     }
     command
-        .arg("--reset-every")
-        .arg(persistent.reset_secs.to_string())
         .arg("--inactive-after-days")
         .arg(persistent.inactive_after_days.to_string());
     size_sessions(&mut command, config, persistent);
