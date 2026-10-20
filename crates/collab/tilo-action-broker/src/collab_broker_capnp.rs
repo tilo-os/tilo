@@ -16895,7 +16895,7 @@ pub mod tests {
             descriptor.set_operation_kind("effect");
             descriptor.set_params_json("[]");
             descriptor.set_contract_json(
-                &serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap(),
+                serde_json::to_string(&tilo_actions::ActionContract::default()).unwrap(),
             );
             let mut identity = descriptor.init_semantic_identity();
             identity.set_kind(kind);
