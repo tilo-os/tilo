@@ -282,33 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_room_authority_writes_proposals() {
+    fn import_proposals_are_governance() {
         let before = AutoCommit::new();
         let mut after = before.clone();
         put_entry(&mut after, &entry(4, 100)).unwrap();
-        let authority = "aa".repeat(32);
-        let member = "bb".repeat(32);
-        assert!(crate::room::governance_change_allowed(
-            Some(&before),
-            &after,
-            false,
-            Some(&authority),
-            &authority
-        ));
-        assert!(!crate::room::governance_change_allowed(
-            Some(&before),
-            &after,
-            false,
-            Some(&authority),
-            &member
-        ));
-        assert!(!crate::room::governance_change_allowed(
-            Some(&before),
-            &after,
-            true,
-            Some(&authority),
-            &authority
-        ));
+        // So only the pinned governance writer may write one
+        // (`room::admit_room_changes`).
+        assert!(!crate::room::governance_unchanged(Some(&before), &after));
     }
 
     #[test]

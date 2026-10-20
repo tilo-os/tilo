@@ -348,13 +348,25 @@ pub fn verify_room(
         _ => return Err(ProofError::Unknown),
     }
     let before = prior.map(|prior| &prior.doc);
-    tilo_peer_state::room::media::validate_transition(
-        before,
+    let pinned = hex::encode(source);
+    // The governor wrote it, so this is the room admission every receiver
+    // runs, from the governor: room, topology, receipts, coverage,
+    // durability and media.
+    tilo_peer_state::room::check_candidate(
+        &tilo_peer_state::room::RoomAdmission {
+            before,
+            room: authority.room(),
+            source: tilo_peer_state::room::Writer {
+                key: &pinned,
+                standing: tilo_peer_state::room::Standing::TransportAuthorized,
+            },
+            authority: tilo_peer_state::room::AuthorityPin::Device(&pinned),
+            contents: tilo_peer_state::room::ContentOwnership::Registry,
+            caps_now: 0,
+        },
         &doc,
-        tilo_peer_state::room::media::TransitionMode::Admission,
     )
     .map_err(|_| ProofError::Unknown)?;
-    let pinned = hex::encode(source);
     identities(authority, before, &doc)?;
     let receipts = effect_receipts(&doc)?;
     // StatePeer preserves omitted receipts separately. A standalone replay
@@ -366,20 +378,6 @@ pub fn verify_room(
     {
         return Err(ProofError::Unknown);
     }
-    if !tilo_peer_state::room::governance_change_allowed(
-        before,
-        &doc,
-        false,
-        Some(&pinned),
-        &pinned,
-    ) || !tilo_peer_state::room::immutable_receipts(before, &doc)
-    {
-        return Err(ProofError::Unknown);
-    }
-    tilo_peer_state::topology::validate(before, &doc, &pinned, &pinned)
-        .map_err(|_| ProofError::Unknown)?;
-    tilo_peer_state::coverage::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
-    tilo_peer_state::durability::monotonic(before, &doc).map_err(|_| ProofError::Unknown)?;
     let coverage = tilo_peer_state::coverage::entries(&doc).map_err(|_| ProofError::Unknown)?;
     if !tilo_peer_state::coverage::canonical(&doc) {
         return Err(ProofError::Unknown);

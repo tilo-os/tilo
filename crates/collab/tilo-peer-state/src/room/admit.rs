@@ -171,16 +171,7 @@ impl std::error::Error for RoomRefusal {}
 /// 1. The sender may make undoable changes on the room, unless it is the
 ///    pinned governance writer (who may grant itself anything) — [`Standing`].
 /// 2. The batch decodes under the shared incoming limits ([`super::candidate`]).
-/// 3. The document names this room ([`super::declared_room_mismatches`]).
-/// 4. A governance change — owner, capabilities, identities, media,
-///    coverage, receipts, durability or import proposals — comes from the
-///    pinned writer ([`super::governance_change_allowed`]).
-/// 5. Window contents change only by their owner ([`ContentOwnership`]).
-/// 6. Effect receipts are immutable ([`super::immutable_receipts`]).
-/// 7. Coverage and durable receipts never rewind
-///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
-/// 8. The media policy is well formed and its transition is permitted
-///    ([`media::validate_transition`]).
+/// 3. Then [`check_candidate`].
 ///
 /// # Errors
 ///
@@ -189,24 +180,51 @@ pub fn admit_room_changes(
     input: RoomAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
+    if !input.authority.admits(&input.source) {
+        may_write(input.before, input.room, &input.source, input.caps_now)?;
+    }
+    let candidate = super::candidate(input.before, changes).map_err(RoomRefusal::Malformed)?;
+    let media = check_candidate(&input, &candidate)?;
+    Ok(AdmittedRoom { candidate, media })
+}
+
+/// Check a candidate room document against `input.before`, however it was
+/// built: from `input.before` and a batch ([`admit_room_changes`]), or as a
+/// whole checkpoint replacing it. Returns the candidate's media policy for the
+/// caller to bind.
+///
+/// 1. The document names this room ([`super::declared_room_mismatches`]).
+/// 2. A governance change — owner, capabilities, identities, media,
+///    coverage, receipts, durability or import proposals — comes from the
+///    pinned writer ([`super::governance_unchanged`]).
+/// 3. Window contents change only by their owner ([`ContentOwnership`]).
+/// 4. Effect receipts are immutable ([`super::immutable_receipts`]).
+/// 5. Coverage and durable receipts never rewind
+///    ([`crate::coverage::monotonic`], [`crate::durability::monotonic`]).
+/// 6. The media policy is well formed and its transition is permitted
+///    ([`media::validate_transition`]).
+///
+/// # Errors
+///
+/// The first [`RoomRefusal`] that applies.
+pub fn check_candidate(
+    input: &RoomAdmission<'_>,
+    candidate: &AutoCommit,
+) -> Result<Option<media::RoomMediaV1>, RoomRefusal> {
     let RoomAdmission {
         before,
         room,
         source,
         authority,
         contents,
-        caps_now,
-    } = input;
+        caps_now: _,
+    } = *input;
     let governs = authority.admits(&source);
-    if !governs {
-        may_write(before, room, &source, caps_now)?;
-    }
-    let candidate = super::candidate(before, changes).map_err(RoomRefusal::Malformed)?;
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
-    if super::declared_room_mismatches(&candidate, declared) {
+    if super::declared_room_mismatches(candidate, declared) {
         return Err(RoomRefusal::DeclaredRoomMismatch);
     }
-    if !governs && !super::governance_unchanged(before, &candidate) {
+    if !governs && !super::governance_unchanged(before, candidate) {
         return Err(RoomRefusal::GovernanceWriter);
     }
     match contents {
@@ -216,26 +234,25 @@ pub fn admit_room_changes(
                     "topology registry requires a pinned authority device".into(),
                 ));
             };
-            crate::topology::validate(before, &candidate, source.key, pinned)
+            crate::topology::validate(before, candidate, source.key, pinned)
                 .map_err(RoomRefusal::Topology)?;
         }
         ContentOwnership::Salted { local_salt } => {
             let rewritten = tilo_desktop_model::projection::changed_owned_entries(
-                before, &candidate, local_salt,
+                before, candidate, local_salt,
             );
             if rewritten > 0 {
                 return Err(RoomRefusal::OwnedContents(rewritten));
             }
         }
     }
-    if !super::immutable_receipts(before, &candidate) {
+    if !super::immutable_receipts(before, candidate) {
         return Err(RoomRefusal::ReceiptImmutable);
     }
-    crate::coverage::monotonic(before, &candidate).map_err(RoomRefusal::Coverage)?;
-    crate::durability::monotonic(before, &candidate).map_err(RoomRefusal::Durability)?;
-    let media = media::validate_transition(before, &candidate, media::TransitionMode::Admission)
-        .map_err(RoomRefusal::Media)?;
-    Ok(AdmittedRoom { candidate, media })
+    crate::coverage::monotonic(before, candidate).map_err(RoomRefusal::Coverage)?;
+    crate::durability::monotonic(before, candidate).map_err(RoomRefusal::Durability)?;
+    media::validate_transition(before, candidate, media::TransitionMode::Admission)
+        .map_err(RoomRefusal::Media)
 }
 
 /// Undoable changes on the room for a sender that is not the governance

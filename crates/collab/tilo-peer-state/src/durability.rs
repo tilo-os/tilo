@@ -293,20 +293,7 @@ mod tests {
             BTreeMap::from([(route_key("app", "record"), receipt(1))]),
         )
         .unwrap();
-        assert!(!crate::room::governance_change_allowed(
-            Some(&before),
-            &after,
-            false,
-            Some("authority"),
-            "viewer"
-        ));
-        assert!(crate::room::governance_change_allowed(
-            Some(&before),
-            &after,
-            false,
-            Some("authority"),
-            "authority"
-        ));
+        assert!(!crate::room::governance_unchanged(Some(&before), &after));
     }
     fn compact_coverage(sequence: u64) -> Coverage {
         Coverage {
