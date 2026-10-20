@@ -1302,6 +1302,25 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_at(None, resource, id, arguments, false)
     }
 
+    /// [`Self::call_on`], waiting for the job the action started, as
+    /// [`Self::effect`] does: what it finished with.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn call_on_finished(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            return Err(tilo_actions::DoorError::InvalidArguments(
+                "arguments are an object".into(),
+            ));
+        };
+        self.effect_invoked(None, resource, id, &arguments, false)
+    }
+
     /// [`Self::call_on`], answering the whole output: the value and the
     /// resources the call produced, such as the items a verb created.
     ///
