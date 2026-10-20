@@ -678,6 +678,18 @@ requirement = { cores = 8, memory = "8GiB" }
 cost = "heavy"
 default = false
 
+# The engine sealed with a key thrown away, for development layers where the registry doesn't
+# offer it (tilo-vm-pack-apps-<arch> ships it through TILO_RUNTIME_BUNDLE_DIR). Keyed by the
+# engine's inputs, so a swap compiles and seals nothing the last one didn't.
+[[matrix.check]]
+name = "engine-dev-{arch}"
+run = "bash tools/apps/t-engine-release.sh dev {arch} /target/engine-release/{arch} /target/engine-dev/{arch}"
+needs = ["engine-build-{arch}"]
+outputs = ["/target/engine-dev/{arch}/**"]
+requires = ["{node}"]
+cost = "minutes"
+default = false
+
 [[matrix.check]]
 name = "sign-engine-{arch}"
 run = "bash tools/apps/t-engine-release.sh sign {arch} /target/engine-release/{arch} /target/engine-release/{arch}/signed"
