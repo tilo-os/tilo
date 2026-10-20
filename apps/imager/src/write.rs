@@ -523,9 +523,9 @@ fn run_job_file_bound(
             }
         },
         {
-            #[cfg(all(target_os = "linux", feature = "installation"))]
+            #[cfg(target_os = "linux")]
             {
-                crate::setup::portable_home_media::payload_capacity_for_free_bytes
+                crate::setup::media_setup::writer::payload_capacity
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -534,10 +534,6 @@ fn run_job_file_bound(
                         "Migration data provisioning requires Linux",
                     ))
                 }
-            }
-            #[cfg(all(target_os = "linux", not(feature = "installation")))]
-            {
-                |_| Err(installation_medium_refused())
             }
         },
         || {
@@ -574,9 +570,6 @@ fn run_system_job(
     }) {
         return JobResult::WriteFailed(error.to_string());
     }
-    // Only the installation's medium layout needs the helper's caller.
-    #[cfg(not(all(target_os = "linux", feature = "installation")))]
-    let _ = authenticated_caller;
     imager_backend::write::job::run_system_job(
         &imager_backend::write::job::SystemWriteRequest {
             source: reviewed_source(req),
@@ -587,7 +580,6 @@ fn run_system_job(
         },
         &AppWriteSetup {
             req,
-            #[cfg(all(target_os = "linux", feature = "installation"))]
             authenticated_caller,
         },
         should_cancel,
@@ -597,23 +589,18 @@ fn run_system_job(
 
 struct AppWriteSetup<'a> {
     req: &'a WriteRequest,
-    #[cfg(all(target_os = "linux", feature = "installation"))]
     authenticated_caller: Option<u32>,
 }
 impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     fn output_preflight(&self) -> io::Result<()> {
-        #[cfg(all(target_os = "linux", not(feature = "installation")))]
-        if self.req.offline_layout.is_some() {
-            return Err(installation_medium_refused());
-        }
-        #[cfg(all(target_os = "linux", feature = "installation"))]
+        #[cfg(target_os = "linux")]
         if let Some(layout) = &self.req.offline_layout {
             return self
                 .authenticated_caller
                 .ok_or_else(|| {
                     io::Error::other("Original migration requires authenticated helper custody")
                 })
-                .and_then(|uid| crate::setup::media_setup::validate_pending_caller(layout, uid));
+                .and_then(|uid| crate::setup::media_setup::writer::validate_caller(layout, uid));
         }
         Ok(())
     }
@@ -671,17 +658,13 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
     }
 
     fn provision_after_write(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<()> {
-        #[cfg(all(target_os = "linux", not(feature = "installation")))]
-        if self.req.offline_layout.is_some() {
-            return Err(installation_medium_refused());
-        }
-        #[cfg(all(target_os = "linux", feature = "installation"))]
+        #[cfg(target_os = "linux")]
         if let Some(pending) = &self.req.offline_layout {
             return self
                 .authenticated_caller
                 .ok_or_else(|| io::Error::other("Original migration caller custody missing"))
                 .and_then(|uid| {
-                    crate::setup::media_setup::provision_after_write(
+                    crate::setup::media_setup::writer::provision_after_write(
                         &self.req.target,
                         pending,
                         uid,
@@ -1020,22 +1003,9 @@ pub fn spawn_job(
 }
 
 fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
-    #[cfg(all(target_os = "linux", not(feature = "installation")))]
-    if req.offline_layout.is_some() {
-        return Err(installation_medium_refused());
-    }
-    #[cfg(all(target_os = "linux", feature = "installation"))]
+    #[cfg(target_os = "linux")]
     if let Some(pending) = &req.offline_layout {
-        imager_backend::write::pending::validate_pending_source_disks(
-            &req.target,
-            pending.target_number,
-            |number| {
-                crate::setup::migration_handoff::validate_offline_source_disks(
-                    &pending.source_plans,
-                    number,
-                )
-            },
-        )?;
+        crate::setup::media_setup::writer::validate_source_disks(&req.target, pending)?;
     }
     #[cfg(not(target_os = "linux"))]
     let _ = req;
@@ -1044,37 +1014,10 @@ fn validate_pending_source_disks(req: &WriteRequest) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn validate_pending_descriptor(req: &WriteRequest, device: &std::fs::File) -> io::Result<()> {
-    #[cfg(not(feature = "installation"))]
-    if req.offline_layout.is_some() {
-        let _ = device;
-        return Err(installation_medium_refused());
-    }
-    #[cfg(feature = "installation")]
     if let Some(pending) = &req.offline_layout {
-        imager_backend::write::pending::validate_pending_descriptor(
-            &req.target,
-            device,
-            pending.target_number,
-            |number| {
-                crate::setup::migration_handoff::validate_offline_source_disks(
-                    &pending.source_plans,
-                    number,
-                )
-            },
-        )?;
+        crate::setup::media_setup::writer::validate_descriptor(&req.target, device, pending)?;
     }
     Ok(())
-}
-
-/// A request that lays out a prepared installation medium (original files
-/// carried to the new system) needs the installation; the Tilo app's writer
-/// writes images and refuses it before touching the drive.
-#[cfg(all(target_os = "linux", not(feature = "installation")))]
-fn installation_medium_refused() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Preparing an installation medium needs the Tilo Installer download",
-    )
 }
 
 #[cfg(test)]
