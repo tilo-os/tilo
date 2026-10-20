@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::op::{
-    DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V2_PREFIX, DOCUMENT_SEGMENT_TAG,
+    ContentRetention, DOCUMENT_INCREMENTAL_TAG, DOCUMENT_MUTATION_V2_PREFIX, DOCUMENT_SEGMENT_TAG,
     DOCUMENT_SNAPSHOT_TAG, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
     MAX_DOCUMENT_MUTATION_BYTES,
 };
@@ -237,6 +237,35 @@ impl DocumentFrame {
             });
         }
         Ok(Self::Whole(mutation))
+    }
+
+    /// Storage class of this frame: a snapshot, or the first segment of
+    /// one, starts a new retained baseline; everything else follows it. A
+    /// segmented snapshot's later segments are the tail behind its first, so
+    /// a replaying device receives every segment in order.
+    #[must_use]
+    pub fn retention(&self) -> ContentRetention {
+        match self {
+            Self::Whole(DocumentMutation::Snapshot(_)) => ContentRetention::Checkpoint,
+            Self::Segment(segment)
+                if segment.kind == DocumentMutationKind::Snapshot && segment.index == 0 =>
+            {
+                ContentRetention::Checkpoint
+            }
+            Self::Whole(DocumentMutation::Incremental(_)) | Self::Segment(_) => {
+                ContentRetention::Delta
+            }
+        }
+    }
+}
+
+impl ContentRetention {
+    /// Storage class of one cleartext document frame
+    /// ([`DocumentFrame::retention`]); a payload that is not a document
+    /// frame starts no baseline.
+    #[must_use]
+    pub fn of_frame(cleartext: &[u8]) -> Self {
+        DocumentFrame::decode(cleartext).map_or(Self::Delta, |frame| frame.retention())
     }
 }
 

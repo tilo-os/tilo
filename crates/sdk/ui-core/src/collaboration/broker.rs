@@ -6382,23 +6382,6 @@ async fn try_send_frame(
     }
 }
 
-/// Storage class of one cleartext document frame: a snapshot (or its first
-/// segment) starts a new retained baseline, everything else follows it.
-fn document_frame_retention(cleartext: &[u8]) -> collab_types::ContentRetention {
-    match collab_types::DocumentFrame::decode(cleartext) {
-        Ok(collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(_))) => {
-            collab_types::ContentRetention::Checkpoint
-        }
-        Ok(collab_types::DocumentFrame::Segment(segment))
-            if segment.kind == collab_types::DocumentMutationKind::Snapshot
-                && segment.index == 0 =>
-        {
-            collab_types::ContentRetention::Checkpoint
-        }
-        _ => collab_types::ContentRetention::Delta,
-    }
-}
-
 /// Seal one frame under the route's current channel content key, so every
 /// member — including one added later — can read it from history. A route
 /// still waiting for its keys keeps the frame on the device instead.
@@ -6411,7 +6394,7 @@ fn prepare_document_payload(
     let Ok(mut keys) = encryption.lock() else {
         return PreparedFrame::Failed("route key state lock poisoned".into());
     };
-    let retention = document_frame_retention(&cleartext);
+    let retention = collab_types::ContentRetention::of_frame(&cleartext);
     match keys.seal(artifact, retention, cleartext.clone()) {
         super::route_keys::Sealed::Ready(payload, metadata) => {
             PreparedFrame::Ready(payload, metadata)
@@ -7832,7 +7815,9 @@ fn decrypt_document_payload(
             if envelope
                 .encryption
                 .and_then(|metadata| metadata.retention())
-                .is_some_and(|retention| retention != document_frame_retention(&plaintext))
+                .is_some_and(|retention| {
+                    retention != collab_types::ContentRetention::of_frame(&plaintext)
+                })
             {
                 return Err(refused(collab_types::DocumentMutationError::RouteMismatch));
             }
@@ -10439,7 +10424,11 @@ mod tests {
             .encode()
             .unwrap();
         let (metadata, ciphertext) = group
-            .seal_content(artifact, document_frame_retention(&frame), &frame)
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::of_frame(&frame),
+                &frame,
+            )
             .unwrap();
         let op = SignedOp::new_unsigned_with_encryption(
             ciphertext,
@@ -12986,7 +12975,7 @@ mod tests {
                 .encode()
                 .unwrap();
             assert_eq!(
-                document_frame_retention(&snapshot),
+                collab_types::ContentRetention::of_frame(&snapshot),
                 collab_types::ContentRetention::Checkpoint
             );
             let big = DocumentMutation::Snapshot(
@@ -12996,7 +12985,7 @@ mod tests {
             .unwrap();
             let classes: Vec<_> = big
                 .iter()
-                .map(|frame| document_frame_retention(frame))
+                .map(|frame| collab_types::ContentRetention::of_frame(frame))
                 .collect();
             assert_eq!(
                 classes.first(),
@@ -13033,7 +13022,11 @@ mod tests {
                     .encode()
                     .unwrap();
                     let (metadata, ciphertext) = alice
-                        .seal_content(artifact, document_frame_retention(&frame), &frame)
+                        .seal_content(
+                            artifact,
+                            collab_types::ContentRetention::of_frame(&frame),
+                            &frame,
+                        )
                         .unwrap();
                     let op = SignedOp::new_unsigned_with_encryption(
                         ciphertext,

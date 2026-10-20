@@ -24,6 +24,15 @@ pub enum Retention {
     Delta,
 }
 
+impl From<collab_types::ContentRetention> for Retention {
+    fn from(retention: collab_types::ContentRetention) -> Self {
+        match retention {
+            collab_types::ContentRetention::Checkpoint => Self::Checkpoint,
+            collab_types::ContentRetention::Delta => Self::Delta,
+        }
+    }
+}
+
 /// The devices a host delivers `msg` to as it arrives, when only they can
 /// use it: the copy of a channel admission carrying what its devices join
 /// from (every other member gets the copy without it). `None` for a message
@@ -107,32 +116,10 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             // without reading it. A single-use MLS application message is
             // never retained: no later reader could open it.
             if let Some(metadata) = envelope.encryption {
-                let retention = match metadata.retention()? {
-                    collab_types::ContentRetention::Checkpoint => Retention::Checkpoint,
-                    collab_types::ContentRetention::Delta => Retention::Delta,
-                };
-                return Some((channel, retention));
+                return Some((channel, metadata.retention()?.into()));
             }
             let frame = collab_types::DocumentFrame::decode(&envelope.payload).ok()?;
-            // A segmented snapshot replaces the checkpoint with its first
-            // segment and retains the rest as the tail behind it, so a
-            // replaying device receives every segment of it in order.
-            let retention = match frame {
-                collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(_)) => {
-                    Retention::Checkpoint
-                }
-                collab_types::DocumentFrame::Segment(segment)
-                    if segment.kind == collab_types::DocumentMutationKind::Snapshot
-                        && segment.index == 0 =>
-                {
-                    Retention::Checkpoint
-                }
-                collab_types::DocumentFrame::Whole(
-                    collab_types::DocumentMutation::Incremental(_),
-                )
-                | collab_types::DocumentFrame::Segment(_) => Retention::Delta,
-            };
-            return Some((channel, retention));
+            return Some((channel, frame.retention().into()));
         }
         // Channel governance is replayable state a device that was offline
         // must still receive, and none of it is content: the channel's
