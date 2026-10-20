@@ -34,7 +34,7 @@ import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError,
   hostToReconnect, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces, markUnavailable,
-  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, randomDisplayName, rememberEntered,
+  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, rememberEntered,
   spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -665,7 +665,7 @@ export async function startEntryPage({mode}) {
         const identity = kept?.paired ? undefined : await browserPerson();
         // A page that came back here by itself because the host turned it
         // away (session-refusal.mjs) joins under the name it went by.
-        displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? randomDisplayName();
+        displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
         const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
         entered = 'joined';
         return peer;
@@ -694,7 +694,7 @@ export async function startEntryPage({mode}) {
       const identity = currentIdentity() ?? await browserIdentity({create: false});
       const kept = identity && hostToReconnect(origin, identity.userPublicKey);
       if (!kept) return null;
-      displayName = chosenDisplayName(identity.userPublicKey) ?? randomDisplayName();
+      displayName = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
       if (kept.owner) {
         // On a machine of their own the owner enters any of its rooms
         // (the host admits this device as its owner); the host refuses
@@ -718,7 +718,7 @@ export async function startEntryPage({mode}) {
     },
     onInvite: () => { void workspaceActions?.perform(INVITE.id); },
     pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
-      displayName = chosenDisplayName(userPublicKey) ?? randomDisplayName();
+      displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
       try {
         return await pairViaHost({origin, room, userPublicKey, invite, workspace, runtime, displayName,
