@@ -1268,7 +1268,7 @@ mod tests {
     fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
         let menu = w
             .as_any()
-            .is_some_and(|any| any.is::<ui::widget::RowMenu>());
+            .is_some_and(<dyn std::any::Any>::is::<ui::widget::RowMenu>);
         if (w.name() == "Button" || menu)
             && let Some(label) = w.accessibility().and_then(|node| node.name)
         {

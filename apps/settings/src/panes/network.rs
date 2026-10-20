@@ -4567,14 +4567,6 @@ mod tests {
     /// data and forgetting it, each a control of its own.
     #[test]
     fn a_known_network_opens_its_details_in_place() {
-        let fake = Arc::new(FakeNetwork::default());
-        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
-            uuid: "1234-abcd".into(),
-            name: "Home_Network".into(),
-            kind: "802-11-wireless".into(),
-            autoconnect: true,
-        }];
-        let mut model = model(&fake);
         // The details are open when the row holding them is.
         fn open_holding(widget: &dyn Widget, id: &str) -> bool {
             if let Some(row) = widget
@@ -4592,6 +4584,14 @@ mod tests {
                 .iter()
                 .any(|child| open_holding(*child, id))
         }
+        let fake = Arc::new(FakeNetwork::default());
+        *fake.profiles.lock().unwrap() = vec![SavedNetworkProfile {
+            uuid: "1234-abcd".into(),
+            name: "Home_Network".into(),
+            kind: "802-11-wireless".into(),
+            autoconnect: true,
+        }];
+        let mut model = model(&fake);
         let details = |model: &NetworkModel| {
             let _settled = ui::motion::testing::settled();
             let composed = model.build_composition();

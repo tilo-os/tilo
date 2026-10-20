@@ -739,10 +739,9 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
         if !busy {
             break;
         }
-        assert!(
-            started.elapsed() < tilo_test_env::hang_bound(),
-            "account removal did not finish"
-        );
+        if started.elapsed() >= tilo_test_env::hang_bound() {
+            return Err("account removal did not finish".into());
+        }
         std::thread::yield_now();
     }
     assert_mail_remaining(
