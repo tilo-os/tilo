@@ -12,9 +12,9 @@
 //!
 //! A canonical checkpoint reaches a receiving owner as several signed frames.
 //! Between the frame that moves the room's coverage and the frame carrying the
-//! covered snapshot, the durable bytes cannot be restored. That is a state the
-//! owner leaves by itself, not a refusal: the read reports
-//! [`DocumentRead::CheckpointPending`] and hands out nothing.
+//! covered snapshot, the record's admitted checkpoint is older than its
+//! coverage. That is a state the owner leaves by itself, not a refusal: the
+//! read reports [`DocumentRead::CheckpointPending`] and hands out nothing.
 //!
 //! A reader that holds an earlier revision this owner handed it (by its
 //! heads) is answered with only the changes since, from the committed view's
@@ -27,9 +27,7 @@
 //! [`NativeCommittedView::read_document`].
 use crate::NativeCommittedView;
 use std::time::SystemTime;
-use tilo_peer_state::{
-    BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDocumentReadError, PeerLimits,
-};
+use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
 use tilo_user_identity::RevocationList;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
@@ -194,10 +192,15 @@ impl NativeCommittedView {
                 return Ok(DocumentRead::Unchanged(revision));
             }
         }
+        if self.peer.checkpoint_pending(app, record) {
+            // Still answer only a reader who may read the record now.
+            self.peer.check_document_read(reader, app, record, now)?;
+            return Ok(DocumentRead::CheckpointPending);
+        }
         let limits = PeerLimits::default();
         #[cfg(test)]
         ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
-        let restored = match BoundedStatePeer::restore(
+        let restored = BoundedStatePeer::restore(
             &self.record.peer,
             &self.record.room.to_string(),
             &self.record.governor,
@@ -205,15 +208,8 @@ impl NativeCommittedView {
             &RevocationList::new(),
             now,
             &limits,
-        ) {
-            Ok(restored) => restored,
-            Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Coverage)) => {
-                // Still answer only a reader who may read the record now.
-                self.peer.check_document_read(reader, app, record, now)?;
-                return Ok(DocumentRead::CheckpointPending);
-            }
-            Err(error) => return Err(error.to_string()),
-        };
+        )
+        .map_err(|error| error.to_string())?;
         let read = restored.read();
         let denied = |error| match error {
             PeerDocumentReadError::Denied => "the reader may not read that document".into(),

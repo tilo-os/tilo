@@ -31,6 +31,11 @@ fn stored() -> (AutoCommit, Vec<u8>) {
     super::super::put(&mut room, coverage).unwrap();
     (room, snapshot)
 }
+/// A document that admitted the checkpoint `stored` covers.
+fn admitted() -> BTreeMap<String, u64> {
+    let (peer, _, _, _, _) = crate::admission_tests::seeded();
+    BTreeMap::from([(hex::encode(peer.authority().device_public_key), 1)])
+}
 fn native(room: &mut AutoCommit) -> NativeDocument {
     NativeBatch::new(8 * 1024 * 1024)
         .load(&room.save())
@@ -44,20 +49,20 @@ fn coverage_reader_accepts_the_governed_checkpoint_in_both_storage_modes() {
     let read = native.read();
     let legacy = governed_snapshot_matches(
         Some(&LegacyRead(&room)),
-        "test.app",
-        "tab:1",
+        ("test.app", "tab:1"),
+        &admitted(),
         Some(&snapshot),
         &LegacyCoverage,
     );
     let bounded = governed_snapshot_matches(
         Some(&read),
-        "test.app",
-        "tab:1",
+        ("test.app", "tab:1"),
+        &admitted(),
         Some(&snapshot),
         &BoundedCoverage { limits: limits() },
     );
-    assert_eq!(legacy, Ok(()));
-    assert_eq!(bounded, Ok(()));
+    assert_eq!(legacy, Ok(Governed::Current));
+    assert_eq!(bounded, Ok(Governed::Current));
 }
 
 #[test]
@@ -97,22 +102,22 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
         };
         let legacy = governed_snapshot_matches(
             Some(&LegacyRead(&room)),
-            "test.app",
-            "tab:1",
+            ("test.app", "tab:1"),
+            &admitted(),
             Some(payload),
             &LegacyCoverage,
         );
         let bounded = governed_snapshot_matches(
             Some(&read),
-            "test.app",
-            "tab:1",
+            ("test.app", "tab:1"),
+            &admitted(),
             Some(payload),
             &BoundedCoverage { limits: limits() },
         );
         match mode {
             0 | 1 => {
-                assert_eq!(legacy, Ok(()));
-                assert_eq!(bounded, Ok(()));
+                assert_eq!(legacy, Ok(Governed::Current));
+                assert_eq!(bounded, Ok(Governed::Current));
             }
             2 => {
                 assert!(matches!(legacy, Err(CoverageMatchError::Decode(_))));
@@ -141,21 +146,62 @@ fn coverage_reader_keeps_genuine_capacity_denial_and_does_not_decode_when_checkp
         },
     };
     assert_eq!(
-        governed_snapshot_matches(Some(&read), "test.app", "tab:1", None, &decoder),
-        Ok(())
+        governed_snapshot_matches(
+            Some(&read),
+            ("test.app", "tab:1"),
+            &admitted(),
+            None,
+            &decoder
+        ),
+        Ok(Governed::Current)
     );
     assert!(matches!(
-        governed_snapshot_matches(Some(&read), "test.app", "tab:1", Some(&snapshot), &decoder),
+        governed_snapshot_matches(
+            Some(&read),
+            ("test.app", "tab:1"),
+            &admitted(),
+            Some(&snapshot),
+            &decoder
+        ),
         Err(CoverageMatchError::Decode(PeerResourceError::Capacity))
     ));
     assert_eq!(
         governed_snapshot_matches(
             Some(&LegacyRead(&room)),
-            "test.app",
-            "unknown",
+            ("test.app", "unknown"),
+            &admitted(),
             Some(&snapshot),
             &LegacyCoverage
         ),
-        Ok(())
+        Ok(Governed::Current)
+    );
+}
+
+#[test]
+fn coverage_reader_reports_a_checkpoint_whose_body_has_not_been_admitted_as_arriving() {
+    let (mut room, _) = stored();
+    let native = native(&mut room);
+    let read = native.read();
+    let older = b"older checkpoint".as_slice();
+    let arriving = BTreeMap::new();
+    assert_eq!(
+        governed_snapshot_matches(
+            Some(&LegacyRead(&room)),
+            ("test.app", "tab:1"),
+            &arriving,
+            Some(older),
+            &LegacyCoverage,
+        ),
+        Ok(Governed::Arriving)
+    );
+    assert_eq!(
+        governed_snapshot_matches(
+            Some(&read),
+            ("test.app", "tab:1"),
+            &arriving,
+            Some(older),
+            &BoundedCoverage { limits: limits() },
+        ),
+        Ok(Governed::Arriving)
     );
 }

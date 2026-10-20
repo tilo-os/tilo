@@ -413,19 +413,27 @@ fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
 fn check_governed_snapshot(
     room: Option<&AutoCommit>,
     route: &Route,
+    covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
 ) -> Result<(), String> {
     use crate::coverage::read::{CoverageMatchError, LegacyCoverage, governed_snapshot_matches};
     let room = room.map(crate::room::read::LegacyRead);
-    governed_snapshot_matches(room.as_ref(), &route.app, &route.record, snapshot, &LegacyCoverage)
-        .map_err(|error| match error {
-            CoverageMatchError::Decode(error) => format!("invalid checkpoint coverage: {error}"),
-            CoverageMatchError::Capacity => "checkpoint coverage exceeds its limit".into(),
-            CoverageMatchError::NoMatch => format!(
-                "governed checkpoint for {}/{} does not match its coverage; preserve journal and request a fresh authenticated checkpoint",
-                route.app, route.record
-            ),
-        })
+    governed_snapshot_matches(
+        room.as_ref(),
+        (&route.app, &route.record),
+        covered,
+        snapshot,
+        &LegacyCoverage,
+    )
+    .map(drop)
+    .map_err(|error| match error {
+        CoverageMatchError::Decode(error) => format!("invalid checkpoint coverage: {error}"),
+        CoverageMatchError::Capacity => "checkpoint coverage exceeds its limit".into(),
+        CoverageMatchError::NoMatch => format!(
+            "governed checkpoint for {}/{} does not match its coverage; preserve journal and request a fresh authenticated checkpoint",
+            route.app, route.record
+        ),
+    })
 }
 
 impl StatePeer {
@@ -1044,8 +1052,8 @@ impl StatePeer {
     /// Whether `record`'s governed checkpoint is still arriving: the room
     /// already carries its coverage, but the checkpoint body it names has
     /// not been admitted, so the document's accepted checkpoint is an older
-    /// one. A restoring read refuses this room until the body arrives; it is
-    /// a cut in flight, not a damaged replica.
+    /// one. A read waits for the body; it is a cut in flight, not a damaged
+    /// replica, and durable state taken now restores.
     #[must_use]
     pub fn checkpoint_pending(&self, app: &str, record: &str) -> bool {
         let route = Route {
@@ -1067,12 +1075,12 @@ impl StatePeer {
         matches!(
             crate::coverage::read::governed_snapshot_matches(
                 room.as_ref(),
-                app,
-                record,
+                (app, record),
+                &document.covered,
                 snapshot,
                 &crate::coverage::read::LegacyCoverage,
             ),
-            Err(crate::coverage::read::CoverageMatchError::NoMatch)
+            Ok(crate::coverage::read::Governed::Arriving)
         )
     }
 
@@ -3356,6 +3364,7 @@ impl StatePeer {
             check_governed_snapshot(
                 peer.core.room_doc.as_deref(),
                 &document.route,
+                &document.covered,
                 document.covered_snapshot.as_deref(),
             )?;
             let channel = ChannelState {

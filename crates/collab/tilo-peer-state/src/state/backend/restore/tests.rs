@@ -18,6 +18,79 @@ use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 
 #[test]
+fn coverage_ahead_of_its_checkpoint_stays_restorable() {
+    let (mut governor, key, member, _, now) = crate::admission_tests::seeded();
+    governor.select_admission_v5().unwrap();
+    let authority = key.verifying_key().to_bytes();
+    let member = member.verifying_key().to_bytes();
+    let mut receiver = governor.clone();
+    let floors = receiver.replay_floors();
+    let original = receiver.document("test.app", "tab:1").unwrap();
+    let mut document = AutoCommit::load(&original).unwrap();
+    document.put(ROOT, "value", "next checkpoint").unwrap();
+    document.commit();
+    let checkpoint = governor
+        .publish_document("test.app", "tab:1", document.save(), &key, now)
+        .unwrap();
+    let room = governor.room_message();
+    let mut refused = receiver.clone();
+    assert!(
+        refused
+            .receive_from_report(
+                TransportOrigin::RetainedRelayDelta(member),
+                room.clone(),
+                now
+            )
+            .is_err(),
+        "a member cannot advance the governor's coverage"
+    );
+    assert_eq!(refused.durable().unwrap(), receiver.durable().unwrap());
+    receiver
+        .receive_from_report(TransportOrigin::RetainedRelayDelta(authority), room, now)
+        .unwrap();
+    assert_eq!(
+        receiver.document("test.app", "tab:1").unwrap(),
+        original,
+        "coverage alone applies no checkpoint bytes"
+    );
+    assert_eq!(receiver.replay_floors(), floors);
+    let mut restarted = StatePeer::restore(
+        &receiver.durable().unwrap(),
+        receiver.room(),
+        receiver.authority().clone(),
+        receiver.certificates(),
+        RevocationList::new(),
+        now,
+    )
+    .expect("state persisted between coverage and its checkpoint restores");
+    assert!(restarted.checkpoint_pending("test.app", "tab:1"));
+    assert_eq!(restarted.document("test.app", "tab:1").unwrap(), original);
+    restarted
+        .receive_from_report(
+            TransportOrigin::RetainedRelayDelta(authority),
+            checkpoint,
+            now,
+        )
+        .unwrap();
+    assert!(!restarted.checkpoint_pending("test.app", "tab:1"));
+    let restored = restore_bounded(&restarted, now, &PeerLimits::default());
+    let read = restored.read();
+    let admitted = read
+        .document_read(authority, "test.app", "tab:1", now)
+        .unwrap();
+    assert_eq!(
+        admitted
+            .document()
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .as_str(),
+        Some("next checkpoint")
+    );
+}
+
+#[test]
 fn complete_bounded_restore_preserves_v4_v5_documents_and_metadata() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let v4 = peer.durable().unwrap();
