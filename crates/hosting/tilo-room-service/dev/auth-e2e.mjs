@@ -546,7 +546,7 @@ async function postInChat(tab, text) {
 }
 
 /** Whether `tab`'s Chat shows `text` in the channel `resource`. */
-async function chatShows(tab, resource, text) {
+export async function chatShows(tab, resource, text) {
   const channel = await tab.evaluate(CHAT_CHANNEL);
   if (!channel) return false;
   return tab.evaluate(`(async () => {
