@@ -1516,6 +1516,28 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 /// feature); a host without it drives [`launch_spec`] itself.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn run<A: ResourceApp>() {
+    /// Print `report` and end the process: what `--surface` does. An item
+    /// of its own, not generic over the app, so the JSON printer is
+    /// compiled once rather than in every app's `run`.
+    #[inline(never)]
+    fn print_surface_report(report: &serde_json::Value) -> ! {
+        let code = match serde_json::to_string_pretty(report) {
+            Ok(report) => {
+                println!("{report}");
+                0
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                1
+            }
+        };
+        #[allow(
+            clippy::exit,
+            reason = "the surface report is the whole run of the binary"
+        )]
+        std::process::exit(code);
+    }
+
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
         print_surface_report(&super::testing::surface_report::<A>());
@@ -1528,29 +1550,6 @@ pub fn run<A: ResourceApp>() {
         std::process::exit(code);
     }
     crate::launch::run_or_exit(&launch_spec::<A>());
-}
-
-/// Print `report` and end the process: what `--surface` does. Not generic
-/// over the app, so the JSON printer is compiled once rather than in every
-/// app's `run`.
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[inline(never)]
-fn print_surface_report(report: &serde_json::Value) -> ! {
-    let code = match serde_json::to_string_pretty(report) {
-        Ok(report) => {
-            println!("{report}");
-            0
-        }
-        Err(error) => {
-            eprintln!("Error: {error}");
-            1
-        }
-    };
-    #[allow(
-        clippy::exit,
-        reason = "the surface report is the whole run of the binary"
-    )]
-    std::process::exit(code);
 }
 
 /// The flag that makes an app's binary print its

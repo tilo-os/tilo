@@ -5,7 +5,7 @@
 //! `name` as a Flathub app wins.** Duplicates on the Flathub side
 //! are dropped. Case-insensitive matching, whitespace-trimmed.
 
-use registry_types::{RegistryImageKind, RegistryVersion, TappArtifact};
+use ui::registry::{RegistryImageKind, RegistryVersion, TappArtifact};
 
 use crate::flathub_client::AppStreamRecord;
 use crate::model::{
@@ -177,7 +177,7 @@ pub(crate) fn preferred_locale() -> String {
         .find_map(|name| std::env::var(name).ok())
         .and_then(|value| {
             let tag = value.split('.').next()?.replace('_', "-");
-            registry_types::valid_language_tag(&tag).then_some(tag)
+            ui::registry::valid_language_tag(&tag).then_some(tag)
         })
         .unwrap_or_else(|| "en".into())
 }
@@ -519,7 +519,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::registry_client::TrustLevel;
     use ed25519_dalek::SigningKey;
-    use registry_types::{RegistryEntry, sign_entry};
+    use ui::registry::{RegistryEntry, sign_entry};
 
     #[test]
     fn configured_remote_catalogue_preserves_metadata_and_device_scope() {
@@ -639,11 +639,11 @@ pub(crate) mod tests {
     ) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
-            kind: registry_types::EntryKind::App,
+            kind: ui::registry::EntryKind::App,
             name: name.into(),
             description: format!("Description of {name}").into(),
             tagline: format!("{name} for Tilo OS").into(),
-            images: registry_types::LocalizedImages::default(),
+            images: ui::registry::LocalizedImages::default(),
             supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
             source_url: None,
@@ -652,13 +652,13 @@ pub(crate) mod tests {
             versions: vec![RegistryVersion {
                 version: version.into(),
                 released_at_unix: 200,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                artifact: ui::registry::VersionArtifact::Tapp(ui::registry::TappArtifact {
                     tapp_url: format!("https://apps.tilo.so/{id}/{version}.tapp"),
                     tapp_root_hash_hex: "cd".repeat(32),
                     tapp_size_bytes: 100,
                     tapp_blake3_hex: "ef".repeat(32),
-                    target: registry_types::RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                    target: ui::registry::RegistryTarget {
+                        platform: ui::registry::TILO_OS_PLATFORM.into(),
                         architecture: std::env::consts::ARCH.into(),
                         isa: std::env::consts::ARCH.into(),
                         runtime: None,
@@ -714,12 +714,12 @@ pub(crate) mod tests {
             publisher_pubkey_hex: "aa".repeat(32),
             registry_name: "Tilo".into(),
             version: "1.0.0".into(),
-            artifact: registry_types::BotArtifact {
+            artifact: ui::registry::BotArtifact {
                 program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
                 program_blake3_hex: "ab".repeat(32),
                 program_size_bytes: 10,
-                requires: registry_types::BotRequirements {
-                    connectors: vec![registry_types::PackageRequirement {
+                requires: ui::registry::BotRequirements {
+                    connectors: vec![ui::registry::PackageRequirement {
                         package_id: "so.tilo.discord".into(),
                         min_version: "0.1.0".into(),
                     }],

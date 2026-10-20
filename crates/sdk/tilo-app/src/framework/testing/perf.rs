@@ -276,7 +276,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
         String::from_utf8_lossy(&output.stdout).into_owned()
     };
     for dir in ["home", "config", "data", "state", "cache", "run"] {
-        std::fs::create_dir_all(root.join(dir)).expect("a scratch directory");
+        tilo_files::native::create_dir_all(&root.join(dir)).expect("a scratch directory");
     }
     let _ = launch();
     let mut cold = ColdStart {
@@ -544,7 +544,7 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
                 entry.1 = entry.1.saturating_add(scope.calls);
             }
             // The glide advances on the toolkit's clock: a frame's worth.
-            std::thread::sleep(std::time::Duration::from_millis(4));
+            let _ = ui_core::rt::sleep_thread(std::time::Duration::from_millis(4));
         }
         if report.samples.len() >= frames {
             break;

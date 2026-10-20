@@ -90,7 +90,7 @@ pub fn is_bot(item: &StoreItem) -> bool {
 /// app, not a bot or a runtime component.
 #[must_use]
 pub fn is_listed_app(item: &StoreItem) -> bool {
-    !is_bot(item) && !registry_types::is_runtime_package_id(&item.id)
+    !is_bot(item) && !ui::registry::is_runtime_package_id(&item.id)
 }
 
 /// The source an app states on its row and page, in the person's words.
@@ -367,7 +367,7 @@ pub fn search(
         .zip(ranks)
         .filter_map(|(item, rank)| Some((item, rank?)))
         .filter(|(item, _)| !blocks.is_blocked(&item.id))
-        .filter(|(item, _)| !registry_types::is_runtime_package_id(&item.id))
+        .filter(|(item, _)| !ui::registry::is_runtime_package_id(&item.id))
         .collect();
     hits.sort_by_key(|(item, rank)| {
         (
@@ -501,11 +501,11 @@ mod tests {
             apps: vec!["so.tilo.notes".into()],
             connectors: Vec::new(),
             appearance: false,
-            artifact: registry_types::BotArtifact {
+            artifact: ui::registry::BotArtifact {
                 program_url: "https://apps.tilo.so/blobs/00".into(),
                 program_blake3_hex: "00".repeat(32),
                 program_size_bytes: 10,
-                requires: registry_types::BotRequirements::default(),
+                requires: ui::registry::BotRequirements::default(),
             },
         });
         let items = vec![

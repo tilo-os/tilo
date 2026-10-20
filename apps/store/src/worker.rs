@@ -75,7 +75,7 @@ pub enum Request {
     Act(Box<StoreItem>, ActionKind),
     /// Update each app in turn, reporting progress, then refresh once.
     UpdateAll(Vec<StoreItem>),
-    ExternalModeration(registry_types::ExternalModerationOperation),
+    ExternalModeration(ui::registry::ExternalModerationOperation),
     RefreshModeration {
         registry_name: String,
         case_id: String,
@@ -94,7 +94,7 @@ pub type Done = mpsc::Sender<Outcome>;
 pub struct Finished {
     pub status: String,
     pub runtime_review: Option<app_host::runtime_transaction::RuntimeReview>,
-    pub case: Option<registry_types::ModerationCase>,
+    pub case: Option<ui::registry::ModerationCase>,
     pub launch: Option<crate::actions::ApplicationLaunch>,
 }
 
@@ -633,7 +633,7 @@ fn runtime_details(
         if offer.runtime.as_deref() != Some(runtime)
             || offer.registry != registry.name
             || offer.trust != "publisher-signed"
-            || !registry_types::is_runtime_package_id(&offer.package_id)
+            || !ui::registry::is_runtime_package_id(&offer.package_id)
             || offer.version.is_empty()
             || offer.publisher_pubkey_hex.len() != 64
             || !offer

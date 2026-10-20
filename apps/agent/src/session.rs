@@ -219,7 +219,7 @@ pub struct Config {
     pub permissions: PermissionContext,
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
-    pub content: tilo_content::ContentStore,
+    pub content: ui::content::ContentStore,
     /// Applications started beside the agent whose actions its first run
     /// waits for ([`Session::await_companions`]).
     pub companions: Vec<String>,
@@ -1391,7 +1391,7 @@ mod tests {
                             &[],
                             ui::permissions::KindSet::READ_UNDOABLE,
                         ),
-                        content: tilo_content::ContentStore::memory(),
+                        content: ui::content::ContentStore::memory(),
                         companions: Vec::new(),
                         provider: None,
                     },

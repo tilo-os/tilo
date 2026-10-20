@@ -115,8 +115,7 @@ impl InstalledState {
             InstalledState::Installed {
                 version, available, ..
             } => {
-                !available.is_empty()
-                    && registry_types::version::compare(available, version).is_gt()
+                !available.is_empty() && ui::registry::version::compare(available, version).is_gt()
             }
         }
     }
@@ -232,10 +231,10 @@ pub struct BotListing {
     /// Trigger kinds (`connector`, `record_changed`, …).
     pub triggers: Vec<String>,
     pub apps: Vec<String>,
-    pub connectors: Vec<registry_types::PackageRequirement>,
+    pub connectors: Vec<ui::registry::PackageRequirement>,
     /// Whether it may post under other names and avatars.
     pub appearance: bool,
-    pub artifact: registry_types::BotArtifact,
+    pub artifact: ui::registry::BotArtifact,
 }
 
 /// What the catalogue says about an app beyond its name and versions: who
@@ -376,7 +375,7 @@ impl StoreItem {
             return ActionKind::AddBot;
         }
         if matches!(self.source, StoreSource::Tilo { .. })
-            && registry_types::is_runtime_package_id(&self.id)
+            && ui::registry::is_runtime_package_id(&self.id)
         {
             return ActionKind::RuntimeInstall;
         }
@@ -427,7 +426,7 @@ impl StoreItem {
     /// for Flatpak apps, whose install *is* the pin, and for bots and
     /// runtime components.
     pub fn pin_action(&self) -> Option<ActionKind> {
-        if self.bot.is_some() || registry_types::is_runtime_package_id(&self.id) {
+        if self.bot.is_some() || ui::registry::is_runtime_package_id(&self.id) {
             return None;
         }
         match (&self.source, &self.installed) {

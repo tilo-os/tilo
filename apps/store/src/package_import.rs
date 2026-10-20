@@ -246,28 +246,28 @@ type = "gui"
         .unwrap();
         let packed = tilo_app_package::pack(dir.path(), &manifest, &identity).unwrap();
         let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
-        let mut entry = registry_types::RegistryEntry {
+        let mut entry = ui::registry::RegistryEntry {
             package_id: manifest.package.id,
-            kind: registry_types::EntryKind::App,
+            kind: ui::registry::EntryKind::App,
             name: "Catalogue fixture".into(),
             description: "A signed test app".into(),
             tagline: "Signed and listed".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: ui::registry::LocalizedImages::default(),
             supported_languages: vec!["en".into()],
             categories: Vec::new(),
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-            versions: vec![registry_types::RegistryVersion {
+            versions: vec![ui::registry::RegistryVersion {
                 version: "1.2.0".into(),
                 released_at_unix: 1,
-                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                artifact: ui::registry::VersionArtifact::Tapp(ui::registry::TappArtifact {
                     tapp_url: "https://packages.test/catalogue-fixture.tapp".into(),
                     tapp_root_hash_hex: packed.id().to_hex(),
                     tapp_size_bytes: bytes.len() as u64,
                     tapp_blake3_hex: ui::framework::content::hash_bytes(&bytes),
-                    target: registry_types::RegistryTarget {
-                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                    target: ui::registry::RegistryTarget {
+                        platform: ui::registry::TILO_OS_PLATFORM.into(),
                         architecture: arch.into(),
                         isa: target_isa.into(),
                         runtime: None,
@@ -278,17 +278,17 @@ type = "gui"
             updated_at_unix: 2,
             signature_hex: String::new(),
         };
-        registry_types::sign_entry(&mut entry, &publisher);
+        ui::registry::sign_entry(&mut entry, &publisher);
         let owner = SigningKey::from_bytes(&[75; 32]);
         let now = 1_800_000_000;
-        let mut snapshot = registry_types::SignedRegistrySnapshot {
-            protocol: registry_types::PACKAGE_FORMAT_VERSION,
+        let mut snapshot = ui::registry::SignedRegistrySnapshot {
+            protocol: ui::registry::PACKAGE_FORMAT_VERSION,
             sequence: 1,
             issued_at_unix: now,
             expires_at_unix: now + 3600,
             previous_snapshot_hash_hex: String::new(),
             moderation_head_hex: String::new(),
-            publishers: vec![registry_types::PublisherAuthorization {
+            publishers: vec![ui::registry::PublisherAuthorization {
                 pubkey_hex: entry.publisher_pubkey_hex.clone(),
                 can_add_new: true,
             }],
@@ -296,9 +296,9 @@ type = "gui"
             owner_signature_hex: String::new(),
             channel_authorization: None,
         };
-        registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
+        ui::registry::sign_snapshot(&mut snapshot, &owner).unwrap();
         let entries = app_cli::client::classify_snapshot(
-            &registry_types::CatalogueSnapshot::Full(snapshot),
+            &ui::registry::CatalogueSnapshot::Full(snapshot),
             &hex::encode(owner.verifying_key().to_bytes()),
             now,
         )

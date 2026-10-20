@@ -253,10 +253,8 @@ fn resource_detail_excerpt(value: &str) -> String {
 /// large-text layout may choose one catalogue list instead of availability
 /// shelves, but that must not turn an untouched catalogue into “Search
 /// results” for sighted or screen-reader users.
-pub(crate) fn moderation_status_label(
-    status: registry_types::ModerationCaseStatus,
-) -> &'static str {
-    use registry_types::ModerationCaseStatus;
+pub(crate) fn moderation_status_label(status: ui::registry::ModerationCaseStatus) -> &'static str {
+    use ui::registry::ModerationCaseStatus;
     match status {
         ModerationCaseStatus::Open => "Open",
         ModerationCaseStatus::NeedsInformation => "Needs information",
@@ -2318,9 +2316,9 @@ impl StoreApp {
         &self,
         app: &str,
         appeal: bool,
-    ) -> Result<registry_types::ExternalModerationOperation, String> {
+    ) -> Result<ui::registry::ExternalModerationOperation, String> {
         use getrandom::rand_core::TryRng as _;
-        use registry_types::{
+        use ui::registry::{
             ExternalModerationOperation, ModerationDestination, ModerationMutation,
         };
         let report = if appeal {
@@ -2355,7 +2353,7 @@ impl StoreApp {
             }
         } else {
             let evidence_digest_hex =
-                registry_types::report_evidence_digest(app, &report.status, &report.note, None)
+                ui::registry::report_evidence_digest(app, &report.status, &report.note, None)
                     .map_err(|error| error.to_string())?;
             ModerationMutation::FileReport {
                 package_id: app.into(),
@@ -2403,17 +2401,17 @@ impl StoreApp {
         app: &str,
         payload: &str,
         appeal: bool,
-    ) -> Result<registry_types::ExternalModerationOperation, String> {
-        let operation: registry_types::ExternalModerationOperation = serde_json::from_str(payload)
+    ) -> Result<ui::registry::ExternalModerationOperation, String> {
+        let operation: ui::registry::ExternalModerationOperation = serde_json::from_str(payload)
             .map_err(|e| format!("invalid moderation operation: {e}"))?;
         operation.validate()?;
         if !appeal && self.report(app)?.is_case() {
             return Err("this report was already submitted".into());
         }
         match &operation.mutation {
-            registry_types::ModerationMutation::FileReport { package_id, .. }
+            ui::registry::ModerationMutation::FileReport { package_id, .. }
                 if !appeal && package_id == app => {}
-            registry_types::ModerationMutation::PublisherAppeal { case_id, .. }
+            ui::registry::ModerationMutation::PublisherAppeal { case_id, .. }
                 if appeal && self.case(app)?.id == *case_id => {}
             _ => return Err("moderation operation does not match this action".into()),
         }
@@ -2459,7 +2457,7 @@ impl StoreApp {
         if let Request::ExternalModeration(operation) = request {
             let appeal = matches!(
                 operation.mutation,
-                registry_types::ModerationMutation::PublisherAppeal { .. }
+                ui::registry::ModerationMutation::PublisherAppeal { .. }
             );
             let work = cx.external_moderation(operation)?;
             self.pending_jobs += 1;
@@ -3410,12 +3408,12 @@ mod tests {
             publisher_pubkey_hex: "aa".repeat(32),
             registry_name: "Tilo".into(),
             version: "1.0.0".into(),
-            artifact: registry_types::BotArtifact {
+            artifact: ui::registry::BotArtifact {
                 program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
                 program_blake3_hex: "ab".repeat(32),
                 program_size_bytes: 10,
-                requires: registry_types::BotRequirements {
-                    connectors: vec![registry_types::PackageRequirement {
+                requires: ui::registry::BotRequirements {
+                    connectors: vec![ui::registry::PackageRequirement {
                         package_id: "so.tilo.discord".into(),
                         min_version: "0.1.0".into(),
                     }],
@@ -5962,7 +5960,7 @@ mod tests {
             let StoreEffect::SubmitReport { operation, .. } = &effect else {
                 panic!("report")
             };
-            let expected: registry_types::ExternalModerationOperation =
+            let expected: ui::registry::ExternalModerationOperation =
                 serde_json::from_str(operation).unwrap();
             draft(
                 &mut app,
@@ -5974,8 +5972,7 @@ mod tests {
             };
             assert_eq!(operation, expected);
             assert_eq!(operation.destination, frozen.destination);
-            let registry_types::ModerationMutation::FileReport { summary, .. } =
-                &operation.mutation
+            let ui::registry::ModerationMutation::FileReport { summary, .. } = &operation.mutation
             else {
                 panic!("report mutation")
             };
@@ -6028,7 +6025,7 @@ mod tests {
             let StoreEffect::Appeal { operation, .. } = &effect else {
                 panic!("appeal")
             };
-            let expected: registry_types::ExternalModerationOperation =
+            let expected: ui::registry::ExternalModerationOperation =
                 serde_json::from_str(operation).unwrap();
             app.reports[0].note = "A changed reason after approval.".into();
             let job = admitted_job(&mut app, effect);
@@ -6038,7 +6035,7 @@ mod tests {
             assert_eq!(actual, expected);
             assert!(matches!(
                 actual.mutation,
-                registry_types::ModerationMutation::PublisherAppeal { ref reason, .. } if reason.contains("network dependency")
+                ui::registry::ModerationMutation::PublisherAppeal { ref reason, .. } if reason.contains("network dependency")
             ));
             let row = app.live_row("case-authoritative").unwrap().into_resource();
             let offered: Vec<&str> = row
