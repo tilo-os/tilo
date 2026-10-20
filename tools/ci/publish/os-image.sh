@@ -208,6 +208,10 @@ case ${1:-} in
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     load_image "$in" localhost/tilo:ci "$revision"
+    # The snapshot the OS image was built from, which build-dev-image.sh would otherwise pull by
+    # the image's label: a local set from image-rpms-ARCH exists only in the job that made it.
+    rpms_snapshot "$arch"
+    export RPMS_REF
     # About 3 GiB a job, as `build`: the shell's dev build links the same large binaries.
     jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 / 1024 / 3 ))
     (( jobs > $(nproc) )) && jobs=$(nproc)
@@ -235,10 +239,8 @@ case ${1:-} in
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
     load_image "$in" localhost/tilo-vm:ci "$revision"
     stage_board_firmware "$board"
-    # The snapshot the OS image was built from, as build-dev-image.sh takes it.
-    RPMS_REF=$(podman image inspect --format '{{index .Labels "org.tilo.rpms.ref"}}' localhost/tilo-vm:ci)
-    [[ $RPMS_REF =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
-      || die "the dev image names no RPM snapshot (org.tilo.rpms.ref): $RPMS_REF"
+    # The snapshot the OS image was built from, as the dev image takes it.
+    rpms_snapshot "$arch"
     # The board image's update origin: the tag os-board-publish.sh pushes it under.
     build_board "$board" localhost/tilo-vm:ci "registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-$board"
     save_image localhost/tilo-board:ci "$out" "$revision"
