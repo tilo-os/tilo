@@ -131,7 +131,7 @@ fn the_linking_actions_are_offered_to_every_member_through_the_host() {
                 crate::KIND,
                 "on the record's own resource"
             );
-            entry.address.action.to_string()
+            entry.address.action
         })
         .collect();
     assert_eq!(own, ["link-account", "my-link", "unlink-mine"]);
