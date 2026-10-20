@@ -5684,6 +5684,16 @@ impl TerminalPerformer<'_> {
     /// ANSI/xterm CSI sequences (cursor motion, erase, scroll region,
     /// SGR, device attributes/status).
     fn csi_dispatch_public(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        // A private marker or intermediate byte makes it a different command
+        // from the plain sequence with the same final byte: `CSI > 4 ; 2 m` is
+        // XTMODKEYS (modifyOtherKeys), not SGR 4;2 (underline + faint), and
+        // `CSI > 5 u` / `CSI < u` push and pop Kitty keyboard flags, not a
+        // cursor restore. Claude Code sends all three at start-up, so reading
+        // them as their plain forms left its whole UI underlined and dimmed.
+        if !intermediates.is_empty() {
+            self.csi_dispatch_intermediate(params, intermediates, c);
+            return;
+        }
         match c {
             'A' => {
                 let n = Self::csi_first_or1(params);
@@ -5759,17 +5769,26 @@ impl TerminalPerformer<'_> {
                 }
             }
             'm' => self.apply_sgr(params),
-            // Device Attributes. `CSI c` / `CSI 0 c` is the Primary request
-            // (DA1); `CSI > c` / `CSI > 0 c` is the Secondary (DA2). fish
-            // blocks on the DA1 reply for up to 10s at startup.
-            'c' => match intermediates.first() {
-                None => self.reply_da1(),
-                Some(&b'>') => self.reply_da2(),
-                _ => {}
-            },
+            // Device Attributes, Primary request (DA1): `CSI c` / `CSI 0 c`.
+            // fish blocks on the DA1 reply for up to 10s at startup.
+            'c' => self.reply_da1(),
             // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
-            // cursor position (CPR). Only the plain (non-`>`) form replies.
-            'n' if intermediates.is_empty() => self.reply_dsr(Self::csi_first(params)),
+            // cursor position (CPR).
+            'n' => self.reply_dsr(Self::csi_first(params)),
+            _ => {}
+        }
+    }
+
+    /// CSI sequences carrying a private marker (`>`, `<`, `=`) or an
+    /// intermediate byte (`$`, `!`, …). Only the ones named here act; every
+    /// other one (XTMODKEYS `CSI > Ps ; Ps m`, Kitty keyboard `CSI > Ps u` /
+    /// `CSI < u` / `CSI = Ps u`, …) is ignored rather than run as the plain
+    /// command sharing its final byte.
+    fn csi_dispatch_intermediate(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        match c {
+            // Device Attributes, Secondary request (DA2): `CSI > c` /
+            // `CSI > 0 c`.
+            'c' if intermediates.first() == Some(&b'>') => self.reply_da2(),
             // XTVERSION — `CSI > 0 q` → the terminal's name + version.
             'q' if intermediates.first() == Some(&b'>') && Self::csi_first(params) == 0 => {
                 self.reply_xtversion();
@@ -6147,7 +6166,9 @@ impl TerminalPerformer<'_> {
                 1 => self.current_attr.bold = true,
                 2 => self.current_attr.dim = true,
                 3 => self.current_attr.italic = true,
-                4 => self.current_attr.underline = true,
+                // `4` underlines; the colon form picks a style (`4:1` single,
+                // `4:3` curly, …) and `4:0` means no underline.
+                4 => self.current_attr.underline = group.get(1).copied().unwrap_or(1) != 0,
                 7 => self.current_attr.reverse = true,
                 9 => self.current_attr.strike = true,
                 // SGR 22 turns off both bold *and* faint (they share the
@@ -6166,6 +6187,15 @@ impl TerminalPerformer<'_> {
                 49 => self.current_attr.bg = CellColor::Default,
                 90..=97 => self.current_attr.fg = CellColor::Indexed((code - 90 + 8) as u8),
                 100..=107 => self.current_attr.bg = CellColor::Indexed((code - 100 + 8) as u8),
+                // SGR 58 — underline colour, not drawn (underlines take the
+                // text colour). Its semicolon form still has to swallow its
+                // arguments, or `58;2;r;g;b` would run `2` (faint) and the
+                // colour components as SGR codes of their own.
+                58 if group.len() < 2 => match groups.get(i + 1).and_then(|g| g.first()) {
+                    Some(2) => i += 4,
+                    Some(5) => i += 2,
+                    _ => {}
+                },
                 38 | 48 => {
                     let is_fg = code == 38;
                     if group.len() >= 2 {

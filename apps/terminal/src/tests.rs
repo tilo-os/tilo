@@ -3095,6 +3095,133 @@ fn terminal_resource_identity_convergence_and_presence() {
 }
 
 // ---------------------------------------------------------------
+// Private-marker CSI sequences are not their plain forms.
+// ---------------------------------------------------------------
+
+/// The cells from `col` for `len` columns on `row`, as (char, attr) pairs.
+fn cells(w: &TerminalWidget, row: usize, col: usize, len: usize) -> Vec<(char, Attr)> {
+    w.grid_row(row)
+        .chars()
+        .skip(col)
+        .take(len)
+        .enumerate()
+        .map(|(i, c)| (c, w.cell_attr(row, col + i)))
+        .collect()
+}
+
+// USER REQUIREMENT (2026-10-21): "for some reason nearly all text has a line
+// drawn under it" (Claude Code in the Terminal; Alacritty shows no underline).
+/// Claude Code's start-up bytes, as captured from `claude` 2.1.305 on a pty:
+/// it pushes Kitty keyboard flags (`CSI > 5 u`), pops them (`CSI < u`) and
+/// sets modifyOtherKeys (`CSI > 4 ; 2 m`), then styles its text with `1`/`22`
+/// and colours only, never `0` or `24`. Reading `CSI > 4 ; 2 m` as SGR 4;2
+/// underlined and dimmed every word it drew after it.
+#[test]
+fn claude_codes_start_up_leaves_its_text_without_a_line_under_it() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    w.feed(
+        b"\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?2004h\x1b[?2031h\x1b[?1004h\x1b[<u\x1b[>5u\x1b[>4;2m\
+          \x1b]0;\xe2\x9c\xb3 Claude Code\x07\x1b[?1049h\x1b[2J\x1b[H\x1b[<u\x1b[>5u\x1b[>4;2m\
+          \x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[H\
+          \x1b[1mClaude Code\x1b[22m\x1b[13G\x1b[38;5;246mv2.1.305\x1b[39m",
+    );
+    w.sync(&doc, &automerge::ROOT);
+
+    let drawn = cells(&w, 0, 0, 20);
+    let text: String = drawn.iter().map(|(c, _)| c).collect();
+    assert_eq!(
+        text, "Claude Code v2.1.305",
+        "the private-marker sequences moved nothing: {text:?}"
+    );
+    for (c, attr) in &drawn {
+        assert!(!attr.underline, "{c:?} has a line drawn under it: {attr:?}");
+        assert!(!attr.dim, "{c:?} is drawn faint: {attr:?}");
+    }
+    assert!(
+        drawn.iter().take(6).all(|(_, a)| a.bold),
+        "the bold that was asked for still applies"
+    );
+}
+
+/// `CSI > 5 u` and `CSI < u` are Kitty keyboard pushes and pops, not a
+/// cursor restore (`CSI u`): text after them lands where the cursor was, in
+/// the attribute it had, not at the position and style `ESC 7` saved.
+#[test]
+fn kitty_keyboard_pushes_and_pops_do_not_restore_the_cursor() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    w.feed(b"\x1b[3;10H\x1b[4m\x1b7\x1b[24m\x1b[H\x1b[>5uA\x1b[<uB\x1b[=1;1uC");
+    w.sync(&doc, &automerge::ROOT);
+
+    let drawn = cells(&w, 0, 0, 3);
+    let text: String = drawn.iter().map(|(c, _)| c).collect();
+    assert_eq!(text, "ABC", "each letter follows the last: {text:?}");
+    assert!(drawn.iter().all(|(_, a)| !a.underline), "{drawn:?}");
+}
+
+/// Underline state is set and cleared the ways programs send it: `24` and
+/// `0` end it, `4:0` is "no underline", `4:3` (curly) is an underline, the
+/// underline colour (`58;2;r;g;b`, `58;5;n`, `58:2::r:g:b`, `59`) never turns
+/// into other SGR codes, and an OSC 8 link's underline stops at its close.
+#[test]
+fn underline_ends_where_programs_end_it() {
+    use vello::kurbo::Rect;
+    let (mut w, _rx) = build_test_widget();
+    let doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    // (bytes before `X`, X underlined?, X faint?)
+    let cases: &[(&[u8], bool, bool)] = &[
+        (b"\x1b[4m", true, false),
+        (b"\x1b[4m\x1b[24m", false, false),
+        (b"\x1b[4m\x1b[0m", false, false),
+        (b"\x1b[4:3m", true, false),
+        (b"\x1b[4:3m\x1b[4:0m", false, false),
+        (b"\x1b[4:0m", false, false),
+        // `2` and `4` as colour components, never as faint / underline.
+        (b"\x1b[58;2;2;4;4m", false, false),
+        (b"\x1b[58;5;4m", false, false),
+        (b"\x1b[58:2::4:2:4m", false, false),
+        (b"\x1b[4;58;2;1;2;3m\x1b[59m\x1b[24m", false, false),
+        (b"\x1b[>4;2m", false, false),
+        (b"\x1b[>4m", false, false),
+    ];
+    for (i, (seq, underline, dim)) in cases.iter().enumerate() {
+        let mut bytes = b"\x1b[0m\x1b[H".to_vec();
+        bytes.extend_from_slice(seq);
+        bytes.push(b'X');
+        w.feed(&bytes);
+        w.sync(&doc, &automerge::ROOT);
+        let a = w.cell_attr(0, 0);
+        assert_eq!(
+            (a.underline, a.dim),
+            (*underline, *dim),
+            "case {i} {:?}: {a:?}",
+            String::from_utf8_lossy(seq)
+        );
+    }
+
+    // An OSC 8 link, then plain text: only the link's cells carry it.
+    w.feed(b"\x1b[0m\x1b[2;1H\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ plain");
+    w.sync(&doc, &automerge::ROOT);
+    let row = cells(&w, 1, 0, 10);
+    assert!(row.iter().take(4).all(|(_, a)| a.link_id != 0), "{row:?}");
+    assert!(
+        row.iter()
+            .skip(4)
+            .all(|(_, a)| a.link_id == 0 && !a.underline),
+        "text after the link's close is plain: {row:?}"
+    );
+}
+
+// ---------------------------------------------------------------
 // SGR — 256-color, truecolor, and the four style bits.
 // ---------------------------------------------------------------
 
