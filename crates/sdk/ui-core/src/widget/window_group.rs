@@ -2177,10 +2177,11 @@ impl WindowGroup {
         let painted = |rect: Rect| (rect.area() > 0.0).then_some(rect);
         // The window's own controls stand at the end of its bar, maximized or
         // not: one control maximizes or, on a maximized window, restores.
-        let controls = self
-            .navigation_bar_visible()
-            .then(|| *self.bar.window_controls())
-            .unwrap_or_default();
+        let controls = if self.navigation_bar_visible() {
+            *self.bar.window_controls()
+        } else {
+            crate::widget::window_controls::WindowControls::default()
+        };
         let toggle = painted(controls.maximize);
         WindowGroupBounds {
             group: self.rect,
