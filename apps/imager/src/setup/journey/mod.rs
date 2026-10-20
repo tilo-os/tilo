@@ -2508,9 +2508,10 @@ impl InstallerPreview {
                     } else if self.flatpak_access_details && self.journey.details {
                         self.flatpak_access_details = false;
                         true
-                    } else if self.journey.details {
+                    } else if self.journey.details && !self.journey.cancels_edit() {
                         // Details close back to the overview in a review edit
-                        // too; only the overview's Back cancels or retreats.
+                        // too, unless the edit opened on the details themselves:
+                        // then Back cancels it like any edit's first page.
                         self.journey.toggle_details();
                         true
                     } else {
