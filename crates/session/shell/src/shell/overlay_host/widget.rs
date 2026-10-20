@@ -707,6 +707,8 @@ impl Widget for ShellOverlayHost {
         }
     }
 
+    /// The sections the compositor presents, composed into one scene, so
+    /// captures, shots and tests show what the screen shows.
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -715,107 +717,10 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let contextual_tour = self
-            .onboarding
-            .as_ref()
-            .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
-        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(scene, transform, text_renderer, theme, presence);
-            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
-            if !self.capture_studio.is_choosing_screenshot() {
-                self.capture_studio
-                    .draw(scene, transform, text_renderer, theme, presence);
-            }
-            return;
-        }
-        // The root needs the active text scale before any of its popover
-        // geometry is resolved below; otherwise a first frame at large type
-        // has a default-height card and clips its two-line controls.
-        self.refresh_active_tab_presence();
-        self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
-        self.qs_panel = QsPanelMetrics::for_theme(theme);
-        if let Some(chrome) = self.chrome.as_ref() {
-            // A live projection holds notification banners back so their
-            // contents never reach the room.
-            chrome.borrow_mut().set_presenting(matches!(
-                self.projection_overlay.controller().status,
-                crate::shell::projection::ProjectionStatus::Connected { .. }
-            ));
-            // The root keeps its natural size; a popover shorter than the
-            // page scrolls it (`QuickSettingsRoot::draw`).
-            let state = chrome.borrow();
-            self.qs_root.sync_displays(&state.quick_settings);
-        }
-        // Split into four layer passes — was one 372-line function; see
-        // each helper (in the other `impl ShellOverlayHost` block) for
-        // what it covers.
-        let flags = self.overlay_flags();
-        self.draw_desktop_below_bar(scene, transform, text_renderer, theme, presence);
-        // Detached app surfaces are presented by the shell after the window
-        // layer, but before shell chrome. The app still paints the live
-        // content and owns its controls; only presentation ownership changes.
-        // Keeping this as a second pass avoids a texture/snapshot hand-off and
-        // therefore preserves the exact frame across the detach boundary.
-        let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
-        for row in rows {
-            // SAFETY: `group_row_ptrs` points into the boxed content tree
-            // owned by this host. Drawing is sequential and `&mut self`
-            // prevents another traversal from aliasing these rows.
-            unsafe {
-                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
-                    &mut *row,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                );
-            }
-        }
-        // The windows' bars put their menus and tooltips over the windows.
-        self.draw_window_bar_popups(scene, transform, text_renderer, theme, presence);
-        self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
-        // The bar's presence follows what this frame shows, as the retained
-        // sections bring it up to date: a single-scene paint (captures,
-        // shots, the frame tests) hides it over a maximized window too.
-        self.sync_top_bar_presence(Instant::now());
-        // The top bar goes over all of that, as the retained sections
-        // compose it: their workspace section holds everything above.
-        if let Some(surface) = self.desktop_surface_mut() {
-            surface.draw_bar(scene, transform, text_renderer, theme, presence);
-        }
-        self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
-        self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
-        let suppress_agent_markers = self.agent_quick_composer.is_open()
-            || self.person_quick_composer.is_open()
-            || self.onboarding_active()
-            || self.inner_surface_captures_input()
-            || self.modal_sheet_owns_keyboard();
-        self.agent_markers.refresh(presence, suppress_agent_markers);
-        self.person_markers.refresh(suppress_agent_markers);
-        self.person_markers
-            .draw(scene, transform, text_renderer, theme, presence);
-        // Native confirmation and authentication sheets keep the top layer.
-        // Keep the retained private draft, but never paint it above a sheet.
-        if !self.modal_sheet_owns_keyboard() && !self.onboarding_active() {
-            self.person_quick_composer.draw_overlay(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
-        self.agent_quick_composer
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
-        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(scene, transform, text_renderer, theme, presence);
-            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
-        }
-        self.capture_studio
-            .draw(scene, transform, text_renderer, theme, presence);
+        // One scene is in screen space: nothing is drawn apart to be panned.
+        let _screen_space = ui::retained_present::RetainedScene::begin(false);
+        self.draw_scene_sections(transform, text_renderer, theme, presence)
+            .compose_into(scene);
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {

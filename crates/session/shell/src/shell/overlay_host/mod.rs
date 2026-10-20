@@ -1074,6 +1074,9 @@ pub struct ShellOverlayHost {
 /// (the panel, the strip ribbon, the strip rail), which narrow its damage to what changed.
 pub struct ShellSceneSections {
     pub backdrop: Scene,
+    /// OS chrome: its normal controls stay inside the reserved top-bar
+    /// band, while anchored surfaces such as the center widget editor stay
+    /// above app tabs and client content.
     pub topbar: Scene,
     pub workspace: Scene,
     /// Desktop content over the strips that stays where it is on screen
@@ -1151,18 +1154,28 @@ impl ShellSceneSections {
         ui::scene_parts::track(&self.above_quick_settings);
     }
 
-    /// The sections composed below a floating surface drawn into backdrop
-    /// `layer`'s section, bottom to top.
-    pub fn below_layer(&self, layer: u32) -> Option<Vec<&Scene>> {
-        let order = [
+    fn in_order(&self) -> [&Scene; 6] {
+        [
             &self.backdrop,
             &self.workspace,
             &self.workspace_overlays,
             &self.topbar,
             &self.quick_settings,
             &self.above_quick_settings,
-        ];
-        order
+        ]
+    }
+
+    /// Append the sections to `scene` in the order they are presented.
+    pub fn compose_into(&self, scene: &mut Scene) {
+        for section in self.in_order() {
+            scene.append(section, None);
+        }
+    }
+
+    /// The sections composed below a floating surface drawn into backdrop
+    /// `layer`'s section, bottom to top.
+    pub fn below_layer(&self, layer: u32) -> Option<Vec<&Scene>> {
+        self.in_order()
             .get(..usize::try_from(layer).ok()?)
             .map(<[&Scene]>::to_vec)
     }

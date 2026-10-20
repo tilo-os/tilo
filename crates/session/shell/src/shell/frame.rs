@@ -2198,12 +2198,15 @@ impl FrameBuilder {
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
         let backdrop = BackdropRecording::begin();
-        let logical = self.paint_logical();
+        let (logical, sections) = self.paint_logical();
         let surfaces = backdrop.finish();
         let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
-        // One scene: each surface's backdrop is what was drawn before it.
-        self.painted_backdrop = self.backdrop_to_scene(surfaces, |_| Some(Vec::new()));
+        // A surface drawn into a section sits over the sections below it;
+        // one drawn over them all, into the scene itself (layer 0), over
+        // what that scene already holds.
+        self.painted_backdrop =
+            self.backdrop_to_scene(surfaces, |layer| sections.below_layer(layer));
         self.to_scene(logical)
     }
 
@@ -2335,20 +2338,19 @@ impl FrameBuilder {
 
     /// [`Self::paint`] before the displays magnify it: the desktop in
     /// logical coordinates, the space the widget tree is laid out in.
-    fn paint_logical(&mut self) -> Scene {
+    fn paint_logical(&mut self) -> (Scene, Box<crate::shell::overlay_host::ShellSceneSections>) {
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
-        // One scene: a floating surface's backdrop is what was drawn before it.
         ui::backdrop::layer_scene(&scene, 0);
-        self.host.draw(
-            &mut scene,
+        let sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
         );
+        sections.compose_into(&mut scene);
         for proxy in &self.floating_transfer_proxies {
             proxy.draw(&mut scene);
         }
@@ -2424,12 +2426,12 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
-        scene
+        (scene, sections)
     }
 
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
-    /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
-    /// independent for capture and pixel-oracle use.
+    /// retained-damage metadata for the DRM bridge. Both draw the host's sections
+    /// ([`crate::shell::overlay_host::ShellOverlayHost::draw_scene_sections`]).
     #[allow(
         clippy::too_many_lines,
         reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
@@ -2990,15 +2992,7 @@ impl FrameBuilder {
         Option<crate::shell::scanout_candidate::ScanoutCandidate>,
     ) {
         let mut scene = Scene::new();
-        scene.append(&sections.backdrop, None);
-        scene.append(&sections.workspace, None);
-        scene.append(&sections.workspace_overlays, None);
-        // OS chrome owns this layer. Its normal controls stay inside the
-        // reserved top-bar band, while anchored surfaces such as the center
-        // widget editor must remain above app tabs and client content.
-        scene.append(&sections.topbar, None);
-        scene.append(&sections.quick_settings, None);
-        scene.append(&sections.above_quick_settings, None);
+        sections.compose_into(&mut scene);
         // A popup, the on-screen keyboard or anything else drawn above the
         // fullscreen client in its section leaves it not on top.
         let fullscreen_on_top = fullscreen_on_top
