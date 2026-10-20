@@ -220,6 +220,18 @@ export function randomDisplayName(random = Math.random) {
   return `${pick(ADJECTIVES)} ${pick(ANIMALS)}`;
 }
 
+/**
+ * The name a person goes by until they choose one: drawn from their key, so
+ * every visit and every way in names them alike. A name drawn afresh per
+ * visit showed one person under two names, to the room and to what it is
+ * bridged with. Random only for a page that has no key yet.
+ */
+export function defaultDisplayName(userPublicKey, random = Math.random) {
+  if (!/^[0-9a-f]{4}/i.test(userPublicKey ?? '')) return randomDisplayName(random);
+  const [adjective, animal] = [0, 2].map(at => parseInt(userPublicKey.slice(at, at + 2), 16));
+  return `${ADJECTIVES[adjective % ADJECTIVES.length]} ${ANIMALS[animal % ANIMALS.length]}`;
+}
+
 const NAMES = 'tilo-display-names';
 const readNames = store => {
   try { return JSON.parse(store?.getItem(NAMES) ?? '{}') ?? {}; } catch { return {}; }
@@ -349,7 +361,7 @@ const browserCustody = profile => openDeviceCustody({profile, storage: idbStorag
  * devices, as on any new browser.
  */
 export async function joinViaHost({
-  workspace, identity, displayName = randomDisplayName(), fetch = globalThis.fetch, memberships = globalThis.localStorage,
+  workspace, identity, displayName = defaultDisplayName(identity?.userPublicKey), fetch = globalThis.fetch, memberships = globalThis.localStorage,
   join = joinWorkspace, connect = connectPeer, pair = pairDevice, openCustody = browserCustody, onProgress,
   ...connectOptions
 }) {
@@ -467,7 +479,7 @@ export const doorRefused = name => `${name || 'This workspace'} couldn’t let y
  * joined, paired, for the next visit (`joinViaHost`).
  */
 export async function pairViaHost({
-  origin, room, userPublicKey, workspace = null, label = 'Browser', displayName = randomDisplayName(),
+  origin, room, userPublicKey, workspace = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');

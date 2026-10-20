@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, rememberEntered, removedFrom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -246,6 +246,15 @@ test('a full room and a cooldown are told apart', async () => {
 
 test('display names are an adjective and an animal', () => {
   assert.match(randomDisplayName(() => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+});
+
+test('a person goes by the same name at every visit until they choose one', () => {
+  const key = 'a1'.repeat(32);
+  const name = defaultDisplayName(key, () => 0);
+  assert.match(name, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(defaultDisplayName(key, () => 0.99), name);
+  assert.notEqual(defaultDisplayName('07'.repeat(32)), name);
+  assert.match(defaultDisplayName(undefined, () => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
 });
 
 test('the home workspace is listed first, then the person\u2019s own, each host once', () => {
