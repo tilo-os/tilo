@@ -5106,3 +5106,74 @@ fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
         );
     }
 }
+
+/// Selecting text docks its controls in the slot above the prose, at the
+/// window's UI scale: the text does not move or repaginate, and no control
+/// covers a line.
+#[test]
+fn selection_controls_dock_above_the_prose_without_moving_it() {
+    fn draw_at(app: &mut BooksApp, theme: &Theme, width: f64) {
+        app.rect = Rect::new(0.0, 0.0, width, 810.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+    }
+    for (scale, width) in [(1.0, 520.0), (1.5, 1440.0), (2.0, 2000.0)] {
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let theme = theme.with_ui_scale(scale);
+            let mut app = app_with_sample();
+            draw_at(&mut app, &theme, width);
+            let before = app.reader_page_geometry(app.rect, ReadMode::Paged);
+            if before.framed {
+                assert!(
+                    (before.paper_y - before.body_y0 - f64::from(theme.tokens.spacing.s6)).abs()
+                        < 0.01,
+                    "the page's margin follows the UI scale"
+                );
+            }
+            app.sel = Some(TextSel {
+                anchor: DocPos { block: 1, ch: 0 },
+                head: DocPos { block: 1, ch: 50 },
+            });
+            draw_at(&mut app, &theme, width);
+            let after = app.reader_page_geometry(app.rect, ReadMode::Paged);
+            assert_eq!(
+                before.content_y, after.content_y,
+                "selecting does not move the text"
+            );
+            assert_eq!(
+                before.content_h, after.content_h,
+                "selecting does not repaginate"
+            );
+            let copy = app
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.action, Action::CopySelection))
+                .expect("the selection controls are painted")
+                .rect;
+            let dock = app
+                .hits
+                .iter()
+                .find(|hit| {
+                    matches!(hit.action, Action::Swallow) && hit.rect.contains(copy.center())
+                })
+                .expect("the selection controls' bar")
+                .rect;
+            assert!(
+                dock.x0 >= after.center_x0 - 0.01
+                    && dock.x1 <= after.center_x1 + 0.01
+                    && dock.y0 >= after.paper_y - 0.01
+                    && dock.y1 + f64::from(theme.tokens.spacing.s2) <= after.content_y + 0.01,
+                "{scale}x {width}: the bar {dock:?} stays above the prose at {}",
+                after.content_y
+            );
+            assert!((dock.height() - ui::SelectionHud::height(&theme)).abs() < 0.01);
+        }
+    }
+}

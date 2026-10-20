@@ -898,6 +898,12 @@ pub struct BooksApp {
     /// Height of the window's header row in the current theme, refreshed at
     /// the top of every frame so the event path hit-tests what was painted.
     header_h: f64,
+    /// The page's spacing and compact breakpoint at the window's UI scale,
+    /// and the height of the selection controls docked above the prose;
+    /// refreshed with `header_h`.
+    reader_spacing: ui::tokens::spacing::Spacing,
+    reader_compact_breakpoint: f64,
+    selection_hud_h: f64,
     /// Height of the page bubble in the current theme: the page foot's band
     /// is at least this tall, so the bubble it shares with the progress
     /// slider never covers text. Refreshed with `header_h`.
@@ -1240,6 +1246,9 @@ impl BooksApp {
                 .right()
                 .docked_width(f64::from(Metrics::BASE.inspector_width)),
             header_h: f64::from(Metrics::BASE.header_height),
+            reader_spacing: ui::tokens::spacing::Spacing::BASE,
+            reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
+            selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
             bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
             type_button: Rect::ZERO,
             toast_area: Rect::ZERO,
@@ -4620,6 +4629,9 @@ impl Widget for BooksApp {
         self.shelf_controls.begin_frame();
         self.font_dropdown.begin_frame();
         self.header_h = f64::from(theme.tokens.metrics.header_height);
+        self.reader_spacing = theme.tokens.spacing;
+        self.reader_compact_breakpoint = f64::from(theme.tokens.metrics.compact_breakpoint);
+        self.selection_hud_h = ui::SelectionHud::height(theme);
         self.bubble_h = ui::status_bubble::pill_height(theme);
         self.toast_area = self.rect;
         // Resolve the drawers against this frame's width (a breakpoint
@@ -7313,14 +7325,19 @@ impl BooksApp {
             .dragging(self.progress_dragging)
             .focused(self.semantic_focus.as_deref() == Some("books.reader.progress"));
         self.progress_slider_track = face.track_rect();
-        // The slider stands on the page, so it takes the page's polarity.
+        // The slider stands on the page, so it takes the page's polarity,
+        // at the window's UI scale and text size.
         let page_dark = self.resolve_palette(theme).dark;
         let page_theme = if page_dark == theme.tokens.colors.palette.dark {
             theme.clone()
-        } else if page_dark {
-            Theme::dark()
         } else {
-            Theme::light()
+            if page_dark {
+                Theme::dark()
+            } else {
+                Theme::light()
+            }
+            .with_ui_scale(theme.ui_scale)
+            .with_text_scale(theme.text_scale)
         };
         // The foot's band: the slider's, and the page bubble's while a new
         // page is shown. Reaching for the slider gives it back.
@@ -7359,7 +7376,7 @@ impl BooksApp {
         // ---- chrome: header row, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
         // Floating selection toolbar over the page (under any overlay rail).
-        self.draw_selection_hud(ctx, geom, sel_anchor);
+        self.draw_selection_hud(ctx, geom);
         self.draw_rails(ctx, &lib);
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
@@ -7409,9 +7426,13 @@ impl BooksApp {
         // ---- paper rect + content box -----------------------------------
         // In a compact window the page fills the reading area edge-to-edge,
         // no framed page or margin; a wide window keeps the framed page.
-        let framed = self.rect.width() >= f64::from(Metrics::BASE.compact_breakpoint);
+        let framed = self.rect.width() >= self.reader_compact_breakpoint;
         let center_w = (center_x1 - center_x0).max(120.0);
-        let sp = ui::tokens::spacing::Spacing::BASE;
+        let sp = self.reader_spacing;
+        // The selection controls dock in the slot above the prose, which is
+        // kept whether or not text is selected, so selecting never covers a
+        // line or moves the text.
+        let hud_slot = self.selection_hud_h + 2.0 * f64::from(sp.s2);
         // The foot is one band the progress slider and the page bubble take
         // turns in, so neither ever lies over the text.
         let slider_band = if framed {
@@ -7434,7 +7455,7 @@ impl BooksApp {
             // keeps its pixel grid).
             let header_y = paper_y + f64::from(sp.s6);
             let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
-            let pad_top = rule_y - paper_y + f64::from(sp.s2);
+            let pad_top = (rule_y - paper_y + f64::from(sp.s2)).max(hud_slot);
             let pad = f64::from(sp.s12);
             (
                 paper_x, paper_y, paper_w, paper_h, pad, pad_top, header_y, rule_y,
@@ -7458,7 +7479,7 @@ impl BooksApp {
                 paper_w,
                 paper_h,
                 pad_x,
-                f64::from(sp.s6),
+                hud_slot.max(f64::from(sp.s6)),
                 0.0,
                 0.0,
             )
@@ -7681,7 +7702,9 @@ impl BooksApp {
             ctx.fill_rect(paper, palette.page);
         }
 
-        if geom.framed {
+        // While text is selected, its controls take the running header's
+        // place above the rule.
+        if geom.framed && self.sel.is_none_or(|selection| selection.is_empty()) {
             if let Some(book) = lib.get(self.book_idx)
                 && let Some(ch) = book.chapters.get(self.chapter)
             {
@@ -7834,7 +7857,7 @@ impl BooksApp {
         self.draw_pane_highlight_markers(ctx, frame.palette, pane.x, &bands.group_top);
 
         // ---- glyphs + decorations (on top of bands) ---------------------
-        let compact = self.rect.width() < f64::from(Metrics::BASE.compact_breakpoint);
+        let compact = self.rect.width() < self.reader_compact_breakpoint;
         Self::draw_pane_glyphs(ctx, frame, pane, compact);
 
         (bands.sel_anchor, bands.comment_box)
@@ -8311,15 +8334,8 @@ impl BooksApp {
 
     /// A floating toolbar shown while a paragraph is selected: highlight
     /// colours + Note, reachable at any width even with the rail collapsed.
-    fn draw_selection_hud(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        geom: &ReaderPageGeometry,
-        anchor: Option<(f64, f64)>,
-    ) {
+    fn draw_selection_hud(&mut self, ctx: &mut PaintCtx<'_>, geom: &ReaderPageGeometry) {
         let theme = ctx.theme;
-        let (paper_x, paper_w) = (geom.paper_x, geom.paper_w);
-        let (body_y0, body_y1) = (geom.body_y0, geom.body_y1);
         // Hide the picker while a note is being composed (the composer takes
         // over) or when there's no active selection/block.
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
@@ -8341,13 +8357,10 @@ impl BooksApp {
                 .named(col.name())
             })
             .collect();
-        // Anchor above the selection; fall back to the page centre near the top.
-        let anchor_pt = anchor.map_or_else(
-            || Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0),
-            |(x, y)| Point::new(x, y),
-        );
-        // The toolbar stays inside the reading column, clear of the rails.
-        let bounds = Rect::new(geom.center_x0, body_y0, geom.center_x1, body_y1);
+        // Docked in the slot above the prose, centred on the page, never
+        // over a line of text; inside the reading column, clear of the rails.
+        let anchor_pt = Point::new(geom.paper_x + geom.paper_w / 2.0, geom.content_y);
+        let bounds = Rect::new(geom.center_x0, geom.paper_y, geom.center_x1, geom.content_y);
         let hud = ui::SelectionHud::draw(
             ctx.scene,
             ctx.transform,
