@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn directory_hint_preserves_the_requested_folder_without_granting_it() {
-        let home = local_path("/Users/Recognized home");
+        let home = local_path("/Users/you/Recognized home");
         let request =
             PickRequest::directory("Allow this folder", "Allow").initial_directory(home.clone());
         assert_eq!(request.directory_hint(), Some(home.as_path()));

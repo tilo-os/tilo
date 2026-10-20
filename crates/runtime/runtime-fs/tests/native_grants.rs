@@ -1127,7 +1127,7 @@ fn raw_readlink_is_metadata_only_preserves_bytes_and_refuses_substitution() {
         session.read_at(&linked, 0, 10),
         Err(FsError::Denied)
     ));
-    symlink("/var/home/old/private", temp.path().join("absolute")).unwrap();
+    symlink("/var/home/bob/private", temp.path().join("absolute")).unwrap();
     let absolute = session
         .stat_child(&root, &name("absolute"))
         .unwrap()
@@ -1136,7 +1136,7 @@ fn raw_readlink_is_metadata_only_preserves_bytes_and_refuses_substitution() {
         session
             .readlink_child(&root, &name("absolute"), absolute)
             .unwrap(),
-        b"/var/home/old/private"
+        b"/var/home/bob/private"
     );
     symlink("replacement", temp.path().join("new-link")).unwrap();
     std::fs::rename(temp.path().join("new-link"), temp.path().join("link")).unwrap();

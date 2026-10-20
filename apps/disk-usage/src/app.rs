@@ -742,7 +742,7 @@ mod view_tests {
         let places = [
             Place {
                 label: "Home".into(),
-                path: PathBuf::from("/var/home/lena"),
+                path: PathBuf::from("/var/home/you"),
             },
             Place {
                 label: "File system".into(),
@@ -750,7 +750,7 @@ mod view_tests {
             },
         ];
         assert_eq!(
-            folder_title(&places, std::path::Path::new("/var/home/lena")),
+            folder_title(&places, std::path::Path::new("/var/home/you")),
             "Home"
         );
         assert_eq!(
@@ -758,7 +758,7 @@ mod view_tests {
             "File system"
         );
         assert_eq!(
-            folder_title(&places, std::path::Path::new("/var/home/lena/Projects")),
+            folder_title(&places, std::path::Path::new("/var/home/you/Projects")),
             "Projects"
         );
         assert_eq!(folder_title(&[], std::path::Path::new("/")), "/");
