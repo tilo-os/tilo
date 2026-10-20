@@ -9,7 +9,8 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    reason = "this module is where the toolkit's lossy numeric casts live, each with its saturation policy"
 )]
 
 pub fn f32_of_f64(value: f64) -> f32 {
@@ -21,10 +22,6 @@ pub fn f32_of_i64(value: i64) -> f32 {
 }
 
 pub fn f32_of_u32(value: u32) -> f32 {
-    value as f32
-}
-
-pub fn f32_of_usize(value: usize) -> f32 {
     value as f32
 }
 

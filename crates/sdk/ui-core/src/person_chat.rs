@@ -109,6 +109,9 @@ fn current(value: &mut Cache) {
         };
     }
 }
+/// Drop the cached contacts: the broker calls this when the identity or
+/// connection changes. Only the broker transport and tests change them.
+#[cfg(any(test, feature = "broker-transport"))]
 pub(crate) fn invalidate() {
     if let Ok(mut value) = cache().lock() {
         let generation = value.generation.wrapping_add(1);
@@ -193,13 +196,6 @@ fn load_contacts_once() {
     {
         value.pending.remove(&failed_key);
     }
-}
-
-/// Explicit user-driven retry, or an authenticated host change notification.
-/// Never call this from UI sync: it deliberately starts a new one-shot load.
-pub fn refresh_snapshots() {
-    invalidate();
-    load_contacts_once();
 }
 
 /// Current workspace's certified public keys; unavailable hosts answer no contacts.

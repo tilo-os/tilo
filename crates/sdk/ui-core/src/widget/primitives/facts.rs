@@ -223,14 +223,6 @@ impl Facts {
             layout_theme: Theme::dark(),
         }
     }
-
-    /// Replace the facts.
-    pub fn set_facts(&mut self, facts: Vec<Fact>) {
-        if self.items != facts {
-            self.items = facts;
-            self.dirty = true;
-        }
-    }
 }
 
 impl Widget for Facts {

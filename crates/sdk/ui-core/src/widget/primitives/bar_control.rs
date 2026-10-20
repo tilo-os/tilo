@@ -66,14 +66,6 @@ impl<'a> BarControlFace<'a> {
         self
     }
 
-    /// Set the label in `Body` (the time in the top bar) instead of
-    /// `Label`.
-    #[must_use]
-    pub fn body_label(mut self) -> Self {
-        self.label_role = TextRole::Body;
-        self
-    }
-
     /// A trailing icon: the chevron of a control that opens a menu.
     #[must_use]
     pub fn trailing(mut self, icon: Icon) -> Self {
