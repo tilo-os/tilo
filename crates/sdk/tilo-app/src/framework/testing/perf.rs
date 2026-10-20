@@ -287,18 +287,44 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
         calls: BTreeMap::new(),
     };
     for _ in 0..launches {
-        let printed = launch();
+        cold.record(label, &launch());
+    }
+    cold
+}
+
+/// [`cold_start`]'s launches.
+pub struct ColdStart {
+    label: String,
+    /// Milliseconds from each process starting to its first frame drawn.
+    totals: Vec<u64>,
+    /// Each phase's microseconds, one per launch it ran in.
+    phases: BTreeMap<String, Vec<u64>>,
+    /// Each startup mark's microseconds since the process started, one per
+    /// time it was marked.
+    marks: BTreeMap<String, Vec<u64>>,
+    /// The most times one launch ran each named scope, by `stage phase`.
+    calls: BTreeMap<String, u64>,
+}
+
+impl ColdStart {
+    /// Add what one launch printed: its total, its startup marks and its
+    /// first-frame scopes.
+    #[allow(
+        clippy::panic,
+        reason = "a measurement fails loudly when the app says nothing"
+    )]
+    fn record(&mut self, label: &str, printed: &str) {
         let line = printed
             .lines()
             .find(|line| line.starts_with("APP-STARTUP "))
             .unwrap_or_else(|| panic!("{label}: no startup line in {printed}"));
         for field in line.split_whitespace() {
             if let Some(total) = field.strip_prefix("total_ms=") {
-                cold.totals.push(total.parse().unwrap_or_default());
+                self.totals.push(total.parse().unwrap_or_default());
             } else if let Some(phases) = field.strip_prefix("phases=") {
                 for phase in phases.split(',') {
                     if let Some((name, ms)) = phase.rsplit_once(':') {
-                        cold.phases
+                        self.phases
                             .entry(format!("mark {name}"))
                             .or_default()
                             .push(ms.parse::<u64>().unwrap_or_default().saturating_mul(1000));
@@ -319,7 +345,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
                     us = value.parse().unwrap_or_default();
                 }
             }
-            cold.marks.entry(name.to_owned()).or_default().push(us);
+            self.marks.entry(name.to_owned()).or_default().push(us);
         }
         for scope in printed
             .lines()
@@ -344,27 +370,12 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
                 field("phase="),
                 field("calls=")
             );
-            cold.phases
+            self.phases
                 .entry(name)
                 .or_default()
                 .push(field("us=").parse().unwrap_or_default());
         }
     }
-    cold
-}
-
-/// [`cold_start`]'s launches.
-pub struct ColdStart {
-    label: String,
-    /// Milliseconds from each process starting to its first frame drawn.
-    totals: Vec<u64>,
-    /// Each phase's microseconds, one per launch it ran in.
-    phases: BTreeMap<String, Vec<u64>>,
-    /// Each startup mark's microseconds since the process started, one per
-    /// time it was marked.
-    marks: BTreeMap<String, Vec<u64>>,
-    /// The most times one launch ran each named scope, by `stage phase`.
-    calls: BTreeMap<String, u64>,
 }
 
 impl ColdStart {
