@@ -19,6 +19,11 @@
 //! # #[cfg(not(target_os = "linux"))] fn main() {}
 //! ```
 //!
+//! The job's init is the calling program again, run as `tilo-job-init`: a
+//! new, small process rather than a copy of the caller, whose memory may be
+//! large. A program that calls [`Launch::spawn`] runs that init before its
+//! `main` when started as one; nothing needs to be added for it.
+//!
 //! The module exists on Linux only. `JobSpec` is portable data, so a macOS
 //! backend (Seatbelt) can be added behind the same call.
 
