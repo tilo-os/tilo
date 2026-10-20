@@ -9,7 +9,9 @@
 //! [`runs_over_image`]) as long as it fits the OS: a user copy requiring a
 //! system interface version the image does not serve never runs over the
 //! image's copy, which matches its own image by construction (see
-//! [`crate::interfaces`]).
+//! [`crate::interfaces`]). Nor does one whose runtime build is not installed:
+//! after a rollback to an older image, an app updated for the newer one runs
+//! as the older image ships it until its runtime is back.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -69,6 +71,8 @@ pub struct Catalog {
     /// The system store's rows, once read successfully. A failed read is
     /// not kept: the next lookup reports it again.
     system_rows: OnceLock<Vec<InstalledPackage>>,
+    /// Whether a runtime (`<name>/<version>`) is installed.
+    runtime_installed: fn(&str) -> bool,
 }
 
 impl PartialEq for Catalog {
@@ -88,7 +92,15 @@ impl Catalog {
             user: Layout::new(user_root),
             system,
             system_rows: OnceLock::new(),
+            runtime_installed,
         }
+    }
+
+    /// This catalogue judging which runtimes are installed by `installed`.
+    #[must_use]
+    pub fn with_runtimes(mut self, installed: fn(&str) -> bool) -> Self {
+        self.runtime_installed = installed;
+        self
     }
 
     /// The stores the environment names; see [`layout::default_user_root`]
@@ -124,7 +136,7 @@ impl Catalog {
         for entry in Registry::load(&self.user.registry())?.into_entries() {
             match out.iter_mut().find(|row| row.id == entry.id) {
                 Some(slot) => {
-                    if runs_over_image(&entry, slot) && self.unmet(&entry).is_empty() {
+                    if runs_over_image(&entry, slot) && self.fits(&entry) {
                         *slot = entry;
                     }
                 }
@@ -146,11 +158,23 @@ impl Catalog {
             .into_iter()
             .find(|row| row.id == app_id);
         let user_unmet = user.as_ref().map_or_else(Vec::new, |row| self.unmet(row));
+        let user_runtime_missing = user.as_ref().is_some_and(|row| !self.runtime_present(row));
         Ok(Layers {
             user,
             image,
             user_unmet,
+            user_runtime_missing,
         })
+    }
+
+    /// Whether `row` can run on this OS: every interface it requires is
+    /// served and its runtime build is installed.
+    fn fits(&self, row: &InstalledPackage) -> bool {
+        self.unmet(row).is_empty() && self.runtime_present(row)
+    }
+
+    fn runtime_present(&self, row: &InstalledPackage) -> bool {
+        row.runtime.is_empty() || (self.runtime_installed)(&row.runtime)
     }
 
     /// The interfaces `row`'s package requires that this OS does not serve.
@@ -230,6 +254,9 @@ pub struct Layers {
     /// The system interfaces the user's copy requires that this OS does not
     /// serve. While any are listed the image's copy runs, if there is one.
     pub user_unmet: Vec<Unmet>,
+    /// The user's copy names a runtime build that is not installed. While it
+    /// is missing the image's copy runs, if there is one.
+    pub user_runtime_missing: bool,
 }
 
 impl Layers {
@@ -237,7 +264,9 @@ impl Layers {
     pub fn running(&self) -> Option<&InstalledPackage> {
         match (&self.user, &self.image) {
             (Some(user), Some(image))
-                if !runs_over_image(user, image) || !self.user_unmet.is_empty() =>
+                if !runs_over_image(user, image)
+                    || !self.user_unmet.is_empty()
+                    || self.user_runtime_missing =>
             {
                 Some(image)
             }
@@ -261,6 +290,14 @@ pub fn runs_over_image(user: &InstalledPackage, image: &InstalledPackage) -> boo
     user.held
         || tilo_app_package::version::compare(&user.version, &image.version)
             != std::cmp::Ordering::Less
+}
+
+/// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
+/// launcher looks for it: the user's runtime directory or the system image.
+pub fn runtime_installed(runtime: &str) -> bool {
+    runtime
+        .split_once('/')
+        .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
 }
 
 /// Whether an existing `path` resolves into one of `roots` (already
@@ -707,6 +744,38 @@ mod tests {
             let row = os.find("so.tilo.settings").unwrap().unwrap();
             assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
         }
+    }
+
+    #[test]
+    fn a_user_copy_without_its_runtime_never_runs_over_the_image() {
+        let system = versioned_store(&[("so.tilo.notes", "0.1.10", false)]);
+        let user = versioned_store(&[("so.tilo.notes", "0.2.0", false)]);
+        let registry = user.path().join("registry.toml");
+        let rows = std::fs::read_to_string(&registry).unwrap();
+        std::fs::write(
+            &registry,
+            rows.replace("[[entry]]\n", "[[entry]]\nruntime = 'tilo-runtime/new'\n"),
+        )
+        .unwrap();
+        let on = |installed: fn(&str) -> bool| {
+            catalog(system.path(), user.path()).with_runtimes(installed)
+        };
+
+        // The image the update was made for: the update runs.
+        let newer = on(|runtime| runtime == "tilo-runtime/new");
+        let row = newer.find("so.tilo.notes").unwrap().unwrap();
+        assert_eq!((row.version.as_str(), row.system), ("0.2.0", false));
+
+        // Rolled back to an image without that runtime: the image's copy
+        // runs, and the update stays for when the runtime is back.
+        let older = on(|_| false);
+        let row = older.find("so.tilo.notes").unwrap().unwrap();
+        assert_eq!((row.version.as_str(), row.system), ("0.1.10", true));
+        assert_eq!(older.list().unwrap()[0].version, "0.1.10");
+        let layers = older.layers("so.tilo.notes").unwrap();
+        assert!(layers.user_runtime_missing);
+        assert_eq!(layers.user.unwrap().version, "0.2.0");
+        assert!(older.superseded().unwrap().is_empty());
     }
 
     #[test]

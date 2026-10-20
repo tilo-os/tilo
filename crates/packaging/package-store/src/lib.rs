@@ -38,7 +38,7 @@ mod store;
 
 pub use catalog::{
     Catalog, CatalogError, Layers, SystemStore, display_name_for_package_id, find_installed,
-    list_installed, runs_over_image,
+    list_installed, runs_over_image, runtime_installed,
 };
 #[cfg(feature = "store")]
 pub use image::{

@@ -58,10 +58,12 @@ if grep -Eq 'python(3)?' "$gate"; then
   exit 1
 fi
 grep -Fq 'tilo-image-trust bootc-status-field "$1"' "$deployment"
+grep -Fq 'tilo-image-trust bootc-status-field "$2"' "$deployment"
 grep -Fq 'status="$(bootc_status_json)"' "$deployment"
-for selector in booted-image staged-image rollback-image booted-composefs; do
-  grep -Fq "tilo-image-trust bootc-status-field $selector" "$deployment"
+for deployment_kind in booted staged rollback; do
+  grep -Fq "image_label \"\$status\" $deployment_kind" "$deployment"
 done
+grep -Fq 'status_field "$status" booted-composefs' "$deployment"
 grep -Fq 'bootc_field staged-composefs' "$deployment"
 if grep -Eq 'python(3)?[[:space:]]+-c|eval[[:space:]]*\(' "$deployment"; then
   echo 'deployment bootc authority parsing still permits Python or eval' >&2

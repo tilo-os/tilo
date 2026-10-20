@@ -593,29 +593,33 @@ impl UpdateControl for RealUpdateControl {
 /// What `bootc status` says this machine can go back to.
 ///
 /// Same defensive shape as [`parse_bootc_staged`]: any non-null
-/// `status.rollback` counts, and the first human-readable label under it wins.
+/// `status.rollback` counts. The image's version and build date name it
+/// best; the image reference usually reads the same for every image this
+/// machine follows, so it is the fallback.
 pub fn parse_bootc_rollback(json: &str) -> Option<String> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let rb = root.get("status")?.get("rollback")?;
     if rb.is_null() {
         return None;
     }
-    if let Some(img) = rb
-        .get("image")
-        .and_then(|i| i.get("image"))
-        .and_then(|i| i.get("image"))
-        .and_then(|v| v.as_str())
-    {
-        return Some(img.to_string());
-    }
-    if let Some(v) = rb
-        .get("image")
-        .and_then(|i| i.get("version"))
-        .and_then(|v| v.as_str())
-    {
-        return Some(v.to_string());
-    }
-    Some("the previous image".to_string())
+    let image = rb.get("image");
+    let field = |path: &[&str]| {
+        path.iter()
+            .try_fold(image?, |value, key| value.get(key))?
+            .as_str()
+            .filter(|value| !value.is_empty())
+    };
+    let label = field(&["version"]).or_else(|| field(&["image", "image"]));
+    // RFC 3339: the date is the first ten characters.
+    let built = field(&["timestamp"]).and_then(|stamp| stamp.get(..10));
+    Some(match (label, built) {
+        (Some(label), Some(date)) => t_args(
+            "upd-image-built",
+            &[("image", label.into()), ("date", date.into())],
+        ),
+        (Some(label), None) => label.to_string(),
+        (None, _) => "the previous image".to_string(),
+    })
 }
 
 /// Production impl: `systemctl reboot`.
@@ -2930,6 +2934,12 @@ mod tests {
         {
             let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
             assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
+            let dated = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:stable"},
+                "version":"2026.10.18","timestamp":"2026-10-18T04:12:00Z"}}}}"#;
+            assert_eq!(
+                parse_bootc_rollback(dated).as_deref(),
+                Some("2026.10.18, built 2026-10-18")
+            );
             let none = r#"{"status":{"rollback":null}}"#;
             assert_eq!(parse_bootc_rollback(none), None);
             let bare = r#"{"status":{"rollback":{}}}"#;
@@ -3133,7 +3143,7 @@ mod tests {
             // The confirmation view has to actually carry the caveats, or the
             // second click is uninformed.
             let shown = pane.rollback_card_lines().join("\n");
-            for phrase in ["do NOT revert", "stop launching"] {
+            for phrase in ["do NOT revert", "next app update"] {
                 assert!(
                     shown.contains(phrase),
                     "the confirmation must say what a rollback does not undo \

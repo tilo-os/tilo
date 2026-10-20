@@ -38,6 +38,9 @@ store = [
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
+# Which runtime builds are installed: a user copy without its runtime never
+# runs over the image's.
+runtime-bundle = { version = "0.1.0", path = "../runtime-bundle" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 serde.workspace = true

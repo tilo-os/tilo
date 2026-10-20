@@ -30,9 +30,12 @@ never lost by rolling back, and a bug that *corrupted* your data is not fixed by
 rolling back either.
 
 **Packages you installed yourself do not revert.** A `.tapp` lives under `/var`,
-so it survives, but the runtime bundle it links against went back with `/usr`. An
-app built for a newer runtime can stop launching after a rollback. Reinstall it,
-or roll forward again.
+so it survives, but the runtime bundle it links against went back with `/usr`.
+A copy whose runtime build is missing never runs over the image's own copy of
+the app, so an app the image ships runs as that image ships it. Any other app
+counts as out of date until its runtime is back, so the next `app update`
+(hourly, `tilo-app-update.timer`) fetches that runtime. Rolling forward
+needs nothing: the newer copy was never removed and runs again.
 
 Every path that offers a rollback prints this before it does anything —
 `tilo rollback`, the Settings control, and the repair console all call
@@ -47,7 +50,7 @@ rewrites the original while recovering files.
 ## From a working session
 
 ```bash
-tilo status                 # what is booted, staged, and rollable-to
+tilo status                 # what is booted, staged, and rollable-to (version, build date)
 tilo rollback               # prints the caveats, asks, then reorders the boot
 tilo rollback --yes         # for a script
 sudo reboot
