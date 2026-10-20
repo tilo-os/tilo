@@ -964,7 +964,6 @@ impl PrintCentre {
     /// The scan and print steps that have nothing to act on right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         const NO_DOCUMENT: &str = "Choose a document to print first.";
-        const NO_PAGE: &str = "Scan a page first.";
         let mut statuses = Vec::new();
         if let Some(reason) = self.scan_reset_blocked() {
             statuses.push(EffectStatus::unavailable(
@@ -1020,6 +1019,14 @@ impl PrintCentre {
                 "Find network printers first.",
             ));
         }
+        self.scan_review_statuses(&mut statuses);
+        statuses
+    }
+
+    /// The steps on a scanned page, unavailable while there is none to review
+    /// or while the scan is being saved.
+    fn scan_review_statuses(&self, statuses: &mut Vec<EffectStatus>) {
+        const NO_PAGE: &str = "Scan a page first.";
         let page = self.scan.result.as_ref();
         let reviewing = self.page == Page::Scan && page.is_some();
         let first = self.scan.selected == 0;
@@ -1063,7 +1070,6 @@ impl PrintCentre {
                 ));
             }
         }
-        statuses
     }
 
     fn known_printer(&self, printer: String) -> Result<String, String> {
