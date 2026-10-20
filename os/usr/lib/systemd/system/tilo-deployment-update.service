@@ -3,6 +3,11 @@ Description=Fetch and stage the current image
 Documentation=file:///usr/share/doc/tilo/recovery.md
 RequiresMountsFor=/boot /boot/efi
 After=local-fs.target network.target
+# A dev image (os/Containerfile.dev writes /usr/lib/tilo/image-flavour) moves
+# onto new images through tilo-vm (`tilo-vm vm upgrade`), never through a
+# release's update channel, whose origin it is not: the unit is skipped there,
+# inactive with this condition named, instead of failing on every start.
+ConditionPathExists=!/usr/lib/tilo/image-flavour
 
 [Service]
 Type=oneshot

@@ -393,6 +393,12 @@ grep -Fqx 'lock sentinel' "$work/update-lock-alias" || {
   exit 1
 }
 
+# A dev image updates through tilo-vm: the release update skips itself there
+# instead of failing (os/scripts/finalize-dev-image.py writes the marker).
+grep -Fxq 'ConditionPathExists=!/usr/lib/tilo/image-flavour' "$deployment_update_unit"
+grep -Fq 'usr/lib/tilo/image-flavour' "$repo/os/scripts/finalize-dev-image.py"
+! grep -Fq 'image-flavour' "$repo/os/Containerfile"
+printf 'ok: a dev image skips the release update instead of failing it\n'
 printf 'ok: staged updates enforce the optional owner identity image chain\n'
 printf 'ok: rejected endorsements fail closed before update activation\n'
 printf 'ok: download, verification, rollback state, and activation share one lock\n'
