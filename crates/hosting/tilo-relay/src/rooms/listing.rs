@@ -97,7 +97,7 @@ impl Listings {
     }
 
     /// List `room` with `listing`, or take it out of the directory.
-    fn set(&self, room: &str, listing: Option<Listing>) -> Result<(), String> {
+    pub(super) fn set(&self, room: &str, listing: Option<Listing>) -> Result<(), String> {
         let mut stored = self.stored.lock_recover();
         let changed = match listing {
             Some(listing) => stored.rooms.insert(room.to_owned(), listing.clone()) != Some(listing),
@@ -185,6 +185,11 @@ impl Rooms {
             .set(room, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
         tracing::info!(%room, role = ?listing.default_role, "workspace made public");
+        // Strangers come in through its door from now on: its members'
+        // windows are theirs alone (`public_rooms`).
+        if let Err(error) = self.make_public(room).await {
+            tracing::warn!(%room, %error, "a public room still holds its members' windows");
+        }
         Ok(listing)
     }
 

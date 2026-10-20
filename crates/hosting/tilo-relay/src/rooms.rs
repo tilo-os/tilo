@@ -42,7 +42,9 @@ mod private;
 #[cfg(test)]
 mod private_network_tests;
 mod private_store;
+mod public_rooms;
 pub use private::PrivateProtocol;
+pub(crate) use public_rooms::PUBLIC_LAYOUT_REFUSAL;
 mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -654,6 +656,9 @@ struct RoomsInner {
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
     /// The rooms listed as public workspaces, and how lively each is.
     listings: listing::Listings,
+    /// The rooms public here: their members' windows are never shared
+    /// ([`public_rooms`]).
+    public: public_rooms::PublicRooms,
 }
 
 /// What a member sent a room's channel steward.
@@ -776,8 +781,10 @@ impl Rooms {
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
                 listings,
+                public: public_rooms::PublicRooms::default(),
             }),
         };
+        this.learn_public().await;
         let rooms = this
             .inner
             .rooms
@@ -1178,6 +1185,13 @@ impl Rooms {
         // The relay stewards the room's channels: what only a steward reads
         // is neither delivered to members nor replayed to them.
         runtime.store.replay_without_steward_only();
+        // A public room shares no member's layout: what members wrote of it
+        // before is replayed to nobody.
+        if self.is_public(room.room()) {
+            runtime
+                .store
+                .replay_without_member_layout(host.cert.device_public_key);
+        }
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
             runtime.governor_tap = Some(tap);
@@ -1351,6 +1365,11 @@ impl Rooms {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
+        // A public room takes in no member's windows; its doors refuse
+        // them before they get here (`public_rooms`).
+        if self.is_public(room) {
+            return Ok(());
+        }
         let host = &self.inner.host;
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
@@ -1599,7 +1618,9 @@ impl Rooms {
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
             }
-            if let Ok(message) = postcard::from_bytes(&retained.body) {
+            if let Ok(message) = postcard::from_bytes(&retained.body)
+                && self.recalls(room, retained.author, &message)
+            {
                 room.follow(retained.author, message);
             }
         }

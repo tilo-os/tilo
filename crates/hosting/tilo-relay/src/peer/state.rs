@@ -703,25 +703,39 @@ pub(super) async fn tell_governor(
 }
 
 /// Why the room refuses `env`, `author`'s change, when it writes the room's
-/// shared desktop ([`crate::rooms::Rooms::decide_desktop_write`]); `None` for
-/// any other change, and in a room this relay does not govern.
+/// shared layout: its topology or its shared desktop
+/// ([`crate::rooms::Rooms::decide_layout_write`]); `None` for any other
+/// change, and in a room this relay does not govern.
 pub(super) async fn desktop_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::rooms::writes_desktop(&body) {
+    if !crate::rooms::writes_desktop(&body) && !writes_topology(&body) {
         return None;
     }
     let authority = ws.lock().await.room_authority.clone()?;
     let reason = authority
         .rooms()?
-        .decide_desktop_write(authority.room(), author, &body)
+        .decide_layout_write(authority.room(), author, &body)
         .await
         .err()?;
-    tracing::warn!(%reason, device = %hex::encode(author), "refused a shared desktop change");
+    if reason == crate::rooms::PUBLIC_LAYOUT_REFUSAL {
+        tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
+    } else {
+        tracing::warn!(%reason, device = %hex::encode(author), "refused a shared layout change");
+    }
     Some(reason)
+}
+
+/// Whether `body` is a change to some room's document (`SyncResp`), told
+/// apart without decoding the changes it carries.
+fn writes_topology(body: &[u8]) -> bool {
+    matches!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        Ok(neighbour_wire::NeighbourMsg::SyncResp { .. })
+    )
 }
 
 /// What the room's governor follows of `env`, a member's state change: its
