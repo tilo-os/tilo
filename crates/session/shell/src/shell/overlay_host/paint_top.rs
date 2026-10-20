@@ -263,12 +263,11 @@ impl ShellOverlayHost {
                 sheet_radius,
                 &theme.tokens.elevation.floating,
             );
-            scene.fill(
-                Fill::NonZero,
+            ui::paint::fill_shape(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
                 &sheet,
+                ui::chrome::ChromeRole::Panel.surface(theme),
             );
             crate::shell::trusted_ui::paint_seal(
                 scene,
@@ -277,29 +276,29 @@ impl ShellOverlayHost {
                 theme,
                 sheet_radius,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &view.title(),
-                20.0,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 22.0).into()),
                 None,
+                &theme.text(TextRole::Title),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &view.app_name(),
-                14.0,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 50.0).into()),
                 None,
+                &theme.text(TextRole::Body),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &self.portal_dialogs.displayed_detail(),
-                14.0,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
                 None,
+                &theme.text(TextRole::Body),
             );
             for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
                 let selected = index == self.portal_dialogs.selected();
@@ -413,14 +412,14 @@ impl ShellOverlayHost {
                 );
             }
             if let Some(error) = self.portal_dialogs.entry_error() {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     error,
-                    12.0,
                     theme.tokens.colors.semantic.warning,
                     transform
                         .pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
             for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate()
@@ -446,13 +445,13 @@ impl ShellOverlayHost {
                     ui::chrome::SelectionState::active(selected),
                 );
                 if let Some(status) = &row.status {
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         status,
-                        11.0,
                         theme.tokens.colors.semantic.warning,
                         transform.pre_translate((rect.x0 + 10.0, rect.y1 - 10.0).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                 }
             }

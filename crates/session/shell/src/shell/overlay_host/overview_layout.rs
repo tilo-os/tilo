@@ -321,7 +321,8 @@ impl ShellOverlayHost {
         } else if self.overview_beside_picture() {
             overview_grid::COLUMN_WIDTH_PX
         } else {
-            OVERVIEW_PANEL_WIDTH_PX
+            self.overview_metrics
+                .panel_width
                 .min(area.width() - self.overview_metrics.margin * 2.0)
                 .max(0.0)
         }
@@ -652,10 +653,6 @@ impl ShellOverlayHost {
     }
 }
 
-/// Widest the rooms panel ever gets, matching the workspace-settings
-/// modal so the shell's floating surfaces are one family.
-pub(super) const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
-
 /// Most share rows drawn before the rest collapse into "+N more" — the
 /// panel says whether things leave this room, the permissions pane has
 /// the full list.
@@ -675,6 +672,10 @@ pub(super) struct OverviewMetrics {
     /// Inset from the viewport edge, and the smallest gap the panel keeps
     /// from the top and bottom of the screen (`s12`).
     pub(super) margin: f64,
+    /// Widest the panel ever gets: the readable width, the same cap as the
+    /// workspace-settings lens, so the shell's floating surfaces are one
+    /// family.
+    pub(super) panel_width: f64,
     /// Inner padding of the panel (HIG §9.6: Panel padding `s4`).
     pub(super) pad: f64,
     /// Gap between the "you are here" block and the room list (§9.6: `s4`).
@@ -738,6 +739,7 @@ impl OverviewMetrics {
         let row_sub_lh = lh(TextRole::Caption);
         Self {
             margin: f64::from(spacing.s12),
+            panel_width: f64::from(tokens.metrics.readable_width),
             pad: s4,
             section_gap: s4,
             panel_radius: f64::from(tokens.radii.panel),
@@ -767,12 +769,6 @@ impl Default for OverviewMetrics {
     }
 }
 
-/// Radius of an avatar in a face stack.
-pub(super) const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
-
-/// Horizontal step between overlapping faces.
-pub(super) const OVERVIEW_FACE_STEP_PX: f64 = 18.0;
-
 /// How much of their own colour an away member's face keeps, the rest
 /// being the panel behind it. At a third it vanished against a light
 /// ground and lost the member altogether.
@@ -787,10 +783,6 @@ pub(super) const OVERVIEW_PANEL_RISE_PX: f64 = 20.0;
 
 /// Scale the panel starts its entrance at.
 pub(super) const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
-
-/// Height of the fade over the bottom of an overflowing room list, so a
-/// clipped row reads as "there is more" rather than unfinished.
-pub(super) const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
 /// `(alpha, dy, scale)` for the panel of workspaces at the overview zoom's
 /// `progress` (already on the zoom's spring, so the exit is the same motion

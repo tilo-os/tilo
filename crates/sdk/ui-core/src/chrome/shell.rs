@@ -351,6 +351,43 @@ pub fn lightness_step(a: Color, b: Color) -> f32 {
     (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
 }
 
+/// What a display's edge says ([`paint_display_edge`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayEdge {
+    /// A call rings on another display.
+    Ringing,
+    /// A visual alert, along every display.
+    Alert,
+}
+
+/// Paint `edge` along the inside of `display`'s rectangle.
+pub fn paint_display_edge(
+    scene: &mut Scene,
+    transform: Affine,
+    display: Rect,
+    edge: DisplayEdge,
+    theme: &Theme,
+) {
+    let metrics = &theme.tokens.metrics;
+    let (width, colour) = match edge {
+        DisplayEdge::Ringing => (
+            f64::from(metrics.call_edge_px),
+            theme.tokens.colors.border_focus,
+        ),
+        DisplayEdge::Alert => (
+            f64::from(metrics.alert_edge_px),
+            theme.tokens.colors.intent.accent,
+        ),
+    };
+    scene.stroke(
+        &vello::kurbo::Stroke::new(width),
+        transform,
+        colour,
+        None,
+        &display.inset(-width / 2.0),
+    );
+}
+
 /// The desktop's own ground: what shell chrome drawn over the whole desktop
 /// (the overview's pictured windows and their captions) stands on.
 #[must_use]
@@ -402,6 +439,42 @@ pub fn panel_ground(theme: &Theme) -> Color {
         }
     }
     last
+}
+
+/// A Panel's derived edge: [`panel_border`], stroked half a pixel inside
+/// its outline so the 1 px edge is crisp and stays the panel's own
+/// outermost pixel row.
+pub fn paint_panel_edge(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        panel_border(theme),
+        None,
+        &crate::surface::edge_outline(rect, radius),
+    );
+}
+
+/// A derived hairline round `shape` on `ground`: a whole-row target that
+/// should read as one without a body of its own.
+pub fn paint_hairline_outline(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &RoundedRect,
+    ground: Color,
+) {
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        Colors::hairline_on(ground, HAIRLINE_ALPHA),
+        None,
+        shape,
+    );
 }
 
 /// The edge of a floating [`ChromeRole::Panel`], stroked on its outermost

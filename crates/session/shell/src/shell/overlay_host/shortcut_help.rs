@@ -228,28 +228,17 @@ impl ShellOverlayHost {
             panel.x0 + 68.0 + f64::from(title_width),
             panel.y0 + 46.0,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[2],
-            None,
-            &RoundedRect::from_rect(f1_hint, 7.0),
-        );
-        let f1_style = theme.text(TextRole::Caption);
-        let (f1_width, f1_height) = text_renderer.measure_style("F1", None, &f1_style);
-        text_renderer.draw_style(
+        // The key that reopens the guide, as every keycap is drawn.
+        InputHint::paint_keycap_labels_at(
             scene,
-            "F1",
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    f1_hint.center().x - f64::from(f1_width) / 2.0,
-                    f1_hint.center().y - f64::from(f1_height) / 2.0,
-                )
-                    .into(),
+            transform,
+            Point::new(
+                f1_hint.x0,
+                f1_hint.center().y - InputHint::keycap_height(theme) / 2.0,
             ),
-            None,
-            &f1_style.clone().with_weight(TextWeight::Semibold),
+            &["F1".to_owned()],
+            text_renderer,
+            theme,
         );
         text_renderer.draw_style(
             scene,
@@ -261,38 +250,15 @@ impl ShellOverlayHost {
         );
 
         let done = self.shortcut_help_done_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.intent.accent,
-            None,
-            &RoundedRect::from_rect(done, 10.0),
-        );
-        if self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done) {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                colors.text_primary,
-                None,
-                &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
-            );
-        }
-        let label_style = theme.text(TextRole::Caption);
         let done_label = t("guide-done");
-        let (done_w, done_h) = text_renderer.measure_style(&done_label, None, &label_style);
-        text_renderer.draw_style(
+        ui::widget::Button::paint(
             scene,
-            &done_label,
-            colors.intent.on_accent,
-            transform.pre_translate(
-                (
-                    done.center().x - f64::from(done_w) / 2.0,
-                    done.center().y - f64::from(done_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            &label_style.clone().with_weight(TextWeight::Semibold),
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(done, &done_label)
+                .role(ui::widget::ButtonRole::Primary)
+                .focused(self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done)),
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};
@@ -571,15 +537,14 @@ impl ShellOverlayHost {
                 );
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
-                scene.fill(
-                    Fill::NonZero,
+                // The navigation chords sit on a recessed card in the panel.
+                let navigation_ground = colors.surfaces.sidebar;
+                ui::surface::card(
+                    scene,
                     transform,
-                    colors.neutral[1],
-                    None,
-                    &RoundedRect::from_rect(
-                        navigation_surface,
-                        f64::from(theme.tokens.radii.detail),
-                    ),
+                    navigation_surface,
+                    f64::from(theme.tokens.radii.detail),
+                    navigation_ground,
                 );
                 text_renderer.draw_style(
                     scene,
@@ -635,13 +600,25 @@ impl ShellOverlayHost {
                         let hovered = self
                             .last_cursor
                             .is_some_and(|point| screen_hit.contains(point));
-                        if active || focused || hovered {
-                            scene.stroke(
-                                &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
+                        // The chord being rebound is selected; one under the
+                        // pointer lifts; the keyboard's carries its ring.
+                        if active || hovered {
+                            ui::chrome::shell::paint_row_selection(
+                                scene,
                                 transform,
-                                colors.intent.accent,
-                                None,
-                                &RoundedRect::from_rect(hit, 8.0),
+                                hit,
+                                ui::chrome::SelectionState::new(active, hovered && !active, false),
+                                navigation_ground,
+                                theme,
+                            );
+                        }
+                        if focused {
+                            ui::widget::paint_focus_ring(
+                                scene,
+                                transform,
+                                hit,
+                                f64::from(theme.tokens.radii.control),
+                                theme,
                             );
                         }
                         if screen_hit.intersect(body).area() > 0.0 {
@@ -679,12 +656,12 @@ impl ShellOverlayHost {
                             false,
                         );
                         if focused {
-                            scene.stroke(
-                                &Stroke::new(2.0),
+                            ui::widget::paint_focus_ring(
+                                scene,
                                 transform,
-                                colors.intent.accent,
-                                None,
-                                &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
+                                reset,
+                                f64::from(theme.tokens.radii.control),
+                                theme,
                             );
                         }
                         let reset_style = theme.text(TextRole::Body);
@@ -843,12 +820,12 @@ impl ShellOverlayHost {
                     let thumb_h = (track.height() * body.height() / content_height).max(24.0);
                     let thumb_y = track.y0
                         + (track.height() - thumb_h) * scroll / self.shortcut_guide_max_scroll;
-                    scene.fill(
-                        Fill::NonZero,
+                    ui::widget::scrollbar::paint_thumb(
+                        scene,
                         outer,
-                        ui::widget::scrollbar::thumb_color(theme, false),
-                        None,
-                        &RoundedRect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_h, 2.0),
+                        Rect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_h),
+                        theme,
+                        false,
                     );
                 }
             }

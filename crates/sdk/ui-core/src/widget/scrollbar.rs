@@ -184,6 +184,25 @@ pub struct TrackMark {
     pub tone: crate::widget::Tone,
 }
 
+/// Paint a scrollbar thumb in `thumb`, pill-shaped, for a host that draws
+/// its own scrolled surface and places the thumb itself.
+pub fn paint_thumb(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    thumb: Rect,
+    theme: &Theme,
+    active: bool,
+) {
+    let radius = thumb.width().min(thumb.height()) / 2.0;
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        thumb_color(theme, active),
+        None,
+        &vello::kurbo::RoundedRect::from_rect(thumb, radius),
+    );
+}
+
 /// The track's fill behind an expanded bar, derived against the base surface.
 #[must_use]
 pub fn track_color(theme: &Theme) -> Color {

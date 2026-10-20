@@ -248,8 +248,11 @@ impl ShellOverlayHost {
         ground: Color,
     ) -> f64 {
         let (right_x, cy) = (anchor.x, anchor.y);
-        let r = OVERVIEW_FACE_RADIUS_PX;
-        let step = OVERVIEW_FACE_STEP_PX;
+        // A face is an inline avatar; each stands three quarters of a face
+        // past the one before, so most of it shows.
+        let face = f64::from(ctx.theme.tokens.metrics.avatar_inline);
+        let r = face / 2.0;
+        let step = face * 0.75;
         let shown = people.len().min(OVERVIEW_FACES_MAX);
         let overflow = people.len().saturating_sub(shown);
         let slots = shown.saturating_add(usize::from(overflow > 0));
@@ -359,13 +362,7 @@ impl ShellOverlayHost {
             // A destination occupies the whole row, not only its label and
             // avatar: a derived hairline keeps the click target legible on
             // the panel ground without giving it a body of its own.
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::shell::HAIRLINE_ALPHA),
-                None,
-                &rr,
-            );
+            ui::chrome::shell::paint_hairline_outline(scene, transform, &rr, ground);
         }
 
         let pad = m.row_pad;
@@ -611,15 +608,9 @@ impl ShellOverlayHost {
                 &theme.tokens.elevation.floating,
             );
             let card_rr = RoundedRect::from_rect(panel, m.panel_radius);
-            scene.fill(Fill::NonZero, transform, ground, None, &card_rr);
-            // A Panel's edge is derived (HIG §9.5), never `border_standard`.
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &ui::surface::edge_outline(panel, m.panel_radius),
-            );
+            ui::paint::fill_shape(scene, transform, &card_rr, ground);
+            // A Panel's edge is derived (HIG §9.5).
+            ui::chrome::shell::paint_panel_edge(scene, transform, panel, m.panel_radius, theme);
         }
     }
 
@@ -638,7 +629,6 @@ impl ShellOverlayHost {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let name_size = Self::overview_header_font_size_for(tokens);
 
         if let Some((hi, card)) = here_idx.and_then(|hi| cards.get(hi).map(|card| (hi, card))) {
             self.draw_overview_here_room(
@@ -647,7 +637,6 @@ impl ShellOverlayHost {
                 here_rect,
                 hi,
                 card,
-                name_size,
             );
             let leave = self.overview_leave_rect(hi, &self.site_rooms());
             if leave.area() > 0.0 {
@@ -663,14 +652,13 @@ impl ShellOverlayHost {
         } else {
             // No room is marked current. Saying which one you are in
             // would be an invention, so the panel says what is true.
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("overview-no-room"),
-                name_size,
                 colors.text_dim,
                 transform.pre_translate((content.x0, here_rect.y0).into()),
                 None,
-                TextWeight::Bold,
+                &theme.text(TextRole::Display).with_weight(TextWeight::Bold),
             );
         }
     }
@@ -684,7 +672,6 @@ impl ShellOverlayHost {
         here_rect: Rect,
         hi: usize,
         card: &tilo_desktop::overview::RoomCard,
-        name_size: f32,
     ) {
         use ui::widget::{ChipFace, ChipLead, ChipStyle};
 
@@ -723,22 +710,18 @@ impl ShellOverlayHost {
         let marks_left =
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
         let name_avail = (marks_left - s4 - content.x0 - chip_w - s3).max(60.0);
-        let name = text_renderer.elide_to_width_weighted(
-            &card.name,
-            name_size,
-            f32_of_f64(name_avail),
-            TextWeight::Bold,
-        );
-        let (name_w, name_h) =
-            text_renderer.measure_weighted(&name, name_size, None, TextWeight::Bold);
-        text_renderer.draw_text_weighted(
+        // The room's name at the display role, bold.
+        let name_style = theme.text(TextRole::Display).with_weight(TextWeight::Bold);
+        let name =
+            text_renderer.elide_to_width_style(&card.name, f32_of_f64(name_avail), &name_style);
+        let (name_w, name_h) = text_renderer.measure_style(&name, None, &name_style);
+        text_renderer.draw_style(
             scene,
             &name,
-            name_size,
             colors.text_primary,
             transform.pre_translate((content.x0, here_rect.y0).into()),
             None,
-            TextWeight::Bold,
+            &name_style,
         );
         let chip_x0 = content.x0 + f64::from(name_w) + s3;
         ChipFace::new(
@@ -799,15 +782,13 @@ impl ShellOverlayHost {
             here_rect.y1 - s2,
         );
         // The keyboard's choice is a lift of the panel, with its edge.
-        let sel_rr = RoundedRect::from_rect(sel, self.overview_metrics.row_radius);
         let fill = theme.tokens.colors.lift_on(ground, 1.0);
-        scene.fill(Fill::NonZero, transform, fill, None, &sel_rr);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        ui::surface::card(
+            scene,
             transform,
-            ui::surface::edge_on(fill),
-            None,
-            &sel_rr,
+            sel,
+            self.overview_metrics.row_radius,
+            fill,
         );
         if self.overview_window_selection.is_none() {
             let focus = if self.overview_scrolls_whole_panel() {
@@ -1129,32 +1110,12 @@ impl ShellOverlayHost {
         band: Rect,
     ) {
         if self.overview_scroll_y + 0.5 < self.overview_max_scroll_y() {
-            let fade_y1 = band.y1;
-            let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
-            let ground = ui::chrome::shell::panel_ground(theme);
-            let grad = vello::peniko::Gradient::new_linear(
-                Point::new(band.x0, fade_y0),
-                Point::new(band.x0, fade_y1),
-            )
-            .with_extend(vello::peniko::Extend::Pad)
-            .with_stops(
-                &[
-                    vello::peniko::ColorStop {
-                        offset: 0.0,
-                        color: ground.with_alpha_factor(0.0).into(),
-                    },
-                    vello::peniko::ColorStop {
-                        offset: 1.0,
-                        color: ground.into(),
-                    },
-                ][..],
-            );
-            scene.fill(
-                Fill::NonZero,
+            ui::surface::content_edge_fade(
+                scene,
                 transform,
-                &grad,
-                None,
-                &Rect::new(band.x0, fade_y0, band.x1, fade_y1),
+                band,
+                ui::surface::ContentEdge::Bottom,
+                ui::chrome::shell::panel_ground(theme),
             );
         }
     }
