@@ -1133,13 +1133,31 @@ impl FacePaint<'_> {
         // disabled control stay visible on a light ground.
         let outline = crate::surface::edge_outline(face_rect, radius);
         if self.interact.focused && !disabled {
+            let ring = theme.tokens.colors.intent.accent_ink;
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
                 ctx.transform,
-                theme.tokens.colors.intent.accent_ink,
+                ring,
                 None,
                 &outline,
             );
+            // Your colour on a fill of your colour (a primary face, an "on"
+            // toggle) would only make the face look larger: a line of the
+            // ground both are made to stand out from parts the two.
+            if fill.components[3] > 0.0
+                && crate::a11y::contrast_ratio(ring, fill)
+                    < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+            {
+                let gap = f64::from(theme.tokens.metrics.chrome_rule_px);
+                let inset = FOCUS_RING_WIDTH - 0.5 + gap / 2.0;
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(gap),
+                    ctx.transform,
+                    theme.tokens.colors.surfaces.content,
+                    None,
+                    &RoundedRect::from_rect(face_rect.inset(-inset), (radius - inset).max(0.0)),
+                );
+            }
         } else if let Some(edge) = edge {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
@@ -2714,6 +2732,51 @@ mod tests {
             laid_out.layout_needs_measure(),
             "a touch target may be wider"
         );
+    }
+
+    /// The keyboard focus ring reads as a ring on every face: where it meets
+    /// a fill it does not contrast with (a primary face is your colour, as
+    /// the ring is), a line of the ground parts the two.
+    #[test]
+    fn the_focus_ring_stands_apart_from_every_face() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::tokens::PresenceHue;
+        use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        let pixel = |rgba: &[u8], y: u32| {
+            let (r, g, b, a) = OffscreenRenderer::sample(rgba, 128, 64, y);
+            vello::peniko::Color::from_rgba8(r, g, b, a)
+        };
+        // Half-pixel edges: the ring covers rows 8 and 9, the parting line
+        // row 10, and the fill starts at row 11.
+        let rect = Rect::new(8.5, 8.5, 120.5, 48.5);
+        for base in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for hue in [PresenceHue::Blue, PresenceHue::Amber, PresenceHue::Magenta] {
+                let theme = base.clone().with_your_colour(hue);
+                for role in [ButtonRole::Primary, ButtonRole::Secondary] {
+                    let mut scene = Scene::new();
+                    let face = ButtonFace::new(rect, "Save").role(role).focused(true);
+                    Button::paint(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut TextRenderer::new(),
+                        &theme,
+                        &face,
+                    );
+                    let rgba = OffscreenRenderer::new(128, 64)
+                        .render(&scene, theme.tokens.colors.surfaces.content);
+                    let (ring, inside, fill) = (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
+                    let contrast = crate::a11y::contrast_ratio;
+                    assert!(
+                        contrast(ring, inside) >= NON_TEXT_MIN_CONTRAST,
+                        "{} {hue:?} {role:?}: the ring blends into what it rings",
+                        theme.name
+                    );
+                    if inside != fill {
+                        assert!(contrast(inside, fill) >= NON_TEXT_MIN_CONTRAST);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
