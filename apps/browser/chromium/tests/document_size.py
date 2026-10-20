@@ -9,6 +9,7 @@ the wheel once the page is painted there.
 import argparse
 import base64
 import json
+import os
 from pathlib import Path
 import queue
 import struct
@@ -16,6 +17,10 @@ import subprocess
 import tempfile
 import threading
 import time
+
+# How long a wait on the host may take before it counts as hung: the
+# shared hang bound (tools/tests/hang.py), so a loaded runner is not a failure.
+HANG_BOUND = float(os.environ.get('TILO_TEST_HANG_BOUND_SECS', '120'))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('host', type=Path)
@@ -77,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
             send({'op': 'scroll', 'x': 400.0, 'y': 100.0, 'dx': 0.0, 'dy': 120.0})
 
     try:
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + HANG_BOUND
         asked = False
         sizes = []
         frames = 0
@@ -133,9 +138,9 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-document-size-') as profile:
                     break
         assert phase == 'done', f'{phase}: {sizes}'
         send({'op': 'shutdown'})
-        while next_event(time.monotonic() + 10)['event'] != 'closed':
+        while next_event(time.monotonic() + HANG_BOUND)['event'] != 'closed':
             pass
-        assert host.wait(timeout=10) == 0
+        assert host.wait(timeout=HANG_BOUND) == 0
         print(f'PASS: off until asked, height, anchor and wheel scroll reported ({frames} frames)')
     finally:
         if host.poll() is None:
