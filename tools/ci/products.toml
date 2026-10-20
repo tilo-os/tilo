@@ -1112,11 +1112,11 @@ family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. `t dispatch publish-os-board-lenovo-83ed --ref
-main` builds main's head and pushes registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which
-`tilo-vm vm upgrade --from sha:<commit>` takes on that board, and moves tilo-vm:<board>-ci, which
-installed boards follow with `bootc upgrade` (DEVELOPMENT.md, "Board dev images on real
-hardware")."""
+since bootc takes a device tree only from one. Every night, and when dispatched (`t dispatch
+publish-os-board-lenovo-83ed --ref main`), main's head is built and pushed as
+registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
+sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
+follow on their own (DEVELOPMENT.md, "Board dev images on real hardware")."""
 each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
 [[matrix.check]]
@@ -1143,7 +1143,7 @@ needs = ["os-board-{board}"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 
 [[matrix]]
 family = "extension-manifests"

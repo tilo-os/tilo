@@ -78,8 +78,9 @@ A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
 UKI, which keeps the device tree across updates. t builds and publishes one for main's
-head when asked (`publish-os-board-<board>` in `t.toml`; it builds `os-image-aarch64`,
-`os-dev-image-aarch64` and `os-board-<board>` first, a few hours from cold):
+head every night and when asked (`publish-os-board-<board>` in `t.toml`; it builds
+`os-image-aarch64`, `os-dev-image-aarch64` and `os-board-<board>` first, a few hours from
+cold):
 
 ```sh
 t dispatch publish-os-board-lenovo-83ed --ref main
@@ -108,7 +109,9 @@ curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
 sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
 ```
 
-The installed system follows the moving tag, so later builds of main arrive with:
+The installed system follows the moving tag on its own: the update timer stages each new
+build, what can apply live does, and a board restarts into the rest while nobody is at it.
+To take a build now:
 
 ```sh
 sudo bootc upgrade && sudo systemctl reboot
