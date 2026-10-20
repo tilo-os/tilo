@@ -718,6 +718,13 @@ pub struct AppearancePrefs {
     /// [`Self::distinct_letters_effective`] is what the system shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_letters: Option<bool>,
+    /// The interface language, a BCP 47 tag (`de-DE`), which Region &
+    /// formats offers among [`crate::i18n::languages`]; `None` follows the
+    /// device's (`settings_store::appearance::LANGUAGE`). Every app and the
+    /// desktop show their copy in it, and a message with no translation in
+    /// English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 fn default_mode() -> String {
@@ -790,6 +797,7 @@ impl Default for AppearancePrefs {
             distribution_defaults: None,
             forced_colors: false,
             distinct_letters: None,
+            language: None,
         }
     }
 }

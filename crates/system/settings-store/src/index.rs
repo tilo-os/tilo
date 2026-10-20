@@ -435,6 +435,7 @@ pub const SETTINGS: &[Setting] = &[
     s("spelling.language", "spelling", "text.spelling_language"),
     s("spelling.dictionary", "spelling", "dictionary.word"),
     // Region & formats
+    s("region.language", "region_formats", "region.language"),
     s("region.currency", "region_formats", "region.currency"),
     s("region.date", "region_formats", "region.date"),
     s("region.time", "region_formats", "region.time"),
