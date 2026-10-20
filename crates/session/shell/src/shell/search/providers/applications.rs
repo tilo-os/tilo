@@ -640,7 +640,7 @@ fn launch_resolved_installed_app(
             })
     };
     if let Some((ws_id, strip, group, tab)) = already {
-        chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
+        chrome.borrow_mut().select_tab(ws_id, strip, group, tab);
         return Ok(());
     }
     // The app is already being installed/launched. Repeated activation should

@@ -7201,9 +7201,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let reveal = chrome.borrow_mut().take_tab_reveal_request();
         let st = chrome.borrow();
         let tree = st.tree();
         if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(strip) = reveal {
+                surface.reveal_on_next_layout(strip);
+            }
             surface.sync_navigation(&tree.desktop);
         }
     }
@@ -8464,7 +8468,7 @@ impl ShellOverlayHost {
         let _ = self.focus_window_widget(address.strip, address.group, address.tab);
         chrome
             .borrow_mut()
-            .focus_tab(workspace, address.strip, address.group, address.tab);
+            .select_tab(workspace, address.strip, address.group, address.tab);
         self.observe_window_focus();
         true
     }
