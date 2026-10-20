@@ -182,9 +182,15 @@ impl State {
         self.arrivals.lock_recover().push(Arrival { room, app });
     }
 
-    /// The joins installed since this was last asked.
-    pub(super) fn take_arrivals(&self) -> Vec<Arrival> {
-        std::mem::take(&mut *self.arrivals.lock_recover())
+    /// The joins installed since this was last asked whose rooms are
+    /// `ready`; the others wait for a later ask.
+    pub(super) fn take_arrivals(&self, ready: impl Fn(RoomId) -> bool) -> Vec<Arrival> {
+        let mut arrivals = self.arrivals.lock_recover();
+        let (taken, waiting) = std::mem::take(&mut *arrivals)
+            .into_iter()
+            .partition(|arrival| ready(arrival.room));
+        *arrivals = waiting;
+        taken
     }
 
     /// The origin of `room`'s host, when this computer reaches it over HTTPS.
@@ -659,6 +665,26 @@ pub(crate) async fn admit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A person who joined a site arrives once the room's own desktop is
+    /// here: before it, the arrival could not see the room's window of the
+    /// site's app, and opened a second one beside it.
+    #[test]
+    fn an_arrival_waits_for_its_rooms_desktop() {
+        let state = State::default();
+        let room = RoomId::parse("6f9619ff-8b86-d011-b42d-00cf4fc964ff").unwrap();
+        state.arrive(room);
+        assert!(
+            state.take_arrivals(|_| false).is_empty(),
+            "not before the desktop"
+        );
+        assert_eq!(
+            state.take_arrivals(|_| true),
+            vec![Arrival { room, app: None }],
+            "then once"
+        );
+        assert!(state.take_arrivals(|_| true).is_empty());
+    }
 
     #[test]
     fn a_typed_site_names_its_entry_directory() {

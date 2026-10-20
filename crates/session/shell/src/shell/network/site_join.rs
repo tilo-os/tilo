@@ -338,8 +338,19 @@ impl ShellNetwork {
 
     /// The site workspaces whose joins installed since this was last asked:
     /// chrome brings the person into each, in the app its site names.
+    ///
+    /// An arrival waits until this device shows the room's own desktop: its
+    /// windows decide whether the site's app is already open there. Decided
+    /// before they arrived, the arrival opened the app a second time beside
+    /// the room's own window of it.
     pub(crate) fn take_arrivals(&self) -> Vec<Arrival> {
-        self.hosted_sites.take_arrivals()
+        let Ok(replica) = self.replica.lock() else {
+            return Vec::new();
+        };
+        let tree = replica.tree.clone();
+        drop(replica);
+        self.hosted_sites
+            .take_arrivals(|room| tree.read().room_docs.contains_key(&room))
     }
 
     /// Open the app `arrival`'s site names in the workspace its join
