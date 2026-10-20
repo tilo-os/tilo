@@ -582,7 +582,7 @@ fn change_app(app: &CatalogueApp, update: bool, installed: Option<&str>) -> Exit
         }
         (true, Some(installed))
             if tilo_app_package::version::compare(&app.version, installed).is_le()
-                && app_cli::installed_record_current(&app.package_id) =>
+                && app_cli::installed_current(&app.package_id) =>
         {
             if PROGRESS_LINES.load(Ordering::Relaxed) {
                 eprintln!("{UP_TO_DATE_LINE}");
@@ -862,7 +862,7 @@ fn outdated<'a>(
         };
         checked = checked.saturating_add(1);
         if tilo_app_package::version::compare(&app.version, version).is_gt()
-            || !app_cli::installed_record_current(&app.package_id)
+            || !app_cli::installed_current(&app.package_id)
         {
             outdated.push((app, version.as_str()));
         }

@@ -5,7 +5,6 @@ de-DE mesh-certified implementation
 de-DE mesh-source-detail implementation
 de-DE net-notice-password-sealed implementation
 de-DE net-notice-used-sealed implementation
-de-DE upd-caveat-apps all-caps
 de-DE upd-caveat-files all-caps
 de-DE upd-caveat-image implementation
 en-US accounts-best-effort-icloud narration

@@ -29,9 +29,10 @@
 # /usr reverts. /var does not — the workspace tree, every app's documents, the
 # identity keys and the blob store are all on the stateroot and are shared by
 # every deployment. Neither do user-installed packages: the runtime bundle under
-# /usr/lib/tilo-runtime reverts with /usr, and a .tapp installed against a newer
-# one stays installed and can stop launching. Both are printed before anything is
-# changed, because finding out afterwards is the failure this is meant to prevent.
+# /usr/lib/tilo-runtime reverts with /usr, so a .tapp installed against a newer
+# one runs as the image ships it, or gets its runtime at the next app update.
+# Both are printed before anything is changed, because finding out afterwards is
+# the failure this is meant to prevent.
 set -uo pipefail
 
 log()  { printf 'tilo-deployment: %s\n' "$*"; }
@@ -172,6 +173,21 @@ bootc_field() {  # $1 = bootc-status-field selector
   bootc_status_json | tilo-image-trust bootc-status-field "$1" 2>/dev/null
 }
 
+status_field() {  # $1 = bootc status JSON, $2 = bootc-status-field selector
+  printf '%s' "$1" | tilo-image-trust bootc-status-field "$2" 2>/dev/null
+}
+
+# "<image> <version>" of one deployment in a bootc status snapshot, plus the
+# rollback deployment's build date: an update usually keeps the image
+# reference, so the version and date are what tell two deployments apart.
+image_label() {  # $1 = bootc status JSON, $2 = booted|staged|rollback
+  local image version built=""
+  image="$(status_field "$1" "$2-image")"
+  version="$(status_field "$1" "$2-version")"
+  [ "$2" != rollback ] || built="$(status_field "$1" rollback-timestamp)"
+  printf '%s%s%s' "$image" "${version:+ $version}" "${built:+, built ${built%%T*}}"
+}
+
 cmd_list() {
   local json=0
   [ "${1:-}" = "--json" ] && json=1
@@ -190,13 +206,13 @@ cmd_list() {
   # One coherent snapshot is both faster and more accurate than asking bootc
   # four times while a deployment may be changing underneath us.
   status="$(bootc_status_json)"
-  booted="$(printf '%s' "$status" | tilo-image-trust bootc-status-field booted-image 2>/dev/null)"
-  staged="$(printf '%s' "$status" | tilo-image-trust bootc-status-field staged-image 2>/dev/null)"
-  rollback="$(printf '%s' "$status" | tilo-image-trust bootc-status-field rollback-image 2>/dev/null)"
+  booted="$(image_label "$status" booted)"
+  staged="$(image_label "$status" staged)"
+  rollback="$(image_label "$status" rollback)"
   printf '  booted   : %s\n' "${booted:-<unknown>}"
   printf '             generation %s, composefs %.16s\n' \
     "$(tilo_running_generation)" \
-    "$(printf '%s' "$status" | tilo-image-trust bootc-status-field booted-composefs 2>/dev/null)"
+    "$(status_field "$status" booted-composefs)"
   printf '  staged   : %s\n' "${staged:-<none>}"
   printf '  rollback : %s\n' "${rollback:-<none>}"
 
@@ -261,10 +277,11 @@ What rolling back does and does not undo
                       shared by all deployments. A rollback does not restore
                       them, and anything a newer version wrote to them stays
                       written.
-  packages do NOT     a .tapp you installed yourself is under /var and survives.
-                      If it was built against a newer runtime bundle than the
-                      deployment you are going back to, it can stop launching.
-                      Reinstall it, or roll forward again.
+  packages are kept   a .tapp you installed or updated yourself is under /var
+                      and survives. One built against a runtime bundle the
+                      deployment you are going back to lacks runs as that
+                      image ships it, or gets its runtime at the next app
+                      update. Roll forward and it is back as it was.
 EOT
 }
 
@@ -312,7 +329,7 @@ cmd_rollback() {
   before="$(next_boot_entry "$esp")"
 
   local target
-  target="$(bootc_field rollback-image)"
+  target="$(image_label "$(bootc_status_json)" rollback)"
   if [ -z "$target" ]; then
     # No bootc rollback deployment. There may still be another loader entry —
     # which is the case that matters after an automatic rollback has already

@@ -166,13 +166,7 @@ fn runtime_named(tapp: &registry_types::TappArtifact) -> bool {
     tapp.target.runtime.is_none() || tapp.target.native_runtime().is_some()
 }
 
-/// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
-/// launcher looks for it: the user's runtime directory or the system image.
-pub fn runtime_installed(runtime: &str) -> bool {
-    runtime
-        .split_once('/')
-        .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
-}
+pub use package_store::runtime_installed;
 
 /// The version of an app to install when it is opened for the first time:
 /// `newest` when it runs on a runtime this device already has, else the
@@ -485,17 +479,22 @@ pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
         .ok_or_else(|| format!("could not read the installed manifest for {package_id}"))
 }
 
-/// Whether the installed `package_id` is recorded at the package format this
-/// build reads. One installed before the format changed is behind whatever
-/// its version, and the next update replaces it
-/// ([`package_store::integrity::record_current`]). A package that is not
-/// installed, or a registry that cannot be read, is not judged here.
+/// Whether the installed `package_id` needs nothing an update would bring
+/// besides a newer version. One recorded before the package format changed
+/// is behind whatever its version ([`package_store::integrity::record_current`]),
+/// and so is one whose runtime build is missing, as after a rollback to an
+/// image that does not ship it: the next update fetches the runtime. A
+/// package that is not installed, or a registry that cannot be read, is not
+/// judged here.
 #[must_use]
-pub fn installed_record_current(package_id: &str) -> bool {
+pub fn installed_current(package_id: &str) -> bool {
     package_store::find_installed(package_id)
         .ok()
         .flatten()
-        .is_none_or(|entry| package_store::integrity::record_current(&entry))
+        .is_none_or(|entry| {
+            package_store::integrity::record_current(&entry)
+                && (entry.runtime.is_empty() || runtime_installed(&entry.runtime))
+        })
 }
 
 /// Installed package versions, parsed once for bulk update checks.

@@ -10955,6 +10955,7 @@ dependencies = [
  "hex",
  "iroh-blobs",
  "libc",
+ "runtime-bundle",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
