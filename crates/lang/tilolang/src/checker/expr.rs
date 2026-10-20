@@ -69,6 +69,7 @@ impl Checker<'_> {
         match &e.kind {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
+            ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
             ExprKind::Bool(b) => Ex::new(Ek::Bool(*b), Ty::Bool),
             ExprKind::None => match exp {
                 Some(t @ Ty::Option(_)) => Ex::host(Imp::NoneV, Vec::new(), t.clone()),
@@ -101,6 +102,11 @@ impl Checker<'_> {
             ExprKind::Unary { op, operand } => self.unary(*op, operand, e.span),
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::Field { base, name } => {
+                if matches!(&base.kind, ExprKind::Ident(n) if n == "space")
+                    && self.lookup("space").is_none()
+                {
+                    return self.space_field(name);
+                }
                 if self.names_import(base) {
                     self.err(
                         "E026",
@@ -148,6 +154,21 @@ impl Checker<'_> {
         if let Some((id, ty)) = self.lookup(name) {
             return Ex::local(id, ty);
         }
+        if name == "space" {
+            self.err(
+                "E064",
+                span,
+                format!(
+                    "`space` is read through its fields, in a view: {}",
+                    crate::prims::SPACE_FIELDS
+                ),
+            );
+            return Ex::error();
+        }
+        if crate::prims::TOKENS.contains(&name) {
+            self.err("E014", span, format!("`{name}` is a layout token; it is only a value as a named argument of a UI call, such as `gap: {name}`"));
+            return Ex::error();
+        }
         if let Some(c) = self.env.own_callable(name) {
             self.err(
                 "E026",
@@ -180,6 +201,61 @@ impl Checker<'_> {
             );
         }
         Ex::error()
+    }
+
+    /// `space.width_class`, `space.compact`, ... (layout.md section 4): reads of the space the
+    /// parent offers this view, through `space_i` and `space_f`.
+    fn space_field(&mut self, name: &ast::Ident) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E064",
+                name.span,
+                format!("`space` is the space a view is offered; {who} cannot read it"),
+            );
+            return Ex::error();
+        }
+        let read = |imp: Imp, field: &str, ty: Ty| Ex::host(imp, vec![Ex::str(field)], ty);
+        let class_is = |v: i64| {
+            let class = read(Imp::SpaceI, "width_class", Ty::Enum("width_class"));
+            Ex::new(
+                Ek::Bin(ir::BinOp::Eq, Box::new(class), Box::new(Ex::int(v))),
+                Ty::Bool,
+            )
+        };
+        match name.name.as_str() {
+            "width_class" => read(Imp::SpaceI, "width_class", Ty::Enum("width_class")),
+            "orientation" => read(Imp::SpaceI, "orientation", Ty::Enum("orientation")),
+            "compact" => class_is(0),
+            "wide" => class_is(3),
+            "width" => read(Imp::SpaceF, "width", Ty::Float),
+            "height" => read(Imp::SpaceF, "height", Ty::Float),
+            other => {
+                self.err(
+                    "E021",
+                    name.span,
+                    format!(
+                        "`space` has no field `{other}`; fields are: {}",
+                        crate::prims::SPACE_FIELDS
+                    ),
+                );
+                Ex::error()
+            }
+        }
+    }
+
+    /// A bare variant name compared with a `space` enum: `space.width_class == wide`.
+    fn enum_const(&self, lhs: &Ty, rhs: &ast::Expr) -> Option<Ex> {
+        let (Ty::Enum(kind), ExprKind::Ident(v)) = (lhs, &rhs.kind) else {
+            return None;
+        };
+        if self.lookup(v).is_some() {
+            return None;
+        }
+        let index = crate::prims::enum_variants(kind)
+            .iter()
+            .position(|x| x == v)?;
+        Some(Ex::new(Ek::Int(index as i64), Ty::Enum(kind)))
     }
 
     fn string(&mut self, parts: &[StrPart]) -> Ex {
@@ -373,7 +449,10 @@ impl Checker<'_> {
         }
         let l = self.expr(lhs, None);
         let hint = l.ty.clone();
-        let r = self.expr(rhs, Some(&hint));
+        let r = match self.enum_const(&hint, rhs) {
+            Some(r) => r,
+            None => self.expr(rhs, Some(&hint)),
+        };
         if l.ty.is_error() || r.ty.is_error() {
             return Ex::error();
         }
@@ -393,7 +472,7 @@ impl Checker<'_> {
         let r = self.coerce(r, &l.ty.clone(), span);
         let (lt, base) = (l.ty.clone(), if eq { ir::BinOp::Eq } else { ir::BinOp::Ne });
         match lt {
-            Ty::Int | Ty::Float | Ty::Bool => {
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Enum(_) => {
                 Ex::new(Ek::Bin(base, Box::new(l), Box::new(r)), Ty::Bool)
             }
             Ty::Text => {

@@ -34,6 +34,24 @@ pub enum EffectClass {
     Outside,
 }
 
+/// A unit of a length literal such as `11rem` (layout.md section 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LengthUnit {
+    Rem,
+    Dp,
+    Fr,
+}
+
+impl LengthUnit {
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Rem => "rem",
+            Self::Dp => "dp",
+            Self::Fr => "fr",
+        }
+    }
+}
+
 /// Identity of a record type: the app that declares it and its name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeKey {
@@ -59,6 +77,10 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     Action,
     View,
+    /// A length literal; the unit is part of the type.
+    Length(LengthUnit),
+    /// A value of a built-in enum of `space` (`"width_class"` or `"orientation"`).
+    Enum(&'static str),
     /// A type that already produced an error; compatible with everything.
     Error,
 }
@@ -80,8 +102,8 @@ impl Ty {
     /// The wasm representation (spec section 4.1); `None` for no value.
     pub const fn repr(&self) -> Option<Vt> {
         match self {
-            Self::Int => Some(Vt::I64),
-            Self::Float => Some(Vt::F64),
+            Self::Float | Self::Length(_) => Some(Vt::F64),
+            Self::Int | Self::Enum(_) => Some(Vt::I64),
             Self::Unit => None,
             _ => Some(Vt::I32),
         }
@@ -136,6 +158,8 @@ impl Ty {
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
+            Self::Length(u) => format!("Length({})", u.text()),
+            Self::Enum(k) => (*k).to_string(),
             Self::Error => "?".into(),
             Self::Record(k) if k.app == own_app => k.name.clone(),
             Self::Record(k) => format!("{}.{}", k.app, k.name),

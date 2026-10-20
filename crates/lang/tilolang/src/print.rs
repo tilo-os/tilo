@@ -95,6 +95,7 @@ fn expr_text(e: &Expr, min: u8) -> String {
     let body = match &e.kind {
         ExprKind::Int(v) => v.to_string(),
         ExprKind::Float(v) => float_text(*v),
+        ExprKind::Length(v, u) => format!("{v}{}", u.text()),
         ExprKind::Bool(b) => b.to_string(),
         ExprKind::None => "none".into(),
         ExprKind::Str(parts) => {

@@ -296,6 +296,8 @@ pub struct Arg {
 pub enum ExprKind {
     Int(i64),
     Float(f64),
+    /// `11rem`, `4dp`, `1fr`.
+    Length(f64, crate::types::LengthUnit),
     Bool(bool),
     None,
     Str(Vec<StrPart>),

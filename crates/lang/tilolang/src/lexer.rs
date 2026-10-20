@@ -26,6 +26,8 @@ pub enum Tok {
     Kw(&'static str),
     Int(i64),
     Float(f64),
+    /// A number with a unit suffix: `11rem`.
+    Length(f64, &'static str),
     Str(Vec<StrPiece>),
     Ref(RefLit),
     Doc(String),
@@ -64,7 +66,7 @@ impl Tok {
         match self {
             Self::Ident(n) => format!("`{n}`"),
             Self::Kw(k) => format!("`{k}`"),
-            Self::Int(_) | Self::Float(_) => "a number".into(),
+            Self::Int(_) | Self::Float(_) | Self::Length(..) => "a number".into(),
             Self::Str(_) => "a string".into(),
             Self::Ref(_) => "a reference".into(),
             Self::Doc(_) => "a doc comment".into(),
@@ -176,6 +178,14 @@ impl Lexer<'_> {
                     self.pos += 1;
                     self.newline(start);
                 }
+                b';' => {
+                    self.pos += 1;
+                    if self.depth == 0
+                        && !matches!(self.toks.last().map(|t| &t.tok), Some(Tok::Newline) | None)
+                    {
+                        self.push(Tok::Newline, start);
+                    }
+                }
                 b'/' if self.at(1) == Some(b'/') => self.comment(start),
                 b'"' => self.string(start),
                 b'@' => self.reference(start),
@@ -274,6 +284,29 @@ impl Lexer<'_> {
             }
         }
         let text = self.slice(start, self.pos).to_string();
+        let suffix_start = self.pos;
+        while self.at(0).is_some_and(is_ident_char) {
+            self.pos += 1;
+        }
+        let unit = ["rem", "dp", "fr"]
+            .into_iter()
+            .find(|u| *u == self.slice(suffix_start, self.pos));
+        if let Some(u) = unit {
+            match text.parse::<f64>() {
+                Ok(v) if v.is_finite() => self.push(Tok::Length(v, u), start),
+                _ => {
+                    self.error(
+                        "E004",
+                        start,
+                        self.pos,
+                        format!("`{text}{u}` is not a finite length"),
+                    );
+                    self.push(Tok::Length(0.0, u), start);
+                }
+            }
+            return;
+        }
+        self.pos = suffix_start;
         if float {
             match text.parse::<f64>() {
                 Ok(v) if v.is_finite() => self.push(Tok::Float(v), start),
