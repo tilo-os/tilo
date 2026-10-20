@@ -775,16 +775,27 @@ pub(crate) fn read_messages(
             ))
         })
         .transpose()?;
+    // Oldest first by when written; posts of the same second keep the
+    // order the chain holds them in (the stable sort), which is the order
+    // they were posted in. Their ids are random, so ordering ties by id
+    // would shuffle a burst of posts.
     let mut messages: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
         .iter()
         .filter(|(_, found)| found.channel.as_str() == channel)
-        .filter(|(id, found)| {
-            after
-                .as_ref()
-                .is_none_or(|(ts, last)| (found.ts, id.as_str()) > (*ts, last.as_str()))
-        })
         .collect();
-    messages.sort_by(|(a, left), (b, right)| (left.ts, a.as_str()).cmp(&(right.ts, b.as_str())));
+    messages.sort_by_key(|(_, found)| found.ts);
+    if let Some((ts, last)) = &after {
+        // After the cursor's message where it is still held; past its
+        // second when it has gone since.
+        let start = messages
+            .iter()
+            .position(|(id, _)| id.as_str() == last)
+            .map_or_else(
+                || messages.partition_point(|(_, found)| found.ts <= *ts),
+                |at| at + 1,
+            );
+        messages.drain(..start);
+    }
     let more = messages.len() > size;
     messages.truncate(size);
     let next = more
