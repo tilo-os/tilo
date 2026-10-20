@@ -1,8 +1,7 @@
 use super::*;
 use automerge::ReadDoc;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+use tilo_test_env::hang_bound;
 
 #[test]
 fn peer_hardware_language_metadata_survives_projection_without_a_source_extension() {
@@ -277,7 +276,7 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     app.sync(&state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while ui::time::now() < deadline {
         app.update(&state.doc, &state.root);
         app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
@@ -316,7 +315,7 @@ fn the_embedded_terminal_is_the_projects_terminal_child() {
             && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
                 .is_some_and(|text| text.contains("CHILD_TERM_OK"))
     };
-    let deadline = ui::time::now() + HANG_BOUND;
+    let deadline = ui::time::now() + hang_bound();
     while !shown(&mut app) && ui::time::now() < deadline {
         app.settle();
         std::thread::sleep(std::time::Duration::from_millis(20));

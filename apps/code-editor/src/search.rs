@@ -417,8 +417,7 @@ pub fn relative_display(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     fn q(n: &str) -> Query {
         Query::new(n)
@@ -624,7 +623,7 @@ mod tests {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
         let mut hits = Vec::new();
-        let deadline = ui::time::now() + HANG_BOUND;
+        let deadline = ui::time::now() + hang_bound();
         while ui::time::now() < deadline {
             for msg in job.drain() {
                 match msg {
