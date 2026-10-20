@@ -3,7 +3,7 @@
 The production `tilo-extension activate` command improved from **77.98 ms to
 48.21 ms median (38.2%)** across 40 native processes per version. Nearest-rank
 p95 improved from **117.31 ms to 83.41 ms**. Every command exited successfully
-with empty stdout/stderr. [All samples and boot observations](boot-extension-startup-2026-10-06.json)
+with empty stdout/stderr. [All samples and boot observations](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/boot-extension-startup-2026-10-06.json)
 are retained, including a rejected networking experiment.
 
 ## Change and security behavior
