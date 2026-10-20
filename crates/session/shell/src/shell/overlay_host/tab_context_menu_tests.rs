@@ -605,6 +605,9 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     /// The menu paints through the shared widget with the live theme and
     /// an `e4` shadow following its outline, and never paints when closed.
     fn the_open_menu_paints_and_the_closed_one_does_not() {
+        // Motion reads at its end: this checks the resting frame of a menu
+        // that opens on the standard motion.
+        let _settled = ui::motion::testing::settled();
         let mut h = harness(2);
         let mut tr = TextRenderer::new();
         let presence = ui::presence::PresenceCtx::default();
@@ -1050,10 +1053,12 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
     use winit::keyboard::ModifiersState;
     // Motion reads at its end: this test checks the resting frame.
     let _settled = ui::motion::testing::settled();
+    // Wide enough for the window's tabs beside its own controls.
+    const FIRST_W: f64 = 640.0;
     let mut h = harness(2);
     h.host.set_output_geometry(&[
-        OutputGeometry::unscaled(0.0, 0.0, 360.0, VH),
-        OutputGeometry::unscaled(360.0, 0.0, VW - 360.0, VH).with_id(1),
+        OutputGeometry::unscaled(0.0, 0.0, FIRST_W, VH),
+        OutputGeometry::unscaled(FIRST_W, 0.0, VW - FIRST_W, VH).with_id(1),
     ]);
     (h.taffy, h.root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
     // Pointer entry focuses the empty second display. Keyboard navigation
@@ -1089,13 +1094,13 @@ fn tab_menu_keyboard_anchor_stays_on_the_focused_display() {
         .last()
         .unwrap();
     assert!(
-        pill.area() > 0.0 && pill.x0 >= 0.0 && pill.x1 <= 360.0,
+        pill.area() > 0.0 && pill.x0 >= 0.0 && pill.x1 <= FIRST_W,
         "the focused pill lies on the focused display: {pill:?}"
     );
     assert!(h.key_with_modifiers(Key::Named(NamedKey::F10), ModifiersState::SUPER, false));
     let menu = h.host.tab_context_menu_rect().unwrap();
     assert!(
-        menu.x0 >= 0.0 && menu.x1 <= 360.0,
+        menu.x0 >= 0.0 && menu.x1 <= FIRST_W,
         "the keyboard menu stays on the focused display: {menu:?}"
     );
     assert!(
