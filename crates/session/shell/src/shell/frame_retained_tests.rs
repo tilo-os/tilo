@@ -3187,9 +3187,11 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 2160.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 2160.0).with_id(1),
         ]);
-        frame.relayout();
-        // The fade itself is under test, not the reduced-motion snap.
+        // The fade itself is under test, not the reduced-motion snap. The
+        // overview latches its transition with the motion it was last laid
+        // out for, so motion is restored before that layout.
         frame.theme.reduce_motion = false;
+        frame.relayout();
         let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
         frame.with_chrome(|chrome| {
             chrome.overlays.overview = true;
