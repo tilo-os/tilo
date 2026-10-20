@@ -381,13 +381,14 @@ impl Stewardship {
         if !allowed.of(request.channel).contains(&request.device) {
             return Ok(());
         }
-        let pending = self.requests.entry(request.channel).or_default();
-        if pending
-            .get(&request.device)
-            .is_none_or(|known| known.issued_at <= request.issued_at)
-        {
-            pending.insert(request.device, request);
-        }
+        // A device's latest request replaces any earlier one whatever its
+        // clock says: a device that started over, or whose clock went back,
+        // can no longer use the key package it asked with before. The
+        // steward refuses a package it already admitted.
+        self.requests
+            .entry(request.channel)
+            .or_default()
+            .insert(request.device, request);
         Ok(())
     }
 
@@ -631,8 +632,14 @@ mod tests {
         );
     }
 
-    /// The access request `device` makes for `channel`, as a member would.
-    fn access_request(dir: &Path, device: &SigningKey, channel: ChannelId) -> MlsAccessRequestV1 {
+    /// The access request `device` makes for `channel` at second `at`, as a
+    /// member would.
+    fn access_request(
+        dir: &Path,
+        device: &SigningKey,
+        channel: ChannelId,
+        at: u64,
+    ) -> MlsAccessRequestV1 {
         std::fs::create_dir_all(dir).unwrap();
         let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
         channel_crypto::ChannelMember::open(
@@ -645,9 +652,41 @@ mod tests {
             &VaultKey::new([2; 32]),
         )
         .unwrap()
-        .access_request(device, 1, &VaultKey::new([2; 32]))
+        .access_request(device, at, &VaultKey::new([2; 32]))
         .unwrap()
         .unwrap()
+    }
+
+    /// A device that started over with its clock behind the requests its
+    /// earlier instance made is not kept waiting behind them: its latest
+    /// request is the one admitted.
+    #[test]
+    fn a_devices_latest_request_wins_whatever_its_clock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stewardship = Stewardship::new(
+            "room",
+            tmp.path().join("room.channels"),
+            &SigningKey::from_bytes(&[9; 32]),
+        );
+        let device = SigningKey::from_bytes(&[2; 32]);
+        let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        let channel = ChannelId::new();
+        let allowed = Readers::new(
+            BTreeSet::from([device_key]),
+            HashMap::new(),
+            BTreeSet::new(),
+        );
+        let ahead = access_request(&tmp.path().join("earlier"), &device, channel, 100);
+        let fresh = access_request(&tmp.path().join("fresh"), &device, channel, 1);
+        assert!(fresh.issued_at < ahead.issued_at);
+        for request in [ahead, fresh.clone()] {
+            stewardship
+                .request(device.verifying_key().to_bytes(), request, None, &allowed)
+                .unwrap();
+        }
+        assert_eq!(stewardship.requests[&channel][&device_key], fresh);
+        stewardship.admit_pending(&allowed).unwrap();
+        assert!(stewardship.members(channel).unwrap().contains(&device_key));
     }
 
     /// "Finance: Deny Read" for one device, as `readers` hands it over: every
@@ -699,6 +738,7 @@ mod tests {
                     &member.join(hex::encode(device.to_bytes())),
                     device,
                     channel,
+                    1,
                 );
                 stewardship
                     .request(device.verifying_key().to_bytes(), request, route, &allowed)
@@ -706,7 +746,7 @@ mod tests {
             }
         }
         // A route that hashes to another channel is a forgery.
-        let forged = access_request(&member.join("forged"), &other, unknown);
+        let forged = access_request(&member.join("forged"), &other, unknown, 1);
         assert!(
             stewardship
                 .request(
