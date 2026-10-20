@@ -142,8 +142,10 @@ def goldens(image: str) -> str:
         'requirement = { cores = 16, memory = "48GiB" }',
         'cost = "minutes"',
         # Pushes to main don't run it: it holds 16 cores and 48 GiB per job, and on main it took
-        # 21 job-hours a day. Release candidates do (visual-goldens below); `t test goldens`
-        # runs it for a working tree.
+        # 21 job-hours a day. Main runs it when t has room left after everything else (`idle`),
+        # and t bisects a failure to the commit that broke it; release candidates run it too
+        # (visual-goldens below); `t test goldens` runs it for a working tree.
+        'on = ["idle"]',
         "default = false",
         "",
         "# The goldens family over all its packages, on every release candidate and on demand.",
