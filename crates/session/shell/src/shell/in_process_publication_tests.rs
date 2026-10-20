@@ -106,7 +106,7 @@ fn authorized_browser_directory_waits_for_primary_and_person_documents() {
     let provider = wait_native_directory(
         &mut shown,
         &session.broker.app_action_broker().unwrap(),
-        browser::definition().app_id,
+        browser::definition().app_id(),
     );
     let host = crate::shell::remote_actions::BrokerActionHost::new(
         session.broker.app_action_broker().unwrap(),
@@ -137,7 +137,7 @@ fn authorized_store_directory_publishes_inspect_catalogue() {
     let provider = wait_native_directory(
         &mut shown,
         &session.broker.app_action_broker().unwrap(),
-        definition.app_id,
+        definition.app_id(),
     );
     let host = crate::shell::remote_actions::BrokerActionHost::new(
         session.broker.app_action_broker().unwrap(),

@@ -203,7 +203,7 @@ impl LaunchSpec {
             component_host: None,
             component_capture_scenario: None,
             component_native_services: false,
-            app_id: definition.app_id,
+            app_id: definition.app_id(),
             shot_viewport: |_| DEFAULT_VIEWPORT,
             command_handler: None,
             headless_enabled: true,
@@ -1149,7 +1149,7 @@ fn identity_step(spec: &LaunchSpec) -> IdentityStep {
 /// identity selected: who works here, and the button to choose.
 #[cfg(any(feature = "native", test))]
 fn identity_window_root(spec: &LaunchSpec) -> crate::widget::Scrollable {
-    crate::workspace_identity::required_state(spec.definition.title).into_scrollable()
+    crate::workspace_identity::required_state(spec.definition.title()).into_scrollable()
 }
 
 #[cfg(feature = "native")]
@@ -2393,7 +2393,7 @@ mod tests {
             let want = crate::record::RecordCheckout::new(id, definition.record_kind.clone());
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id, room)
+                .open(definition.app_id(), room)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
                 crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)
@@ -2542,7 +2542,7 @@ mod tests {
                 crate::record::RecordId::parse(args.value("--fixture-record").unwrap()).unwrap();
             let mut owners = crate::record::RecordOwners::new(root.clone());
             let records = owners
-                .open(definition.app_id, room)
+                .open(definition.app_id(), room)
                 .map_err(LaunchError::Record)?;
             let views = std::rc::Rc::new(
                 crate::application_view::InstanceViewStore::new(root, probe::DEVICE, room)

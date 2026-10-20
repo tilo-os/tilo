@@ -68,7 +68,7 @@ pub trait ComponentContextSource {
         request: &TileRequest<'_>,
     ) -> Result<RecordCheckout, LaunchError> {
         Ok(crate::records::component_record(
-            definition.app_id,
+            definition.app_id(),
             request.tab.id,
             definition.record_kind.clone(),
         ))

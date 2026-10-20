@@ -272,13 +272,13 @@ impl Delivery {
 fn publisher(apps: &mut InProcessApps, admission: &Enrollment) -> Result<ui::App, LaunchError> {
     let definition = chat::definition();
     let connector = apps.broker.as_ref().ok_or(LaunchError::BindingMismatch)?(
-        definition.app_id,
+        definition.app_id(),
         &admission.destination.room,
     );
     let collaboration = ui::collaboration::CollaborationManager::for_route_host_in_background(
         connector,
         ui::collaboration::RouteSpec {
-            app_id: definition.app_id.into(),
+            app_id: definition.app_id().into(),
             cluster_id: admission
                 .destination
                 .room
@@ -303,7 +303,7 @@ fn publisher_on(
             // creates a new Chat record or treats local cached bytes as admission.
             let records = apps
                 .owners
-                .open(definition.app_id, &admission.destination.room)
+                .open(definition.app_id(), &admission.destination.room)
                 .map_err(LaunchError::Record)?;
             let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
             records

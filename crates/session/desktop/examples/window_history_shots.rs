@@ -39,7 +39,7 @@ fn tile(
     seed: impl FnOnce(&mut ui::automerge::AutoCommit),
 ) -> TileHost {
     let mut owners = RecordOwners::new(profile.to_owned());
-    let records = owners.open(definition.app_id, ROOM).unwrap();
+    let records = owners.open(definition.app_id(), ROOM).unwrap();
     let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
     if records.try_open_record(&checkout).is_err() {
         records

@@ -137,7 +137,7 @@ fn startup(current: Enrollment) -> Startup {
 fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
     let admitted = enrollment();
     let mut owners = RecordOwners::new(profile.to_owned());
-    let records = owners.open(chat::definition().app_id, ROOM).unwrap();
+    let records = owners.open(chat::definition().app_id(), ROOM).unwrap();
     let checkout = RecordCheckout::package_primary(chat::definition().record_kind.clone());
     let missing = match records.try_open_record(&checkout) {
         Ok(_) => false,

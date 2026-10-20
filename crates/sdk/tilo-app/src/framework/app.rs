@@ -403,8 +403,8 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
 
 fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: A::ID,
-        title: A::TITLE,
+        app_id: A::ID.into(),
+        title: A::TITLE.into(),
         icon: icon(hooks::<A>()),
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
@@ -1344,7 +1344,7 @@ fn prepare_named(
         return Ok(super::testing::in_profile(
             prepared,
             &profile_root,
-            definition.app_id,
+            definition.app_id(),
         ));
     }
     if let Some(directory) = args.value("--data-dir") {
@@ -1362,7 +1362,7 @@ fn prepare_named(
                 super::testing::in_profile(
                     prepared,
                     &super::testing::data_dir_root(directory.as_ref()),
-                    definition.app_id,
+                    definition.app_id(),
                 )
             },
         );

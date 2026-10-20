@@ -264,8 +264,8 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "test.directory",
-        title: "Directory",
+        app_id: "test.directory".into(),
+        title: "Directory".into(),
         icon: crate::widget::IconDescriptor::Glyph("D"),
         record_kind: crate::record::RecordKind::new("directory"),
         required: vec![],

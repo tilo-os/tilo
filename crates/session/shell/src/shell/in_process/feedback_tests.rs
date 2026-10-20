@@ -169,7 +169,7 @@ impl FeedbackHost for AdmittedHost {
 }
 
 fn destination_owner(apps: &mut InProcessApps) -> Rc<RefCell<DestinationOwner>> {
-    let records = apps.owners.open(chat::definition().app_id, ROOM).unwrap();
+    let records = apps.owners.open(chat::definition().app_id(), ROOM).unwrap();
     let checkout =
         ui::record::RecordCheckout::package_primary(chat::definition().record_kind.clone());
     records

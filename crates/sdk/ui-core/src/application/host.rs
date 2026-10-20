@@ -55,7 +55,7 @@ impl NativeProcessHost {
         author: UserId,
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
-        let resolved = environment.resolve(definition.app_id, &author)?;
+        let resolved = environment.resolve(definition.app_id(), &author)?;
         let permissions = Rc::new(RefCell::new(resolved.permissions));
         // A workspace launch's participation follows the room's grants, as
         // the shell tells the window (`crate::room_sync`): read-only becomes
@@ -682,7 +682,7 @@ impl ApplicationHost {
         definition: &ApplicationDefinition,
         mut context: HostContext,
     ) -> HostContext {
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         match crate::record::person::PersonRecords::open(
             &mut self.person,
             package_id,
@@ -707,8 +707,8 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
-        if package_id != definition.app_id {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
+        if package_id != definition.app_id() {
             return Err(LaunchError::BindingMismatch);
         }
         self.owners
@@ -731,8 +731,8 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
-        if package_id != definition.app_id
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
+        if package_id != definition.app_id()
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
                     || saved.record_id != checkout.id.as_str()
@@ -757,7 +757,7 @@ impl ApplicationHost {
         let Some(saved) = self.views.load(instance_id).map_err(LaunchError::Restore)? else {
             return Ok(None);
         };
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if saved.app_id != package_id
             || definition.record_kind.as_str() != saved.record_kind
@@ -811,7 +811,7 @@ impl ApplicationHost {
             // presentation: this instance reopens where it was left (the
             // note it showed), when what it saved is of the room's record.
             // A view of a record it kept per window before is not restored.
-            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+            let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
             let saved = if matches!(target, LaunchTarget::Record { .. }) {
                 self.views
                     .load(instance_id)
@@ -984,8 +984,8 @@ mod native_process_tests {
 
     fn definition(app_id: &'static str) -> ApplicationDefinition {
         ApplicationDefinition {
-            app_id,
-            title: "Host probe",
+            app_id: app_id.into(),
+            title: "Host probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("H"),
             record_kind: crate::record::RecordKind::new("host.probe"),
             required: vec![],
