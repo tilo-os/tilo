@@ -65,6 +65,26 @@ fn a_stack_runs_top_to_bottom_with_the_sibling_gap() {
 }
 
 #[test]
+fn an_absent_child_takes_its_gap_with_it() {
+    let theme = Theme::dark();
+    let mut stack = Stack::stack()
+        .align(Align::Start)
+        .push(boxed(20.0))
+        .push(Box::new(crate::widget::Absent::new()))
+        .push(boxed(30.0));
+    solve(&mut stack, &theme, 400.0);
+    let last = stack
+        .children()
+        .last()
+        .map(|child| child.get_rect())
+        .expect("three children");
+    assert!(
+        (last.y0 - (20.0 + gap(&theme, Rhythm::Sibling))).abs() < 0.5,
+        "one gap between the two present children: {last:?}"
+    );
+}
+
+#[test]
 fn a_row_runs_leading_to_trailing_and_mirrors_in_right_to_left() {
     let theme = Theme::dark();
     let mut row = Row::row().fill_width().push(boxed(20.0)).push(boxed(20.0));

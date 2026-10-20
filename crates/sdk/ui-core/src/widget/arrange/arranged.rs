@@ -265,8 +265,14 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 continue;
             };
             let inner = slot.element.build_layout(tree, theme, map);
+            let mut style = style;
             // The child grows into a wrapper that is larger than its content (a filled slot).
             if let Ok(current) = tree.style(inner) {
+                // A child out of the flow (an absent one, an effect endpoint) takes its slot
+                // with it, gap and all.
+                if current.display == taffy::Display::None {
+                    style.display = taffy::Display::None;
+                }
                 let mut grown = current.clone();
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
