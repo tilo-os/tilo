@@ -1,14 +1,17 @@
 //! `embed(source, author: who)` (implementation design 7.8): a block's source rendered inline.
 //!
-//! The node carries the block's source and its author as `Text`. The host compiles the source
+//! The node carries the block's source, its author as a `Principal`, and for an action block
+//! the `Invocation` the host recorded when the message was posted. The host compiles the source
 //! against the loaded packages' metadata (cached by the source's hash and the package set),
 //! runs it as a nested boundary whose code author is the principal, and replaces the node's
 //! children with what the block's value shows. The node's `state` property says which:
 //!
 //! * `view`: the block was a view; its tree is the only child.
-//! * `invocation`: the block was an action application. The child is an `invocation` node
-//!   (`state` of `done`, `suggested`, `declined`, `failed` or `denied`, plus `action`, `app`,
-//!   and for a suggestion its `run`), holding the action's proposal view when it has one.
+//! * `invocation`: the block was an action application. Nothing runs here: the child is an
+//!   `invocation` node drawn from the recorded resource (`state` of `pending` before the host
+//!   has recorded one, then `done`, `suggested`, `declined`, `failed` or `denied`, plus
+//!   `action`, `app`, `result`, the `invocation` reference and `can_resolve`), holding the
+//!   action's proposal view while it is a suggestion and the action has one.
 //! * `data`: the block was a value; the child is its default rendering.
 //! * `error`: the source did not compile or the block failed; the child is an `error` node
 //!   with one `text` child per diagnostic.
@@ -21,13 +24,11 @@ use tilolang::{BlockKind, CompiledBlock, Diagnostic, PackageMeta, Span};
 
 use crate::core::Core;
 use crate::error::RuntimeError;
-use crate::exec::InvokeOutcome;
-use crate::flow::JournalEntry;
-use crate::ids::ModuleHash;
+use crate::ids::{ModuleHash, Principal};
 use crate::project::{ProjectOptions, project};
 use crate::registry::Package;
 use crate::render::{Acc, Build, ViewTarget, scope};
-use crate::value::{ActionRef, Value};
+use crate::value::{ResourceRef, Value, from_json};
 use crate::view::UiNode;
 
 /// The app prefix of block modules: they are never visible to other blocks.
@@ -35,22 +36,15 @@ const BLOCK_APP_PREFIX: &str = "agent.block.";
 
 /// A compiled and registered block.
 pub struct EmbedBlock {
-    block: CompiledBlock,
-    pkg: Rc<Package>,
+    pub(crate) block: CompiledBlock,
+    pub(crate) pkg: Rc<Package>,
 }
 
-type Cached = Result<Rc<EmbedBlock>, Rc<Vec<Diagnostic>>>;
-
-/// What an embedded action application did, kept so a re-render does not repeat it.
-struct Invocation {
-    aref: ActionRef,
-    outcome: InvokeOutcome,
-}
+pub(crate) type Cached = Result<Rc<EmbedBlock>, Rc<Vec<Diagnostic>>>;
 
 #[derive(Default)]
 pub struct EmbedState {
     blocks: HashMap<String, Cached>,
-    invocations: HashMap<String, Rc<Invocation>>,
 }
 
 fn hex(h: &blake3::Hash) -> String {
@@ -190,11 +184,22 @@ impl Core {
     /// Replace the children of an `embed` node with what its block shows. Nothing here fails
     /// the surrounding view: a block that does not compile or run is an `error` child.
     pub(crate) fn resolve_embed(&self, cx: &Build<'_>, node: &mut UiNode, acc: &mut Acc) {
-        let (source, author) = (text_prop(node, "source"), text_prop(node, "author"));
+        let source = text_prop(node, "source");
+        let author = match node.props.get("author") {
+            Some(Value::Principal(p)) => Some(p.clone()),
+            _ => None,
+        };
+        let invocation = match node.props.get("invocation") {
+            Some(Value::Opt(Some(inner))) => match &**inner {
+                Value::Ref(r) => Some(r.target.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
         let key = node.key.clone();
         let (state, children) = match (source, author) {
-            (Some(s), Some(a)) if !a.is_empty() => {
-                match self.embed_content(cx, &key, &s, &a, acc) {
+            (Some(s), Some(a)) => {
+                match self.embed_content(cx, &key, &s, &a, invocation.as_ref(), acc) {
                     Ok(done) => done,
                     Err(e) => ("error", vec![error_node(&key, &[e.to_string()])]),
                 }
@@ -203,7 +208,10 @@ impl Core {
                 "error",
                 vec![error_node(
                     &key,
-                    &["an embed needs its source and its author as text".to_owned()],
+                    &[
+                        "an embed needs its source as text and its author as a principal"
+                            .to_owned(),
+                    ],
                 )],
             ),
         };
@@ -216,7 +224,8 @@ impl Core {
         cx: &Build<'_>,
         key: &str,
         source: &str,
-        author: &str,
+        author: &Principal,
+        invocation: Option<&ResourceRef>,
         acc: &mut Acc,
     ) -> Result<(&'static str, Vec<UiNode>), RuntimeError> {
         let block = match self.embed_block(source) {
@@ -226,7 +235,7 @@ impl Core {
                 return Ok(("error", vec![error_node(key, &lines)]));
             }
         };
-        let identity = ModuleHash::principal(author);
+        let identity = ModuleHash::principal(&author.0);
         match block.block.kind {
             BlockKind::View => {
                 let target = ViewTarget {
@@ -235,16 +244,11 @@ impl Core {
                     params: Vec::new(),
                 };
                 let nested = self.render_at(&target, &[], cx.offer.deeper(), Some(&identity))?;
-                acc.absorb(
-                    nested.reads,
-                    nested.space_reads,
-                    nested.retained,
-                    nested.runs,
-                );
+                acc.absorb(nested.reads, nested.space_reads, nested.retained);
                 Ok(("view", vec![scope(key, nested.root)]))
             }
             BlockKind::Action => {
-                let child = self.embed_action(cx, key, source, author, &block, acc)?;
+                let child = self.invocation_card(cx, key, invocation, acc)?;
                 Ok(("invocation", vec![child]))
             }
             BlockKind::Data => {
@@ -259,7 +263,7 @@ impl Core {
     /// The block for a source, compiled against the packages loaded now. The cache key is the
     /// source's hash and the set of packages it was compiled against, so loading another
     /// package makes the same source compile again.
-    fn embed_block(&self, source: &str) -> Cached {
+    pub(crate) fn embed_block(&self, source: &str) -> Cached {
         let pkgs: Vec<Rc<Package>> = self
             .registry
             .borrow()
@@ -302,125 +306,85 @@ impl Core {
         built
     }
 
-    /// Invoke (or suggest) the action a block applies, once for this message and author, and
-    /// render the outcome. A re-render shows the recorded outcome; a suggestion's state
-    /// follows its journal, so deciding it shows as done or declined.
-    fn embed_action(
+    /// Draw the invocation the host recorded for an action block. This only reads: the action
+    /// ran, or was suggested, when the message was posted.
+    fn invocation_card(
         &self,
         cx: &Build<'_>,
         key: &str,
-        source: &str,
-        author: &str,
-        block: &EmbedBlock,
+        invocation: Option<&ResourceRef>,
         acc: &mut Acc,
     ) -> Result<UiNode, RuntimeError> {
-        let memo = format!(
-            "{key}\u{0}{}\u{0}{author}",
-            hex(&blake3::hash(source.as_bytes()))
-        );
-        let known = self.embeds.borrow().invocations.get(&memo).cloned();
-        let inv = if let Some(inv) = known {
-            inv
-        } else {
-            let identity = ModuleHash::principal(author);
-            let value = self.eval_block(&block.pkg, &block.block.value_type, Some(&identity))?;
-            let Value::Action(aref) = value else {
-                return Err(RuntimeError::Package(
-                    "the block did not produce an action".into(),
-                ));
-            };
-            let outcome = self.invoke_direct(cx.offer.viewer, &aref)?;
-            let inv = Rc::new(Invocation { aref, outcome });
-            self.embeds
-                .borrow_mut()
-                .invocations
-                .insert(memo, Rc::clone(&inv));
-            inv
+        let card_key = format!("{key}/invocation");
+        let Some(inv) = invocation else {
+            return Ok(node(
+                "invocation",
+                card_key,
+                &[("state", Value::text("pending"))],
+                Vec::new(),
+            ));
         };
-        acc.runs = true;
-        let (state, run) = self.invocation_state(&inv.outcome);
-        let (app, name, proposal) = self.action_facts(&inv.aref);
+        acc.reads.extend(self.invocation_reads(inv));
+        let rec = self.read_invocation(inv)?;
         let mut props = vec![
-            ("state", Value::text(state)),
-            ("action", Value::text(&name)),
-            ("app", Value::text(&app)),
+            ("state", Value::text(&rec.state)),
+            ("action", Value::text(&rec.name)),
+            ("app", Value::text(&rec.app)),
+            ("author", Value::Principal(rec.author.clone())),
+            ("invocation", Value::resource(inv)),
         ];
-        if let Some(run) = &run {
-            props.push(("run", Value::text(run)));
-        }
-        if let InvokeOutcome::Done(v) = &inv.outcome
-            && *v != Value::Unit
-        {
-            let shown = project(self, v, ProjectOptions::default());
-            props.push(("result", Value::text(shown.to_string())));
+        if !rec.result.is_empty() {
+            props.push(("result", Value::text(&rec.result)));
         }
         let mut children = Vec::new();
-        if state == "suggested"
-            && let Some((view, args)) = proposal
-        {
-            let target = self.view_target(&view)?;
-            let nested = self.render_at(&target, &args, cx.offer.deeper(), None)?;
-            acc.absorb(
-                nested.reads,
-                nested.space_reads,
-                nested.retained,
-                nested.runs,
-            );
-            children.push(scope(&format!("{key}/invocation"), nested.root));
-        }
-        Ok(node(
-            "invocation",
-            format!("{key}/invocation"),
-            &props,
-            children,
-        ))
-    }
-
-    /// How an invocation stands now, and the run waiting on a decision.
-    fn invocation_state(&self, outcome: &InvokeOutcome) -> (&'static str, Option<String>) {
-        match outcome {
-            InvokeOutcome::Done(_) => ("done", None),
-            InvokeOutcome::Denied => ("denied", None),
-            InvokeOutcome::Suggested(s) => {
-                let journal = self.store.borrow_mut().load_journal(&s.run);
-                match journal {
-                    Ok(Some(j)) if j.pending.is_none() => {
-                        let state = match j.entries.last() {
-                            Some(JournalEntry::Denied { .. }) => "declined",
-                            Some(JournalEntry::Failed { .. }) => "failed",
-                            _ => "done",
-                        };
-                        (state, None)
-                    }
-                    _ => ("suggested", Some(s.run.clone())),
-                }
+        if rec.state == "suggested" {
+            props.push(("run", Value::text(&rec.run)));
+            props.push((
+                "can_resolve",
+                Value::Bool(self.may_decide(cx.offer.viewer, &rec.action)),
+            ));
+            let args = serde_json::from_str::<serde_json::Value>(&rec.args)
+                .ok()
+                .and_then(|j| from_json(&j).ok());
+            if let Some(Value::List(args)) = args
+                && let (_, _, Some((view, view_args))) = self.action_facts(&rec.action, &args)
+            {
+                let target = self.view_target(&view)?;
+                let nested = self.render_at(&target, &view_args, cx.offer.deeper(), None)?;
+                acc.absorb(nested.reads, nested.space_reads, nested.retained);
+                children.push(scope(&card_key, nested.root));
             }
         }
+        Ok(node("invocation", card_key, &props, children))
     }
 
-    /// The app and name of an applied action or flow, and the proposal view with the
-    /// arguments it takes.
-    fn action_facts(&self, aref: &ActionRef) -> (String, String, Option<(String, Vec<Value>)>) {
+    /// The app and name of an action or flow by id, and the proposal view with the arguments
+    /// it takes.
+    pub(crate) fn action_facts(
+        &self,
+        action: &str,
+        args: &[Value],
+    ) -> (String, String, Option<(String, Vec<Value>)>) {
         let reg = self.registry.borrow();
-        if let Some(pkg) = reg.action_package(&aref.action)
-            && let Some(meta) = pkg.action(&aref.action)
+        if let Some(pkg) = reg.action_package(action)
+            && let Some(meta) = pkg.action(action)
         {
             let proposal = meta.proposal.as_ref().map(|p| {
-                let args = p
+                let shown = p
                     .args
                     .iter()
                     .filter_map(|n| meta.params.iter().position(|x| &x.name == n))
-                    .filter_map(|i| aref.args.get(i).cloned())
+                    .filter_map(|i| args.get(i).cloned())
                     .collect();
-                (p.view.clone(), args)
+                (p.view.clone(), shown)
             });
             return (pkg.meta.app.clone(), meta.name.clone(), proposal);
         }
-        if let Some(pkg) = reg.flow_package(&aref.action)
-            && let Some(meta) = pkg.flow(&aref.action)
+        if let Some(pkg) = reg.flow_package(action)
+            && let Some(meta) = pkg.flow(action)
         {
             return (pkg.meta.app.clone(), meta.name.clone(), None);
         }
-        (String::new(), aref.action.clone(), None)
+        (String::new(), action.to_owned(), None)
     }
 }
