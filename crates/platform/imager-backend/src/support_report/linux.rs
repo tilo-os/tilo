@@ -188,7 +188,7 @@ fn sound(sys: &Path, out: &mut Vec<RawSoundCard>) {
             }
             card.driver = driver_of(&entry.join("device"))
                 .or_else(|| uevent(&entry.join("device"), "DRIVER"));
-        } else if let Some((index, direction)) = pcm(&name) {
+        } else if let Some((index, direction)) = pcm(name) {
             let card = cards.entry(index).or_insert_with(|| RawSoundCard {
                 name: format!("Sound card {index}"),
                 playback: 0,

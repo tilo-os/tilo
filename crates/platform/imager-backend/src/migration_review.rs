@@ -351,12 +351,10 @@ impl SourceInventory {
             .custody
             .iter()
             .map(|c| c.relative.as_path())
-            .chain(self.original_custody.iter().map(|c| c.relative.as_path()))
-            .collect::<Vec<_>>();
+            .chain(self.original_custody.iter().map(|c| c.relative.as_path()));
         #[cfg(not(target_os = "linux"))]
-        let custody: Vec<&Path> = Vec::new();
+        let custody = std::iter::empty::<&Path>();
         custody
-            .into_iter()
             .chain(self.exclusions.iter().map(PathBuf::as_path))
             .collect()
     }

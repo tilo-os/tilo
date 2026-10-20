@@ -41,12 +41,16 @@ fn wait(app: &mut App, predicate: impl Fn(&serde_json::Value) -> bool) -> serde_
     }
 }
 fn choose(app: &mut App, choice: &str) {
-    app.effect(&InstallerPreviewEffect::ChoosePreview {
+    let chosen = app.effect(&InstallerPreviewEffect::ChoosePreview {
         choice: choice.into(),
-    })
-    .unwrap_or_else(|error| panic!("choose {choice}: {error:?}"));
-    app.effect(&InstallerPreviewEffect::ContinuePreview)
-        .unwrap_or_else(|error| panic!("continue after {choice}: {error:?}"));
+    });
+    assert!(chosen.is_ok(), "choose {choice}: {:?}", chosen.err());
+    let continued = app.effect(&InstallerPreviewEffect::ContinuePreview);
+    assert!(
+        continued.is_ok(),
+        "continue after {choice}: {:?}",
+        continued.err()
+    );
 }
 fn prepare(
     app: &mut App,

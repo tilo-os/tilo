@@ -191,8 +191,9 @@ impl InstallerPreview {
         self.recovery
             .evidence()
             .map_err(|_| "installer-recovery-copy-required")?;
+        let capture_files = self.selected_files()?;
         let wants_migration = self.journey.migrate == Some(true)
-            && (self.journey.categories[0] || self.selected_applications());
+            && (capture_files || self.selected_applications() || self.selected_source_anchor());
         let migration = if wants_migration {
             Some(
                 self.migration_selection
@@ -202,10 +203,7 @@ impl InstallerPreview {
         } else {
             None
         };
-        if self.journey.migrate == Some(true)
-            && self.journey.categories[0]
-            && self.selected_applications()
-        {
+        if self.journey.migrate == Some(true) && capture_files && self.selected_applications() {
             migration
                 .as_ref()
                 .ok_or("installer-preview-import-unavailable")?
@@ -453,6 +451,15 @@ impl InstallerPreview {
         if self.journey.migrate != Some(true) {
             return Ok(None);
         }
+        if !self.selected_files()?
+            && !self.selected_applications()
+            && !self.selected_source_anchor()
+        {
+            // A complete source with nothing selected has no Home or account
+            // journal to anchor. It must not capture an empty Home merely
+            // because the category defaulted on.
+            return Ok(None);
+        }
         if !self.capabilities.prepared_installation {
             return Err("installer-preview-deferred-handoff-unavailable");
         }
@@ -465,8 +472,12 @@ impl InstallerPreview {
             .home
             .as_deref()
             .ok_or("installer-preview-home-unavailable")?;
-        let exclusions = self
-            .migration_exclusions()?
+        let exclusions = if self.selected_files()? {
+            self.migration_exclusions()?
+        } else {
+            Vec::new()
+        };
+        let exclusions = exclusions
             .iter()
             .map(|path| imager_backend::setup::migration_store::NativePath::encode(path))
             .collect::<Vec<_>>();
@@ -498,9 +509,9 @@ impl InstallerPreview {
                 mail: &mail,
                 browser: &browser,
                 applications: self.selected_applications(),
-                accounts: self.journey.categories[2],
+                accounts: plan.categories.accounts,
                 account_sources: &account_sources,
-                accounts_in_package: carried_by_package && self.journey.categories[2],
+                accounts_in_package: carried_by_package && plan.categories.accounts,
                 browser_in_package: carried_by_package,
             },
         )

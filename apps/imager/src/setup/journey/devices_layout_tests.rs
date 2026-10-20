@@ -27,7 +27,7 @@ fn retained_form(root: &dyn Widget) -> Vec<(Rect, usize)> {
         let node = control(root, id).expect("production naming form");
         (
             node.get_rect(),
-            std::ptr::from_ref(node) as *const () as usize,
+            std::ptr::from_ref(node).cast::<()>() as usize,
         )
     })
     .collect()

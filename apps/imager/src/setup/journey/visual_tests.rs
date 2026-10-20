@@ -51,32 +51,8 @@ fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme
     paint_app(&mut app, scenario, ids, viewport, tag);
 }
 
-/// Scroll the real body until `id` is inside the viewport. A control below
-/// the fold is reachable with the same wheel input a person uses, never by
-/// lowering the assertion or editing its rectangle.
-pub(super) fn scroll_into_view<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, id: &str) {
-    let pointer = app
-        .with_widget::<InstallerPreview, _>(|preview| (preview.rect.center().x, 100.0))
-        .unwrap();
-    app.harness().click_at(pointer.0, pointer.1);
-    for _ in 0..80 {
-        app.settle();
-        let found = app
-            .with_widget::<InstallerPreview, _>(|preview| {
-                control(preview, id).map(|control| (control.get_rect(), preview.rect.y1))
-            })
-            .flatten();
-        let Some((rect, viewport_bottom)) = found else {
-            panic!("missing {id}");
-        };
-        if rect.y0 >= 0.0 && rect.y1 <= viewport_bottom {
-            return;
-        }
-        app.harness().scroll(0.0, -20.0);
-        app.settle();
-    }
-    panic!("{id} never scrolled into view");
-}
+mod scroll;
+pub(super) use scroll::scroll_into_view;
 
 pub(super) fn paint_app<A: ui::framework::ResourceApp>(
     app: &mut TestApp<A>,

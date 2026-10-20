@@ -479,7 +479,7 @@ impl InstallerPreview {
             )
             .with_enabled(self.journey.destination == Some(Destination::Computer)),
         ));
-        page::Frame::new(content).build()
+        page::Frame::new(content).with_cursor(self.cursor).build()
     }
 
     pub(super) fn windows_view(&self) -> Box<dyn Widget> {
@@ -796,7 +796,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::PrepareUsb,
         )));
         content = content.push(Box::new(self.recovery_content()));
-        page::Frame::new(content).build()
+        page::Frame::new(content).with_cursor(self.cursor).build()
     }
 }
 

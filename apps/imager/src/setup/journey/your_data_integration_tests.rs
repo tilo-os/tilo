@@ -109,8 +109,10 @@ fn preview(home: &Path) -> InstallerPreview {
         home: home.to_path_buf(),
         config: home_transfer::granted_root(&home.join(".config")).unwrap(),
     });
-    let mut preview = InstallerPreview::default();
-    preview.live = true;
+    let mut preview = InstallerPreview {
+        live: true,
+        ..Default::default()
+    };
     preview.journey.page = Page::Belongings;
     preview.journey.destination = Some(Destination::Another);
     preview.journey.migrate = Some(true);
@@ -127,22 +129,22 @@ fn apply(
 }
 
 fn node(preview: &InstallerPreview, label: &str) -> String {
-    preview
-        .your_data()
+    let data = preview.your_data();
+    let found = data
         .source("files")
         .unwrap()
         .groups
         .iter()
-        .find(|group| group.label == label)
-        .unwrap_or_else(|| panic!("missing discovered folder {label}"))
-        .id
-        .clone()
+        .find(|group| group.label == label);
+    assert!(found.is_some(), "missing discovered folder {label}");
+    found.unwrap().id.clone()
 }
 
 fn checkbox(preview: &InstallerPreview, test_id: &str) -> (Option<bool>, bool) {
     let composed = preview.composition(&Theme::dark());
-    let widget = visual_tests::control(composed.as_ref(), test_id)
-        .unwrap_or_else(|| panic!("missing control {test_id}"));
+    let widget = visual_tests::control(composed.as_ref(), test_id);
+    assert!(widget.is_some(), "missing control {test_id}");
+    let widget = widget.unwrap();
     let state = widget.accessibility().expect("checkbox state").state;
     (state.checked, state.mixed)
 }
@@ -532,13 +534,12 @@ fn browser_source_master_toggle_is_one_atomic_edit_over_profiles_and_sessions() 
     )
     .unwrap();
     assert!(
-        preview
+        !preview
             .belongings
             .browser
             .profile_state(&profile)
             .unwrap()
             .included
-            == false
     );
     assert!(preview.belongings.browser.selected().profiles().is_empty());
     assert!(
@@ -617,7 +618,7 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
     assert!(
         selected
             .validate(
-                &preview
+                preview
                     .belongings
                     .accounts
                     .thunderbird_reviewed
@@ -658,7 +659,7 @@ fn thunderbird_accounts_and_folders_are_selected_independently_and_validated() {
     apply(
         &mut preview,
         InstallerPreviewEffect::ExpandYourDataSource {
-            source: mail.clone(),
+            source: mail,
             expanded: true,
         },
     )
@@ -1081,8 +1082,10 @@ fn granted_windows_onedrive_root_is_an_account_source() {
     let root = fixture.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("notes.txt"), b"notes").unwrap();
-    let mut preview = InstallerPreview::default();
-    preview.live = true;
+    let mut preview = InstallerPreview {
+        live: true,
+        ..Default::default()
+    };
     preview.journey.page = Page::Belongings;
     preview.journey.destination = Some(Destination::Another);
     preview.journey.migrate = Some(true);

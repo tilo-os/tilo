@@ -61,8 +61,10 @@ fn preview(home: &Path) -> InstallerPreview {
         home: home.to_path_buf(),
         config: home_transfer::granted_root(&home.join(".config")).unwrap(),
     });
-    let mut preview = InstallerPreview::default();
-    preview.live = true;
+    let mut preview = InstallerPreview {
+        live: true,
+        ..Default::default()
+    };
     preview.journey.page = Page::Belongings;
     preview.journey.destination = Some(Destination::Another);
     preview.journey.migrate = Some(true);
@@ -92,13 +94,16 @@ fn selected_mail_without_drafts(preview: &InstallerPreview) -> prepared_media::M
 
 fn read_until(timeout: std::time::Duration, mut check: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
+    let finished = loop {
         if check() {
-            return;
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("handoff did not finish");
+    };
+    assert!(finished, "handoff did not finish");
 }
 
 #[test]

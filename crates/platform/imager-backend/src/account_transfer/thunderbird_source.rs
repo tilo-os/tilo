@@ -1338,7 +1338,6 @@ fn mail_folder(hierarchy: &[String], local_only: bool) -> (CachedFolder, Vec<Str
         "inbox" => CachedFolder::Inbox,
         "sent" | "sent items" | "sent mail" => CachedFolder::Sent,
         "drafts" | "draft" => CachedFolder::Drafts,
-        "archives" | "archive" => CachedFolder::Archive,
         "trash" | "deleted items" | "deleted" => CachedFolder::Trash,
         "junk" | "spam" | "junk e-mail" => CachedFolder::Junk,
         _ => CachedFolder::Archive,
@@ -1418,19 +1417,17 @@ fn mbox_messages(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
         }
         offset = start + 5;
     }
-    let ranges: Vec<_> = starts
-        .iter()
-        .enumerate()
-        .map(|(index, start)| {
-            (
-                *start,
-                starts.get(index + 1).copied().unwrap_or(bytes.len()),
-            )
-        })
-        .collect();
-    ranges
-        .into_iter()
-        .map(move |(start, end)| &bytes[start..end])
+    let mut ranges = Vec::new();
+    let mut message_start = None;
+    for start in starts {
+        if let Some(previous) = message_start.replace(start) {
+            ranges.push(previous..start);
+        }
+    }
+    if let Some(previous) = message_start {
+        ranges.push(previous..bytes.len());
+    }
+    ranges.into_iter().map(move |range| &bytes[range])
 }
 
 fn retain_folder(

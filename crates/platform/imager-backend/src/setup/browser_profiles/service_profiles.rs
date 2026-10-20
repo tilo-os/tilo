@@ -82,6 +82,7 @@ impl CookieProfile {
         if self.native_slack && service != Service::Slack {
             return Ok(None);
         }
+        #[cfg(feature = "installation")]
         if self.material == Material::DiscordOrigin {
             return Ok(None);
         }

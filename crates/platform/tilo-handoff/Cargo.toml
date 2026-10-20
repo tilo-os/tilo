@@ -53,6 +53,7 @@ rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

@@ -1218,6 +1218,7 @@ impl InstallerPreview {
         }
         Box::new(
             Scrollable::new_vertical()
+                .with_cursor(self.cursor)
                 .with_focus_reveal()
                 .with_child(Box::new(
                     Container::new()
@@ -1370,17 +1371,13 @@ impl InstallerPreview {
                 "installer-preview-save",
                 InstallerPreviewEffect::ContinuePreview,
             ),
-            Page::Belongings if self.live => (
+            Page::Belongings | Page::Review if self.live => (
                 "installer-preview-continue",
                 InstallerPreviewEffect::ContinuePreview,
             ),
             Page::Ready => (
                 "installer-preview-restart",
                 InstallerPreviewEffect::RestartPreview,
-            ),
-            Page::Review if self.live => (
-                "installer-preview-continue",
-                InstallerPreviewEffect::ContinuePreview,
             ),
             Page::Review => (
                 "installer-preview-finish",
@@ -1453,7 +1450,7 @@ impl InstallerPreview {
                     .with_child(Box::new(content)),
             ));
         }
-        let frame = page::Frame::new(content);
+        let frame = page::Frame::new(content).with_cursor(self.cursor);
         let frame = if self.journey.page == Page::Devices {
             frame
         } else {

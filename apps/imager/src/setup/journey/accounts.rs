@@ -393,7 +393,7 @@ pub(super) struct Accounts {
     step: Step,
     opener: Arc<dyn BrowserOpener>,
     dav_fields: [ui::LocalState<String>; 3],
-    source_accounts: SourceAccountSelection,
+    selection: SourceAccountSelection,
 }
 impl Default for Accounts {
     fn default() -> Self {
@@ -409,22 +409,22 @@ impl Default for Accounts {
             step: Step::Overview,
             opener: Arc::new(PortalOpener),
             dav_fields: std::array::from_fn(|_| ui::LocalState::new(String::new())),
-            source_accounts: SourceAccountSelection::default(),
+            selection: SourceAccountSelection::default(),
         }
     }
 }
 
 impl Accounts {
     pub(super) fn source_account_selection(&self) -> &SourceAccountSelection {
-        &self.source_accounts
+        &self.selection
     }
 
     pub(super) fn source_account_selection_snapshot(&self) -> SourceAccountSelection {
-        self.source_accounts.clone()
+        self.selection.clone()
     }
 
     pub(super) fn restore_source_account_selection(&mut self, previous: SourceAccountSelection) {
-        self.source_accounts = previous;
+        self.selection = previous;
     }
 
     pub(super) fn set_source_account(
@@ -438,9 +438,9 @@ impl Accounts {
             .iter()
             .find(|candidate| candidate.id == id && !source_account_services(candidate).is_empty())
             .ok_or("installer-your-data-changed")?;
-        let before = self.source_accounts.clone();
-        self.source_accounts.set_account(candidate, included);
-        Ok(before != self.source_accounts)
+        let before = self.selection.clone();
+        self.selection.set_account(candidate, included);
+        Ok(before != self.selection)
     }
 
     pub(super) fn set_source_account_service(
@@ -457,10 +457,9 @@ impl Accounts {
                 candidate.id == id && source_account_services(candidate).contains(&service)
             })
             .ok_or("installer-your-data-changed")?;
-        let before = self.source_accounts.clone();
-        self.source_accounts
-            .set_service(candidate, service, included);
-        Ok(before != self.source_accounts)
+        let before = self.selection.clone();
+        self.selection.set_service(candidate, service, included);
+        Ok(before != self.selection)
     }
 
     pub(super) fn set_source_accounts(
@@ -470,17 +469,17 @@ impl Accounts {
         included: bool,
     ) -> Result<bool, &'static str> {
         let mut matched = false;
-        let before = self.source_accounts.clone();
+        let before = self.selection.clone();
         for candidate in inventory.candidates.iter().filter(|candidate| {
             scope.includes(candidate) && !source_account_services(candidate).is_empty()
         }) {
             matched = true;
-            self.source_accounts.set_account(candidate, included);
+            self.selection.set_account(candidate, included);
         }
         if !matched && !matches!(scope, SourceAccountScope::Gnome) {
             return Err("installer-your-data-changed");
         }
-        Ok(before != self.source_accounts)
+        Ok(before != self.selection)
     }
 
     pub(super) fn set_all_source_accounts(
@@ -488,20 +487,20 @@ impl Accounts {
         inventory: &Inventory,
         included: bool,
     ) -> bool {
-        let before = self.source_accounts.clone();
-        self.source_accounts.touched = true;
+        let before = self.selection.clone();
+        self.selection.touched = true;
         if included {
-            self.source_accounts.excluded.clear();
+            self.selection.excluded.clear();
         } else {
             for candidate in inventory
                 .candidates
                 .iter()
                 .filter(|candidate| !source_account_services(candidate).is_empty())
             {
-                self.source_accounts.set_account(candidate, false);
+                self.selection.set_account(candidate, false);
             }
         }
-        before != self.source_accounts
+        before != self.selection
     }
 
     pub fn update_sources(
@@ -529,7 +528,7 @@ impl Accounts {
         self.actions
             .update_sources(roots.clone(), inventory.clone())
             .map_err(|_| "installer-accounts-sources-changed")?;
-        self.source_accounts.retain(&inventory);
+        self.selection.retain(&inventory);
         self.source_roots = Some(roots);
         self.inventory = inventory;
         Ok(())
@@ -584,13 +583,13 @@ impl Accounts {
             .iter()
             .filter_map(|entry| entry.source_id.as_deref())
             .collect::<BTreeSet<_>>();
-        let checkpoint = !self.source_accounts.touched && !prepared.is_empty();
+        let checkpoint = !self.selection.touched && !prepared.is_empty();
         let mut selected = BTreeMap::new();
         for candidate in inventory.candidates.iter().filter(|candidate| {
             candidate.origin == super::super::account_transfer::Origin::Gnome
                 && (!checkpoint || prepared.contains(candidate.id.as_str()))
         }) {
-            let services = self.source_accounts.services(candidate);
+            let services = self.selection.services(candidate);
             let Some(identity) = candidate
                 .identity
                 .clone()

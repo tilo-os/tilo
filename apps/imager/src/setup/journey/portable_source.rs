@@ -649,6 +649,94 @@ fn validate_grant(selected: &Path, expected: &Path) -> Result<Arc<SourceGrant>, 
         .map_err(|_| ReviewFailure::Permission)
 }
 
+impl OriginalSource {
+    fn from_native(native: NativeOriginalSource) -> Self {
+        Self {
+            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
+            applications_only: Self::native_applications_only,
+        }
+    }
+}
+impl std::ops::Deref for OriginalSource {
+    type Target = NativeOriginalSource;
+    fn deref(&self) -> &Self::Target {
+        self.native_payload
+            .get()
+            .expect("original source retains its native owner")
+    }
+}
+impl super::portable_source::SelectionState for Selection {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn busy(&self) -> bool {
+        Selection::busy(self)
+    }
+    fn choosing(&self) -> bool {
+        Selection::choosing(self)
+    }
+    fn refresh(&mut self) -> Result<(), &'static str> {
+        Selection::refresh(self)
+    }
+    fn poll(&mut self) -> Option<Result<bool, &'static str>> {
+        Selection::poll(self)
+    }
+    fn reviewed_original(&self) -> Option<Arc<OriginalSource>> {
+        Selection::reviewed_original(self)
+    }
+    fn invalidate(&mut self) {
+        Selection::invalidate(self)
+    }
+    fn mounted_permission_active(&self) -> bool {
+        Selection::mounted_permission_active(self)
+    }
+    fn mounted_needs_restart(&self) -> bool {
+        Selection::mounted_needs_restart(self)
+    }
+    fn mounted_choices(&self) -> Vec<(String, String, bool)> {
+        Selection::mounted_choices(self)
+    }
+    fn request_mounted(&mut self, location: String) -> Result<(), &'static str> {
+        Selection::request_mounted(self, location)
+    }
+    fn finish_mounted(&mut self) -> Result<(), &'static str> {
+        Selection::finish_mounted(self)
+    }
+    fn cancel_mounted(&mut self) {
+        Selection::cancel_mounted(self)
+    }
+    fn mounted_locations(&self) -> Vec<String> {
+        Selection::mounted_locations(self)
+    }
+    fn projection(&self) -> serde_json::Value {
+        Selection::projection(self)
+    }
+}
+impl std::ops::Deref for super::portable_source::Selection {
+    type Target = Selection;
+    fn deref(&self) -> &Self::Target {
+        self.native
+            .get()
+            .expect("native adapter installed")
+            .as_any()
+            .downcast_ref()
+            .expect("matching native adapter")
+    }
+}
+impl std::ops::DerefMut for super::portable_source::Selection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.native
+            .get_mut()
+            .expect("native adapter installed")
+            .as_any_mut()
+            .downcast_mut()
+            .expect("matching native adapter")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1038,93 +1126,5 @@ mod tests {
         assert!(selection.reviewed_handle().is_none());
         assert_eq!(selection.projection()["state"], "cancelled");
         assert_eq!(std::fs::read(home.join("original")).unwrap(), b"unchanged");
-    }
-}
-
-impl OriginalSource {
-    fn from_native(native: NativeOriginalSource) -> Self {
-        Self {
-            native_payload: super::native_ownership::FrontendNativeCustody::new(native),
-            applications_only: Self::native_applications_only,
-        }
-    }
-}
-impl std::ops::Deref for OriginalSource {
-    type Target = NativeOriginalSource;
-    fn deref(&self) -> &Self::Target {
-        self.native_payload
-            .get()
-            .expect("original source retains its native owner")
-    }
-}
-impl super::portable_source::SelectionState for Selection {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn busy(&self) -> bool {
-        Selection::busy(self)
-    }
-    fn choosing(&self) -> bool {
-        Selection::choosing(self)
-    }
-    fn refresh(&mut self) -> Result<(), &'static str> {
-        Selection::refresh(self)
-    }
-    fn poll(&mut self) -> Option<Result<bool, &'static str>> {
-        Selection::poll(self)
-    }
-    fn reviewed_original(&self) -> Option<Arc<OriginalSource>> {
-        Selection::reviewed_original(self)
-    }
-    fn invalidate(&mut self) {
-        Selection::invalidate(self)
-    }
-    fn mounted_permission_active(&self) -> bool {
-        Selection::mounted_permission_active(self)
-    }
-    fn mounted_needs_restart(&self) -> bool {
-        Selection::mounted_needs_restart(self)
-    }
-    fn mounted_choices(&self) -> Vec<(String, String, bool)> {
-        Selection::mounted_choices(self)
-    }
-    fn request_mounted(&mut self, location: String) -> Result<(), &'static str> {
-        Selection::request_mounted(self, location)
-    }
-    fn finish_mounted(&mut self) -> Result<(), &'static str> {
-        Selection::finish_mounted(self)
-    }
-    fn cancel_mounted(&mut self) {
-        Selection::cancel_mounted(self)
-    }
-    fn mounted_locations(&self) -> Vec<String> {
-        Selection::mounted_locations(self)
-    }
-    fn projection(&self) -> serde_json::Value {
-        Selection::projection(self)
-    }
-}
-impl std::ops::Deref for super::portable_source::Selection {
-    type Target = Selection;
-    fn deref(&self) -> &Self::Target {
-        self.native
-            .get()
-            .expect("native adapter installed")
-            .as_any()
-            .downcast_ref()
-            .expect("matching native adapter")
-    }
-}
-impl std::ops::DerefMut for super::portable_source::Selection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.native
-            .get_mut()
-            .expect("native adapter installed")
-            .as_any_mut()
-            .downcast_mut()
-            .expect("matching native adapter")
     }
 }

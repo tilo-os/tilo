@@ -351,7 +351,7 @@ fn a_wrong_key_binding_or_selection_cannot_open_or_widen_the_artifact() {
         .unwrap_err(),
         ConnectionError::CredentialUnavailable
     );
-    let mut widened = selection.clone();
+    let mut widened = selection;
     widened.accounts[0].folders.push("not-a-folder".into());
     assert_eq!(
         import_selected(target.path(), &sealed, &transport_key, BINDING, &widened).unwrap_err(),

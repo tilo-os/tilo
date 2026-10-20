@@ -167,6 +167,15 @@ impl SourceSelection {
         self.selection.as_ref().map(Selection::exclusions)
     }
 
+    /// Whether the selected entries hold real file content. `Some(false)` only
+    /// when a completed discovery proves the selection empty; `None` before
+    /// discovery completes, which is never an empty Home.
+    pub fn selected_files(&self) -> Option<bool> {
+        self.selection
+            .as_ref()
+            .map(|selection| !selection.selected_is_known_empty())
+    }
+
     /// The path-free tree, selection state, totals and unknown counts.
     pub fn report(&self) -> serde_json::Value {
         match &self.selection {
@@ -337,5 +346,29 @@ mod tests {
         assert_eq!(selection.state(), "failed");
         assert!(!selection.report().to_string().contains("private detail"));
         assert!(selection.exclusions().is_none());
+        assert_eq!(
+            selection.selected_files(),
+            None,
+            "a source that could not be read is unknown, not empty"
+        );
+    }
+
+    #[test]
+    fn a_complete_empty_home_is_known_empty_but_a_nonempty_one_is_not() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("empty-home");
+        fs::create_dir_all(home.join(".config")).unwrap();
+        let empty = SourceSelection::discover(&belongings(&home), &SourceSet::Home(home.clone()));
+        assert!(empty.ready());
+        assert_eq!(
+            empty.selected_files(),
+            Some(false),
+            "a complete tree with nothing selected has nothing to capture"
+        );
+
+        let recognized = home_fixture(fixture.path());
+        let populated =
+            SourceSelection::discover(&belongings(&recognized), &SourceSet::Home(recognized));
+        assert_eq!(populated.selected_files(), Some(true));
     }
 }

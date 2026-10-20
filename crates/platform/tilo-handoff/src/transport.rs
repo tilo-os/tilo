@@ -1387,7 +1387,7 @@ fn join_worker(
         identity_public_key: handoff.identity_public_key,
         package_sha256: handoff.package_sha256.clone(),
         expires_at_ns: handoff.expires_at_ns,
-        reply_ticket: reply_ticket.clone(),
+        reply_ticket,
         request: Box::new(request.clone()),
         ephemeral_public_key: ephemeral_public.to_bytes(),
         signature: signature.to_vec(),

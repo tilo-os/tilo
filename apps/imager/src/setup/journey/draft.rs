@@ -70,6 +70,10 @@ pub(super) struct TargetDraft {
     pub report: Option<imager_backend::support_report::SupportReport>,
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if requires a reference"
+)]
 fn is_false(value: &bool) -> bool {
     !*value
 }
