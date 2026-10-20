@@ -5136,6 +5136,30 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
+# A bootable development installer medium from os-image-{arch}'s exact output
+# (tools/ci/publish/dev-installer-medium.sh): the archive is checked against the digest and
+# commit its build recorded, the canonical os/dev/build-custom-installer.sh closes the image's
+# placeholder composefs seal and installs it to a qcow2, and media-provenance.py records the
+# finished medium. It is unsigned and never published, and needs no capture qualifier, source
+# assets or signing identity. `t outputs dev-installer-medium-{arch}` gives disk.qcow2, its
+# SHA-256 and source.json; boot it in a throwaway VM with `tilo-vm scenario install --medium`.
+[[check]]
+name = "dev-installer-medium-{arch}"
+run = "bash tools/ci/publish/dev-installer-medium.sh {arch} /target/publish/os/{arch} /target/publish/dev-installer-medium/{arch}"
+inputs = ["tools/ci/publish/dev-installer-medium.sh", "tools/ci/publish/lib.sh", "os/dev/build-custom-installer.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/_common.sh", "os/dev/check-disk-sectors.py", "os/dev/check-composefs-verity.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/installer-offline-target.py", "os/dev/hardware_profile.py", "os/Containerfile.installer", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/**", "os/external-assets/bootc-install-reseal/**", "os/etc/greetd/**", "os/usr/**", "apps/imager/packaging/media-provenance.py"]
+needs = ["os-image-{arch}"]
+outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 12, memory = "24GiB" }
+timeout_secs = 7200
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
 # The image os-image-{arch} built, checked as a device gets it, every night main's image inputs
 # changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
 # every script its interpreter and every package its dependencies, the enabled units exist and
