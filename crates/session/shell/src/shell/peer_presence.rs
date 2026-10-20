@@ -1140,7 +1140,11 @@ impl PeerPresence {
             if ws.room.is_nil() {
                 return Some((false, String::new(), generation));
             }
-            let labels = tree.room_peer_labels(ws.room);
+            // What each member calls themselves, over their device's name.
+            let labels = crate::shell::network::named_by_themselves(
+                tree.room_peer_labels(ws.room),
+                self.net.live_labels_of(&ws.room.to_string()),
+            );
             // Two ways to be present: moving cursor, or CRDT participation.
             let room = ws.room.to_string();
             let mut arrived = handles_seen_in(presence, &room);
@@ -3861,6 +3865,29 @@ mod two_sessions {
             "and finds the same people",
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// presence.md: a device's name never leaves it. The roster calls a
+    /// member by the name they give themselves once they have said it.
+    #[test]
+    fn the_roster_calls_a_member_by_the_name_they_give_themselves() {
+        let ada = peer_id(71);
+        let (mut host_tree, room) = host_naming(&[(&ada, "Primary device")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-named-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, host_net, _host_cmds) = session(&dir, "n.sock", &host_handle, &peer_id(70));
+        host_net.hear_live_label_for_test(&room.to_string(), handle_of(&ada), "Ada Lovelace");
+        assert!(host.refresh_roster(&PresenceCtx::default()));
+        assert_eq!(
+            roster_of(&host_handle)
+                .into_iter()
+                .map(|(name, _, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["Ada Lovelace".to_owned()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
