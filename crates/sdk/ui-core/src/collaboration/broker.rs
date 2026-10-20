@@ -1697,6 +1697,13 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "Handoff"
         }
+        CollabEvent::RecordsArrived { records } => {
+            meter.add_product(records.capacity(), std::mem::size_of::<String>());
+            for record in records {
+                meter.string_capacity(record);
+            }
+            "RecordsArrived"
+        }
         CollabEvent::DocumentSnapshotRequested { route } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.record {
@@ -5414,6 +5421,14 @@ async fn spawn_context_stream(
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
+                if !context.records_arrived.is_empty() {
+                    if !tx.send_durable(CollabEvent::RecordsArrived {
+                        records: context.records_arrived,
+                    }) {
+                        return;
                     }
                     continue;
                 }

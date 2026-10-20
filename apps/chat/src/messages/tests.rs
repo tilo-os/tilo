@@ -333,3 +333,35 @@ fn a_store_told_of_a_kept_part_has_the_window_look_at_once() {
     assert_ne!(devices.guest.revision(), seen, "the settle opens the part");
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
+
+/// On a desktop the room does not keep a part another device started: the
+/// guest's window is told a peer wrote it, starts the same part itself
+/// (each part's genesis is the same everywhere), and the poster's changes
+/// then apply on it with nothing missing, as they arrive on its route.
+#[test]
+fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
+    let devices = TwoDevices::new();
+    devices
+        .poster
+        .invoke(&crate::demo::post("c_general", "the first post", None))
+        .unwrap();
+    let seen = devices.guest_syncs();
+    devices.guest_store.announce([crate::parts::part(0)]);
+    assert_eq!(devices.guest_syncs(), seen, "a sync opens nothing");
+    assert_eq!(devices.guest.head(), Some(0), "the settle starts the part");
+    let mut written =
+        ui::automerge::AutoCommit::load(&devices.poster.part_bytes(0).unwrap()).unwrap();
+    let missing = devices
+        .guest_store
+        .with(&crate::parts::part(0), |doc| {
+            let changes = written.get_changes(&doc.get_heads());
+            tilo_automerge::ApplyIncoming::apply_incoming(doc, changes).unwrap();
+            doc.get_missing_deps(&[])
+        })
+        .unwrap();
+    assert!(
+        missing.is_empty(),
+        "the poster's part builds on the same genesis"
+    );
+    assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
+}

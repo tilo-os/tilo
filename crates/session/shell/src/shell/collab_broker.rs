@@ -625,6 +625,7 @@ impl DrainQueues {
         };
         for entry in drained_signed {
             let peer = entry.peer;
+            self.announce_tree_record(&entry.app_id, &entry.cluster_id, &entry.record_id);
             let document = tilo_action_broker::collab_inbound::RemoteDocument {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
@@ -656,6 +657,31 @@ impl DrainQueues {
             }
         }
         true
+    }
+
+    /// A peer wrote a record of an app's tree (a chain's next part, a
+    /// container's child) that no window here holds: tell the app's windows
+    /// in that room, which then hold it like their own and sync it on its
+    /// route, receiving what was admitted for it before
+    /// (`CapnpBrokerState::subscribe_ops`).
+    fn announce_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        if ui::record::RecordId::parse(record_id)
+            .and_then(|id| id.tree())
+            .is_none()
+        {
+            return;
+        }
+        let record = CrdtRoute::record(app_id, cluster_id, record_id);
+        if self.table.holds_route(&record) {
+            return;
+        }
+        self.table.fanout_to_route(
+            &CollabEvent::RecordsArrived {
+                records: vec![record_id.to_owned()],
+            },
+            u64::MAX,
+            &CrdtRoute::app(app_id, cluster_id),
+        );
     }
 
     /// When another of this person's devices came back, ask the local apps

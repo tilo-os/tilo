@@ -286,6 +286,12 @@ impl FanoutState {
             .filter(|state| state.is_accepting())
     }
 
+    /// Whether a local app subscribes to exactly `route`'s documents.
+    pub fn holds_route(&self, route: &CrdtRoute) -> bool {
+        self.capnp_state()
+            .is_some_and(|state| state.holds_route(route))
+    }
+
     /// Ask the local apps holding records in `cluster_id` to publish their
     /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
     pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {

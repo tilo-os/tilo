@@ -3445,6 +3445,10 @@ pub struct ChannelContext {
     /// `Some` only on a session-local frame naming the room's verified
     /// delegated agents (possibly none). Not a roster update either.
     pub history_agents: Option<Vec<HistoryAgent>>,
+    /// On a session-local frame: records of this application's trees a peer
+    /// wrote and no window here holds (`recordsArrived`); empty otherwise.
+    /// Not a roster update either.
+    pub records_arrived: Vec<String>,
 }
 
 /// One delegated agent the session verified for a room: its person's root
@@ -3537,6 +3541,16 @@ impl ContextStream {
         } else {
             None
         };
+        let arrived = ctx.get_records_arrived()?;
+        let mut records_arrived = Vec::with_capacity(arrived.len() as usize);
+        for record in arrived {
+            records_arrived.push(
+                record?
+                    .to_str()
+                    .map_err(|e| capnp::Error::failed(format!("invalid utf8 arrived record: {e}")))?
+                    .to_owned(),
+            );
+        }
         Ok(ChannelContext {
             collaborators,
             permissions,
@@ -3544,6 +3558,7 @@ impl ContextStream {
             snapshot_requested: ctx.get_snapshot_requested(),
             handoff,
             history_agents,
+            records_arrived,
         })
     }
 }

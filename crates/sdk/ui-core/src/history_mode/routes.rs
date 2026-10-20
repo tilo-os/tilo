@@ -217,7 +217,20 @@ pub(crate) struct OwnerRoute {
     /// no host replays its route, so a snapshot that leaves this replica
     /// ahead of its sender is answered with this replica's own.
     pub(crate) answers_snapshots: bool,
+    /// Joined, and not yet open for documents: its first publication
+    /// waits for the route instead of failing. A record a running action
+    /// created (the next part of a chain) has no route until the action
+    /// made it.
+    pub(crate) opening: bool,
 }
+/// A record of a live owner's tree, and the lifetime its owner on the
+/// route lives by.
+struct TreeRecord {
+    store: crate::record::RecordStore,
+    checkout: crate::record::RecordCheckout,
+    lifetime: std::rc::Rc<super::owner::LegacyHistoryLifetime>,
+}
+
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
     pub(crate) witness: Option<PrimaryRouteWitness>,
@@ -229,6 +242,9 @@ pub(crate) struct OwnerDocumentRoutes {
     /// peers. Cleared by the next accepted change.
     pub(crate) outbound: Option<String>,
     retired: HashSet<RouteSpec>,
+    /// The records held as part of a live owner's tree ([`RecordId::tree`])
+    /// that no view owns: each keeps its route while its store has it open.
+    tree: Vec<TreeRecord>,
     #[cfg(test)]
     pub(crate) sent: Vec<(RouteSpec, crate::collaboration::CollabRequest)>,
     /// Transport outcome the recording test transport reports for owned
@@ -237,6 +253,57 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) refuse_for_test: Option<crate::collaboration::CollabSendError>,
 }
 impl OwnerDocumentRoutes {
+    /// Give every record of a live owner's tree its own owner: a chat's
+    /// message parts, a container's child records. They are records of the
+    /// owner's store, synced on their own routes like the owner's record,
+    /// whether or not a view shows them. Without this a part only one device
+    /// wrote never left it.
+    fn hold_trees(&mut self, current: &mut Vec<(HistoryOwner, bool)>) {
+        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+        for (owner, _) in current.iter() {
+            let (store, _) = owner.store_checkout();
+            if !stores.iter().any(|known| known.same_owner(store)) {
+                stores.push(store.clone());
+            }
+        }
+        let mut held = Vec::new();
+        for store in &stores {
+            for checkout in store.open_tree_records() {
+                let owned = current.iter().any(|(owner, _)| {
+                    let (other, owned) = owner.store_checkout();
+                    other.same_owner(store) && owned == &checkout
+                });
+                if owned {
+                    continue;
+                }
+                let index = self
+                    .tree
+                    .iter()
+                    .position(|entry| entry.store.same_owner(store) && entry.checkout == checkout);
+                let entry = match index {
+                    Some(index) => self.tree.swap_remove(index),
+                    None => TreeRecord {
+                        store: store.clone(),
+                        checkout,
+                        lifetime: super::owner::LegacyHistoryLifetime::new(),
+                    },
+                };
+                held.push(entry);
+            }
+        }
+        // What closed, or a view now owns, gives up its tree owner.
+        for gone in self.tree.drain(..) {
+            gone.lifetime.active.set(false);
+        }
+        for entry in &held {
+            current.push((
+                HistoryOwner::legacy(entry.store.clone(), entry.checkout.clone(), &entry.lifetime),
+                true,
+            ));
+        }
+        self.tree = held;
+    }
+
     pub(crate) fn retired_route(&self, route: &RouteSpec) -> bool {
         self.retired.contains(route)
     }
@@ -280,6 +347,7 @@ impl OwnerDocumentRoutes {
         }
         let mut current = vec![];
         collect(root, &mut current);
+        self.hold_trees(&mut current);
         // Hidden live subtrees retain their admitted collaboration owners.
         crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
             collect(live, &mut current)
@@ -326,6 +394,7 @@ impl OwnerDocumentRoutes {
                     pending: PendingRemote::default(),
                     outbound_failure: None,
                     answers_snapshots,
+                    opening: true,
                 });
             }
         }
