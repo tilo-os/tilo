@@ -617,6 +617,23 @@ impl ShellOverlayHost {
         self.desk_animating(Instant::now())
     }
 
+    /// Lay the desk out at `now` with every widget already where it is
+    /// going, for a test that measures what follows the desk's first
+    /// appearance rather than the appearance itself.
+    #[cfg(test)]
+    pub(crate) fn force_desk_settled(&mut self, now: Instant) {
+        let _ = self.update_desk(now);
+        for presence in self
+            .desk
+            .shown
+            .values_mut()
+            .chain(self.desk.opened.values_mut())
+        {
+            let open = presence.is_open();
+            presence.snap(open);
+        }
+    }
+
     pub(crate) fn desk_animating(&self, now: Instant) -> bool {
         self.desk
             .shown

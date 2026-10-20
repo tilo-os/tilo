@@ -198,8 +198,17 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
     fn exact_session_action_ignores_temporary_active_app_search_scope() {
         use crate::shell::search::action_api::{AllVisible, ResourceRef};
 
-        let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
             .with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
+        // The fixture host lists no session actions of its own; the
+        // production host registers this provider.
+        host.search_registry.register(Rc::new(
+            crate::shell::search::providers::SessionActionsProvider::new(
+                crate::shell::search::providers::SessionActionPolicy::new(
+                    tilo_power_mgmt::InhibitRegistry::new(),
+                ),
+            ),
+        ));
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         chrome.borrow_mut().search_scope = crate::shell::chrome_state::SearchScope::ActiveApp;
         let state = chrome.borrow();
@@ -718,6 +727,8 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
             sources: vec![source],
             consents: vec![consent],
         };
+        let rows_view = view.clone();
+        let realtime_rows = realtime_view.clone();
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
         let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
@@ -730,11 +741,24 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         }));
         host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        // The rows as the section lists them: the call's source, then the
+        // device to move it to, wherever the pane places them.
+        let rows = device_fabric_pane_rows(&rows_view, &realtime_rows);
+        let source_row = rows
+            .iter()
+            .position(|row| matches!(row, DeviceFabricPaneRow::RealtimeSource(_)))
+            .expect("the call's source has a row");
+        let device_row = rows
+            .iter()
+            .position(
+                |row| matches!(row, DeviceFabricPaneRow::Device(device) if device.id == remote),
+            )
+            .expect("the remote device has a row");
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(source_row).center());
         // Choosing a device after the call's source proposes it there.
         host.handle_qs_device_fabric_click(Point::new(
-            host.qs_devices_row_rect(3).x0 + 44.0,
-            host.qs_devices_row_rect(3).center().y,
+            host.qs_devices_row_rect(device_row).x0 + 44.0,
+            host.qs_devices_row_rect(device_row).center().y,
         ));
         let (_, decline) =
             ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
@@ -743,10 +767,13 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         host.press_qs_device_row(0, None);
 
         let actions = actions.borrow();
-        assert!(actions.contains(&RealtimeContinuityUiAction::Propose {
-            session: "source-session".into(),
-            target: remote,
-        }));
+        assert!(
+            actions.contains(&RealtimeContinuityUiAction::Propose {
+                session: "source-session".into(),
+                target: remote,
+            }),
+            "{actions:?}"
+        );
         assert!(
             actions.contains(&RealtimeContinuityUiAction::ResolveConsent {
                 session: "target-session".into(),

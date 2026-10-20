@@ -689,12 +689,14 @@ impl Desk {
     /// Work on the window on display `index`, with one frame painted.
     fn work_on(&mut self, index: usize) {
         let group = if index == 0 { ON_PANEL } else { ON_MONITOR };
+        // Whether focus moved: false when that window has it already.
         let _ = self
             .fb
             .host_mut()
             .focus_window_on_strip(STRIP, group, tab_of(group));
-        self.fb.relayout();
-        let _ = self.fb.paint();
+        // Focus reaches the display partition on the next update, as it
+        // does after any input.
+        self.settle();
         assert_eq!(
             self.focused_display(),
             Some(self.outputs[index].id.0),
