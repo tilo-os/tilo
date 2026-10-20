@@ -111,6 +111,11 @@ child_running() {
 
 start_backend() {
   current=$1
+  # A session a previous run of this supervisor left behind (the board unit
+  # was stopped while it was starting one) holds the unit name, and
+  # systemd-run would refuse the new one: it ends first.
+  "$systemctl_bin" stop "$drm_unit.service" 2>/dev/null || true
+  "$systemctl_bin" --user --machine="$account@" stop "$headless_unit.service" 2>/dev/null || true
   if [ "$current" = drm ]; then
     drm_started=$SECONDS
     # The PAM login takes VT 1, which the console getty holds while the

@@ -51,10 +51,12 @@ echo "runuser $*" >>"$SEAT_LOG"
 shift 2; [ "$1" = -- ] && shift
 exec "$@"
 EOF
+# Stopping a board session ends the one running, if any.
 cat >"$bin/systemctl" <<'EOF'
 #!/bin/sh
 echo "systemctl $*" >>"$SEAT_LOG"
-case "$*" in *"stop tilo-board-"*) : >"$SEAT_STOP" ;; esac
+case "$*" in *"stop tilo-board-"*) [ -e "$SEAT_STOP.running" ] && : >"$SEAT_STOP" ;; esac
+exit 0
 EOF
 # Each session runs until its stop file appears or for SESSION_TENTHS
 # (DRM_TENTHS for a drm session) tenths of a second.
@@ -64,6 +66,9 @@ backend=${*: -1}
 echo "run $backend $*" >>"$SEAT_LOG"
 limit=${SESSION_TENTHS:-30}
 [ "$backend" = drm ] && limit=${DRM_TENTHS:-$limit}
+rm -f "$SEAT_STOP"
+: >"$SEAT_STOP.running"
+trap 'rm -f "$SEAT_STOP.running"' EXIT
 n=0
 while [ "$n" -lt "$limit" ]; do
   [ -e "$SEAT_STOP" ] && { rm -f "$SEAT_STOP"; exit 0; }
@@ -121,6 +126,21 @@ if [ "$backends" = 'drm headless ' ]; then
   ok 'a drm session that ends with the display connected falls back to headless'
 else
   bad "a failed drm session was not replaced by headless: $backends"
+fi
+
+# A drm session left running by an earlier supervisor (its unit stopped while
+# it was starting one) holds the unit name: it is stopped before the new one.
+: >"$work/seat.log"; echo on >"$work/display"; rm -f "$work/stop"
+: >"$work/stop.running"
+seat SESSION_TENTHS=600 &
+pid=$!
+sleep 1
+kill -TERM "$pid"; wait "$pid"
+if awk '/stop tilo-board-drm-session.service/ { stopped = 1 } $1 == "run" { print (stopped ? "after" : "before"); exit }' \
+     "$work/seat.log" | grep -qx after; then
+  ok 'a session left behind is stopped before the next one starts'
+else
+  bad 'the next session started over one left behind'; cat "$work/seat.log" >&2
 fi
 
 # USER REQUIREMENT (2026-10-19): "Tilo, not a tty, always — robust across updates and reboots."
