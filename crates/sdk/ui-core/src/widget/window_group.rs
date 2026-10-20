@@ -1196,7 +1196,7 @@ impl WindowGroup {
     /// live resize ([`AppWidget::set_live_resize_anchor`]).
     fn set_live_resize_anchor(&mut self, fixed: Option<WindowEdge>) {
         for (_, host) in &mut self.hosts {
-            if let TileContent::App(app) = host.content_mut() {
+            if let Some(app) = host.app_mut() {
                 app.set_live_resize_anchor(fixed);
             }
         }
@@ -1206,7 +1206,7 @@ impl WindowGroup {
     /// its content has caught up with the window's size.
     fn release_live_resize_anchor(&mut self) {
         for (_, host) in &mut self.hosts {
-            if let TileContent::App(app) = host.content_mut() {
+            if let Some(app) = host.app_mut() {
                 app.release_live_resize_anchor();
             }
         }

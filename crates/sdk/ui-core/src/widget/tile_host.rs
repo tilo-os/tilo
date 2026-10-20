@@ -1399,6 +1399,16 @@ impl TileHost {
             TileContent::Notice { title, .. } => title.clone(),
         }
     }
+    /// The hosted app, to reach a capability or concrete type of it in
+    /// place. Unlike [`Self::content_mut`], which hands out the content to
+    /// replace, this leaves the tile's record, History and layout alone: a
+    /// change inside the app reports its own structure.
+    pub fn app_mut(&mut self) -> Option<&mut (dyn AppWidget + 'static)> {
+        match &mut self.content {
+            TileContent::App(app) => Some(app.as_mut()),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
     /// Mutable legacy content access. Canonical components use checked replacement.
     /// # Panics
     /// Refuses extraction of a canonical component through the legacy content API.
@@ -3844,6 +3854,23 @@ mod tests {
             encoding.draw_tags.len(),
             2,
             "the card's ground under the content, then the content"
+        );
+    }
+
+    /// Reaching into the app every frame (a peer stream's late picture)
+    /// must not read as new content: that rebuilt the whole layout tree on
+    /// every frame a peer window showed.
+    #[test]
+    fn reaching_into_the_app_leaves_the_structure_alone() {
+        let rect = Rect::new(0.0, 0.0, 160.0, 100.0);
+        let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
+        let _ = Widget::take_structure_dirty(&mut host);
+        assert!(host.app_mut().is_some());
+        assert!(!Widget::take_structure_dirty(&mut host));
+        let _ = host.content_mut();
+        assert!(
+            Widget::take_structure_dirty(&mut host),
+            "content handed out to replace is a new structure"
         );
     }
 

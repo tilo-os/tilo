@@ -125,7 +125,7 @@ impl ShellOverlayHost {
                     let Some(host) = group.host_for_tab_mut(tab_id) else {
                         continue;
                     };
-                    let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    let Some(app) = host.app_mut() else {
                         continue;
                     };
                     // A repeated stream start for a mounted share: the sender
@@ -289,9 +289,7 @@ impl ShellOverlayHost {
                 let Some(host) = group.host_for_tab_mut(tab_id) else {
                     continue;
                 };
-                let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    return None;
-                };
+                let app = host.app_mut()?;
                 return app
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>());

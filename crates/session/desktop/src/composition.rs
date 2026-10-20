@@ -513,11 +513,11 @@ impl DesktopSurface {
             for group in &mut row.groups {
                 let tabs: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
                 for tab in tabs {
-                    if let Some(ui::widget::TileContent::App(app)) = group
+                    if let Some(app) = group
                         .host_for_tab_mut(tab)
-                        .map(ui::widget::TileHost::content_mut)
+                        .and_then(ui::widget::TileHost::app_mut)
                     {
-                        visit(tab, app.as_mut());
+                        visit(tab, app);
                     }
                 }
             }
