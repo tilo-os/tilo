@@ -6,6 +6,9 @@
 )]
 use super::*;
 
+/// The tab right-click menu: request harvest, routing, actions, semantics
+/// and paint. Everything a person, a script or a reader does with the
+/// menu passes through here, so the three routes cannot disagree.
 impl ShellOverlayHost {
     /// Drains every tab bar's right-click request
     /// ([`UiWindowGroup::take_tab_context_menu`]) and opens the menu for
