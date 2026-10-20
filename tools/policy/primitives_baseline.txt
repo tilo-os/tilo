@@ -19,7 +19,7 @@ glyph-icon 1 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
 glyph-join 7 apps/agent/src/tools.rs
-glyph-join 1 apps/browser/src/blocker.rs
+glyph-join 1 apps/browser-parts/src/blocker.rs
 glyph-join 1 apps/browser/src/browser_widget/library.rs
 glyph-join 2 apps/calendar/src/app.rs
 glyph-join 1 apps/calendar/src/model.rs
@@ -127,7 +127,11 @@ glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
 glyph-join 1 crates/session/shell/src/shell/directory_sheet.rs
 glyph-join 1 crates/session/shell/src/shell/fixed_chords.rs
 glyph-join 1 crates/session/shell/src/shell/in_process/messaging/sms_first.rs
-glyph-join 6 crates/session/shell/src/shell/overlay_host/mod.rs
+glyph-join 1 crates/session/shell/src/shell/overlay_host/keyboard.rs
+glyph-join 1 crates/session/shell/src/shell/overlay_host/overview_paint.rs
+glyph-join 2 crates/session/shell/src/shell/overlay_host/paint_top.rs
+glyph-join 1 crates/session/shell/src/shell/overlay_host/qs_device_rows.rs
+glyph-join 1 crates/session/shell/src/shell/overlay_host/queries.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/peer_sync_overlay.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
@@ -154,7 +158,6 @@ hand-rolled 1 crates/session/desktop/src/topbar.rs
 hand-rolled 4 crates/session/desktop/src/workspace_settings.rs
 hand-rolled 4 crates/session/desktop/src/workspace_settings/overlay.rs
 hand-rolled 1 crates/session/shell/src/shell/display_confirm.rs
-hand-rolled 4 crates/session/shell/src/shell/overlay_host/mod.rs
 hand-rolled 3 crates/session/shell/src/shell/peer_sync_overlay.rs
 raw-colour 1 apps/calculator/src/app.rs
 raw-colour 1 apps/calculator/src/graph3d.rs
@@ -197,6 +200,7 @@ raw-colour 1 crates/session/shell/src/compositor/screen_dim.rs
 raw-colour 3 crates/session/shell/src/shell/frame.rs
 raw-colour 1 crates/session/shell/src/shell/live_presence.rs
 raw-colour 1 crates/session/shell/src/shell/overlay_host/bar_popovers.rs
-raw-colour 2 crates/session/shell/src/shell/overlay_host/mod.rs
+raw-colour 1 crates/session/shell/src/shell/overlay_host/follow.rs
+raw-colour 1 crates/session/shell/src/shell/overlay_host/overview_paint.rs
 raw-colour 1 crates/session/shell/src/shell/projection_overlay.rs
 raw-colour 1 crates/session/shell/src/shell/render/paint/retained_target.rs
