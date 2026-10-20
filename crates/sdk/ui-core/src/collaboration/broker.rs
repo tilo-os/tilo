@@ -2233,11 +2233,19 @@ impl BridgeState {
         self.fail_closed_with_rpc_error(direction, None);
     }
 
-    fn fail_closed_with_rpc_error(
-        &self,
-        direction: &'static str,
-        rejected: Option<(u64, &runtime_portal::NotAvailable)>,
-    ) {
+    /// The app stopped reading its events (it closed, or its manager was
+    /// dropped): collaboration ends as for [`Self::fail_closed`], logged as
+    /// the ordinary end it is rather than an overload.
+    fn receiver_gone(&self, direction: &'static str) {
+        if self.close(direction) {
+            tracing::debug!(direction, "collab: the app stopped reading its events");
+            self.notify_events();
+        }
+    }
+
+    /// Withdraw health and fail every waiting publication; whether this
+    /// call is the one that ended a healthy bridge.
+    fn close(&self, direction: &'static str) -> bool {
         // Latch before withdrawing health or dropping any queued receipt sender.
         self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
         self.document_reads.close();
@@ -2245,7 +2253,15 @@ impl BridgeState {
         // Re-notify after health publication: a construction waiter may have
         // consumed the readiness withdrawal while health was still closing.
         self.document_reads.progressed();
-        if was_healthy {
+        was_healthy
+    }
+
+    fn fail_closed_with_rpc_error(
+        &self,
+        direction: &'static str,
+        rejected: Option<(u64, &runtime_portal::NotAvailable)>,
+    ) {
+        if self.close(direction) {
             if let Some((invocation_id, error)) = rejected {
                 let (rpc_kind, rpc_error, rpc_error_truncated) = bounded_rpc_diagnostic(error);
                 tracing::error!(
@@ -2543,6 +2559,28 @@ impl InboundBridge {
         }
     }
 
+    /// The outcome of queueing a durable event. A full queue means the app
+    /// fell behind its events: collaboration fails closed and says the
+    /// bridge was overloaded. A closed one means the app stopped reading
+    /// them, as it does when it closes: collaboration ends without claiming
+    /// an overload that never happened.
+    fn queued(&self, sent: Result<(), tokio_mpsc::error::TrySendError<QueuedCollabEvent>>) -> bool {
+        match sent {
+            Ok(()) => {
+                self.state.notify_events();
+                true
+            }
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                self.state.fail_closed("inbound event queue");
+                false
+            }
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                self.state.receiver_gone("inbound event queue");
+                false
+            }
+        }
+    }
+
     /// Deliver a document event without ever disconnecting for size: wait
     /// for the owner to drain earlier document events when the document
     /// budget is full. Returns false only when the bridge has failed or the
@@ -2575,7 +2613,8 @@ impl InboundBridge {
             self.state.notify_events();
             true
         } else {
-            self.state.fail_closed("inbound document queue");
+            // Only a receiver that went away refuses a waiting send.
+            self.state.receiver_gone("inbound document queue");
             false
         }
     }
@@ -2629,21 +2668,11 @@ impl InboundBridge {
             self.state.fail_closed("inbound event byte budget");
             return false;
         };
-        if self
-            .tx
-            .try_send(QueuedCollabEvent {
-                event,
-                _reservation: reservation,
-                _turn: turn,
-            })
-            .is_ok()
-        {
-            self.state.notify_events();
-            true
-        } else {
-            self.state.fail_closed("inbound event queue");
-            false
-        }
+        self.queued(self.tx.try_send(QueuedCollabEvent {
+            event,
+            _reservation: reservation,
+            _turn: turn,
+        }))
     }
 
     /// Queue an action catalogue snapshot against its own budget, trimmed
@@ -2681,21 +2710,11 @@ impl InboundBridge {
             );
             return true;
         };
-        if self
-            .tx
-            .try_send(QueuedCollabEvent {
-                event,
-                _reservation: reservation,
-                _turn: turn,
-            })
-            .is_ok()
-        {
-            self.state.notify_events();
-            true
-        } else {
-            self.state.fail_closed("inbound event queue");
-            false
-        }
+        self.queued(self.tx.try_send(QueuedCollabEvent {
+            event,
+            _reservation: reservation,
+            _turn: turn,
+        }))
     }
 
     /// Returns false only when the receiver has gone away. A full queue is a
@@ -2718,7 +2737,7 @@ impl InboundBridge {
             }
             Err(tokio_mpsc::error::TrySendError::Full(_)) => true,
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
-                self.state.fail_closed("inbound presence queue");
+                self.state.receiver_gone("inbound presence queue");
                 false
             }
         }
@@ -10940,6 +10959,64 @@ mod tests {
         reply.send(state.publication_result()).unwrap();
         state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
         assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+    }
+
+    /// Errors logged while `body` ran on this thread.
+    fn errors_logged(body: impl FnOnce()) -> usize {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        struct Errors(Arc<std::sync::atomic::AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Errors {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == tracing::Level::ERROR {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Errors(count.clone()));
+        tracing::subscriber::with_default(subscriber, body);
+        count.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn an_app_that_stopped_reading_ends_collaboration_without_an_overload_error() {
+        let state = BridgeState::new();
+        let (tx, rx) = tokio_mpsc::channel::<QueuedCollabEvent>(1);
+        let inbound = InboundBridge::new(tx, state.clone());
+        // The app closes: its manager, and with it the receiver, is dropped.
+        drop(rx);
+        let mut delivered = true;
+        let errors = errors_logged(|| {
+            delivered = inbound.send_durable(CollabEvent::FollowChanged { peer_id: None });
+        });
+        assert!(!delivered, "nothing reads the event");
+        assert!(!state.is_healthy(), "collaboration ends with its reader");
+        assert_eq!(errors, 0, "a closed app is not an overloaded bridge");
+    }
+
+    #[test]
+    fn an_app_that_fell_behind_its_events_fails_closed_as_an_overload() {
+        let state = BridgeState::new();
+        let (tx, _rx) = tokio_mpsc::channel::<QueuedCollabEvent>(1);
+        let inbound = InboundBridge::new(tx, state.clone());
+        let mut delivered = (false, true);
+        let errors = errors_logged(|| {
+            delivered = (
+                inbound.send_durable(CollabEvent::FollowChanged { peer_id: None }),
+                inbound.send_durable(CollabEvent::FollowChanged { peer_id: None }),
+            );
+        });
+        assert_eq!(
+            delivered,
+            (true, false),
+            "the second event finds the queue full"
+        );
+        assert!(!state.is_healthy(), "a lost durable event fails closed");
+        assert_eq!(errors, 1, "the overload is reported once");
     }
 
     #[test]
