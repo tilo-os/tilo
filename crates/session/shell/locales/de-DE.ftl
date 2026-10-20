@@ -2218,6 +2218,10 @@ search-action-strip-invalid-name = Gib einen Leistennamen mit 1 bis 48 Zeichen o
 search-action-strip-rename-missing = Diese Leiste gibt es in diesem Arbeitsbereich nicht.
 search-action-strip-move = Leiste verschieben
 search-action-strip-move-subtitle = Eine Leiste dieses Arbeitsbereichs weiter nach oben oder unten setzen
+search-action-strip-remove = Leiste entfernen
+search-action-strip-remove-subtitle = Eine leere Leiste aus diesem Arbeitsbereich entfernen
+search-action-strip-remove-not-empty = Diese Leiste enthält noch Fenster. Verschiebe oder schließe sie zuerst
+search-action-strip-remove-last = Ein Arbeitsbereich behält mindestens eine Leiste
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.

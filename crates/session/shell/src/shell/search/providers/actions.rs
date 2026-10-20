@@ -25,6 +25,13 @@ mod device_pairing;
 mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
+mod strips;
+
+use strips::{
+    STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
+    move_strip, remove_strip, rename_strip,
+};
+pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 
 use crate::shell::shared_display_actions;
 
@@ -69,120 +76,6 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     }
     state.add_workspace(name);
     Ok(())
-}
-
-const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
-    "name",
-    ParamType::Text,
-    "1 to 48 characters without control characters. Omit to use the localized default name.",
-)];
-
-const STRIP_RENAME_PARAMS: &[ActionParam] = &[
-    ActionParam::optional(
-        "name",
-        ParamType::Text,
-        "The new name: 1 to 48 characters without control characters. Omit to open the \
-         strip switcher's name field on the focused strip for a person to type it.",
-    ),
-    ActionParam::optional(
-        "strip",
-        ParamType::Integer,
-        "Which strip of the active workspace, counting from 1. Defaults to the focused strip.",
-    ),
-];
-
-const STRIP_MOVE_PARAMS: &[ActionParam] = &[
-    ActionParam::required(
-        "strip",
-        ParamType::Integer,
-        "Which strip of the active workspace to move, counting from 1 at the top.",
-    ),
-    ActionParam::required(
-        "position",
-        ParamType::Integer,
-        "Where it ends up, counting from 1 at the top; past the last strip means the bottom.",
-    ),
-];
-
-/// Longest strip name a person or an agent may give, in characters: what the
-/// strip switcher's row shows without eliding most of it.
-pub(crate) const STRIP_NAME_MAX_CHARS: usize = 48;
-
-/// A strip name as given, trimmed, or `None` when it is empty, too long or
-/// holds control characters.
-pub(crate) fn valid_strip_name(supplied: &str) -> Option<&str> {
-    let name = supplied.trim();
-    (!name.is_empty()
-        && name.chars().count() <= STRIP_NAME_MAX_CHARS
-        && !supplied.chars().any(char::is_control))
-    .then_some(name)
-}
-
-fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let default_name = t("search-action-strip-create-default-name");
-    let supplied = args.text("name").unwrap_or(&default_name);
-    let name = valid_strip_name(supplied)
-        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
-    state
-        .create_strip(name)
-        .map(|_| ())
-        .map_err(ActionError::Refused)
-}
-
-fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let Some(supplied) = args.text("name") else {
-        if args.integer("strip").is_some() {
-            return Err(ActionError::Refused(t("search-action-strip-invalid-name")));
-        }
-        state.request_strip_rename();
-        return Ok(());
-    };
-    let name = valid_strip_name(supplied)
-        .ok_or_else(|| ActionError::Refused(t("search-action-strip-invalid-name")))?;
-    let strip = match args.integer("strip") {
-        None => state.focused_strip_id(),
-        Some(index) => usize::try_from(index)
-            .ok()
-            .and_then(|index| index.checked_sub(1))
-            .and_then(|index| {
-                let tree = state.tree();
-                let id = tree.desktop.active_workspace()?.strips.get(index)?.id;
-                drop(tree);
-                Some(id)
-            }),
-    }
-    .ok_or_else(|| ActionError::Refused(t("search-action-strip-rename-missing")))?;
-    state
-        .rename_strip(strip, name)
-        .map_err(ActionError::Refused)
-}
-
-/// Move a strip of the active workspace to another place in its stack: the
-/// overview's Move up and Move down, for an agent or a script.
-fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
-    let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
-    let index_of = |key: &str| {
-        args.integer(key)
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| n.checked_sub(1))
-    };
-    let from = index_of("strip").ok_or_else(missing)?;
-    let to = index_of("position").ok_or_else(missing)?;
-    let (strip, before) = {
-        let tree = state.tree();
-        let strips = &tree.desktop.active_workspace().ok_or_else(missing)?.strips;
-        let strip = strips.get(from).ok_or_else(missing)?.id;
-        let others: Vec<_> = strips
-            .iter()
-            .map(|s| s.id)
-            .filter(|id| *id != strip)
-            .collect();
-        drop(tree);
-        (strip, others.get(to).copied())
-    };
-    state
-        .move_strip(strip, before)
-        .map_err(ActionError::Refused)
 }
 
 /// What `record.bring` must be told.
@@ -397,7 +290,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
+        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -497,7 +390,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" => {
+        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -2636,6 +2529,13 @@ impl Action {
             subtitle: "search-action-strip-move-subtitle",
             params: STRIP_MOVE_PARAMS,
             apply: move_strip,
+        },
+        Action {
+            id: "strip.remove",
+            label: "search-action-strip-remove",
+            subtitle: "search-action-strip-remove-subtitle",
+            params: STRIP_REMOVE_PARAMS,
+            apply: remove_strip,
         },
         Action {
             id: "workspace.create",
@@ -5932,58 +5832,7 @@ mod tests {
     }
 
     /// A session with a room this machine administers — what `agent.invite` needs.
-    #[test]
-    fn strip_move_puts_a_strip_where_it_is_told_and_refuses_a_strip_that_is_not_there() {
-        let chrome = chrome_with_room();
-        for name in ["Main", "Second", "Third"] {
-            chrome.borrow_mut().create_strip(name).expect("a strip");
-        }
-        let names = || {
-            chrome
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .map(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .map(|strip| strip.name.clone())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
-        let before = names();
-        let count = before.len();
-        assert!(count >= 3, "{before:?}");
-        invoke_shell_action(
-            &chrome,
-            "strip.move",
-            &serde_json::json!({ "strip": count, "position": 1 }),
-        )
-        .expect("the last strip moves to the top");
-        let moved = names();
-        assert_eq!(moved.first(), before.last(), "{moved:?}");
-        invoke_shell_action(
-            &chrome,
-            "strip.move",
-            &serde_json::json!({ "strip": 1, "position": count + 5 }),
-        )
-        .expect("past the end means the bottom");
-        assert_eq!(names(), before);
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                "strip.move",
-                &serde_json::json!({ "strip": count + 1, "position": 1 }),
-            )
-            .is_err(),
-            "there is no such strip"
-        );
-        assert_eq!(names(), before);
-    }
-
-    fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
+    pub(super) fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
         use crate::shell::state::{Workspace, WorkspaceId};
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
@@ -9429,7 +9278,7 @@ mod tests {
     /// exact address in a catalog, then bind and run its JSON arguments.
     /// Every action stays selectable, so the provider's own authority
     /// check is the one under test.
-    fn invoke_shell_action(
+    pub(super) fn invoke_shell_action(
         chrome: &Chrome,
         id: &str,
         args: &serde_json::Value,
