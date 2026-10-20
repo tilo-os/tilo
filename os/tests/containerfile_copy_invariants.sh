@@ -274,7 +274,9 @@ containerfile="$repo/os/Containerfile"
 # context COPY of the same file.
 # The relay's state migration and its tmpfiles entry (tilo-relay.conf) ship
 # with tilo-relay.service, which a home peer enables on this image too.
-expected_contract=0529213fe8ecb3adf0bacdc386e643b66d7ed070af66b173fdebe102613a40a9
+# bootc's update timer and service each get a drop-in that lets them run on
+# the composefs backend, which leaves no /run/ostree-booted: two payload rows.
+expected_contract=f2f89e36e1057773efcc7543f20c4f6c3c183c84a6ffe50a2c5baae630277ce2
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
