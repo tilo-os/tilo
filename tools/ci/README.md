@@ -142,7 +142,7 @@ graph. Bind the export to the exact source revision and compare every root/membe
 manifest and the lockfile with the producing worktree before setting
 `TILO_CURRENT_WORKTREE_METADATA`. Keep that validation evidence beside the export;
 refresh it after any source, manifest, lockfile or target-inventory change. The
-prescribed `AGENTS.md` invocation fails before starting Python when the validated
+invocation below fails before starting Python when the validated
 export variable is unset or empty. Missing JSON fails rather than invoking Cargo.
 
 Use the stable runtime guard when invoking a selector from an older worktree.
@@ -153,12 +153,13 @@ the metadata argument. No source files in the caller worktree are changed.
 Set `TILO_CI_TOOLS` to `tools/ci` in a current trusted checkout, then run:
 
 ```sh
-python3 "$TILO_CI_TOOLS/offline_affected_plan.py" --root "$PWD" \
+python3 "${TILO_CI_TOOLS:?stable CI tools required}/offline_affected_plan.py" --root "$PWD" \
   --bundle "${TILO_CURRENT_WORKTREE_METADATA_BUNDLE:?source-bound CI export required}" \
   --base origin/main --shards 2
 ```
 
-This is the canonical agent caller in `AGENTS.md`. The direct selector's current
+This is the canonical caller (tools/tests/test_guarded_affected_plan.py runs
+it as written). The direct selector's current
 version rejects its local default before Cargo starts. Old relative entrypoints
 do not inherit that change automatically: migrate their callers to this stable
 launcher, rather than relying on prose in an old branch. The normal CI selector

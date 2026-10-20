@@ -46,8 +46,8 @@ class GuardedAffectedPlanTests(unittest.TestCase):
                      'assert m["packages"][0]["dependencies"][0]["optional"]\n'
                      'print(json.dumps({"security_required":True,"complete":True}))\n'
                      'raise SystemExit(7)\n')
-        instructions = (SCRIPT.parents[2] / 'AGENTS.md').read_text()
-        command = re.search(r'`(python3 "\$\{TILO_CI_TOOLS:[^`]+)`', instructions)
+        instructions = (SCRIPT.parent / 'README.md').read_text().replace('\\\n', ' ')
+        command = re.search(r'^(python3 "\$\{TILO_CI_TOOLS:[^\n]+)$', instructions, re.M)
         self.assertIsNotNone(command, 'the actual prescribed caller must use the stable guard')
         environment = os.environ | {'TILO_CI_TOOLS': str(SCRIPT.parent),
                                     'TILO_CURRENT_WORKTREE_METADATA_BUNDLE': str(self.bundle)}
