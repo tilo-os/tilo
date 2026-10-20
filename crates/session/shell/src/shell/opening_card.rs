@@ -282,8 +282,17 @@ impl Widget for OpeningCard {
         let (status, indicator) = self.status_at(now);
         if matches!(indicator, Indicator::Bar(_)) && self.bar_since.is_none() {
             self.bar_since = Some(now);
-            self.indicator_fade
-                .show(true, theme.motion(), ui::tokens::MotionSource::Pointer, now);
+            if self.reduce_motion {
+                // A still card: the bar takes the dots' place at once.
+                self.indicator_fade = ui::motion::CrossFade::new(true);
+            } else {
+                self.indicator_fade.show(
+                    true,
+                    theme.motion(),
+                    ui::tokens::MotionSource::Pointer,
+                    now,
+                );
+            }
         }
         let (dots, bar) = self.indicator_alphas(indicator, now);
         let place = ui::widget::paint_opening_card(
