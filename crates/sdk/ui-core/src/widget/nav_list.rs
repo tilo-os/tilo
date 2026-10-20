@@ -1558,6 +1558,12 @@ impl NavList {
             .collect()
     }
 
+    /// Place the list at `rect` for a host that paints its own layout and
+    /// positions its children by hand rather than through the layout tree.
+    pub fn place_at(&mut self, rect: Rect) {
+        self.tree.place_at(rect);
+    }
+
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
     pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {

@@ -163,6 +163,8 @@ pub struct TypstApp {
     editor: SourceEditor,
     preview: PreviewPane,
     diagnostics: DiagnosticsPanel,
+    /// The open document's headings, in a drawer beside the source.
+    outline: crate::outline::Outline,
 
     // --- workspace ---
     /// The workspace as last presented.
@@ -280,6 +282,7 @@ impl TypstApp {
             editor,
             preview: PreviewPane::new(),
             diagnostics: DiagnosticsPanel::new(),
+            outline: crate::outline::Outline::new(),
             files: Rc::default(),
             current: None,
             pending_open: false,
@@ -486,6 +489,7 @@ impl TypstApp {
             page_count: self.preview.page_count(),
         })
         .into_iter()
+        .chain(self.outline.resources())
         .map(ui::framework::LiveRow::from_resource)
         .collect()
     }
@@ -747,6 +751,7 @@ impl TypstApp {
             Command::ZoomIn => TypstEffect::ZoomIn,
             Command::Fit => TypstEffect::FitWidth,
             Command::ToggleProblems => TypstEffect::Problems,
+            Command::ToggleOutline => TypstEffect::Outline,
             Command::ShowEditor => TypstEffect::Editor,
             Command::ShowPreview => TypstEffect::Preview,
         };
@@ -791,6 +796,21 @@ impl TypstApp {
                         self.editor.focused = true;
                     }
                 }
+            }
+            TypstEffect::Outline => {
+                self.outline.toggle();
+                self.layout_in(self.rect);
+            }
+            TypstEffect::GoToHeading { line } => {
+                let text = self.source_cache.clone();
+                self.editor.goto_line(&text, line);
+                if self.compact {
+                    self.set_compact_view(CompactPane::Editor);
+                } else {
+                    self.editor.focused = true;
+                }
+                self.outline.dismiss_if_overlay();
+                self.layout_in(self.rect);
             }
             TypstEffect::GoToPage { page } => {
                 self.preview.scroll_to_page(page);
@@ -858,8 +878,10 @@ impl TypstApp {
         self.bar_rect = Rect::new(r.x0, r.y0, r.x1, (r.y0 + frame.bar_h).min(r.y1));
         let status_top = (r.y1 - frame.status_h).max(self.bar_rect.y1);
         self.status_rect = Rect::new(r.x0, status_top, r.x1, r.y1);
-        let body = Rect::new(r.x0, self.bar_rect.y1, r.x1, status_top);
-        let content_w = r.width();
+        let body = self
+            .outline
+            .layout(Rect::new(r.x0, self.bar_rect.y1, r.x1, status_top));
+        let content_w = body.width();
 
         // Derive the layout mode from the *current* width every pass, so a
         // resize across the threshold reflows without any cached-on-launch mode.
@@ -883,8 +905,7 @@ impl TypstApp {
                 }
             }
         } else {
-            self.splitter
-                .set_bounds(Rect::new(r.x0, body.y0, r.x1, body.y1));
+            self.splitter.set_bounds(body);
             let (editor_col, preview) = self.splitter.pane_rects();
             self.preview_rect = preview;
             let (main, diag) = self.split_off_diagnostics(editor_col);
@@ -964,6 +985,7 @@ impl TypstApp {
         );
         let text_k = f64::from(tr.text_scale()).max(f64::from(f32::EPSILON));
         self.preview.apply_theme(theme);
+        self.outline.scale_for(theme);
         let panel_before = self.diagnostics.preferred_height();
         self.diagnostics.measure_rows(tr, theme);
         let changed = frame != self.frame
@@ -982,6 +1004,7 @@ impl TypstApp {
             0,
             self.err_count + self.warn_count,
             self.show_diagnostics,
+            self.outline.visible(),
             matches!(self.compact_view, CompactPane::Preview),
         );
         self.chrome
@@ -1047,20 +1070,21 @@ impl Widget for TypstApp {
     );
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
-        for child in self.chrome.children_mut() {
+        for child in self.children_mut() {
             child.settle(edits, path);
         }
         for command in self.chrome.take() {
             self.run_command(command, edits.doc());
             self.dirty = true;
         }
+        self.take_outline_choice();
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         // Retained controls settle their admitted operations on sync (notably
         // opening the toolbar overflow); Chrome's presentation sync only
         // updates the document label and current toggle state.
-        for child in self.chrome.children_mut() {
+        for child in self.children_mut() {
             child.sync(doc, path);
         }
         let (doc, _) = ui::doc::document_ref(doc, path);
@@ -1088,6 +1112,7 @@ impl Widget for TypstApp {
         // Show the open file's source as the document holds it.
         self.editor.pull(doc);
         let source = self.editor.text().to_owned();
+        self.outline.sync(&source);
 
         // In the browser the fonts arrive after the editor opens; compile
         // once they have, with parts built from them.
@@ -1136,7 +1161,6 @@ impl Widget for TypstApp {
         // hand in `draw`, so their taffy geometry is unused: the nodes exist
         // so each control is registered in `node_map` (a11y, focus, events).
         let child_nodes: Vec<NodeId> = self
-            .chrome
             .children_mut()
             .into_iter()
             .map(|child| child.build_layout(taffy, theme, node_map))
@@ -1156,15 +1180,19 @@ impl Widget for TypstApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.chrome.children()
+        let mut children = self.chrome.children();
+        children.extend(self.outline.widget());
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.chrome.children_mut()
+        let mut children = self.chrome.children_mut();
+        children.extend(self.outline.widget_mut());
+        children
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.chrome.take_structure_dirty()
+        self.chrome.take_structure_dirty() | self.outline.take_structure_dirty()
     }
 
     fn draw(
@@ -1206,6 +1234,7 @@ impl Widget for TypstApp {
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
         }
+        self.outline.draw(scene, t, tr, theme, presence);
 
         ui::chrome::status_bar::draw(
             scene,
@@ -1267,6 +1296,9 @@ impl Widget for TypstApp {
         for command in self.chrome.take() {
             self.run_command(command, ctx.state.doc());
             self.dirty = true;
+        }
+        if !*ctx.handled || already_handled {
+            self.route_to_outline(event, ctx, is_key);
         }
         let claimed = *ctx.handled && !already_handled;
         if !self.compact && !claimed {
@@ -1671,6 +1703,71 @@ impl TypstApp {
         }
     }
 
+    /// Give the outline the event: a pointer over its drawer, or a key while
+    /// it, not the source, has focus. A press on a floating drawer's scrim
+    /// closes it.
+    fn route_to_outline(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        is_key: bool,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.mouse = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        if !self.outline.visible() {
+            return;
+        }
+        let pressed = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        );
+        if pressed && self.outline.dismiss_at(self.mouse) {
+            self.layout_in(self.rect);
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
+        let over = self.outline.rect().contains(self.mouse);
+        if (is_key && self.editor.focused) || (!is_key && !over) {
+            return;
+        }
+        if pressed {
+            self.editor.focused = false;
+        }
+        let node = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|nodes| nodes.last().copied())
+            .unwrap_or(ctx.node_id);
+        if let Some(list) = self.outline.widget_mut() {
+            list.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.take_outline_choice();
+        if !is_key {
+            // The drawer's rows own the pointer over it.
+            *ctx.handled = true;
+        }
+        self.dirty = true;
+    }
+
+    /// Go to the heading chosen in the outline, through its published effect.
+    fn take_outline_choice(&mut self) {
+        if let Some(effect) = self.outline.take_chosen() {
+            match &self.actions {
+                Some(actions) => {
+                    actions.effect(&effect);
+                }
+                None => self.perform_resource_operation(effect),
+            }
+            self.dirty = true;
+        }
+    }
+
     /// Give the pane splitter the event and apply the split it asks for.
     fn route_to_splitter(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let (hovered, dragging) = (self.splitter.is_hovered(), self.splitter.is_dragging());
@@ -1822,6 +1919,43 @@ mod tests {
 
     fn fresh() -> (TypstApp, AutoCommit) {
         workspace(None)
+    }
+
+    /// The outline lists the open document's headings beside the source, and
+    /// going to one puts the source's caret on its line, from the toolbar's
+    /// toggle and the heading's published effect alike.
+    #[test]
+    fn the_outline_goes_to_a_heading_in_the_source() {
+        use crate::actions::TypstEffect;
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1400.0, 900.0));
+        let headings = crate::outline::headings(&app.source_cache);
+        let target = headings.last().expect("the welcome document has headings");
+        let outline = app
+            .live_rows()
+            .into_iter()
+            .find(|row| row.id() == "typst.outline")
+            .expect("the outline is published")
+            .into_resource();
+        assert!(
+            outline
+                .children
+                .iter()
+                .any(|row| row.id.0 == format!("typst.heading:{}", target.line)),
+            "every heading is a row an agent can go to"
+        );
+        let full = app.editor_rect.width() + app.preview_rect.width();
+        app.perform_resource_operation(TypstEffect::Outline);
+        assert!(app.outline.visible());
+        assert!(
+            app.editor_rect.width() + app.preview_rect.width() < full,
+            "the docked outline takes room from the panes, not over them"
+        );
+        app.perform_resource_operation(TypstEffect::GoToHeading { line: target.line });
+        assert_eq!(app.caret_line_col().0, target.line);
+        assert!(app.editor.focused);
+        app.perform_resource_operation(TypstEffect::Outline);
+        assert!(!app.outline.visible());
     }
 
     /// [`fresh`] with the examples a capture of `scenario` shows.

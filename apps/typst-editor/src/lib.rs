@@ -29,6 +29,7 @@ pub mod chrome;
 pub mod compile;
 pub mod diagnostics;
 pub mod editor;
+mod outline;
 pub mod preview;
 pub mod resource;
 pub mod samples;

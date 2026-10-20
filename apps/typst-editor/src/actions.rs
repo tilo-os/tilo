@@ -63,6 +63,15 @@ pub enum TypstEffect {
         #[param("The Problems row")]
         index: usize,
     },
+    /// Toggle outline.
+    #[effect(view)]
+    Outline,
+    /// Go to heading.
+    #[effect(view, row)]
+    GoToHeading {
+        #[param("The heading's one-based source line")]
+        line: usize,
+    },
     /// Go to page.
     #[effect(view, row)]
     GoToPage {

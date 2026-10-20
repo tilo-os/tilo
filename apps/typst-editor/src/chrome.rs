@@ -32,6 +32,7 @@ pub enum Command {
     ZoomIn,
     Fit,
     ToggleProblems,
+    ToggleOutline,
     /// Narrow window: show the source editor pane.
     ShowEditor,
     /// Narrow window: show the rendered preview pane.
@@ -40,8 +41,10 @@ pub enum Command {
 
 type Queue = Rc<RefCell<Vec<Command>>>;
 
-/// The position of the Problems toggle among the toolbar's items.
+/// The position of the Problems and Outline toggles among the toolbar's
+/// items.
 const PROBLEMS_ITEM: usize = 1;
+const OUTLINE_ITEM: usize = 2;
 
 /// What the toolbar was built for; it is rebuilt when the Problems label or
 /// the toggle's state would differ.
@@ -49,6 +52,7 @@ const PROBLEMS_ITEM: usize = 1;
 struct ToolbarFor {
     problems: usize,
     shown: bool,
+    outline: bool,
 }
 
 pub struct Chrome {
@@ -103,12 +107,11 @@ impl OptionalToolbarAction for Toolbar {
 
 fn build_toolbar(
     queue: &Queue,
-    problems: usize,
-    shown: bool,
+    state: ToolbarFor,
     actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
     use crate::actions::TypstEffect;
-    let label = problems_label(problems);
+    let label = problems_label(state.problems);
     // Overflow folds the trailing commands first, so the order is the
     // priority: what the person needs at every width (compile, and whether the
     // source has problems) leads, the preview's zoom follows, and the file
@@ -116,8 +119,14 @@ fn build_toolbar(
     Toolbar::new(Orientation::Horizontal)
         .push_button("Compile", command(queue, Command::Compile))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Compile)))
-        .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
+        .push_toggle(&label, state.shown, command(queue, Command::ToggleProblems))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Problems)))
+        .push_toggle(
+            "Outline",
+            state.outline,
+            command(queue, Command::ToggleOutline),
+        )
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)))
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomOut)))
@@ -173,9 +182,10 @@ impl Chrome {
         let toolbar_for = ToolbarFor {
             problems: 0,
             shown: false,
+            outline: false,
         };
         Self {
-            toolbar: build_toolbar(&queue, 0, false, None),
+            toolbar: build_toolbar(&queue, toolbar_for, None),
             toolbar_for,
             document,
             document_name,
@@ -195,12 +205,7 @@ impl Chrome {
         &mut self,
         actions: &ui::framework::Actions<crate::resource::Workspace>,
     ) {
-        self.toolbar = build_toolbar(
-            &self.queue,
-            self.toolbar_for.problems,
-            self.toolbar_for.shown,
-            Some(actions),
-        );
+        self.toolbar = build_toolbar(&self.queue, self.toolbar_for, Some(actions));
         self.close_problems = actions.bind_effect_invocation(
             Button::icon_only("typst.close-problems", Icon::X, "Close problems"),
             &crate::actions::TypstEffect::Problems,
@@ -222,6 +227,7 @@ impl Chrome {
         current: usize,
         problems: usize,
         problems_shown: bool,
+        outline_shown: bool,
         preview_shown: bool,
     ) {
         let name = names.get(current).copied().unwrap_or_default();
@@ -229,11 +235,13 @@ impl Chrome {
         let wanted = ToolbarFor {
             problems,
             shown: problems_shown,
+            outline: outline_shown,
         };
         if wanted != self.toolbar_for {
             self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
             self.toolbar
                 .set_label(PROBLEMS_ITEM, &problems_label(problems));
+            self.toolbar.set_active(OUTLINE_ITEM, outline_shown);
             self.toolbar_for = wanted;
         }
         self.view.set_selected(usize::from(preview_shown));
