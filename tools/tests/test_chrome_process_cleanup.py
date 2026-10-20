@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from hang import HANG_BOUND
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -162,7 +163,7 @@ class ChromeProcessCleanup(unittest.TestCase):
                                FIXTURE_HELPER=str(REPO / 'tools/web/chrome.mjs'))
             try:
                 process = subprocess.run(['node', str(script)], cwd=REPO, env=environment,
-                                         capture_output=True, text=True, timeout=20)
+                                         capture_output=True, text=True, timeout=HANG_BOUND)
                 self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
                 return json.loads(process.stdout)
             finally:
