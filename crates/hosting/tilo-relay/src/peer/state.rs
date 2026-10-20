@@ -721,7 +721,7 @@ pub(super) async fn desktop_refusal(
         .decide_layout_write(authority.room(), author, &body)
         .await
         .err()?;
-    if reason == crate::rooms::PUBLIC_LAYOUT_REFUSAL {
+    if reason == crate::rooms::LAYOUT_REFUSAL {
         tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
     } else {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a shared layout change");

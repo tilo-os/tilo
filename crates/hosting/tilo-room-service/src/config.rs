@@ -86,6 +86,12 @@ pub struct PersistentConfig {
     /// the room offers its visitors. `none`, none, and the room is
     /// read-only to its guests whatever their role.
     pub author_apps: Vec<String>,
+    /// Whether the room shares its members' windows and strips
+    /// (`TILO_ROOMS_LAYOUT`): `personal` unless set (everyone comes in
+    /// through the site's door, so each member's windows stay on their
+    /// device and the room shares its records and people), or `shared`.
+    /// Settled at every start.
+    pub layout: String,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -470,6 +476,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         bots: list("TILO_ROOMS_BOTS", ';'),
         author_apps: author_apps(var, &seed_apps)?,
         seed_apps,
+        layout: layout(var)?,
         inactive_after_days: inactive_after_days(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
@@ -492,6 +499,19 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         )?,
         live,
     }))
+}
+
+/// `TILO_ROOMS_LAYOUT`: `personal` unless set, or `shared`.
+fn layout(var: &impl Fn(&str) -> Option<String>) -> Result<String> {
+    let Some(layout) = var("TILO_ROOMS_LAYOUT") else {
+        return Ok("personal".into());
+    };
+    let layout = layout.trim();
+    ensure!(
+        matches!(layout, "personal" | "shared"),
+        "TILO_ROOMS_LAYOUT is personal (each member's windows stay on their device) or shared, not {layout:?}"
+    );
+    Ok(layout.to_owned())
 }
 
 /// The longest `TILO_ROOMS_INACTIVE_AFTER_DAYS` takes: ten years.
@@ -900,6 +920,22 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+    #[test]
+    fn a_site_rooms_members_keep_their_windows_unless_the_host_shares_them() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        assert_eq!(
+            config(&base).unwrap().persistent.unwrap().layout,
+            "personal"
+        );
+        let shared = config(&[base[0], base[1], ("TILO_ROOMS_LAYOUT", "shared")]).unwrap();
+        assert_eq!(shared.persistent.unwrap().layout, "shared");
+        assert!(config(&[base[0], base[1], ("TILO_ROOMS_LAYOUT", "public")]).is_err());
     }
 
     // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."

@@ -31,6 +31,7 @@ document (schema: `tilo_desktop_model::projection`) carries:
 | People | `owner`, `members`, `members_joined_v1`, `grants`, `sandbox`, `peer_identities_v1`, `invitation_receipts_v1`, `media_policy_v1`, bots and delegates | the governor |
 | State | `records` (the record index), `tasks_v1`, `effect_receipts_v1`, `automations_v1`, `schedule_claims_v1`, `presets_v1`, `name` | members, under the room's grants |
 | Custody | checkpoint coverage, durable receipts, import proposals | the governor |
+| Sharing scope | `layout_v1` (`shared` or `personal`) | the governor |
 
 Each record is its own document on its own `(app, room, record)` route
 beside the room document, because an Automerge change graph cannot be served
@@ -55,6 +56,30 @@ namespace so a restart neither drops nor repeats one. A window someone moved
 therefore stays where they put it instead of snapping back when its owner
 returns. Following someone (focus, scroll position) is presence, not room
 state.
+
+**Sharing scope is room policy.** The room's governance says whether it
+shares its members' layout (`tilo_desktop_model::projection::RoomLayout`).
+In a *shared* room (the default, an invite-only room's) layout crosses
+devices as above. In a *personal* room each member's strips and windows stay
+on their device; only its records and its people are shared. Its governor
+admits no member's change that puts anything into `contents` (a member may
+only take its own out), the relay's doors refuse members' layout writes, and
+devices send none and mirror none. A room admitted through a public door (a
+community site's persistent room, `tilo-relay room --layout`, personal
+unless its host says otherwise) or with open admission (listed in a public
+directory, unless its governor chose) is personal. Windows of host or
+unconfined programs reach no room at all, whatever its scope; in a shared
+workspace their bar says "Only on this device".
+
+**Presence is per resource, layout is per person.** Inside a resource
+several people have open (a note, a chat channel) each sees the others'
+caret, selection, typing, pointer and who is in it: that is collaboration on
+the document, in shared and personal rooms alike. Under "That I'm here" (a
+public room's default) nothing else leaves the device: not which windows,
+tabs or apps someone has, their desktop pointer, whom they follow, what they
+say beside their pointer, or what the machine infers (an automatic status,
+idle or away from a quiet or locked screen). "Nothing" hides them
+everywhere, inside resources too.
 
 **History nests.** A workspace's history is the room document's history
 (layout, people, tasks, receipts) as the outer level and each record's own

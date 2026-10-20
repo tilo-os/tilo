@@ -112,6 +112,16 @@ pub struct PersistentArgs {
     /// An app authored into the room at its first start; repeatable.
     #[arg(long = "seed-app", value_name = "APP_ID")]
     pub seed_apps: Vec<String>,
+    /// Whether the room shares its members' windows and strips: `personal`
+    /// (each member's stay on their device; the room shares its records and
+    /// people) or `shared`. Settled at every start.
+    #[arg(
+        long = "layout",
+        value_name = "SCOPE",
+        default_value = "personal",
+        value_parser = parse_layout
+    )]
+    pub layout: tilo_desktop_model::projection::RoomLayout,
     /// An app the room's members write through: it authors the room's
     /// content, so a member whose role lets them change the room (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
@@ -410,6 +420,12 @@ fn input_value(text: &str) -> serde_json::Value {
 fn token_digest(token: &[u8]) -> [u8; 32] {
     use sha2::Digest as _;
     sha2::Sha256::digest(token).into()
+}
+
+/// `--layout`: `shared` or `personal`.
+fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::RoomLayout, String> {
+    tilo_desktop_model::projection::RoomLayout::from_id(scope)
+        .ok_or_else(|| format!("{scope:?} is not a layout scope: say shared or personal"))
 }
 
 fn parse_keys(flag: &str, keys: &[String]) -> anyhow::Result<BTreeSet<[u8; 32]>> {
@@ -920,13 +936,13 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
-    // Every visitor comes in through the site's door: the room shares its
-    // apps' records, never what anyone has open.
-    // The room is public from here on even if what it held of its members'
-    // windows could not all be removed now; the next start tries again.
-    if let Err(error) = rooms.make_public(&room).await {
-        tracing::warn!(%room, %error, "a public room still holds its members' windows");
-    }
+    // Every visitor comes in through the site's door: unless the host says
+    // otherwise, the room shares its apps' records, never what anyone has
+    // open. Settled at every start, as the host configured it.
+    rooms
+        .set_layout(&room, persistent.layout)
+        .await
+        .map_err(|error| anyhow::anyhow!("settle the room's layout scope: {error}"))?;
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
     let workspace_id = rooms
@@ -1797,6 +1813,31 @@ mod tests {
             .inactive_after_days;
         assert_eq!(shorter, 7, "the host configures it");
         assert!(Args::try_parse_from(["relay", "--inactive-after-days", "0"]).is_err());
+    }
+
+    // USER REQUIREMENT (2026-10-20): "windows should stay private by default"
+    /// A site's room lets everyone in through its door: unless its host says
+    /// otherwise, each member's windows stay on their device.
+    #[test]
+    fn a_site_rooms_layout_is_personal_unless_its_host_says_otherwise() {
+        use clap::Parser as _;
+        use tilo_desktop_model::projection::RoomLayout;
+        #[derive(clap::Parser)]
+        struct Args {
+            #[command(flatten)]
+            persistent: PersistentArgs,
+        }
+        assert_eq!(
+            Args::parse_from(["relay"]).persistent.layout,
+            RoomLayout::Personal
+        );
+        assert_eq!(
+            Args::parse_from(["relay", "--layout", "shared"])
+                .persistent
+                .layout,
+            RoomLayout::Shared
+        );
+        assert!(Args::try_parse_from(["relay", "--layout", "public"]).is_err());
     }
 
     #[test]

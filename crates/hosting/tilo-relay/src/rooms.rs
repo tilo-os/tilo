@@ -36,15 +36,15 @@ pub(crate) use desktop_writes::writes_desktop;
 mod listing;
 mod member_records;
 pub use member_records::PreparedRecord;
+mod layout_scope;
 mod pages;
 mod peer_parts;
 mod private;
 #[cfg(test)]
 mod private_network_tests;
 mod private_store;
-mod public_rooms;
+pub(crate) use layout_scope::LAYOUT_REFUSAL;
 pub use private::PrivateProtocol;
-pub(crate) use public_rooms::PUBLIC_LAYOUT_REFUSAL;
 mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -656,9 +656,9 @@ struct RoomsInner {
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
     /// The rooms listed as public workspaces, and how lively each is.
     listings: listing::Listings,
-    /// The rooms public here: their members' windows are never shared
-    /// ([`public_rooms`]).
-    public: public_rooms::PublicRooms,
+    /// Each room's layout scope, as its governance says
+    /// ([`layout_scope`]).
+    layouts: layout_scope::Layouts,
 }
 
 /// What a member sent a room's channel steward.
@@ -781,10 +781,10 @@ impl Rooms {
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
                 listings,
-                public: public_rooms::PublicRooms::default(),
+                layouts: layout_scope::Layouts::default(),
             }),
         };
-        this.learn_public().await;
+        this.learn_layouts().await;
         let rooms = this
             .inner
             .rooms
@@ -801,6 +801,7 @@ impl Rooms {
             // What the relay's log revoked while the room was closed.
             this.carry_revocations(&mut room, &[]).await?;
         }
+        this.settle_layouts().await;
         this.watch_calls();
         this.follow_activity();
         Ok(this)
@@ -1185,13 +1186,12 @@ impl Rooms {
         // The relay stewards the room's channels: what only a steward reads
         // is neither delivered to members nor replayed to them.
         runtime.store.replay_without_steward_only();
-        // A public room shares no member's layout: what members wrote of it
-        // before is replayed to nobody.
-        if self.is_public(room.room()) {
-            runtime
-                .store
-                .replay_without_member_layout(host.cert.device_public_key);
-        }
+        // A room whose layout is personal shares no member's layout: what
+        // members wrote of it before is replayed to nobody.
+        runtime.store.replay_member_layout(
+            self.is_public(room.room())
+                .then_some(host.cert.device_public_key),
+        );
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
             runtime.governor_tap = Some(tap);
@@ -1365,8 +1365,8 @@ impl Rooms {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        // A public room takes in no member's windows; its doors refuse
-        // them before they get here (`public_rooms`).
+        // A room whose layout is personal takes in no member's windows; its
+        // doors refuse them before they get here (`layout_scope`).
         if self.is_public(room) {
             return Ok(());
         }

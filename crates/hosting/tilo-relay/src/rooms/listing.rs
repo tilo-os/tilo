@@ -185,10 +185,11 @@ impl Rooms {
             .set(room, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
         tracing::info!(%room, role = ?listing.default_role, "workspace made public");
-        // Strangers come in through its door from now on: its members'
-        // windows are theirs alone (`public_rooms`).
-        if let Err(error) = self.make_public(room).await {
-            tracing::warn!(%room, %error, "a public room still holds its members' windows");
+        // Strangers come in through its door from now on: unless its
+        // governor chose otherwise, its members' windows are theirs alone
+        // (`layout_scope`).
+        if let Err(error) = self.default_to_personal(room).await {
+            tracing::warn!(%room, %error, "a listed room still shares its layout");
         }
         Ok(listing)
     }

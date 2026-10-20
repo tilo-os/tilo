@@ -419,6 +419,8 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         command.arg("--roles-file").arg(roles);
     }
     command
+        .arg("--layout")
+        .arg(&persistent.layout)
         .arg("--inactive-after-days")
         .arg(persistent.inactive_after_days.to_string());
     size_sessions(&mut command, config, persistent);
@@ -1628,6 +1630,15 @@ mod tests {
                 &[("TILO_ROOMS_INACTIVE_AFTER_DAYS", "7")]
             ),
             ["7"]
+        );
+    }
+
+    #[test]
+    fn the_relay_keeps_members_windows_on_their_devices_unless_the_operator_shares_them() {
+        assert_eq!(relay_args("--layout", &[]), ["personal"]);
+        assert_eq!(
+            relay_args("--layout", &[("TILO_ROOMS_LAYOUT", "shared")]),
+            ["shared"]
         );
     }
 
