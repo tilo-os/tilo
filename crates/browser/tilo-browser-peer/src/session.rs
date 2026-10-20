@@ -143,7 +143,8 @@ pub struct PeerConfig {
     /// This page only watches the rooms it joins: a public room's
     /// spectator. It writes nothing: no document, live frame, action,
     /// compaction or presence of its own, no live join, and no channel
-    /// governance, so it never asks a channel for access. It takes the
+    /// governance, so it never asks a channel for access; it only asks the
+    /// room for content its records reference. It takes the
     /// content keys of the records it opens from the room's steward over
     /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
     pub watching: bool,
@@ -1962,13 +1963,12 @@ impl Task {
             return Some(command);
         }
         match command {
-            // A watching page asks the room for no content: the host
-            // answers none to it.
+            // A watching page still asks the room for content its records
+            // reference: a public room's host answers it.
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
-            | Command::Compact(..)
-            | Command::WantContent(..) => {}
+            | Command::Compact(..) => {}
             Command::RemoteAction(workspace_id, to, _) => {
                 self.emit(&PeerEvent::RemoteActionUndeliverable {
                     workspace_id,
