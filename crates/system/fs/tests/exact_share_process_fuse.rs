@@ -1471,8 +1471,13 @@ fn idle_share_recipient_stays_asleep() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Settled, the recipient awaits again from here, and the host answers
+    // that await on a change or once its limit passes.
+    let await_began = Instant::now();
+    let connections_at_revocation = connected(&viewer);
 
-    // Revoking the link ends the recipient's refreshes.
+    // Revoking the link ends the recipient's refreshes, through the event:
+    // the revoked grant wakes the host's held await, which answers Denied.
     while viewer.output.try_recv().is_ok() {}
     let revoked = Instant::now();
     assert!(matches!(
@@ -1485,13 +1490,24 @@ fn idle_share_recipient_stays_asleep() {
         "the revocation reached the recipient {} ms after it was made",
         revocation.as_millis()
     );
+    let denied_after_await = await_began.elapsed();
+    let reconnected = connected(&viewer) - connections_at_revocation;
     viewer.stop();
     host.stop();
 
+    // Nothing but the grant change answers the held await before the
+    // host's await limit, and a recipient that polled would have opened a
+    // connection of its own. How long the event takes on a loaded runner
+    // is printed above, not bounded.
     assert!(
-        revocation <= REVOKE_BOUND,
-        "the recipient kept refreshing a revoked link for {} ms",
-        revocation.as_millis()
+        denied_after_await < fs::RECORD_AWAIT_CHANGE_LIMIT,
+        "the revocation was answered only when the host's await limit passed ({} ms after \
+         the await began), not by the revoked grant waking it",
+        denied_after_await.as_millis()
+    );
+    assert_eq!(
+        reconnected, 0,
+        "the revocation must reach the recipient on the stream it holds, not by a poll"
     );
     assert_eq!(
         connections, 0,
