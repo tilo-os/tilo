@@ -21,6 +21,9 @@ so t.toml carries both, generated between markers:
     external crates t derives from the manifests and the lockfile), and the
     files outside those packages they or the packages read, so a change
     elsewhere in the tree doesn't run them again;
+  * what `security` reads: the trees its invariant scripts check as a whole
+    (SECURITY_AREAS) and the workspace packages and apps they name, so a change
+    to a crate none of them reads doesn't boot its micro-VM again;
   * the size checks: `thin-runtime-<arch>`, which builds what they share once,
     and on it `app-size/<app>-<arch>` for each app of the default collection and
     `runtime-size-<arch>`, each keyed by what building and measuring its subject
@@ -80,6 +83,46 @@ SUITE_PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/
 def glob(pattern: str) -> str:
     """A suites.toml input as a t glob: "dir/" covers everything below it."""
     return pattern + "**" if pattern.endswith("/") else pattern
+
+
+# What the security-boundary invariants (suites.SECURITY_MANIFEST) read whole: the OS tree, its
+# packaging and release tooling, keys, docs, workflows and CI configuration, and the app manifests
+# tools/apps/app_release.py resolves the app collections from. Beyond these they read the files
+# of workspace packages and apps they name by path, which `security_reads` finds in them.
+SECURITY_AREAS = ("os/**", "dist/**", "docs/**", "keys/**", "scripts/**", "tools/**", ".forgejo/**",
+                  ".config/**", "apps/*/Cargo.toml", "apps/*/tilo-app.toml")
+# A path into the workspace's packages and apps, as an invariant names it: "$repo/crates/x/y/src/z.rs"
+# or ROOT / "crates/x" / "y" (joined first). A path with a variable or glob in it ends before that.
+SECURITY_PATH = re.compile(r"(?<![\w.-])((?:crates|apps|examples|sdk|vendor)/[\w.@+-]+(?:/[\w.@+-]+)*)")
+
+
+def security_reads(root: Path = ROOT) -> str:
+    """The `inputs` of the security check: SECURITY_AREAS, the invariant scripts and, for every
+    existing path of a workspace package or app they name, that package's whole directory
+    (another of its files may be read through the one named), else the path itself. A path only
+    built at runtime has to fall in SECURITY_AREAS."""
+    manifest = root / suites.SECURITY_MANIFEST
+    invariants = [line.strip() for line in manifest.read_text(encoding="utf-8").splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")]
+    reads: set[str] = set()
+    for invariant in invariants:
+        text = re.sub(r'"\s*/\s*"', "/", (root / invariant).read_text(encoding="utf-8"))
+        for match in SECURITY_PATH.finditer(text):
+            named = match[1].rstrip(".")
+            # A path no file has is a fixture's, made up in a scratch directory.
+            if not (root / named).exists():
+                continue
+            within = named.split("/")
+            package = next(("/".join(within[:n]) for n in range(len(within), 1, -1)
+                            if (root / "/".join(within[:n]) / "Cargo.toml").is_file()), None)
+            reads.add(f"{package}/**" if package else f"{named}/**" if (root / named).is_dir() else named)
+    reads |= {suites.SECURITY_MANIFEST, "tools/run-security-boundary-invariants.sh", *invariants}
+    trees = [*SECURITY_AREAS, *(path for path in reads if path.endswith("/**"))]
+
+    def covered(path: str) -> bool:
+        return any(tree != path and fnmatch.fnmatchcase(path.removesuffix("/**"), tree) for tree in trees)
+
+    return f"inputs = {array([*SECURITY_AREAS, *sorted(path for path in reads if not covered(path))])}\n"
 
 
 def array(values: list[str]) -> str:
@@ -613,6 +656,7 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
+            "security-reads": security_reads(),
             **product_blocks(products.load()), **cargo_checks(manifest)}
 
 

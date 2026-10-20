@@ -301,6 +301,21 @@ inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-dep
 suites = ["os/tests/test_no_cisco_openh264.py"]
 
 [[group]]
+name = "openssl-free"
+requirement = { cores = 1, memory = "2GiB" }
+# No OpenSSL, native-tls or second crypto provider in the workspace's dependency
+# graph or any lockfile, and none started by the shipped runtime's sources, image
+# recipes or workflows. It scans every Rust and shell source and resolves the
+# whole graph with cargo tree, so it is a group of its own, which answers in
+# seconds, rather than part of security, whose micro-VM every crate change
+# would otherwise boot.
+inputs = [
+  "os/", ".forgejo/", "dist/", "crates/", "apps/", "vendor/", ".cargo/",
+  "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
+]
+suites = ["os/tests/no_openssl_runtime.sh"]
+
+[[group]]
 name = "mount-source-cache-keys"
 requirement = { cores = 1, memory = "1GiB" }
 # A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
