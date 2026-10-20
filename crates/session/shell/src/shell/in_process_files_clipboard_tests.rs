@@ -137,7 +137,7 @@ mod files_clipboard_tests {
                     .unwrap();
                     let client = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                     let channel = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
+                        tilo_test_env::hang_bound(),
                         client.join_channel_as_kind(&room, &presentation, &agent, "agent", ""),
                     )
                     .await
@@ -150,7 +150,7 @@ mod files_clipboard_tests {
                             .encode()
                             .unwrap();
                         let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
+                            tilo_test_env::hang_bound(),
                             channel.remote_action(&bytes),
                         )
                         .await
@@ -225,7 +225,7 @@ mod files_clipboard_tests {
 
         fn start_session(profile: &Path, restarting: bool) -> crate::runtime_host::Session {
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded restart deadline");
             loop {
                 let mut stage = String::new();
@@ -496,7 +496,7 @@ mod files_clipboard_tests {
                 "actual agent admission refused: {result:?}"
             );
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded test deadline");
             loop {
                 let pending = agent.request(Message::observe(invocation));
@@ -563,7 +563,7 @@ mod files_clipboard_tests {
 
         fn wait_for_paste_history(&mut self, undone: Option<bool>, failure: &str) {
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded history deadline");
             loop {
                 let history = self.succeeds(1, "history");
@@ -2258,7 +2258,7 @@ mod files_clipboard_tests {
         fixture.succeeds(0, "select-all");
         fixture.command_key(0, "c");
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded test deadline");
         while fixture.succeeds(1, "clipboard-status")["offer"].is_null() {
             assert!(
@@ -2282,7 +2282,7 @@ mod files_clipboard_tests {
         fixture.command_key(1, "z");
         let [first, second] = &mut fixture.shown;
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded test deadline");
         until(
             &mut [first, second],
@@ -2313,7 +2313,7 @@ mod files_clipboard_tests {
         );
         let [first, second] = &mut fixture.shown;
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded restart deadline");
         until(
             &mut [first, second],
