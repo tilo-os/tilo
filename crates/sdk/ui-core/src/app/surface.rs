@@ -796,6 +796,7 @@ impl App {
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
+                | WindowEvent::Focused(false)
         ) && app.input.tooltip_host.dismiss()
         {
             window.request_redraw();

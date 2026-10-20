@@ -1047,6 +1047,46 @@ mod theme_repaint_tests {
         );
     }
 
+    /// A tooltip is about where the pointer rests in a window the person
+    /// is using: it goes when the pointer leaves, and when the window loses
+    /// focus.
+    #[test]
+    fn a_tooltip_goes_when_the_pointer_leaves_or_the_window_loses_focus() {
+        let _settled = crate::motion::testing::settled();
+        for ending in [
+            WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+            WindowEvent::Focused(false),
+        ] {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Button::new("probe", "Probe").tooltip("Probe the tile")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            let theme = Theme::light();
+            layout(&mut tile, &theme);
+            let _ = paint_tracked(&mut tile, &theme);
+            let at = tile.app.root_widget.get_rect().center();
+            let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
+            tile.app.surface_input(&tile.region, moved, false);
+            std::thread::sleep(
+                crate::widget::tooltip::HOVER_DWELL + crate::time::Duration::from_millis(50),
+            );
+            tile.wants_frame.set(true);
+            let _ = paint_tracked(&mut tile, &theme);
+            assert!(
+                tile.app.input.tooltip_host.visible().is_some(),
+                "the tooltip shows"
+            );
+            tile.app.surface_input(&tile.region, ending.clone(), false);
+            assert!(
+                tile.app.input.tooltip_host.visible().is_none(),
+                "{ending:?} takes the tooltip away"
+            );
+        }
+    }
+
     #[test]
     fn an_embedded_frame_hands_its_widget_damage_to_the_host() {
         let label = std::rc::Rc::new(std::cell::RefCell::new("before".to_owned()));
