@@ -491,10 +491,6 @@ pub fn panel_border(theme: &Theme) -> Color {
     }
 }
 
-/// The panel edge outside high contrast: about a sixth, so the edge reads as
-/// the panel's own and not a line around it.
-pub const PANEL_BORDER_QUIET_ALPHA: u8 = 40;
-
 /// Lay down a floating panel's elevation, clipped to the ring *outside*
 /// its own silhouette. The shadow is [`crate::surface::shadow`], a blur of
 /// the panel's own rounded rect (so it stays even around a corner instead

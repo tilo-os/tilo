@@ -406,13 +406,6 @@ impl RoomActivityPane {
         Ok(invocation)
     }
 
-    /// The outcome of an answer [`Self::answer_paused_draft`] sent: `None`
-    /// while it is on its way.
-    #[must_use]
-    pub fn paused_answer_outcome(&self, invocation: uuid::Uuid) -> Option<Result<(), String>> {
-        self.host.poll_task_review(invocation)
-    }
-
     /// Open task `task_id`'s paused action for editing, as the card's Edit
     /// does, once Task Center shows that task.
     pub fn edit_paused_draft(&mut self, task_id: &str) {
@@ -594,33 +587,6 @@ impl RoomActivityPane {
         focus: &ActivityFocus,
     ) -> Option<ui::a11y::AccessNode> {
         self.confirmation.as_ref()?.input(focus)?.accessibility()
-    }
-
-    /// Shared field semantics for the overlay accessibility bridge.
-    pub fn perform_confirmation_field_action(
-        &mut self,
-        focus_index: Option<usize>,
-        action: &ui::a11y::Action,
-    ) -> bool {
-        let focus = focus_index.map_or(ActivityFocus::DeclineReason, ActivityFocus::ConfirmField);
-        let Some(input) = self
-            .confirmation
-            .as_mut()
-            .and_then(|review| review.input_mut(&focus))
-        else {
-            return false;
-        };
-        match action {
-            ui::a11y::Action::SetValue(value) => {
-                input.set_text(value);
-                true
-            }
-            ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
-                self.keyboard_focus = Some(focus);
-                true
-            }
-            _ => false,
-        }
     }
 
     /// Route a pointer press onto a card field, then keys to the focused one.

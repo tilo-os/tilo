@@ -230,13 +230,6 @@ impl LaunchSpec {
         self
     }
 
-    /// Whether a launch while the workspace has no identity opens what works
-    /// without one ([`Self::runs_without_identity`]).
-    #[must_use]
-    pub fn opens_without_identity(&self) -> bool {
-        self.without_identity
-    }
-
     /// The application this specification launches.
     #[must_use]
     pub fn definition(&self) -> &'static crate::application::ApplicationDefinition {

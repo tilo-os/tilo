@@ -278,12 +278,6 @@ pub fn set_agent_host_available(available: bool) {
     HOSTED.with(|hosted| hosted.set(available));
 }
 
-/// Ask the agent about the selection under `root`, for an "Ask agent…"
-/// entry that acts on whatever its surface has selected.
-pub fn ask_agent_about(root: &dyn Widget) {
-    ask_agent(subtree_selection(root));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

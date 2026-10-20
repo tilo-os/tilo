@@ -739,20 +739,6 @@ impl WindowMotion {
             ),
         }
     }
-
-    /// How a rect move from `from` to `to` is timed: one window width of
-    /// travel takes the spring's own time, further takes longer.
-    #[must_use]
-    pub fn move_timing(
-        from: Rect,
-        to: Rect,
-        motion: EffectiveMotion,
-        source: MotionSource,
-    ) -> Timing {
-        let travel = (to.center() - from.center()).hypot();
-        let reference = from.width().max(to.width()).max(1.0);
-        Self::MOVE.timing_over(Direction::Enter, motion, source, travel / reference)
-    }
 }
 
 // ---------------------------------------------------------------------------
