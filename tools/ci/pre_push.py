@@ -95,7 +95,19 @@ def git_is_ancestor(commit: str, base: str) -> bool:
 def opt_in(suggest: dict) -> list[str]:
     """The opt-in checks `t suggest` says the change touches (its reason starts "opt-in")."""
     return [entry["check"] for entry in suggest.get("checks", [])
-            if str(entry.get("reason", "")).startswith("opt-in")]
+            if str(entry.get("reason", "")).startswith("opt-in") and entry["check"] not in ALWAYS]
+
+
+# The opt-in checks the hook names on its one line; `t suggest` lists the rest.
+SHOWN = 8
+
+
+def opt_in_line(names: list[str]) -> str:
+    """The hook's line about them: what to run, and how many more there are."""
+    if not names:
+        return ""
+    more = f" (and {len(names) - SHOWN} more: t suggest)" if len(names) > SHOWN else ""
+    return f"not run before a push; main runs them, or run them yourself: t test {' '.join(names[:SHOWN])}{more}"
 
 
 def load(path: Path) -> dict:
@@ -117,7 +129,7 @@ def main(argv: list[str]) -> int:
     suggested.add_argument("--suggest", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "opt-in":
-        print(" ".join(opt_in(load(args.suggest))))
+        print(opt_in_line(opt_in(load(args.suggest))))
         return 0
     changed = [line for line in args.changed.read_text(encoding="utf-8").splitlines() if line]
     print(json.dumps(select(load(args.scope), load(args.main), changed, git_is_ancestor)))

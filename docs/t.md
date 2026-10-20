@@ -31,21 +31,33 @@ python3 tools/dev/install-git-hooks.py
 - **`main`** is where changes integrate: push straight to it, no pull request, no queue. A push
   that isn't a fast-forward is refused; rebase on `main` and push again.
 - **The push gate.** The pre-push hook runs t on exactly the commit being pushed, as committed
-  (`--rev`: uncommitted changes and untracked files don't count, and no checkout is made): the
-  checks of what the commit touches (`t scope --rev <commit>`: clippy and tests of the packages
-  whose files it changes, and the command checks whose inputs it changes), plus the fast checks
-  that verify formatting and generated files (`fmt`, `lockfile`, `hakari`, `t-toml`, `codemap`,
-  `sdk-policy`, `deny`). A failure the change causes refuses the push; one that `main` has too
-  doesn't. A failure that a check's `fix` repairs is fixed for you to commit, never amended: into
-  your working tree when you push `HEAD` (files you edited since are left alone), else as a patch
-  in `.git/t-fix.patch`. Inputs the change doesn't touch are cached, so a push after a rebase
-  costs little. `git push --no-verify` skips the gate.
+  (`--rev`: uncommitted changes and untracked files don't count, and no checkout is made). It
+  has to be fast, a minute for a typical change, so it runs only what is cheap to catch and
+  annoying to break (`tools/ci/pre_push.py`), of what the commit touches (`t scope --rev`):
+  - `fmt-changed`, rustfmt of the Rust files the commit changes;
+  - the policy steps (`policy/*`) and the generated-file and manifest checks (`t-toml`,
+    `codemap`, `sdk-policy`, `workspace-layout`, `lockfile`, `hakari`, `deny`) whose inputs it
+    touches; the policy suite's own tests only when it touches `tools/policy/`;
+  - `changes`, the diff gates (allow reasons, commit messages, user-requirement tests,
+    interfaces);
+  - clippy of the packages whose files it changes, not of their dependents.
+
+  No tests, VM checks, images, suites or dependents: `main` runs those on every commit, or on
+  its newest head (below), and tells the commit that broke one. A check red on `main` at the
+  commit the push branched from is skipped, with one line saying so. The hook also prints the
+  opt-in checks `t suggest` says the change touches, and runs none of them. A failure the change
+  causes refuses the push; one that `main` has too doesn't. A failure that a check's `fix`
+  repairs is fixed for you to commit, never amended: into your working tree when you push
+  `HEAD` (files you edited since are left alone), else as a patch in `.git/t-fix.patch`. Inputs
+  the change doesn't touch are cached, so a push after a rebase costs little.
+  `git push --no-verify` skips the gate.
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.
 - **Heavy checks on `main`.** The heavy checks that matter for `main`'s health (the SDK builds,
-  the web and Android builds, the goldens, FUSE, render counters, examples: `on = [..., "idle"]`
-  in `t.toml`) run on `main`'s newest head whenever t has room left after the default checks and
+  the web and Android builds, the goldens, FUSE, render counters, examples, the security
+  invariants, the OS and VM acceptance suites, the desktop and imager preflights, app lints, the
+  portable toolkit build: `on = [..., "idle"]` in `t.toml`) run on `main`'s newest head whenever t has room left after the default checks and
   everyone's own runs, at a priority that never delays either. Each commit's key is recorded, so
   when one fails t bisects it to the commit that broke it and tells that commit's session, as for
   a default check; `t main` and the notice mark it as heavy. The per-app size checks aren't among
@@ -80,7 +92,8 @@ t fix                                   # apply the `fix` of what fails (fmt, ha
 
 While you work, test what you change: `t scope` names the checks your change touches (the
 packages you touched, the command checks whose inputs changed), and `t test $(t scope --names)`
-runs them; the push gate runs them again on the pushed commit, cached where nothing changed.
+runs them; the push gate runs the cheap ones of them again on the pushed commit, cached where
+nothing changed, and leaves the tests to you and to `main`.
 Heavy checks run for you only when named: `t suggest` lists those your change touches (their key
 differs from your base commit's), with the `t test <check>` that runs each. Skip one and `main`
 still runs it when it has room, and tells you if your commit broke it. Results nobody's change
@@ -164,10 +177,16 @@ requires = ["arch=arm64", "/dev/kvm"]   # also "os=macos", or a label a node was
 `t status` lists the connected nodes and what each offers. The format is described in t's
 [README](https://code.tilo.so/tilo/t#declaring-checks).
 
+The repository policy suite is one check per step, `policy/<step>` (`policy/tests/<step>` for
+the suite's own tests), each keyed by what that step reads: its command and inputs are in
+[`tools/policy/steps.toml`](../tools/policy/steps.toml), which `tools/policy/run.sh` runs as a
+whole. `t test policy` runs every step. A new step goes there, with the files it reads.
+
 Some of `t.toml` is generated: the `package_inputs` of the cargo families and the `suite-*`
-checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), the `goldens` family from
-`.config/nextest-filters.toml` and `.config/visual-goldens-image`, and the size checks below
-from the default collection's apps and the runtime's budget. After changing those, run
+checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), the `policy/*` checks from
+`tools/policy/steps.toml`, what `security`, `t-toml` and `workspace-layout` read, the `goldens`
+family from `.config/nextest-filters.toml` and `.config/visual-goldens-image`, and the size
+checks below from the default collection's apps and the runtime's budget. After changing those, run
 `t fix t-toml` (or `python3 tools/ci/t_toml.py write`); `t-toml` fails while `t.toml` is out of
 date.
 
