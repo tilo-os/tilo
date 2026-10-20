@@ -67,11 +67,12 @@ ux-bench = []
 # between words. The browser desktop uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
-# The image decoders a web page's images need (`image`: PNG, JPEG, WebP)
-# are not linked into page drawing: the program fetches their code the first
-# time a page draws an image and hands it over (`defer_page_image_decoder`,
-# `install_page_image_decoder`); until then images are left out. The browser
-# desktop uses this to keep them out of its start module.
+# The image decoders (`image`: PNG, JPEG, WebP) a web page's images and an
+# `ImageStore`'s pictures need are not linked: the program fetches their code
+# the first time something decodes and hands it over
+# (`image_decoders::defer_image_decoders`, `install_image_decoders`); until
+# then images are left out. The browser desktop uses this to keep them out of
+# its start module.
 lazy-image-decode = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
@@ -134,8 +135,10 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
 # The paint stream: a page as a layered display list the WebView can draw
-# instead of the engine's pixels, natively and in the WASM client alike.
-tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
+# instead of the engine's pixels, natively and in the WASM client alike. Its
+# SVG parser (`svg`, usvg) is native only, below: the browser toolkit core
+# leaves it out, so `Image::from_svg` there finds no supported artwork.
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
 # The desktop's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }

@@ -166,6 +166,8 @@ impl Image {
     ///
     /// This uses the same SVG subset as web content: gradients use their
     /// first stop, while unsupported text and raster nodes are skipped.
+    /// The parser is native only: the browser toolkit core leaves it out of
+    /// its start module, and there every SVG is unsupported.
     ///
     /// # Errors
     /// Returns an error for invalid SVG or artwork without supported paths.
