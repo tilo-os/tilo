@@ -967,6 +967,13 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
+    // Every visitor comes in through the site's door: the room shares its
+    // apps' records, never what anyone has open.
+    // The room is public from here on even if what it held of its members'
+    // windows could not all be removed now; the next start tries again.
+    if let Err(error) = rooms.make_public(&room).await {
+        tracing::warn!(%room, %error, "a public room still holds its members' windows");
+    }
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
     let workspace_id = rooms

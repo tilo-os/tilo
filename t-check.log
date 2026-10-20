@@ -1,0 +1,15 @@
+t: run r7fd9408c5b (`t follow r7fd9408c5b` shows it again if this t stops)
+    Checking tilo-runner-native v0.1.0 (/src/crates/sdk/runner-native)
+    Checking tilo-relay v0.1.0 (/src/crates/hosting/tilo-relay)
+    Checking tilo-app v0.1.0 (/src/crates/sdk/tilo-app)
+    Checking tilo-rich-text v0.1.0 (/src/crates/sdk/tilo-rich-text)
+    Checking moderation-model v0.1.0 (/src/apps/moderation-model)
+    Checking photos v0.1.0 (/src/apps/photos)
+    Checking chat v0.1.0 (/src/apps/chat)
+    Checking word-processor v0.1.0 (/src/apps/word-processor)
+t: 20s in, running cargo check -p tilo-relay -p tilo-peer-state -p tilo-desktop-model --tests (19s on t-worker-arm-1-npqqg)
+    Finished `dev` profile [unoptimized] target(s) in 31.46s
+t: compiler cache: 0 of 19 compiles came from it (0%), 19 compiled and written
+t: used 1.8 cores on average (4 at most), 1.4 GiB of memory at most, in 31s
+t: on t-worker-arm-1-npqqg before its command: sources 131ms, workspace 247ms
+exit 0

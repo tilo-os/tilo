@@ -58,6 +58,12 @@ pub const ROOM_GRANTS_KEY: &str = "grants";
 pub const ROOM_SANDBOX_KEY: &str = "sandbox";
 /// Key a room document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
+/// Key of the flag (`true`) a public room's governor writes: the room lets
+/// people in through a door (a site's or a public directory's), so the people
+/// in it are strangers to each other. A public room shares only its apps'
+/// records: no member's windows, strips or layout are published into it or
+/// taken from it, and its governor commits none.
+pub const ROOM_PUBLIC_KEY: &str = "public_v1";
 
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
@@ -1634,6 +1640,63 @@ pub fn apply_admitted_room(
     Ok(changed || renamed || reshortcut || reprofiled)
 }
 
+/// Whether `doc`, a room document, is a public room's: its governor wrote
+/// [`ROOM_PUBLIC_KEY`].
+#[must_use]
+pub fn room_is_public(doc: &AutoCommit) -> bool {
+    use automerge::{ROOT, ScalarValue, Value};
+    matches!(
+        doc.get(&ROOT, ROOM_PUBLIC_KEY).ok().flatten(),
+        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Boolean(true))
+    )
+}
+
+/// Delete from `doc`'s `contents` every strip, group and tab whose id `keep`
+/// refuses, with everything under it; what `keep` keeps is walked for what it
+/// holds. Returns how many entries were deleted. Nothing else of the
+/// document is touched.
+pub fn drop_contents_except(doc: &mut AutoCommit, keep: &impl Fn(u64) -> bool) -> usize {
+    let contents = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
+    drop_contents_level(doc, &contents, 0, keep)
+}
+
+/// [`drop_contents_except`] over one level of `contents`: strips (`0`),
+/// groups (`1`) or tabs (`2`).
+fn drop_contents_level(
+    doc: &mut AutoCommit,
+    containers: &[automerge::ObjId],
+    level: u8,
+    keep: &impl Fn(u64) -> bool,
+) -> usize {
+    use automerge::transaction::Transactable;
+    let child = match level {
+        0 => Some("groups"),
+        1 => Some("tabs"),
+        _ => None,
+    };
+    let mut dropped = 0;
+    for container in containers {
+        let keys: Vec<String> = doc.keys(container).collect();
+        for key in keys {
+            let Some(id) = contents_key_id(&key) else {
+                continue;
+            };
+            if !keep(id) {
+                if doc.delete(container, key.as_str()).is_ok() {
+                    dropped += 1;
+                }
+                continue;
+            }
+            if let Some(child) = child {
+                let entries = map_candidates(doc, container, key.as_str());
+                let nested = child_candidates(doc, &entries, child);
+                dropped += drop_contents_level(doc, &nested, level.saturating_add(1), keep);
+            }
+        }
+    }
+    dropped
+}
+
 /// The room's topology namespaces: salt → the device key (64 lowercase hex
 /// digits) that owns it. Malformed entries are skipped; salt `0` is never a
 /// namespace.
@@ -1759,6 +1822,59 @@ mod tests {
             let ids: Vec<String> = room_records_of(&a).into_iter().map(|(id, _)| id).collect();
             assert_eq!(ids, ["file:/a.md", "file:/b.md"]);
         }
+    }
+
+    /// What another namespace put into the room's contents goes, down to a
+    /// window it opened in someone else's strip, and everything of the kept
+    /// namespace stays.
+    #[test]
+    fn dropping_contents_keeps_only_what_keep_admits_at_every_level() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let mut a_strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        a_strip.window_groups.push(canvas_group(A, 2, "Board"));
+        let mut b_view = a_strip.clone();
+        b_view
+            .window_groups
+            .push(canvas_group(B, 3, "Alacritty: ~/secret"));
+        let b_strip = {
+            let mut strip = Strip::new(StripId(compose_id(B, 4)), "Mine");
+            strip.window_groups.push(canvas_group(B, 5, "htop"));
+            strip
+        };
+        let mut doc = AutoCommit::new();
+        project_owned_contents(&mut doc, &[a_strip], A, None, EmptyStrips::Skip).unwrap();
+        project_owned_contents(&mut doc, &[b_view, b_strip], B, None, EmptyStrips::Skip).unwrap();
+        let before = contents_of(&doc);
+        assert_eq!(before.len(), 2);
+
+        let dropped = drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A);
+        assert_eq!(dropped, 2, "B's strip, and B's group in A's strip");
+        let after = contents_of(&doc);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, compose_id(A, 1));
+        let titles: Vec<&str> = after[0]
+            .groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+            .collect();
+        assert_eq!(titles, ["Board"]);
+        assert_eq!(
+            drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A),
+            0,
+            "nothing left to drop"
+        );
+    }
+
+    #[test]
+    fn a_room_is_public_only_when_its_document_says_so() {
+        use automerge::transaction::Transactable;
+        let mut doc = AutoCommit::new();
+        assert!(!room_is_public(&doc));
+        doc.put(automerge::ROOT, ROOM_PUBLIC_KEY, false).unwrap();
+        assert!(!room_is_public(&doc));
+        doc.put(automerge::ROOT, ROOM_PUBLIC_KEY, true).unwrap();
+        assert!(room_is_public(&doc));
     }
 
     /// A test window group under `salt`, with one tab named `name`.

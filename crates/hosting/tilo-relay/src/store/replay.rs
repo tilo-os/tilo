@@ -63,6 +63,10 @@ pub(crate) struct CaptureLeases {
     /// channel's steward reads. A lineage's route names its kind of message
     /// for good, so the answer never changes: each is read once.
     steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
+    /// The governor of a public room this store holds: captures leave out
+    /// every other author's lineages of the room's layout
+    /// ([`WorkspaceStore::replay_without_member_layout`]).
+    layout_governor: std::sync::Mutex<Option<[u8; 32]>>,
     /// What each lineage's current generation held when last listed.
     listed: std::sync::Mutex<ListedLineages>,
     /// How each retained channel's record syncs
@@ -120,6 +124,24 @@ impl WorkspaceStore {
             .store(true, Ordering::SeqCst);
     }
 
+    /// From now on, leave out of every capture what members other than
+    /// `governor` wrote of the room's layout: their changes to the room
+    /// document (its topology and windows) and to its shared desktop record.
+    /// The room is public, and shares no member's windows. They stay
+    /// retained; no one is replayed them.
+    pub(crate) fn replay_without_member_layout(&self, governor: [u8; 32]) {
+        *self.capture_leases.layout_governor.lock_recover() = Some(governor);
+    }
+
+    /// Whether a capture leaves the retained lineage `name` out because it
+    /// is a member's part of a public room's layout.
+    fn leaves_out_member_layout(&self, name: &std::ffi::OsStr) -> bool {
+        let Some(governor) = *self.capture_leases.layout_governor.lock_recover() else {
+            return false;
+        };
+        member_layout_lineage(name, &governor)
+    }
+
     /// The next entry of the directory a capture lists, past the retained
     /// lineages it leaves out: a room keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
@@ -137,7 +159,8 @@ impl WorkspaceStore {
             let entry = entry?;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if self.leaves_out(&name, &entry.path())?
+                if self.leaves_out_member_layout(&name)
+                    || self.leaves_out(&name, &entry.path())?
                     || (!every_record && self.leaves_out_on_demand(&name)?)
                 {
                     continue;
@@ -2061,5 +2084,62 @@ impl PublicationCursor {
             charged_bytes: charge,
             _allocation: allocation,
         })))
+    }
+}
+
+/// Whether the retained lineage `name` (`<author>-<channel>`, both hex) is
+/// an author's other than `governor` on a room's layout: the room document
+/// (`SyncResp`) or the shared desktop record.
+fn member_layout_lineage(name: &std::ffi::OsStr, governor: &[u8; 32]) -> bool {
+    let Some((author, channel)) = name.to_str().and_then(|name| name.split_once('-')) else {
+        return false;
+    };
+    if author == hex::encode(governor) {
+        return false;
+    }
+    let topology = blake3::hash(b"shell-tree");
+    let desktop = neighbour_wire::app_document_channel(
+        tilo_desktop_model::ownership::DESKTOP_APP,
+        tilo_desktop_model::ownership::DESKTOP_RECORD,
+    );
+    channel == hex::encode(topology.as_bytes()) || channel == hex::encode(desktop)
+}
+
+#[cfg(test)]
+mod member_layout_tests {
+    use super::member_layout_lineage;
+
+    /// The lineages a public room replays to nobody: a member's room
+    /// document and shared desktop writes, never the governor's, and no
+    /// record's.
+    #[test]
+    fn a_members_layout_lineages_are_told_apart_from_the_governors_and_records() {
+        let governor = [7u8; 32];
+        let member = hex::encode([9u8; 32]);
+        let topology = hex::encode(blake3::hash(b"shell-tree").as_bytes());
+        let desktop = hex::encode(neighbour_wire::app_document_channel(
+            "so.tilo.browser-desktop",
+            "desktop",
+        ));
+        let chat = hex::encode(neighbour_wire::app_document_channel("so.tilo.chat", "home"));
+        let lineage =
+            |author: &str, channel: &str| std::ffi::OsString::from(format!("{author}-{channel}"));
+        assert!(member_layout_lineage(
+            &lineage(&member, &topology),
+            &governor
+        ));
+        assert!(member_layout_lineage(
+            &lineage(&member, &desktop),
+            &governor
+        ));
+        assert!(!member_layout_lineage(&lineage(&member, &chat), &governor));
+        assert!(!member_layout_lineage(
+            &lineage(&hex::encode(governor), &topology),
+            &governor
+        ));
+        assert!(!member_layout_lineage(
+            std::ffi::OsStr::new("CURRENT"),
+            &governor
+        ));
     }
 }
