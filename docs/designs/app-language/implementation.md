@@ -475,10 +475,176 @@ agents as source-like signatures, doc comments included:
 action so.tilo.counter.increment(c: Counter)
 ```
 
-## 7. Platform integration (`tilolang-tilo`)
+## 7. Platform integration (`tilolang-tilo` and `apps/tilolang`)
 
-This section is filled in from the platform research. It covers records and room sync, the action
-door, grants, rendering, presence and provenance.
+### 7.1 Shape: one host app, many tilolang apps
+
+- **The host.** `apps/tilolang` is one Tilo app with id `so.tilo.lang`. It hosts every tilolang
+  package in process, and each module gets its own wasm instance (spec §6.3). Inside the host, the
+  tilolang runtime's `Authority` keeps the packages apart. Cross-app views, foreign actions in
+  flows, and agent blocks therefore all run in one runtime, with no process hop.
+- **Why not one Tilo package per tilolang app.** The launcher gives one package one binary and no
+  arguments, and each app process sees only its own records. Cross-app views and blocks would then
+  need cross-process data access, which v1 doesn't need to solve.
+- **Built at the lowest public layer.** The host is a leaked `ApplicationDefinition`, an
+  `AppComponent` and a root widget that implements `PublishesResources`. That is the pattern of
+  `crates/browser/tilo-browser-runtime/src/scratch.rs` and of agent-participant's `AppCatalogue`.
+  It does **not** go through `ResourceApp`, whose consts and typed `ViewCx` assume one Rust type
+  per app.
+- **Packages.** The host compiles the built-in packages at startup from sources embedded with
+  `include_str!` (`apps/tl/*/app.tl` and `app.ids`). Compiling takes milliseconds. Packages written
+  by people or agents are later stored as resources in the record (spec: code is a resource); in
+  v1 only blocks are dynamic.
+- **Opening an app.** A window shows a small home view listing the packages. Opening a package
+  shows its `main` view. By convention, `view main(root: T)` takes the package's **root resource**,
+  a per-room singleton of type `T` that the host creates the first time it's opened.
+
+### 7.2 State: `DynRecord` in the room record
+
+- **The record.** `ROOM_RECORD = true` means one record per room for the host. It's synced, it has
+  history, and it can be undone. The document root holds `tl: { <app id>: { <resource id>:
+  <resource> } }`, where each resource stores its fields by **field id** (§4.8 layout).
+- **`DynRecord`** is a hand-written implementation of `tilo_resource::Model` and `Fields`.
+  - Its schema comes from a process-wide registry keyed by the `$type` id stored in each resource.
+    Leaked `'static` shapes are acceptable, since registration happens once per package version.
+  - `edit_fields` dispatches on the field's merge kind and delegates to the concrete types'
+    `Model::edit`:
+
+| Merge kind | Delegate type |
+|---|---|
+| text | `String` (splice) |
+| register | `Atom`, or a scalar |
+| counter | `Counter` |
+| Set | `Set<Value>` |
+| Map | `Map<Value>` |
+| Collection | `Collection<DynRecord>` |
+
+- **The `Store`.** `tilolang-tilo` implements the runtime's `Store` over this record. Opening a
+  resource resolves to its object inside the record. A transaction collects the runtime's
+  mutations as a list of `Edit<DynRecord>` values.
+
+### 7.3 Actions are planners; peers replay edits
+
+- **The problem.** Peers replay recorded actions (`verify_change`). A peer that doesn't have the
+  wasm module can't re-run it.
+- **The fix.**
+  - At the origin, a tilolang action runs in wasm as a **planner**. The host's transaction turns
+    its `res_*`/`coll_*` calls into `Edit`s.
+  - The recorded action is `DynAction { app, action_id, args, edits }`. Its `apply` is plain Rust
+    that applies the edits deterministically.
+  - It is committed through the framework executor, so the change gets the normal `ActionContext`:
+    invoker, task group, item label, encoded action. Undo and history work as for any app.
+- **Authorship.** The authoring module's hash and the authorship chain go into the action's
+  arguments and into the `ActionContext` as an `ActionFacet`. History can then say "you, via
+  Alex's view".
+
+### 7.4 Surface and door
+
+- **The surface.** The host generates its `surface.toml` bytes at runtime from the packages'
+  metadata: kinds, verbs, fields and writes. It registers them with
+  `app_surface::register_package(app_id, bytes)` before the first signed operation. Receivers that
+  lack the surface hold changes until it arrives through the content store.
+- **v1 deviation.** The surface covers the built-in packages, and a package version change changes
+  the surface. That fits the rule that workspaces pin app versions (spec §7).
+- **The published tree.** Every tilolang resource is published as a `tilo_actions::Resource`:
+  - kind `tl.<app>.<Type>`;
+  - one `ActionSpec::typed` per action, with a JSON Schema built from the parameters and the
+    contract kind taken from the metadata's effect class;
+  - the build closure runs the wasm planner and encodes the `DynAction`.
+
+  The desktop agent (`list_operations` / `invoke`), the runtime MCP door (`tilo_do`), shortcuts and
+  grants therefore all reach tilolang actions with no agent-side code.
+- **Codemode and blocks on the door.** The host publishes a resource `tl.host` with three actions:
+  - `run-block(source)`: Read, or the block's class. It returns the value's model projection, or
+    the outcome of the invocation.
+  - `run-flow(source)`: runs a flow written in source. It returns `Done(projection)`, or
+    `Suspended(suggestion)`.
+  - `catalogue()`: Read. It returns the signatures (§6.3).
+
+  This follows the rule that MCP never calls app code directly: agents use `tilo_do` against
+  published actions.
+
+### 7.5 Authority on the platform
+
+`TiloAuthority` implements the runtime's `Authority`:
+
+1. **Invoker, inside Tilo:** the invoker's own permission comes from the host's
+   `PermissionContext` (`invocation_verdict`).
+2. **Authorship, inside tilolang:** the code authors in the chain, per spec §4.3:
+   - own actions are allowed;
+   - foreign actions depend on whether each author is trusted. Built-in packages are trusted. An
+     agent's task code takes its task's grants. A stranger's code asks.
+3. **The minimum wins.** Ask is rendered by the host as **trusted chrome**: a bar drawn by the
+   host's Rust widget, never by the wasm view.
+   - The bar shows the action's proposal view (§5.4 of the spec) when it has one, and otherwise a
+     form built from the parameter schema.
+   - It offers Confirm, Edit, Decline and Always allow.
+
+**Agent invocations that arrive over the door** also go through Tilo's existing Ask/Draft flow for
+Outside actions. Nothing new is needed there.
+
+### 7.6 Rendering
+
+- **Through the UI graph.** The runtime's view tree, which is concrete with loops already
+  expanded, is translated into a `UiDocument`. Node id = node key; text is literal. The runtime's
+  patches become `UiGraphEdit`s, applied with `UiGraphHandle::apply_edits`. `LiveUi` reconciles by
+  id and keeps focus.
+- **Primitives.** `column`, `row`, `text`, `heading`, `caption`, `button`, `input`, `checkbox`,
+  `section`, `spacer` and `embed` map onto ui-graph nodes, or onto a `Component` for `section`
+  and `embed`.
+  - Missing nodes are added to `crates/dev/ui-graph`. They're shared widgets, never hand-rolled.
+  - All visible text comes from tilolang source. Host chrome strings go through fluent.
+- **Events.**
+  - Buttons report clicks through `UiValues::click` with the node key as the click path. The
+    host's `sync` drains `take_click` and calls the runtime's `press`.
+  - Inputs and checkboxes use `UiValues::route` / `route_bool`. Edits call the runtime's `edit`,
+    which splices.
+- **Hover disclosure** (spec §4.3, point 9) is v1 follow-up work.
+
+### 7.7 Presence and provenance (v1)
+
+- **Presence.** The host shows who else has the same package open, through the framework's
+  existing presence for the room record.
+- **Provenance.** Each change already carries its `ActionContext`. v1 shows it in the history list
+  ("Ada: increment"). Highlights inside views come later.
+
+### 7.8 Agent answers with blocks (v1)
+
+- **The tilolang Chat app** (`apps/tl/chat`) stores messages with a body made of parts: text, or a
+  block's source.
+- **The `embed(source, author)` primitive.** The host compiles and evaluates the block **with the
+  message's author as the code author**, and renders its value inline. A View renders as a view. An
+  Action renders as an invocation that has happened or as a suggestion. Data renders through its
+  default view.
+- **Where agents answer.** Agents post answers through the door, via the Chat package's `post`
+  action, so blocks appear wherever people talk with the agent in tilolang.
+- **Tilo's existing Chat app is out of scope for v1.** A `CodeBlock{lang: "tilo"}` already
+  round-trips through its record. Rendering it there needs a runtime in Chat's process.
+
+### 7.9 Registration checklist for `apps/tilolang`
+
+The host crate needs:
+- the manifest, with id `so.tilo.lang` and the collab service;
+- locales and search ftl files;
+- membership in the root `Cargo.toml`, `dist/apps/registry-metadata.toml` and the tapp size
+  budget;
+- `generate_web_desktop.py`, `generate_catalogue_fleet.py`, `t_toml.py write` and `codemap.py`
+  run;
+- a `tilo-app check`;
+- because of portability rule D2, `tilolang-tilo` either lives under `crates/platform/` or is added
+  to `allowed-packages`. **Decision:** it lives at `crates/platform/tilolang-tilo`. The compiler and
+  runtime stay under `crates/lang/` and are dependencies of `tilolang-tilo`. They are added to
+  `allowed-packages` if the rule requires it.
+
+### 7.10 Collaboration tests
+
+Tests copy `examples/apps/shared-checklist/tests/app.rs`: `TestApp`, a peer replica through
+`peer_document` and `merge_peer`, `history_is_attributed`, and undo of only your own actions. They
+cover:
+- two replicas increment the counter concurrently, and the result is 2;
+- concurrent todo inserts and moves converge;
+- history names the invoker;
+- a peer **without** the wasm module replays a `DynAction`.
 
 ## 8. Tests that pin the design
 
