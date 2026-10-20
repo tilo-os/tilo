@@ -72,7 +72,7 @@ the base numbers upward:
 ```toml
 # tools/perf/tapp-size-budget/raises/<change>.toml
 reason = "the toolkit gained guarded OS dictation"  # at least 20 characters
-run = 90210                  # the Release / apps run that measured the growth
+run = 90210                  # the run that measured the growth (or a t run: "r5260902b38")
 
 [apps."so.tilo.settings"]    # bytes added to each app's budget
 x86_64 = 65536
