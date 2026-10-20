@@ -3953,21 +3953,65 @@ fn st_bump(handle: &shell::shell::chrome_state::Chrome) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn driver_scene_setup_covers_the_catalogue_and_keeps_pending_invites_out_of_presence() {
+    /// The scene catalogue is driven in this many parts, one test each, so
+    /// the parts run side by side: a single test driving every scene in a
+    /// fresh driver takes minutes, and a loaded runner stretched it past the
+    /// hang bound.
+    const SCENE_PARTS: usize = 6;
+
+    /// Drive every scene of part `part` of [`SCENE_PARTS`] and check each
+    /// returns Ok.
+    fn drive_scene_part(part: usize) {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_UI_DEBUG", "1");
-        // Phase `driver_scene_setup_covers_catalogue`.
-        // Smoke for `scene_setup` — drive every named scene and verify it
-        // returns Ok, then verify a fresh driver returns Err for an
-        // unknown name.
+        let per_part = ShellDriver::ALL_SCENES.len().div_ceil(SCENE_PARTS);
+        for &name in ShellDriver::ALL_SCENES
+            .chunks(per_part)
+            .nth(part)
+            .unwrap_or(&[])
         {
-            for &name in ShellDriver::ALL_SCENES {
-                let mut d = ShellDriver::new((1600, 900));
-                d.scene_setup(name)
-                    .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
-                let _ = d.paint_settled();
-            }
+            let mut d = ShellDriver::new((1600, 900));
+            d.scene_setup(name)
+                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+            let _ = d.paint_settled();
+        }
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_1() {
+        drive_scene_part(0);
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_2() {
+        drive_scene_part(1);
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_3() {
+        drive_scene_part(2);
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_4() {
+        drive_scene_part(3);
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_5() {
+        drive_scene_part(4);
+    }
+
+    #[test]
+    fn driver_scene_setup_covers_the_catalogue_part_6() {
+        drive_scene_part(5);
+    }
+
+    #[test]
+    fn driver_scene_setup_refuses_an_unknown_scene_and_keeps_pending_invites_out_of_presence() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_UI_DEBUG", "1");
+        {
             let mut d = ShellDriver::new((1600, 900));
             assert!(d.scene_setup("nope").is_err());
         }
