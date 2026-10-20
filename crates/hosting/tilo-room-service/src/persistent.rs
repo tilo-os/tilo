@@ -1195,6 +1195,11 @@ mod tests {
 
     #[tokio::test]
     async fn admitted_guests_fill_the_room_before_the_relay_counts_them() {
+        // An admitted guest's seat is held for 30 s of wall time; a loaded
+        // runner can take longer than that between the joins, and the held
+        // seats would lapse before the room is asked to be full. The wall
+        // clock stands still here, so the joins all fall inside the hold.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let (persistent, mut relay, _dir) = persistent(2, 1000).await;
         join_once(&persistent, &mut relay, "203.0.113.1", 7).await;
         join_once(&persistent, &mut relay, "203.0.113.2", 8).await;
