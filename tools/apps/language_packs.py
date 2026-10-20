@@ -78,6 +78,8 @@ def build(repo: pathlib.Path, out: pathlib.Path) -> int:
     overlay, which nothing has, so it is refused rather than one picked."""
     if out.exists():
         shutil.rmtree(out)
+    # A tree with no translations packs none, and says so in an empty index.
+    out.mkdir(parents=True)
     seen: dict[tuple[str, str], pathlib.Path] = {}
     for locale, crate, path in catalogues(repo):
         pack = language(locale)
