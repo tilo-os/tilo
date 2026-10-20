@@ -32,7 +32,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       ca-certificates curl libgcc libstdc++ zlib-ng-compat \
       gnupg2 diffutils which \
     && dnf clean all
-# Native fixture tools for check.yml's security-boundary invariants (EFI, RPM
+# Native fixture tools for the security-boundary invariants (EFI, RPM
 # signing, kernel modules, rendered fonts, runtime assembly confinement) and
 # the C linker cargo needs when
 # lint.yml compiles tilo-app-cli (`cc` is Fedora's alternatives symlink to gcc).
@@ -40,6 +40,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # separate layer keeps the base cached.
 RUN dnf install -y --setopt=install_weak_deps=False \
       gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts bubblewrap \
+      dosfstools \
     && dnf clean all \
     && bwrap --version \
     && test -x /usr/bin/cc \
