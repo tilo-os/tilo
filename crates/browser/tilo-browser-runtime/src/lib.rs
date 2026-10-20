@@ -22,7 +22,7 @@
 #[cfg(target_arch = "wasm32")]
 mod background_work;
 #[cfg(target_arch = "wasm32")]
-mod page_content;
+pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use page_content::page_content;
 #[cfg(target_arch = "wasm32")]

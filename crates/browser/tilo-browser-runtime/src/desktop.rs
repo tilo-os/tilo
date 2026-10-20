@@ -121,6 +121,9 @@ pub(crate) struct Shared {
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    /// The window each image loader draws for, by its place in `images`
+    /// ([`crate::page_content::ImageOwners`]).
+    pub image_owners: crate::page_content::ImageOwners,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
     pub owner_wakes: ui::owner_wake::OwnerWakeQueue,
@@ -776,6 +779,7 @@ impl Tiles {
             context.lend(self.shared.linked.clone());
         }
         let destination = Rc::clone(&self.shared.images);
+        let first_loader = self.shared.images.borrow().len();
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
             Rc::new(move |max_dimension| {
                 let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
@@ -785,6 +789,12 @@ impl Tiles {
             || definition.instantiate(context, target, restore),
         )
         .map_err(|error| error.to_string())?;
+        crate::page_content::own_loaders(
+            &self.shared.image_owners,
+            first_loader..self.shared.images.borrow().len(),
+            definition.app_id,
+            component.record().id.as_str(),
+        );
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
