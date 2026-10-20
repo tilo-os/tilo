@@ -49,7 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::create_dir_all(&out)?;
     let variant = std::env::args().nth(2);
-    for (name, theme, width) in [
+    // Boxed: six themes are too large to build on the stack.
+    for (name, theme, width) in vec![
         ("dark", Theme::dark(), 440_u32),
         ("light", Theme::light(), 440),
         ("large-text", Theme::dark().with_text_scale(2.0), 440),
