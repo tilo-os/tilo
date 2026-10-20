@@ -2,7 +2,7 @@ use super::*;
 use std::sync::{MutexGuard, TryLockError, mpsc};
 use std::time::Duration;
 
-pub(super) mod allocations;
+pub(crate) mod allocations;
 
 fn domain() -> RetirementDomain {
     RetirementDomain::new().unwrap()
