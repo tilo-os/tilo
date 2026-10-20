@@ -112,6 +112,10 @@ async fn the_host_mints_a_message_link_with_its_range() {
     assert_eq!(resource.kind, kind);
     assert_eq!(kind, "chat.messages.messages");
     assert!(url.ends_with("?chars=6-7"), "{url}");
+    assert!(
+        url.contains("/so.tilo.chat/-/chat.messages.messages/"),
+        "a part's item opens with the record the part is held beside: {url}"
+    );
     publisher.peer.close();
     hosted.agents.shutdown();
     drop(hosted.web);

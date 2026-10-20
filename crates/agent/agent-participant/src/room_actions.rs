@@ -2068,10 +2068,15 @@ impl Worker {
             invite: false,
             args: arguments,
         };
-        let locator = page
+        let mut locator = page
             .locator
             .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
-        let url = ui::framework::host_link(&request, &route.app_id, &route.record, &locator)
+        // A part of a chain opens with the record it is held beside: the
+        // link's page mounts that record, whose window holds the part and
+        // offers its items at the address asked for here.
+        let opened = self.holder_of(route);
+        locator.provider = record_provider(&opened);
+        let url = ui::framework::host_link(&request, &opened.app_id, &opened.record, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
             value: Some(serde_json::json!({ "url": url })),
