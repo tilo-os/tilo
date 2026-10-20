@@ -5,12 +5,14 @@
 #
 # tilo-vm runs a remote builder as a cargo drop-in, from the worktree root:
 #   dist/dev/t-builder.sh ARCH run --locked -p tilo-vm --bin tilo-vm -- layer-pack ARGS...
-# This script hands `tilo-vm layer-pack ARGS...` to t.toml's
-# `tilo-vm-pack-<arch>` check, which runs it on a node of that architecture
+# This script hands `tilo-vm layer-pack ARGS...` to one of t.toml's
+# `tilo-vm-pack-*-<arch>` checks, which runs it on a node of that architecture
 # against this worktree (uncommitted changes and tilo-vm's source inventory
 # included) and keeps the framed layer it prints as the check's output. The
-# script downloads that output and writes it to stdout, where tilo-vm reads
-# the layer; everything t says goes to stderr.
+# check is picked by the component's size, so each declares what its builds
+# really take; tilo-vm itself is not built here but taken from the
+# tilo-vm-binary-<arch> check. The script downloads that output and writes it
+# to stdout, where tilo-vm reads the layer; everything t says goes to stderr.
 #
 # Register it once per architecture in ~/.config/tilo-vm/vms.toml:
 #   [remote_builders]
@@ -26,16 +28,30 @@ die() { printf 't-builder: %s\n' "$*" >&2; exit 1; }
 arch=${1:?usage: t-builder.sh ARCH run ... -- layer-pack ARGS...}
 shift
 case $arch in
-    aarch64|arm64) check=tilo-vm-pack-arm64 ;;
-    x86_64|amd64) check=tilo-vm-pack-x86_64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    x86_64|amd64) arch=x86_64 ;;
     *) die "no t check builds for $arch" ;;
 esac
 # Everything up to `--` is the cargo invocation that builds tilo-vm itself;
-# the check makes that build on the node. What follows is tilo-vm's command.
+# t builds it in the tilo-vm-binary-<arch> check instead. What follows is
+# tilo-vm's command.
 while (($#)) && [[ $1 != -- ]]; do shift; done
 (($#)) || die "expected '-- layer-pack ...' after the cargo arguments"
 shift
 [[ ${1:-} == layer-pack ]] || die "only layer-pack runs on t, not ${1:-nothing}"
+component=
+for ((i = 2; i < $#; i++)); do
+    [[ ${!i} == --component ]] && { j=$((i + 1)); component=${!j}; }
+done
+[[ -n $component ]] || die "layer-pack names no --component"
+# The app collection and its runtime are a thin-app build of every app; the
+# shell (and the runtime host built from its package) is one large release
+# binary; every other component is a release build of a smaller program.
+case $component in
+    apps+runtime) check=tilo-vm-pack-apps-$arch ;;
+    shell|native-runtime-host) check=tilo-vm-pack-shell-$arch ;;
+    *) check=tilo-vm-pack-$arch ;;
+esac
 command -v t >/dev/null || die "t is not on PATH (docs/t.md)"
 
 root=$PWD
