@@ -667,7 +667,7 @@ impl ShellOverlayHost {
             let (workspace, room, mut here): (_, _, Vec<String>) = {
                 let tree = state.tree();
                 let workspace = tree.desktop.workspaces.get(idx)?;
-                (
+                let picked = (
                     workspace.id,
                     workspace.room,
                     workspace
@@ -675,7 +675,9 @@ impl ShellOverlayHost {
                         .iter()
                         .map(|person| person.id.clone())
                         .collect(),
-                )
+                );
+                drop(tree);
+                picked
             };
             // A workspace still joining its site's room says so, and one
             // whose join failed says why.

@@ -1375,7 +1375,9 @@ fn tab_menu_current_output_capture_matrix_is_written() {
             640,
         ),
         ("narrow", Theme::dark().with_text_scale(2.0), 320),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         let mut menu = menu_opened_near_the_output_edge();
         menu.open(
             super::tab_menu::TabMenuTarget {

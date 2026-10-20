@@ -139,6 +139,35 @@ impl super::ShellOverlayHost {
         );
     }
 
+    /// Ask Chat, through `broker`, to join the call `target` names; the
+    /// reason it refused, if it did.
+    fn ask_to_join(
+        broker: crate::shell::collab_broker::AppActionBroker,
+        caller: &Caller,
+        target: RemoteActionTarget,
+    ) -> Option<String> {
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target,
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let polled = BrokerActionHost::new(broker)
+            .invoke_job(caller, request)
+            .poll_ready();
+        match polled {
+            // Waiting: Chat is opening, and takes it once it does.
+            PendingPoll::Ready(Ok(_)) | PendingPoll::Waiting => None,
+            PendingPoll::Ready(Err(error)) => Some(error.to_string()),
+            PendingPoll::Abandoned => Some(crate::shell::i18n::t("people-join-call-not-taken")),
+        }
+    }
+
     /// Join `call` (a row's Join): asked of Chat, which opens into the
     /// workspace first when it is closed. Says so when it could not.
     pub(super) fn join_voice(&self, call: &VoiceChannel) {
@@ -147,36 +176,12 @@ impl super::ShellOverlayHost {
         };
         let workspace = room.to_string();
         let target = join_call_target(&workspace, call);
-        let broker = self.action_broker();
-        let refusal = match (target, broker) {
-            (Some(target), Some(broker)) => {
-                let caller = Caller::local_person(chrome.borrow().local_user_for_room(&room))
-                    .in_room(workspace.clone());
-                let request = InvokeRequest {
-                    on_behalf_of: None,
-                    invocation: InvocationId::new(),
-                    target,
-                    argument: InvokeArgument::None,
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    wait_ms: None,
-                    appearance: None,
-                };
-                let polled = BrokerActionHost::new(broker)
-                    .invoke_job(&caller, request)
-                    .poll_ready();
-                match polled {
-                    // Waiting: Chat is opening, and takes it once it does.
-                    PendingPoll::Ready(Ok(_)) | PendingPoll::Waiting => None,
-                    PendingPoll::Ready(Err(error)) => Some(error.to_string()),
-                    PendingPoll::Abandoned => {
-                        Some(crate::shell::i18n::t("people-join-call-not-taken"))
-                    }
-                }
-            }
-            _ => Some(crate::shell::i18n::t("people-join-call-not-taken")),
-        };
+        let caller =
+            Caller::local_person(chrome.borrow().local_user_for_room(&room)).in_room(workspace);
+        let refusal = target.zip(self.action_broker()).map_or_else(
+            || Some(crate::shell::i18n::t("people-join-call-not-taken")),
+            |(target, broker)| Self::ask_to_join(broker, &caller, target),
+        );
         if let Some(reason) = refusal {
             chrome.borrow_mut().push_warning_notification(
                 crate::shell::i18n::t("people-join-call-failed"),

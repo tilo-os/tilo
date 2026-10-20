@@ -28,11 +28,12 @@ impl Drop for Scope {
 pub(super) fn observe(
     start: impl FnOnce() -> Result<(), String>,
 ) -> Result<LaunchReadiness, String> {
-    let session = super::launcher::LaunchSession::current();
-    let (token, readiness) = session.startup.reserve()?;
-    let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
-    start()?;
-    Ok(readiness)
+    super::launcher::LaunchSession::with(|session| {
+        let (token, readiness) = session.startup.reserve()?;
+        let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
+        start()?;
+        Ok(readiness)
+    })
 }
 
 /// Run `start` as one identified launch attempt, without observing its
@@ -271,32 +272,33 @@ mod tests {
         output.read_line(&mut line).unwrap();
         let descendant: u32 = line.trim().parse().unwrap();
         let launcher_pid = process.0.id();
-        let session = super::super::launcher::LaunchSession::current();
-        let readiness = observe(|| {
-            let worker = super::super::launcher::spawn_reporting(
-                std::thread::Builder::new(),
-                inherit(move || {
-                    let token = CURRENT
-                        .with(Cell::get)
-                        .expect("worker must retain exact attempt");
-                    super::super::launcher::LaunchSession::current()
-                        .startup
-                        .started(Some(token), launcher_pid);
-                }),
-            )
+        super::super::launcher::LaunchSession::with(|session| {
+            let readiness = observe(|| {
+                let worker = super::super::launcher::spawn_reporting(
+                    std::thread::Builder::new(),
+                    inherit(move || {
+                        let token = CURRENT
+                            .with(Cell::get)
+                            .expect("worker must retain exact attempt");
+                        super::super::launcher::LaunchSession::current()
+                            .startup
+                            .started(Some(token), launcher_pid);
+                    }),
+                )
+                .unwrap();
+                worker.join().unwrap();
+                Ok(())
+            })
             .unwrap();
-            worker.join().unwrap();
-            Ok(())
+            assert_eq!(CURRENT.with(Cell::get), None);
+            assert_eq!(session.startup.0.lock().unwrap().len(), 1);
+            session.startup.adopted(std::process::id());
+            assert_eq!(session.startup.0.lock().unwrap().len(), 1);
+            session.startup.adopted(descendant);
+            assert_eq!(readiness.wait().await, Ok(()));
+            assert!(session.startup.0.lock().unwrap().is_empty());
+            drop(process);
         })
-        .unwrap();
-        assert_eq!(CURRENT.with(Cell::get), None);
-        assert_eq!(session.startup.0.lock().unwrap().len(), 1);
-        session.startup.adopted(std::process::id());
-        assert_eq!(session.startup.0.lock().unwrap().len(), 1);
-        session.startup.adopted(descendant);
-        assert_eq!(readiness.wait().await, Ok(()));
-        assert!(session.startup.0.lock().unwrap().is_empty());
-        drop(process);
     }
 
     #[tokio::test]

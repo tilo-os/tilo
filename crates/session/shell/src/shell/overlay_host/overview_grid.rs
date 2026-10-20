@@ -250,6 +250,9 @@ pub(super) fn layout_strips(
     places
 }
 
+/// Another person on a tab: the tab, their initial and their colour.
+type PersonOnTab = (u64, char, Color);
+
 /// One strip of this workspace, as the overview pictures it.
 #[derive(Clone, Debug)]
 pub(super) struct OverviewStrip {
@@ -386,7 +389,7 @@ impl ShellOverlayHost {
             .map(|window| (window.address.tab, window))
             .collect();
         // Where each other person is: the tab their presence names.
-        let people: Vec<(u64, char, Color)> =
+        let people: Vec<PersonOnTab> =
             tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local_user)
                 .into_iter()
                 .filter(|row| !row.invited && row.id != own && row.id != local_user)
@@ -400,7 +403,10 @@ impl ShellOverlayHost {
                     Some((tab, row.initial, row.color))
                 })
                 .collect();
-        self.overview_strips_of(&tree, workspace, focused, (&listed, &people), fallback)
+        let strips =
+            self.overview_strips_of(&tree, workspace, focused, (&listed, &people), fallback);
+        drop(tree);
+        strips
     }
 
     /// Each strip of `workspace` as the overview pictures it: its windows
@@ -411,7 +417,7 @@ impl ShellOverlayHost {
         tree: &crate::shell::state::WorkspaceTree,
         workspace: &tilo_desktop_model::Workspace,
         focused: Option<StripId>,
-        (listed, people): (&HashMap<u64, SwitcherWindow>, &[(u64, char, Color)]),
+        (listed, people): (&HashMap<u64, SwitcherWindow>, &[PersonOnTab]),
         fallback: Size,
     ) -> Vec<OverviewStrip> {
         let mut strips = Vec::with_capacity(workspace.strips.len());
