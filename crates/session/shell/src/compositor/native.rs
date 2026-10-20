@@ -8423,20 +8423,10 @@ fn start_session_peer_sync(
     }
 }
 
-/// How windows cross devices: this device names itself the host of its
-/// legacy windows, so rooms carry them as running here rather than as
-/// windows other devices would relaunch, and reads the records a governed
-/// room's windows open.
-fn install_window_hosting(
-    net: &Arc<crate::shell::network::ShellNetwork>,
-    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
-) {
-    if let Some((device, device_label)) = net.local_device_fabric_identity() {
-        tree_handle.write().window_hosting = Some(crate::shell::state::WindowHosting {
-            device: device.as_str().to_owned(),
-            device_label,
-        });
-    }
+/// How windows cross devices: this device reads the records a governed
+/// room's windows open. Its own windows of a host or unconfined program
+/// never cross at all ([`crate::shell::state::shareable`]).
+fn install_window_hosting(net: &Arc<crate::shell::network::ShellNetwork>) {
     let records = crate::shell::document_import::NativeHostedRooms(Arc::clone(net));
     crate::shell::peer_windows::set_hosted_record_reader(Box::new(move |room, app, record| {
         use crate::shell::document_import::HostedRooms as _;
@@ -8484,7 +8474,7 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
-    install_window_hosting(&net, tree_handle);
+    install_window_hosting(&net);
     let hosted_net = Arc::clone(&net);
     frame_builder.with_chrome(move |chrome| {
         chrome.window_transfers.set_hosted_rooms(Box::new(

@@ -1553,6 +1553,63 @@ pub fn merge_room_contents(
     changed
 }
 
+/// In the workspace addressing `room`, remove every window `foreign` names
+/// (someone else's, mirrored here), then the window groups left with none
+/// and the strips left with none that this machine did not make
+/// (`local_salt`). Everything else of this machine's own stays where it is.
+/// Reports whether anything changed.
+pub fn drop_windows_of_others(
+    desktop: &mut DesktopTree,
+    room: RoomId,
+    local_salt: u16,
+    foreign: &impl Fn(&Tab) -> bool,
+) -> bool {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+        return false;
+    };
+    let mut changed = false;
+    let mut vanished: Vec<StripId> = Vec::new();
+    for strip in &mut ws.strips {
+        for group in &mut strip.window_groups {
+            let before = group.tabs.len();
+            group.tabs.retain(|tab| !foreign(tab));
+            if group.tabs.len() == before {
+                continue;
+            }
+            changed = true;
+            group
+                .focus_history
+                .retain(|id| group.tabs.iter().any(|tab| tab.id == *id));
+            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+                && let Some(first) = group.tabs.first()
+            {
+                group.active_tab = first.id;
+            }
+        }
+        strip.window_groups.retain(|group| !group.tabs.is_empty());
+    }
+    ws.strips.retain(|strip| {
+        let keep = !strip.window_groups.is_empty() || peer_salt_of(strip.id.raw()) == local_salt;
+        if !keep {
+            vanished.push(strip.id);
+        }
+        keep
+    });
+    changed |= !vanished.is_empty();
+    let ws_id = ws.id;
+    if desktop
+        .active_strip
+        .get(&ws_id)
+        .is_some_and(|active| vanished.contains(active))
+    {
+        desktop.active_strip.remove(&ws_id);
+    }
+    for strip in vanished {
+        desktop.active_group.remove(&strip);
+    }
+    changed
+}
+
 /// The room a candidate document says it describes, when it names a valid
 /// one. A payload naming a different room than the one it answers must be
 /// refused before anything else reads it.
@@ -1868,6 +1925,60 @@ mod tests {
             drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A),
             0,
             "nothing left to drop"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-20): "Make sure other people's mirrored windows that a device received are removed from its local copy of a public workspace, while its own windows stay."
+    #[test]
+    fn dropping_others_windows_keeps_every_window_of_ones_own() {
+        const MINE: u16 = 0x1111;
+        const THEIRS: u16 = 0x2222;
+        let room = RoomId::new();
+        // My strip, holding my window and one of theirs side by side; their
+        // strip, holding only theirs; their strip I moved a window of mine
+        // into.
+        let mut mine = Strip::new(StripId(compose_id(MINE, 1)), "Mine");
+        mine.window_groups.push(canvas_group(MINE, 2, "Board"));
+        mine.window_groups
+            .push(canvas_group(THEIRS, 3, "ssh prod-db"));
+        let mut theirs = Strip::new(StripId(compose_id(THEIRS, 4)), "Terminals");
+        theirs
+            .window_groups
+            .push(canvas_group(THEIRS, 5, "~/private"));
+        let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
+        shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
+        let mut tree = room_desktop(room, 1, vec![mine, theirs, shared]);
+        let ws = tree.workspaces[0].id;
+        tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
+
+        let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
+        assert!(drop_windows_of_others(&mut tree, room, MINE, &foreign));
+        let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| {
+                (
+                    strip.name.as_str(),
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            [("Mine", vec!["Board"]), ("Shared", vec!["Notes"])],
+            "every window of mine stays, none of theirs"
+        );
+        assert!(
+            !tree.active_strip.contains_key(&ws),
+            "no pointer at a strip that went"
+        );
+        assert!(
+            !drop_windows_of_others(&mut tree, room, MINE, &foreign),
+            "nothing more to drop"
         );
     }
 

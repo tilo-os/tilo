@@ -74,6 +74,7 @@ mod tab_menu;
 mod top_bar_reveal;
 mod widget;
 mod window_toolbars;
+mod device_local_chips;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{

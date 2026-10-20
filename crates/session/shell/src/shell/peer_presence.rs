@@ -4335,6 +4335,75 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&pair.dir);
     }
 
+    // USER REQUIREMENT (2026-10-20): "under 'That I'm here' (the public default) nothing about which window or app the person is in leaves the device."
+    /// Every kind of presence the desktop and its apps publish, under "That
+    /// I'm here": only the desktop's own word about the whole workspace
+    /// leaves, never which window or tab is in front, which app or record
+    /// the person is in, or a status inferred from what they do. Under
+    /// "Where I am" all of it does.
+    #[test]
+    fn that_im_here_says_nothing_of_which_window_or_app_you_are_in() {
+        use ui::collaboration::PresencePayload as P;
+        let mut pair = pair("here-only");
+        let room = pair.room.to_string();
+        let workspace = PresenceKey::Workspace { id: room.clone() };
+        let tab = PresenceKey::Tab {
+            id: format!("{:x}", 0x0042_0000_0000_0007_u64),
+        };
+        let frame = |key: &PresenceKey, payload: &P| {
+            crate::shell::collab_presence::to_peer(key, payload).expect("presence encodes")
+        };
+        let inferred = P::Status {
+            text: "Editing the budget in Notes".into(),
+            automatic: true,
+        };
+        let typed = P::Status {
+            text: "back in 5".into(),
+            automatic: false,
+        };
+        let where_you_are = [
+            ("tilo-shell", frame(&tab, &P::Arrived)),
+            ("tilo-shell", frame(&tab, &P::Left)),
+            ("tilo-shell", frame(&workspace, &inferred)),
+            ("so.tilo.notes", frame(&workspace, &P::Arrived)),
+            ("Alacritty", frame(&workspace, &P::Arrived)),
+        ];
+        let that_you_are_here = [
+            ("tilo-shell", frame(&workspace, &P::Arrived)),
+            ("tilo-shell", frame(&workspace, &typed)),
+        ];
+        let sent = |pair: &mut Pair, app: &str, presence: collab_types::PeerPresence| {
+            pair.guest_net
+                .publish_app_presence(app.into(), room.clone(), presence);
+            match pair.guest_cmds.try_recv() {
+                Ok(NetCmd::Publish {
+                    msg: NeighbourMsg::AppPresenceV2 { app_id, .. },
+                    ..
+                }) => Some(app_id),
+                Ok(_) | Err(_) => None,
+            }
+        };
+        pair.guest_net
+            .set_presence_visibility(&room, ui::PresenceVisibility::ThatImHere);
+        for (app, presence) in where_you_are.clone() {
+            assert_eq!(
+                sent(&mut pair, app, presence.clone()),
+                None,
+                "{app} {:?} says where the person is",
+                presence.payload
+            );
+        }
+        for (app, presence) in that_you_are_here.clone() {
+            assert_eq!(sent(&mut pair, app, presence), Some(app.to_owned()));
+        }
+        pair.guest_net
+            .set_presence_visibility(&room, ui::PresenceVisibility::WhereIAm);
+        for (app, presence) in where_you_are.into_iter().chain(that_you_are_here) {
+            assert_eq!(sent(&mut pair, app, presence), Some(app.to_owned()));
+        }
+        let _ = std::fs::remove_dir_all(&pair.dir);
+    }
+
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
     /// so nothing of where they are leaves and nobody's pointer shows, never
@@ -4401,6 +4470,17 @@ mod two_sessions {
         };
         pair.guest_net
             .publish_app_presence("so.tilo.notes".into(), room.clone(), arrived);
+        assert!(
+            pair.guest_cmds.try_recv().is_err(),
+            "nor which app or record the person arrived in"
+        );
+        let here = crate::shell::collab_presence::to_peer(
+            &PresenceKey::Workspace { id: room.clone() },
+            &ui::collaboration::PresencePayload::Arrived,
+        )
+        .expect("arrival encodes");
+        pair.guest_net
+            .publish_app_presence("tilo-shell".into(), room.clone(), here);
         assert!(
             pair.guest_cmds.try_recv().is_ok(),
             "but being here is: the face shows"

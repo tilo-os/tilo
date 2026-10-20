@@ -15,7 +15,7 @@ pub use local_app_records::LocalAppRecord;
 pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
 };
-pub use window_hosting::WindowHosting;
+pub(crate) use window_hosting::{is_unconfined, shareable};
 
 pub use collab_types::caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
@@ -862,10 +862,6 @@ pub struct WorkspaceTree {
     /// to `tilo-fs --acl`, so both sides decide from one list.
     #[serde(skip)]
     pub fs_acl_path: Option<std::path::PathBuf>,
-    /// This device as host of its legacy windows, which rooms carry as
-    /// hosted here instead of as windows to reopen. Set at session start.
-    #[serde(skip)]
-    pub window_hosting: Option<WindowHosting>,
     /// Which of the person's devices each of their workspaces shows on, as
     /// the person's workspace list says; set by the network for the
     /// workspace's menu.
@@ -905,7 +901,6 @@ impl Default for WorkspaceTree {
             package_launches: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
-            window_hosting: None,
             personal_device_choices: HashMap::new(),
             personal_device_requests: Vec::new(),
         }
@@ -1858,10 +1853,8 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
-            || ws.strips.clone(),
-            |hosting| hosting.published(&ws.strips, &self.package_launches),
-        );
+        // A window of a host or unconfined program never reaches a room.
+        let strips: Vec<Strip> = shareable(&ws.strips, &self.package_launches);
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
@@ -1873,6 +1866,7 @@ impl WorkspaceTree {
         // The cache contains no media definitions. Preserve the admitted field
         // on a candidate; only the committed native owner may supply it anew.
         let before = self.room_docs.get(&room).cloned().unwrap_or_default();
+        let public = projection::room_is_public(&before);
         let mut candidate = before.clone();
         let doc = &mut candidate;
 
@@ -1895,23 +1889,39 @@ impl WorkspaceTree {
             tracing::error!(?err, "room doc: records map");
         }
         let mut retained: Vec<StripId> = Vec::new();
-        for (order, strip) in strips.iter().enumerate() {
-            if !self.strips_to_retain.contains(&strip.id) {
-                continue;
+        if public {
+            // A public room shares no member's windows, strips or layout:
+            // nothing of this desktop is written into it, and what this
+            // device wrote before it knew the room is public is taken out.
+            if local_salt != 0 {
+                let _ =
+                    projection::drop_contents_except(doc, &|id| peer_salt_of(id) != local_salt);
             }
-            match projection::retain_owned_strip(doc, strip, order as u64, local_salt) {
-                Ok(_) => retained.push(strip.id),
-                Err(err) => tracing::error!(?err, "room doc: retained strip"),
+            retained.extend(
+                strips
+                    .iter()
+                    .filter(|strip| self.strips_to_retain.contains(&strip.id))
+                    .map(|strip| strip.id),
+            );
+        } else {
+            for (order, strip) in strips.iter().enumerate() {
+                if !self.strips_to_retain.contains(&strip.id) {
+                    continue;
+                }
+                match projection::retain_owned_strip(doc, strip, order as u64, local_salt) {
+                    Ok(_) => retained.push(strip.id),
+                    Err(err) => tracing::error!(?err, "room doc: retained strip"),
+                }
             }
-        }
-        if let Err(err) = projection::project_owned_contents(
-            doc,
-            &strips,
-            local_salt,
-            share_floor,
-            projection::EmptyStrips::Skip,
-        ) {
-            tracing::error!(?err, "room doc: contents map");
+            if let Err(err) = projection::project_owned_contents(
+                doc,
+                &strips,
+                local_salt,
+                share_floor,
+                projection::EmptyStrips::Skip,
+            ) {
+                tracing::error!(?err, "room doc: contents map");
+            }
         }
         if let Err(error) = projection::project_workspace_tasks(doc, &tasks) {
             tracing::error!(?error, "room doc: tasks map");
@@ -2156,6 +2166,16 @@ impl WorkspaceTree {
         out
     }
 
+    /// Whether `room` is public, as its governance document here says: it
+    /// lets strangers in through a door, and shares none of its members'
+    /// windows or layout.
+    #[must_use]
+    pub fn room_is_public(&self, room: RoomId) -> bool {
+        self.room_docs
+            .get(&room)
+            .is_some_and(projection::room_is_public)
+    }
+
     /// Fold `room`'s replication document into the cached workspace that
     /// addresses it — see [`projection::merge_room_contents`]. Reports
     /// whether anything changed.
@@ -2167,6 +2187,30 @@ impl WorkspaceTree {
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
+        if projection::room_is_public(doc) {
+            // A public room shares no member's windows: nothing of its
+            // contents is taken in, and what this device mirrored of other
+            // people's windows before goes. Its own windows stay.
+            // Someone else's: minted in a namespace the room registered to
+            // another device, or in a room that registers none, under any
+            // salt but this device's own (and not under none at all).
+            let owners = projection::contents_owners_of(doc);
+            let theirs = |salt: u16| {
+                salt != 0 && salt != local_salt && (owners.is_empty() || owners.contains_key(&salt))
+            };
+            return projection::drop_windows_of_others(
+                &mut self.desktop,
+                room,
+                local_salt,
+                &|tab: &Tab| {
+                    theirs(peer_salt_of(tab.id))
+                        || matches!(
+                            tab.tile,
+                            TileContent::PeerWindow { .. } | TileContent::HostedWindow { .. }
+                        )
+                },
+            );
+        }
         let replicated = projection::contents_of(doc);
         let changed = projection::merge_room_contents(
             &mut self.desktop,
@@ -6904,8 +6948,9 @@ mod automerge_foundation_tests {
     /// tab)`. Half of
     /// [`a_window_the_host_opens_appears_for_the_guest_without_moving_them`]'s
     /// fixture — the host's side.
+    // USER REQUIREMENT (2026-10-20): "Any window from a host or unconfined program (launcher "host application … UNCONFINED") is never published to any room, private or public."
     #[test]
-    fn legacy_windows_cross_the_room_as_hosted_and_tilo_apps_as_windows_to_open() {
+    fn unconfined_windows_never_cross_the_room_and_tilo_apps_do() {
         const HOST: u16 = 0xCAFE;
         const GUEST: u16 = 0xBEEF;
         let (mut host, mut guest, room) = two_in_a_room();
@@ -6922,7 +6967,7 @@ mod automerge_foundation_tests {
                 .unwrap();
             let group = &mut ws.strips[0].window_groups[0];
             group.tabs[0].tile = TileContent::Foreign {
-                app_id: "org.gimp.GIMP".into(),
+                app_id: "Alacritty".into(),
                 surface_id: 41,
             };
             group.tabs.push(Tab {
@@ -6934,10 +6979,6 @@ mod automerge_foundation_tests {
                 },
             });
         }
-        host.window_hosting = Some(WindowHosting {
-            device: "ab".repeat(32),
-            device_label: "Laptop".into(),
-        });
         host.remember_package_launch(native, "so.tilo.notes".into());
 
         ship(&mut host, &mut guest, room, 1);
@@ -6953,16 +6994,7 @@ mod automerge_foundation_tests {
             .flat_map(|group| &group.tabs)
             .map(|tab| (tab.id, tab.tile.clone()))
             .collect();
-        assert_eq!(
-            tiles.get(&tab),
-            Some(&TileContent::HostedWindow {
-                app_id: "org.gimp.GIMP".into(),
-                label: "Plan".into(),
-                host: "ab".repeat(32),
-                host_label: "Laptop".into(),
-            }),
-            "a legacy window is shown as running on its host"
-        );
+        assert_eq!(tiles.get(&tab), None, "the terminal stays on its device");
         assert!(
             matches!(
                 tiles.get(&native),
@@ -6970,12 +7002,92 @@ mod automerge_foundation_tests {
             ),
             "a Tilo app's window is one to open here"
         );
+        let doc = host.room_docs.get(&room).unwrap();
+        assert!(
+            projection::contents_of(doc)
+                .iter()
+                .flat_map(|strip| &strip.groups)
+                .flat_map(|group| &group.tabs)
+                .all(|shared| shared.id != tab),
+            "not even its title is in the room's document"
+        );
         assert!(
             matches!(
                 host.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
                 TileContent::Foreign { .. }
             ),
             "the host keeps its own live window"
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-20): "Public rooms never share layout or windows."
+    // USER REQUIREMENT (2026-10-20): "The device never sends them for a workspace bound to a public room."
+    /// Once the room's governance says it is public, this device writes none
+    /// of its windows into the room's document and takes out what it wrote
+    /// before; and what it mirrored of the other member's windows goes from
+    /// its desktop, while its own windows stay.
+    #[test]
+    fn in_a_public_room_no_window_is_written_or_mirrored() {
+        const HOST: u16 = 0xCAFE;
+        const GUEST: u16 = 0xBEEF;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+        let (_, _, host_tab) = seed_single_tab_strip(&mut host, room, HOST);
+        let (_, _, guest_tab) = seed_single_tab_strip(&mut guest, room, GUEST);
+        host.sync_room_doc(room);
+        guest.sync_room_doc(room);
+        ship(&mut host, &mut guest, room, 1);
+        let tabs_of = |tree: &WorkspaceTree| -> Vec<u64> {
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|w| w.room == room)
+                .into_iter()
+                .flat_map(|w| &w.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect()
+        };
+        assert!(
+            tabs_of(&guest).contains(&host_tab),
+            "a private room mirrors the host's window, as before"
+        );
+
+        // The governor says the room is public.
+        for tree in [&mut host, &mut guest] {
+            let doc = tree.room_docs.get_mut(&room).unwrap();
+            automerge::transaction::Transactable::put(
+                doc,
+                automerge::ROOT,
+                projection::ROOM_PUBLIC_KEY,
+                true,
+            )
+            .unwrap();
+            doc.commit();
+        }
+        assert!(guest.merge_room_contents(room));
+        let shown = tabs_of(&guest);
+        assert!(
+            !shown.contains(&host_tab),
+            "the host's window went: {shown:?}"
+        );
+        assert!(shown.contains(&guest_tab), "the guest's own window stays");
+
+        host.sync_room_doc(room);
+        let doc = host.room_docs.get(&room).unwrap();
+        assert!(
+            projection::contents_of(doc)
+                .iter()
+                .flat_map(|strip| &strip.groups)
+                .flat_map(|group| &group.tabs)
+                .all(|tab| peer_salt_of(tab.id) != HOST),
+            "the host's window is out of the public room's document"
+        );
+        assert!(
+            tabs_of(&host).contains(&host_tab),
+            "and still on its desktop"
         );
     }
 

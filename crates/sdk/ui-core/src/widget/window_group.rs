@@ -2156,6 +2156,13 @@ impl WindowGroup {
         self.bar.set_holder(id, holder)
     }
 
+    /// Mark tab `id` as a window that stays on this device, or clear the
+    /// mark: while it is in front the bar says "Only on this device".
+    /// `true` when that changed what the window shows.
+    pub fn set_tab_device_local(&mut self, id: u64, local: bool) -> bool {
+        self.bar.set_device_local(id, local)
+    }
+
     /// Whether someone else holds any of the window's tabs, so it does not
     /// move as a whole.
     pub fn is_held(&self) -> bool {

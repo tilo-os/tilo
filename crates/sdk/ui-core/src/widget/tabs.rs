@@ -404,6 +404,10 @@ pub struct TabBar {
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
     held_ids: HashMap<u64, TabHolder>,
+    /// Tabs whose window stays on this device and reaches nobody else in
+    /// the workspace (a host or unconfined program's, in a public
+    /// workspace): the bar says so with a quiet chip while one is in front.
+    device_local_ids: HashSet<u64>,
     /// A drag on a held tab, pulling it or springing it back.
     resist: Option<Resist>,
     /// Whether the hover-reveal maximize chip is offered at all. A host whose
@@ -573,6 +577,7 @@ impl TabBar {
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             held_ids: HashMap::new(),
+            device_local_ids: HashSet::new(),
             resist: None,
             show_maximize: true,
             closable: true,
@@ -2533,6 +2538,73 @@ impl TabBar {
             None => self.held_ids.remove(&id).is_some(),
         }
     }
+    /// Mark `id` as a window that stays on this device, or clear the mark.
+    /// `true` when that changed what the bar shows.
+    pub fn set_device_local(&mut self, id: u64, local: bool) -> bool {
+        if local {
+            self.device_local_ids.insert(id)
+        } else {
+            self.device_local_ids.remove(&id)
+        }
+    }
+    /// Whether `id`'s window stays on this device.
+    pub fn is_device_local(&self, id: u64) -> bool {
+        self.device_local_ids.contains(&id)
+    }
+    /// Where the "Only on this device" chip of the window in front stands,
+    /// with its label: after the pills, in the row's free run before the
+    /// window's controls. `None` when the window in front is shared, its app
+    /// put slots in the row, a tab is being dragged, or the run is too
+    /// short for the chip.
+    pub fn device_local_chip(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<(Rect, String)> {
+        if !self.device_local_ids.contains(&self.active_id)
+            || self.active_toolbar().is_some()
+            || self.pending_drag.is_some()
+            || self.tab_rects.len() != self.tabs.len()
+        {
+            return None;
+        }
+        let label = crate::i18n!("tab-only-on-this-device");
+        let tab_row = self.tab_row();
+        let after = self
+            .tab_rects
+            .iter()
+            .chain(std::iter::once(&self.new_tab_rect))
+            .filter(|rect| rect.area() > 0.0)
+            .map(|rect| rect.x1)
+            .fold(tab_row.x0, f64::max);
+        let x0 = after + TOOLBAR_LEAD_GAP;
+        let limit = self.controls.content_limit(tab_row) - self.search_control.unwrap_or(0.0);
+        let width =
+            super::ChipFace::intrinsic_width(&label, super::ChipLead::None, false, tr, theme);
+        let height = super::ChipFace::height(theme);
+        (x0 + width <= limit).then(|| {
+            (
+                Rect::from_origin_size(
+                    Point::new(x0, tab_row.center().y - height / 2.0),
+                    (width, height),
+                ),
+                label,
+            )
+        })
+    }
+    /// The window in front stays on this device: say so, quietly, beside
+    /// its pills ([`Self::device_local_chip`]).
+    fn draw_device_local_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if let Some((rect, label)) = self.device_local_chip(tr, theme) {
+            super::ChipFace::new(rect, &label).paint(scene, transform, tr, theme);
+        }
+    }
     /// Who holds `id`, when someone else does.
     pub fn holder(&self, id: u64) -> Option<&TabHolder> {
         self.held_ids.get(&id)
@@ -3951,6 +4023,7 @@ impl Widget for TabBar {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
+        self.draw_device_local_chip(scene, transform, tr, theme);
         if self.window_controls {
             self.controls.paint(
                 scene,
@@ -5372,6 +5445,54 @@ mod tests {
             Rect::new(180.0, 10.0, 196.0, 30.0),
         ];
         b
+    }
+
+    // USER REQUIREMENT (2026-10-20): "In a public workspace its window bar shows a quiet 'Only on this device' chip, using the design-system Chip."
+    /// A window that stays on this device says so beside its pill while it
+    /// is in front, and only where the bar has room; a shared one says
+    /// nothing.
+    #[test]
+    fn a_window_that_stays_on_this_device_says_so_in_its_bar() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut bar = TabBar::new("terminal", vec![TabDescriptor::new(1, "Alacritty")], 1);
+        lay_out_at_width(&mut bar, 800.0);
+        assert!(
+            bar.device_local_chip(&mut tr, &theme).is_none(),
+            "shared: no chip"
+        );
+        assert!(bar.set_device_local(1, true));
+        assert!(
+            !bar.set_device_local(1, true),
+            "marking it again changes nothing"
+        );
+        let (rect, label) = bar
+            .device_local_chip(&mut tr, &theme)
+            .expect("the chip stands beside the pill");
+        assert_eq!(label, "Only on this device");
+        assert!(
+            rect.x0 >= bar.tab_rects[0].x1,
+            "{rect:?} after {:?}",
+            bar.tab_rects[0]
+        );
+        assert!((rect.height() - crate::widget::ChipFace::height(&theme)).abs() < 0.5);
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+
+        lay_out_at_width(&mut bar, 140.0);
+        assert!(
+            bar.device_local_chip(&mut tr, &theme).is_none(),
+            "a bar too narrow keeps its pill and drops the chip"
+        );
+        lay_out_at_width(&mut bar, 800.0);
+        assert!(bar.set_device_local(1, false));
+        assert!(bar.device_local_chip(&mut tr, &theme).is_none());
     }
 
     #[test]

@@ -1680,6 +1680,33 @@ fn tells_where(payload: &collab_types::PeerPresencePayload) -> bool {
     )
 }
 
+/// The app id the desktop publishes its own presence in a room under.
+pub(crate) const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
+
+/// Whether `presence`, which `app_id` publishes in the room `room`, says
+/// nothing but that the person is there: the desktop's own word about the
+/// whole workspace, never an app's (which names the app and the record it is
+/// in), never a window's or tab's, and never a status the machine inferred
+/// from what the person does. "That I'm here" lets only this leave.
+fn says_only_here(app_id: &str, room: &str, presence: &collab_types::PeerPresence) -> bool {
+    if app_id != DESKTOP_PRESENCE_APP {
+        return false;
+    }
+    let workspace = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+        id: room.to_owned(),
+    });
+    if workspace.ok().as_deref() != Some(presence.key.as_slice()) {
+        return false;
+    }
+    !matches!(
+        presence.payload,
+        collab_types::PeerPresencePayload::Status {
+            automatic: true,
+            ..
+        }
+    )
+}
+
 /// Whether `visibility` lets `payload` leave this session.
 fn visibility_allows(
     visibility: ui::PresenceVisibility,
@@ -3414,6 +3441,7 @@ impl ShellNetwork {
         let visibility = self.presence_visibility(&cluster_id);
         if self.is_local_person_room(&cluster_id)
             || !visibility_allows(visibility, &presence.payload)
+            || (!visibility.shows_where() && !says_only_here(&app_id, &cluster_id, &presence))
         {
             return;
         }
@@ -6913,6 +6941,12 @@ impl ShellNetwork {
             tree.sync_room_doc(room);
             let heads = tree.room_heads(room);
             if heads.is_empty() {
+                continue;
+            }
+            // A public room takes no member's changes to its document (its
+            // governor refuses them): nothing of this desktop is sent there.
+            if tree.room_is_public(room) {
+                push.announced.insert(room, heads);
                 continue;
             }
             let Some(announced) = push.announced.get(&room) else {

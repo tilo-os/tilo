@@ -277,6 +277,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
         self.sync_window_toolbars();
+        self.sync_device_local_chips();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
         let opened_for_new_tab = self.harvest_pending_new_tab();

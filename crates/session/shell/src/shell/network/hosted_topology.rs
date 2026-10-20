@@ -113,10 +113,12 @@ impl ShellNetwork {
 
     /// Keep `room`'s document showing this session's windows among its
     /// workspace's layout in `tree`. When another device governs `room`,
-    /// that is this session's own legacy tabs ([`own_legacy_windows`]),
+    /// that is this session's own adopted tabs ([`own_legacy_windows`]),
     /// published for the governor to admit; the governor places the rest.
     /// When this device governs `room` itself, it is every window it owns,
-    /// admitted here. Cheap when nothing changed: while neither those
+    /// admitted here. Never a window of a host or unconfined program
+    /// ([`crate::shell::state::shareable`]), and nothing at all in a public
+    /// room. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
     pub fn publish_hosted_legacy_windows(
@@ -142,10 +144,23 @@ impl ShellNetwork {
         let Some(owner) = self.opened_native_owner() else {
             return;
         };
-        let governed_here = owner
-            .with_current(room, |view| Ok(view.governed_here()))
-            .unwrap_or(false);
+        let (governed_here, public) = owner
+            .with_current(room, |view| {
+                Ok((view.governed_here(), view.peer().governance().room_public()))
+            })
+            .unwrap_or((false, false));
         if !governed_here && !self.governed_elsewhere_by(&owner, room) {
+            return;
+        }
+        // A public room shares no member's windows: none is published into
+        // it, and nothing published before is sent again.
+        if public {
+            if let Ok(mut rooms) = self.hosted_topology.rooms.lock()
+                && let Some(state) = rooms.get_mut(&room)
+            {
+                state.pending.clear();
+                state.settled = None;
+            }
             return;
         }
         let (salt, windows) = {
@@ -157,10 +172,14 @@ impl ShellNetwork {
                 .iter()
                 .find(|workspace| workspace.room == room)
                 .map(|workspace| {
+                    // A window of a host or unconfined program never
+                    // reaches a room.
+                    let shareable =
+                        crate::shell::state::shareable(&workspace.strips, &tree.package_launches);
                     if governed_here {
-                        workspace.strips.clone()
+                        shareable
                     } else {
-                        own_legacy_windows(&workspace.strips, salt)
+                        own_legacy_windows(&shareable, salt)
                     }
                 })
                 .unwrap_or_default();
@@ -593,10 +612,15 @@ mod tests {
         );
     }
 
-    /// A room this device governs takes every window this device opens
-    /// into its layout, admitted here: no other device places them.
+    // USER REQUIREMENT (2026-10-20): "Any window from a host or unconfined program (launcher "host application … UNCONFINED") is never published to any room, private or public."
+    // USER REQUIREMENT (2026-10-20): "The device never sends them for a workspace bound to a public room."
+    /// A room this device governs takes every Tilo window this device opens
+    /// into its layout, admitted here: no other device places them. A window
+    /// of an unconfined program stays on this device, and once the room is
+    /// public no window is taken in at all.
     #[test]
-    fn a_room_this_device_governs_takes_every_window_it_opens() {
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+    fn a_room_this_device_governs_takes_every_tilo_window_it_opens_and_no_unconfined_one() {
         use crate::shell::state::{StripId, WorkspaceTree};
         use ed25519_dalek::SigningKey;
         let directory = tempfile::tempdir().unwrap();
@@ -678,7 +702,11 @@ mod tests {
                     .collect())
             })
             .unwrap();
-        assert_eq!(tabs, [own(3), own(4)], "both windows are in the room");
+        assert_eq!(
+            tabs,
+            [own(3)],
+            "the Tilo window is in the room, the unconfined browser is not"
+        );
         let shown: Vec<u64> = tree
             .read()
             .desktop
@@ -696,6 +724,73 @@ mod tests {
             shown,
             [own(3), own(4)],
             "and still shown here, as they were"
+        );
+
+        // The room becomes public, as its governor (this device) says.
+        let changes = owner
+            .with_current(room, |view| {
+                let mut doc = view.peer().admitted_room().ok_or("no room")?.clone();
+                let heads = doc.get_heads();
+                doc.set_actor(automerge::ActorId::from(device.device_public_key.to_vec()));
+                automerge::transaction::Transactable::put(
+                    &mut doc,
+                    automerge::ROOT,
+                    tilo_desktop_model::projection::ROOM_PUBLIC_KEY,
+                    true,
+                )
+                .map_err(|error| error.to_string())?;
+                doc.commit();
+                Ok(doc
+                    .get_changes(&heads)
+                    .iter()
+                    .map(|change| change.raw_bytes().to_vec())
+                    .collect::<Vec<_>>())
+            })
+            .unwrap();
+        owner
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RelayDelta(device.device_public_key),
+                crate::network::NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        {
+            let mut tree = tree.write();
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.room == room)
+                .unwrap();
+            ws.strips[0].window_groups[0].tabs.push(tab(
+                own(5),
+                TileContent::AppPlaceholder {
+                    kind: crate::shell::state::AppKind::Other("so.tilo.canvas".into()),
+                    label: "Canvas".into(),
+                },
+            ));
+        }
+        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+        network.publish_hosted_legacy_windows(room, &tree);
+        let tabs: Vec<u64> = owner
+            .with_current(room, |view| {
+                Ok(tilo_desktop_model::projection::contents_of(
+                    view.peer().admitted_room().ok_or("no room")?,
+                )
+                .iter()
+                .flat_map(|strip| &strip.groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect())
+            })
+            .unwrap();
+        assert!(
+            !tabs.contains(&own(5)),
+            "a public room takes in no window: {tabs:?}"
         );
     }
 
