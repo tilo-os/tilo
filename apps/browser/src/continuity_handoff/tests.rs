@@ -254,7 +254,7 @@ fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_reco
             window.page_mut().continuity_grant_for_test(
                 File::open(fixture.root.path())?,
                 StorageDirectory::open(fixture.state.path())?,
-            );
+            )?;
             Ok(())
         })
         .ok_or("browser surface is missing")??;
@@ -347,7 +347,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
             window.page_mut().continuity_grant_for_test(
                 File::open(fixture.root.path())?,
                 StorageDirectory::open(fixture.state.path())?,
-            );
+            )?;
             Ok(())
         })
         .ok_or("browser surface is missing")??;
