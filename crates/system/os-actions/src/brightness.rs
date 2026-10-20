@@ -1016,6 +1016,17 @@ fn probe(
         next.push(entry);
     }
     let mut shared = shared.lock_recover();
+    // A monitor known before the probe keeps its live entry: a level set
+    // while the probe read the bus (outside the lock) is newer than the
+    // snapshot this probe started from, and must not be put back.
+    for entry in &mut next {
+        if let Some(live) = shared.monitors.iter().find(|live| {
+            live.monitor.connector == entry.monitor.connector
+                && live.monitor.edid == entry.monitor.edid
+        }) {
+            entry.clone_from(live);
+        }
+    }
     let changed = shared.monitors.len() != next.len()
         || shared
             .monitors
@@ -1262,6 +1273,43 @@ mod tests {
             let _ = done.send(());
         }));
         told.recv_timeout(Duration::from_secs(30)).unwrap();
+    }
+
+    /// A level set while a rescan reads the bus survives the rescan: the
+    /// probe works from a snapshot outside the lock and must not put a known
+    /// monitor's older level back when it commits.
+    #[test]
+    fn a_level_set_during_a_rescan_is_not_reverted() {
+        let mut software = ddc_monitor("DP-9");
+        software.target = BrightnessTarget::Software;
+        // The second discovery (the rescan) waits until the test has set a
+        // level, as a slow bus would hold it.
+        let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, released) = (Mutex::new(entered_tx), Mutex::new(released));
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let service = BrightnessService::spawn(
+            Arc::new(move || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let _ = entered_tx.lock().unwrap().send(());
+                    let _ = released.lock().unwrap().recv();
+                }
+                vec![software.clone()]
+            }),
+            Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> { Err("no bus".into()) }),
+            Arc::new(
+                |_: &BrightnessTarget, _: f32, _: Option<u16>| -> Result<(), String> { Ok(()) },
+            ),
+            |_| {},
+            None,
+        );
+        service.rescan_blocking();
+        service.rescan();
+        entered.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(service.set("DP-9", 40.0));
+        release.send(()).unwrap();
+        idle(&service);
+        assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
     }
 
     #[test]
