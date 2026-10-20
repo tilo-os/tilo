@@ -24,7 +24,6 @@ impl HistoryHost {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.admit_composition();
         // Closed, the History control stands in the app's header row; open,
         // the live app is inert, so the control moves into this bar.
         let control = (self.open_button && !self.open && !self.invalid_owner)
@@ -45,6 +44,11 @@ impl HistoryHost {
             self.app_presents_status = presents_status;
             self.rebuild_toolbar();
         }
+        // What this build lays out, including the toolbar the offer above
+        // just rebuilt: admitted before it, the first build of every app
+        // with History read its own toolbar as a change after it and built
+        // the whole tree a second time.
+        self.admit_composition();
         self.timeline_node = None;
         self.canvas_node = None;
         self.live_node = None;

@@ -1501,6 +1501,10 @@ pub struct NavShell {
     rect: Rect,
     geometry: NavGeometry,
     last_stack: Option<Vec<NavPane>>,
+    /// The push stack and front screen the tree was built for before any
+    /// layout said how wide the shell is: the first layout rebuilds the tree
+    /// only when it lands elsewhere.
+    planned: Option<(Vec<NavPane>, NavPane)>,
     /// The app or the person chose the front screen.
     pane_chosen: bool,
     resize: Option<Resize>,
@@ -1612,6 +1616,7 @@ impl NavShell {
             rect: Rect::ZERO,
             geometry: NavGeometry::default(),
             last_stack: None,
+            planned: None,
             pane_chosen: false,
             resize: None,
             last_cursor: Point::ZERO,
@@ -3191,11 +3196,18 @@ impl NavShell {
             inputs.push_pos = None;
             let at = inputs.push.target();
             inputs.push.snap(at);
+            let pane = inputs.pane;
             drop(inputs);
             if switched {
                 self.move_into_layout(before);
             }
-            self.structure_dirty = true;
+            // The tree a first layout finds was built for the screens it
+            // planned at an assumed size; where the window's real size lands
+            // on the same ones, it is already the tree this layout needs.
+            let planned = self.planned.take();
+            if switched || planned != Some((stack, pane)) {
+                self.structure_dirty = true;
+            }
             self.update_toggle_names();
             self.invalidate();
         }
@@ -4017,6 +4029,9 @@ impl Widget for NavShell {
                 inputs.metrics.rail = rail;
             }
             let g = plan(&inputs, size.0, size.1);
+            if self.last_stack.is_none() {
+                self.planned = Some((g.stack.clone(), inputs.pane));
+            }
             let parts = g.visible_parts(&inputs);
             inputs.parts.clone_from(&parts);
             parts

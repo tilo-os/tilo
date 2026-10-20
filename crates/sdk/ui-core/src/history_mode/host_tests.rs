@@ -228,6 +228,30 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     assert!(history.captures_input());
 }
 
+/// An app whose header takes the History control (Settings, Files, Notes)
+/// learns it is presenting it during the first build, which rebuilds the
+/// bar to leave the control out. That bar is the one this build lays out:
+/// the build admits it, so its own first layout is not reported as a
+/// change after it and the app does not build its whole tree twice.
+#[test]
+fn a_first_build_whose_header_takes_the_history_control_is_admitted_as_built() {
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "existing document").unwrap();
+    state.commit_action(None, None);
+    let mut live = crate::widget::NavShell::new()
+        .content(Box::new(Button::new("live", "Send")))
+        .content_header("Page", Vec::new());
+    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    history.set_width(900.0);
+    let mut tree = taffy::TaffyTree::new();
+    let mut nodes = std::collections::HashMap::new();
+    history.build_composition(&mut live, &mut tree, &Theme::dark(), &mut nodes);
+    assert!(
+        !history.take_structure_dirty(),
+        "the first build admits the bar it built"
+    );
+}
+
 /// Runners keep raw pointers into the admitted composition between frames.
 /// Replacing the toolbar, or swapping which children are presented, must
 /// report structure dirty until the next build admits the new widgets.

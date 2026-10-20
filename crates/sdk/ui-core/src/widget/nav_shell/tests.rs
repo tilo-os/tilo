@@ -1899,3 +1899,31 @@ fn a_window_bar_that_presents_search_takes_the_headers_own_search_button_away() 
         assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
     }
 }
+
+/// Before any layout the shell builds its tree for the screens a regular
+/// window shows. A first layout whose window shows those same screens needs
+/// no second tree: Settings opened at a regular size built its tree twice
+/// in one layout for nothing. A first layout that lands elsewhere (a narrow
+/// window, one screen at a time) still rebuilds, and opens on its list.
+#[test]
+fn a_first_layout_on_the_screens_the_shell_planned_keeps_its_tree() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut shell = settings_shell();
+    let regular = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    crate::widget::layout::lay_out_detached(&mut shell, regular, &theme, &mut text)
+        .expect("layout");
+    assert!(
+        !shell.take_structure_dirty(),
+        "a regular window lands on the screens the tree was built for"
+    );
+
+    let mut shell = settings_shell();
+    let narrow = Rect::new(0.0, 0.0, 360.0, 700.0);
+    crate::widget::layout::lay_out_detached(&mut shell, narrow, &theme, &mut text).expect("layout");
+    assert!(
+        shell.take_structure_dirty(),
+        "a narrow window shows one screen at a time: its tree is rebuilt"
+    );
+    assert_eq!(shell.front_pane(), NavPane::Sidebar, "it opens on its list");
+}

@@ -27,13 +27,20 @@ fn start_cost() {
 
 /// What launching settings costs cold, one process per launch as on a device:
 /// from the process starting to its first frame drawn, fonts and every
-/// other per-process cache empty.
+/// other per-process cache empty. The first frame builds the window's
+/// widget tree once, and composes it once more against the window's first
+/// allocation (History presents by width): never a third time.
 #[test]
 fn cold_start() {
-    ui::framework::testing::perf::cold_start(
+    let start = ui::framework::testing::perf::cold_start(
         "settings",
         std::path::Path::new(env!("CARGO_BIN_EXE_settings")),
         8,
-    )
-    .print();
+    );
+    start.print();
+    assert_eq!(
+        start.calls("frame", "ui.rebuild_structure"),
+        2,
+        "the first frame builds the tree once and composes it once for its size"
+    );
 }
