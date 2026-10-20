@@ -55,6 +55,7 @@ pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;
 mod room_name;
+mod room_public;
 mod succession;
 pub use native_publication::NativePublicationCut;
 pub use succession::succeeded_authority;
