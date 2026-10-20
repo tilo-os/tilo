@@ -101,3 +101,22 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
   metadata, so its own source holds none of the values the audit looks for.
 - **Unmeasured:** the release size of the host (`tools/binary-budget.toml`, the tapp budget) and
   the first-frame time of compiling the built-in packages.
+
+## `tilolang run` (`apps/tilolang/src/dev.rs`)
+
+- **Packages from disk.** A page made with `TilolangPage::developing` loads the packages under
+  development instead of the embedded ones, through `Host::load_compiled`, which replaces a
+  loaded package of the same app (`Runtime::reload_package`). Each new build is loaded the same
+  way and the open app is opened again; the room keeps its state.
+- **A plain toolkit window.** `run` opens `ui::App::from_factory` with a `Workbench` root, not
+  the launcher: no runtime attachment, workspace, record store or identity, so a development run
+  cannot reach the person's session. Each replica holds its own `AutoCommit` and commits through
+  a door in `dev.rs` that builds and applies the published action as the action door does.
+- **Peers in one window.** The toolkit runs one window per event loop, so `--peers N` shows N
+  replicas side by side in one window. Replicas are forks of one room and exchange changes with
+  automerge's merge after every frame in which a replica changed something.
+- **Watching.** A thread compares the `.tl` files' modification times and lengths every 250 ms
+  and wakes the window through `ui::wake::waking_channel` when they change; the window compiles
+  again on that wake only.
+- **Ids.** A development build writes new ids to the package's `app.ids` at once, so the replicas
+  and the next build agree on them.

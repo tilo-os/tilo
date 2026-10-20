@@ -137,3 +137,12 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - No descending `sort_by`, no `list_set`, no reference-valued maps.
 - A removed note leaves a dangling reference that a view cannot test for (no existence check).
 - The authority chain ignores the authors of resource-reference arguments.
+
+## Development reloads
+
+- **`Runtime::reload_package`** loads a new version of a package and removes every loaded
+  version of the same app, so the new one takes over their declaration ids
+  (`Registry::replace`). Resources keep their state: they are stored by declaration id. Views
+  opened over the old version keep its module until they are opened again. A refused version
+  leaves the old one loaded. `load_package` still refuses a second package that claims the same
+  ids.
