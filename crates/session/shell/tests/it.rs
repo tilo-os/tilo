@@ -213,6 +213,8 @@ mod sandbox_check;
 mod saved_layout_keymap;
 #[path = "scale_precedes_configure.rs"]
 mod scale_precedes_configure;
+#[path = "scroll_reaches_windows.rs"]
+mod scroll_reaches_windows;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
