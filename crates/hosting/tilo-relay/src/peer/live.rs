@@ -308,9 +308,22 @@ pub(super) async fn handle_presence(
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        // A spectator's presence asks for its baseline and nothing more:
-        // nobody sees it, and it asks the room for no content.
+        // A spectator's presence asks for its baseline: nobody sees it. In
+        // a public room it reads what members read, so it may also ask the
+        // room for the content those records reference.
         if room_access::watches_only(&wr, peer) {
+            let reads = wr.spectators.is_some_and(|spectators| spectators.public);
+            let authority = wr.room_authority.clone();
+            drop(wr);
+            if reads && let (Some(body), Some(authority)) = (asks, authority) {
+                answer_content(
+                    &ws,
+                    &authority,
+                    workspace_id,
+                    (*session.own_device_public_key, peer.device_public_key),
+                    body,
+                );
+            }
             return Ok(None);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
