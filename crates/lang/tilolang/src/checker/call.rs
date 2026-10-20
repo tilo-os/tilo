@@ -15,6 +15,13 @@ impl Checker<'_> {
         match &callee.kind {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
+                if let Some(key) = self.enum_path(base) {
+                    let ty = Ty::Enum(key);
+                    return match super::enums::Shape::of(self, &ty) {
+                        Some(shape) => self.construct_variant(&shape, &ty, name, Some(args), span),
+                        None => Ex::error(),
+                    };
+                }
                 if self.names_import(base) {
                     let path = dotted(base).unwrap_or_default().join(".");
                     if let Some(import) = self.env.find_import(&path).cloned() {
@@ -54,6 +61,8 @@ impl Checker<'_> {
             "outside" => return self.builtin_outside(args, span),
             "model_call" => return self.builtin_model(args, span),
             "run_block" => return self.builtin_run_block(args, span),
+            "set" => return self.builtin_set(args, span),
+            "open" => return self.builtin_open(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
@@ -226,7 +235,7 @@ impl Checker<'_> {
             }
             (CKind::Action, Ctx::Action) => {
                 if !c.own {
-                    self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `do {}(...)`", c.name, c.name));
+                    self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
                     return Ex::error();
                 }
                 if let Some(f) = c.func {
@@ -290,7 +299,9 @@ impl Checker<'_> {
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
         if std::mem::take(&mut self.st.try_invoke) {
-            return self.try_result(act, &c.result);
+            // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
+            let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));
+            return Ex::host(Imp::TryInvoke, vec![act], ty);
         }
         match &c.result {
             Ty::Unit => Ex::host(Imp::Invoke, vec![act], Ty::Unit),
@@ -304,30 +315,6 @@ impl Checker<'_> {
                 }
             }
         }
-    }
-
-    /// The value of `try act(..)`: the invocation's result, or its failure.
-    fn try_result(&mut self, act: Ex, result: &Ty) -> Ex {
-        let raw = Ex::host(Imp::Invoke, vec![act], Ty::Text);
-        let tmp = self.fresh(Ty::Text);
-        let failed = Ex::host(Imp::IsError, vec![Ex::local(tmp, Ty::Text)], Ty::Bool);
-        let (value, ty) = match result {
-            Ty::Unit => (Ex::new(Ek::Not(Box::new(failed)), Ty::Bool), Ty::Bool),
-            Ty::Error => return Ex::error(),
-            t => {
-                let opt = Ty::Option(Box::new(t.clone()));
-                let none = Ex::host(Imp::NoneV, Vec::new(), opt.clone());
-                // The host boxes a scalar result like `some_i`, which is already the Option.
-                let some = if t.is_scalar() {
-                    Ex::local(tmp, opt.clone())
-                } else {
-                    Self::some(Ex::local(tmp, t.clone()), &opt)
-                };
-                let pick = Ek::If(Box::new(failed), Box::new(none), Box::new(some));
-                (Ex::new(pick, opt.clone()), opt)
-            }
-        };
-        Ex::new(Ek::Seq(vec![Stmt::Set(tmp, raw)], Box::new(value)), ty)
     }
 
     /// `Todo(title: "x")`: a record value, not yet a resource.
@@ -507,6 +494,125 @@ impl Checker<'_> {
         }
         self.st.facts.mutates = true;
         Ex::host(Imp::QueueBlock, vec![p, Ex::str(&f.id), src], Ty::Unit)
+    }
+
+    /// `set(name, value)`: an action reference that changes the view state `name` when the
+    /// control it is on is used. Views only.
+    fn builtin_set(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E066",
+                span,
+                format!(
+                    "`set(name, value)` changes a view's `window` or `lens` state; {who} has none"
+                ),
+            );
+            return Ex::error();
+        }
+        let (Some(target), Some(value), 2) = (args.first(), args.get(1), args.len()) else {
+            self.err(
+                "E022",
+                span,
+                "`set` takes the view state and its new value: `set(sort, .title)`",
+            );
+            return Ex::error();
+        };
+        let state = match &target.value.kind {
+            ExprKind::Ident(n) if target.name.is_none() => self.state_named(n),
+            _ => None,
+        };
+        let Some(state) = state else {
+            let known = self.state_names();
+            self.err("E066", target.value.span, format!("the first argument of `set` names a `window` or `lens` declaration of this view; this view declares: {known}"));
+            let _ = self.expr(&value.value, None);
+            return Ex::error();
+        };
+        let v = self.expr_as(&value.value, &state.ty);
+        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+        Ex::host(
+            Imp::ActSet,
+            vec![layer, Ex::str(&state.id), Self::handle_of(v)],
+            Ty::Action,
+        )
+    }
+
+    /// `open(r)` or `open(r, view: v)`: an action reference that goes to the window of `r`
+    /// (workspace-model.md section 3). Views only.
+    fn builtin_open(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "`open(r)` is applied from a view, on a control; {who} cannot open a window"
+                ),
+            );
+            return Ex::error();
+        }
+        let Some(target) = args.first().filter(|a| a.name.is_none()) else {
+            self.err(
+                "E022",
+                span,
+                "`open` takes the resource to open: `open(note)`",
+            );
+            return Ex::error();
+        };
+        let r = self.expr(&target.value, None);
+        let Ty::Record(key) = r.ty.clone() else {
+            if !r.ty.is_error() {
+                let t = self.show(&r.ty);
+                self.err(
+                    "E067",
+                    target.value.span,
+                    format!("`open` opens a resource, a value of a record type; this is {t}"),
+                );
+            }
+            return Ex::error();
+        };
+        let mut view_id = String::new();
+        for a in args.iter().skip(1) {
+            let named_view = a.name.as_ref().is_some_and(|n| n.name == "view");
+            if !named_view {
+                self.err(
+                    "E022",
+                    a.value.span,
+                    "`open` takes the resource and, optionally, `view: <view>`",
+                );
+                continue;
+            }
+            match self.view_for(&a.value, &key) {
+                Some(id) => view_id = id,
+                None => {
+                    self.err(
+                        "E067",
+                        a.value.span,
+                        format!(
+                            "`view:` names a view that takes a `{}` and nothing else",
+                            key.name
+                        ),
+                    );
+                }
+            }
+        }
+        Ex::host(Imp::ActOpen, vec![r, Ex::str(&view_id)], Ty::Action)
+    }
+
+    /// The id of the view `e` names (`editor` or `notes.editor`), when it shows a `key` alone.
+    fn view_for(&self, e: &ast::Expr, key: &TypeKey) -> Option<String> {
+        let path = dotted(e)?;
+        let c = match path.as_slice() {
+            [one] => self.env.own_callable(one)?,
+            [prefix @ .., last] => {
+                let import = self.env.find_import(&prefix.join("."))?;
+                self.env.foreign_callable(&import.app, last)?
+            }
+            [] => return None,
+        };
+        let fits = c.kind == CKind::View
+            && matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone()));
+        fits.then(|| c.id.clone())
     }
 
     fn builtin_model(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -764,15 +870,6 @@ impl Checker<'_> {
             }
             (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
-            (Ty::Option(_), "is_some") if args.is_empty() => {
-                Ex::host(Imp::IsSome, vec![r], Ty::Bool)
-            }
-            (Ty::Option(_), "is_none") if args.is_empty() => Ex::new(
-                Ek::Not(Box::new(Ex::host(Imp::IsSome, vec![r], Ty::Bool))),
-                Ty::Bool,
-            ),
-            (Ty::Option(t), "unwrap") if args.is_empty() => Self::unwrap_opt(r, t),
-            (Ty::Option(t), "unwrap_or") => self.unwrap_or(r, t, name, args, span),
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "len") if args.is_empty() => {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
@@ -802,7 +899,9 @@ impl Checker<'_> {
                     Ty::Float => "to_int, to_text",
                     Ty::Bool => "to_text",
                     Ty::Record(_) => "id (and fields)",
-                    Ty::Option(_) => "is_some, is_none, unwrap, unwrap_or",
+                    Ty::Option(_) | Ty::Result(..) | Ty::Enum(_) => {
+                        "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
+                    }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
                         "len, is_empty, map, filter, any, all, find, count"
                     }
@@ -824,34 +923,6 @@ impl Checker<'_> {
                 Ex::error()
             }
         }
-    }
-
-    fn unwrap_or(
-        &mut self,
-        r: Ex,
-        inner: &Ty,
-        name: &ast::Ident,
-        args: &[ast::Arg],
-        span: Span,
-    ) -> Ex {
-        if !self.arity(name, args, 1, span) {
-            return Ex::error();
-        }
-        let Some(a) = args.first() else {
-            return Ex::error();
-        };
-        let fallback = self.expr_as(&a.value, inner);
-        let tmp = self.fresh(r.ty.clone());
-        let is = Ex::host(Imp::IsSome, vec![Ex::local(tmp, r.ty.clone())], Ty::Bool);
-        let val = Self::unwrap_opt(Ex::local(tmp, r.ty.clone()), inner);
-        let pick = Ex::new(
-            Ek::If(Box::new(is), Box::new(val), Box::new(fallback)),
-            inner.clone(),
-        );
-        Ex::new(
-            Ek::Seq(vec![Stmt::Set(tmp, r)], Box::new(pick)),
-            inner.clone(),
-        )
     }
 
     /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop

@@ -42,7 +42,7 @@ view todo_list(list: TodoList) {
         for item in list.items {
             row {
                 checkbox(item.title, bind: item.done)
-                button("Remove", on: remove(list, item)) #remove
+                button("Remove", on: remove(list, item)) as remove
             }
         }
         input(bind: list.name, placeholder: "List name")

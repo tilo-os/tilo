@@ -1,7 +1,7 @@
 //! Name resolution: the module's declarations, its imports, and the signatures the checker
 //! needs before it looks at any body.
 
-use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, TypeExpr, TypeExprKind, UnOp};
+use crate::ast::{self, Expr, ExprKind, Item, MergeSpec, StateLayer, TypeExpr, TypeExprKind, UnOp};
 use crate::diag::{Diagnostic, Span};
 use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
@@ -39,6 +39,48 @@ impl TypeInfo {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+/// One variant of a declared enum and its payload fields.
+#[derive(Clone, Debug)]
+pub struct VariantInfo {
+    pub name: String,
+    pub id: String,
+    pub doc: String,
+    pub fields: Vec<FieldInfo>,
+}
+
+/// A declared `enum`.
+#[derive(Clone, Debug)]
+pub struct EnumInfo {
+    pub key: TypeKey,
+    pub id: String,
+    pub doc: String,
+    pub variants: Vec<VariantInfo>,
+}
+
+impl EnumInfo {
+    pub fn variant(&self, name: &str) -> Option<&VariantInfo> {
+        self.variants.iter().find(|v| v.name == name)
+    }
+
+    pub fn variant_names(&self) -> String {
+        self.variants
+            .iter()
+            .map(|v| format!(".{}", v.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A `window` or `lens` declaration of a view.
+#[derive(Clone, Debug)]
+pub struct StateInfo {
+    pub view: String,
+    pub name: String,
+    pub id: String,
+    pub layer: StateLayer,
+    pub ty: Ty,
 }
 
 #[derive(Clone, Debug)]
@@ -112,11 +154,28 @@ pub struct Env {
     pub imports: Vec<Import>,
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
+    pub enums: Vec<EnumInfo>,
+    /// The package's root types (`root T`), in declaration order.
+    pub roots: Vec<TypeKey>,
+    /// `default view v for T`: the type and the view's name.
+    pub default_views: Vec<(TypeKey, String)>,
+    /// The view state every view declares.
+    pub states: Vec<StateInfo>,
 }
 
 impl Env {
     pub fn type_info(&self, key: &TypeKey) -> Option<&TypeInfo> {
         self.types.iter().find(|t| &t.key == key)
+    }
+
+    pub fn enum_info(&self, key: &TypeKey) -> Option<&EnumInfo> {
+        self.enums.iter().find(|t| &t.key == key)
+    }
+
+    pub fn own_enum(&self, name: &str) -> Option<&EnumInfo> {
+        self.enums
+            .iter()
+            .find(|t| t.key.app == self.app && t.key.name == name)
     }
 
     pub fn own_type(&self, name: &str) -> Option<&TypeInfo> {
@@ -180,19 +239,36 @@ impl Env {
             app: meta.app.clone(),
         });
         let app = meta.app.clone();
+        let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
+            name: f.name.clone(),
+            id: f.id.clone(),
+            ty: Ty::parse_meta(&f.ty, &app).unwrap_or(Ty::Error),
+            merge: f.merge,
+            doc: f.doc.clone(),
+            default: f.default.clone(),
+        };
+        for e in &meta.enums {
+            self.enums.push(EnumInfo {
+                key: TypeKey {
+                    app: app.clone(),
+                    name: e.name.clone(),
+                },
+                id: e.id.clone(),
+                doc: e.doc.clone(),
+                variants: e
+                    .variants
+                    .iter()
+                    .map(|v| VariantInfo {
+                        name: v.name.clone(),
+                        id: v.id.clone(),
+                        doc: v.doc.clone(),
+                        fields: v.fields.iter().map(field_info).collect(),
+                    })
+                    .collect(),
+            });
+        }
         for t in &meta.types {
-            let fields = t
-                .fields
-                .iter()
-                .map(|f| FieldInfo {
-                    name: f.name.clone(),
-                    id: f.id.clone(),
-                    ty: Ty::parse_meta(&f.ty, &app).unwrap_or(Ty::Error),
-                    merge: f.merge,
-                    doc: f.doc.clone(),
-                    default: f.default.clone(),
-                })
-                .collect();
+            let fields = t.fields.iter().map(field_info).collect();
             self.types.push(TypeInfo {
                 key: TypeKey {
                     app: app.clone(),
@@ -280,6 +356,7 @@ struct Resolver<'a> {
     env: Env,
     diags: &'a mut Vec<Diagnostic>,
     own_types: HashSet<String>,
+    own_enums: HashSet<String>,
 }
 
 /// Builds the environment of a parsed module. Errors go to `diags`.
@@ -297,11 +374,13 @@ pub fn resolve(
         env,
         diags,
         own_types: HashSet::new(),
+        own_enums: HashSet::new(),
     };
     r.env.add_import("host", &crate::host::host_meta());
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
+    r.package_decls(module);
     r.env
 }
 
@@ -311,6 +390,7 @@ fn mentions_principal(ty: &Ty) -> bool {
         Ty::List(t) | Ty::Set(t) | Ty::Map(t) | Ty::Collection(t) | Ty::Option(t) => {
             mentions_principal(t)
         }
+        Ty::Result(a, b) => mentions_principal(a) || mentions_principal(b),
         Ty::Tuple(ts) => ts.iter().any(mentions_principal),
         _ => false,
     }
@@ -371,6 +451,29 @@ impl Resolver<'_> {
     }
 
     fn types(&mut self, module: &ast::Module, lock: &IdsLock) {
+        let mut enums: Vec<&ast::EnumDecl> = Vec::new();
+        for item in &module.items {
+            let Item::Enum(e) = item else { continue };
+            if !name_case_ok(&e.name.name, true) {
+                self.err(
+                    "E016",
+                    e.name.span,
+                    format!(
+                        "enum names start with an uppercase letter; rename `{}`",
+                        e.name.name
+                    ),
+                );
+            }
+            if is_builtin_type(&e.name.name) || !self.own_enums.insert(e.name.name.clone()) {
+                self.err(
+                    "E011",
+                    e.name.span,
+                    format!("the type `{}` is declared twice", e.name.name),
+                );
+                continue;
+            }
+            enums.push(e);
+        }
         let mut decls: Vec<&ast::TypeDecl> = Vec::new();
         for item in &module.items {
             let Item::Type(t) = item else { continue };
@@ -384,7 +487,10 @@ impl Resolver<'_> {
                     ),
                 );
             }
-            if !self.own_types.insert(t.name.name.clone()) {
+            if is_builtin_type(&t.name.name)
+                || self.own_enums.contains(&t.name.name)
+                || !self.own_types.insert(t.name.name.clone())
+            {
                 self.err(
                     "E011",
                     t.name.span,
@@ -393,6 +499,9 @@ impl Resolver<'_> {
                 continue;
             }
             decls.push(t);
+        }
+        for e in enums {
+            self.enum_decl(e, lock);
         }
         for t in decls {
             let mut fields: Vec<FieldInfo> = Vec::new();
@@ -419,13 +528,92 @@ impl Resolver<'_> {
         }
     }
 
+    fn enum_decl(&mut self, e: &ast::EnumDecl, lock: &IdsLock) {
+        let name = &e.name.name;
+        let mut variants: Vec<VariantInfo> = Vec::new();
+        if e.variants.is_empty() {
+            self.err(
+                "E013",
+                e.name.span,
+                format!("the enum `{name}` has no variants; write `enum {name} {{ a, b }}`"),
+            );
+        }
+        for v in &e.variants {
+            if variants.iter().any(|x| x.name == v.name.name) {
+                self.err(
+                    "E012",
+                    v.name.span,
+                    format!("`{name}` already has a variant `{}`", v.name.name),
+                );
+                continue;
+            }
+            if !name_case_ok(&v.name.name, false) {
+                self.err(
+                    "E016",
+                    v.name.span,
+                    format!(
+                        "variant names start with a lowercase letter; rename `{}`",
+                        v.name.name
+                    ),
+                );
+            }
+            let mut fields: Vec<FieldInfo> = Vec::new();
+            for p in &v.fields {
+                if fields.iter().any(|x| x.name == p.name.name) {
+                    self.err(
+                        "E012",
+                        p.name.span,
+                        format!("`.{}` already has a field `{}`", v.name.name, p.name.name),
+                    );
+                    continue;
+                }
+                let ty = self.resolve_type(&p.ty, false);
+                if matches!(ty, Ty::Action | Ty::View) {
+                    self.err(
+                        "E023",
+                        p.ty.span,
+                        format!(
+                            "a variant's field cannot hold `{ty}`: enum values are stored state"
+                        ),
+                    );
+                }
+                fields.push(FieldInfo {
+                    name: p.name.name.clone(),
+                    id: id_of(lock, &format!("{name}.{}.{}", v.name.name, p.name.name)),
+                    ty,
+                    merge: MergeKind::Register,
+                    doc: String::new(),
+                    default: None,
+                });
+            }
+            variants.push(VariantInfo {
+                name: v.name.name.clone(),
+                id: id_of(lock, &format!("{name}.{}", v.name.name)),
+                doc: v.doc.join("\n"),
+                fields,
+            });
+        }
+        self.env.enums.push(EnumInfo {
+            key: TypeKey {
+                app: self.env.app.clone(),
+                name: name.clone(),
+            },
+            id: id_of(lock, name),
+            doc: e.doc.join("\n"),
+            variants,
+        });
+    }
+
     fn field(&mut self, owner: &str, f: &ast::FieldDecl, lock: &IdsLock) -> FieldInfo {
         let ty = self.resolve_type(&f.ty, true);
         if matches!(ty, Ty::Action | Ty::View) {
-            self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, List, Option, Set, Map and Collection"));
+            self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
         }
         let merge = self.merge(&ty, f.merge.as_ref(), &f.name.name);
-        let default = f.default.as_ref().and_then(|d| self.default_value(&ty, d));
+        let default = match &f.default {
+            Some(d) => self.default_value(&ty, d),
+            None => self.implicit_default(&ty, f),
+        };
         FieldInfo {
             name: f.name.name.clone(),
             id: id_of(lock, &format!("{owner}.{}", f.name.name)),
@@ -474,13 +662,94 @@ impl Resolver<'_> {
         default
     }
 
+    /// An enum field without a default starts as the enum's first variant, which must then
+    /// carry no payload.
+    fn implicit_default(&mut self, ty: &Ty, f: &ast::FieldDecl) -> Option<serde_json::Value> {
+        let Ty::Enum(key) = ty else { return None };
+        let info = self.env.enum_info(key)?;
+        let first = info.variants.first()?;
+        if first.fields.is_empty() {
+            return Some(enum_json(&info.id, &first.id, &serde_json::Map::new()));
+        }
+        let msg = format!(
+            "the field `{}` needs a default: its enum's first variant `.{}` carries a payload; write `{}: {} = .<variant>`",
+            f.name.name, first.name, f.name.name, key.name
+        );
+        self.err("E019", f.name.span, msg);
+        None
+    }
+
+    /// `.name` or `.name(field: literal)` as the default of an Option or enum field.
+    fn variant_default(
+        &mut self,
+        ty: &Ty,
+        name: &ast::Ident,
+        args: Option<&Vec<ast::Arg>>,
+        span: Span,
+    ) -> Option<serde_json::Value> {
+        match ty {
+            Ty::Option(_) if name.name == "none" && args.is_none() => Some(serde_json::Value::Null),
+            Ty::Enum(key) => {
+                let info = self.env.enum_info(key)?.clone();
+                let Some(v) = info.variant(&name.name) else {
+                    self.err(
+                        "E036",
+                        name.span,
+                        format!(
+                            "`{}` has no variant `.{}`; its variants: {}",
+                            key.name,
+                            name.name,
+                            info.variant_names()
+                        ),
+                    );
+                    return None;
+                };
+                let mut fields = serde_json::Map::new();
+                let given = args.map_or(&[][..], Vec::as_slice);
+                if given.len() != v.fields.len() {
+                    self.err(
+                        "E022",
+                        span,
+                        format!(
+                            "`.{}` has {} payload field(s): {}",
+                            v.name,
+                            v.fields.len(),
+                            v.fields
+                                .iter()
+                                .map(|f| f.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
+                    return None;
+                }
+                for (i, a) in given.iter().enumerate() {
+                    let f = match &a.name {
+                        Some(n) => v.fields.iter().find(|f| f.name == n.name),
+                        None => v.fields.get(i),
+                    }?;
+                    let value = self.default_value(&f.ty, &a.value)?;
+                    fields.insert(f.id.clone(), value);
+                }
+                Some(enum_json(&info.id, &v.id, &fields))
+            }
+            _ => {
+                self.err(
+                    "E020",
+                    span,
+                    format!("the default is a variant but the field has type {ty}"),
+                );
+                None
+            }
+        }
+    }
+
     fn default_value(&mut self, ty: &Ty, e: &Expr) -> Option<serde_json::Value> {
         fn lit(e: &Expr) -> Option<(Option<Ty>, serde_json::Value)> {
             match &e.kind {
                 ExprKind::Int(v) => Some((Some(Ty::Int), serde_json::json!(v))),
                 ExprKind::Float(v) => Some((Some(Ty::Float), serde_json::json!(v))),
                 ExprKind::Bool(v) => Some((Some(Ty::Bool), serde_json::json!(v))),
-                ExprKind::None => Some((None, serde_json::Value::Null)),
                 ExprKind::Str(parts) => {
                     let mut s = String::new();
                     for p in parts {
@@ -506,22 +775,23 @@ impl Resolver<'_> {
                 _ => None,
             }
         }
+        if let ExprKind::Variant { name, args } = &e.kind {
+            return self.variant_default(ty, name, args.as_ref(), e.span);
+        }
         let Some((lt, value)) = lit(e) else {
             self.err(
                 "E019",
                 e.span,
-                "a field default must be a literal: a number, a string, true, false or none",
+                "a field default must be a literal: a number, a string, true, false, or a variant such as `.none`",
             );
             return None;
         };
         let ok = match (&lt, ty) {
-            (None, Ty::Option(_) | Ty::Error) => true,
             (None, _) => false,
-            (Some(t), Ty::Option(inner)) => t.same(inner),
             (Some(t), want) => t.same(want),
         };
         if !ok {
-            let found = lt.map_or_else(|| "none".to_string(), |t| t.to_string());
+            let found = lt.map_or_else(|| "?".to_string(), |t| t.to_string());
             self.err(
                 "E020",
                 e.span,
@@ -535,9 +805,23 @@ impl Resolver<'_> {
     /// Resolves a written type. Set, Map and Collection are only valid as field types.
     pub fn resolve_type(&mut self, te: &TypeExpr, field_position: bool) -> Ty {
         match &te.kind {
+            TypeExprKind::Tuple(items) if items.is_empty() => Ty::Unit,
             TypeExprKind::Tuple(items) => {
                 let tys = items.iter().map(|t| self.resolve_type(t, false)).collect();
                 Ty::Tuple(tys)
+            }
+            TypeExprKind::Generic(name, args) if name.name == "Result" => {
+                let [ok, err] = args.as_slice() else {
+                    self.err(
+                        "E013",
+                        te.span,
+                        "`Result` takes two type arguments, written `Result<T, E>`",
+                    );
+                    return Ty::Error;
+                };
+                let ok = self.resolve_type(ok, false);
+                let err = self.resolve_type(err, false);
+                Ty::Result(Box::new(ok), Box::new(err))
             }
             TypeExprKind::Generic(name, args) => {
                 if args.len() != 1 {
@@ -589,9 +873,20 @@ impl Resolver<'_> {
                         name: name.to_string(),
                     });
                 }
+                name if self.own_enums.contains(name) => {
+                    return Ty::Enum(TypeKey {
+                        app: self.env.app.clone(),
+                        name: name.to_string(),
+                    });
+                }
                 _ => {}
             }
-            let mut known: Vec<String> = self.own_types.iter().cloned().collect();
+            let mut known: Vec<String> = self
+                .own_types
+                .iter()
+                .chain(self.own_enums.iter())
+                .cloned()
+                .collect();
             known.sort();
             let known = if known.is_empty() {
                 "this module declares none".to_string()
@@ -612,13 +907,18 @@ impl Resolver<'_> {
             app: import.app.clone(),
             name: name.to_string(),
         };
+        if self.env.enum_info(&key).is_some() {
+            return Ty::Enum(key);
+        }
         if self.env.type_info(&key).is_none() {
             let names: Vec<&str> = self
                 .env
                 .types
                 .iter()
-                .filter(|t| t.key.app == key.app)
-                .map(|t| t.key.name.as_str())
+                .map(|t| &t.key)
+                .chain(self.env.enums.iter().map(|e| &e.key))
+                .filter(|k| k.app == key.app)
+                .map(|k| k.name.as_str())
                 .collect();
             self.err(
                 "E013",
@@ -661,7 +961,11 @@ impl Resolver<'_> {
                 Item::Flow(f) => (CKind::Flow, &f.name, &f.params, f.result.as_ref()),
                 Item::View(v) => (CKind::View, &v.name, &v.params, None),
                 Item::Fn(f) => (CKind::Fn, &f.name, &f.params, Some(&f.result)),
-                Item::Use(_) | Item::Type(_) => continue,
+                Item::Use(_)
+                | Item::Type(_)
+                | Item::Enum(_)
+                | Item::Root(_)
+                | Item::DefaultView(_) => continue,
             };
             let index = func;
             func += 1;
@@ -718,6 +1022,121 @@ impl Resolver<'_> {
             });
             if let Item::View(v) = item {
                 self.anchors(v, lock);
+                self.states(v, lock);
+            }
+        }
+    }
+
+    /// The `window` and `lens` declarations at the top of a view body.
+    fn states(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
+        for s in &v.body {
+            let ast::UiKind::State(d) = &s.kind else {
+                continue;
+            };
+            if self
+                .env
+                .states
+                .iter()
+                .any(|x| x.view == v.name.name && x.name == d.name.name)
+            {
+                self.err(
+                    "E012",
+                    d.name.span,
+                    format!("view `{}` already declares `{}`", v.name.name, d.name.name),
+                );
+                continue;
+            }
+            let ty = self.resolve_type(&d.ty, false);
+            if matches!(ty, Ty::Action | Ty::View) {
+                self.err("E066", d.ty.span, format!("view state cannot hold `{ty}`; it holds values: scalars, Text, records, enums, List and Option"));
+            }
+            self.env.states.push(StateInfo {
+                view: v.name.name.clone(),
+                name: d.name.name.clone(),
+                id: id_of(lock, &format!("{}.{}", v.name.name, d.name.name)),
+                layer: d.layer,
+                ty,
+            });
+        }
+    }
+
+    /// `root T` and `default view v for T` (workspace-model.md sections 2 and 7).
+    fn package_decls(&mut self, module: &ast::Module) {
+        for item in &module.items {
+            match item {
+                Item::Root(r) => {
+                    let Some(key) = self.own_record(&r.ty, "root") else {
+                        continue;
+                    };
+                    if self.env.roots.contains(&key) {
+                        self.err(
+                            "E011",
+                            r.span,
+                            format!("`{}` is declared a root twice", key.name),
+                        );
+                        continue;
+                    }
+                    self.env.roots.push(key);
+                }
+                Item::DefaultView(d) => {
+                    let Some(key) = self.own_record(&d.ty, "default view") else {
+                        continue;
+                    };
+                    if self.env.default_views.iter().any(|(k, _)| *k == key) {
+                        self.err(
+                            "E011",
+                            d.span,
+                            format!("`{}` has two default views", key.name),
+                        );
+                        continue;
+                    }
+                    let fits = self
+                        .env
+                        .own_callable(&d.view.name)
+                        .filter(|c| c.kind == CKind::View)
+                        .map(|c| matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())));
+                    match fits {
+                        Some(true) => self.env.default_views.push((key, d.view.name.clone())),
+                        Some(false) => self.err("E018", d.view.span, format!("the default view of `{}` takes the resource and nothing else: `view {}(x: {})`", key.name, d.view.name, key.name)),
+                        None => self.err("E018", d.view.span, format!("`{}` is not a view of this package", d.view.name)),
+                    }
+                }
+                _ => {}
+            }
+        }
+        let missing: Vec<TypeKey> = self
+            .env
+            .roots
+            .iter()
+            .filter(|k| !self.env.default_views.iter().any(|(d, _)| d == *k))
+            .cloned()
+            .collect();
+        for key in missing {
+            let span = module
+                .items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Root(r) => Some(r.span),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
+        }
+    }
+
+    /// The own record type a package declaration names.
+    fn own_record(&mut self, te: &TypeExpr, what: &str) -> Option<TypeKey> {
+        match self.resolve_type(te, false) {
+            Ty::Record(key) if key.app == self.env.app => Some(key),
+            Ty::Error => None,
+            other => {
+                let t = other.display(&self.env.app);
+                self.err(
+                    "E018",
+                    te.span,
+                    format!("a {what} is one of this package's record types, not {t}"),
+                );
+                None
             }
         }
     }
@@ -753,12 +1172,48 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
         .filter(|t| t.key.app == env.app)
         .map(|t| t.key.name.clone())
         .collect();
+    let own_enums = env
+        .enums
+        .iter()
+        .filter(|t| t.key.app == env.app)
+        .map(|t| t.key.name.clone())
+        .collect();
     let mut r = Resolver {
         env: env.clone(),
         diags,
         own_types,
+        own_enums,
     };
     r.resolve_type(te, false)
+}
+
+/// Names the language gives types of its own; a package cannot declare them.
+fn is_builtin_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Int"
+            | "Float"
+            | "Bool"
+            | "Text"
+            | "Principal"
+            | "Action"
+            | "View"
+            | "List"
+            | "Set"
+            | "Map"
+            | "Collection"
+            | "Option"
+            | "Result"
+    )
+}
+
+/// An enum value as the runtime stores it in a register (see the runtime's `value::to_json`).
+pub fn enum_json(
+    ty: &str,
+    variant: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({ "enum": ty, "variant": variant, "fields": fields })
 }
 
 fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
@@ -777,7 +1232,12 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
                     collect(e, out);
                 }
             }
-            ast::UiKind::Let { .. } => {}
+            ast::UiKind::Match { arms, .. } => {
+                for arm in arms {
+                    collect(&arm.body, out);
+                }
+            }
+            ast::UiKind::Let { .. } | ast::UiKind::State(_) => {}
         }
     }
 }

@@ -3,9 +3,10 @@
 //! Syntax errors are recovered at statement and item boundaries, so one run reports several.
 
 use crate::ast::{
-    ActionDecl, AppHeader, Arg, AssignOp, BinOp, Block, Else, Expr, ExprKind, FieldDecl, FlowDecl,
-    FnDecl, Ident, Item, MergeSpec, Module, NodeId, Param, Place, Proposal, Stmt, StmtKind,
-    StrPart, TypeDecl, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp, UseDecl, ViewDecl,
+    ActionDecl, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl, EnumDecl, Expr, ExprKind,
+    FieldDecl, FlowDecl, FnDecl, Ident, Item, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
+    Place, Proposal, RootDecl, StateDecl, StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr,
+    TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
@@ -103,8 +104,10 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
-const ITEM_KWS: &[&str] = &["use", "type", "action", "flow", "view", "fn"];
-const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option"];
+const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
+const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option", "Result"];
+const ITEM_EXPECTED: &str =
+    "`use`, `type`, `enum`, `root`, `default view`, `action`, `flow`, `view` or `fn`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -296,7 +299,22 @@ impl<'a> Parser<'a> {
     }
 
     fn at_item_start(&self) -> bool {
-        matches!(self.peek(), Tok::Doc(_)) || ITEM_KWS.iter().any(|k| self.is_kw(k))
+        matches!(self.peek(), Tok::Doc(_))
+            || ITEM_KWS.iter().any(|k| self.is_kw(k))
+            || self.at_root_decl()
+            || self.at_default_view()
+    }
+
+    /// `root T` at the start of an item.
+    fn at_root_decl(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "root")
+            && matches!(self.peek_at(1), Tok::Ident(_))
+    }
+
+    /// `default view v for T` at the start of an item.
+    fn at_default_view(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "default")
+            && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
     fn recover_item(&mut self) {
@@ -421,18 +439,93 @@ impl<'a> Parser<'a> {
     fn item(&mut self) -> PResult<Item> {
         let doc = self.docs();
         let start = self.span();
+        if self.at_root_decl() {
+            self.bump();
+            let node = self.node();
+            let ty = self.type_expr()?;
+            return Ok(Item::Root(RootDecl {
+                node,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        if self.at_default_view() {
+            self.bump();
+            self.bump();
+            let node = self.node();
+            let view = self.ident("the name of the default view")?;
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::DefaultView(DefaultViewDecl {
+                node,
+                view,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
         let Tok::Kw(kw) = self.peek().clone() else {
-            return self.unexpected("`use`, `type`, `action`, `flow`, `view` or `fn`");
+            return self.unexpected(ITEM_EXPECTED);
         };
         match kw {
             "use" => self.use_decl(start).map(Item::Use),
             "type" => self.type_decl(doc, start).map(Item::Type),
+            "enum" => self.enum_decl(doc, start).map(Item::Enum),
             "action" => self.action(doc, start).map(Item::Action),
             "flow" => self.flow(doc, start).map(Item::Flow),
             "view" => self.view(doc, start).map(Item::View),
             "fn" => self.func(doc, start).map(Item::Fn),
-            _ => self.unexpected("`use`, `type`, `action`, `flow`, `view` or `fn`"),
+            _ => self.unexpected(ITEM_EXPECTED),
         }
+    }
+
+    fn enum_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<EnumDecl> {
+        self.expect_kw("enum")?;
+        let node = self.node();
+        let name = self.ident("an enum name")?;
+        self.expect(&Tok::LBrace)?;
+        let mut variants = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
+            if matches!(self.peek(), Tok::Eof) {
+                return self.unexpected("`}` to close the enum");
+            }
+            let vdoc = self.docs();
+            let vstart = self.span();
+            let vnode = self.node();
+            let vname = match self.ident("a variant name") {
+                Ok(n) => n,
+                Err(Abort) => {
+                    self.recover_stmt();
+                    continue;
+                }
+            };
+            let fields = if self.is(&Tok::LParen) {
+                self.params()?
+            } else {
+                Vec::new()
+            };
+            variants.push(VariantDecl {
+                node: vnode,
+                doc: vdoc,
+                name: vname,
+                fields,
+                span: vstart.to(Span::new(self.prev_end(), self.prev_end())),
+            });
+            if !self.eat(&Tok::Comma) && !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
+                let _: PResult<()> = self.unexpected("a new line, `,` or `}` after the variant");
+                self.recover_stmt();
+            }
+        }
+        Ok(EnumDecl {
+            node,
+            doc,
+            name,
+            variants,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
     }
 
     fn use_decl(&mut self, start: Span) -> PResult<UseDecl> {
@@ -532,6 +625,14 @@ impl<'a> Parser<'a> {
     fn type_expr(&mut self) -> PResult<TypeExpr> {
         let start = self.span();
         if self.eat(&Tok::LParen) {
+            if self.is(&Tok::RParen) {
+                // `()`: no value, as in `Result<(), Text>`.
+                let close = self.bump().span;
+                return Ok(TypeExpr {
+                    kind: TypeExprKind::Tuple(Vec::new()),
+                    span: start.to(close),
+                });
+            }
             let mut items = vec![self.type_expr()?];
             while self.eat(&Tok::Comma) {
                 items.push(self.type_expr()?);
@@ -735,7 +836,6 @@ impl<'a> Parser<'a> {
                 let value = self.expr()?;
                 StmtKind::Let { name, ty, value }
             }
-            Tok::Kw("if") => return self.if_stmt(),
             Tok::Kw("for") => {
                 self.bump();
                 let var = self.ident("a loop variable")?;
@@ -773,25 +873,6 @@ impl<'a> Parser<'a> {
         };
         Ok(Stmt {
             kind,
-            span: start.to(Span::new(self.prev_end(), self.prev_end())),
-        })
-    }
-
-    fn if_stmt(&mut self) -> PResult<Stmt> {
-        let start = self.expect_kw("if")?;
-        let cond = self.expr()?;
-        let then = self.block()?;
-        let els = if self.eat_kw("else") {
-            if self.is_kw("if") {
-                Some(Else::If(Box::new(self.if_stmt()?)))
-            } else {
-                Some(Else::Block(self.block()?))
-            }
-        } else {
-            None
-        };
-        Ok(Stmt {
-            kind: StmtKind::If { cond, then, els },
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -942,18 +1023,12 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        if self.is_kw("do") || self.is_kw("try") {
-            let is_try = self.is_kw("try");
+        if self.is_kw("try") {
             let start = self.bump().span;
             let operand = self.unary()?;
             let span = start.to(operand.span);
-            let operand = Box::new(operand);
             return Ok(Expr {
-                kind: if is_try {
-                    ExprKind::Try(operand)
-                } else {
-                    ExprKind::Do(operand)
-                },
+                kind: ExprKind::Try(Box::new(operand)),
                 span,
             });
         }
@@ -995,14 +1070,23 @@ impl<'a> Parser<'a> {
     fn args(&mut self) -> PResult<Vec<Arg>> {
         let mut out = Vec::new();
         while !self.is(&Tok::RParen) {
-            let name =
-                if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Colon) {
+            let name = match (self.peek().clone(), self.peek_at(1)) {
+                (Tok::Ident(_), Tok::Colon) => {
                     let n = self.ident("an argument name")?;
                     self.bump();
                     Some(n)
-                } else {
-                    None
-                };
+                }
+                // A keyword names an argument too: `open(r, view: v)`.
+                (Tok::Kw(k), Tok::Colon) => {
+                    let span = self.bump().span;
+                    self.bump();
+                    Some(Ident {
+                        name: k.to_string(),
+                        span,
+                    })
+                }
+                _ => None,
+            };
             let value = self.expr()?;
             out.push(Arg { name, value });
             if !self.eat(&Tok::Comma) {
@@ -1040,10 +1124,35 @@ impl<'a> Parser<'a> {
                 self.bump();
                 ExprKind::Bool(false)
             }
-            Tok::Kw("none") => {
-                self.bump();
-                ExprKind::None
+            Tok::Ident(name) if name == "do" && matches!(self.peek_at(1), Tok::Ident(_)) => {
+                let span = self.span();
+                return self.fail(
+                    span,
+                    "flows invoke an action by calling it: write `act(args)`, without `do`",
+                );
             }
+            Tok::Dot if matches!(self.peek_at(1), Tok::Ident(_)) => {
+                self.bump();
+                let name = self.ident("a variant name")?;
+                let args = if self.is(&Tok::LParen) {
+                    self.bump();
+                    let args = self.args()?;
+                    self.expect(&Tok::RParen)?;
+                    Some(args)
+                } else {
+                    None
+                };
+                ExprKind::Variant { name, args }
+            }
+            Tok::LBrace => {
+                let block = self.block()?;
+                let span = block.span;
+                return Ok(Expr {
+                    kind: ExprKind::Block(block),
+                    span,
+                });
+            }
+            Tok::Kw("match") => return self.match_expr(),
             Tok::Ref(r) => {
                 self.bump();
                 ExprKind::Ref(r)
@@ -1091,28 +1200,107 @@ impl<'a> Parser<'a> {
                     span: start.to(close),
                 });
             }
-            Tok::Kw("if") => {
-                self.bump();
-                let cond = self.expr()?;
-                self.expect_kw("then")?;
-                let then = self.expr()?;
-                self.expect_kw("else")?;
-                let els = self.expr()?;
-                let span = start.to(els.span);
-                return Ok(Expr {
-                    kind: ExprKind::IfExpr {
-                        cond: Box::new(cond),
-                        then: Box::new(then),
-                        els: Box::new(els),
-                    },
-                    span,
-                });
-            }
+            Tok::Kw("if") => return self.if_expr(),
             _ => return self.unexpected("an expression"),
         };
         Ok(Expr {
             kind,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `if cond { ... } [else (if ... | { ... })]`.
+    fn if_expr(&mut self) -> PResult<Expr> {
+        let start = self.expect_kw("if")?;
+        let cond = self.expr()?;
+        if matches!(self.peek(), Tok::Ident(n) if n == "then") {
+            let span = self.span();
+            return self.fail(span, "`if` takes blocks: write `if cond { a } else { b }`");
+        }
+        let then = self.block()?;
+        let els = if self.eat_kw("else") {
+            if self.is_kw("if") {
+                Some(Box::new(self.if_expr()?))
+            } else {
+                let b = self.block()?;
+                let span = b.span;
+                Some(Box::new(Expr {
+                    kind: ExprKind::Block(b),
+                    span,
+                }))
+            }
+        } else {
+            None
+        };
+        Ok(Expr {
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                then,
+                els,
+            },
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `.name` or `.name(a, b)` before the `=>` of a match arm.
+    fn pattern(&mut self) -> PResult<Pattern> {
+        let start = self.span();
+        if !self.eat(&Tok::Dot) {
+            return self.unexpected("a pattern such as `.some(x)` or `.none`");
+        }
+        let variant = self.ident("a variant name")?;
+        let mut binds = Vec::new();
+        if self.eat(&Tok::LParen) {
+            while !self.is(&Tok::RParen) {
+                binds.push(self.ident("a name for the payload field")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::RParen)?;
+        }
+        Ok(Pattern {
+            variant,
+            binds,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// After a match arm: a `,`, a new line, or the closing `}`.
+    fn arm_end(&mut self) -> PResult<()> {
+        if self.eat(&Tok::Comma) || matches!(self.peek(), Tok::Newline | Tok::RBrace) {
+            return Ok(());
+        }
+        self.unexpected("`,`, a new line or `}` after the match arm")
+    }
+
+    fn match_expr(&mut self) -> PResult<Expr> {
+        let start = self.expect_kw("match")?;
+        let scrutinee = self.expr()?;
+        self.expect(&Tok::LBrace)?;
+        let mut arms = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.is(&Tok::RBrace) {
+                break;
+            }
+            if matches!(self.peek(), Tok::Eof) {
+                return self.unexpected("`}` to close the match");
+            }
+            let pattern = self.pattern()?;
+            self.expect(&Tok::FatArrow)?;
+            self.skip_nl();
+            let body = self.expr()?;
+            arms.push(MatchArm { pattern, body });
+            self.arm_end()?;
+        }
+        let end = self.expect(&Tok::RBrace)?;
+        Ok(Expr {
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span: start.to(end),
         })
     }
 
@@ -1188,16 +1376,66 @@ impl<'a> Parser<'a> {
                 let body = self.ui_block()?;
                 UiKind::For { var, iter, body }
             }
-            Tok::Kw("if") => {
+            Tok::Kw("if") => return self.ui_if(),
+            Tok::Kw("match") => {
                 self.bump();
-                let cond = self.expr()?;
-                let then = self.ui_block()?;
-                let els = if self.eat_kw("else") {
-                    Some(self.ui_block()?)
+                let scrutinee = self.expr()?;
+                self.expect(&Tok::LBrace)?;
+                let mut arms = Vec::new();
+                loop {
+                    self.skip_nl();
+                    if self.is(&Tok::RBrace) {
+                        break;
+                    }
+                    if matches!(self.peek(), Tok::Eof) {
+                        return self.unexpected("`}` to close the match");
+                    }
+                    let pattern = self.pattern()?;
+                    self.expect(&Tok::FatArrow)?;
+                    self.skip_nl();
+                    let (body, braced) = if self.is(&Tok::LBrace) {
+                        (self.ui_block()?, true)
+                    } else {
+                        (vec![self.ui_stmt()?], false)
+                    };
+                    arms.push(UiArm {
+                        pattern,
+                        body,
+                        braced,
+                    });
+                    self.arm_end()?;
+                }
+                self.expect(&Tok::RBrace)?;
+                UiKind::Match { scrutinee, arms }
+            }
+            Tok::Ident(word)
+                if (word == "window" || word == "lens")
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && matches!(self.peek_at(2), Tok::Colon) =>
+            {
+                self.bump();
+                let layer = if word == "window" {
+                    StateLayer::Window
+                } else {
+                    StateLayer::Lens
+                };
+                let node = self.node();
+                let name = self.ident("a state name")?;
+                self.expect(&Tok::Colon)?;
+                let ty = self.type_expr()?;
+                let default = if self.eat(&Tok::Assign) {
+                    Some(self.expr()?)
                 } else {
                     None
                 };
-                UiKind::If { cond, then, els }
+                UiKind::State(StateDecl {
+                    node,
+                    layer,
+                    name,
+                    ty,
+                    default,
+                    span: start.to(Span::new(self.prev_end(), self.prev_end())),
+                })
             }
             Tok::Kw("let") => {
                 self.bump();
@@ -1210,6 +1448,26 @@ impl<'a> Parser<'a> {
         };
         Ok(UiStmt {
             kind,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `if cond { ui } [else (if ... | { ui })]` in a view body.
+    fn ui_if(&mut self) -> PResult<UiStmt> {
+        let start = self.expect_kw("if")?;
+        let cond = self.expr()?;
+        let then = self.ui_block()?;
+        let els = if self.eat_kw("else") {
+            if self.is_kw("if") {
+                Some(vec![self.ui_if()?])
+            } else {
+                Some(self.ui_block()?)
+            }
+        } else {
+            None
+        };
+        Ok(UiStmt {
+            kind: UiKind::If { cond, then, els },
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -1229,8 +1487,12 @@ impl<'a> Parser<'a> {
                 block = Some(self.ui_block()?);
             }
         }
-        let anchor = if self.eat(&Tok::Hash) {
-            Some(self.ident("an anchor name after `#`")?)
+        if self.is(&Tok::Hash) {
+            let span = self.span();
+            return self.fail(span, "an anchor is written after the call as `as name`, for example `button(\"+1\", on: increment(c)) as plus`");
+        }
+        let anchor = if self.eat_kw("as") {
+            Some(self.ident("an anchor name after `as`")?)
         } else {
             None
         };

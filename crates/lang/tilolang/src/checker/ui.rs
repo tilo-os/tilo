@@ -1,7 +1,7 @@
 //! View bodies: UI statements lowered to `ui_*` host calls (implementation.md section 4.4).
 
 use super::expr::dotted;
-use super::{Checker, Ex, conv, store_op};
+use super::{Checker, Ex, StateRef, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
@@ -11,6 +11,112 @@ use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
 
 impl Checker<'_> {
+    /// Lowers the `window` and `lens` declarations at the top of a view body: each reads its
+    /// slot, or its default while the slot is empty, into a local of its name. Returns the rest
+    /// of the body.
+    pub(super) fn view_state(&mut self, view: &str, body: &[UiStmt]) -> Vec<UiStmt> {
+        let mut rest = Vec::new();
+        for s in body {
+            let UiKind::State(d) = &s.kind else {
+                rest.push(s.clone());
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .states
+                .iter()
+                .find(|x| x.view == view && x.name == d.name.name)
+                .cloned()
+            else {
+                continue;
+            };
+            let fallback = match &d.default {
+                Some(e) => self.expr_as(e, &info.ty),
+                None => self.zero_of(&info.ty, d.name.span),
+            };
+            // The slot's value, or the default while it is empty; scalars travel boxed.
+            let layer = Ex::new(Ek::I32(info.layer.code()), Ty::Bool);
+            let args = vec![layer, Ex::str(&info.id), Self::handle_of(fallback)];
+            let value = if info.ty.is_scalar() {
+                let boxed = Ty::Option(Box::new(info.ty.clone()));
+                Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &info.ty)
+            } else {
+                Ex::host(Imp::StateGet, args, info.ty.clone())
+            };
+            let local = self.declare(&info.name, info.ty.clone());
+            self.emit(Stmt::Set(local, value));
+            self.st.states.insert(
+                info.name.clone(),
+                StateRef {
+                    layer: info.layer,
+                    id: info.id.clone(),
+                    ty: info.ty.clone(),
+                    local,
+                },
+            );
+        }
+        rest
+    }
+
+    /// The value view state of type `ty` starts with when it declares no default.
+    fn zero_of(&mut self, ty: &Ty, span: Span) -> Ex {
+        match ty {
+            Ty::Int => Ex::int(0),
+            Ty::Float => Ex::new(Ek::Float(0.0), Ty::Float),
+            Ty::Bool => Ex::new(Ek::Bool(false), Ty::Bool),
+            Ty::Text => Ex::str(""),
+            Ty::Option(_) => Ex::host(Imp::NoneV, Vec::new(), ty.clone()),
+            Ty::List(_) => Ex::host(Imp::ListNew, Vec::new(), ty.clone()),
+            Ty::Choice(_) => Ex::new(Ek::Int(0), ty.clone()),
+            Ty::Error => Ex::error(),
+            Ty::Enum(_) => {
+                let shape = super::enums::Shape::of(self, ty);
+                let first = shape
+                    .as_ref()
+                    .and_then(|s| s.variants().into_iter().next())
+                    .filter(|v| v.fields.is_empty());
+                match (shape, first) {
+                    (Some(shape), Some(v)) => {
+                        let name = ast::Ident { name: v.name, span };
+                        self.construct_variant(&shape, ty, &name, None, span)
+                    }
+                    _ => {
+                        let t = self.show(ty);
+                        self.err("E066", span, format!("this view state needs a default: the first variant of {t} carries a payload; write `= .<variant>(...)`"));
+                        Ex::error()
+                    }
+                }
+            }
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E066",
+                    span,
+                    format!("view state of type {t} needs a default: write `= <value>`"),
+                );
+                Ex::error()
+            }
+        }
+    }
+
+    /// The view state `name` names here, unless a variable of that name hides it.
+    pub(super) fn state_named(&self, name: &str) -> Option<StateRef> {
+        let state = self.st.states.get(name)?;
+        let (local, _) = self.lookup(name)?;
+        (local == state.local).then(|| state.clone())
+    }
+
+    /// The names of the view state in scope, for messages.
+    pub(super) fn state_names(&self) -> String {
+        let mut names: Vec<&str> = self.st.states.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        if names.is_empty() {
+            "nothing".to_string()
+        } else {
+            names.join(", ")
+        }
+    }
+
     /// Lowers a whole view body and returns its root node.
     pub(super) fn view_body(&mut self, body: &[UiStmt]) {
         let root = match body {
@@ -34,7 +140,7 @@ impl Checker<'_> {
         self.emit(Stmt::Return(Some(Ex::local(root, Ty::View))));
     }
 
-    fn ui_stmts(&mut self, stmts: &[UiStmt], parent: LocalId) {
+    pub(super) fn ui_stmts(&mut self, stmts: &[UiStmt], parent: LocalId) {
         for s in stmts {
             match &s.kind {
                 UiKind::Call(c) => {
@@ -58,6 +164,20 @@ impl Checker<'_> {
                     self.emit(Stmt::If(c, t, f));
                 }
                 UiKind::For { var, iter, body } => self.ui_for(&var.name, iter, body, parent),
+                UiKind::Match { scrutinee, arms } => {
+                    self.match_ui(scrutinee, arms, parent, s.span);
+                }
+                UiKind::State(d) => {
+                    self.err(
+                        "E066",
+                        d.span,
+                        format!(
+                            "declare `{} {}` at the top of the view's body, not inside a block",
+                            d.layer.word(),
+                            d.name.name
+                        ),
+                    );
+                }
             }
         }
     }
@@ -429,13 +549,16 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
-        self.apply_arg(n, &name, &a.value);
+        self.apply_arg(n, p.name, &name, &a.value);
     }
 
-    /// Lowers one named argument of a UI call to its host call.
-    fn apply_arg(&mut self, n: LocalId, name: &str, value: &ast::Expr) {
+    /// Lowers one named argument of the UI call `prim` (empty for a view call) to its host
+    /// call.
+    fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
-        if name == "bind" {
+        if let Some(kind) = prims::arg_choice(prim, name) {
+            self.choice_arg(node, kind, name, value);
+        } else if name == "bind" {
             self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {
             let act = self.expr_as(value, &Ty::Action);
@@ -447,12 +570,6 @@ impl Checker<'_> {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiOn,
                 vec![node, Ex::str(event), act],
-                Ty::Unit,
-            )));
-        } else if let Some(token) = self.token_of(value) {
-            self.emit(Stmt::Eval(Ex::host(
-                Imp::UiPropH,
-                vec![node, Ex::str(name), Ex::str(&token)],
                 Ty::Unit,
             )));
         } else if name == "aspect" {
@@ -478,16 +595,40 @@ impl Checker<'_> {
         }
     }
 
-    /// A bare layout token (`related`, `center`, `bottom_trailing`) given as an argument value.
-    fn token_of(&self, e: &ast::Expr) -> Option<String> {
-        match &e.kind {
-            ExprKind::Ident(t)
-                if self.lookup(t).is_none() && prims::TOKENS.contains(&t.as_str()) =>
-            {
-                Some(t.clone())
-            }
-            _ => None,
+    /// An option of a UI call that takes a built-in enum (`gap: .section`): the property holds
+    /// the variant's name.
+    fn choice_arg(&mut self, node: Ex, kind: &'static str, name: &str, value: &ast::Expr) {
+        if let ExprKind::Ident(word) = &value.kind
+            && self.lookup(word).is_none()
+        {
+            let c = prims::choice(kind);
+            let variants = c.map_or(&[][..], |c| c.variants);
+            let msg = if variants.contains(&word.as_str()) {
+                format!("options are written with a dot: `{name}: .{word}`")
+            } else {
+                format!(
+                    "`{name}` is one of {}; write it with a dot, such as `{name}: .{}`",
+                    variants
+                        .iter()
+                        .map(|v| format!(".{v}"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    variants.first().copied().unwrap_or("")
+                )
+            };
+            self.err("E065", value.span, msg);
+            return;
         }
+        let v = self.expr_as(value, &Ty::Choice(kind));
+        if v.ty.is_error() {
+            return;
+        }
+        let text = self.choice_text(kind, v);
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::UiPropH,
+            vec![node, Ex::str(name), text],
+            Ty::Unit,
+        )));
     }
 
     fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
@@ -501,7 +642,7 @@ impl Checker<'_> {
                     Ty::Unit,
                 )));
             }
-            Ty::Action | Ty::View | Ty::Unit | Ty::Enum(_) => {
+            Ty::Action | Ty::View | Ty::Unit | Ty::Choice(_) | Ty::Enum(_) | Ty::Result(..) => {
                 let t = self.show(&v.ty);
                 self.err("E063", span, format!("the property `{name}` cannot hold {t}; events are written `on: action(...)`"));
             }
@@ -518,11 +659,27 @@ impl Checker<'_> {
     }
 
     fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        if let ExprKind::Ident(n) = &value.kind
+            && let Some(state) = self.state_named(n)
+        {
+            if !matches!(state.ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text) {
+                let t = self.show(&state.ty);
+                self.err("E062", value.span, format!("`bind:` edits view state of type Int, Float, Bool or Text; `{n}` is {t}; change it with `on: set({n}, value)`"));
+                return;
+            }
+            let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiBindState,
+                vec![node.clone(), layer, Ex::str(&state.id)],
+                Ty::Unit,
+            )));
+            return;
+        }
         let ExprKind::Field { base, name } = &value.kind else {
             self.err(
                 "E062",
                 value.span,
-                "`bind:` takes a field of a resource, such as `bind: item.done`",
+                "`bind:` takes a field of a resource, such as `bind: item.done`, or a `window` or `lens` declaration of the view",
             );
             let _ = self.expr(value, None);
             return;
@@ -608,7 +765,7 @@ impl Checker<'_> {
         let node = self.view_node(v, bound, key, span);
         for a in node_args {
             match &a.name {
-                Some(n) => self.apply_arg(node, &n.name, &a.value),
+                Some(n) => self.apply_arg(node, "", &n.name, &a.value),
                 None => self.flag_arg(node, &a.value),
             }
         }

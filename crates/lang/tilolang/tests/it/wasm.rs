@@ -150,12 +150,43 @@ fn a_flow_that_invokes_a_foreign_action_validates() {
 #[test]
 fn control_flow_and_scalars_validate() {
     let src = "type T {\n    n: Int\n    f: Float\n    b: Bool\n    s: Text\n}\n\
-        fn calc(a: Int, b: Float, ok: Bool) -> Float {\n    let x = a.to_float() * b\n    if ok and a > 2 or not ok {\n        x = x + 1.5\n    }\n    for i in [1, 2, 3] {\n        x += i.to_float()\n    }\n    return if x > 0.0 then -x else x / 2.0\n}\n\
+        fn calc(a: Int, b: Float, ok: Bool) -> Float {\n    let x = a.to_float() * b\n    if ok and a > 2 or not ok {\n        x = x + 1.5\n    }\n    for i in [1, 2, 3] {\n        x += i.to_float()\n    }\n    return if x > 0.0 { -x } else { x / 2.0 }\n}\n\
         fn label(a: Int, s: Text) -> Text {\n    if s < \"m\" {\n        return \"{a}{s}\"\n    }\n    return s + \"!\"\n}\n\
-        action set(t: T, v: Int) -> Int {\n    t.n = v\n    t.f = 1.5\n    t.b = true\n    t.s = \"x\"\n    return t.n\n}\n\
-        fn opt(t: T) -> Int {\n    let o: Option<Int> = t.n\n    return o.unwrap_or(0) + [1, 2].filter(x -> x > 1).count(y -> y > 0) + (1, \"a\").len()\n}";
+        action put(t: T, v: Int) -> Int {\n    t.n = v\n    t.f = 1.5\n    t.b = true\n    t.s = \"x\"\n    return t.n\n}\n\
+        fn opt(t: T) -> Int {\n    let o: Option<Int> = t.n\n    let base = match o {\n        .some(n) => n,\n        .none => 0,\n    }\n    return base + [1, 2].filter(x -> x > 1).count(y -> y > 0) + (1, \"a\").len()\n}";
     let c = crate::common::compile_body(src.replace("+ (1, \"a\").len()", "").as_str());
     assert_shape(&c);
+}
+
+#[test]
+fn enums_matches_and_block_values_validate() {
+    let src = "enum Shape {\n    dot\n    line(len: Int)\n    disc(r: Float, label: Text, on: Bool)\n}\n\
+        type P {\n    s: Shape\n    o: Option<Shape>\n}\n\
+        fn size(s: Shape) -> Float {\n    match s {\n        .dot => 0.0,\n        .line(n) => n.to_float(),\n        .disc(r, _, on) => {\n            if on {\n                return r\n            }\n            r * 2.0\n        }\n    }\n}\n\
+        fn same(a: Shape, b: Shape) -> Bool {\n    a == b\n}\n\
+        action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc(r: 1.5, label: \"x\", on: true)\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
+        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Int\n    match p.s {\n        .dot => text(\"dot\"),\n        .line(len) => text(\"{len}\"),\n        .disc(r, label, on) => stack(gap: if on { .tight } else { .group }) {\n            text(label)\n        }\n    }\n    button(\"Line\", on: set(shown, .line(len: n)))\n    input(bind: n)\n}";
+    let c = crate::common::compile_body(src);
+    assert_shape(&c);
+    let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
+    for want in [
+        "enum_new",
+        "enum_set_f",
+        "enum_set_h",
+        "enum_set_i",
+        "enum_is",
+        "enum_get_i",
+        "enum_get_f",
+        "value_eq",
+        "state_get",
+        "act_set",
+        "ui_bind_state",
+    ] {
+        assert!(
+            names.contains(&want.to_string()),
+            "{want} is not imported: {names:?}"
+        );
+    }
 }
 
 #[test]

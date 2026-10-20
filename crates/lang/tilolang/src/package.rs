@@ -9,8 +9,8 @@ use crate::hash::sha256_hex;
 use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
-    ActionMeta, AnchorMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta, ParamMeta, ProposalMeta,
-    TypeMeta, ViewMeta,
+    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
+    ParamMeta, ProposalMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -295,13 +295,24 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
         .iter()
         .map(|p| ParamMeta {
             name: p.name.clone(),
-            ty: p.ty.display(app),
+            ty: p.ty.meta_text(app),
         })
         .collect()
 }
 
 fn result_meta(ty: &Ty, app: &str) -> Option<String> {
-    (!matches!(ty, Ty::Unit)).then(|| ty.display(app))
+    (!matches!(ty, Ty::Unit)).then(|| ty.meta_text(app))
+}
+
+fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
+    FieldMeta {
+        id: f.id.clone(),
+        name: f.name.clone(),
+        ty: f.ty.meta_text(app),
+        merge: f.merge,
+        doc: f.doc.clone(),
+        default: f.default.clone(),
+    }
 }
 
 fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
@@ -311,25 +322,47 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
         title: module.app.title.clone(),
         ..PackageMeta::default()
     };
+    let type_id =
+        |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
+    meta.roots = env.roots.iter().map(type_id).collect();
+    meta.default_views = env
+        .default_views
+        .iter()
+        .filter_map(|(key, view)| {
+            Some(DefaultViewMeta {
+                ty: type_id(key),
+                view: env.own_callable(view)?.id.clone(),
+            })
+        })
+        .collect();
     for item in &module.items {
         match item {
-            Item::Use(_) => {}
+            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) => {}
+            Item::Enum(e) => {
+                let Some(info) = env.own_enum(&e.name.name) else {
+                    continue;
+                };
+                meta.enums.push(EnumMeta {
+                    id: info.id.clone(),
+                    name: info.key.name.clone(),
+                    doc: info.doc.clone(),
+                    variants: info
+                        .variants
+                        .iter()
+                        .map(|v| VariantMeta {
+                            id: v.id.clone(),
+                            name: v.name.clone(),
+                            doc: v.doc.clone(),
+                            fields: v.fields.iter().map(|f| field_meta(f, app)).collect(),
+                        })
+                        .collect(),
+                });
+            }
             Item::Type(t) => {
                 let Some(info) = env.own_type(&t.name.name) else {
                     continue;
                 };
-                let fields = info
-                    .fields
-                    .iter()
-                    .map(|f| FieldMeta {
-                        id: f.id.clone(),
-                        name: f.name.clone(),
-                        ty: f.ty.display(app),
-                        merge: f.merge,
-                        doc: f.doc.clone(),
-                        default: f.default.clone(),
-                    })
-                    .collect();
+                let fields = info.fields.iter().map(|f| field_meta(f, app)).collect();
                 meta.types.push(TypeMeta {
                     id: info.id.clone(),
                     name: info.key.name.clone(),
@@ -412,6 +445,17 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     params: params_meta(&c.params, app),
                     anchors,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    state: env
+                        .states
+                        .iter()
+                        .filter(|s| s.view == v.name.name)
+                        .map(|s| StateMeta {
+                            id: s.id.clone(),
+                            name: s.name.clone(),
+                            layer: s.layer.word().to_string(),
+                            ty: s.ty.meta_text(app),
+                        })
+                        .collect(),
                 });
             }
             Item::Fn(f) => {
@@ -423,7 +467,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     name: c.name.clone(),
                     doc: doc(&f.doc),
                     params: params_meta(&c.params, app),
-                    result: c.result.display(app),
+                    result: c.result.meta_text(app),
                 });
             }
         }
@@ -498,7 +542,7 @@ pub fn compile_block_for(
     };
     Ok(CompiledBlock {
         wasm,
-        value_type: result.ty.display(&app),
+        value_type: result.ty.meta_text(&app),
         kind,
         meta,
     })

@@ -7,10 +7,6 @@ use crate::diag::Span;
 use crate::ir::{self, Conv, Ek};
 use crate::types::Ty;
 
-fn is_none_lit(e: &Ex) -> bool {
-    matches!(&e.kind, Ek::Host(Imp::NoneV, _))
-}
-
 impl Checker<'_> {
     /// Checks `e` against an expected type and coerces the result.
     pub(super) fn expr_as(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
@@ -27,6 +23,15 @@ impl Checker<'_> {
             && ex.ty.same(inner)
         {
             return Self::some(ex, want);
+        }
+        // A collection or set read is a list of its items.
+        if let (Ty::List(w), Ty::Collection(t) | Ty::Set(t)) = (want, &ex.ty)
+            && t.same(w)
+        {
+            return Ex {
+                ty: want.clone(),
+                ..ex
+            };
         }
         let (w, f) = (self.show(want), self.show(&ex.ty));
         let hint = match (want, &ex.ty) {
@@ -71,30 +76,17 @@ impl Checker<'_> {
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
             ExprKind::Bool(b) => Ex::new(Ek::Bool(*b), Ty::Bool),
-            ExprKind::None => match exp {
-                Some(t @ Ty::Option(_)) => Ex::host(Imp::NoneV, Vec::new(), t.clone()),
-                Some(Ty::Error) => Ex::error(),
-                _ => {
-                    self.err("E025", e.span, "cannot tell which Option type `none` is here; annotate the variable (`let x: Option<Int> = none`) or use it where an Option is expected");
-                    Ex::error()
-                }
-            },
             ExprKind::Str(parts) => self.string(parts),
             ExprKind::Ref(r) => self.ref_lit(r, e.span),
-            ExprKind::Ident(name) => self.ident(name, e.span),
+            ExprKind::Ident(name) => self.ident(name, e.span, exp),
             ExprKind::Tuple(items) => self.tuple(items, exp),
             ExprKind::List(items) => self.list(items, exp, e.span),
-            ExprKind::IfExpr { cond, then, els } => {
-                let c = self.expr_as(cond, &Ty::Bool);
-                let t = self.expr(then, exp);
-                let want = exp
-                    .filter(|w| !matches!(w, Ty::Error))
-                    .cloned()
-                    .unwrap_or_else(|| t.ty.clone());
-                let t = self.coerce(t, &want, then.span);
-                let f = self.expr_as(els, &want);
-                Ex::new(Ek::If(Box::new(c), Box::new(t), Box::new(f)), want)
+            ExprKind::If { cond, then, els } => {
+                self.if_value(cond, then, els.as_deref(), exp, e.span)
             }
+            ExprKind::Block(b) => self.block_value(b, exp),
+            ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
+            ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {
                 self.err("E050", e.span, "a lambda `x -> ...` can only be a direct argument of map, filter, any, all, find, count or sort_by; it cannot be stored or passed around");
                 Ex::error()
@@ -106,6 +98,13 @@ impl Checker<'_> {
                     && self.lookup("space").is_none()
                 {
                     return self.space_field(name);
+                }
+                if let Some(key) = self.enum_path(base) {
+                    let ty = Ty::Enum(key);
+                    return match super::enums::Shape::of(self, &ty) {
+                        Some(shape) => self.construct_variant(&shape, &ty, name, None, e.span),
+                        None => Ex::error(),
+                    };
                 }
                 if self.names_import(base) {
                     self.err(
@@ -122,28 +121,12 @@ impl Checker<'_> {
                 self.field_read(b, name)
             }
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
-            ExprKind::Do(inner) => {
-                if self.st.ctx != Ctx::Flow {
-                    let who = self.st.ctx.word();
-                    self.err("E044", e.span, format!("`do` invokes an action and only a flow may do that; {who} builds a reference instead: write the action call without `do`"));
-                    return Ex::error();
-                }
-                if !matches!(inner.kind, ExprKind::Call { .. }) {
-                    self.err(
-                        "E044",
-                        e.span,
-                        "`do` must be followed by an action call, such as `do archive(m)`",
-                    );
-                    return Ex::error();
-                }
-                self.expr(inner, exp)
-            }
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
         }
     }
 
-    /// `try act(args)`: a `Bool` for an action with no result, otherwise an `Option` of the
-    /// result. It is `false` / `none` when the invocation was denied, declined or failed.
+    /// `try act(args)`: a `Result` of the action's result (`()` for an action without one) and
+    /// the reason, as Text, when the invocation was denied, declined or failed.
     fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         if self.st.ctx != Ctx::Flow {
             let who = self.st.ctx.word();
@@ -154,10 +137,7 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        let call = match &inner.kind {
-            ExprKind::Do(x) => x.as_ref(),
-            _ => inner,
-        };
+        let call = inner;
         if !matches!(call.kind, ExprKind::Call { .. }) {
             self.err(
                 "E044",
@@ -188,7 +168,7 @@ impl Checker<'_> {
         self.env.find_import(&path.join(".")).is_some()
     }
 
-    fn ident(&mut self, name: &str, span: Span) -> Ex {
+    fn ident(&mut self, name: &str, span: Span, exp: Option<&Ty>) -> Ex {
         if let Some((id, ty)) = self.lookup(name) {
             return Ex::local(id, ty);
         }
@@ -214,8 +194,15 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        if crate::prims::TOKENS.contains(&name) {
-            self.err("E014", span, format!("`{name}` is a layout token; it is only a value as a named argument of a UI call, such as `gap: {name}`"));
+        let variant_of_exp = exp
+            .and_then(|t| super::enums::Shape::of(self, t))
+            .is_some_and(|s| s.variants().iter().any(|v| v.name == name));
+        if variant_of_exp {
+            self.err(
+                "E065",
+                span,
+                format!("`{name}` is a variant here; write it with a dot: `.{name}`"),
+            );
             return Ex::error();
         }
         if let Some(c) = self.env.own_callable(name) {
@@ -228,6 +215,12 @@ impl Checker<'_> {
                     c.kind.word(),
                     c.signature(&self.env.app)
                 ),
+            );
+        } else if self.env.own_enum(name).is_some() {
+            self.err(
+                "E026",
+                span,
+                format!("`{name}` is an enum; write one of its values, such as `{name}.<variant>`"),
             );
         } else if self.env.own_type(name).is_some() {
             self.err(
@@ -266,15 +259,15 @@ impl Checker<'_> {
         }
         let read = |imp: Imp, field: &str, ty: Ty| Ex::host(imp, vec![Ex::str(field)], ty);
         let class_is = |v: i64| {
-            let class = read(Imp::SpaceI, "width_class", Ty::Enum("width_class"));
+            let class = read(Imp::SpaceI, "width_class", Ty::Choice("width_class"));
             Ex::new(
                 Ek::Bin(ir::BinOp::Eq, Box::new(class), Box::new(Ex::int(v))),
                 Ty::Bool,
             )
         };
         match name.name.as_str() {
-            "width_class" => read(Imp::SpaceI, "width_class", Ty::Enum("width_class")),
-            "orientation" => read(Imp::SpaceI, "orientation", Ty::Enum("orientation")),
+            "width_class" => read(Imp::SpaceI, "width_class", Ty::Choice("width_class")),
+            "orientation" => read(Imp::SpaceI, "orientation", Ty::Choice("orientation")),
             "compact" => class_is(0),
             "wide" => class_is(3),
             "width" => read(Imp::SpaceF, "width", Ty::Float),
@@ -291,20 +284,6 @@ impl Checker<'_> {
                 Ex::error()
             }
         }
-    }
-
-    /// A bare variant name compared with a `space` enum: `space.width_class == wide`.
-    fn enum_const(&self, lhs: &Ty, rhs: &ast::Expr) -> Option<Ex> {
-        let (Ty::Enum(kind), ExprKind::Ident(v)) = (lhs, &rhs.kind) else {
-            return None;
-        };
-        if self.lookup(v).is_some() {
-            return None;
-        }
-        let index = crate::prims::enum_variants(kind)
-            .iter()
-            .position(|x| x == v)?;
-        Some(Ex::new(Ek::Int(index as i64), Ty::Enum(kind)))
     }
 
     fn string(&mut self, parts: &[StrPart]) -> Ex {
@@ -499,10 +478,7 @@ impl Checker<'_> {
         }
         let l = self.expr(lhs, None);
         let hint = l.ty.clone();
-        let r = match self.enum_const(&hint, rhs) {
-            Some(r) => r,
-            None => self.expr(rhs, Some(&hint)),
-        };
+        let r = self.expr(rhs, Some(&hint));
         if l.ty.is_error() || r.ty.is_error() {
             return Ex::error();
         }
@@ -515,15 +491,16 @@ impl Checker<'_> {
 
     fn equality(&mut self, eq: bool, l: Ex, r: Ex, span: Span) -> Ex {
         let negate = |e: Ex| Ex::new(Ek::Not(Box::new(e)), Ty::Bool);
-        if matches!(l.ty, Ty::Option(_)) && is_none_lit(&r) {
-            let some = Ex::host(Imp::IsSome, vec![l], Ty::Bool);
-            return if eq { negate(some) } else { some };
-        }
         let r = self.coerce(r, &l.ty, span);
         let (lt, base) = (l.ty.clone(), if eq { ir::BinOp::Eq } else { ir::BinOp::Ne });
         match lt {
-            Ty::Int | Ty::Float | Ty::Bool | Ty::Enum(_) => {
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) => {
                 Ex::new(Ek::Bin(base, Box::new(l), Box::new(r)), Ty::Bool)
+            }
+            // Enums, options, results, tuples and lists compare by value, payloads included.
+            Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
+                let e = Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool);
+                if eq { e } else { negate(e) }
             }
             Ty::Text => {
                 let e = Ex::host(Imp::StrEq, vec![l, r], Ty::Bool);
@@ -540,7 +517,7 @@ impl Checker<'_> {
             Ty::Error => Ex::error(),
             other => {
                 let t = self.show(&other);
-                self.err("E024", span, format!("{t} values cannot be compared with `==`; compare Int, Float, Bool, Text or records (for an Option, compare with `none` or unwrap it)"));
+                self.err("E024", span, format!("{t} values cannot be compared with `==`; compare scalars, Text, records, principals, enums, options, results, tuples or lists"));
                 Ex::error()
             }
         }

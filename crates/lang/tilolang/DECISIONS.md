@@ -30,13 +30,15 @@ departs from them. The runtime agent should mirror the ABI additions.
 - **View calls** of own views are wrapped in a `fragment` node keyed by the call site and the loop
   item, because the callee's root key is the same at every call. Per-node layout arguments on a view
   call (`fill`, `min:`, `at:`, ...) go on that wrapper node.
-- **Keys.** A node key is `<view id>.<ui_call node id>`, or the anchor's id when it has `#anchor`.
+- **Keys.** A node key is `<view id>.<ui_call node id>`, or the anchor's id when it has an anchor
+  (`as name`).
   Inside `for` the key is `str_concat(key, suffix)` where the suffix accumulates `"/"+ref_id(item)`
   for record items and `"/"+int_to_str(index)` for other values.
 - **Layout arguments** (layout.md): unit literals `11rem`, `4dp`, `1fr` are `Length` values; a prop
-  with a length is `ui_prop_f(n, "<name>.<unit>", value)` (`"min.rem"`). Rhythm tokens, alignments
-  and positions (`gap: section`, `at: bottom_trailing`, `collapse: drawer`) are `ui_prop_h` string
-  props. Bare flags (`truncate`, `page(full)`) are `ui_prop_i(n, "<flag>", 1)`; `fill` is
+  with a length is `ui_prop_f(n, "<name>.<unit>", value)` (`"min.rem"`). Options that take one of
+  the primitives' enums (`gap: .section`, `at: .bottom_trailing`, `collapse: .drawer`, button
+  `style: .primary`) are `ui_prop_h` props holding the variant's name, so hosts read the same
+  strings as before (see "Syntax revision"). Bare flags (`truncate`, `page(full)`) are `ui_prop_i(n, "<flag>", 1)`; `fill` is
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `column` stays as an older name of `stack`. `;` separates statements on one line.
@@ -85,11 +87,11 @@ departs from them. The runtime agent should mirror the ABI additions.
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
   `list_sort_by_key(items, keys) -> list`: ascending and stable, keys Int, Float, Text or Bool
   (E020 otherwise). There is no descending order and no `list_set`.
-- `try act(args)` (flows only, E044 elsewhere) invokes an action and reports whether it worked:
-  a `Bool` for an action without a result, an `Option` of the result otherwise (`none` when the
-  invocation was denied, declined or trapped). It compiles to `invoke` then `is_error(h) -> i32`;
-  a scalar result is already boxed by the host, so the `Option` is that handle. Without `try`, a
-  failed `do act(..)` yields an error value that traps when its scalar is unwrapped.
+- `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
+  (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
+  invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
+  which invokes like `invoke` and builds the `Result` value in the host. Without `try`, a failed
+  invocation yields an error value that traps when its scalar is unwrapped.
 - Sets and maps of Int and Float take their elements and values boxed with `some_i`/`some_f`
   through the existing `set_add`, `set_remove` and `map_put`. Set elements of Int or Float are
   stored under their text form, so a set iterates in text order.
@@ -133,3 +135,93 @@ departs from them. The runtime agent should mirror the ABI additions.
 
 - E072 (a block with no value) is defined but cannot be reached from source today.
 - `layout-check` (layout.md section 6) is not part of this crate.
+
+## Syntax revision
+
+The language as implementation.md section 2 wrote it, revised: sum types, one `if`, blocks as
+expressions, dot literals for every built-in option, `as` anchors, no `do`, view state, and the
+package-level `root` and `default view` of workspace-model.md. The README has the reference.
+
+- **Enums.** `enum Name { a, b(x: T, y: U), c }`. Enum and type names share one namespace;
+  variants are lowercase. Ids: the enum `Name`, each variant `Name.v`, each payload field
+  `Name.v.f`, all in `app.ids`. A payload field holds a value type (not `Action` or `View`).
+  Payload fields are positional or named at construction (`.b(1, "z")`, `.b(x: 1, y: "z")`).
+- **Values.** `.v` / `.v(args)` resolve against the type the context expects (a parameter, a
+  field, an annotation, the other side of `==`, a branch's agreed type, a UI option); with none,
+  E037 asks for `Name.v`. A qualified `pkg.Name.v` names another package's enum.
+- **Host representation.** A declared enum value, and a `Result`, is a host handle holding the
+  type id, the variant id and the payload by field id. New imports: `enum_new(ty, variant) -> h`,
+  `enum_set_i/f/h(e, field, x)`, `enum_is(e, variant) -> i32`, `enum_get_i/f/h(e, field)`.
+  Storing by ids keeps stored values readable when variants or fields are reordered. In a
+  register an enum value is the JSON `{"enum": ty, "variant": v, "fields": {id: value}}`.
+- **`Option` and `Result` are built-in enums.** `Option<T>` keeps the host's option values
+  (`some_*`, `none`, `is_some`, `unwrap_*` are now only what `.some`/`.none` and `match` compile
+  to). `Result<T, E>` uses the enum imports with the fixed ids `tilolang::RESULT_TYPE`
+  (`result`), variants `ok`/`err`, fields `value`/`error`. The surface language has no `none`
+  literal, no `is_some`/`is_none`/`unwrap`/`unwrap_or`; a `T` is still accepted where an
+  `Option<T>` is expected, because wrapping cannot fail.
+- **Equality.** `==` on enums, options, results, tuples and lists compiles to
+  `value_eq(a, b) -> i32`: structural, payloads included, references by target only.
+- **`match`** is an expression, a statement and a UI statement. It must name every variant
+  (E035 lists the missing ones), each once, with binders for all payload fields or none (`_`
+  skips one; E036). It lowers to an `if` chain over the variant tests; the last arm is untested.
+  A wildcard arm does not exist: the variants are always spelled out.
+- **Fields of enum type** are registers holding the whole value. Without a default they start
+  as the first variant, which must then carry no payload (E019 otherwise); a default is a dot
+  literal with literal payload values. The default's JSON is the register encoding above, so the
+  platform's record initialises it like any register.
+- **Metadata** lists `enums` (variants and payload fields with ids). A type that names an enum
+  is written `enum Name` (`enum so.tilo.notes.NoteOrder` when foreign) in metadata only, so a
+  reader of the metadata tells it from a record without the declaring package at hand; source
+  and diagnostics write `Name`. `Ty::meta_text` writes it, `Ty::parse_meta` reads it.
+- **Built-in enums of the platform** (`Ty::Choice`): the options of UI primitives (`Gap`, `Align`,
+  `Distribute`, `Collapse`, `Side`, `Position`, `Axis`, `ButtonStyle`, `TextStyle`) and the
+  `space` enums (`WidthClass`, `Orientation`). Their values are the variant index (an `i64`),
+  so they compare with `==` and can be chosen at run time (`style: if on { .primary } else {
+  .plain }`); a UI option becomes `ui_prop_h(node, name, <variant name>)`, a constant for a
+  literal and an `if` chain otherwise. They have no names in source. A bare word where an option
+  is expected is E065 with the dot form; `space.width_class == wide` is now `== .wide`.
+- **One `if`.** `if c { a } else { b }` is an expression (`Ek::If` over two block values); `if ...
+  then ... else` is gone. As an expression statement (and in a view body) the branches run as
+  statements and `else` is optional. An `if` used as a value needs `else` (E038). `else if`
+  chains in views too.
+- **Blocks are expressions.** `{ stmts; expr }` has the last expression's value; a block that
+  returns on every path has any type (it lowers to `unreachable` after the return). A body whose
+  last statement is an expression returns it, so `fn f() -> Int { 1 }` needs no `return`.
+- **Lines that start with `.`.** A line starting `.name` continues the previous line as a method
+  call, as before, except after a line that ended with `}` and except for a line that is a match
+  arm (`.name(..) =>`), so arms need no commas. The printer writes a comma after every arm that
+  is not a block.
+- **Keywords.** `enum` and `match` are new keywords; `then`, `none` and `do` are no longer.
+  `window`, `lens` (at the start of a view statement, before `name:`), `root` and `default`
+  (before `view`, at the start of an item) are contextual, so they stay usable as names. A
+  keyword may name a call argument (`open(r, view: v)`).
+- **Flows** invoke an action by calling it. `do act(args)` is a syntax error that says so.
+- **Anchors** follow the call: `button("+1", on: inc(c)) as plus`. `#plus` is a syntax error
+  that says so. An anchored node keeps the anchor id as its key, so an anchor belongs on a node
+  that appears once in its view's tree, not on a row of a list.
+- **View state.** `window name: T = default` and `lens name: T = default` are declared at the top
+  of a view body (E066 elsewhere, or outside a view); their ids are `view.name` in `app.ids`, and
+  views list them in metadata (`state`: id, name, layer, type). Without a default, Int, Float,
+  Bool, Text, options, lists and payload-less first variants start empty or first; other types
+  need one. The view reads a slot with `state_get(layer, id, default) -> h` (layer 0 window, 1
+  lens; scalars boxed like `some_i`), which returns the slot's value or the default; the host
+  records the read. `bind: name` on a control is `ui_bind_state(node, layer, id)` (Int, Float,
+  Bool or Text state, E062 otherwise). `set(name, value)` in a view is
+  `act_set(layer, id, value) -> h`, an action reference the host applies to the slot; it carries
+  no capability and is never a change to a resource. State is the declaring view's own: other
+  views and nested view calls do not see it (pass values or `Action`s as parameters).
+- **`open(r)`** and `open(r, view: v)` in a view are `act_open(r, view id or "") -> h`, an action
+  reference the host turns into a request to go to the window of `r` (E067: `r` is a record, `v`
+  a view that takes exactly an `r`). Flows and blocks cannot open windows yet.
+- **`root T` and `default view v for T`.** `T` is one of the package's record types (E018); a
+  root needs a default view, which takes the resource and nothing else (E018). A type has at
+  most one default view and is a root at most once (E011). Metadata: `roots` (type ids, in
+  order) and `default_views` (type id and view id); `PackageMeta::default_view(ty)` reads them.
+  `view main(root: T)` is no longer a convention: hosts open `roots[0]` through its default
+  view.
+- **New error codes:** E018 package declarations, E035 non-exhaustive match, E036 unknown or
+  repeated variant, wrong binders, E037 a variant with no expected type, E038 an `if` value
+  without `else`, E065 a bare word where a dot literal is expected, E066 view state, E067
+  `open`.
+- **Removed from the compiler's import table:** `is_error` (the runtime still provides it).

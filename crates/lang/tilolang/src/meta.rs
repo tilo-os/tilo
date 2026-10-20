@@ -14,10 +14,57 @@ pub struct PackageMeta {
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
+    /// Declared enums. Types that name one are written `enum Name` in metadata.
+    #[serde(default)]
+    pub enums: Vec<EnumMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
     pub flows: Vec<FlowMeta>,
     pub fns: Vec<FnMeta>,
+    /// Ids of the root types (`root T`): one resource each per workspace, which the launcher
+    /// lists and opens.
+    #[serde(default)]
+    pub roots: Vec<String>,
+    /// The view a window of each type uses unless changed (`default view v for T`).
+    #[serde(default)]
+    pub default_views: Vec<DefaultViewMeta>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefaultViewMeta {
+    /// The type id.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The view id.
+    pub view: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EnumMeta {
+    pub id: String,
+    pub name: String,
+    pub doc: String,
+    pub variants: Vec<VariantMeta>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VariantMeta {
+    pub id: String,
+    pub name: String,
+    pub doc: String,
+    /// The payload fields, in order. Their merge is always `register`.
+    pub fields: Vec<FieldMeta>,
+}
+
+/// A `window` or `lens` declaration of a view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateMeta {
+    pub id: String,
+    pub name: String,
+    /// `window` (shared by the window) or `lens` (one per person per window).
+    pub layer: String,
+    #[serde(rename = "type")]
+    pub ty: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -92,6 +139,8 @@ pub struct ViewMeta {
     pub params: Vec<ParamMeta>,
     pub anchors: Vec<AnchorMeta>,
     pub reaches: Vec<Reach>,
+    #[serde(default)]
+    pub state: Vec<StateMeta>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -115,6 +164,14 @@ pub struct FnMeta {
 }
 
 impl PackageMeta {
+    /// The id of the default view of the type `ty` (an id), when the package declares one.
+    pub fn default_view(&self, ty: &str) -> Option<&str> {
+        self.default_views
+            .iter()
+            .find(|d| d.ty == ty)
+            .map(|d| d.view.as_str())
+    }
+
     /// The JSON bytes embedded in the `tilolang.meta` section.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
