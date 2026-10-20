@@ -360,7 +360,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                     name: c.name.clone(),
                     doc: doc(&sc.doc),
                     params: Vec::new(),
-                    result: None,
+                    result: result_meta(&c.result, app),
                     class: class_of(idx),
                     proposal: None,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),

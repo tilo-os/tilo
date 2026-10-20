@@ -107,6 +107,9 @@ pub struct ScenarioDecl {
     pub doc: Vec<String>,
     pub name: String,
     pub name_span: Span,
+    /// `scenario "editing a note" -> Note { ... }`: what the scenario returns, which the window
+    /// shows once it is staged, as it shows what a primary action made.
+    pub result: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
 }

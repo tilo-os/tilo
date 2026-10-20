@@ -84,10 +84,10 @@ view editor(d: Draft) {
 }
 
 /// A desk with letters on both shelves: enough drafts to scroll.
-scenario "a desk of letters" {
+scenario "a desk of letters" -> Draft {
     let desk = root Desk
     desk.drafts.insert(Draft(to: "bo@example.org", subject: "Dinner on Friday", body: "Shall we try the new place on Mill Lane? I can book for eight."))
-    desk.drafts.insert(Draft(to: "landlord@example.org", subject: "Boiler repair", body: "The boiler stopped again this morning. Could the engineer come on Tuesday?"))
+    let boiler = desk.drafts.insert(Draft(to: "landlord@example.org", subject: "Boiler repair", body: "The boiler stopped again this morning. Could the engineer come on Tuesday?"))
     desk.drafts.insert(Draft(to: "mia@example.org", subject: "Photos from the trip", body: "Here are the ones from the lake. The sunset ones came out best."))
     desk.drafts.insert(Draft(to: "hr@example.org", subject: "Holiday in August", body: "I would like to take the second and third weeks of August off."))
     desk.drafts.insert(Draft(to: "sam@example.org", subject: "Happy birthday", body: "Thirty! Let me know when you are free for a proper celebration."))
@@ -102,6 +102,7 @@ scenario "a desk of letters" {
     desk.drafts.insert(Draft(to: "bank@example.org", subject: "Change of address", body: "Please send post to the new flat from the first of the month.", sent: true))
     desk.drafts.insert(Draft(to: "gran@example.org", subject: "See you at Easter", body: "We will drive up on Thursday evening and stay until Monday.", sent: true))
     desk.drafts.insert(Draft(to: "club@example.org", subject: "Cancelling my membership", body: "I am moving away at the end of March, so please cancel from April.", sent: true))
+    boiler
 }
 
 /// A first letter, half written.

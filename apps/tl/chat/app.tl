@@ -137,7 +137,7 @@ view composer(c: Conversation) {
 }
 
 /// A workspace's conversations: enough to scroll, the first one under way.
-scenario "a busy workspace" {
+scenario "a busy workspace" -> Conversation {
     let chat = root Chat
     let plans = chat.conversations.insert(Conversation(title: "Weekend plans"))
     post(plans, "Is everyone still up for the walk on Saturday?", "")
@@ -154,6 +154,7 @@ scenario "a busy workspace" {
     chat.conversations.insert(Conversation(title: "Holiday in August"))
     chat.conversations.insert(Conversation(title: "Recipes"))
     chat.conversations.insert(Conversation(title: "Interview loop"))
+    plans
 }
 
 /// One conversation with a sum worked out inline.

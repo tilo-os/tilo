@@ -331,6 +331,35 @@ fn e094_scenarios_and_root() {
     );
 }
 
+/// A scenario may return the resource the window shows once it is staged, as a primary action
+/// returns what it made; it must then return one on every path.
+#[test]
+fn a_scenario_returns_what_the_window_shows() {
+    let base = with_t(
+        "root T\ndefault view v for T\nview v(x: T) {\n    page {\n        text(x.t)\n    }\n}\n",
+    );
+    ok(&format!(
+        "{base}scenario \"open\" -> T {{\n    let r = root T\n    r.n = 1\n    r\n}}"
+    ));
+    expect(
+        "E029",
+        &format!("{base}scenario \"open\" -> T {{\n    let r = root T\n    r.n = 1\n}}"),
+    );
+    let src = format!(
+        "app so.tilo.t \"T\"\n{base}scenario \"open\" -> T {{\n    let r = root T\n    r\n}}\n"
+    );
+    let compiled = crate::common::compile(&src);
+    let scenario = compiled
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.scenario)
+        .expect("the scenario's action");
+    assert!(scenario.result.is_some(), "{scenario:?}");
+    let printed = tilolang::print_module(&tilolang::parse(&src).expect("parses"));
+    assert!(printed.contains("scenario \"open\" -> T {"), "{printed}");
+}
+
 /// A board's scenario attaches the apps it shows: `root alias.T` reaches a root of a package it
 /// uses. (What fills those roots is their own packages' scenarios; one change never spans apps.)
 #[test]

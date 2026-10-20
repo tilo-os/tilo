@@ -663,27 +663,40 @@ impl Window {
         // first scenario, so a scenario that attaches their roots shows them filled.
         for used in used_packages(host, &self.app) {
             if let Some(first) = used.meta.scenarios.first() {
-                self.run_scenario(host, &used.meta.app, &first.name, &first.action);
+                let _ = self.run_scenario(host, &used.meta.app, &first.name, &first.action);
             }
         }
-        self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
+        let shown = self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
         self.commit_planned();
+        // A scenario that returns a resource shows it, as a primary action shows what it made.
+        if let Some(shown) = shown {
+            self.open_detail(&shown, None, true);
+        }
     }
 
-    /// Run the scenario `name` (its hidden action `action`) of the package `app` over its root.
-    fn run_scenario(&self, host: &Host, app: &str, name: &str, action: &str) {
+    /// Run the scenario `name` (its hidden action `action`) of the package `app` over its root;
+    /// the resource it returned, when it returns one.
+    fn run_scenario(
+        &self,
+        host: &Host,
+        app: &str,
+        name: &str,
+        action: &str,
+    ) -> Option<ResourceRef> {
         if let Err(error) = host.root_of(app) {
             tracing::warn!(app, %error, "the package has no root to stage");
-            return;
+            return None;
         }
         match host
             .runtime()
             .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
         {
+            Ok(InvokeOutcome::Done(Value::Ref(shown))) => return Some(shown.target),
             Ok(InvokeOutcome::Done(_)) => {}
             Ok(other) => tracing::warn!(scenario = name, ?other, "the scenario did not run"),
             Err(error) => tracing::warn!(scenario = name, %error, "the scenario failed"),
         }
+        None
     }
 
     // ----- the shell -----------------------------------------------------------------------

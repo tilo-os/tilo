@@ -352,7 +352,9 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
             .as_deref(),
         Some("All notes")
     );
-    // Nothing is open yet: the content says so in one sentence.
+    // The scenario showed its note; with that closed, the content says so in one sentence.
+    assert!(room.window.detail.is_some());
+    room.ask(Request::Back);
     assert!(room.window.detail.is_none());
     assert!(room.window.headers.contains_key("content-empty"));
 }
@@ -971,4 +973,24 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
         room.items_of("so.tilo.notes", "notes") >= 12,
         "and the notebook its"
     );
+}
+
+#[test]
+fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
+    let mut room = Room::seeded("notes");
+    let shown = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the scenario's note is shown");
+    let host = room.window.current_host().unwrap();
+    assert_eq!(describe::title_of(&host, &shown), "Q3 plan");
+    let selected = room.list().selected.clone();
+    let row = room
+        .list()
+        .rows
+        .iter()
+        .find(|row| row.item == shown)
+        .map(|row| row.key.clone());
+    assert_eq!(selected, row, "and its row is the selected one");
 }
