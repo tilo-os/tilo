@@ -423,3 +423,27 @@ impl Host {
         lookup(ty).is_some()
     }
 }
+
+/// The `surface.toml` bytes of the host with these built-in packages (source and ids lock),
+/// generated from their metadata: what receivers decide the host's changes against.
+///
+/// A package that does not compile is left out and named in the log.
+#[must_use]
+pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
+    let doc = tilo_resource::Doc::new();
+    let Ok(host) = Host::new(&doc, Principal::new("surface"), |_, _| Decision::Allow) else {
+        return Vec::new();
+    };
+    for (source, ids) in packages {
+        if let Err(error) = host.load_builtin(source, ids) {
+            eprintln!("a built-in tilolang package did not compile: {error}");
+        }
+    }
+    let metas: Vec<Meta> = host
+        .packages()
+        .into_iter()
+        .map(|package| package.meta)
+        .collect();
+    let refs: Vec<&Meta> = metas.iter().collect();
+    crate::surface::surface_toml(&refs).unwrap_or_default()
+}

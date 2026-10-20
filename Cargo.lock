@@ -20141,8 +20141,6 @@ dependencies = [
  "runtime-dylib",
  "serde_json",
  "tilo-app",
- "tilo-automerge-fork",
- "tilolang-runtime",
  "tilolang-tilo",
  "tracing",
  "workspace-hack",

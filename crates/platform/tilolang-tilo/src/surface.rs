@@ -18,10 +18,6 @@ use crate::meta::{MetaExt as _, action_kind};
 
 /// The kind of the host's own resource.
 pub const HOST_KIND: &str = "tl.host";
-/// The host resource's actions.
-pub const RUN_BLOCK: &str = "run-block";
-pub const RUN_FLOW: &str = "run-flow";
-pub const CATALOGUE: &str = "catalogue";
 pub use crate::publish::COMMIT;
 
 /// The storage version of every generated resource.
@@ -275,15 +271,7 @@ fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>)
     }
 }
 
-fn source_param() -> ParamSurface {
-    ParamSurface {
-        name: "source".to_owned(),
-        required: true,
-        schema: json!({"type": "string"}),
-    }
-}
-
-/// The surface of the host's own resource: codemode blocks, flows and the catalogue.
+/// The surface of the host's own resource: the commit of an action the runtime planned.
 #[must_use]
 pub fn host_surface() -> Surface {
     Surface {
@@ -291,26 +279,16 @@ pub fn host_surface() -> Surface {
         label: "tilolang".to_owned(),
         version: VERSION,
         person: false,
-        verbs: vec![
-            host_verb(
-                RUN_BLOCK,
-                "Run a block",
-                ActionKind::Undoable,
-                vec![source_param()],
-            ),
-            host_verb(
-                RUN_FLOW,
-                "Run a flow",
-                ActionKind::Undoable,
-                vec![source_param()],
-            ),
-            host_verb(
-                CATALOGUE,
-                "List the catalogue",
-                ActionKind::Read,
-                Vec::new(),
-            ),
-        ],
+        verbs: vec![host_verb(
+            COMMIT,
+            "Commit a planned action",
+            ActionKind::Undoable,
+            vec![ParamSurface {
+                name: "ticket".to_owned(),
+                required: true,
+                schema: json!({"type": "integer"}),
+            }],
+        )],
         fields: Vec::new(),
     }
 }

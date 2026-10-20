@@ -35,26 +35,11 @@ pub const RECORD_KIND: &str = "tilolang.room";
 /// The surface file the host registers for its app id: the host resource and every built-in
 /// package's kinds and verbs, generated from the packages' metadata.
 fn surface_bytes() -> Vec<u8> {
-    use tilolang_tilo::host::Host;
-    use tilolang_tilo::surface::surface_toml;
-    let doc = automerge::AutoCommit::new();
-    let Ok(host) = Host::new(&doc, tilolang_runtime::Principal::new("surface"), |_, _| {
-        tilolang_runtime::Decision::Allow
-    }) else {
-        return Vec::new();
-    };
-    for package in packages::EMBEDDED {
-        if let Err(error) = host.load_builtin(package.source, package.ids) {
-            tracing::error!(package = package.dir, %error, "a built-in package did not compile");
-        }
-    }
-    let metas: Vec<_> = host
-        .packages()
-        .into_iter()
-        .map(|package| package.meta)
+    let sources: Vec<(&str, &str)> = packages::EMBEDDED
+        .iter()
+        .map(|package| (package.source, package.ids))
         .collect();
-    let refs: Vec<_> = metas.iter().collect();
-    surface_toml(&refs).unwrap_or_default()
+    tilolang_tilo::host::builtin_surface(&sources)
 }
 
 #[allow(

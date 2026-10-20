@@ -25,3 +25,5 @@ pub use action::{Authorship, DynAction, DynEdit, register_actions};
 pub use meta::MetaExt;
 pub use record::{DynRecord, DynValue};
 pub use schema::{FieldSchema, MergeKind, TypeSchema};
+/// The runtime, for hosts that drive views and read values.
+pub use tilolang_runtime as runtime;

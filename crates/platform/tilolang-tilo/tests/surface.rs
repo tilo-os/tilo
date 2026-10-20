@@ -2,14 +2,11 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::json;
-use tilo_actions::{ActionKind, ActionRegistry, EncodedAction};
+use tilo_actions::{ActionKind, ActionRegistry};
 use tilolang_runtime::Meta;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
-use tilolang_tilo::publish::{
-    COMMIT, Committer, PlanRequest, Planner, host_resource, publish_package, publish_record,
-    resource_id,
-};
-use tilolang_tilo::surface::{HOST_KIND, package_surfaces, surface_toml};
+use tilolang_tilo::publish::{PlanRequest, Planner, publish_package, publish_record, resource_id};
+use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
 use crate::fixtures::{COUNTER, Replica, TODO};
 
@@ -126,19 +123,9 @@ fn a_published_action_builds_the_planned_dyn_action() {
     assert!(publish_package(&meta, &planner).actions.is_empty());
 }
 
-struct Queue;
-
-impl Committer for Queue {
-    fn encoded(&self, ticket: u64) -> Result<EncodedAction, String> {
-        Err(format!("nothing is queued under {ticket}"))
-    }
-}
-
 #[test]
-fn the_host_publishes_blocks_flows_the_catalogue_and_the_commit() {
-    let committer: Arc<dyn Committer> = Arc::new(Queue);
-    let host = host_resource(&committer);
-    let ids: Vec<&str> = host.actions.iter().map(|spec| spec.id.as_str()).collect();
-    assert_eq!(ids, ["run-block", "run-flow", "catalogue", COMMIT]);
-    assert_eq!(host.actions[2].contract.kind, ActionKind::Read);
+fn the_host_surface_declares_the_commit() {
+    let surface = host_surface();
+    assert_eq!(surface.kind, HOST_KIND);
+    assert_eq!(surface.verb("commit").unwrap().0, ActionKind::Undoable);
 }
