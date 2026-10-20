@@ -23,6 +23,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PUBLISH = ROOT / "tools/ci/publish"
 sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("ci_products", ROOT / "tools/ci/products.py")
 assert SPEC and SPEC.loader
 products = importlib.util.module_from_spec(SPEC)
@@ -35,7 +36,7 @@ DEFAULTS = {"buildah": "buildah@sha256:1", "skopeo": "skopeo@sha256:2", "signing
 
 def checks(*product: dict) -> dict[str, dict]:
     text = products.render({"defaults": DEFAULTS, "product": list(product)}, "f")
-    return {c["name"]: c for c in tomllib.loads(text)["check"]}
+    return {c["name"]: c for c in t_matrix.expand(tomllib.loads(text))["check"]}
 
 
 class GeneratorTests(unittest.TestCase):
@@ -134,6 +135,16 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(c["image-m"]["requires"], ["arch=any"])
         self.assertEqual(c["publish-m"]["needs"], ["image-m"])
         self.assertIn("/target/publish/m/index 'sha-{commit}'", c["publish-m"]["run"])
+
+    def test_the_architectures_builds_are_one_declaration_t_expands(self):
+        product = {"family": "f", "name": "m", "repository": "r/m", "dev": ["sha-{commit}"],
+                   "arches": ["x86_64", "aarch64"], "index": True,
+                   "build": {"run": "build {arch} {platform} {out}"}}
+        text = products.render({"defaults": DEFAULTS, "product": [product]}, "f")
+        self.assertIn('name = "image-m-{arch}"', text)
+        self.assertIn('[check.matrix]\narch = [{ arch = "x86_64", platform = "linux/amd64" }, '
+                      '{ arch = "aarch64", platform = "linux/arm64" }]', text)
+        self.assertNotIn("image-m-x86_64\"\n", text)
 
     def test_an_index_with_children_signs_and_publishes_each_image(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "dev": ["dev-{commit}"],
@@ -237,7 +248,7 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(products.ProductError, "index joins"):
             checks({"family": "f", "name": "x", "repository": "r", "dev": ["t"], "index": True, "build": {"run": "b"}})
 
-    def test_matrices_write_each_check_per_variant(self):
+    def test_matrices_stand_for_each_check_per_variant(self):
         text = products.render({"defaults": DEFAULTS, "matrix": [{
             "family": "f", "about": "per arch",
             "each": [{"arch": "x86_64", "node": "arch=x86_64"}, {"arch": "aarch64", "node": "arch=arm64"}],
@@ -248,8 +259,12 @@ class GeneratorTests(unittest.TestCase):
                 {"name": "pack", "run": "p", "needs": ["build-x86_64", "build-aarch64"], "default": True},
             ]}]}, "f")
         self.assertTrue(text.startswith("# per arch\n[[check]]"))
-        c = {x["name"]: x for x in tomllib.loads(text)["check"]}
-        self.assertEqual(list(c), ["build-x86_64", "wine-x86_64", "build-aarch64", "pack"])
+        # One declaration per check of the matrix, which t expands per variant.
+        self.assertEqual(text.count("[[check]]"), 3)
+        self.assertIn('[check.matrix]\narch = [{ arch = "x86_64", node = "arch=x86_64" }, '
+                      '{ arch = "aarch64", node = "arch=arm64" }]', text)
+        c = {x["name"]: x for x in t_matrix.expand(tomllib.loads(text))["check"]}
+        self.assertEqual(list(c), ["build-x86_64", "build-aarch64", "wine-x86_64", "pack"])
         self.assertEqual(c["build-aarch64"]["requires"], ["arch=arm64"])
         self.assertEqual(c["build-aarch64"]["run"], "b aarch64 {commit}")
         self.assertEqual(c["build-aarch64"]["image"], "img")
@@ -260,7 +275,7 @@ class GeneratorTests(unittest.TestCase):
         manifest = products.load()
         names = set()
         for family in products.families(manifest):
-            for c in tomllib.loads(products.render(manifest, family))["check"]:
+            for c in t_matrix.expand(tomllib.loads(products.render(manifest, family)))["check"]:
                 self.assertNotIn(c["name"], names)
                 names.add(c["name"])
                 if "id_token" in c:
@@ -283,7 +298,7 @@ def publish_scripts(script: str, seen: set[str]) -> set[str]:
 class InputsTests(unittest.TestCase):
     def test_checks_read_the_publishing_scripts_they_run(self):
         """A change to a publishing script reruns exactly the checks that run it."""
-        for c in tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))["check"]:
+        for c in t_matrix.load(ROOT)["check"]:
             inputs = c.get("inputs", [])
             if "tools/ci/publish/**" in inputs:
                 continue

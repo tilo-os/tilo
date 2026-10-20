@@ -16,6 +16,9 @@ architecture where it is built natively (docs/publishing-on-t.md, "Products"):
                         or release tags, in one check whose signature is an optional need
 
 A product in products.toml is a few lines of data; this module turns it into those checks.
+Checks that exist once per architecture are written once, with a `[check.matrix]` that t
+expands into each architecture's check (t's README, "Matrices"; tools/ci/t_matrix.py), verified
+to be exactly the checks written out one by one, so their keys are those.
 t_toml.py writes them into t.toml between markers and the policy tests fail while they are
 out of date.
 """
@@ -25,7 +28,11 @@ import json
 from pathlib import Path
 import re
 import tomllib
+import sys
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import t_matrix  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "tools" / "ci" / "products.toml"
@@ -108,11 +115,15 @@ def publish_scripts(text: str, seen: set[str] | None = None) -> set[str]:
     return seen
 
 
-def check(fields: dict[str, Any], comment: str | None = None) -> str:
-    # Every check reads the publishing scripts it runs, so a change to one reruns exactly those.
+def with_scripts(fields: dict[str, Any]) -> dict[str, Any]:
+    """Every check reads the publishing scripts it runs, so a change to one reruns exactly those."""
     scripts = sorted(publish_scripts(fields.get("run", "")) - set(fields.get("inputs", [])))
-    if scripts:
-        fields = {**fields, "inputs": [*fields.get("inputs", []), *scripts]}
+    return {**fields, "inputs": [*fields.get("inputs", []), *scripts]} if scripts else fields
+
+
+def check(fields: dict[str, Any], comment: str | None = None, matrix: dict[str, Any] | None = None) -> str:
+    """A `[[check]]`, and with `matrix` the `[check.matrix]` t expands it by."""
+    fields = with_scripts(fields)
     order = {name: i for i, name in enumerate(FIELD_ORDER)}
     lines = [f"# {line}".rstrip() for line in comment.strip().splitlines()] if comment else []
     lines.append("[[check]]")
@@ -123,6 +134,8 @@ def check(fields: dict[str, Any], comment: str | None = None) -> str:
             tables.append(f"\n[check.dispatch_inputs]\n" + "".join(f"{key(k)} = {value(x)}\n" for k, x in v.items()))
             continue
         lines.append(f"{key(name)} = {value(v)}")
+    if matrix:
+        tables.append("\n[check.matrix]\n" + "".join(f"{key(k)} = {value(x)}\n" for k, x in matrix.items()))
     return "\n".join(lines) + "\n" + "".join(tables)
 
 
@@ -251,9 +264,9 @@ class Product:
             fields["inputs"] = dedupe([f"{PUBLISH}/lib.sh", *fields.get("inputs", [])])
             out.append(check(fields, about))
             about = None
-        for arch in self.arches:
-            out.append(check(self.build(arch, context_name), about))
-            about = None
+        out.append(per_arch([self.build(arch, context_name) for arch in self.arches],
+                            [self.values(arch) for arch in self.arches], about))
+        about = None
         if self.index:
             dirs = [self.out(arch) for arch in self.arches]
             out.append(check({
@@ -513,29 +526,74 @@ def matrix(data: dict[str, Any]) -> list[str]:
     """Checks that differ only by architecture, written once with placeholders.
 
     `each` lists the variants, each a table of placeholder values (`arch`, and whatever else the
-    checks name, such as `deb = "amd64"`). Every `[[matrix.check]]` is written for each variant,
-    in order; one with `only` is written for those variants whose `arch` it lists, and one whose
-    name has no placeholder is written once, after the variants. `fields` go to every check
-    that doesn't set them itself.
+    checks name, such as `deb = "amd64"`). Every `[[matrix.check]]` stands for a check per
+    variant, which t.toml says as one check with a `[check.matrix]` that t expands; one with
+    `only` stands for those variants whose `arch` it lists, and one whose name has no placeholder
+    is written once, after the others. `fields` go to every check that doesn't set them itself.
     """
     unknown = set(data) - {"family", "about", "each", "check", "fields"}
     if unknown:
         raise ProductError(f"matrix {data.get('about', '')[:40]!r}: unknown keys {sorted(unknown)}")
     out, about = [], data.get("about")
     once = [c for c in data["check"] if "{" not in c["name"]]
-    for values in data["each"]:
-        for spec in data["check"]:
-            if spec in once or values["arch"] not in spec.get("only", [values["arch"]]):
-                continue
-            fields = placeholders({**data.get("fields", {}),
-                                   **{k: v for k, v in spec.items() if k not in ("only", "comment")}}, values)
-            comment = "\n".join(x for x in (about, placeholders(spec.get("comment", ""), values)) if x)
-            out.append(check(fields, comment or None))
-            about = None
+    for spec in data["check"]:
+        if spec in once:
+            continue
+        variants = [v for v in data["each"] if v["arch"] in spec.get("only", [v["arch"]])]
+        fields = {**data.get("fields", {}), **{k: v for k, v in spec.items() if k not in ("only", "comment")}}
+        comment = "\n".join(x for x in (about, spec.get("comment", "")) if x)
+        out.append(per_variant(fields, variants, comment or None))
+        about = None
     for spec in once:
         out.append(check({**data.get("fields", {}), **{k: v for k, v in spec.items() if k != "comment"}},
                          spec.get("comment")))
     return out
+
+
+def per_variant(fields: dict[str, Any], variants: list[dict[str, str]], comment: str | None) -> str:
+    """One check per variant, as one `[[check]]` with a matrix whose axis is the variable that
+    tells the variants apart in the name. Each check t expands it into is the one written out
+    for its variant, so their keys are those the written-out checks had."""
+    if len(variants) == 1:
+        return check(placeholders(fields, variants[0]), placeholders(comment, variants[0]) if comment else None)
+    axis = next((k for k in variants[0] if "{" + k + "}" in fields["name"]
+                 and len({v[k] for v in variants}) == len(variants)), None)
+    if axis is None:
+        raise ProductError(f"{fields['name']}: no placeholder of its name tells its variants apart")
+    template = with_scripts(fields)
+    for v in variants:
+        if t_matrix.fill(template, v) != with_scripts(placeholders(fields, v)):
+            raise ProductError(f"{fields['name']}: its {v[axis]} check differs from the others beyond placeholders")
+    values = [v[axis] if list(v) == [axis] else v for v in variants]
+    return check(template, comment, {axis: values})
+
+
+def per_arch(checks: list[dict[str, Any]], variants: list[dict[str, str]], comment: str | None) -> str:
+    """Checks written for each variant, as one `[[check]]` with a matrix over `arch` where each
+    is the template with the variant's values put in (verified, so t expands it into exactly
+    these checks), else one after the other."""
+    if len(checks) > 1:
+        names = ("arch", "platform")
+        template = checks[0]
+        for name in sorted(names, key=lambda n: -len(variants[0][n])):
+            template = placeholders_of(template, variants[0][name], "{" + name + "}")
+        used = [n for n in names if "{" + n + "}" in json.dumps(template)]
+        values = [{n: v[n] for n in used} for v in variants]
+        if "arch" in used and all(t_matrix.fill(with_scripts(template), v) == with_scripts(c)
+                                  for v, c in zip(values, checks)):
+            return check(template, comment, {"arch": [v["arch"] if list(v) == ["arch"] else v for v in values]})
+    return "\n".join(check(c, comment if i == 0 else None) for i, c in enumerate(checks))
+
+
+def placeholders_of(v: Any, text: str, placeholder: str) -> Any:
+    """`v` with `text` in its strings written as `placeholder`."""
+    if isinstance(v, str):
+        return v.replace(text, placeholder)
+    if isinstance(v, list):
+        return [placeholders_of(x, text, placeholder) for x in v]
+    if isinstance(v, dict):
+        return {k: placeholders_of(x, text, placeholder) for k, x in v.items()}
+    return v
 
 
 def render(manifest: dict[str, Any], family: str) -> str:

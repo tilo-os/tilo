@@ -8,8 +8,11 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("package_features", ROOT / "tools/ci/package_features.py")
 features = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(features)
@@ -69,7 +72,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                       "${{ matrix.test_packages }}", workflow)
         self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run",
                       (ROOT / "tools/ci/local-affected.sh").read_text())
-        config = tomllib.loads((ROOT / "t.toml").read_text())
+        config = t_matrix.load(ROOT)
         test = next(family for family in config["cargo"] if family["name"] == "test")
         self.assertEqual(test["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
         self.assertIn("tools/ci/package_features.py", test["inputs"])

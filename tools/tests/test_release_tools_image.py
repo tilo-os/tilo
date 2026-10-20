@@ -1,10 +1,12 @@
 from pathlib import Path
 import re
-import tomllib
 import unittest
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 
 
 def job_block(workflow: str, name: str) -> str:
@@ -21,7 +23,7 @@ def job_block(workflow: str, name: str) -> str:
 
 class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        t = tomllib.loads((ROOT / "t.toml").read_text())
+        t = t_matrix.load(ROOT)
         self.checks = {check["name"]: check for check in t["check"]}
         self.release_workflow = (
             ROOT / ".forgejo/workflows/release-apps.yml"

@@ -4,11 +4,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("ci_t_toml", ROOT / "tools/ci/t_toml.py")
 assert SPEC and SPEC.loader
 t_toml = importlib.util.module_from_spec(SPEC)
@@ -22,7 +22,7 @@ class TTomlTests(unittest.TestCase):
         self.assertEqual(text, expected, "run python3 tools/ci/t_toml.py write")
 
     def test_policy_has_git_and_private_writable_sources(self):
-        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
+        config = t_matrix.load(ROOT)
         policy = next(check for check in config["check"] if check["name"] == "policy")
         self.assertTrue(policy["git"])
         self.assertTrue(policy["writable_sources"])
@@ -51,7 +51,7 @@ class TTomlTests(unittest.TestCase):
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=True), {"top", "lib", "base", "helper"})
 
     def test_each_default_app_has_a_size_check_keyed_by_its_own_build(self):
-        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
+        config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}
         module = t_toml.app_release_module()
         catalog = module.app_catalog(ROOT)
