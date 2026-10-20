@@ -390,29 +390,13 @@ pub fn launch(
     launch_with_document_and_activation(desktop_id, None, portal_workspace_id, None)
 }
 
-/// Unlike a Tilo launch there's no grant to make alongside it — the app
-/// already has the user's filesystem, which is what makes it a host app.
-///
-/// # Errors
-///
-/// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
-/// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
-/// when the compositor or `tilo-launcher` binary can't be reached.
-pub fn launch_with_document(
-    desktop_id: &str,
-    document: Option<&Path>,
-    portal_workspace_id: Option<String>,
-) -> Result<HostApp, LaunchError> {
-    launch_with_document_and_activation(desktop_id, document, portal_workspace_id, None)
-}
-
 /// Host launch with a compositor-minted `xdg_activation_v1` token. The token
 /// travels only as the standard desktop environment variable and grants no
 /// Tilo sandbox or service authority.
 ///
 /// # Errors
 ///
-/// Returns the same launch-resolution errors as [`launch_with_document`].
+/// Returns the same launch-resolution errors as [`launch`].
 pub fn launch_with_document_and_activation(
     desktop_id: &str,
     document: Option<&Path>,
@@ -464,7 +448,7 @@ pub enum HostOpen<'a> {
 ///
 /// # Errors
 ///
-/// Returns the same launch-resolution errors as [`launch_with_document`].
+/// Returns the same launch-resolution errors as [`launch`].
 pub fn launch_with_url(
     desktop_id: &str,
     url: &str,

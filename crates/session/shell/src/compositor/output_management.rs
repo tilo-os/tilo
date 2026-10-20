@@ -48,7 +48,7 @@ use smithay::reexports::wayland_protocols_wlr::output_power_management::v1::serv
     zwlr_output_power_manager_v1::{self, ZwlrOutputPowerManagerV1},
     zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
-use smithay::reexports::wayland_server::backend::{ClientId, GlobalId};
+use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_output;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
@@ -184,8 +184,6 @@ pub struct DisplayConfirmation {
 
 /// Server-side state of both protocols.
 pub struct OutputManagementState {
-    manager_global: GlobalId,
-    power_global: GlobalId,
     heads: Vec<OutputHead>,
     /// Bumped on every change to [`Self::heads`]; a configuration created
     /// against an older serial is cancelled rather than applied.
@@ -209,11 +207,9 @@ pub struct OutputManagementState {
 
 impl OutputManagementState {
     pub fn new(display: &DisplayHandle) -> Self {
+        display.create_global::<State, ZwlrOutputManagerV1, _>(MANAGER_VERSION, ());
+        display.create_global::<State, ZwlrOutputPowerManagerV1, _>(POWER_MANAGER_VERSION, ());
         Self {
-            manager_global: display
-                .create_global::<State, ZwlrOutputManagerV1, _>(MANAGER_VERSION, ()),
-            power_global: display
-                .create_global::<State, ZwlrOutputPowerManagerV1, _>(POWER_MANAGER_VERSION, ()),
             heads: Vec::new(),
             serial: 1,
             managers: Vec::new(),
@@ -235,14 +231,6 @@ impl OutputManagementState {
     /// Reuse the session loop's existing mailbox wake for storage results.
     pub fn set_wake(&mut self, wake: crate::session_runtime::Wake) {
         self.wake = Some(wake);
-    }
-
-    pub fn manager_global(&self) -> GlobalId {
-        self.manager_global.clone()
-    }
-
-    pub fn power_global(&self) -> GlobalId {
-        self.power_global.clone()
     }
 
     /// The heads currently advertised.

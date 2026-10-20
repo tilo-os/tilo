@@ -5080,11 +5080,6 @@ impl FrameBuilder {
         self.system_modal_scrim = shown;
     }
 
-    /// Whether the desktop is dimmed under a system-modal prompt.
-    pub fn system_modal_scrim(&self) -> bool {
-        self.system_modal_scrim
-    }
-
     pub fn fullscreen_surface_rect(&self) -> Option<(u64, Rect)> {
         self.fullscreen_overlay
             .as_ref()

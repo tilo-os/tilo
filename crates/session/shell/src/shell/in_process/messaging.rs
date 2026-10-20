@@ -491,16 +491,6 @@ impl NativeSignalAccount {
         self.gate.check_account_scope(broker.scope())?;
         self.supervisor.install_signal_receiving(broker, receiver)
     }
-    /// Resume the exact retained account through original approved credential custody.
-    /// No grant, socket discovery, daemon spawn or login is performed here.
-    /// # Errors
-    /// Refuses relative storage, revoked authority or another activation.
-    pub fn activate_native(&self, handles: NativeSignalHandles) -> Result<(), SendError> {
-        if !handles.private_root.is_absolute() {
-            return Err(SendError::InvalidRequest);
-        }
-        self.activate(|authority| assemble_native(self, handles, authority))
-    }
 }
 fn assemble_native(
     account: &NativeSignalAccount,

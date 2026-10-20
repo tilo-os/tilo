@@ -394,24 +394,6 @@ async fn finish_display_when_paired(
     }
 }
 
-/// Start the service on the session runtime for the compositor boot path,
-/// logging rather than failing when there's no Bluetooth on this machine.
-#[cfg(target_os = "linux")]
-pub fn spawn_on(
-    rt: &tokio::runtime::Handle,
-    handle: PairingPromptHandle,
-) -> tokio::task::JoinHandle<Option<PairingService>> {
-    rt.spawn(async move {
-        match PairingService::start(handle).await {
-            Ok(svc) => Some(svc),
-            Err(e) => {
-                info!(target: "tilo::bluetooth", "no pairing agent this session: {e}");
-                None
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

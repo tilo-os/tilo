@@ -977,10 +977,6 @@ impl SharedFlatpakSession {
         self.stream_sender.poll(peer)
     }
 
-    pub fn stream_sender(&self) -> Arc<SurfaceStreamSender> {
-        self.stream_sender.clone()
-    }
-
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
         let mut reg = self.share_registry.lock_recover();
         reg.set_read_only(peer, self.surface_id, read_only);

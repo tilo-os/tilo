@@ -74,18 +74,10 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Install the closure that carries out [`PeerSyncRequest`]s. Without
+    /// Install the closure that carries out [`PeerSyncRequest`]s; without
     /// one, requests fail visibly as unavailable when the frame pump drains
-    /// them.
-    #[must_use]
-    pub fn with_peer_sync_bridge(mut self, bridge: PeerSyncBridge) -> Self {
-        self.set_peer_sync_bridge(bridge);
-        self
-    }
-
-    /// [`Self::with_peer_sync_bridge`] for a host that is already
-    /// built — the native compositor constructs its host inside a
-    /// `FrameBuilder` before it has a network handle to bridge to.
+    /// them. Set on a built host: the native compositor constructs its host
+    /// inside a `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
         self.peer_sync.set_bridge(bridge);
     }
@@ -186,13 +178,6 @@ impl ShellOverlayHost {
             clipboard_history_matches_query(item, &self.qs_clipboard_query, fabric.as_ref())
         });
         history
-    }
-
-    /// Supply identities the host has already verified (for example, through
-    /// Contacts or a previous in-person verification). The invite sheet may
-    /// reuse only these exact keys for its “someone I know” choices.
-    pub fn set_remembered_invitees(&mut self, invitees: Vec<RememberedInvitee>) {
-        self.peer_sync_overlay.set_remembered_invitees(invitees);
     }
 
     /// Install the session-local bridge that binds application viewports to

@@ -2810,7 +2810,6 @@ onboarding-portable-home-body = Enter the password you chose during setup to rev
 
 onboarding-portable-home-unavailable = Your transfer is not available on this computer yet. Try again or continue without bringing your files over.
 
-onboarding-migration-resume-busy = Finish the current setup before opening your file migration.
 
 onboarding-migration-resume-unavailable = There is no deferred file migration available for your current identity.
 

@@ -589,35 +589,6 @@ impl GlobalShortcutsHandle {
         self.service.release_session(session);
         Some(record.caller)
     }
-
-    /// Release every session belonging to a previous frontend generation.
-    /// This prevents old broker names from consuming the bounded registry.
-    pub fn close_owner(&self, owner: &str) -> Vec<PortalCaller> {
-        let removed = self
-            .state
-            .lock()
-            .map(|mut state| {
-                let paths: Vec<_> = state
-                    .sessions
-                    .iter()
-                    .filter(|(_, session)| session.owner == owner)
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                paths
-                    .into_iter()
-                    .filter_map(|path| state.sessions.remove(&path).map(|session| (path, session)))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for (path, session) in &removed {
-            let _ = self.lifecycle.close_session(path, &session.owner);
-            self.service.release_session(path);
-        }
-        removed
-            .into_iter()
-            .map(|(_, session)| session.caller)
-            .collect()
-    }
 }
 
 #[derive(Clone)]

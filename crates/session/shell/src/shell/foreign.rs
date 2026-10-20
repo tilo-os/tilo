@@ -2624,13 +2624,6 @@ impl ForeignFrameStore {
         self.imports.load(Ordering::Relaxed)
     }
 
-    /// Capture the buffer a client just committed. Tries `wl_shm` readback
-    /// first; a not-shm buffer routes to the dmabuf importer. The `wl_buffer → Dmabuf` lookup is done by the caller-visible [`smithay::wayland::dmabuf::get_dmabuf`], keeping this a single entry point.
-    #[cfg(target_os = "linux")]
-    pub fn capture_commit(&self, id: SurfaceId, buffer: &WlBuffer) -> CaptureOutcome {
-        self.capture_commit_associated(id, buffer, None)
-    }
-
     /// Capture one buffer commit with the token assigned by its pre-commit
     /// hook. Supplying the exact token prevents an unrelated damage-only
     /// commit from consuming a later blocked dmabuf result.

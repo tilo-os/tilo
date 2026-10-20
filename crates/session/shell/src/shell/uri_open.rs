@@ -59,24 +59,6 @@ pub fn resource_for_uri(uri: &str) -> Result<ResourceKind, UriOpenError> {
 
 /// # Errors
 ///
-/// Propagates [`resource_for_uri`]'s error for a malformed `uri`, or
-/// returns [`UriOpenError::NoHandler`] if no app claims the URI's scheme
-/// under `user_id`'s or `workspace`'s policy.
-pub fn resolve_for(
-    uri: &str,
-    user_id: &str,
-    workspace: Option<&desktop_policy::WorkspaceDefaults>,
-) -> Result<InstalledApp, UriOpenError> {
-    let resource = resource_for_uri(uri)?;
-    launcher::app_for_resource_with_policy(&resource, user_id, workspace).ok_or_else(|| {
-        UriOpenError::NoHandler {
-            scheme: resource.scheme_name().unwrap_or_default().to_string(),
-        }
-    })
-}
-
-/// # Errors
-///
 /// Returns [`UriOpenError::InvalidUri`] for a malformed `uri`,
 /// [`UriOpenError::NoHandler`] if no app claims (or still claims) the
 /// scheme, [`UriOpenError::NoWorkspace`] if there is no active workspace

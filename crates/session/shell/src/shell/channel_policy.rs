@@ -75,14 +75,8 @@ impl WorkspaceChannelDirectory {
         self
     }
 
-    /// Production source of this machine's own devices: the fleet of the
-    /// identity selected for the room.
-    pub fn session_fleet() -> OwnDevices {
-        Self::session_fleet_with(Box::new(|_| Vec::new()))
-    }
-
-    /// [`Self::session_fleet`] plus the identity's devices the session
-    /// authenticated: `authenticated(user)` returns the root-signed
+    /// This machine's own devices: the fleet of the identity selected for the
+    /// room, plus the identity's devices the session authenticated: `authenticated(user)` returns the root-signed
     /// certificates of `user`'s devices a transport or workspace host
     /// verified (a browser the user certified through the host is in no
     /// local fleet file). The root signature is what makes a device the

@@ -2788,7 +2788,6 @@ onboarding-migration-progress = { $files } Dateien kopiert
 onboarding-portable-home-title = Hol deine Dateien in Tilo
 onboarding-portable-home-body = Gib das Passwort ein, das du bei der Einrichtung gewählt hast, um deine Dateien zu prüfen, bevor du sie diesem Computer hinzufügst.
 onboarding-portable-home-unavailable = Deine Übertragung ist auf diesem Computer noch nicht verfügbar. Versuche es erneut oder mach weiter, ohne deine Dateien herüberzuholen.
-onboarding-migration-resume-busy = Schließe die aktuelle Einrichtung ab, bevor du die Übernahme deiner Dateien öffnest.
 onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es keine aufgeschobene Dateiübernahme.
 onboarding-existing-files-available = Deine vorhandenen Dateien sind in Tilo verfügbar. Änderungen, die du hier machst, erscheinen auch in deinem bisherigen System.
 onboarding-existing-files-prepare-apps = Meine Apps vorbereiten
