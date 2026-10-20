@@ -5337,47 +5337,148 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
-# `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh): runs the `tilo-vm layer-pack`
-# command the builder left in .tilo-vm-pack/args.json against the uploaded worktree, on a node of
-# the device's architecture, and keeps the framed layer as the output the builder downloads and
-# streams to the device. Each request carries its own source inventory, so nothing is cached here;
-# layer-pack reuses a layer the device already holds by itself.
+# `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh). The tilo-vm that packs the layer
+# is a check of its own per architecture, keyed by the packages it is built from (not by the
+# worktree), so a swap from a commit that doesn't touch tilo-vm takes the last build instead of
+# compiling tilo-vm again. A command check gets no jobserver from t, so cargo would keep
+# .cargo/config.toml's floor of 4 jobs: this dev build of one CLI is the size of a `t cargo build`,
+# which the default requirement covers.
+
+[[check]]
+name = "tilo-vm-binary-x86_64"
+run = """
+cargo build --locked -p tilo-vm --bin tilo-vm
+rm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin
+cp "$CARGO_TARGET_DIR/debug/tilo-vm" /target/tilo-vm-bin/
+"""
+cargo_packages = ["tilo-vm"]
+cargo_dev_dependencies = false
+# A tool to run, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/tilo-vm-bin/**"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "tilo-vm-binary-arm64"
+run = """
+cargo build --locked -p tilo-vm --bin tilo-vm
+rm -rf /target/tilo-vm-bin && mkdir -p /target/tilo-vm-bin
+cp "$CARGO_TARGET_DIR/debug/tilo-vm" /target/tilo-vm-bin/
+"""
+cargo_packages = ["tilo-vm"]
+cargo_dev_dependencies = false
+# A tool to run, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/tilo-vm-bin/**"]
+requires = ["arch=arm64"]
+cost = "minutes"
+default = false
+
+# The layer itself (dist/dev/t-pack.sh): the `tilo-vm layer-pack` command the builder left in
+# .tilo-vm-pack/args.json, run by that tilo-vm against the uploaded worktree on a node of the
+# device's architecture; the framed layer it prints is the output the builder downloads and streams
+# to the device. Each request carries its own source inventory, so nothing is cached here;
+# layer-pack reuses a layer the device already holds by itself. The builder picks the check by the
+# component's size, and each check's cargo runs as many jobs as the cores it requires (a command
+# check gets no jobserver from t): `tilo-vm-pack-apps-<arch>` builds the app collection and its
+# runtime with the thin-app profile, as big as the collection's own builds (app-binaries-<arch>),
+# and lays them out in bubblewrap sandboxes of its own (so it is "nested");
+# `tilo-vm-pack-shell-<arch>` builds the shell's release binary, the size of shell-binaries;
+# `tilo-vm-pack-<arch>` builds every other component (the launcher, the system services), release
+# builds of one program each.
 [[check]]
 name = "tilo-vm-pack-x86_64"
-run = """
-mapfile -t argv < <(python3 -c 'import json; [print(a) for a in json.load(open(".tilo-vm-pack/args.json"))]')
-rm -rf /target/tilo-vm-pack && mkdir -p /target/tilo-vm-pack
-cargo run --locked -p tilo-vm --bin tilo-vm -- "${argv[@]}" > /target/tilo-vm-pack/layer.txt
-"""
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
+needs = ["tilo-vm-binary-x86_64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=x86_64"]
-requirement = { cores = 16, memory = "32GiB" }
+requirement = { cores = 8, memory = "12GiB" }
 cache = false
 cost = "heavy"
 timeout_secs = 5400
 default = false
 
-# `tilo-vm swap --builder remote` on t (dist/dev/t-builder.sh): runs the `tilo-vm layer-pack`
-# command the builder left in .tilo-vm-pack/args.json against the uploaded worktree, on a node of
-# the device's architecture, and keeps the framed layer as the output the builder downloads and
-# streams to the device. Each request carries its own source inventory, so nothing is cached here;
-# layer-pack reuses a layer the device already holds by itself.
+[[check]]
+name = "tilo-vm-pack-shell-x86_64"
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+needs = ["tilo-vm-binary-x86_64"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 8, memory = "24GiB" }
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "tilo-vm-pack-apps-x86_64"
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+needs = ["tilo-vm-binary-x86_64"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "32GiB" }
+# os/dev/assemble-app-runtime.py lays the runtime and the apps out in bubblewrap sandboxes of its
+# own, which the strict job sandbox refuses (no new namespaces).
+isolation = "nested"
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
 [[check]]
 name = "tilo-vm-pack-arm64"
-run = """
-mapfile -t argv < <(python3 -c 'import json; [print(a) for a in json.load(open(".tilo-vm-pack/args.json"))]')
-rm -rf /target/tilo-vm-pack && mkdir -p /target/tilo-vm-pack
-cargo run --locked -p tilo-vm --bin tilo-vm -- "${argv[@]}" > /target/tilo-vm-pack/layer.txt
-"""
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
+needs = ["tilo-vm-binary-arm64"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=arm64"]
+requirement = { cores = 8, memory = "12GiB" }
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "tilo-vm-pack-shell-arm64"
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_BUILD_JOBS = "8", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+needs = ["tilo-vm-binary-arm64"]
+outputs = ["/target/tilo-vm-pack/**"]
+requires = ["arch=arm64"]
+requirement = { cores = 8, memory = "24GiB" }
+cache = false
+cost = "heavy"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "tilo-vm-pack-apps-arm64"
+run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
+# A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
+env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+needs = ["tilo-vm-binary-arm64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=arm64"]
 requirement = { cores = 16, memory = "32GiB" }
+# os/dev/assemble-app-runtime.py lays the runtime and the apps out in bubblewrap sandboxes of its
+# own, which the strict job sandbox refuses (no new namespaces).
+isolation = "nested"
 cache = false
 cost = "heavy"
 timeout_secs = 5400
