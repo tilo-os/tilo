@@ -606,18 +606,6 @@ pub fn switch_views<A: ResourceApp>(
     )
 }
 
-/// Clicks at `at` that change nothing an app shows: an empty spot. What
-/// every click costs before it does anything.
-pub fn idle_clicks<A: ResourceApp>(
-    app: &mut HeadlessApp<A>,
-    at: (f64, f64),
-    steps: usize,
-) -> Report {
-    measure(app, "idle click", (2, steps), |app, _| {
-        app.harness().click_at(at.0, at.1);
-    })
-}
-
 /// The interactions [`profile`] measured; `None` where the app's capture
 /// offers nothing of that kind to drive.
 pub struct Profile {

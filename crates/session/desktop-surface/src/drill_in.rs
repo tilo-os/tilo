@@ -157,14 +157,6 @@ fn discovery_label_width(row: Rect, glyph: Rect, trailing_reserve: f64) -> f64 {
     (row.x1 - trailing_reserve.max(status_slots) - label_x).max(1.0)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DrillInOutcome {
-    #[default]
-    None,
-    Back,
-    Changed,
-}
-
 #[derive(Default)]
 pub struct DrillInList {
     back: Rect,
@@ -220,37 +212,6 @@ impl DrillInList {
 
     pub fn row_count(&self) -> usize {
         self.row_count
-    }
-
-    pub fn visible_indices(&self) -> std::ops::Range<usize> {
-        self.first_visible..self.first_visible.saturating_add(self.rows.len())
-    }
-
-    /// Pure projection of the current scroll window. Semantic geometry can
-    /// use this before paint without mutating the retained list.
-    pub fn visible_rects(
-        &self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-    ) -> Vec<(usize, Rect)> {
-        let capacity = Self::capacity(panel, list_top);
-        let first = self.first_visible.min(row_count.saturating_sub(capacity));
-        let visible = capacity.min(row_count.saturating_sub(first));
-        (0..visible)
-            .map(|slot| {
-                let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
-                (
-                    first.saturating_add(slot),
-                    Rect::new(
-                        panel.x0 + PANEL_PAD,
-                        y,
-                        panel.x1 - PANEL_PAD,
-                        y + ROW_HEIGHT,
-                    ),
-                )
-            })
-            .collect()
     }
 
     pub fn row_for(&self, index: usize) -> Option<&Rect> {
@@ -355,10 +316,6 @@ impl DrillInList {
         list_top + rows * ROW_HEIGHT + (rows - 1.0) * RELATED_GAP + PANEL_PAD
     }
 
-    pub fn back_contains(&self, point: Point) -> bool {
-        self.back.contains(point)
-    }
-
     pub fn row_at(&self, point: Point) -> Option<usize> {
         self.rows
             .iter()
@@ -368,11 +325,6 @@ impl DrillInList {
 
     pub fn rows(&self) -> &[Rect] {
         &self.rows
-    }
-
-    /// Centre of the Back button, where a press pops the drill-in.
-    pub fn back_center(&self) -> Point {
-        self.back.center()
     }
 
     pub fn draw_header(

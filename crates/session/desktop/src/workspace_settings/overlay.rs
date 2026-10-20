@@ -515,11 +515,6 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
-    /// The Public card's switch, role and description controls.
-    pub fn public_control_rects(&self) -> &[Rect; 3] {
-        &self.public_rects
-    }
-
     /// The Public card's control under `point`, if any.
     fn public_card_hit(&self, point: Point) -> Option<EventOutcome> {
         let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);

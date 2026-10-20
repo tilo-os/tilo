@@ -1122,11 +1122,6 @@ impl PresenceCtx {
             .map_or(1.0, |bounce| bounce.scale(now))
     }
 
-    /// Whether a face is bouncing at `now`.
-    pub fn faces_moving(&self, now: Instant) -> bool {
-        self.bounces.values().any(|bounce| bounce.is_moving(now))
-    }
-
     /// Waves heard since the last call: who waved, at whom, when.
     pub fn take_waves(&mut self) -> Vec<(UserId, String, Instant)> {
         std::mem::take(&mut self.waves)

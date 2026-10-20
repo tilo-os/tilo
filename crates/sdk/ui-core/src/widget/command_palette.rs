@@ -325,15 +325,6 @@ impl CommandEntry {
         self
     }
 
-    /// Ask for a value of `kind` in the argument step.
-    #[must_use]
-    pub fn argument_kind(mut self, kind: ArgumentKind) -> Self {
-        if let Some(spec) = &mut self.argument {
-            spec.kind = kind;
-        }
-        self
-    }
-
     #[must_use]
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());

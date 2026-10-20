@@ -874,24 +874,6 @@ impl WindowGroup {
         self.top_edge.on_press(p, &geo);
     }
 
-    /// Show the bar for keyboard use (`pinned`) or let the pointer decide
-    /// again. Returns whether the bar showed or hid.
-    pub fn pin_maximized_chrome(&mut self, pinned: bool) -> bool {
-        if !self.maximized_chrome_live() {
-            return false;
-        }
-        let changed = if pinned {
-            self.top_edge.pin(crate::time::now())
-        } else {
-            self.top_edge.unpin();
-            false
-        };
-        if changed {
-            self.top_edge_changed();
-        }
-        changed
-    }
-
     /// Tell the group how much of its top edge something overlays now — the
     /// desktop's top bar while it shows over a window that reaches under an
     /// auto-hiding top bar — so the window's bar stands below it instead of
@@ -2367,11 +2349,6 @@ impl WindowGroup {
     #[cfg(test)]
     pub fn close_glyph_icon_for_tests() -> icons::Icon {
         icons::Icon::X
-    }
-
-    #[cfg(test)]
-    pub fn restore_glyph_icon_for_tests() -> icons::Icon {
-        icons::Icon::Minimize2
     }
 
     #[cfg(test)]
