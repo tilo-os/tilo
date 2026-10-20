@@ -1927,3 +1927,59 @@ fn a_first_layout_on_the_screens_the_shell_planned_keeps_its_tree() {
     );
     assert_eq!(shell.front_pane(), NavPane::Sidebar, "it opens on its list");
 }
+
+fn sidebar_resize_control(h: &FrameHarness) -> Option<crate::headless::Control> {
+    h.controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Resize sidebar"))
+}
+
+#[test]
+fn the_sidebar_resize_edge_is_an_accessible_separator() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let resize = sidebar_resize_control(&h).expect("the docked sidebar's edge is a control");
+    h.operate_control(
+        &resize.id,
+        &crate::headless::ControlInput::SetValue("25%".into()),
+    )
+    .expect("set-value resizes the sidebar");
+    settle(&mut h, 1400, 800);
+    let width = geometry(&h).sidebar_column.width();
+    assert!((width - 350.0).abs() < 1.0, "laid out width {width}");
+    assert!(
+        h.operate_control(
+            &resize.id,
+            &crate::headless::ControlInput::SetValue("NaN%".into())
+        )
+        .is_err()
+    );
+    settle(&mut h, 1400, 800);
+    assert_eq!(geometry(&h).sidebar_column.width(), width);
+
+    settle(&mut h, 400, 800);
+    assert!(
+        sidebar_resize_control(&h).is_none(),
+        "a sidebar that is not docked has no resize edge"
+    );
+}
+
+#[test]
+fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let resize = sidebar_resize_control(&h).expect("the docked sidebar's edge is a control");
+    h.operate_control(&resize.id, &crate::headless::ControlInput::Focus)
+        .expect("focus the edge");
+    let before = geometry(&h).sidebar_column.width();
+    h.key("ArrowRight");
+    settle(&mut h, 1400, 800);
+    let wider = geometry(&h).sidebar_column.width();
+    assert!(wider > before, "{wider} after {before}");
+
+    let content = geometry(&h).content_column.center();
+    h.click_at(content.x, content.y);
+    h.key("ArrowRight");
+    settle(&mut h, 1400, 800);
+    assert_eq!(geometry(&h).sidebar_column.width(), wider);
+}

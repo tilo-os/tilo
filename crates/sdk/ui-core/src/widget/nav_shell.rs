@@ -88,6 +88,7 @@ use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
     AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
 };
+use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
 
 mod header_parts;
 use crate::widget::toast::{ToastKind, ToastStack};
@@ -1508,6 +1509,9 @@ pub struct NavShell {
     /// The app or the person chose the front screen.
     pane_chosen: bool,
     resize: Option<Resize>,
+    /// The sidebar's resize edge holds keyboard focus (given through its
+    /// accessible separator); arrows then resize.
+    resize_focused: bool,
     last_cursor: Point,
     /// Reduced motion: the sidebar and drawers fade in instead of sliding.
     fade: crate::motion::Presence,
@@ -1627,6 +1631,7 @@ impl NavShell {
             planned: None,
             pane_chosen: false,
             resize: None,
+            resize_focused: false,
             last_cursor: Point::ZERO,
             fade: crate::motion::Presence::opened(),
             switch_fade: crate::motion::Presence::opened(),
@@ -3425,6 +3430,9 @@ impl NavShell {
             }
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
+        if self.resize_focused && self.sidebar_resize_handle().is_some() {
+            crate::widget::paint_focus_ring(f.scene, f.transform, g.resize_handle, 2.0, f.theme);
+        }
 
         // Drawers over the columns, under the header row; the row's buttons
         // stay above everything. No scrim: a drawer is not modal, and the
@@ -4362,7 +4370,45 @@ impl Widget for NavShell {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let key = self.id.as_deref().unwrap_or("nav-shell");
-        Some(AccessNode::new(Role::Group).with_semantic_key(format!("{key}.window")))
+        let resize = self.sidebar_resize_handle().map(|handle| {
+            let target = self.sidebar_resize_target();
+            handle
+                .accessibility()
+                .with_name(crate::i18n::widget_format("widget-sidebar-resize", &[]))
+                .with_action_target(target.clone())
+                .with_hashed_key(&target)
+                .with_bounds(self.geometry.resize_handle)
+        });
+        Some(
+            AccessNode::new(Role::Group)
+                .with_semantic_key(format!("{key}.window"))
+                .with_children(resize.into_iter().collect()),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
+            return false;
+        }
+        if matches!(action, crate::a11y::Action::Focus) {
+            self.resize_focused = true;
+            self.invalidate();
+            return true;
+        }
+        self.step_sidebar_resize(action)
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if !focused && self.resize_focused {
+            self.resize_focused = false;
+            self.invalidate();
+        }
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -4678,6 +4724,17 @@ impl NavShell {
     }
 
     fn handle_key(&mut self, key: &Key, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+        if self.resize_focused {
+            let step = match key {
+                Key::Named(NamedKey::ArrowLeft) => Some(crate::a11y::Action::Decrement),
+                Key::Named(NamedKey::ArrowRight) => Some(crate::a11y::Action::Increment),
+                _ => None,
+            };
+            if let Some(step) = step {
+                self.step_sidebar_resize(&step);
+                return true;
+            }
+        }
         let modifiers = ctx.modifiers.state();
         let command = self.conventions.command_modifier_down(modifiers);
         if command && let Key::Character(c) = key {
@@ -4725,6 +4782,10 @@ impl NavShell {
     }
 
     fn handle_press(&mut self) -> bool {
+        if self.resize_focused {
+            self.resize_focused = false;
+            self.invalidate();
+        }
         let p = self.last_cursor;
         let g = &self.geometry;
         if g.resize_handle.contains(p) {
@@ -4753,6 +4814,60 @@ impl NavShell {
             self.active_hint = Some(NavPane::Overview);
         }
         false
+    }
+
+    fn sidebar_resize_target(&self) -> String {
+        format!(
+            "{}.sidebar-resize",
+            self.id.as_deref().unwrap_or("nav-shell")
+        )
+    }
+
+    /// The docked sidebar's resize edge as the shared split separator, its
+    /// value the sidebar's share of the window, while the edge is draggable.
+    fn sidebar_resize_handle(&self) -> Option<SplitHandle> {
+        let edge = self.geometry.resize_handle;
+        let extent = self.rect.width();
+        if self.resize.is_some() || self.animating || edge.width() <= 0.0 || extent <= 0.0 {
+            return None;
+        }
+        let inputs = self.inputs.borrow();
+        let overview = if inputs.has_overview {
+            inputs.metrics.overview
+        } else {
+            0.0
+        };
+        let widest = inputs
+            .metrics
+            .sidebar_max
+            .min((extent - overview - inputs.content_min()).max(0.0));
+        let mut ratio = SplitRatio::default().with_bounds(0.0, f32_of_f64(widest / extent));
+        ratio.set(crate::num::f32_of_f64(
+            self.geometry.sidebar_column.width() / extent,
+        ));
+        let mut handle = SplitHandle::new(SplitOrientation::Horizontal, ratio);
+        handle.set_bounds(Rect::new(self.rect.x0, edge.y0, self.rect.x1, edge.y1));
+        handle.set_focused(self.resize_focused);
+        Some(handle)
+    }
+
+    /// Resize the sidebar by a separator step or value, as a drag would.
+    fn step_sidebar_resize(&mut self, action: &crate::a11y::Action) -> bool {
+        let Some(mut handle) = self.sidebar_resize_handle() else {
+            return false;
+        };
+        if !handle.perform_action(action) {
+            return false;
+        }
+        let width = handle.ratio().first_extent(self.rect.width());
+        self.drag_sidebar_to(
+            Resize {
+                start_x: 0.0,
+                start_width: 0.0,
+            },
+            width,
+        );
+        true
     }
 
     fn drag_sidebar_to(&mut self, resize: Resize, x: f64) {
