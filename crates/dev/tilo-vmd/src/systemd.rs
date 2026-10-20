@@ -2215,4 +2215,17 @@ mod userspace_tests {
                 .any(|arg| arg.contains("nsenter") || arg.contains("restart"))
         );
     }
+
+    /// Stopping a slot's session (a restart, `tilo-vm slot rm`) ends
+    /// tilo-session with 143: the unit counts that as a clean stop, so a
+    /// removed slot leaves no failed `tilo-vm-session@<slot>.service`.
+    #[test]
+    fn a_stopped_slot_session_is_not_a_failed_unit() {
+        let unit = include_str!("../data/tilo-vm-session@.service");
+        assert!(
+            unit.lines()
+                .any(|line| line.trim() == "SuccessExitStatus=143"),
+            "tilo-vm-session@.service must count SIGTERM's exit status as success"
+        );
+    }
 }

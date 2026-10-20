@@ -40,5 +40,9 @@ RuntimeDirectory=tilo-vm/%i
 # see its output; tilo-vm logs reads this identifier instead.
 SyslogIdentifier=tilo-session-%i
 ExecStart=/usr/libexec/tilo-session --backend ${TILO_VM_BACKEND}
+# tilo-session ends with status 143 (128 + SIGTERM) when systemd stops it: a
+# slot restart or `tilo-vm slot rm`. That is a clean stop, not a failure, so a
+# removed slot leaves no failed unit behind.
+SuccessExitStatus=143
 Restart=always
 RestartSec=2
