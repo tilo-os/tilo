@@ -257,9 +257,11 @@ little, so they hold nothing more (`patch_log_memory.rs` and
 into a scattered text builds it on the third: the 80,000-op document
 above holds 4.4 MB, and the index adds 0.65 MB. A document found not
 worth it is looked at again once it has grown by an eighth. The index is
-dropped, to be rebuilt by the next apply, when ops leave the document (a
-rolled back transaction), actors are renumbered, a gap grows past 4,096
-ops, or more ops have been spliced in than a quarter of those built.
+dropped, to be rebuilt by the next apply, when ops it was built with leave
+the document, actors are renumbered, a gap grows past 4,096 ops, or more
+ops have been spliced in than a quarter of those built (ops spliced in
+since and taken out again, as a rolled back transaction's are, leave
+their gap instead: next section).
 
 A position the index gives is used only once the id read there is the one
 asked for; otherwise, or with no index, the column is searched as before,
@@ -276,6 +278,53 @@ documents, heads and patches with crates.io `automerge` 0.12.0 over
 three-actor histories typed at scattered places and checks that what a
 remote letter costs does not grow with such a history. Upstream `main`
 looks ops up the same way; the patch is upstreamable.
+
+# Tilo patch: a rolled back transaction keeps the op index
+
+`OpSet::undo_op` dropped the op index of the section above for every op a
+rolled back transaction took out, so the next apply built it again over the
+whole document. `tilolang-tilo`'s store keeps its runtime's writes as an
+open transaction in its replica of the room and rolls it back before taking
+in each change of the room: with the index dropped at every keystroke, the
+apply after it cost about 10 ms at 10,000 notes (release), where the same
+apply without the rollback took 0.1 ms.
+
+A transaction's ops are always ops spliced in since the index was built
+(the index is only built by an apply, which no open transaction spans), so
+taking one out is the inverse of splicing it in: `OpIdIndex::removed` takes
+it out of its gap and the gap's block count, in O(log n). An op the index
+was built with leaving the document still drops it. Delete ops, which the
+op columns do not store, are not looked for. The marked spot is
+`TILO(op-id-index)` in `undo_op`; the unit test
+`taking_back_spliced_ops_keeps_the_index` checks the index against a model
+through random transactions committed or taken back. Pinned by
+`crates/doc/tilo-automerge/tests/speculative_writes.rs`: taking back a letter
+before a remote letter adds 3.4 ms to the remote letter at 80,000 letters of
+scattered history without the patch (test profile, the fork optimised),
+16 µs at 4,000; with it the test holds the long history to twice the short
+one's cost plus 0.1 ms. The index decides how fast an op is
+found, never which, so documents and patches are unchanged. Upstreamable.
+
+# Tilo patch: an empty commit opens no transaction
+
+`AutoCommit::commit_with` opened a transaction even when none was open, only
+to commit it empty and return `None`. Opening it adds the document's actor
+when that actor has not written yet, renumbering the actor of every op, and
+the empty commit removes it again, renumbering them back (and dropping the
+op index). Tilo's hosts commit after every executor dispatch, whose change
+is already committed under the action's own actor, so each keystroke paid
+both: 6.6 ms at 10,000 notes (release). With no transaction open,
+`commit_with` now returns `None` at once. The document, its heads, actors
+and patch log are as the empty commit left them; the one difference is that
+an empty commit no longer drops queued changes of the document's own actor
+at or after its next sequence number (`transaction_args` does that for a
+change about to claim that number, and an empty commit claims none). The
+marked spot is `TILO(empty-commit)` in `autocommit.rs`. Pinned by
+`crates/doc/tilo-automerge/tests/speculative_writes.rs`: an empty commit
+cost 1.3 ms at 80,000 letters of scattered history and 37 µs at 4,000
+without the patch (test profile); with it the test holds the long history
+to ten times the short one's cost plus 50 µs.
+Upstreamable.
 
 # Tilo change: the fork's own tests run in CI
 

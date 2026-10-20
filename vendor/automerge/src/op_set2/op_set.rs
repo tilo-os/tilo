@@ -255,7 +255,10 @@ impl OpSet {
             self.undo_succ(&op.undo);
         }
         self.cols.remove_ops(op.pos, &[op]);
-        self.id_index.clear(); // TILO(op-id-index)
+        // TILO(op-id-index): the op `Columns::remove_ops` took out, if any.
+        if op.bld.action != Action::Delete {
+            self.id_index.removed(op.id());
+        }
         if op.obj_info().is_some() {
             self.obj_info.remove(op.id());
         }

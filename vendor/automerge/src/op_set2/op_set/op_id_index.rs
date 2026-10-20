@@ -14,8 +14,9 @@
 //! `g` (gap `len` at the end), and holds its ops in order. A Fenwick tree
 //! over blocks of [`BLOCK`] gaps counts the ops spliced into each, so the
 //! ops before a built op or a gap are O(log n) to count and a splice
-//! O(log n) to record. Ops that leave the document (a rolled back
-//! transaction) or a renumbering of actors drop the index, as does a gap
+//! O(log n) to record, and so is taking such an op out again (a rolled
+//! back transaction). Any other op leaving the document or a renumbering of
+//! actors drops the index, as does a gap
 //! growing past [`MAX_GAP`] or more ops spliced in than a quarter of those
 //! built; the next apply rebuilds it. It costs about 8 bytes per built op.
 //!
@@ -202,6 +203,18 @@ impl OpIdIndex {
         }
     }
 
+    /// The op `id` left the document. One spliced in since the build (as
+    /// every op of a transaction being rolled back is) leaves its gap; any
+    /// other drops the index.
+    pub(crate) fn removed(&mut self, id: OpId) {
+        let State::Built(built) = &mut self.state else {
+            return;
+        };
+        if built.remove(id).is_none() {
+            self.state = State::Dropped;
+        }
+    }
+
     /// Where the op `id` is: `None` if nothing is indexed, `Some(None)` if
     /// the document does not hold it, else a position to check.
     pub(crate) fn find(&self, id: OpId) -> Option<Option<usize>> {
@@ -293,6 +306,23 @@ impl Built {
             return Some((u32::try_from(gap + rest).ok()?, 0));
         }
         None
+    }
+
+    fn remove(&mut self, id: OpId) -> Option<()> {
+        let gap = self.recent.remove(&id)?;
+        let held = self.gaps.get_mut(&gap)?;
+        let offset = held.iter().rposition(|&o| o == id)?;
+        held.remove(offset);
+        if held.is_empty() {
+            self.gaps.remove(&gap);
+        }
+        let mut i = gap as usize / BLOCK + 1;
+        while i < self.blocks.len() {
+            let node = self.blocks.get_mut(i)?;
+            *node = node.checked_sub(1)?;
+            i += i & i.wrapping_neg();
+        }
+        Some(())
     }
 
     fn insert(&mut self, at: usize, ids: &[OpId]) -> Option<()> {
@@ -409,6 +439,50 @@ mod tests {
         index.clear();
         assert!(!index.is_built());
         assert!(index.wants_counters(1_000, MIN_SLABS));
+    }
+
+    #[test]
+    fn taking_back_spliced_ops_keeps_the_index() {
+        for seed in 1..40u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let mut next = 1u64;
+            let mut doc: Vec<OpId> = (0..300)
+                .map(|_| {
+                    next += 1;
+                    OpId::new(next, rng.below(3))
+                })
+                .collect();
+            let mut index = OpIdIndex::default();
+            index.build(doc.len(), doc.iter().copied());
+            let first_built = doc[0];
+            for _ in 0..60 {
+                // A transaction: a few ops spliced in anywhere, then taken
+                // back newest first, as `Transaction::rollback` does.
+                let mut spliced = Vec::new();
+                for _ in 0..1 + rng.below(6) {
+                    next += 1;
+                    let id = OpId::new(next, 3);
+                    let at = rng.below(doc.len() + 1);
+                    doc.insert(at, id);
+                    index.inserted(at, std::iter::once(id));
+                    spliced.push(id);
+                }
+                if rng.below(3) == 0 {
+                    // Committed: they stay.
+                    continue;
+                }
+                for id in spliced.into_iter().rev() {
+                    let at = doc.iter().position(|&o| o == id).unwrap();
+                    doc.remove(at);
+                    index.removed(id);
+                }
+                assert!(index.is_built());
+                check(&index, &doc, next + 1);
+            }
+            // A built op leaving drops the index.
+            index.removed(first_built);
+            assert!(!index.is_built());
+        }
     }
 
     #[test]
