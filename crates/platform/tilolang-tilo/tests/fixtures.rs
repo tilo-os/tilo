@@ -1,38 +1,156 @@
-//! A package as the compiler's metadata describes it, and its registered schemas.
+//! Packages compiled from source, and replicas of one room that run them.
 
-use tilolang_tilo::PackageMeta;
+use automerge::AutoCommit;
+use tilo_actions::{ActionContext, ActionEnvelope, ActionInvoker};
+use tilolang_runtime::meta::Meta;
+use tilolang_runtime::{Decision, Principal, ViewInstance};
+use tilolang_tilo::action::DynAction;
+use tilolang_tilo::host::{Host, Package};
+use tilolang_tilo::record::{DynRecord, DynValue};
 
-/// The counter of the language spec, plus a todo list for collections, sets and text.
-pub const META: &str = r#"{
-  "app": "so.tilo.counter", "title": "Counter", "module_hash": "mod1",
-  "types": [
-    {"id": "tcnt0001", "name": "Counter", "fields": [
-      {"id": "fval0001", "name": "value", "type": "Int", "merge": "counter"}]},
-    {"id": "ttodo001", "name": "Todo", "fields": [
-      {"id": "ftitle01", "name": "title", "type": "Text", "merge": "text"},
-      {"id": "fdone001", "name": "done", "type": "Bool", "merge": "register", "default": false},
-      {"id": "fitems01", "name": "items", "type": "Collection<Item>"},
-      {"id": "ftags001", "name": "tags", "type": "Set<Text>"},
-      {"id": "fprops01", "name": "props", "type": "Map<Text>"}]},
-    {"id": "titem001", "name": "Item", "fields": [
-      {"id": "ftext001", "name": "text", "type": "Text", "merge": "text"},
-      {"id": "fcheck01", "name": "checked", "type": "Bool", "merge": "register", "default": false}]}
-  ],
-  "actions": [
-    {"id": "aincr001", "name": "increment", "params": [{"name": "c", "type": "Counter"}],
-     "class": "undoable", "doc": "Count one up."},
-    {"id": "aadd00001", "name": "add", "params": [{"name": "t", "type": "Todo"}, {"name": "text", "type": "Text"}],
-     "class": "undoable"},
-    {"id": "alook001", "name": "peek", "params": [{"name": "c", "type": "Counter"}],
-     "class": "read"},
-    {"id": "asend001", "name": "announce", "params": [{"name": "message", "type": "Text"}],
-     "class": "outside"}
-  ],
-  "views": [{"id": "vmain001", "name": "main", "params": [{"name": "c", "type": "Counter"}]}]
-}"#;
+/// The counter of the language spec: the first package of the host.
+pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
 
-pub fn meta() -> PackageMeta {
-    let meta = PackageMeta::from_json(META).unwrap();
-    meta.register_schemas();
-    meta
+/// A list with text, a collection and a set, for the merge kinds the counter does not use.
+pub const TODO: &str = r#"app so.tilo.todo "Todo"
+
+type Item {
+  text: Text merge text
+  done: Bool
+}
+
+type TodoList {
+  title: Text merge text
+  items: Collection<Item>
+  tags: Set<Text>
+}
+
+action add(l: TodoList, text: Text) { l.items.insert(Item(text: text, done: false)) }
+
+action move_first(l: TodoList, i: Item) { l.items.move(i, 0) }
+
+action tag(l: TodoList, t: Text) { l.tags.add(t) }
+
+view main(l: TodoList) {
+  stack {
+    input(bind: l.title, placeholder: "Title")
+    for i in l.items {
+      text(i.text)
+    }
+  }
+}
+"#;
+
+pub const APP: &str = "so.tilo.counter";
+
+/// One collaborator's machine: a copy of the room record and a host over it.
+pub struct Replica {
+    pub name: String,
+    pub doc: AutoCommit,
+    pub host: Host,
+    /// The envelope of every action committed here, for a peer to replay.
+    pub log: Vec<ActionEnvelope>,
+}
+
+impl Replica {
+    /// A replica of `doc` for `name`, with `packages` (source and ids lock) loaded.
+    pub fn new(name: &str, doc: AutoCommit, packages: &[(&str, &str)]) -> (Self, Vec<Package>) {
+        let host = Host::new(&doc, Principal::new(name), |_, _| Decision::Allow).unwrap();
+        let loaded = packages
+            .iter()
+            .map(|(source, ids)| host.load_builtin(source, ids).unwrap())
+            .collect();
+        (
+            Self {
+                name: name.to_owned(),
+                doc,
+                host,
+                log: Vec::new(),
+            },
+            loaded,
+        )
+    }
+
+    /// A second replica of this one's room, for `name`, running the same packages.
+    pub fn fork(&mut self, name: &str, packages: &[(&str, &str)]) -> Self {
+        Self::new(name, self.doc.fork(), packages).0
+    }
+
+    /// Commit one planned action through the executor, as the host does for a window: it is
+    /// the change's recorded action, attributed to this replica's person.
+    pub fn apply(&mut self, action: &DynAction) {
+        let context = ActionContext::for_resource(
+            action.resources().first().copied().unwrap_or("room"),
+            &action.kind,
+            &action.kind,
+        )
+        .with_app("so.tilo.lang", "tilolang")
+        .with_invoker(ActionInvoker::actor(self.name.clone()));
+        let envelope = tilo_actions::apply_local_with_context(
+            &mut self.doc,
+            action,
+            action.encode().unwrap(),
+            Some(self.name.as_bytes()),
+            context,
+        )
+        .unwrap();
+        self.log.push(envelope);
+        self.doc.commit();
+        self.host.sync_from(&self.doc);
+    }
+
+    /// Commit what the runtime committed on its own (a press, a created root).
+    pub fn commit(&mut self) {
+        for committed in self.host.take_committed() {
+            self.apply(&committed.action);
+        }
+    }
+
+    /// Exchange every change with `other`, as sync does.
+    pub fn sync_with(&mut self, other: &mut Self) {
+        self.doc.merge(&mut other.doc).unwrap();
+        other.doc.merge(&mut self.doc).unwrap();
+        self.host.sync_from(&self.doc);
+        other.host.sync_from(&other.doc);
+    }
+
+    /// Open the `main` view of `app`.
+    pub fn view(&self, app: &str) -> ViewInstance {
+        self.host.open_main(app).unwrap()
+    }
+
+    /// The root resource of `app` as the runtime reads it now.
+    pub fn root(&self, app: &str) -> DynRecord {
+        let root = self.host.root_of(app).unwrap();
+        self.host.store().record(&root.doc).unwrap()
+    }
+}
+
+/// The id of the field `field` of the type `ty` of `meta`.
+pub fn field_id(meta: &Meta, ty: &str, field: &str) -> String {
+    meta.types
+        .iter()
+        .find(|declared| declared.name == ty)
+        .and_then(|declared| declared.fields.iter().find(|f| f.name == field))
+        .map(|f| f.id.clone())
+        .unwrap()
+}
+
+/// The counter's value in a root record.
+pub fn count(record: &DynRecord, meta: &Meta) -> i64 {
+    match record.get(&field_id(meta, "Counter", "value")) {
+        Some(DynValue::Counter(counter)) => counter.get(),
+        other => panic!("not a counter: {other:?}"),
+    }
+}
+
+/// The key of the first button of a view: the one a person presses.
+pub fn button_key(view: &ViewInstance) -> String {
+    fn find(node: &tilolang_runtime::UiNode) -> Option<String> {
+        if node.kind == "button" {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(find)
+    }
+    find(view.tree()).expect("the view has a button")
 }

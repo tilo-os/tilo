@@ -20119,6 +20119,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-encoder",
+ "wasmparser 0.252.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-runtime"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "wasmi",
+ "wat",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
@@ -20128,7 +20154,8 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge-fork",
  "tilo-resource",
- "tilo-ui-graph",
+ "tilolang",
+ "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]

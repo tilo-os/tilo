@@ -124,40 +124,55 @@ impl DynAction {
     }
 }
 
-impl Action for DynAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        if self.edits.is_empty() {
-            return Ok(());
-        }
-        let payload =
-            serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
-        let mut cx = ActionCx::for_write(doc, &payload);
-        let records = ensure_map(doc, &ROOT, RECORDS_KEY)?;
-        let app = ensure_map(doc, &records, &self.app)?;
-        for edit in &self.edits {
-            match edit {
-                DynEdit::Create { id, record } => {
-                    let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
-                    record
-                        .store(doc, Slot::Key(&app, id))
-                        .map_err(|error| refused(&error))?;
-                }
-                DynEdit::Edit { id, edit } => {
-                    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())?
-                    else {
-                        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-                    };
-                    DynRecord::edit_fields(doc, &obj, edit.path(), edit.op(), &mut cx)
-                        .map_err(|error| refused(&error))?;
-                }
-                DynEdit::Remove { id } => {
-                    if doc.get(&app, id.as_str())?.is_some() {
-                        doc.delete(&app, id.as_str())?;
-                    }
+/// Apply `edits` to the resources of `app` in `doc`, creating the maps they live in.
+///
+/// `seed` pins the ids a minting edit would draw: edits carry their own ids, so it only has to
+/// be the same on every replica.
+///
+/// # Errors
+/// An edit names a resource that is not there, or does not fit its field.
+pub fn apply_edits(
+    doc: &mut Doc,
+    app: &str,
+    edits: &[DynEdit],
+    seed: &[u8],
+) -> Result<(), ActionError> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let mut cx = ActionCx::for_write(doc, seed);
+    let records = ensure_map(doc, &ROOT, RECORDS_KEY)?;
+    let app = ensure_map(doc, &records, app)?;
+    for edit in edits {
+        match edit {
+            DynEdit::Create { id, record } => {
+                let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+                record
+                    .store(doc, Slot::Key(&app, id))
+                    .map_err(|error| refused(&error))?;
+            }
+            DynEdit::Edit { id, edit } => {
+                let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                    return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+                };
+                DynRecord::edit_fields(doc, &obj, edit.path(), edit.op(), &mut cx)
+                    .map_err(|error| refused(&error))?;
+            }
+            DynEdit::Remove { id } => {
+                if doc.get(&app, id.as_str())?.is_some() {
+                    doc.delete(&app, id.as_str())?;
                 }
             }
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+impl Action for DynAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let payload =
+            serde_json::to_vec(self).map_err(|error| ActionError::Refused(error.to_string()))?;
+        apply_edits(doc, &self.app, &self.edits, &payload)
     }
 
     fn describe(&self, _doc: &Doc) -> Option<Described> {
