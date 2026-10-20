@@ -25,7 +25,7 @@ impl Drop for Header {
 }
 
 const MAGIC: &[u8; 8] = b"TILOMIG1";
-pub(super) const CHUNK: usize = 1024 * 1024;
+pub(crate) const CHUNK: usize = 1024 * 1024;
 const MAX_ENVELOPE: usize = CHUNK + 256;
 
 fn invalid(message: &str) -> io::Error {
@@ -60,7 +60,7 @@ fn read_frame(reader: &mut impl Read, max: usize) -> io::Result<Vec<u8>> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Footer {
+pub(crate) struct Footer {
     pub chunks: u64,
     pub bytes: u64,
     pub sha256: [u8; 32],
@@ -213,7 +213,7 @@ impl<W: Write> Write for Sealer<'_, W> {
     }
 }
 
-pub(super) struct Opener<'a, R: Read> {
+pub(crate) struct Opener<'a, R: Read> {
     reader: R,
     prefix: Vec<u8>,
     key: SymmetricKey,
