@@ -106,6 +106,8 @@ fn malloc_kib() -> (usize, usize, usize, usize) {
 fn window_cycle_memory_returns_to_the_bare_desktop() {
     let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
     let wallpaper_bytes = wallpaper.data.len() as u64;
     for _ in 0..IDLE_PAINTS {
@@ -220,6 +222,8 @@ fn closed_windows_heap_goes_back_to_the_kernel() {
     }
     let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
     for _ in 0..IDLE_PAINTS {
         paint(&mut bridge, &wallpaper, None);
@@ -286,6 +290,8 @@ const CLOSE_PAINTS: u32 = 8;
 fn closed_windows_device_memory_goes_back_to_the_kernel() {
     let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let device = bridge.target.device.clone();
     let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
     for _ in 0..IDLE_PAINTS {
@@ -425,6 +431,8 @@ fn paint_scene(
 fn closed_windows_renderer_scratch_comes_back() {
     let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
         .expect("the memory gate requires a real wgpu adapter");
+    // What these measure is memory, not how fast llvmpipe finishes a frame.
+    bridge.wait_for_gpu_completion_for_test();
     let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
     let mut bare_pixels = Vec::new();
     for _ in 0..IDLE_PAINTS {
