@@ -263,14 +263,19 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["crates/platform/*/web/**", "apps/*/tilo-app.toml", "scripts/moq-browser/**",
                    "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh", "tools/web/**"],
     },
-    # The portable provider panel in the production single-app browser runtime.
+    # The portable provider panel in the production single-app browser runtime: tilo-app
+    # builds the app bundle, which carries the compute worker, checks the app against the
+    # desktop crate's links and every app's resource kinds, and bundles the MoQ library;
+    # run.mjs drives it in Chromium through tools/web/chrome.mjs. Whether the desktop
+    # registry matches the apps is sdk-policy's to say, on every commit.
     "model-providers-web": {
-        "packages": lambda packages, root: {"model-providers", "tilo-app-cli", "tilo-browser-runtime"},
+        "packages": lambda packages, root: {"model-providers", "tilo-app-cli", "tilo-browser-runtime",
+                                            "tilo-browser-compute"},
         "dev": False,
-        "inputs": ["apps/model-providers/web/**", "apps/*/tilo-app.toml", "apps/*/Cargo.toml",
-                   "apps/*/src/lib.rs", "crates/browser/tilo-web-desktop/**",
-                   "crates/agent/agent-participant/src/web_apps.rs", "scripts/moq-browser/**",
-                   "tools/ci/**", "tools/web/**"],
+        "inputs": ["apps/model-providers/web/**", "apps/*/tilo-app.toml",
+                   "crates/browser/tilo-web-desktop/Cargo.toml", "scripts/moq-browser/**",
+                   "tools/ci/prepare_sdk_moq.py", "tools/ci/ensure-browser-dependencies.sh",
+                   "tools/web/chrome.mjs", "tools/web/owned_browser.py"],
     },
     # The release desktop bundle and the image worker it qualifies.
     "sdk-web-size": {
@@ -280,13 +285,30 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["apps/*/tilo-app.toml", "scripts/moq-browser/**", "tools/ci/ensure-browser-dependencies.sh",
                    "tools/web/**"],
     },
-    # The FUSE tests of these packages, and the session lifecycle test, which
-    # reads the OS image's units and the session scripts.
+    # The FUSE tests of these packages, and the session lifecycle test, which builds
+    # the flight recorder (tilo-session-record) and reads the session wrapper, the
+    # user units, the login session, the SELinux policy, the image's Containerfile
+    # and workflow, and the session scripts.
     "real-fuse": {
         "packages": lambda packages, root: {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer",
-                                            "fs-protocol", "tilo-user-identity", "shell"},
-        "inputs": ["os/**", "dist/session/**", ".forgejo/workflows/build-image.yml", "tools/desktop-isolation.sh",
-                   "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+                                            "fs-protocol", "tilo-user-identity", "shell",
+                                            "tilo-session-record"},
+        "tested": {"tilo-relay", "tilo-fs", "tilo-runtime", "file-explorer", "fs-protocol",
+                   "tilo-user-identity", "shell"},
+        "inputs": ["os/tests/tilo-session-lifecycle.sh", "os/usr/libexec/tilo-session",
+                   "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
+                   "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
+                   "os/Containerfile", "dist/session/**", ".forgejo/workflows/build-image.yml",
+                   "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
+    },
+    # The credential vault's wasm build linted, and its storage probe example built
+    # and driven in Chromium (crates/system/accounts/web/run.mjs, tools/web/chrome.mjs).
+    # The builder's definition says which wasm-bindgen and Node it carries.
+    "accounts-web-storage": {
+        "packages": lambda packages, root: {"accounts", "tilo-secret-vault", "tilo-files", "tilo-secrets"},
+        "tested": set(),
+        "inputs": ["crates/system/accounts/web/**", "tools/web/chrome.mjs", "tools/web/owned_browser.py",
+                   "tools/ci/ensure-browser-dependencies.sh", "os/Containerfile.builder"],
     },
     # The relay's privileged personal-device test, built here for the micro-VM
     # check that runs it as real root (real-fuse-privileged).

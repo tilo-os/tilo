@@ -3,6 +3,7 @@ import fnmatch
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -31,11 +32,19 @@ class AccountsWebStorageTests(unittest.TestCase):
         self.assertIn('@puppeteer/browsers@2 install chrome@stable', run)
         for forbidden in ('--workspace', 'os/build.sh', 'tilo-app build'):
             self.assertNotIn(forbidden, run)
-        # Include every local WASM dependency, the actual browser supervisor,
-        # builder/tool versions and any patched external dependency.
+        # Every local WASM dependency is part of the key through the packages the check
+        # builds: t follows their local dependencies and keys the lockfile entries and
+        # root-manifest sections (patches included) of the crates they use.
+        self.assertEqual(set(check['cargo_packages']),
+                         {'accounts', 'tilo-secret-vault', 'tilo-files', 'tilo-secrets'})
+        sys.path.insert(0, str(ROOT / 'tools/ci'))
+        import t_toml
+        import workspace_graph
+        packages = {p['name']: p for p in workspace_graph.cargo_metadata(ROOT)['packages']}
+        reached = {Path(packages[name]['manifest_path']).resolve().parent.relative_to(ROOT.resolve())
+                   for name in t_toml.local_closure(packages, set(check['cargo_packages']), True)}
         for path in (
             'crates/system/accounts/examples/account_storage_probe.rs',
-            'crates/system/accounts/web/run.mjs',
             'crates/system/accounts/src/vault.rs',
             'crates/system/secret-vault/src/lib.rs',
             'crates/system/advisory-lock/src/lib.rs',
@@ -50,7 +59,12 @@ class AccountsWebStorageTests(unittest.TestCase):
             'crates/platform/tilo-platform-caps/src/lib.rs',
             'crates/platform/tilo-rt/src/lib.rs',
             'crates/platform/tilo-wake/src/lib.rs',
-            'vendor/example/src/lib.rs', 'Cargo.toml', 'Cargo.lock',
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(any(directory in Path(path).parents for directory in reached))
+        # And the files outside them: the browser supervisor, and the builder and tool versions.
+        for path in (
+            'crates/system/accounts/web/run.mjs',
             'tools/web/chrome.mjs', 'tools/web/owned_browser.py',
             'tools/ci/ensure-browser-dependencies.sh', 'os/Containerfile.builder',
         ):
