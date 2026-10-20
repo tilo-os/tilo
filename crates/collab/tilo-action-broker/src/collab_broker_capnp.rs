@@ -12900,7 +12900,7 @@ impl CapnpPresenceHandle {
             payload,
         };
         if let Some(fanout) = self.state.fanout.upgrade() {
-            fanout.fanout_to_route(&event, self.peer_id, &route);
+            fanout.fanout_presence(&event, self.peer_id, &route, &self.full_route());
         }
     }
 }
@@ -12934,7 +12934,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &PresencePayload::Pointer { x, y },
             );
             if let Some(t) = state.fanout.upgrade() {
-                t.fanout_to_route(&event, peer_id, &route);
+                t.fanout_presence(&event, peer_id, &route, &full_route);
             }
             Ok(())
         })

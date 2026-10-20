@@ -299,6 +299,30 @@ impl FanoutState {
             .map_or(0, |state| state.request_room_snapshots(cluster_id))
     }
 
+    /// [`Self::fanout_to_route`] for a local app's presence: delivered to
+    /// whoever `scope` (the room) addresses, while in-process subscribers
+    /// are told the `origin` route it came from — which app, which record —
+    /// as the shell needs to know what a window under the pointer shows.
+    pub fn fanout_presence(
+        &self,
+        event: &CollabEvent,
+        except: u64,
+        scope: &CrdtRoute,
+        origin: &CrdtRoute,
+    ) {
+        if self.stopped.load(Ordering::Acquire) || scope.cluster_id.is_empty() {
+            return;
+        }
+        for sub in self.local_subs() {
+            if sub.wants(scope) {
+                (sub.sink)(event, origin);
+            }
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(event, except, scope);
+        }
+    }
+
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
@@ -1254,5 +1278,35 @@ mod weak_facade_tests {
         assert!(weak.upgrade().is_err());
         drop(broker);
         assert!(weak.upgrade().is_err());
+    }
+}
+
+#[cfg(test)]
+mod presence_origin_tests {
+    use super::*;
+
+    /// The shell learns which record a window shows from its app pointing
+    /// in it: cursor chat over that window is sealed for and placed in that
+    /// record. A local app's presence is delivered room-wide, and the
+    /// shell's subscription is told the app and record it came from.
+    #[test]
+    fn a_local_apps_presence_names_the_app_and_record_it_came_from() {
+        let fanout = FanoutState::new();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        let _shell = fanout.subscribe_rooms(
+            vec!["room".into()],
+            Box::new(move |_, route| sink.lock().unwrap().push(route.clone())),
+        );
+        let origin = CrdtRoute::record("so.tilo.chat", "room", "derived:main");
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: "peer@1".into(),
+            key: ui::presence::PresenceKey::pointer_default(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        };
+        fanout.fanout_presence(&event, 0, &origin.to_cluster_scope(), &origin);
+        drop(fanout);
+        let heard = heard.lock().unwrap().clone();
+        assert_eq!(heard, vec![origin]);
     }
 }
