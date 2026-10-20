@@ -5727,9 +5727,15 @@ impl BooksApp {
         } else {
             None
         };
-        // The bubble is drawn below subsequent reader overlays. Their app-wide
-        // hits therefore keep precedence when geometry ever overlaps.
-        let bubble_action = if comment_action.is_none() && shelf_action.is_none() && top.is_none() {
+        // The bubble is drawn below subsequent reader overlays, whose hits
+        // keep precedence where geometry overlaps; but it is drawn over the
+        // progress slider it shares the foot with, so its chevrons win there.
+        let bubble_action = if comment_action.is_none()
+            && shelf_action.is_none()
+            && top
+                .as_ref()
+                .is_none_or(|hit| matches!(hit.action, Action::SeekProgress))
+        {
             self.reader_bubble.hit_test(self.cursor)
         } else {
             None
@@ -5739,10 +5745,12 @@ impl BooksApp {
         self.press_pos = self.cursor;
         self.shelf_focus_visible = false;
 
-        if matches!(
-            top.as_ref().map(|hit| &hit.action),
-            Some(Action::SeekProgress)
-        ) {
+        if bubble_action.is_none()
+            && matches!(
+                top.as_ref().map(|hit| &hit.action),
+                Some(Action::SeekProgress)
+            )
+        {
             self.progress_dragging = true;
             self.on_seek_progress(self.progress_fraction_at(self.cursor));
             self.dirty = true;

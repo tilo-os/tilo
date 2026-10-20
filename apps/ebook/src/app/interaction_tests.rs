@@ -2251,11 +2251,14 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
         let next = find_hit(&app, |a| matches!(a, Action::NextPage))
             .expect("next chevron on the page bubble");
         assert!(click(&mut app, &mut doc, next), "next handled");
+        assert_eq!(
+            (app.chapter, app.page),
+            (c0, p0 + 1),
+            "the visible chevron turns exactly one page, never seeks underneath"
+        );
         assert!(
-            app.page != p0 || app.chapter != c0,
-            "position advanced from ch{c0}/pg{p0} to ch{}/pg{}",
-            app.chapter,
-            app.page
+            !app.progress_dragging,
+            "a page turn does not start a seek drag"
         );
     }
 
