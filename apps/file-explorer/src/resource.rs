@@ -1791,7 +1791,7 @@ mod tests {
     /// and the device reverts in a later frame, as a job.
     fn undo_settled(app: &mut TestApp<FileExplorerShell>) {
         assert!(app.undo());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = tilo_test_env::hang_deadline();
         app.settle();
         while app.state().ops.pending().next().is_some() {
             assert!(
@@ -2126,7 +2126,7 @@ mod tests {
         app.settle();
         let listener = server.join().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while app.state().ops.pending().next().is_some() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2368,7 +2368,7 @@ mod tests {
         );
         app.invoke(FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !folder.join("Google.docx").exists() || app.state().ops.pending().next().is_some() {
             assert!(std::time::Instant::now() < deadline);
             app.settle();
@@ -2410,7 +2410,7 @@ mod tests {
         };
         app.invoke(FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while app.state().ops.pending().next().is_some() {
             assert!(std::time::Instant::now() < deadline);
             app.settle();

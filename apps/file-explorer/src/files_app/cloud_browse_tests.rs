@@ -100,7 +100,7 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.pending.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -190,7 +190,7 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
         *pinned,
         crate::cloud_transfer::pin_destination(folder, std::iter::empty()).unwrap()
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.transfer.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -270,7 +270,7 @@ fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
             .is_err()
         );
         assert!(files.run_effect(FilesEffect::MoreCloud).is_err());
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while files.cloud.pending.is_some() {
             assert!(Instant::now() < deadline);
             files.poll_cloud();

@@ -160,17 +160,27 @@ pub(crate) const HYDRATION_WAIT: Duration = Duration::from_secs(10 * 60);
 /// The final error `write` returned.
 pub(crate) fn write_until_hydrated(
     wait: Duration,
-    mut write: impl FnMut() -> std::io::Result<()>,
+    write: impl FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
+    repeat_while_hydrating(wait, || start.elapsed(), std::thread::sleep, write)
+}
+
+/// [`write_until_hydrated`] on a given clock: `elapsed` reads the time since
+/// the first write and `sleep` pauses between repeats.
+fn repeat_while_hydrating(
+    wait: Duration,
+    mut elapsed: impl FnMut() -> Duration,
+    mut sleep: impl FnMut(Duration),
+    mut write: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let mut pause = Duration::from_millis(20);
     loop {
         match write() {
             Err(error)
-                if ErrorCode::of(&error) == Some(ErrorCode::InProgress)
-                    && start.elapsed() < wait =>
+                if ErrorCode::of(&error) == Some(ErrorCode::InProgress) && elapsed() < wait =>
             {
-                std::thread::sleep(pause.min(wait.saturating_sub(start.elapsed())));
+                sleep(pause.min(wait.saturating_sub(elapsed())));
                 pause = pause.saturating_mul(2).min(Duration::from_millis(500));
             }
             result => return result,
@@ -347,10 +357,21 @@ mod tests {
     /// settles, and the last `EINPROGRESS` is the answer once the wait is over.
     #[test]
     fn history_writes_repeat_while_content_hydrates() {
+        // A clock that moves only when the loop pauses.
+        let clock = std::cell::Cell::new(Duration::ZERO);
+        let repeat = |wait, write: &mut dyn FnMut() -> std::io::Result<()>| {
+            clock.set(Duration::ZERO);
+            repeat_while_hydrating(
+                wait,
+                || clock.get(),
+                |pause| clock.set(clock.get() + pause),
+                write,
+            )
+        };
         // --- phase: repeats_until_the_content_is_local ---
         {
             let mut calls = 0_u32;
-            let result = write_until_hydrated(Duration::from_secs(30), || {
+            let result = repeat(Duration::from_secs(30), &mut || {
                 calls = calls.saturating_add(1);
                 if calls < 3 {
                     Err(ErrorCode::InProgress.into_io_error())
@@ -360,28 +381,38 @@ mod tests {
             });
             assert!(result.is_ok());
             assert_eq!(calls, 3);
+            assert_eq!(
+                clock.get(),
+                Duration::from_millis(60),
+                "paused 20 then 40 ms"
+            );
         }
         // --- phase: other_answers_return_at_once ---
         {
             let mut calls = 0_u32;
-            let result = write_until_hydrated(Duration::from_secs(30), || {
+            let result = repeat(Duration::from_secs(30), &mut || {
                 calls = calls.saturating_add(1);
                 Err(ErrorCode::Busy.into_io_error())
             });
             assert_eq!(ErrorCode::of(&result.unwrap_err()), Some(ErrorCode::Busy));
             assert_eq!(calls, 1);
+            assert_eq!(clock.get(), Duration::ZERO);
         }
         // --- phase: gives_up_after_the_wait ---
         {
-            let started = Instant::now();
-            let result = write_until_hydrated(Duration::from_millis(100), || {
+            let mut calls = 0_u32;
+            let result = repeat(Duration::from_millis(100), &mut || {
+                calls = calls.saturating_add(1);
                 Err(ErrorCode::InProgress.into_io_error())
             });
             assert_eq!(
                 ErrorCode::of(&result.unwrap_err()),
                 Some(ErrorCode::InProgress)
             );
-            assert!(started.elapsed() < Duration::from_secs(5));
+            // Writes at 0, 20 and 60 ms pause 20, 40 and the remaining 40 ms;
+            // the write at 100 ms is the answer.
+            assert_eq!(calls, 4);
+            assert_eq!(clock.get(), Duration::from_millis(100));
         }
     }
     /// Checked xattr success reads exact intent without claiming applied, and scoped preview names fit macOS with a descriptor that does not follow path replacement.

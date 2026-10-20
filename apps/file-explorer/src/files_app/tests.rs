@@ -1228,11 +1228,11 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
         let _ = widget.refresh_metadata_if_due(ui::time::now());
-        let created = ui::time::now();
         std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
         let shown =
             |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
-        while !shown(&widget) && created.elapsed() < std::time::Duration::from_secs(10) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !shown(&widget) && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
             // The earliest moment a reported change may be read, which is
             // before any poll is due: only the watch can make this read.
@@ -1677,7 +1677,7 @@ mod command_path_tests {
         std::os::unix::fs::symlink(&mount, &alias).unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while app.state().ops.pending().next().is_some() {
             assert!(std::time::Instant::now() < deadline);
             app.settle();
