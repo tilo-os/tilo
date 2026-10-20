@@ -40,7 +40,7 @@ use tilolang_runtime::value::ResourceRef;
 use crate::action::{
     Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
-use crate::reads::{changed_fields, collection_len, locate_ref, read_field, type_at};
+use crate::reads::{changed_by, collection_len, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{TYPE_KEY, lookup};
 
@@ -192,6 +192,26 @@ fn path_to(at: &ResourceRef, field: &str) -> Vec<Segment> {
     path
 }
 
+/// Have the mirror's writes carry the actor of a change the mirror already holds.
+///
+/// Under an actor of its own, each of the mirror's transactions would add that actor to the
+/// document and its rollback remove it again, and Automerge renumbers every op's actor column
+/// for each: two passes over the whole document per keystroke. The mirror never commits (its
+/// writes are taken back before any change of the record is applied, see
+/// [`TiloStore::sync_from`]), so its ops under a borrowed actor never meet that actor's next
+/// real change.
+fn write_as_a_known_actor(mirror: &mut Doc) {
+    let actor = mirror
+        .committed_document()
+        .get_heads()
+        .first()
+        .and_then(|head| mirror.committed_document().get_change_meta_by_hash(head))
+        .map(|meta| meta.actor.into_owned());
+    if let Some(actor) = actor {
+        mirror.set_actor(actor);
+    }
+}
+
 impl TiloStore {
     /// A store whose mirror starts as `record`, whose outside effects `device` carries out.
     #[must_use]
@@ -208,6 +228,7 @@ impl TiloStore {
         // Only the record's committed changes are the mirror's: an open transaction of the
         // record arrives as a change once the framework commits it.
         mirror.rollback();
+        write_as_a_known_actor(&mut mirror);
         let instance: String = automerge::ActorId::random()
             .to_hex_string()
             .chars()
@@ -252,13 +273,11 @@ impl TiloStore {
         inner.local.clear();
         let changed = if inner.mirror.get_heads() == inner.seen {
             let changes = record.committed_document().get_changes(&inner.seen);
-            inner.mirror.update_diff_cursor();
-            let applied = inner.mirror.apply_changes(changes);
-            let patches = inner.mirror.diff_incremental();
-            inner.mirror.reset_diff_cursor();
+            let applied = inner.mirror.apply_changes(changes.iter().cloned());
+            write_as_a_known_actor(&mut inner.mirror);
             applied
                 .ok()
-                .map(|()| changed_fields(&patches, &inner.index))
+                .map(|()| changed_by(&changes, &inner.mirror, &inner.index))
         } else {
             None
         };
@@ -266,11 +285,15 @@ impl TiloStore {
         match changed {
             Some(changed) => {
                 inner.stats.incremental_syncs += 1;
-                if changed.structure {
+                if changed.structure || changed.unplaced {
                     inner.index = scan(&inner.mirror);
                 }
-                for (doc, fields) in changed.docs {
-                    inner.notify(&ChangeSummary { doc, fields });
+                if changed.unplaced {
+                    inner.notify_all();
+                } else {
+                    for (doc, fields) in changed.docs {
+                        inner.notify(&ChangeSummary { doc, fields });
+                    }
                 }
             }
             None => {
@@ -278,6 +301,7 @@ impl TiloStore {
                 inner.stats.full_syncs += 1;
                 inner.mirror = record.clone();
                 inner.mirror.rollback();
+                write_as_a_known_actor(&mut inner.mirror);
                 inner.index = scan(&inner.mirror);
                 inner.notify_all();
             }
