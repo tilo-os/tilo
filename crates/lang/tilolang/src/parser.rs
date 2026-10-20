@@ -554,12 +554,18 @@ impl<'a> Parser<'a> {
             let node = self.node();
             let name_span = self.span();
             let name = self.plain_string("the scenario's name in quotes")?;
+            let result = if self.eat(&Tok::Arrow) {
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
             let body = self.block()?;
             return Ok(Item::Scenario(ScenarioDecl {
                 node,
                 doc,
                 name,
                 name_span,
+                result,
                 body,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));

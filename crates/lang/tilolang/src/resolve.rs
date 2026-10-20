@@ -1186,7 +1186,8 @@ impl Resolver<'_> {
         self.one_primary(module);
     }
 
-    /// A scenario's hidden action: no parameters, no result, named by the scenario.
+    /// A scenario's hidden action: no parameters, named by the scenario, returning what it
+    /// declares (the resource a window shows once the scenario is staged).
     fn scenario(&mut self, sc: &ast::ScenarioDecl, lock: &IdsLock, index: usize) {
         let name = &sc.name;
         if name.trim().is_empty() || name.trim() != name || name.contains(['=', '\n']) {
@@ -1201,6 +1202,10 @@ impl Resolver<'_> {
                 ),
             );
         }
+        let result = match &sc.result {
+            Some(t) => self.resolve_type(t, false),
+            None => Ty::Unit,
+        };
         self.env.callables.push(Callable {
             kind: CKind::Action,
             name: name.clone(),
@@ -1209,7 +1214,7 @@ impl Resolver<'_> {
             own: true,
             func: Some(index),
             params: Vec::new(),
-            result: Ty::Unit,
+            result,
             class: None,
             present: Presentation {
                 label: name.clone(),

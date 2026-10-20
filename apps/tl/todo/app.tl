@@ -130,12 +130,12 @@ view summary(list: TodoList) {
 }
 
 /// A household list on a Saturday morning: enough to scroll, some of it done.
-scenario "a saturday list" {
+scenario "a saturday list" -> Todo {
     let list = root TodoList
     list.name = "Saturday"
     list.items.insert(Todo(title: "Take the bins out", done: true))
     list.items.insert(Todo(title: "Buy oat milk and eggs"))
-    list.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer."))
+    let call = list.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer."))
     list.items.insert(Todo(title: "Water the plants", done: true))
     list.items.insert(Todo(title: "Return the library books"))
     list.items.insert(Todo(title: "Book a haircut"))
@@ -147,6 +147,7 @@ scenario "a saturday list" {
     list.items.insert(Todo(title: "Change the bed sheets", done: true))
     list.items.insert(Todo(title: "Order a birthday present for Sam"))
     list.items.insert(Todo(title: "Back up the laptop"))
+    call
 }
 
 /// A list everyone has finished.

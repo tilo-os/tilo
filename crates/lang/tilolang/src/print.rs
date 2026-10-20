@@ -367,7 +367,12 @@ impl Printer {
             )),
             Item::Scenario(sc) => {
                 self.docs(&sc.doc);
-                self.line(&format!("scenario {} {{", quote(&sc.name)));
+                let result = sc
+                    .result
+                    .as_ref()
+                    .map(|r| format!(" -> {}", print_type(r)))
+                    .unwrap_or_default();
+                self.line(&format!("scenario {}{result} {{", quote(&sc.name)));
                 self.block_body(&sc.body);
                 self.line("}");
             }

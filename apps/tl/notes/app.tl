@@ -107,9 +107,9 @@ view summary(nb: Notebook) {
 }
 
 /// A notebook a week into a project: enough notes to scroll, a few of them pinned.
-scenario "a week of notes" {
+scenario "a week of notes" -> Note {
     let nb = root Notebook
-    nb.notes.insert(Note(title: "Q3 plan", body: "Ship the offline editor, then sharing. Hiring stays flat until October.", pinned: true))
+    let plan = nb.notes.insert(Note(title: "Q3 plan", body: "Ship the offline editor, then sharing. Hiring stays flat until October.", pinned: true))
     nb.notes.insert(Note(title: "Standup, Monday", body: "Ada is on the sync bug. Bo pairs with Chen on the importer."))
     nb.notes.insert(Note(title: "Groceries", body: "Oat milk, eggs, sourdough, two lemons, coffee beans.", pinned: true))
     nb.notes.insert(Note(title: "Interview questions", body: "Ask about the last project they were proud of, and what they would change."))
@@ -123,6 +123,7 @@ scenario "a week of notes" {
     nb.notes.insert(Note(title: "Running plan", body: "Three easy runs and one long run a week, up to fifteen kilometres.", pinned: true))
     nb.notes.insert(Note(title: "Recipe: lentil soup", body: "Onion, carrot, red lentils, cumin, a tin of tomatoes, lemon at the end."))
     nb.notes.insert(Note(title: "Standup, Friday", body: "Release went out at four. Nobody deploys over the weekend."))
+    plan
 }
 
 /// A notebook just started: one note, half written.
