@@ -1,5 +1,6 @@
 //! Room-policy leaves shared by the shell and certified browser peer.
 mod admit;
+mod adopt;
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
@@ -10,6 +11,7 @@ pub use admit::{
     AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
     admit_room_changes, check_candidate,
 };
+pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;

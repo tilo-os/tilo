@@ -39,30 +39,6 @@ pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,
 };
 
-/// Fold this device's schedule claims into those a merged room document
-/// carries. A claim the merge lost to an older concurrent one is kept (the
-/// newer fire time is the answer), and claims for shortcuts the room no
-/// longer holds are dropped.
-fn merge_schedule_claims(
-    merged: &mut Vec<tilo_automation::ScheduleClaim>,
-    local: &[tilo_automation::ScheduleClaim],
-    shortcuts: &[tilo_automation::Shortcut],
-) {
-    for claim in local {
-        match merged.iter_mut().find(|held| held.key() == claim.key()) {
-            Some(held) if claim.supersedes(held) => *held = claim.clone(),
-            Some(_) => {}
-            None => merged.push(claim.clone()),
-        }
-    }
-    merged.retain(|claim| {
-        shortcuts
-            .iter()
-            .any(|shortcut| shortcut.id == claim.shortcut)
-    });
-    merged.sort_by_key(tilo_automation::ScheduleClaim::key);
-}
-
 #[cfg(test)]
 mod identity_fs_tests {
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -1047,12 +1023,6 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
-        let (name, policy) = tilo_peer_state::room::extract_governed_fields(document);
-        let bots = tilo_peer_state::room::room_bots_of(document);
-        let sandbox = projection::room_sandbox_of(document);
-        let presets = projection::workspace_presets_of(document);
-        let tasks = projection::workspace_tasks_of(document);
-        let receipts = projection::workspace_effect_receipts_of(document);
         self.room_docs.insert(room, document.clone());
         self.queue_inbound_records(room, document);
         self.merge_room_contents(room);
@@ -1062,17 +1032,9 @@ impl WorkspaceTree {
             .iter_mut()
             .find(|ws| ws.room == room)
         {
-            if let Some(name) = name {
-                ws.name = name;
-            }
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
-            ws.policy = policy;
-            ws.presets = presets;
-            ws.bots = bots;
-            ws.sandbox = sandbox;
+            tilo_peer_state::room::adopt_room(ws, document, &[]);
             ws.sandbox.extend(local);
-            ws.tasks = tasks;
-            ws.effect_receipts = receipts;
         }
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
     }
@@ -2651,33 +2613,20 @@ impl WorkspaceTree {
             return Ok(false);
         }
 
-        let (name, mut policy) = tilo_peer_state::room::extract_governed_fields(&candidate);
-        let bots = tilo_peer_state::room::room_bots_of(&candidate);
-        let mut sandbox = projection::room_sandbox_of(&candidate);
-        let presets = projection::workspace_presets_of(&candidate);
-        let mut tasks = projection::workspace_tasks_of(&candidate);
-        let shortcuts = projection::workspace_shortcuts_of(&candidate);
-        let mut schedule_claims = projection::schedule_claims_of(&candidate);
-        let mut effect_receipts = projection::workspace_effect_receipts_of(&candidate);
-        // Receipts already projected into the workspace stay immutable even
-        // once the room document omits them.
+        // Receipts already projected into the workspace are immutable.
         if let Some(workspace) = self.workspace_in_room(room) {
-            for existing in &workspace.effect_receipts {
-                match effect_receipts
-                    .iter()
-                    .find(|receipt| receipt.invocation == existing.invocation)
-                {
-                    Some(received) if received != existing => {
-                        tracing::warn!(
-                            room = %room,
-                            invocation = %existing.invocation.0,
-                            "room sync refused: an effect receipt is immutable",
-                        );
-                        return Ok(false);
-                    }
-                    Some(_) => {}
-                    None => effect_receipts.push(existing.clone()),
-                }
+            let received = projection::workspace_effect_receipts_of(&candidate);
+            if let Some(existing) = workspace.effect_receipts.iter().find(|existing| {
+                received.iter().any(|receipt| {
+                    receipt.invocation == existing.invocation && receipt != *existing
+                })
+            }) {
+                tracing::warn!(
+                    room = %room,
+                    invocation = %existing.invocation.0,
+                    "room sync refused: an effect receipt is immutable",
+                );
+                return Ok(false);
             }
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
@@ -2697,62 +2646,12 @@ impl WorkspaceTree {
         let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return Ok(records_changed || contents_changed || peers_changed);
         };
-        let mut fields_changed = false;
-        if let Some(name) = name
-            && ws.name != name
-        {
-            ws.name = name;
-            fields_changed = true;
-        }
-        // An owner is never unset by a document that does not name one.
-        if policy.owner.is_none() {
-            policy.owner.clone_from(&ws.policy.owner);
-        }
-        // Replaced rather than merged: a revoked grant or capability is
-        // simply absent from the peer's document, so carrying the local
-        // list over would let it survive.
-        policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut current = ws.policy.clone();
-        current.grants.sort_by(|a, b| a.id.cmp(&b.id));
-        if current != policy {
-            ws.policy = policy;
-            fields_changed = true;
-        }
-        sandbox.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut current = ws.sandbox.clone();
-        current.sort_by(|a, b| a.id.cmp(&b.id));
-        if current != sandbox {
-            ws.sandbox = sandbox;
-            fields_changed = true;
-        }
-        if ws.presets != presets {
-            ws.presets = presets;
-            fields_changed = true;
-        }
-        if ws.bots != bots {
-            ws.bots = bots;
-            fields_changed = true;
-        }
-        tasks.sort_by(|left, right| left.id.cmp(&right.id));
-        let mut current_tasks = ws.tasks.clone();
-        current_tasks.sort_by(|left, right| left.id.cmp(&right.id));
-        if current_tasks != tasks {
-            ws.tasks = tasks;
-            fields_changed = true;
-        }
-        merge_schedule_claims(&mut schedule_claims, &ws.schedule_claims, &shortcuts);
-        fields_changed |= ws.shortcuts != shortcuts;
-        ws.shortcuts = shortcuts;
-        fields_changed |= ws.schedule_claims != schedule_claims;
-        ws.schedule_claims = schedule_claims;
-        effect_receipts.sort_by_key(|receipt| receipt.invocation.0);
-        let mut current_receipts = ws.effect_receipts.clone();
-        current_receipts.sort_by_key(|receipt| receipt.invocation.0);
-        if current_receipts != effect_receipts {
-            ws.effect_receipts = effect_receipts;
-            fields_changed = true;
-        }
-
+        // This engine keeps no receipt ledger: what it projected stays.
+        let held = ws.effect_receipts.clone();
+        let fields_changed = self
+            .room_docs
+            .get(&room)
+            .is_some_and(|doc| tilo_peer_state::room::adopt_room(ws, doc, &held));
         let fields_changed = fields_changed || contents_changed;
         if fields_changed {
             // Mirror the merged state into the tree document and to disk.
