@@ -1,19 +1,36 @@
 #!/usr/bin/env bash
 # Fast, deterministic repository-policy suite shared by local development and CI.
+#
+# Its steps are independent, and most wait on files and on the processes they start far more
+# than they compute: one after another they took many minutes. They run side by side instead,
+# POLICY_JOBS at a time (8 by default), first the checks of the tree, then the tests, whose
+# fixtures write beside the sources; each step's output is printed whole, in the order below,
+# and every failing step is named.
 set -euo pipefail
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
 
+jobs_max=${POLICY_JOBS:-8}
+work=$(mktemp -d "${TMPDIR:-/tmp}/policy.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+labels=()
+shown=0
+failed=()
+
+# Start step $1, the command after it, once fewer than jobs_max steps run.
 run() {
-  local label=$1 status=0
+  local label=$1 index=${#labels[@]}
   shift
-  printf '\n==> %s\n' "$label"
-  "$@" || status=$?
-  if (( status != 0 )); then
-    printf '::error::repository policy check failed: %s (exit %s)\n' "$label" "$status"
-    exit "$status"
-  fi
+  labels+=("$label")
+  while (( $(jobs -rp | wc -l) >= jobs_max )); do
+    wait -n || true
+  done
+  (
+    started=$SECONDS status=0
+    "$@" >"$work/$index.log" 2>&1 </dev/null || status=$?
+    printf '%s %s\n' "$status" "$((SECONDS - started))" >"$work/$index.status"
+  ) &
 }
 
 # Tests build Git repositories of their own. Under t, the suite finds the tree
@@ -23,6 +40,22 @@ run_tests() {
   local label=$1
   shift
   run "$label" env -u GIT_DIR -u GIT_WORK_TREE "$@"
+}
+
+# Wait for the steps started so far and print what each said.
+settle() {
+  local index status took
+  wait
+  for (( index = shown; index < ${#labels[@]}; index++ )); do
+    read -r status took <"$work/$index.status"
+    printf '\n==> %s (%ss)\n' "${labels[$index]}" "$took"
+    cat "$work/$index.log"
+    if (( status != 0 )); then
+      printf '::error::repository policy check failed: %s (exit %s)\n' "${labels[$index]}" "$status"
+      failed+=("${labels[$index]}")
+    fi
+  done
+  shown=${#labels[@]}
 }
 
 run 'Source blobs are text and LF or explicitly pinned assets' \
@@ -55,16 +88,8 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-app-cli 't.toml#sdk-linux'
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Code map is current' python3 tools/docs/codemap.py --check
-run_tests 'Repository policy unit tests' \
-  python3 -m unittest discover -s tools/tests -p 'test_*.py' --durations 20
-run_tests 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh
-run_tests 'Cargo shim tests' bash tools/tests/cargo_shim.sh
-run_tests 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
-run_tests 'Builder candidate workflow tests' python3 os/tests/test_builder_candidate_workflow.py
-run_tests 'Signed development board dispatch and policy tests' python3 os/tests/test_signed_development_board.py
 run 'Every test suite outside Cargo is gated or explained' python3 tools/ci/suites.py check
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
-run_tests 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks -p 'test_*.py'
 run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
 run 'Copy used by source is in every shipped catalogue' python3 tools/policy/check_app_copy.py
 run 'Copy follows the house language and glossary' python3 tools/policy/check_copy_language.py
@@ -121,5 +146,21 @@ run 'At most eight parameters, no escape hatch' \
   python3 tools/policy/check_too_many_arguments.py
 run 'Rust files stay under their size ceiling' \
   python3 tools/policy/check_source_file_size.py
+settle
 
+# The tests, once nothing reads the tree any more: their fixtures create
+# repositories and scratch files beside the sources.
+run_tests 'Repository policy unit tests' python3 tools/policy/run_unit_tests.py tools/tests
+run_tests 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh
+run_tests 'Cargo shim tests' bash tools/tests/cargo_shim.sh
+run_tests 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
+run_tests 'Builder candidate workflow tests' python3 os/tests/test_builder_candidate_workflow.py
+run_tests 'Signed development board dispatch and policy tests' python3 os/tests/test_signed_development_board.py
+run_tests 'Codex CI watcher tests' python3 tools/policy/run_unit_tests.py .codex/hooks
+settle
+
+if (( ${#failed[@]} )); then
+  printf '\nRepository policy suite failed: %s\n' "$(IFS=';'; printf '%s' "${failed[*]}")"
+  exit 1
+fi
 printf '\nRepository policy suite OK\n'
