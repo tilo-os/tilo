@@ -862,12 +862,18 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        if self.is_kw("do") {
+        if self.is_kw("do") || self.is_kw("try") {
+            let is_try = self.is_kw("try");
             let start = self.bump().span;
             let operand = self.unary()?;
             let span = start.to(operand.span);
+            let operand = Box::new(operand);
             return Ok(Expr {
-                kind: ExprKind::Do(Box::new(operand)),
+                kind: if is_try {
+                    ExprKind::Try(operand)
+                } else {
+                    ExprKind::Do(operand)
+                },
                 span,
             });
         }
