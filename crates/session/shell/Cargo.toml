@@ -212,10 +212,12 @@ xattr = "1.6.1"
 # policy core is unit-testable without a bus; the service actuates via zbus.
 tilo-power-mgmt = { path = "../../system/power" }
 
-# With X11: the hosted backend runs the compositor in a window of an existing
-# Wayland or X11 session (`compositor/backend/winit.rs`). Apps leave X11 out
-# (the toolkit's `x11` feature).
-winit = { workspace = true, features = ["x11"] }
+# With X11 (through tilo-winit-x11): the hosted backend runs the compositor
+# in a window of an existing Wayland or X11 session
+# (`compositor/backend/winit.rs`). Apps leave X11 out (the toolkit's `x11`
+# feature).
+winit.workspace = true
+tilo-winit-x11 = { version = "0.1.0", path = "../../sdk/winit-x11" }
 # XKB keysym values for the media keys winit reports only as raw keysyms.
 xkeysym = "0.2.1"
 # Publishes `Xft.dpi` on each workspace's X server.
