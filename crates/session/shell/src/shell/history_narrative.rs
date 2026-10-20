@@ -41,6 +41,9 @@ const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
 const NARRATIVE_LIMIT: usize = 64 * 1024;
 const NARRATIVE_MAX_TOKENS: u32 = 400;
 const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
+/// The provider's whole answer, its envelope around the prose included: a
+/// misbehaving endpoint cannot make the shell buffer more than this.
+const NARRATIVE_RESPONSE_LIMIT: usize = 1024 * 1024;
 
 impl LocalHistoryNarrator {
     /// Deterministic narrator for fixtures and hosts without local-model
@@ -183,7 +186,7 @@ fn ask(prompt: &Prompt, max_tokens: u32) -> Option<(String, String)> {
             if !response.status().is_success() {
                 return None;
             }
-            response.bytes().await.ok()
+            response.bytes_limited(NARRATIVE_RESPONSE_LIMIT).await.ok()
         })
         .ok()??;
     let text = transform::answer(
