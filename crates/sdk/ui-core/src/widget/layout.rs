@@ -225,6 +225,32 @@ pub unsafe fn compute_widget_layout(
     unsafe { compute_widget_layout_depth(taffy, root, available, nodes, bindings, text, 0) }
 }
 
+/// A node's measured size from its known dimensions and the space offered.
+pub(crate) type MeasureNode<'a> =
+    dyn FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId) -> Size<f32> + 'a;
+
+/// Solve `taffy` from `root`, measuring leaves with `measure`.
+///
+/// Taffy's solver is generic over its measure function, so every distinct
+/// closure handed to `compute_layout_with_measure` compiles the whole flexbox,
+/// grid and block solver again (about 200 KB of WebAssembly each). Toolkit
+/// code solves through this one function instead, so the solver is compiled
+/// once.
+///
+/// # Errors
+/// Returns Taffy's error for an invalid tree.
+#[inline(never)]
+pub(crate) fn solve_layout(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    measure: &mut MeasureNode<'_>,
+) -> taffy::TaffyResult<()> {
+    taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
+        measure(known, available, node)
+    })
+}
+
 pub(super) unsafe fn compute_widget_layout_depth(
     taffy: &mut TaffyTree<()>,
     root: NodeId,
@@ -275,7 +301,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
         super::manual::reset_region(policy, taffy, *node)?;
     }
     for _ in 0..8 {
-        taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
+        solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {

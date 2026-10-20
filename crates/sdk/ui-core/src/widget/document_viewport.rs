@@ -959,13 +959,14 @@ impl DocumentViewport {
                 reason = "narrowing content-space layout dimensions for taffy; never near f32::MAX"
             )]
             let (w, h) = (cw as f32, ch as f32);
-            let _ = taffy.compute_layout_with_measure(
+            let _ = super::layout::solve_layout(
+                &mut taffy,
                 node,
                 Size {
                     width: taffy::AvailableSpace::Definite(w),
                     height: taffy::AvailableSpace::Definite(h),
                 },
-                |known, available, node_id, _, _| {
+                &mut |known, available, node_id| {
                     if let Some(&ptr) = map.get(&node_id) {
                         unsafe { (*ptr).measure(known, available, text_renderer) }
                     } else {

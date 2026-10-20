@@ -2150,13 +2150,14 @@ impl ActionPalette {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
 
-        let Ok(()) = taffy.compute_layout_with_measure(
+        let Ok(()) = crate::widget::layout::solve_layout(
+            &mut taffy,
             node,
             Size {
                 width: AvailableSpace::Definite(width as f32),
                 height: AvailableSpace::Definite(FIELD_SIZE.height(theme) as f32),
             },
-            |known, available, id, _, _| {
+            &mut |known, available, id| {
                 node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
                     (*p).measure(known, available, tr)
                 })
@@ -2289,13 +2290,14 @@ impl ActionPalette {
         let node = self
             .controls
             .build_layout(&mut self.field_taffy, theme, &mut nodes);
-        let Ok(()) = self.field_taffy.compute_layout_with_measure(
+        let Ok(()) = crate::widget::layout::solve_layout(
+            &mut self.field_taffy,
             node,
             Size {
                 width: AvailableSpace::Definite(self.rect.width() as f32),
                 height: AvailableSpace::MaxContent,
             },
-            |known, available, id, _, _| {
+            &mut |known, available, id| {
                 nodes.get(&id).map_or(Size::ZERO, |&p| unsafe {
                     (*p).measure(known, available, text)
                 })
