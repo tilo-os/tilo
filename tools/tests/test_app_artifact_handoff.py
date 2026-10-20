@@ -34,7 +34,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/collect-runtime-dependencies.py",
             "os/scripts/verify-runtime-bundle-closure.sh",
             "os/scripts/stamp-runtime.sh", "tools/apps/stage_sdk_services.py",
-            "tools/apps/pack-runtime-package.sh",
+            "tools/apps/pack-runtime-package.sh", "tools/apps/language_packs.py",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
