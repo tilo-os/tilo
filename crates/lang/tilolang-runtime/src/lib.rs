@@ -46,7 +46,7 @@ pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
 pub use catalogue::{Signature, SignatureKind, catalogue};
 pub use core::{ModelHost, NameHost, OutsideSink};
-pub use engine::EngineLimits;
+pub use engine::{EngineLimits, EngineProfile, Translation, set_translation};
 pub use error::RuntimeError;
 pub use exec::InvokeOutcome;
 pub use flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
