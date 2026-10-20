@@ -372,6 +372,30 @@ fn used_packages(host: &Host, app: &str) -> Vec<tilolang_tilo::host::Package> {
         .collect()
 }
 
+/// Mark each input of a document's page with the role of the field it edits (`title`, `body`),
+/// so the document draws its title as its large title and its body as running text, both in
+/// place, as a native document does. Whether the page edits its title.
+fn mark_field_roles(host: &Host, node: &mut UiNode) -> bool {
+    let mut titled = false;
+    if node.kind == "input"
+        && let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field())
+        && let Some(role) = describe::type_of(host, &target.ty).and_then(|(_, ty)| {
+            ty.fields
+                .iter()
+                .find(|declared| declared.id == *field)
+                .and_then(|declared| declared.role.clone())
+        })
+    {
+        titled = role == "title";
+        node.props
+            .insert("field_role".to_owned(), Value::Text(role));
+    }
+    for child in &mut node.children {
+        titled |= mark_field_roles(host, child);
+    }
+    titled
+}
+
 /// The labels of the action buttons `node` draws in its content.
 fn content_buttons<'a>(node: &'a UiNode, out: &mut Vec<&'a str>) {
     if node.kind == "button"
@@ -1132,7 +1156,8 @@ impl Window {
                 }
             }
         } else if self.detail.is_none() {
-            let page = content_page(&frame);
+            let mut page = content_page(&frame);
+            let titled = frame.kind == "document" && mark_field_roles(&host, &mut page);
             let root_actions = outside(&root_actions, &frame);
             let signature = format!(
                 "{:?}",
@@ -1143,7 +1168,8 @@ impl Window {
             );
             let actions = Rc::clone(&root_actions);
             let title = root_title.clone();
-            self.header("content", &root_title, &signature, |window| {
+            let shown = if titled { "" } else { root_title.as_str() };
+            self.header("content", shown, &signature, |window| {
                 window.action_buttons(&actions, &title, vec![search()])
             });
             let Self { body, root, .. } = self;
@@ -1160,7 +1186,15 @@ impl Window {
                 (self.detail.as_ref(), detail_frame.as_ref())
             {
                 let target = detail.target.clone();
-                let title = describe::title_of(&host, &target);
+                let mut page = content_page(detail_frame);
+                // A document that edits its title shows it as its own large title, which the
+                // header does not repeat (as in Notes).
+                let titled = detail_frame.kind == "document" && mark_field_roles(&host, &mut page);
+                let title = if titled {
+                    String::new()
+                } else {
+                    describe::title_of(&host, &target)
+                };
                 let actions = outside(
                     &describe::offered_in(&host, &target, &root_target),
                     detail_frame,
@@ -1176,7 +1210,6 @@ impl Window {
                     let controls = if overview { Vec::new() } else { vec![search()] };
                     window.action_buttons(&actions, &title, controls)
                 });
-                let page = content_page(detail_frame);
                 let Self { body, detail, .. } = self;
                 if let (Some(shell), Some(lane)) = (shell_of(body), detail.as_mut()) {
                     if shell.content_mut::<Pane>().is_none() {

@@ -666,6 +666,18 @@ impl Reconciler {
                 .multiline(true)
                 .with_min_lines(lines.max(1.0) as usize);
         }
+        // In a document, the title and the body are edited in place, as running text.
+        match token(node, "field_role") {
+            Some("title") => {
+                input = input
+                    .with_text_role(TextRole::LargeTitle)
+                    .with_plain_chrome();
+            }
+            Some("body") => {
+                input = input.multiline(true).with_plain_chrome();
+            }
+            _ => {}
+        }
         Box::new(input)
     }
 
