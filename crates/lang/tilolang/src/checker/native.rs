@@ -121,6 +121,7 @@ impl Checker<'_> {
                 return true;
             }
             ("avatar", "who") => Ty::Principal,
+            ("card", "count") => Ty::Int,
             ("section", "title") | ("field" | "toggle", "label") => Ty::Text,
             _ => return false,
         };
@@ -156,26 +157,30 @@ impl Checker<'_> {
         matches!(&callee.kind, ExprKind::Ident(n) if prims::FRAMES.contains(&n.as_str()) && self.lookup(n).is_none())
     }
 
-    /// A row view's body is one list row.
+    /// A row view's body is one list row, after any `let`s it reads.
     pub(super) fn row_view_body(&mut self, view: &str, ty: &str, rest: &[UiStmt], span: Span) {
-        let ok = match rest {
-            [
+        let ok = match rest.split_last() {
+            Some((
                 UiStmt {
                     kind: UiKind::Call(c),
                     ..
                 },
-            ] => match &c.call.kind {
-                ExprKind::Call { callee, args } => {
-                    matches!(&callee.kind, ExprKind::Ident(n) if n == "row")
-                        && self.titled(args)
-                        && c.block.is_none()
-                }
-                _ => false,
-            },
+                lets,
+            )) => {
+                lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. }))
+                    && match &c.call.kind {
+                        ExprKind::Call { callee, args } => {
+                            matches!(&callee.kind, ExprKind::Ident(n) if n == "row")
+                                && self.titled(args)
+                                && c.block.is_none()
+                        }
+                        _ => false,
+                    }
+            }
             _ => false,
         };
         if !ok {
-            self.err("E093", span, format!("`{view}` is the row view of {ty}, so its body is one list row: `row(x.title, secondary: ...)`"));
+            self.err("E093", span, format!("`{view}` is the row view of {ty}, so its body is one list row, after any `let`s: `row(x.title, secondary: ...)`"));
         }
     }
 
@@ -467,7 +472,7 @@ impl Checker<'_> {
                 None if self.is_flag(None, value) => self.flag_arg(n, value),
                 None if !titled => {
                     titled = true;
-                    self.text_arg(&node, "title", value);
+                    self.row_subject(&node, value);
                 }
                 None => {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
@@ -517,25 +522,43 @@ impl Checker<'_> {
 
     /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
     /// A Date or a Time is marked for the host to format (see `prop`).
+    /// A list row's positional: its title, or the resource it shows (a `resource` prop the
+    /// host renders as that resource's row).
+    fn row_subject(&mut self, node: &Ex, value: &ast::Expr) {
+        let v = self.expr(value, Some(&Ty::Text));
+        if matches!(v.ty, Ty::Record(_)) {
+            self.prop(node.clone(), "resource", v, value.span);
+        } else {
+            self.text_prop(node, "title", v, value.span);
+        }
+    }
+
     fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
         let v = self.expr(value, Some(&Ty::Text));
+        self.text_prop(node, name, v, value.span);
+    }
+
+    fn text_prop(&mut self, node: &Ex, name: &str, v: Ex, span: Span) {
         let v = match &v.ty {
             Ty::Text | Ty::Date | Ty::Time | Ty::Error => v,
             Ty::Option(inner) if **inner == Ty::Text => self.text_or_empty(v),
             Ty::Option(inner) if matches!(**inner, Ty::Date | Ty::Time) => v,
             other => {
                 let t = self.show(other);
+                let what = if name == "title" {
+                    "Text, a Date or a Time, an Option of one, or a resource"
+                } else {
+                    "Text, a Date or a Time, or an Option of one"
+                };
                 self.err(
                     "E020",
-                    value.span,
-                    format!(
-                        "a row's `{name}` is Text, a Date or a Time, or an Option of one; found {t}"
-                    ),
+                    span,
+                    format!("a row's `{name}` is {what}; found {t}"),
                 );
                 return;
             }
         };
-        self.prop(node.clone(), name, v, value.span);
+        self.prop(node.clone(), name, v, span);
     }
 
     /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set

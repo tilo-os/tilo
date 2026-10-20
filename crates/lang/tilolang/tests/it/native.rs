@@ -428,6 +428,37 @@ fn e093_row_views() {
             "row view r for T\nrow view s for T\nview r(x: T) {\n    row(x.t)\n}\nview s(x: T) {\n    row(x.t)\n}",
         ),
     );
+    ok(&with_t(
+        "row view r for T\nview r(x: T) {\n    let last = match x.items.last() {\n        .some(i) => i.t,\n        .none => \"\",\n    }\n    row(last)\n}",
+    ));
+    expect(
+        "E093",
+        &with_t("row view r for T\nview r(x: T) {\n    row(x.t)\n    let y = 1\n}"),
+    );
+}
+
+/// A row shows a value derived from its resource, or a resource itself; a card counts.
+#[test]
+fn rows_of_derived_values_and_resources() {
+    ok(&with_t(
+        "view v(x: T) {\n    list(x.items) { i ->\n        row(i, meta: i.t, avatar: invoker_of(i))\n    }\n}\nfn invoker_of(i: T) -> Principal {\n    i.owner\n}",
+    )
+    .replace("    items: Collection<T>\n", "    items: Collection<T>\n    owner: Principal\n"));
+    ok(&with_t(
+        "fn ends(x: T) -> Int {\n    let a: Option<T> = x.items.first()\n    let b: Option<T> = x.items.last()\n    let n: Option<Int> = [1, 2].last()\n    match n {\n        .some(v) => v,\n        .none => 0,\n    }\n}",
+    ));
+    expect("E027", &with_t("fn f(x: T) -> Int {\n    x.t.last()\n}"));
+    ok(&with_t(
+        "view v(x: T) {\n    card(x, count: x.items.len()) {\n        text(x.t)\n    }\n}",
+    ));
+    expect(
+        "E020",
+        &with_t("view v(x: T) {\n    card(x, count: x.t) {\n        text(x.t)\n    }\n}"),
+    );
+    expect(
+        "E020",
+        &with_t("view v(x: T) {\n    list(x.items) { i ->\n        row(i.b)\n    }\n}"),
+    );
 }
 
 #[test]
@@ -581,6 +612,15 @@ fn e095_a_window_is_one_frame() {
     ok(&with_t(
         "view v(x: T) {\n    stack {\n        page {\n            text(x.t)\n        }\n    }\n}",
     ));
+    ok(&with_t(
+        "view v(x: T) {\n    page {\n        text(x.t)\n        composer {\n            input(bind: x.t)\n        }\n    }\n}",
+    ));
+    expect(
+        "E095",
+        &with_t(
+            "view v(x: T) {\n    page {\n        stack {\n            composer {\n                text(x.t)\n            }\n        }\n    }\n}",
+        ),
+    );
 }
 
 #[test]
@@ -636,15 +676,6 @@ fn e097_lists_and_rows() {
     ok(&with_t(
         "view v(x: T) {\n    list(x.items, empty: \"Nothing\") { i ->\n        row(i.t, secondary: i.t, meta: \"m\", badge: \"b\", value: i.n, icon: .pin, checkbox: i.b, mark: if i.b { .pin } else { .check })\n    }\n}",
     ));
-    ok(&with_t(
-        "view v(x: T) {\n    page {\n        text(x.t)\n        composer {\n            input(bind: x.t)\n        }\n    }\n}",
-    ));
-    expect(
-        "E095",
-        &with_t(
-            "view v(x: T) {\n    page {\n        stack {\n            composer {\n                text(x.t)\n            }\n        }\n    }\n}",
-        ),
-    );
 }
 
 #[test]

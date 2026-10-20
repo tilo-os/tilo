@@ -173,6 +173,23 @@ control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or 
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`.
 
+**Native vocabulary.** Some smaller pieces of syntax:
+
+- An enum case takes an icon: `all (icon: .file_text)`.
+- An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
+  the subject. The `else` branch is the static fallback:
+  `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`.
+- `Date("2026-10-24")` and `Time("2026-10-24T09:30:00Z")` are ISO text that compares with the
+  ordering operators. `date(bind: t.due)` edits one. In an action, `now` is the invocation's
+  Time.
+- A scenario names people with `let mia = person("Mia")`. Inside `as mia { post(t, "Hi") }`,
+  the actions called run with `invoker` = mia.
+- `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
+  `canvas`.
+- `xs.first()` and `xs.last()` give an `Option` of the item.
+- A row view may have `let`s before its `row`. `row(r)` with a resource shows that resource's
+  row. `card(r, count: n)` shows a count.
+
 ## Commands
 
 `tilolang` is the language's tool (`crates/lang/tilolang-cli`, `cargo run -p tilolang-cli --`).
