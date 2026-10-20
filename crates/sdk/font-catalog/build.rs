@@ -16,8 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo::rerun-if-env-changed=TILO_FONT_ASSETS_OFFLINE");
         println!("cargo::rerun-if-env-changed=CARGO_NET_OFFLINE");
         println!("cargo::rerun-if-env-changed=PYTHON");
-        let python = std::env::var_os("PYTHON")
-            .unwrap_or_else(|| if cfg!(windows) { "python" } else { "python3" }.into());
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| python_with_tomllib().into());
         let mut command = Command::new(&python);
         command
             .arg(&tool)
@@ -30,8 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let output = command.output().map_err(|error| {
             format!(
                 "could not launch `{}` to prepare fonts with {}: {error}; \
-                 source builds require Python 3.11+ (Fedora: dnf install python3); \
-                 set PYTHON to its executable if it is not on PATH",
+                 source builds require Python 3.11+ (Fedora: dnf install python3, \
+                 macOS: brew install python); set PYTHON to its executable if it is not on PATH",
                 python.to_string_lossy(),
                 tool.display()
             )
@@ -52,4 +51,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         root.display()
     );
     Ok(())
+}
+
+/// The first Python on this machine that the tool runs on (3.11+, which has
+/// `tomllib`): `python3` on PATH, else a versioned one, else Homebrew's. A
+/// Mac's own `/usr/bin/python3` is 3.9 and comes first on PATH.
+fn python_with_tomllib() -> &'static str {
+    const CANDIDATES: &[&str] = if cfg!(windows) {
+        &["python", "py"]
+    } else {
+        &[
+            "python3",
+            "python3.14",
+            "python3.13",
+            "python3.12",
+            "python3.11",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ]
+    };
+    CANDIDATES
+        .iter()
+        .copied()
+        .find(|python| {
+            Command::new(python)
+                .args(["-c", "import tomllib"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+        .unwrap_or("python3")
 }
