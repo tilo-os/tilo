@@ -121,9 +121,11 @@ impl DisplayModel {
             .map_or(0, |entry| entry.rev)
     }
 
-    fn shared_row(&self, display: &ResolvedDisplay) -> LiveRow {
+    /// A shared display's row: it can always be kept in or out, and moved in
+    /// the display order only while its device has it `active` (switched on).
+    fn shared_row(&self, display: &ResolvedDisplay, active: bool) -> LiveRow {
         let revision = self.shared_revision(&display.device, &display.output);
-        LiveRow::new(
+        let row = LiveRow::new(
             format!(
                 "settings.shared-display:{}:{}",
                 display.device, display.output
@@ -139,8 +141,11 @@ impl DisplayModel {
                 on: display.enabled,
             })
             .bound_asking(&["on"]),
-        )
-        .operation(
+        );
+        if !active {
+            return row;
+        }
+        row.operation(
             SettingsEffect::from(DisplayEffect::OrderSharedDisplay {
                 device: display.device.clone(),
                 output: display.output.clone(),
@@ -227,11 +232,8 @@ impl DisplayModel {
 
     pub(super) fn shared_display_rows(&self) -> Vec<LiveRow> {
         let layout = self.shared_layout();
-        layout
-            .displays
-            .iter()
-            .chain(&layout.inactive)
-            .map(|display| self.shared_row(display))
+        shared_displays(&layout)
+            .map(|(display, active)| self.shared_row(display, active))
             .collect()
     }
 
@@ -319,8 +321,8 @@ impl DisplayModel {
                     effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
                 ),
         );
-        for display in layout.displays.iter().chain(&layout.inactive) {
-            let row = self.shared_row(display).into_resource();
+        for (display, active) in shared_displays(&layout) {
+            let row = self.shared_row(display, active).into_resource();
             let device = display.device.clone();
             let output = display.output.clone();
             let revision = self.shared_revision(&device, &output);
@@ -337,10 +339,12 @@ impl DisplayModel {
                     ("screen", display.name.clone().into()),
                     (
                         "status",
-                        t(if display.online {
+                        t(if !display.online {
+                            "display-device-offline"
+                        } else if active {
                             "display-device-online"
                         } else {
-                            "display-device-offline"
+                            "display-device-switched-off"
                         })
                         .into(),
                     ),
@@ -351,11 +355,7 @@ impl DisplayModel {
                 &t("display-shared-include"),
                 Box::new(toggle),
             ));
-            if layout
-                .displays
-                .iter()
-                .any(|active| active.is(&display.device, &display.output))
-            {
+            if active {
                 let options = (1..=layout.displays.len())
                     .map(|index| index.to_string())
                     .collect::<Vec<_>>();
@@ -381,6 +381,12 @@ impl DisplayModel {
         }
         Some(section(&t("display-shared-title"), rows(content)))
     }
+}
+
+/// Every display of `layout` and whether its device has it switched on.
+fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, bool)> {
+    let active = layout.displays.iter().map(|display| (display, true));
+    active.chain(layout.inactive.iter().map(|display| (display, false)))
 }
 
 #[cfg(test)]
@@ -720,6 +726,53 @@ mod tests {
         assert_eq!(inspection["devices"][0]["online"], false);
         assert_eq!(inspection["devices"][0]["outputs"][0]["mode_width"], 1920);
         assert_eq!(inspection["layout"]["displays"][0]["enabled"], false);
+        assert!(app.harness().component_contract_violations().is_empty());
+    }
+
+    #[test]
+    fn a_switched_off_shared_display_says_so_and_offers_no_ordering() {
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
+        let mut observed = devices();
+        observed[0].online = true;
+        observed[0].outputs[0].enabled = false;
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().person_devices = observed;
+        });
+        app.settle();
+        let mut captions = Vec::new();
+        app.surface::<SettingsApp, _>(|settings| {
+            let model = settings.displays().model().borrow();
+            let card = model.build_shared_displays_card().unwrap().into_section();
+            names(&card, &mut captions);
+        });
+        assert!(
+            captions.iter().any(|name| name.contains("Desk computer")
+                && name.contains("Switched off on that device")),
+            "{captions:?}"
+        );
+        let address = "settings.shared-display:offline-peer:edid:panel-1";
+        let offered = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+                       action: &str| {
+            app.agent_surface()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == address && row["action"] == action)
+        };
+        assert!(offered(&mut app, "include-shared-display"));
+        assert!(!offered(&mut app, "order-shared-display"));
+
+        app.surface::<SettingsApp, _>(|settings| {
+            settings.displays().model().borrow_mut().person_devices[0].outputs[0].enabled = true;
+        });
+        app.settle();
+        assert!(offered(&mut app, "order-shared-display"));
         assert!(app.harness().component_contract_violations().is_empty());
     }
 

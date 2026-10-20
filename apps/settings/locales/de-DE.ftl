@@ -1989,6 +1989,7 @@ display-devices-title = Bildschirme auf deinen Geräten
 display-device-screen = { $device } · { $screen } · { $status }
 display-device-online = Online
 display-device-offline = Offline
+display-device-switched-off = Auf dem Gerät ausgeschaltet
 display-devices-observed = Beobachtete Bildschirmpositionen. Eingabezugriff wird gesondert erteilt.
 
 display-devices-arrange = Einen verbundenen Gerätebildschirm neben Ihren ziehen. Bildschirme desselben Geräts werden zusammen verschoben. Verschieben erlaubt keine Eingabe.
