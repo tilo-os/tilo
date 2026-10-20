@@ -580,8 +580,8 @@ pub struct PdfApp {
     /// Comments and replies as written, one read-only view each, keyed by
     /// [`comment_view_key`]; measured and drawn by the Comments rail.
     comment_views: std::cell::RefCell<HashMap<String, RichTextView>>,
-    /// The rich-text view's line inset, measured at a text scale.
-    rich_inset: std::cell::Cell<Option<(f32, f64)>>,
+    /// The rich-text view's line inset, keyed by text and UI scale.
+    rich_inset: std::cell::Cell<Option<((f32, f32), f64)>>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -679,6 +679,7 @@ pub struct PdfApp {
     /// cluster: Open and Save, the annotation tools, the marker colour and
     /// Fit. What does not fit goes to its More menu.
     toolbar: ui::widget::Toolbar,
+    history: ui::widget::HistoryOpener,
     /// The band the toolbar is laid out in (see `recompute_regions`).
     toolbar_band: Rect,
     /// The reader state last carried onto the toolbar (see `sync_toolbar`).
@@ -1089,7 +1090,7 @@ impl PdfApp {
             comments: Vec::new(),
             signatures: Vec::new(),
             rect: Rect::ZERO,
-            fit: FitMode::Page,
+            fit: FitMode::Width,
             viewport: ViewportState::new()
                 .with_zoom_bounds(ZOOM_MIN, ZOOM_MAX)
                 .with_padding(DEFAULT_PADDING)
@@ -1110,7 +1111,8 @@ impl PdfApp {
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             show_rail: true,
-            rail_w: f64::from(ui::tokens::Metrics::BASE.sidebar_min_width),
+            // A preview rail, not a text sidebar: 168 px at 1.5× UI scale.
+            rail_w: 112.0,
             page_sidebar: PageSidebar::new(PAGE_H / PAGE_W).with_add("Import…"),
             pages_dirty: false,
             portal_import_rx: None,
@@ -1155,6 +1157,7 @@ impl PdfApp {
             context_menu: None,
             marker_colours: None,
             toolbar: build_toolbar(),
+            history: ui::widget::HistoryOpener::new(),
             toolbar_band: Rect::ZERO,
             toolbar_synced: String::new(),
             created_counter: 100,
@@ -1714,10 +1717,12 @@ impl PdfApp {
         // The panels dock while the page canvas keeps its minimum width
         // beside both of them; below that they float over the canvas.
         let m = &self.layout_theme.tokens.metrics;
-        let docked = (f64::from(m.sidebar_min_width)
-            + f64::from(m.inspector_width)
-            + f64::from(m.content_min_width))
-            * self.layout_theme.responsive_scale();
+        // Metrics already include UI scale. Only the text-sized review panel
+        // grows again with accessibility type; a PDF keeps its own geometry.
+        let (rail_min, rail_max) = self.rail_width_range();
+        let docked = self.rail_w.clamp(rail_min, rail_max)
+            + f64::from(m.inspector_width) * f64::from(self.layout_theme.text_growth())
+            + f64::from(m.detail_min_width);
         let overlay = self.rect.width() < docked;
         self.overlay_mode = overlay;
         if self.prev_overlay != Some(overlay) {
@@ -1745,7 +1750,7 @@ impl PdfApp {
         // forcing every comment into a tall, hard-to-scan single word column.
         let theme = &self.layout_theme;
         let m = &theme.tokens.metrics;
-        let preferred = f64::from(m.inspector_width) * theme.responsive_scale();
+        let preferred = f64::from(m.inspector_width) * f64::from(theme.text_growth());
         if self.overlay_mode {
             preferred
                 .min(self.rect.width() - f64::from(m.header_height))
@@ -1835,8 +1840,9 @@ impl PdfApp {
     /// page rather than the whole stack.
     fn fit_page_zoom(&self) -> f64 {
         let r = self.viewport.rect();
-        let avail_w = r.width() - 2.0 * DEFAULT_PADDING;
-        let avail_h = r.height() - 2.0 * DEFAULT_PADDING;
+        let padding = f64::from(self.layout_theme.tokens.spacing.s3);
+        let avail_w = r.width() - 2.0 * padding;
+        let avail_h = r.height() - 2.0 * padding;
         if self.pw() <= 0.0 || self.ph() <= 0.0 || avail_w <= 0.0 || avail_h <= 0.0 {
             return self.viewport.zoom();
         }
@@ -1855,7 +1861,16 @@ impl PdfApp {
             FitMode::Width => self.viewport.fit_width_zoom(),
             FitMode::Custom(z) => z.clamp(ZOOM_MIN, ZOOM_MAX),
         };
+        // A derived fit follows the canvas size, not a focal-point gesture.
+        // Keep the same document position at the viewport's leading edge;
+        // centre-anchored zoom would scroll a newly opened page past its title
+        // when the host applies its theme or resizes the window.
+        let ratio = z / self.zoom();
+        let scroll = (self.scroll_x() * ratio, self.scroll_y() * ratio);
         self.viewport.set_zoom(z);
+        if !matches!(self.fit, FitMode::Custom(_)) {
+            self.viewport.set_scroll(scroll.0, scroll.1);
+        }
     }
 
     /// Whether the zoomed page is wider than the viewport — drives whether
@@ -2737,13 +2752,21 @@ impl PdfApp {
         };
         let drag_bottom = drag.y + drag.h;
         let drag_right = drag.x + drag.w;
+        let vertical_gap = |line: &render::TextLine| {
+            let r = line.rect();
+            (r.y0 - drag_bottom).max(drag.y - r.y1).max(0.0)
+        };
+        // Prefer crossed lines. Proximity is a fallback for an imprecise
+        // drag, not permission to include the neighbouring lines as well.
+        let nearest = lines
+            .iter()
+            .filter(|line| (line.x - drag_right).max(drag.x - line.x_end) <= SNAP_NEAR)
+            .map(vertical_gap)
+            .fold(SNAP_NEAR, f64::min);
         let mut bands = Vec::new();
         for line in lines {
             let lr = line.rect();
-            // Vertical proximity: the line's band overlaps (or is within
-            // SNAP_NEAR of) the drag's vertical span.
-            let v_gap = (lr.y0 - drag_bottom).max(drag.y - lr.y1).max(0.0);
-            if v_gap > SNAP_NEAR {
+            if vertical_gap(line) > nearest + f64::EPSILON {
                 continue;
             }
             // Horizontal overlap with the line's glyph extent, widened to
@@ -2766,6 +2789,30 @@ impl PdfApp {
         bands
     }
 
+    /// Preview and commit share glyph ranges, snapped lines and free-form
+    /// fallback, so releasing the pointer does not change what was marked.
+    fn highlight_geometry(&self, drag: &DragState) -> (Vec<PtRect>, Option<(u32, u32)>) {
+        if let Some(text) = self.raster_text.get(&drag.page)
+            && let Some((start, end)) = text.range_between(drag.start, drag.cur)
+        {
+            return (
+                text.bands_for_range(start, end),
+                text.source_range(start, end),
+            );
+        }
+        let mut rect = PtRect::from_corners(drag.start.0, drag.start.1, drag.cur.0, drag.cur.1);
+        let snapped = self.snap_highlights(drag.page, rect);
+        rect.h = rect.h.max(3.0);
+        (
+            if snapped.is_empty() {
+                vec![rect]
+            } else {
+                snapped
+            },
+            None,
+        )
+    }
+
     fn commit_drag(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(d) = self.drag.take() else { return };
         match d.tool {
@@ -2783,19 +2830,8 @@ impl PdfApp {
                 // highlight covers exactly those characters and remembers
                 // their range. Otherwise it snaps to laid-out lines, or is a
                 // free-form band.
-                let text = self.ensure_raster_text(d.page);
-                let anchored = text.as_ref().and_then(|t| t.range_between(d.start, d.cur));
-                let (quads, chars) = if let (Some((s, e)), Some(t)) = (anchored, text.as_ref()) {
-                    (t.bands_for_range(s, e), t.source_range(s, e))
-                } else {
-                    let snapped = self.snap_highlights(d.page, drag_rect);
-                    let quads = if snapped.is_empty() {
-                        vec![drag_rect]
-                    } else {
-                        snapped
-                    };
-                    (quads, None)
-                };
+                self.ensure_raster_text(d.page);
+                let (quads, chars) = self.highlight_geometry(&d);
                 let a = Annotation {
                     chars,
                     ..Annotation::new(
@@ -2876,7 +2912,7 @@ impl PdfApp {
                     ),
                 _ => tilo_rich_text::plain_blocks(initial),
             };
-            let field = Self::comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
+            let field = self.comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
             self.editing = Some(Editing {
                 target,
                 input: EditInput::Rich(Box::new(field)),
@@ -2902,7 +2938,7 @@ impl PdfApp {
 
     /// A comment or reply field holding `blocks`, focused at its end: Enter
     /// sends, Shift+Enter breaks the line.
-    fn comment_field(blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
+    fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
         let hint = if reply {
             "Reply…"
         } else {
@@ -2913,7 +2949,8 @@ impl PdfApp {
                 ui::widget::BlockEditor::new()
                     .with_wrap_lines(true)
                     .with_compact_paragraph_spacing(true)
-                    .with_block_handles(false),
+                    .with_block_handles(false)
+                    .with_body_size(Self::comment_body_size(&self.layout_theme)),
             )
             .with_placeholder(hint)
             .with_submit(SubmitKey::Enter);
@@ -3073,7 +3110,7 @@ impl PdfApp {
     /// (clamped), against the same inset the pad renders into so a drawn stroke
     /// lands where the pointer went.
     fn sig_pad_norm(&self, p: Point) -> (f64, f64) {
-        let a = self.sig_pad_rect.inflate(-10.0, -10.0);
+        let a = self.signature_ink_rect();
         let x = if a.width() > 0.0 {
             ((p.x - a.x0) / a.width()).clamp(0.0, 1.0)
         } else {
@@ -3085,6 +3122,12 @@ impl PdfApp {
             0.0
         };
         (x, y)
+    }
+
+    /// The same ink area is used for painting and pointer normalisation.
+    fn signature_ink_rect(&self) -> Rect {
+        self.sig_pad_rect
+            .inset(-f64::from(self.layout_theme.tokens.spacing.s3))
     }
 
     /// The signature the composer currently holds: the drawn strokes when in
@@ -4108,7 +4151,7 @@ impl PdfApp {
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
                     self.status_note = None;
-                    self.fit = FitMode::Page;
+                    self.fit = FitMode::Width;
                     self.viewport.set_scroll(0.0, 0.0);
                     self.current_page = 1;
                     self.resource_page_ids = (1..=self.doc.page_count())
@@ -4170,6 +4213,16 @@ impl PdfApp {
                         .raster_handle
                         .as_ref()
                         .and_then(|handle| handle.discard_document(request.id).ok());
+                }
+                RasterEvent::VisualWorkEvicted => {
+                    // A wider canvas can complete more tiles than fit in one
+                    // result burst. Cached results remain valid; only missing
+                    // work must be eligible for submission again.
+                    self.raster_render_pending.clear();
+                    self.raster_text_pending.clear();
+                    self.raster_links_pending.clear();
+                    self.raster_tile_batch.clear();
+                    self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
                     if self
@@ -4495,6 +4548,11 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    ui::provides!(
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
+    );
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.region_copy.failed() {
             self.status_note = Some("Selected a region (clipboard unavailable)".to_string());
@@ -4539,7 +4597,21 @@ impl Widget for PdfApp {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Keep a user-resized rail proportional when the host changes UI scale.
+        self.rail_w *= f64::from(theme.ui_scale / self.layout_theme.ui_scale);
+        self.viewport =
+            std::mem::take(&mut self.viewport).with_padding(f64::from(theme.tokens.spacing.s3));
         self.layout_theme = theme.clone();
+        if let Some(Editing {
+            input: EditInput::Rich(field),
+            ..
+        }) = &mut self.editing
+        {
+            field
+                .widget_mut()
+                .editor_mut()
+                .set_body_size(Self::comment_body_size(theme));
+        }
         taffy.fill_leaf(node_map, self)
     }
 
@@ -4563,6 +4635,14 @@ impl Widget for PdfApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self
+            .history
+            .handle_event(event, self.history_rect(), ctx.scale_factor)
+        {
+            self.dirty = true;
+            *ctx.handled = true;
+            return;
+        }
         if self.context_menu.is_some() {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
@@ -4731,6 +4811,7 @@ impl Widget for PdfApp {
                 .with_bounds(layout.toggle_sidebar)
                 .with_state(focusable().checked(self.show_sidebar)),
         ];
+        controls.extend(self.history.accessibility(self.history_rect()));
         // Commands that went to the More menu keep their nodes (zero bounds)
         // and actions; the More button, and its menu while open, come from
         // the toolbar itself.
@@ -5043,6 +5124,10 @@ impl Widget for PdfApp {
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        if self.history.perform_semantic_action(target, action) {
+            self.dirty = true;
+            return true;
+        }
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             let Some(menu) = self.context_menu.as_mut() else {
@@ -6955,6 +7040,121 @@ mod tests {
         app
     }
 
+    #[test]
+    fn opened_pdf_defaults_to_width_fit() {
+        let (_dir, path, _) = two_documents();
+        let mut app = launched(&path);
+        let reader = app.surface_mut::<PdfApp>();
+        assert!(matches!(reader.fit, FitMode::Width));
+        assert!((reader.zoom() - reader.viewport.fit_width_zoom()).abs() < 0.01);
+    }
+
+    #[test]
+    fn default_width_fit_tracks_the_canvas_and_preserves_explicit_zoom() {
+        let state = crate::scenarios::sample_state();
+        let mut app = framed_with_theme(
+            crate::scenarios::sample_reader(),
+            state,
+            1440.0,
+            810.0,
+            None,
+            Theme::dark().with_ui_scale(1.5),
+        );
+        assert!(matches!(app.fit, FitMode::Width));
+        assert!((app.rail_rect.width() - 168.0).abs() < 0.01);
+        assert!(
+            app.zoom() > 1.15,
+            "default paper is enlarged, not fit to height"
+        );
+        for (width, height) in [(1440.0, 810.0), (1600.0, 900.0), (1200.0, 810.0)] {
+            full_frame(&mut app, width, height, None);
+            let origin = app
+                .page_origins()
+                .first()
+                .copied()
+                .expect("first page origin");
+            let card = render::page_card_rect(origin, app.zoom(), app.pw(), app.ph());
+            let gutter = f64::from(app.layout_theme.tokens.spacing.s3);
+            assert!((card.x0 - app.canvas_rect.x0 - gutter).abs() < 0.01);
+            assert!((app.canvas_rect.x1 - card.x1 - gutter).abs() < 0.01);
+            assert!((card.y0 - app.canvas_rect.y0 - gutter).abs() < 0.01);
+            assert!(!app.is_overflowing_x());
+        }
+        app.fit_page();
+        full_frame(&mut app, 1440.0, 810.0, None);
+        assert!(app.ph() * app.zoom() < app.canvas_rect.height());
+        app.set_custom_zoom(1.75);
+        full_frame(&mut app, 1600.0, 900.0, None);
+        assert!((app.zoom() - 1.75).abs() < 0.01);
+        app.fit_width();
+        full_frame(&mut app, 1440.0, 810.0, None);
+        assert!((app.pw() * app.zoom() - (app.canvas_rect.width() - 36.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn vector_thumbnails_keep_the_pages_glyphs_figures_and_markup() {
+        let (app, _) = app_with_state();
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let mut text = TextRenderer::new();
+        for page in &app.doc.pages {
+            let markup = render::Markup {
+                annotations: &app.annotations,
+                signatures: &app.signatures,
+                selected: None,
+            };
+            let mut page_scene = Scene::new();
+            text.set_text_scale(1.0);
+            render::draw_page(
+                &mut PaintCtx::new(&mut page_scene, Affine::IDENTITY, &mut text, &theme),
+                page,
+                render::PageFrame {
+                    origin: Point::ZERO,
+                    scale: 1.0,
+                    page_w: app.pw(),
+                    page_h: app.ph(),
+                },
+                render::PageRaster {
+                    image: None,
+                    tiles: None,
+                },
+                &[],
+                markup,
+            );
+            let mut thumbnail = Scene::new();
+            text.set_text_scale(1.5);
+            render::Thumbnail {
+                page,
+                page_w: app.pw(),
+                page_h: app.ph(),
+                raster: None,
+                markup,
+            }
+            .draw(
+                &mut PaintCtx::new(&mut thumbnail, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(10.0, 20.0, 122.0, 20.0 + 112.0 * app.ph() / app.pw()),
+            );
+            assert!((text.text_scale() - 1.5).abs() < f32::EPSILON);
+            let glyphs = |scene: &Scene| {
+                scene
+                    .encoding()
+                    .resources
+                    .glyphs
+                    .iter()
+                    .map(|g| (g.id, g.x.to_bits(), g.y.to_bits()))
+                    .collect::<Vec<_>>()
+            };
+            assert!(glyphs(&page_scene).len() > 50, "actual page text, not bars");
+            assert_eq!(glyphs(&thumbnail), glyphs(&page_scene));
+            assert!(
+                thumbnail
+                    .encoding()
+                    .path_data
+                    .ends_with(&page_scene.encoding().path_data),
+                "the miniature keeps the real figures, highlights and signature paths",
+            );
+        }
+    }
+
     /// Set the zoom to an exact factor via the viewport kernel + fit intent
     /// before [`framed`]'s first frame at 1280×800.
     fn framed_at_zoom(mut app: PdfApp, st: ui::State, z: f64, out: Option<&str>) -> Framed<PdfApp> {
@@ -8578,7 +8778,12 @@ mod tests {
             }
             assert!(
                 ui::time::now() < deadline,
-                "the viewport's tiles never all arrived"
+                "the viewport's tiles never all arrived: pending renders {:?}, cached images {:?}, queued tiles {}, cached tiles {}, status {:?}",
+                app.raster_render_pending,
+                app.raster_images.keys().collect::<Vec<_>>(),
+                app.raster_tile_batch.len(),
+                app.raster_tiles.keys().count(),
+                app.status_note
             );
             std::thread::sleep(Duration::from_millis(5));
             let (reader, st) = Framed::split(app);
@@ -9274,6 +9479,120 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_highlight_preview_and_commit_cover_only_the_crossed_line() {
+        let (mut app, mut state) = app_with_state();
+        let mut text = TextRenderer::new();
+        app.refresh_text_lines(&mut text);
+        let lines = app.text_lines.get(&1).expect("visible page text");
+        let line = lines
+            .iter()
+            .find(|line| line.h < 16.0 && line.y > 250.0)
+            .expect("body line")
+            .clone();
+        let drag = DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (line.x + 0.5, line.y + line.h / 2.0),
+            cur: (line.x_end - 0.5, line.y + line.h / 2.0),
+            points: Vec::new(),
+        };
+        let (preview, _) = app.highlight_geometry(&drag);
+        assert_eq!(preview.len(), 1, "nearby lines are not selected");
+        assert!((preview[0].y - line.y).abs() < f64::EPSILON);
+        assert!(
+            (preview[0].h - line.h).abs() < f64::EPSILON,
+            "horizontal drag has a text-height preview"
+        );
+        app.drag = Some(drag);
+        app.commit_drag(&mut Edits::lend(&mut state.doc));
+        let id = app.selected_anno.as_ref().expect("new highlight selected");
+        let stored = PdfMarkup::of(&state.doc)
+            .list_annotations()
+            .into_iter()
+            .find(|annotation| &annotation.id == id)
+            .expect("durable highlight");
+        // Storage uses PDF user space (bottom-up), while the preview uses
+        // the displayed card's top-down space. Compare after projection.
+        let projected = app.page_map(1).annotation_to_card(&stored);
+        let AnnoKind::Markup { quads, .. } = projected.kind else {
+            unreachable!("the gesture stored a highlight");
+        };
+        assert_eq!(quads.len(), preview.len());
+        for (actual, expected) in quads.iter().zip(&preview) {
+            for (a, b) in [
+                (actual.x, expected.x),
+                (actual.y, expected.y),
+                (actual.w, expected.w),
+                (actual.h, expected.h),
+            ] {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "saved band {actual:?} matches preview {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reader_panels_and_page_fit_apply_ui_scale_once() {
+        for scale in [0.75_f32, 1.0, 1.5, 2.0] {
+            let (mut app, st) = app_with_state();
+            app.fit = FitMode::Page;
+            let theme = Theme::dark().with_ui_scale(scale);
+            let mut frame = framed_with_theme(
+                app,
+                st,
+                960.0 * f64::from(scale),
+                810.0,
+                None,
+                theme.clone(),
+            );
+            assert!(!frame.overlay_mode, "panels dock at {scale}×");
+            assert!(frame.show_rail && frame.show_sidebar);
+            assert!((frame.sidebar_rect.width() - 300.0 * f64::from(scale)).abs() < 0.01);
+            assert!((frame.rail_rect.width() - 112.0 * f64::from(scale)).abs() < 0.01);
+            let origin = frame.page_origins()[0];
+            let card = render::page_card_rect(origin, frame.zoom(), frame.pw(), frame.ph());
+            let gutter = f64::from(theme.tokens.spacing.s3);
+            assert!(card.x0 >= frame.canvas_rect.x0 + gutter - 0.01);
+            assert!(card.x1 <= frame.canvas_rect.x1 - gutter + 0.01);
+            assert!(card.y0 >= frame.canvas_rect.y0 + gutter - 0.01);
+            assert!(card.y1 <= frame.canvas_rect.y1 - gutter + 0.01);
+            for view in frame.comment_views.borrow_mut().values_mut() {
+                assert!(
+                    (view.editor_mut().body_size() - theme.text(TextRole::Body).size).abs() < 0.01,
+                    "comment body follows UI scale at {scale}×"
+                );
+            }
+            // Repeated layout does not compound rail scaling.
+            full_frame(&mut frame, 960.0 * f64::from(scale), 810.0, None);
+            assert!((frame.rail_rect.width() - 112.0 * f64::from(scale)).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn history_shares_the_toolbar_and_keeps_its_semantic_door() {
+        use ui::widget::{HistoryControl, WindowHeader, controls::ActionControls};
+        let (mut app, mut state) = app_with_state();
+        app.set_history_control(Some(HistoryControl::Closed));
+        app.recompute_regions();
+        let history = app.history_rect();
+        assert!(history.width() > 0.0);
+        assert!(app.toolbar_layout().toggle_sidebar.x1 < history.x0);
+        assert!(app.perform_semantic_action(
+            ui::widget::HISTORY_CONTROL_ID,
+            &ui::a11y::Action::Activate,
+            &mut Edits::lend(&mut state.doc),
+            &state.root,
+        ));
+        assert!(app.take_control_invocation().is_some());
+        assert!(app.take_control_invocation().is_none());
+        app.set_history_control(None);
+        app.recompute_regions();
+        assert_eq!(app.history_rect(), Rect::ZERO);
+    }
+
+    #[test]
     fn comment_text_starts_on_the_author_name_edge_at_any_scale() {
         // The rich text of a comment sets its first glyph where the author's
         // name starts, at every text scale.
@@ -9410,6 +9729,23 @@ mod tests {
                 body.y1
             );
         }
+    }
+}
+
+impl ui::widget::WindowHeader for PdfApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.dirty = true;
+    }
+}
+
+impl ui::widget::controls::ActionControls for PdfApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take()
     }
 }
 
