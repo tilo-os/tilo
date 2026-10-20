@@ -167,8 +167,9 @@ inventory_cleanup() {
 runtime_wayland="$(sed -n '/# The frozen snapshot already resolves these development specs/,/FINALIZE_RPMDB/p' \
   "$repo/os/Containerfile")"
 if grep -Fq 'rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel' <<<"$runtime_wayland" \
+  && grep -Fq "grep -Ex 'cmake-rpm-macros|ninja-build'" <<<"$runtime_wayland" \
   && inventory_cleanup "$runtime_wayland" \
-    '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$' \
+    '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     'xargs -r rpm -e --nodeps' \
     '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf|cmake-rpm-macros|ninja-build)$'; then
   ok 'immutable runtime erases Wayland/input development, pkg-config and transitive build tools after resolving libraries'
