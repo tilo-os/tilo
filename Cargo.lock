@@ -20119,6 +20119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-tilo"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "tilo-ui-graph",
+ "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

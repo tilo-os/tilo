@@ -1,0 +1,29 @@
+[package]
+autotests = false
+name = "tilolang-tilo"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo platform integration for tilolang apps: dynamic records in the room record, replayable actions, the published surface, and the UI graph translation."
+
+[dependencies]
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
