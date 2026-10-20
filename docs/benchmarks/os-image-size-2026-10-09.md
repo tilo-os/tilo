@@ -13,7 +13,7 @@ its digest and replays the layers with their whiteouts. It counts the content
 bytes of the merged root, deployed by install, with each hard-linked file
 counted once. The images are the production-layout `tilo-ci` builds (LTO
 off, as Build / OS dev builds them). The raw output is in
-`os-image-size-2026-10-09.json`.
+[`os-image-size-2026-10-09.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-image-size-2026-10-09.json).
 
 | image | revision | compressed | content | unique content | undeployed `/sysroot` | redundant payload |
 |---|---|---:|---:|---:|---:|---:|

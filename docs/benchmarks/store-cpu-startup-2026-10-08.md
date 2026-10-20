@@ -18,7 +18,7 @@ Current source caches verified fonts and system discovery once per process. Card
 
 ## Scope and reproduction
 
-The raw samples, warm-rebuild pass profiles and exact source/artifact hashes are in [the JSON receipt](store-cpu-startup-2026-10-08.json). Source base: `418404c4964d0bacd30f3ccb1f69c4821fc67eb0`.
+The raw samples, warm-rebuild pass profiles and exact source/artifact hashes are in [the JSON receipt](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/store-cpu-startup-2026-10-08.json). Source base: `418404c4964d0bacd30f3ccb1f69c4821fc67eb0`.
 
 Build the `store` example `startup-layout-probe` with the configured Cargo implementation in release mode, locked. Run it with no argument, `--fixture`, or `--full-page` against separate private HOME/XDG paths; do not point it at a user's profile or desktop. `--full-page` repeats the screenshot fixture with unique app identities and text, and supplies 48 items. It is synthetic input rather than a captured live catalogue.
 
