@@ -374,6 +374,12 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
 }
 
 impl ActionDirectorySnapshot {
+    /// What [`Self::build`] estimated the snapshot holds.
+    #[cfg(test)]
+    pub(super) const fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+
     fn estimate_retained_bytes(&self) -> usize {
         fn rows(rows: &[ActionDirectoryRow]) -> usize {
             rows.iter().fold(0usize, |bytes, row| {
@@ -384,10 +390,13 @@ impl ActionDirectorySnapshot {
                     .saturating_add(row.resource_kind.capacity())
                     .saturating_add(row.resource_label.capacity())
                     .saturating_add(row.action.as_ref().map_or(0, String::capacity));
-                // Count into a sink, not a temporary JSON buffer. The generous
-                // multiplier covers nested Vec/enum/map slots, allocator headers
-                // and small owned values in the exported descriptor/contract.
-                // These are cloned wire data, not arbitrary application caches.
+                // Count into a sink, not a temporary JSON buffer. The typed
+                // descriptor, presentation and contract hold their nested
+                // Vec/enum/map slots, allocator headers and small owned values
+                // beside the row slots and strings counted here; measured
+                // against the allocator they take under their wire length, so
+                // twice it bounds them. These are cloned wire data, not
+                // arbitrary application caches.
                 let nested = runtime_collab::wire_json_len(&row.descriptor)
                     .saturating_add(runtime_collab::wire_json_len(&row.presentation))
                     .saturating_add(row.visibility.as_ref().map_or(0, |visibility| {
@@ -396,7 +405,7 @@ impl ActionDirectorySnapshot {
                             .capacity()
                             .saturating_add(runtime_collab::wire_json_len(&visibility.contract))
                     }))
-                    .saturating_mul(32);
+                    .saturating_mul(2);
                 bytes.saturating_add(strings).saturating_add(nested)
             })
         }

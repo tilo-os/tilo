@@ -101,7 +101,7 @@ impl crate::resources::PublishesResources for DeclaredDirectory {
                     format!("declared:{index}"),
                     "declared",
                     if doc.get(ROOT, "large-label").unwrap().is_some() {
-                        "L".repeat(8192)
+                        "L".repeat(32 * 1024)
                     } else {
                         format!("Declared {index}")
                     },
@@ -312,7 +312,9 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
 
 #[test]
 fn retained_local_directory_rejects_oversized_snapshot() {
-    let (mut app, _) = declared_directory(16);
+    // 64 resources with 32 KiB labels: several times the pin budget in
+    // memory actually held, not only in the estimate.
+    let (mut app, _) = declared_directory(64);
     app.state_mut_for_test()
         .doc
         .put(ROOT, "large-label", true)
@@ -321,6 +323,82 @@ fn retained_local_directory_rejects_oversized_snapshot() {
     let revision = app.action_directory_revision();
     assert!(app.pin_local_document_action_directory(&revision).is_none());
     assert!(app.actions.local_document_directory_pins.is_empty());
+}
+
+/// The estimate a pin is charged is an upper bound on what a snapshot holds,
+/// and close to it: an estimate many times the memory refused every local
+/// action of an ordinary app (a directory of 40 resources holding 2.8 MB was
+/// charged 25 MB against the 4 MiB pin budget).
+#[test]
+fn directory_snapshot_estimate_bounds_its_measured_memory() {
+    use crate::semantic_document_read::retirement::tests::allocations::allocations_only;
+    let resources = |count: usize, label: usize, extra: usize| -> Vec<Resource> {
+        (0..count)
+            .map(|index| {
+                let mut resource = Resource::new(
+                    format!("declared:{index}"),
+                    "declared",
+                    if label > 0 {
+                        "L".repeat(label)
+                    } else {
+                        format!("Declared {index}")
+                    },
+                )
+                .with_action(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect",
+                        OperationKind::View,
+                        COUNTER_TYPE,
+                        &CounterAction::Bump,
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                );
+                for action in 0..extra {
+                    resource = resource.with_action(
+                        ActionSpec::operation(
+                            format!("extra:{action}"),
+                            "Extra action",
+                            OperationKind::Effect,
+                            COUNTER_TYPE,
+                            &CounterAction::Bump,
+                        )
+                        .unwrap()
+                        .with_contract(tilo_actions::ActionContract::default()),
+                    );
+                }
+                resource
+            })
+            .collect()
+    };
+    for (what, count, label, extra) in [
+        ("long labels", 16, 8192, 0),
+        ("many small resources", 137, 0, 0),
+        ("one wide resource", 1, 0, 140),
+        ("an app's directory", 40, 0, 12),
+    ] {
+        let resources = resources(count, label, extra);
+        let descriptors = tilo_actions::door::survey(&resources);
+        let (snapshot, held) = allocations_only(|| {
+            crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+                &resources,
+                &descriptors,
+                |_| None,
+            )
+        });
+        let estimate = snapshot.retained_bytes();
+        assert!(
+            estimate >= held.live,
+            "{what}: estimated {estimate} bytes, holds {}",
+            held.live
+        );
+        assert!(
+            estimate <= held.live.saturating_mul(3),
+            "{what}: estimated {estimate} bytes for {} held",
+            held.live
+        );
+    }
 }
 
 #[test]
