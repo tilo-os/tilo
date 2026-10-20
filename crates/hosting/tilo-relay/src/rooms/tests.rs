@@ -2500,3 +2500,191 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// One person's device joining `room` through its door, as a Tilo computer
+/// does: the challenge, the door's admission spent with the proof, then the
+/// Complete. Answers the Complete it sent and the host's answer.
+async fn door_join(
+    rooms: &Rooms,
+    host: &DeviceCert,
+    room: &str,
+    (device, device_cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+) -> (
+    tilo_peer_state::join::JoinTransportRequest,
+    tilo_peer_state::join::JoinTransportResponse,
+) {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
+        sign_join_proof,
+    };
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
+    let token = [seed; 8];
+    let issued = rooms
+        .pre_admit(
+            host,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission(room, &token),
+                recipient_user_public_key: Some(device_cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let service = rooms.join_service();
+    let endpoint = device_cert.device_public_key;
+    let JoinTransportResponse::Challenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: device_cert.clone(),
+                request_id: [seed.wrapping_add(100); 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no challenge");
+    };
+    let proof = sign_join_proof(answer.challenge, device).unwrap();
+    let admitted = rooms
+        .page_join(JoinStep::ProvePreAdmitted {
+            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
+            signature: proof.signature,
+            name: "Ada".into(),
+            token: token.to_vec(),
+        })
+        .await;
+    assert!(
+        matches!(admitted, JoinReply::Admitted { .. }),
+        "{admitted:?}"
+    );
+    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
+    let response = service.handle(endpoint, complete.clone()).await;
+    drop(service);
+    (complete, response)
+}
+
+/// The Lounge, 2026-10-20: a laptop's join completed at the host, but the
+/// laptop restarted before it installed the answer. By the time it resent
+/// its retained proof, others had joined: the host no longer replays the
+/// answer, says so with its code, and gives the device, a member now, the
+/// room's current state through the membership exchange, which matches
+/// what the device's retained proof expects.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_membership() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JOIN_COMPLETED_REFRESH, JoinTransportRequest, JoinTransportResponse,
+        MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (laptop, laptop_cert) = guest_device();
+    let (complete, first) =
+        door_join(rooms, &cert, &created.room, (&laptop, &laptop_cert), 11).await;
+    let JoinTransportResponse::Complete(delivered) = first else {
+        panic!("the first Complete is admitted: {first:?}");
+    };
+    // The answer never reached the laptop. Someone else joins meanwhile.
+    let (other, other_cert) = guest_device();
+    let (_, joined) = door_join(rooms, &cert, &created.room, (&other, &other_cert), 12).await;
+    assert!(matches!(joined, JoinTransportResponse::Complete(_)));
+
+    let service = rooms.join_service();
+    let endpoint = laptop_cert.device_public_key;
+    let resent = service.handle(endpoint, complete).await;
+    assert!(
+        matches!(
+            resent,
+            JoinTransportResponse::Error {
+                code: JOIN_COMPLETED_REFRESH,
+                ..
+            }
+        ),
+        "{resent:?}"
+    );
+    let JoinTransportResponse::MembershipChallenge(answer) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
+                room: created.room.clone(),
+                workspace_id: created.workspace_id,
+                device_cert: laptop_cert.clone(),
+                request_id: [13; 32],
+            }),
+        )
+        .await
+    else {
+        panic!("no membership challenge");
+    };
+    let proof = sign_membership_proof(answer.challenge, &laptop).unwrap();
+    let JoinTransportResponse::MembershipComplete(current) = service
+        .handle(
+            endpoint,
+            JoinTransportRequest::MembershipComplete(MembershipCompleteRequest { proof }),
+        )
+        .await
+    else {
+        panic!("no membership");
+    };
+    // What the device's retained proof checks the answer against.
+    assert_eq!(current.version, 1);
+    assert_eq!(current.invite_id, delivered.invite_id);
+    assert_eq!(current.device_cert, laptop_cert);
+    assert_eq!(current.role, delivered.role);
+    assert_eq!(current.room, delivered.room);
+    assert_eq!(current.workspace_id, delivered.workspace_id);
+    assert_eq!(current.authority, delivered.authority);
+    assert!(current.generation > 0);
+    assert!(current.certified_roster.contains(&laptop_cert));
+    assert!(current.certified_roster.contains(&other_cert));
+    assert!(current.certified_roster.contains(&current.authority));
+    relay.shutdown().await;
+}
+
+/// A workspace that moves to its person's host keeps its room: the host
+/// takes over governing the room under the identity it already has, and
+/// refuses a room it holds already, rather than minting another.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_room_moved_here_keeps_its_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().expect("a certified host governs rooms");
+    let room = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
+    let moved = rooms.create_room("Mine", Some(room)).await.unwrap();
+    assert_eq!(moved.room, room, "the room keeps its identity");
+    assert_eq!(
+        moved.workspace_id,
+        crate::room_workspace_id(room).unwrap(),
+        "and its workspace the id every device derives from it"
+    );
+    assert!(
+        rooms.create_room("Again", Some(room)).await.is_err(),
+        "a room the host holds is never made a second time"
+    );
+    assert!(rooms.create_room("Bad", Some("not a room")).await.is_err());
+    let fresh = rooms.create_room("Fresh", None).await.unwrap();
+    assert_ne!(fresh.room, room);
+    relay.shutdown().await;
+}

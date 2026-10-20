@@ -223,8 +223,34 @@ impl GovernedRoom {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<Self, String> {
+        Self::create_in(
+            dir,
+            &uuid::Uuid::new_v4().to_string(),
+            name,
+            (authority, key),
+            now,
+        )
+    }
+
+    /// A new governed room under the identity `room`: a fresh one, or the
+    /// room a workspace already is when it moves here from the device that
+    /// made it (a workspace is its room, and keeps it when its governance
+    /// moves).
+    fn create_in(
+        dir: &Path,
+        room: &str,
+        name: &str,
+        (authority, key): (&DeviceCert, &SigningKey),
+        now: SystemTime,
+    ) -> Result<Self, String> {
         let name = valid_name(name)?;
-        let room = uuid::Uuid::new_v4().to_string();
+        let room = uuid::Uuid::parse_str(room)
+            .map_err(|_| "a room is a UUID".to_owned())?
+            .hyphenated()
+            .to_string();
+        if dir.join(format!("{room}.room")).exists() {
+            return Err("this host has that room already".into());
+        }
         let roster = vec![authority.clone()];
         let mut peer = StatePeer::new(
             &room,
@@ -813,13 +839,39 @@ impl Rooms {
     ///
     /// Returns why the room could not be created, persisted or bound.
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
-        let room = GovernedRoom::create(
-            &self.inner.dir,
-            name,
-            &self.inner.host.cert,
-            &self.inner.host.key,
-            SystemTime::now(),
-        )?;
+        self.create_room(name, None).await
+    }
+
+    /// Create a governed room named `name`, under the identity `room` when
+    /// given: a workspace moving here keeps the room it is. Refused when
+    /// this host holds that room already.
+    ///
+    /// # Errors
+    ///
+    /// The name is not 1–80 characters, `room` is no UUID or held here
+    /// already, or the room could not be written.
+    pub async fn create_room(&self, name: &str, room: Option<&str>) -> Result<RoomSummary, String> {
+        if let Some(room) = room
+            && self.inner.rooms.lock().await.contains_key(room)
+        {
+            return Err("this host has that room already".into());
+        }
+        let room = match room {
+            Some(room) => GovernedRoom::create_in(
+                &self.inner.dir,
+                room,
+                name,
+                (&self.inner.host.cert, &self.inner.host.key),
+                SystemTime::now(),
+            )?,
+            None => GovernedRoom::create(
+                &self.inner.dir,
+                name,
+                &self.inner.host.cert,
+                &self.inner.host.key,
+                SystemTime::now(),
+            )?,
+        };
         self.bind(&room).await?;
         let summary = room.summary();
         let room = Arc::new(AsyncMutex::new(room));
