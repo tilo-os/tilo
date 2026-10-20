@@ -11,10 +11,17 @@ struct ServiceChild {
 }
 
 impl ServiceChild {
-    fn assert_cancelled(&mut self) {
-        self.lease
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+    /// The terminal ended this session: its lease reads end-of-file. When
+    /// the terminal has already moved on (`already`), the end must be there
+    /// at once; otherwise wait for it within the hang bound.
+    fn assert_cancelled(&mut self, already: bool) {
+        if already {
+            self.lease.set_nonblocking(true).unwrap();
+        } else {
+            self.lease
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+        }
         let mut byte = [0u8; 1];
         assert_eq!(
             self.lease.read(&mut byte).unwrap(),
@@ -41,7 +48,7 @@ fn read_json(reader: &mut impl BufRead) -> serde_json::Value {
 
 fn serve_native_sessions(mut control: UnixStream) {
     control
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut reader = BufReader::new(control.try_clone().unwrap());
     let mut previous: Option<ServiceChild> = None;
@@ -51,10 +58,14 @@ fn serve_native_sessions(mut control: UnixStream) {
         } else {
             "host"
         };
-        if let Some(mut previous) = previous.take() {
-            previous.assert_cancelled();
-        }
+        // The terminal ends its old session before it says hello for the
+        // next one, so once the hello is here the old lease has ended. Waiting
+        // for the hello first keeps the check free of how long the terminal
+        // took between switches.
         let hello = read_json(&mut reader);
+        if let Some(mut previous) = previous.take() {
+            previous.assert_cancelled(true);
+        }
         assert_eq!(hello["op"], "hello");
         assert_eq!(hello["protocol"], 2);
         control
@@ -101,7 +112,7 @@ fn serve_native_sessions(mut control: UnixStream) {
             child,
         });
     }
-    previous.as_mut().unwrap().assert_cancelled();
+    previous.as_mut().unwrap().assert_cancelled(false);
 }
 
 #[test]
