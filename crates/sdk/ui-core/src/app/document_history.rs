@@ -360,6 +360,31 @@ impl App {
     ) -> Result<bool, HistoryError> {
         let result =
             crate::standalone_history::apply_restore(&mut self.state, confirmed, Some(author));
+        self.history_written(result)
+    }
+
+    /// Name a run of changes in the live document, or remove its name: one
+    /// attributed change, persisted like a restore. Like the name, it is no
+    /// step of its own: undo walks past it.
+    pub(super) fn apply_history_name(
+        &mut self,
+        request: &crate::GroupNameRequest,
+        author: crate::permissions::UserId,
+    ) -> Result<bool, HistoryError> {
+        let result = crate::standalone_history::apply_name(
+            &mut self.state,
+            &self.permission_ctx,
+            request,
+            author,
+        );
+        self.history_written(result)
+    }
+
+    /// Persist and present what a History write changed.
+    fn history_written(
+        &mut self,
+        result: Result<bool, HistoryError>,
+    ) -> Result<bool, HistoryError> {
         if matches!(result, Ok(true)) {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -1270,6 +1295,7 @@ mod tests {
                     ("history.close", Undoable),
                     ("history.compare", Undoable),
                     ("history.list", Read),
+                    ("history.name", Undoable),
                     ("history.open", Read),
                     ("history.restore", Undoable),
                     ("history.view_at", Undoable),

@@ -264,7 +264,9 @@ impl HistoryHost {
             }
             // A file's versions are restored whole; a single change of a
             // file is not taken back on its own.
-            review::ReviewCommand::Confirm | review::ReviewCommand::RevertChange => return,
+            review::ReviewCommand::Confirm
+            | review::ReviewCommand::RevertChange
+            | review::ReviewCommand::Name => return,
             review::ReviewCommand::Cancel => {
                 files.cancel_review();
                 self.review = None;

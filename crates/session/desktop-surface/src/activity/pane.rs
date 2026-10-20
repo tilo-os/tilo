@@ -7543,20 +7543,8 @@ impl RoomActivityPane {
             return false;
         }
         let before = tree.document_mut().get_heads();
-        if req.label.is_empty() {
-            let Some(record) = req.record_id.as_deref() else {
-                return false;
-            };
-            if !ui::history_groups::clear_name(tree.document_mut(), record) {
-                return false;
-            }
-        } else {
-            ui::history_groups::name_range(
-                tree.document_mut(),
-                &req.start,
-                Some(&req.end),
-                &req.label,
-            );
+        if !ui::history_groups::apply_name_request(tree.document_mut(), req) {
+            return false;
         }
         tree.commit_activity_change();
         if tree.document_mut().get_heads() == before {

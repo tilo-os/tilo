@@ -43,6 +43,8 @@ enum Command {
     PreviousPage,
     NextPage,
     Scope(usize),
+    /// Open the foot's name field for the selected changes.
+    Name,
     Review(review::ReviewCommand),
     FileParent(fs_protocol::FileVersionId),
     FileUndo,
@@ -141,6 +143,10 @@ pub struct HistoryHost {
     window_presents: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
+    /// The foot's name for the selected changes, and the selection whose
+    /// naming is open: another selection closes it.
+    name_draft: crate::LocalState<String>,
+    name_draft_for: Option<Vec<crate::HistoryEntryId>>,
     before: PreviewCanvas,
     after: PreviewCanvas,
     side: PreviewSide,
@@ -393,6 +399,8 @@ impl HistoryHost {
             motion: crate::tokens::EffectiveMotion::default(),
             commands: Rc::new(RefCell::new(VecDeque::new())),
             selected: vec![],
+            name_draft: crate::LocalState::new(String::new()),
+            name_draft_for: None,
             before: PreviewCanvas::new(),
             after: PreviewCanvas::new(),
             side: PreviewSide::After,
@@ -1467,6 +1475,14 @@ impl HistoryHost {
                         });
                 }
                 Command::Activity => self.activity_page = true,
+                Command::Name => {
+                    let seed = self
+                        .selected_name()
+                        .map(|named| named.label.clone())
+                        .unwrap_or_default();
+                    self.name_draft.set(seed);
+                    self.name_draft_for = Some(self.selected.clone());
+                }
                 Command::Before => {
                     self.side = PreviewSide::Before;
                     self.activity_page = false;
@@ -1557,6 +1573,8 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            self.timeline
+                .set_named_ranges(controller.named_ranges().to_vec());
             if opening {
                 // One line per opening, for gates and logs that keep History
                 // fast on long histories.
@@ -1939,6 +1957,31 @@ impl HistoryHost {
             .any(crate::widget::HistoryEntry::is_revertible)
     }
 
+    /// Whether the selected changes can be named: a document's own changes.
+    fn offers_naming(&self) -> bool {
+        matches!(
+            self.source(),
+            HistorySourceRegistration::HostDocument { .. }
+                | HistorySourceRegistration::OwnedDocument { .. }
+        ) && self.selected_entries().any(|entry| !entry.is_genesis())
+    }
+
+    /// The oldest and newest selected change: the run a name covers.
+    pub(super) fn selected_run(&self) -> Option<(crate::HistoryEntryId, crate::HistoryEntryId)> {
+        let mut picked = self.selected_entries();
+        let first = picked.next()?.id;
+        Some((first, picked.last().map_or(first, |entry| entry.id)))
+    }
+
+    /// The name the selected run already carries.
+    pub(super) fn selected_name(&self) -> Option<&crate::NamedRange> {
+        let (start, end) = self.selected_run()?;
+        self.timeline
+            .named_ranges()
+            .iter()
+            .find(|named| named.start == start && named.end == Some(end))
+    }
+
     /// The selected changes as the timeline lists them.
     fn selected_entries(&self) -> impl Iterator<Item = &crate::widget::HistoryEntry> {
         self.timeline
@@ -2035,6 +2078,26 @@ impl HistoryHost {
             ));
         }
         footer = footer.push(Box::new(compare));
+        if self.offers_naming() {
+            if self.name_draft_for.as_ref() == Some(&self.selected) {
+                let commands = self.commands.clone();
+                footer = footer.push(Box::new(
+                    TextInput::from_state(&self.name_draft)
+                        .with_id("history-name-field")
+                        .with_placeholder("history-panel-name")
+                        .on_submit(move |_| {
+                            commands
+                                .borrow_mut()
+                                .push_back(Command::Review(review::ReviewCommand::Name));
+                        }),
+                ));
+            } else {
+                footer = footer.push(Box::new(
+                    self.command_button("history-name", "history-panel-name", Command::Name)
+                        .control_size(crate::widget::ControlSize::Small),
+                ));
+            }
+        }
         let mut restore = Row::new().with_gap(8.0);
         if self.offers_restore() {
             restore = restore.push(Box::new(
