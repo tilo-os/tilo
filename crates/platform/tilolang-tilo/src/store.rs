@@ -71,6 +71,8 @@ struct Inner {
     subs: Vec<Subscription>,
     next_sub: u64,
     committed: VecDeque<Committed>,
+    /// Handed to the host and not yet answered by the door.
+    handed: BTreeMap<u64, DynAction>,
     next_ticket: u64,
     journals: BTreeMap<RunId, Journal>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
@@ -204,6 +206,7 @@ impl TiloStore {
                 subs: Vec::new(),
                 next_sub: 1,
                 committed: VecDeque::new(),
+                handed: BTreeMap::new(),
                 next_ticket: 1,
                 journals: BTreeMap::new(),
                 notes: BTreeMap::new(),
@@ -235,27 +238,37 @@ impl TiloStore {
         true
     }
 
-    /// The actions the runtime committed since the host last took them, oldest first.
+    /// The actions the runtime committed since the host last took them, oldest first. They stay
+    /// available by ticket ([`Self::committed`]) until the door has answered ([`Self::take_ticket`]).
     #[must_use]
     pub fn take_committed(&self) -> Vec<Committed> {
-        self.inner.borrow_mut().committed.drain(..).collect()
+        let mut inner = self.inner.borrow_mut();
+        let taken: Vec<Committed> = inner.committed.drain(..).collect();
+        for entry in &taken {
+            inner.handed.insert(entry.ticket, entry.action.clone());
+        }
+        taken
     }
 
-    /// The action committed under `ticket`, while it is still queued.
+    /// The action committed under `ticket`, while it is queued or handed over.
     #[must_use]
     pub fn committed(&self, ticket: u64) -> Option<DynAction> {
-        self.inner
-            .borrow()
-            .committed
-            .iter()
-            .find(|entry| entry.ticket == ticket)
-            .map(|entry| entry.action.clone())
+        let inner = self.inner.borrow();
+        inner.handed.get(&ticket).cloned().or_else(|| {
+            inner
+                .committed
+                .iter()
+                .find(|entry| entry.ticket == ticket)
+                .map(|entry| entry.action.clone())
+        })
     }
 
-    /// Take the action committed under `ticket` out of the queue.
-    #[must_use]
+    /// Forget the action committed under `ticket`: the door has answered for it.
     pub fn take_ticket(&self, ticket: u64) -> Option<DynAction> {
         let mut inner = self.inner.borrow_mut();
+        if let Some(action) = inner.handed.remove(&ticket) {
+            return Some(action);
+        }
         let at = inner
             .committed
             .iter()

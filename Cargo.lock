@@ -16381,6 +16381,7 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilolang-app",
  "tokio",
  "tokio-rustls",
  "totp",
@@ -19981,6 +19982,7 @@ dependencies = [
  "tilo-search",
  "tilo-spellcheck",
  "tilo-ui",
+ "tilolang-app",
  "totp",
  "tube",
  "typst-editor",
@@ -20126,6 +20128,20 @@ dependencies = [
  "serde_json",
  "wasm-encoder",
  "wasmparser 0.252.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-app"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde_json",
+ "tilo-app",
+ "tilo-automerge-fork",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tracing",
  "workspace-hack",
 ]
 
