@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value as Json;
 use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
-use tilolang_runtime::meta::{Meta, Ty};
+use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
@@ -49,8 +49,6 @@ pub enum HostError {
 pub struct Package {
     pub meta: Meta,
     pub id: PackageId,
-    /// The compiler's metadata, which later packages are compiled against.
-    pub compiled: PackageMeta,
     /// The ids lock after compiling, to write back next to the source.
     pub ids: String,
 }
@@ -127,15 +125,15 @@ impl Committer for HostHandle {
 }
 
 fn value_of(meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
-    let parsed = Ty::parse(ty)?;
-    match parsed {
-        Ty::Named(name) => {
+    match parse_ty(ty, &meta.app)? {
+        Ty::Record(key) => {
             let declared = meta
-                .type_named(&name)
-                .ok_or_else(|| format!("unknown type `{name}`"))?;
+                .type_named(&key.name)
+                .filter(|_| key.app == meta.app)
+                .ok_or_else(|| format!("unknown type `{}`", key.name))?;
             let text = json
                 .as_str()
-                .ok_or_else(|| format!("a {name} is given by its resource id"))?;
+                .ok_or_else(|| format!("a {} is given by its resource id", key.name))?;
             let target = ResourceRef::parse_id(text, declared.id.clone())
                 .ok_or_else(|| format!("`{text}` is not a resource id"))?;
             Ok(Value::resource(&target))
@@ -275,7 +273,7 @@ impl Host {
             .packages
             .borrow()
             .iter()
-            .map(|package| package.compiled.clone())
+            .map(|package| package.meta.clone())
             .collect();
         let compiled =
             tilolang::compile_package(source, &lock, &imports).map_err(|diagnostics| {
@@ -287,9 +285,7 @@ impl Host {
                         .join("\n"),
                 )
             })?;
-        let text = String::from_utf8(compiled.meta.to_json_bytes())
-            .map_err(|error| HostError::Compile(error.to_string()))?;
-        let meta = Meta::from_json(&text).map_err(|error| HostError::Compile(error.to_string()))?;
+        let meta = compiled.meta;
         meta.register_schemas();
         let id = self
             .inner
@@ -299,7 +295,6 @@ impl Host {
         let package = Package {
             meta,
             id,
-            compiled: compiled.meta,
             ids: compiled.ids.to_text(),
         };
         self.inner.packages.borrow_mut().push(package.clone());
