@@ -21,7 +21,7 @@ screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashp
 # The macOS backend's frameworks, which the capabilities above select;
 # nothing on other targets.
 avfoundation = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2-core-graphics", "dep:block2", "dep:dispatch2"]
-scanner = ["dep:os-actions"]
+scanner = ["dep:bounded-command"]
 # Synthetic devices (`broker::synthetic`), for dependents' tests.
 test-support = []
 
@@ -62,7 +62,7 @@ rustix = { workspace = true, features = ["net", "std"] }
 # The ScreenCast portal picks the monitor or window; SANE scans documents.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
-os-actions = { path = "../../system/os-actions", optional = true }
+bounded-command = { path = "../../system/bounded-command", optional = true }
 
 # The page's media devices, pinned to the versions the browser runtime links.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

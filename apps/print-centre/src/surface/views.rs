@@ -472,7 +472,7 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&Operatio
 }
 
 fn live_tools(
-    scanners: &[os_actions::printing::Scanner],
+    scanners: &[tilo_capture::scanner::Scanner],
     jobs: &[os_actions::printing::PrintJob],
     jobs_available: bool,
     tx: &Door,

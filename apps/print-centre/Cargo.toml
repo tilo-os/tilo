@@ -29,6 +29,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 os-actions = { path = "../../crates/system/os-actions" }
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 tilo-ocr = { path = "../../crates/media/ocr" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 image.workspace = true

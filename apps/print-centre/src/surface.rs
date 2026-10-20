@@ -185,7 +185,7 @@ impl ScannedPage {
 pub(crate) struct Snapshot {
     queues: Result<Vec<os_actions::printing::PrinterQueue>, String>,
     jobs: Result<Vec<os_actions::printing::PrintJob>, String>,
-    scanners: Result<Vec<os_actions::printing::Scanner>, String>,
+    scanners: Result<Vec<tilo_capture::scanner::Scanner>, String>,
 }
 
 /// Where the page's controls send what they do: the surface's effects and
@@ -456,7 +456,7 @@ fn job_row(job: &os_actions::printing::PrintJob) -> LiveRow {
     }
     row
 }
-fn scanner_row(scanner: &os_actions::printing::Scanner) -> LiveRow {
+fn scanner_row(scanner: &tilo_capture::scanner::Scanner) -> LiveRow {
     LiveRow::new(
         format!("print-centre.scanner.{}", resource_key(&scanner.device)),
         "print-centre.scanner",
@@ -516,8 +516,9 @@ fn friendly_reason(reason: &str) -> &'static str {
 }
 fn demo_snapshot() -> Snapshot {
     use os_actions::printing::{
-        JobState, PrintJob, PrinterQueue, PrinterSupply, PrinterTelemetry, QueueState, Scanner,
+        JobState, PrintJob, PrinterQueue, PrinterSupply, PrinterTelemetry, QueueState,
     };
+    use tilo_capture::scanner::Scanner;
     Snapshot {
         queues: Ok(vec![PrinterQueue {
             name: "Studio_printer".into(),
@@ -735,7 +736,7 @@ fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
             let _ = tx.send(Snapshot {
                 queues: os_actions::printing::queues(),
                 jobs: os_actions::printing::jobs(),
-                scanners: os_actions::printing::scanners(),
+                scanners: tilo_capture::scanner::scanners(),
             });
         })
         .ok()
@@ -1515,14 +1516,14 @@ impl PrintCentre {
             .copied()
             .unwrap_or(300);
         let color = match self.scan.color.get() {
-            1 => os_actions::printing::ScanColor::Grayscale,
-            2 => os_actions::printing::ScanColor::LineArt,
-            _ => os_actions::printing::ScanColor::Color,
+            1 => tilo_capture::scanner::ScanColor::Grayscale,
+            2 => tilo_capture::scanner::ScanColor::LineArt,
+            _ => tilo_capture::scanner::ScanColor::Color,
         };
         let source = match self.scan.source.get() {
-            1 => os_actions::printing::ScanSource::Feeder,
-            2 => os_actions::printing::ScanSource::FeederDuplex,
-            _ => os_actions::printing::ScanSource::Flatbed,
+            1 => tilo_capture::scanner::ScanSource::Feeder,
+            2 => tilo_capture::scanner::ScanSource::FeederDuplex,
+            _ => tilo_capture::scanner::ScanSource::Flatbed,
         };
         let (ocr_code, ocr_language) = match self.scan.language.get() {
             1 => ("deu", "German"),
@@ -1534,9 +1535,9 @@ impl PrintCentre {
         self.rebuild_scan_setup();
         Ok(cx.thread(
             move |_| {
-                os_actions::printing::scan_page(
+                tilo_capture::scanner::scan_page(
                     &device,
-                    os_actions::printing::ScanSettings {
+                    tilo_capture::scanner::ScanSettings {
                         resolution_dpi,
                         color,
                         source,
