@@ -348,19 +348,6 @@ impl Reassembly {
     }
 }
 
-fn frame_retention(cleartext: &[u8]) -> ContentRetention {
-    match DocumentFrame::decode(cleartext) {
-        Ok(DocumentFrame::Whole(DocumentMutation::Snapshot(_))) => ContentRetention::Checkpoint,
-        Ok(DocumentFrame::Segment(segment))
-            if segment.kind == collab_types::DocumentMutationKind::Snapshot
-                && segment.index == 0 =>
-        {
-            ContentRetention::Checkpoint
-        }
-        _ => ContentRetention::Delta,
-    }
-}
-
 /// Join each run of consecutive incremental changes into one change set.
 /// Automerge loads concatenated change chunks as one, so a route's
 /// checkpoint and its retained tail merge in two steps however long the
@@ -418,7 +405,7 @@ pub async fn sign_frame(
     let timestamp = crate::clock::system_time(now_ns);
     // A document is only ever written sealed for its route's channel.
     let (metadata, sealed) = cipher
-        .seal(artifact, frame_retention(&cleartext), &cleartext)
+        .seal(artifact, ContentRetention::of_frame(&cleartext), &cleartext)
         .map_err(DocumentError::Payload)?;
     // A sealed op carries the claims of its changes for the relay, and names
     // the surface of the page's app they are decided against.
