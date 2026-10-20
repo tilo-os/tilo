@@ -1,7 +1,8 @@
-//! A device's enrolled replicas of rooms that a remote durable host governs.
+//! A device's rooms: replicas of rooms a remote durable host governs, and
+//! rooms this device governs itself.
 //!
 //! [`NativeWorkspaceOwner`] holds the admitted state of every room this
-//! device enrolled in ([`NativeCommittedView`]) and is the only writer of
+//! device enrolled in or created ([`NativeCommittedView`]) and is the only writer of
 //! their durable record, [`NativeAuthorityStorage`]. Every change is admitted
 //! into a candidate, published through the host's [`Store`] and only then
 //! installed, so no reader or receipt ever sees state the disk may not hold.
@@ -19,6 +20,7 @@ mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;
+mod governed;
 mod history_content;
 mod limits;
 mod private_direct_conversations;
@@ -158,9 +160,24 @@ impl NativeCommittedView {
     pub fn governor(&self) -> &DeviceCert {
         self.peer.authority()
     }
+    /// The signed invitation this device enrolled with.
+    ///
+    /// # Errors
+    /// The room is governed here: this device created it.
+    pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
+        Ok(&self.enrollment()?.invitation)
+    }
+    /// Whether this device governs the room itself, having created it,
+    /// rather than holding a replica of a room a host governs.
     #[must_use]
-    pub fn enrollment_invitation(&self) -> &[u8] {
-        &self.record.invitation
+    pub fn governed_here(&self) -> bool {
+        self.record.enrollment.is_none()
+    }
+    fn enrollment(&self) -> Result<&record::StoredEnrollment, String> {
+        self.record
+            .enrollment
+            .as_ref()
+            .ok_or_else(|| "the room is governed here, not joined through a host".into())
     }
     #[must_use]
     pub fn device(&self) -> &DeviceCert {
@@ -180,19 +197,22 @@ impl NativeCommittedView {
     }
     #[must_use]
     pub fn host(&self) -> Option<&DeviceCert> {
-        self.record.host.as_ref()
+        self.record.enrollment.as_ref()?.host.as_ref()
     }
     #[must_use]
     pub fn delivery_locator(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.locator.as_ref()
+        self.record.enrollment.as_ref()?.locator.as_ref()
     }
     #[must_use]
     pub fn hint(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.hint.as_ref()
+        self.record.enrollment.as_ref()?.hint.as_ref()
     }
-    #[must_use]
-    pub fn transport_hint(&self) -> &tilo_peer_state::join::TransportHint {
-        &self.record.transport_hint
+    /// Where the host this device enrolled through is reached.
+    ///
+    /// # Errors
+    /// The room is governed here: no host carries it.
+    pub fn transport_hint(&self) -> Result<&tilo_peer_state::join::TransportHint, String> {
+        Ok(&self.enrollment()?.transport_hint)
     }
     /// # Errors
     /// The enrollment pinned no delivery host independently of its governor.
@@ -200,7 +220,7 @@ impl NativeCommittedView {
         if self.host().is_none() {
             return Err("enrollment has no independently pinned delivery host".into());
         }
-        Ok(match &self.record.floor {
+        Ok(match &self.enrollment()?.floor {
             Some(floor) => GenerationExpectation::Current {
                 generation: floor.generation,
                 descriptor_digest: floor.digest,
@@ -218,13 +238,14 @@ impl NativeCommittedView {
             .map(|doc| tilo_peer_state::room::media::security_basis(doc, &self.peer.revocations()))
             .transpose()
             .map_err(|e| e.to_string())?;
+        let enrollment = self.record.enrollment.as_ref();
         let bytes = postcard::to_stdvec(&(
             policy,
             basis,
             &self.record.device,
-            &self.record.host,
-            &self.record.hint,
-            &self.record.floor,
+            enrollment.and_then(|enrollment| enrollment.host.as_ref()),
+            enrollment.and_then(|enrollment| enrollment.hint.as_ref()),
+            enrollment.and_then(|enrollment| enrollment.floor.as_ref()),
         ))
         .map_err(|e| e.to_string())?;
         Ok(*blake3::hash(&bytes).as_bytes())

@@ -122,7 +122,7 @@ fn signed_input(
         .with_current(room, |view| {
             Ok((
                 view.device().clone(),
-                view.transport_hint().clone(),
+                view.transport_hint()?.clone(),
                 view.continuity(),
             ))
         })

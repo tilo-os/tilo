@@ -281,8 +281,9 @@ impl ShellNetwork {
         if owner
             .with_current(room, |view| {
                 Ok(view.device() == &certificate
-                    && tilo_peer_state::join::encode_invitation_text(view.enrollment_invitation())
-                        == token)
+                    && view.enrollment_invitation().is_ok_and(|invitation| {
+                        tilo_peer_state::join::encode_invitation_text(invitation) == token
+                    }))
             })
             .unwrap_or(false)
         {

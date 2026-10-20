@@ -36,7 +36,7 @@ impl ShellNetwork {
                 return Ok(None);
             }
             let (hint, _) =
-                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                     .map_err(|_| "private governor transport hint invalid")?;
             if hint.room != room.to_string()
                 || &hint.governing_authority != view.governor()
