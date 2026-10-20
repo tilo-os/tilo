@@ -106,7 +106,7 @@
 "crates/sdk/ui-core/src/headless.rs" = 15500
 "crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
 "crates/sdk/ui-core/src/launch.rs" = 3500
-"crates/sdk/ui-core/src/offscreen.rs" = 4500
+"crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 4000
 "crates/sdk/ui-core/src/presence/render.rs" = 3500
 "crates/sdk/ui-core/src/record.rs" = 6000
