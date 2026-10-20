@@ -42,6 +42,20 @@ files, which windows are legacy windows hosted here. That is the device's
 desktop (`DesktopTree` plus the shell's local fields), never a second copy of
 the workspace.
 
+**Layout across devices.** Each device, member or host writes only its own
+namespace of `contents`, which the governor registers in
+`contents_owners_v1` when it admits the device; a member publishes its own
+strips and windows into the room, the governor does not commit them on its
+behalf. Rearranging a window another device owns is a request to that
+owner (`tilo_desktop_model::commands::DesktopCommand`), never a write into
+its namespace. Such a request is room state like any other: the host
+retains it while the owner is offline, the owner applies each request once
+when it next holds the room, and it records which it applied in its own
+namespace so a restart neither drops nor repeats one. A window someone moved
+therefore stays where they put it instead of snapping back when its owner
+returns. Following someone (focus, scroll position) is presence, not room
+state.
+
 **History nests.** A workspace's history is the room document's history
 (layout, people, tasks, receipts) as the outer level and each record's own
 history as the inner one ([`rooms.md`](rooms.md), "History nests"). Undo,
@@ -72,10 +86,14 @@ layout through the same `contents` schema.
 
 ## Where the code is today
 
-The types are already shared: the shell's `WorkspaceTree` wraps the
-desktop model's `DesktopTree` rather than copying it, and both engines
-admit a room document through `tilo_peer_state::room::admit_room_changes`.
-What is still doubled:
+Shared already: the types (the shell's `WorkspaceTree` wraps the desktop
+model's `DesktopTree` rather than copying it), room admission (every
+receiver runs `tilo_peer_state::room::admit_room_changes`, and the
+retained-proof verifier its `check_candidate`), the reading of an admitted
+room into its workspace (`tilo_peer_state::room::adopt_room`, on the shell's
+two paths and in the runtime), the rule for which document frame starts a
+retained baseline (`collab_types::DocumentFrame::retention`), and one
+invitation format besides the shell's own. What is still doubled:
 
 1. **Two engines in the shell.** Rooms a host governs go through
    `NativeWorkspaceOwner` (`WorkspaceTree::requires_native_owner`). Every
@@ -85,26 +103,17 @@ What is still doubled:
    `name_peer`, `certify_peer_identity`, `redeem_invited_identity`,
    `peer_room_allows`, `network/replica.rs`, the `PeerInviteToken` format in
    `network/invite.rs` and the hello store in `network/identity.rs`, about
-   6,000 lines plus their tests. The shell's engine re-implements what
-   `StatePeer` does: identity rows (`GovernedPeerIdentity` beside
-   `GovernedIdentity`), redemption (`redeem_invited_identity` beside
-   `admit_invited_member`), membership writes, receipt immutability, media
-   binding (`media_authority_admitted` beside `validate_media_bindings`) and
-   sender authorization (`peer_room_allows` beside `StatePeer::permissions`).
+   6,000 lines plus their tests. It re-implements what `StatePeer` does:
+   identity rows (`GovernedPeerIdentity` beside `GovernedIdentity`),
+   redemption (`redeem_invited_identity` beside `admit_invited_member`),
+   membership writes, media binding (`media_authority_admitted` beside
+   `validate_media_bindings`) and sender authorization (`peer_room_allows`
+   beside `StatePeer::permissions`).
 2. **Three layout schemas.** The room document's `contents` (native), the
    `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
    browser, relay, agent participant) and the device's whole-desktop
    document (`desktop_doc.rs`). In the browser one room holds many
    workspaces, so `Workspace::room` is not the room it replicates in.
-3. **Three projections of an admitted room into a `Workspace`**: the shell's
-   `project_native_room` and `apply_room_changes`, and the runtime's
-   `standalone::joined::current_room`.
-4. **Copies of shared rules**: `tilo-relay-shell`'s retained proof runs the
-   room admission steps one by one instead of calling them; the browser
-   peer keeps its own checkpoint-retention rule beside `neighbour_wire::retention`.
-5. **Three invitation formats**: workspace-join invitations, the shell's
-   `PeerInviteToken`, and an attenuable `collab_types::invite::InviteToken`
-   nothing uses.
 
 ## Migration
 
@@ -112,50 +121,52 @@ Each step lands on `main` on its own, green, and deletes the copy it
 replaces. Pre-alpha: old paths are removed, not kept beside the new ones;
 state of an older shape is refused and fetched again, not migrated.
 
-1. **Unused invitation format.** Delete `collab_types::invite` and its fuzz
-   target.
-2. **One admission body.** `admit_room_changes` is split into building the
-   candidate and checking it; the retained proof calls the check instead of
-   repeating it.
-3. **One retention rule.** The browser peer asks `neighbour_wire::retention`
-   whether a frame is a checkpoint.
-4. **One projection.** One function reads an admitted room document into a
-   `Workspace`'s governed fields; the shell's two paths and the runtime use
-   it.
-5. **One identity row.** The shell reads and writes `peer_identities_v1`
-   through `GovernedIdentity` and `room::identity_row`;
-   `GovernedPeerIdentity` and `peer_identities_of` go.
-6. **The shell governs its own rooms with `StatePeer`.** A room this device
-   mints is a governed `StatePeer` in the shell's owner store, as the
-   runtime's profile room is; layout is written under the `contents` registry
-   instead of salted ownership. `requires_native_owner` is true for every
-   room, and `room_docs`, `sync_room_doc`, `apply_room_changes`,
-   `try_sync_room_doc` and `ContentOwnership::Salted` go.
-7. **Direct peers on the same engine.** Gossip becomes a carrier for
+1. **The shell governs its own rooms with `StatePeer`.** A room this device
+   mints is a governed `StatePeer` (`StatePeer::new` with this device as
+   authority, then `seed_room` and `install_seed`), kept in the shell's
+   owner store the way the runtime keeps its profile room
+   (`tilo-runtime`'s `standalone/owner.rs`); layout is written under the
+   `contents` registry instead of salted ownership. `requires_native_owner`
+   is true for every room, and `room_docs`, `sync_room_doc`,
+   `apply_room_changes`, `try_sync_room_doc` and `ContentOwnership::Salted`
+   go. Can land rooms nobody else is in first, then shared ones. The
+   engine learns governor succession first: a room whose governor's device
+   is revoked follows the successor a root-signed `GovernorSuccession`
+   names (`current_governor`, today applied by the shell's own pinning,
+   [`collaboration.md`](collaboration.md), "Revoking a device"), and the
+   successor is persisted with the room, so moving rooms onto the engine
+   does not bring back a room frozen by its revoked governor.
+2. **Direct peers on the same engine.** Gossip becomes a carrier for
    `StatePeer` (`SyncResp` and `AppDocument` from an authenticated device,
    like a relay delta). A direct invitation is a workspace-join invitation
    redeemed by the governing device. `network/invite.rs`
    (`PeerInviteToken`), `redeem_invited_identity`, `name_peer`,
-   `certify_peer_identity`, `peer_room_allows`, `room_gate.rs`'s legacy
-   table and `network/replica.rs` go.
-8. **One governor per room, also for a person's own rooms.** A person's own
+   `certify_peer_identity`, `GovernedPeerIdentity`, `peer_room_allows`,
+   `room_gate.rs`'s legacy table and `network/replica.rs` go. (The shell's
+   identity rows are persisted and compared byte for byte by every peer, so
+   they change with this step rather than on their own.)
+3. **One governor per room, also for a person's own rooms.** A person's own
    and continuation rooms are governed by the device that made them (or the
    person's home relay once moved there); their other devices are members
    with the owner's role and change governance through governor actions,
    as members of host rooms do. `RoomAuthority`, `room_authority`,
    `adopt_governed_peers` and the continuation pins go.
-9. **One layout schema.** The browser, the relay's operator strips and the
+4. **One layout schema.** The browser, the relay's operator strips and the
    agent participant write `contents`; `shared_record.rs` and the relay's
    `desktop_guard` go (the topology registry decides who moves what). A new
    workspace in the browser is a new room.
-10. **The device desktop holds only what is the device's.** `desktop_doc`
-    keeps the workspace list and presentation; Activity and Replay read
-    the room documents' history for everything else.
+5. **Requests to rearrange another device's windows are retained room
+   state** applied once by their owner, with the applied ids in its
+   namespace. Today a device may move and close only the windows it
+   opened; this lets a person arrange the windows of their other devices,
+   offline ones included.
+6. **The device desktop holds only what is the device's.** `desktop_doc`
+   keeps the workspace list and presentation; Activity and Replay read
+   the room documents' history for everything else.
 
-Steps 1 to 5 are independent of each other. 6 comes before 7 and 8; 9 and
-10 need only 4. When 8 has landed, `tilo-peer-state` is the room core and
-`tilo-joined-room` its carriers; renaming them is then mechanical and
-optional.
+1 comes before 2 and 3; 4, 5 and 6 are independent of them. When 3 has
+landed, `tilo-peer-state` is the room core and `tilo-joined-room` its
+carriers; renaming them is then mechanical and optional.
 
 ## Records that outgrow a snapshot
 
