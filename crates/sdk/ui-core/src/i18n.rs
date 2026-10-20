@@ -989,15 +989,26 @@ impl LanguagePack {
     }
 }
 
+/// The language `tag` names, lower case: `de` of `de-DE`. One language
+/// pack serves a language, whatever region a tag adds.
+#[must_use]
+pub fn language_of(tag: &str) -> String {
+    tag.split(['-', '_'])
+        .next()
+        .unwrap_or(tag)
+        .to_ascii_lowercase()
+}
+
 /// `tag`'s language in its own words, as a language picker offers it: a
-/// person looking for their language reads it in that language. A tag this
-/// build has no name for reads as the tag.
+/// person looking for their language reads it in that language, once,
+/// whatever region the tag adds. A language this build has no name for
+/// reads as the tag.
 #[must_use]
 pub fn language_name(tag: &str) -> String {
-    match tag {
-        "en-US" => "English (United States)".to_owned(),
-        "de-DE" => "Deutsch (Deutschland)".to_owned(),
-        other => other.to_owned(),
+    match language_of(tag).as_str() {
+        "en" => "English".to_owned(),
+        "de" => "Deutsch".to_owned(),
+        _ => tag.to_owned(),
     }
 }
 
@@ -1062,16 +1073,24 @@ impl EmbeddedCatalog {
         sources
     }
 
-    /// The languages this catalogue can show: the embedded ones and those
-    /// with an installed pack, in the order the catalogue names them.
+    /// The languages this catalogue can show, each once: the embedded ones
+    /// and those with an installed pack, in the order the catalogue names
+    /// them. A language installed under two tags (`de` and `de-DE`) is named
+    /// by the one without a region, the pack's.
     #[must_use]
     pub fn languages(&self) -> Vec<&'static str> {
         let mut languages: Vec<&'static str> =
             self.catalogs.iter().map(|(locale, _)| *locale).collect();
         if let Some(pack) = &self.pack {
             for locale in pack.installed_locales() {
-                if !languages.contains(&locale) {
-                    languages.push(locale);
+                let language = language_of(locale);
+                match languages
+                    .iter_mut()
+                    .find(|known| language_of(known) == language)
+                {
+                    Some(known) if locale.len() < known.len() => *known = locale,
+                    Some(_) => {}
+                    None => languages.push(locale),
                 }
             }
         }

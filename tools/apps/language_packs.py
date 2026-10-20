@@ -4,7 +4,9 @@
 An app's package carries only its source catalogue (`locales/en-US.ftl`), the
 fallback every message resolves to. Each other language ships once, for every
 app and system component, as a language pack: `<out>/<locale>/<crate>.ftl`
-for each crate whose catalogue (`ui::embedded_catalog!`) has that locale,
+for each crate whose catalogue (`ui::embedded_catalog!`) has that language
+(one pack per language: a crate's `de-DE.ftl` and another's `de.ftl` both go
+to `de`),
 where `<crate>` is the crate's package name. The OS image carries them under
 `/usr/share/tilo/language-packs`; the registry offers each as a signed
 `kind = "language-pack"` package (`so.tilo.language-pack.<locale>`, data for
@@ -64,22 +66,35 @@ def catalogues(repo: pathlib.Path) -> list[tuple[str, str, pathlib.Path]]:
     return found
 
 
+def language(locale: str) -> str:
+    """The language a locale tag names (`de` of `de-DE`), the name of its pack."""
+    return re.split(r"[-_]", locale, maxsplit=1)[0].lower()
+
+
 def build(repo: pathlib.Path, out: pathlib.Path) -> int:
+    """One pack per language: every crate's catalogue of a language, whether
+    the crate tags it `de` or `de-DE`, goes to `<out>/de/<crate>.ftl`. A crate
+    with two different catalogues of one language would need a regional
+    overlay, which nothing has, so it is refused rather than one picked."""
     if out.exists():
         shutil.rmtree(out)
     seen: dict[tuple[str, str], pathlib.Path] = {}
     for locale, crate, path in catalogues(repo):
-        if (locale, crate) in seen:
-            print(f"{crate} has two {locale} catalogues: {seen[locale, crate]} and {path}",
-                  file=sys.stderr)
+        pack = language(locale)
+        known = seen.get((pack, crate))
+        if known is not None:
+            if known.read_bytes() == path.read_bytes():
+                continue
+            print(f"{crate} has two different {pack} catalogues: {known} and {path}; "
+                  "one pack per language takes one", file=sys.stderr)
             return 1
-        seen[locale, crate] = path
-        target = out / locale / f"{crate}.ftl"
+        seen[pack, crate] = path
+        target = out / pack / f"{crate}.ftl"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
-    locales = sorted({locale for locale, _ in seen})
-    print(f"language packs: {len(seen)} catalogues in {len(locales)} locales "
-          f"({', '.join(locales) or 'none'}) under {out}")
+    languages = sorted({pack for pack, _ in seen})
+    print(f"language packs: {len(seen)} catalogues in {len(languages)} languages "
+          f"({', '.join(languages) or 'none'}) under {out}")
     return 0
 
 
