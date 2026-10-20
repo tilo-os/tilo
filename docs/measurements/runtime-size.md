@@ -84,7 +84,11 @@ shares; the workspace filesystem's FUSE presentation, runtime-fs-fuse with
 fuser: `libtilo_fuse_engine.so` for Imager's projection worker; the import
 from another browser's profile, browser-continuity's capture with the SQLite
 it reads Chromium's and Firefox's databases with:
-`libtilo_browser_import_engine.so` for Browser; the app host's client, with
+`libtilo_browser_import_engine.so` for Browser, with the parts of Browser
+people rarely use (browser-parts: extensions, site controls, site
+capabilities, saved addresses and passwords, service sessions, the private
+window, and the effects, records and copy they share with the page) and the
+website-session codec check; the app host's client, with
 its Cap'n Proto RPC, and the catalogue Store browses:
 `libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for

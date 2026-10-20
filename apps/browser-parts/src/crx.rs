@@ -327,7 +327,7 @@ fn parse_signed_data(signed_data: &[u8]) -> Result<&[u8], CrxError> {
 }
 
 #[cfg(test)]
-pub(crate) mod fixtures {
+pub mod fixtures {
     //! Build signed CRX3 packages for tests.
     use super::*;
     use ring::rand::SystemRandom;

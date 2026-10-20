@@ -1,7 +1,7 @@
 //! Exact-origin site protection and information, owned by browser chrome.
 use std::collections::BTreeSet;
 
-pub(crate) fn origin(input: &str) -> Option<String> {
+pub fn origin(input: &str) -> Option<String> {
     if input.len() > 8192 {
         return None;
     }
@@ -31,7 +31,7 @@ enum Pending {
     },
     Refresh,
 }
-pub(crate) struct SiteControls {
+pub struct SiteControls {
     pub open: bool,
     information: bool,
     committed: Option<String>,

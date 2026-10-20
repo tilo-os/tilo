@@ -11,8 +11,6 @@
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{KeyModifiers, PageKey, PageRequest};
 
-use crate::browser_widget::{BrowserOperation, LibrarySection};
-
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
@@ -343,7 +341,7 @@ pub enum BrowserEffect {
 
 impl BrowserEffect {
     /// What the window does for this effect.
-    pub(crate) fn operation(self) -> BrowserOperation {
+    pub fn operation(self) -> BrowserOperation {
         let page = BrowserOperation::Page;
         match self {
             Self::ReadContinuity => BrowserOperation::ReadContinuity,
@@ -449,4 +447,88 @@ impl BrowserEffect {
             }),
         }
     }
+}
+
+/// The library's sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibrarySection {
+    History,
+    Bookmarks,
+    Downloads,
+    Extensions,
+}
+
+/// What Browser does for an effect, once decoded.
+#[derive(Clone, Debug)]
+pub enum BrowserOperation {
+    BookmarkPersonalPage {
+        url: String,
+        title: String,
+    },
+    ImportPersonalBookmarks {
+        bundle: String,
+    },
+    ReadContinuity,
+    OpenServiceSession,
+    ForgetServiceSession,
+    ReadServiceSession,
+    ListServiceSessions,
+    RetryContinuity,
+    RemovePersonalBookmark {
+        url: String,
+    },
+    RemovePersonalImportedNode {
+        source: String,
+        id: String,
+    },
+    ShowPersonalBookmarkFolder {
+        source: String,
+        id: Option<String>,
+        offset: u32,
+    },
+    Back,
+    Forward,
+    Reload,
+    Stop,
+    Navigate {
+        url: String,
+    },
+    /// Offer the engine runtime's install through the Store.
+    InstallEngine,
+    /// Another Browser in a desktop tab right after this one.
+    OpenInNewTab {
+        url: String,
+        background: bool,
+    },
+    ShowLibrary {
+        section: LibrarySection,
+    },
+    SetLibraryFilter {
+        query: String,
+    },
+    ClearLibraryFilter,
+    ShowSettings,
+    ShowPage,
+    ClearHistory,
+    RequestWebsiteDataClear,
+    TogglePictureInPicture,
+    /// Show the page's article in reader view, or the page again.
+    ToggleReaderView,
+    ToggleHistoryPause,
+    StartDownload {
+        url: String,
+    },
+    CancelDownload {
+        id: String,
+    },
+    RetryDownload {
+        id: String,
+    },
+    OpenDownload {
+        id: String,
+    },
+    RevealDownload {
+        id: String,
+    },
+    Page(PageRequest),
 }

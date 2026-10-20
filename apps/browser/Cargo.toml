@@ -32,9 +32,10 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
-tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
+# Extensions, site controls and site capabilities: from Browser's engine
+# library in a release.
+browser-parts = { path = "../browser-parts" }
 browser-continuity = { workspace = true, features = ["native"] }
-fnv.workspace = true
 chrono.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
@@ -51,24 +52,13 @@ tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optiona
 # with a blocking client and cached under the user cache dir.
 reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
-host-info = { path = "../../crates/system/host-info" }
-sha2.workspace = true
-base64.workspace = true
-# CRX3 proofs are RSA PKCS#1 v1.5 or ECDSA P-256 signatures over SHA-256.
-ring = "0.17"
 url.workspace = true
 
-# Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
-# (.crx behind a small binary header); manifest.json describes them. Read
-# under the shared zip-bomb bounds before anything is extracted.
-bounded-zip = { path = "../../crates/doc/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 serde.workspace = true
 blake3.workspace = true
-uuid.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 
 tracing.workspace = true
@@ -82,6 +72,16 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Browser's tests compile the parts in (src/lib.rs), with what they use.
+tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
+fnv.workspace = true
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+host-info = { path = "../../crates/system/host-info" }
+sha2.workspace = true
+base64.workspace = true
+ring = "0.17"
+bounded-zip = { path = "../../crates/doc/bounded-zip" }
+uuid.workspace = true
 hex.workspace = true
 # The import tests write the Chromium and Firefox databases they read.
 rusqlite = { version = "0.37.0", features = ["bundled"] }

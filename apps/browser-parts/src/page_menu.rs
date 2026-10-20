@@ -3,7 +3,7 @@ use ui::webview::{SharedEngine, WebViewCommand};
 use ui::widget::{ContextMenu, MenuItem};
 use vello::kurbo::Rect;
 
-pub(crate) struct PageMenu {
+pub struct PageMenu {
     pub menu: ContextMenu,
     id: u32,
     link: String,

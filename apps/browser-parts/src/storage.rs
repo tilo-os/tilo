@@ -128,7 +128,7 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Cleanup takes the same file lock exclusively before removing the root.
 /// Opening without `create` ensures a writer arriving after cleanup cannot
 /// recreate any part of the path.
-pub(crate) fn private_root_write_guard(
+pub fn private_root_write_guard(
     directory: &Path,
 ) -> Result<Option<tilo_files::native::lock::FileLock>, String> {
     let Some(root) = ROOT.get() else {

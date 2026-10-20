@@ -4,7 +4,7 @@ use ui::time::{Duration, Instant};
 use ui::webview::NavigationDirection;
 
 #[derive(Default)]
-pub(crate) struct NavigationHold {
+pub struct NavigationHold {
     pressed: Option<(Instant, NavigationDirection)>,
     consumed: bool,
 }

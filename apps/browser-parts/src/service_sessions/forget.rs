@@ -6,7 +6,7 @@ use ui::collaboration::browser_service_sessions::{
 
 type LocalForget = native::Forget<EngineAdapter, crate::service_profiles::Profile>;
 
-pub(crate) struct PendingForget {
+pub struct PendingForget {
     selection: Selection,
     client: Client,
     local: Option<LocalForget>,
@@ -19,7 +19,7 @@ pub(crate) struct PendingForget {
 }
 
 impl PendingForget {
-    pub(crate) fn start(
+    pub fn start(
         selection: Selection,
         person: [u8; 32],
         client: Client,
@@ -65,7 +65,7 @@ impl PendingForget {
     }
 
     /// Poll on the frame thread; neither engine shutdown nor deletion waits here.
-    pub(crate) fn poll(&mut self, view: Option<&mut ServiceView>) -> bool {
+    pub fn poll(&mut self, view: Option<&mut ServiceView>) -> bool {
         let mut view = view;
         if let Some(local) = self.local.as_ref() {
             let Some(result) = local.poll() else {
@@ -105,7 +105,7 @@ impl PendingForget {
         self.finish(result)
     }
 
-    pub(crate) fn report(&self) -> serde_json::Value {
+    pub fn report(&self) -> serde_json::Value {
         serde_json::json!({"session_id": self.selection.id, "service": self.selection.service,
             "status": if self.revoked { "forgotten" } else if self.failed { "forget-incomplete" } else { "forgetting" },
             "custody_revoked": self.revoked, "custody_backend_needed": !self.revoked,

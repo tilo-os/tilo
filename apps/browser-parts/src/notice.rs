@@ -9,7 +9,7 @@ use ui::widget::{Banner, BannerKind, Container, Widget};
 
 /// What a notice says.
 #[derive(Clone, Debug)]
-pub(crate) struct Notice {
+pub struct Notice {
     /// The id the notice's frame answers to, when something addresses it.
     pub id: Option<&'static str>,
     pub kind: BannerKind,

@@ -32,7 +32,7 @@ fn cached_rules(directory: &Path) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Status {
+pub struct Status {
     pub busy: bool,
     pub message: String,
     pub updated: Option<u64>,
@@ -50,7 +50,7 @@ fn state() -> &'static std::sync::Mutex<Status> {
     static STATE: std::sync::OnceLock<std::sync::Mutex<Status>> = std::sync::OnceLock::new();
     STATE.get_or_init(Default::default)
 }
-pub(crate) fn status() -> Status {
+pub fn status() -> Status {
     state().lock_recover().clone()
 }
 fn fetch_rules(
@@ -135,7 +135,7 @@ fn last_successful_update(directory: &Path) -> Option<u64> {
         .and_then(|_| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
-pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
+pub fn refresh(engine: &SharedEngine, force: bool) {
     if !begin_refresh(state()) {
         return;
     }
@@ -212,7 +212,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
     clippy::needless_pass_by_value,
     reason = "matches the shared blocker startup interface"
 )]
-pub(crate) fn start(engine: SharedEngine) {
+pub fn start(engine: SharedEngine) {
     let initial = crate::blocker::cache_dir().map_or_else(
         || BASELINE.to_string(),
         |directory| cached_rules(&directory),
@@ -226,6 +226,14 @@ pub(crate) fn start(engine: SharedEngine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This test module's test `name` as libtest names it in whichever
+    /// crate compiles the module in: its path without the crate's name.
+    fn own_test(name: &str) -> String {
+        let path = module_path!();
+        let path = path.split_once("::").map_or(path, |(_, path)| path);
+        format!("{path}::{name}")
+    }
     use std::io::{Read, Write};
 
     #[test]
@@ -344,7 +352,8 @@ mod tests {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "native_blocker::tests::private_refresh_does_not_recreate_root_after_helper_exit_child",
+                    own_test("private_refresh_does_not_recreate_root_after_helper_exit_child")
+                        .as_str(),
                     "--ignored",
                     "--nocapture",
                 ])
@@ -486,7 +495,7 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "native_blocker::tests::offline_restart_restores_last_successful_update",
+                own_test("offline_restart_restores_last_successful_update").as_str(),
                 "--nocapture",
             ])
             .env("TILO_TEST_FILTER_RESTART_CHILD", "1")

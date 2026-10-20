@@ -157,6 +157,8 @@ ENGINES = {
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
     "emoji": "the emoji catalogue, which Chat and the on-screen keyboard load from "
              "libtilo_emoji_engine.so",
+    "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
+                     "libtilo_browser_import_engine.so",
     "tilo-fuse-engine": "the FUSE presentation's engine library (libtilo_fuse_engine.so)",
     "runtime-fs-fuse": "the workspace filesystem's FUSE presentation, which Imager's projection "
                        "worker loads from libtilo_fuse_engine.so",

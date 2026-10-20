@@ -61,6 +61,14 @@ fn launch_executable(executable: &Path, url: Option<&str>) -> Result<(), String>
 mod tests {
     use super::*;
 
+    /// This test module's test `name` as libtest names it in whichever
+    /// crate compiles the module in: its path without the crate's name.
+    fn own_test(name: &str) -> String {
+        let path = module_path!();
+        let path = path.split_once("::").map_or(path, |(_, path)| path);
+        format!("{path}::{name}")
+    }
+
     #[test]
     #[cfg(unix)]
     fn launch_uses_only_private_mode_and_reaps_the_child() {
@@ -72,7 +80,7 @@ mod tests {
             let result = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "private_window::tests::launch_uses_only_private_mode_and_reaps_the_child",
+                    own_test("launch_uses_only_private_mode_and_reaps_the_child").as_str(),
                     "--nocapture",
                 ])
                 .env("TILO_TEST_PRIVATE_LAUNCH_PARENT", "1")

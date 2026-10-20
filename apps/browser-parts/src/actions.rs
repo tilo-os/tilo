@@ -1,12 +1,12 @@
 //! Addresses, search scopes and limits the browser's resources share.
 //!
 //! Navigation and the visit log remain local or the person's own. Bookmarks
-//! and preferences are the browser document's ([`crate::resource::Browser`]):
+//! and preferences are the browser document's (Browser's `resource::Browser`):
 //! every visible control, Ctrl+K and agents change them through its verbs
 //! and field edits.
 
-pub(crate) const MAX_WEB_URL_BYTES: usize = 8 * 1024;
-pub(crate) const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
+pub const MAX_WEB_URL_BYTES: usize = 8 * 1024;
+pub const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
 
 /// Search scope and resource id of the history section. A history entry's id
 /// lies beneath it, so a search narrowed to History admits exactly its hits.

@@ -2,7 +2,7 @@
 use browser_continuity::sessions::Service;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Destination {
+pub struct Destination {
     pub service: Service,
     pub uri: String,
 }
@@ -72,13 +72,13 @@ impl Destination {
         })
     }
 }
-pub(crate) fn anchor(id: &str, destination: Option<&Destination>) -> String {
+pub fn anchor(id: &str, destination: Option<&Destination>) -> String {
     match destination {
         Some(destination) => format!("service:{id}|{}", destination.uri),
         None => format!("service:{id}"),
     }
 }
-pub(crate) fn parse_anchor(value: &str) -> Option<(String, Option<Destination>)> {
+pub fn parse_anchor(value: &str) -> Option<(String, Option<Destination>)> {
     let value = value.strip_prefix("service:")?;
     let (id, destination) = match value.split_once('|') {
         Some((id, uri)) => (id, Some(Destination::parse(uri)?)),
@@ -106,7 +106,7 @@ mod tests {
             "http://discord.com/channels/123/456",
             "https://discord.com.evil.example/channels/123/456",
             "https://discord.com@evil.example/channels/123/456",
-            "https://person:secret@discord.com/channels/123/456",
+            "https://person:secret@discord.com/channels/123/456", // example credentials
             "https://discord.com/channels/123/456/789",
             "https://discord.com/channels/123/456?token=secret",
             "https://discord.com/channels/123/456#secret",

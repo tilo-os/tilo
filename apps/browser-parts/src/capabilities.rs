@@ -5,7 +5,7 @@ use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
 
-pub(crate) struct Capabilities {
+pub struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
     // Native events are drained on the UI thread. Tabs share this UI model;
     // background download workers communicate through the engine protocol.
@@ -373,7 +373,7 @@ impl Capabilities {
         }
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (&id, d) in downloads.records.iter().rev().filter(|(_, item)| {
-            super::browser_widget::library_filter_matches(
+            crate::rows::library_filter_matches(
                 query,
                 &[&item.name, &item.url, &item.path, &item.state],
             )

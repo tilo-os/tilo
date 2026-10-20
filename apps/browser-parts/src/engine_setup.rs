@@ -14,7 +14,7 @@ const LOOK_EVERY: Duration = Duration::from_millis(300);
 
 /// What the page area shows while the engine is being set up.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Setup {
+pub enum Setup {
     /// The host is fetching the engine.
     Fetching {
         phase: InstallPhase,
@@ -29,7 +29,7 @@ pub(crate) enum Setup {
 
 impl Setup {
     /// The fraction fetched, when the host has said how much there is.
-    pub(crate) fn fraction(&self) -> Option<f32> {
+    pub fn fraction(&self) -> Option<f32> {
         match self {
             Self::Fetching {
                 phase: InstallPhase::Downloading,
@@ -46,14 +46,14 @@ impl Setup {
 }
 
 /// One setup in flight: a worker follows the host and publishes its state.
-pub(crate) struct EngineSetup {
+pub struct EngineSetup {
     state: Arc<Mutex<Setup>>,
 }
 
 impl EngineSetup {
     /// Ask the host for the engine and follow it. Once installed, start a
     /// fresh Browser on `reopen` (the page being opened, if any).
-    pub(crate) fn start(
+    pub fn start(
         mut installer: Box<dyn EngineInstaller>,
         reopen: Option<String>,
         wake: ui::WakeHandle,
@@ -107,7 +107,7 @@ impl EngineSetup {
         Self { state }
     }
 
-    pub(crate) fn state(&self) -> Setup {
+    pub fn state(&self) -> Setup {
         self.state.lock_recover().clone()
     }
 }

@@ -44,7 +44,7 @@ use ui::webview::{SharedEngine, WebViewCommand};
 /// first-party document/scripts during load, blanking it. They also churn
 /// daily, so a fresh compile can regress unpredictably. `EasyList` + uBO
 /// already cover the same targets through WebKit-safe rules.
-pub(crate) const LISTS: &[(&str, &str)] = &[
+pub const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
         "easyprivacy.txt",
@@ -286,11 +286,11 @@ fn generic_ad_cosmetic_script() -> &'static str {
 "#
 }
 
-pub(crate) fn cache_dir() -> Option<PathBuf> {
+pub fn cache_dir() -> Option<PathBuf> {
     crate::storage::cache_dir().map(|d| d.join("filters"))
 }
 
-pub(crate) fn read_cached_list(path: &std::path::Path) -> Option<String> {
+pub fn read_cached_list(path: &std::path::Path) -> Option<String> {
     use std::io::Read as _;
     let mut text = String::new();
     std::fs::File::open(path)
@@ -303,7 +303,7 @@ pub(crate) fn read_cached_list(path: &std::path::Path) -> Option<String> {
 
 /// Return the list text: fresh cache if young enough, otherwise fetch
 /// (updating the cache), otherwise a stale cache beats nothing.
-pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
+pub fn load_list(name: &str, url: &str) -> Option<String> {
     let path = cache_dir().map(|d| d.join(name));
 
     if let Some(p) = &path

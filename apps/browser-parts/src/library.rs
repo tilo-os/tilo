@@ -4,7 +4,7 @@
 
 use ui::tilo_resource::{self, Collection, Id, Model, Refusal};
 
-pub(crate) const MAX_BOOKMARKS: usize = 10_000;
+pub const MAX_BOOKMARKS: usize = 10_000;
 
 /// One bookmarked page, an item of the browser's bookmarks.
 #[derive(Model, Clone, Debug, PartialEq, Eq)]
@@ -69,7 +69,7 @@ impl Bookmarks {
         Self::from_entries(entries)
     }
 
-    pub(crate) fn from_entries(mut entries: Vec<BookmarkEntry>) -> Self {
+    pub fn from_entries(mut entries: Vec<BookmarkEntry>) -> Self {
         entries.truncate(MAX_BOOKMARKS);
         Self { entries }
     }

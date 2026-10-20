@@ -387,7 +387,10 @@ mod tests {
     fn labels() -> LocalizedLabels {
         static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
             "en-US",
-            &[("en-US", include_str!("../locales/en-US.ftl"))],
+            &[(
+                "en-US",
+                include_str!("../../browser-parts/locales/en-US.ftl"),
+            )],
         );
         LocalizedLabels {
             back: CATALOG.t("browser-personal-bookmarks-back"),

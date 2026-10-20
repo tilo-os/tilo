@@ -37,7 +37,7 @@ struct Pending {
     action: &'static str,
     deadline: Instant,
 }
-pub(crate) struct Credentials {
+pub struct Credentials {
     pub open: bool,
     private: bool,
     address_mode: bool,
@@ -116,7 +116,7 @@ impl Credentials {
         self.addresses.attach(book);
     }
 
-    pub(crate) fn stage_for_review(&mut self, addresses: bool, origin: &str) {
+    pub fn stage_for_review(&mut self, addresses: bool, origin: &str) {
         self.origin = crate::site_controls::origin(origin);
         self.address_mode = addresses;
         self.open = true;
