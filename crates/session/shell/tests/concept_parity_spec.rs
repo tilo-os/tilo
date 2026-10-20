@@ -157,6 +157,9 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
         chrome2.borrow_mut().overlays.ws_settings = true;
         let theme = Theme::dark();
         lay_out(&mut host2, W, H);
+        // Open, not at the start of its appearance from the pill.
+        host2.force_ws_settings_settled();
+        lay_out(&mut host2, W, H);
         let mut tr = TextRenderer::new();
         let mut open_scene = Scene::new();
         let presence = PresenceCtx::default();
@@ -513,6 +516,8 @@ fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chro
     }
     let theme = Theme::dark();
     lay_out(&mut host, W, H);
+    host.force_ws_settings_settled();
+    lay_out(&mut host, W, H);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
@@ -709,6 +714,10 @@ fn render_quick_settings_open(
     chrome.borrow_mut().overlays.quick_settings = true;
     mutate_chrome(&chrome);
     let theme = Theme::dark();
+    lay_out(&mut host, W, H);
+    // Open, with any section it opens standing open: a section unfolds in
+    // place on the disclosure motion, so its first frame shows none of it.
+    host.force_quick_settings_settled();
     lay_out(&mut host, W, H);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
