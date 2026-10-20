@@ -46,6 +46,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"], optional = true }
 uuid.workspace = true
 zeroize = { workspace = true, optional = true }
+workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
