@@ -104,6 +104,20 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
+/// The launcher categories an app declares (`category: .office`), as the platform's menu
+/// categories name them in lower case.
+pub const APP_CATEGORIES: &[&str] = &[
+    "office",
+    "development",
+    "graphics",
+    "multimedia",
+    "network",
+    "education",
+    "science",
+    "game",
+    "utility",
+    "system",
+];
 const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
 const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option", "Result"];
 const ITEM_EXPECTED: &str =
@@ -258,6 +272,60 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// The options after the app's title: `(icon: .note, category: .office)`, each at most once.
+    fn app_options(&mut self) -> PResult<(Option<String>, Option<String>)> {
+        let (mut icon, mut category) = (None, None);
+        if !self.eat(&Tok::LParen) {
+            return Ok((icon, category));
+        }
+        loop {
+            self.skip_nl();
+            if self.eat(&Tok::RParen) {
+                break;
+            }
+            let key = self.ident("`icon` or `category`")?;
+            self.expect(&Tok::Colon)?;
+            self.expect(&Tok::Dot)?;
+            let value = self.ident("a name after the dot, such as `.note`")?;
+            let slot = match key.name.as_str() {
+                "icon" => &mut icon,
+                "category" => {
+                    if !APP_CATEGORIES.contains(&value.name.as_str()) {
+                        return self.fail(
+                            value.span,
+                            format!(
+                                "`.{}` is not a category; an app is one of {}",
+                                value.name,
+                                APP_CATEGORIES
+                                    .iter()
+                                    .map(|c| format!("`.{c}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        );
+                    }
+                    &mut category
+                }
+                other => {
+                    return self.fail(
+                        key.span,
+                        format!("an app has an `icon:` and a `category:`, not `{other}:`"),
+                    );
+                }
+            };
+            if slot.replace(value.name).is_some() {
+                return self.fail(key.span, format!("`{}:` is given twice", key.name));
+            }
+            self.skip_nl();
+            if !self.eat(&Tok::Comma) {
+                self.skip_nl();
+                self.expect(&Tok::RParen)?;
+                break;
+            }
+        }
+        Ok((icon, category))
+    }
+
     fn plain_string(&mut self, what: &str) -> PResult<String> {
         if let Tok::Str(pieces) = self.peek().clone() {
             let span = self.bump().span;
@@ -352,9 +420,12 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id().ok()?;
             let title = self.plain_string("the app title in quotes").ok()?;
+            let (icon, category) = self.app_options().ok()?;
             AppHeader {
                 id,
                 title,
+                icon,
+                category,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -388,13 +459,18 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id();
             let title = id
-                .and_then(|id| Ok((id, self.plain_string("the app title in quotes")?)))
+                .and_then(|id| {
+                    let title = self.plain_string("the app title in quotes")?;
+                    Ok((id, title, self.app_options()?))
+                })
                 .ok();
             match title {
-                Some((id, title)) => {
+                Some((id, title, (icon, category))) => {
                     header = Some(AppHeader {
                         id,
                         title,
+                        icon,
+                        category,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }

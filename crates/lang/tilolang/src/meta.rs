@@ -11,6 +11,12 @@ pub const META_SECTION: &str = "tilolang.meta";
 pub struct PackageMeta {
     pub app: String,
     pub title: String,
+    /// The platform icon the app is shown with (`app ... (icon: .note)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The launcher category (`app ... (category: .office)`), lower case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
