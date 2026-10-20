@@ -59,7 +59,7 @@ CPU-incompatible output must fail before execution; match the repository OS
 floor deliberately rather than inheriting the builder's ISA. The existing native
 [CPU build](../../crates/agent/local-model-service/native/CMakeLists.txt) uses
 x86-64-v3/armv8-a baselines and disables runner-native, OpenMP and GPU backends.
-Its [historical confined baseline receipts](dictation-baseline-qualification.json)
+Its [historical confined baseline receipts](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-baseline-qualification.json)
 observe two total threads; this follow-up does not claim a new acoustic benchmark.
 
 The [configuration](https://github.com/bytecodealliance/wasmtime/blob/3c8a3e79aa3188a1a12b3aebbaa097abccceac92/crates/wasmtime/src/config.rs)

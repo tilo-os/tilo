@@ -104,7 +104,7 @@ an active native call. All eleven owned transient units are inactive.
 
 ## Native-call cancellation and synthetic insertion follow-up
 
-The separate [cancellation ledger](dictation-whistle-aot-cancellation.json)
+The separate [cancellation ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-aot-cancellation.json)
 qualifies both an active streaming call and an active final call on the same AOT
 engine and authenticated public French recording. The review child has opt-in
 fixed begin/end markers containing only the operation number. After observing
@@ -154,7 +154,7 @@ inputs fail before the destination exists. The actual candidate includes the
 runtime library, bridge and AOT under `/usr/lib64/tilo-speech/whistle/x86-64-v3`,
 both complete upstream notices under `/usr/share/licenses/tilo-speech-whistle`,
 and sources/provenance under `/usr/share/tilo-speech/whistle`. Model bytes are
-excluded. The [package ledger](dictation-whistle-aot-package.json) records the
+excluded. The [package ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-aot-package.json) records the
 actual nine files and forged-code rejection.
 
 The package remains a private candidate: no root-owned host package was installed,
@@ -255,7 +255,7 @@ volume and is not attributed to this compile. The observer stopped explicitly.
 
 ### Default automatic-language qualification
 
-The [automatic-language ledger](dictation-whistle-aot-image-auto.json) exercises
+The [automatic-language ledger](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-whistle-aot-image-auto.json) exercises
 the setting the user receives by default, using the same existing production
 worker and four public recordings. There was no Rust rebuild, microphone or
 activation. Ready includes ephemeral fixture setup, approximately 1.11 seconds.
