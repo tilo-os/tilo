@@ -53,6 +53,7 @@ impl Checker<'_> {
         match name {
             "outside" => return self.builtin_outside(args, span),
             "model_call" => return self.builtin_model(args, span),
+            "run_block" => return self.builtin_run_block(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
@@ -458,6 +459,56 @@ impl Checker<'_> {
         )
     }
 
+    /// `run_block(part, source)`: after this action commits, the host evaluates `source` as a
+    /// block written by the invoker and, when it applies an action, records what happened as
+    /// an `Invocation` stored in the part's `invocation` field.
+    fn builtin_run_block(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::Action {
+            self.err(
+                "E047",
+                span,
+                "`run_block(part, source)` queues a step for after the action commits, and only an action may use it",
+            );
+            return Ex::error();
+        }
+        let (Some(part), Some(source), 2) = (args.first(), args.get(1), args.len()) else {
+            self.err(
+                "E022",
+                span,
+                "`run_block` takes a part and the block's source: `run_block(part, source)`",
+            );
+            return Ex::error();
+        };
+        let p = self.expr(&part.value, None);
+        let src = self.expr_as(&source.value, &Ty::Text);
+        let want = Ty::Option(Box::new(Ty::Record(TypeKey {
+            app: crate::host::HOST_APP.to_string(),
+            name: "Invocation".to_string(),
+        })));
+        let Ty::Record(key) = p.ty.clone() else {
+            if !p.ty.is_error() {
+                self.err("E020", part.value.span, "`run_block` needs a resource of this module's types that has a field `invocation: Option<host.Invocation>`");
+            }
+            return Ex::error();
+        };
+        let field = self
+            .env
+            .type_info(&key)
+            .and_then(|t| t.field("invocation"))
+            .filter(|f| f.ty.same(&want))
+            .cloned();
+        let Some(f) = field else {
+            self.err("E020", part.value.span, format!("`{}` has no field `invocation: Option<host.Invocation>`, which is where the host records the invocation", key.name));
+            return Ex::error();
+        };
+        if key.app != self.env.app {
+            self.err("E045", part.value.span, format!("`{}` is declared by another app ({}); an action may only change its own module's types", key.name, key.app));
+            return Ex::error();
+        }
+        self.st.facts.mutates = true;
+        Ex::host(Imp::QueueBlock, vec![p, Ex::str(&f.id), src], Ty::Unit)
+    }
+
     fn builtin_model(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::Flow {
             self.err(
@@ -702,6 +753,9 @@ impl Checker<'_> {
                 Ex::error()
             }
             (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
+            (Ty::Principal, "name") if args.is_empty() => {
+                Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
+            }
             (Ty::Int, "to_float") if args.is_empty() => {
                 Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
             }

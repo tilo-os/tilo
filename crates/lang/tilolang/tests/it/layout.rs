@@ -105,21 +105,31 @@ fn min_and_max_need_a_unit() {
 }
 
 #[test]
-fn embed_takes_text_source_and_author_and_emits_one_node() {
+fn embed_takes_text_source_a_principal_author_and_emits_one_node() {
     let c = compile_body(
-        "type M {\n    who: Text\n    src: Text\n}\nview v(m: M) {\n    embed(m.src, author: m.who)\n}",
+        "type M {\n    who: Principal\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
     );
     validate(&c.wasm);
-    for want in ["embed", "source", "author"] {
+    for want in ["embed", "source", "author", "invocation"] {
         assert!(contains(&c.wasm, want), "{want} is not in the module");
     }
+    let head = "type M {\n    who: Principal\n    src: Text\n    n: Int\n}\n";
     assert!(
-        codes("type M {\n    src: Text\n}\nview v(m: M) {\n    embed(m.src)\n}")
+        codes(&format!("{head}view v(m: M) {{\n    embed(m.src)\n}}"))
             .contains(&"E022".to_string()),
         "an embed without an author is refused"
     );
     assert_eq!(
-        codes("type M {\n    n: Int\n}\nview v(m: M) {\n    embed(m.n, author: \"a\")\n}"),
+        codes(&format!(
+            "{head}view v(m: M) {{\n    embed(m.n, author: m.who)\n}}"
+        )),
         vec!["E020"]
+    );
+    assert_eq!(
+        codes(&format!(
+            "{head}view v(m: M) {{\n    embed(m.src, author: m.src)\n}}"
+        )),
+        vec!["E020"],
+        "text is not a principal"
     );
 }
