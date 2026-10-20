@@ -1547,7 +1547,6 @@ binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
 binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
 binary_target env-tools it env-tools-it
 binary_target installer accounts_native installer-accounts-native
-binary_lib launcher launcher launcher-lib
 """
 outputs = [
   "/target/vm/tilo-sandbox-job",
@@ -1558,12 +1557,11 @@ outputs = [
   "/target/vm/env-tools-it",
   "/target/vm/installer-accounts-native",
   "/target/debug/tilo-firstboot-home-seeds",
-  "/target/vm/launcher-lib",
   "/target/debug/install-test-home-seeds",
   "/target/debug/install-test-firstboot-files",
   "/target/debug/staging-handoff-native-extractor",
 ]
-cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools", "installer", "launcher"]
+cargo_packages = ["tilo-sandbox", "runtime-fs", "account-custody", "runtime-bundle", "tilo-install-helpers", "env-tools", "installer"]
 inputs = ["os/tests/**", "os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition", "os/usr/libexec/tilo-installer-profile-extract", "os/usr/libexec/tilo-firstboot-user"]
 on = ["stable", "dispatch"]
 default = false
@@ -1629,13 +1627,6 @@ run_tests 5 /target/vm/env-tools-it \
   build::requests_dnf_rejects_fail_before_building \
   build::set_runtime_rebuilds_every_tool_or_none \
   --nocapture --test-threads=1
-# The launcher's descriptor and protected-tree fixtures give files to root and
-# other users, which only real root can.
-run_tests 3 /target/vm/launcher-lib \
-  owned_service::capture::output::tests::authenticated_output_proof_binds_real_descriptors_and_operation \
-  owned_service::retained_io::selected_permit_tests::actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file \
-  owned_service::retained_worker::tests::held_entry_walk_refuses_symlink_and_writable_parent \
-  --exact --nocapture --test-threads=1
 """
 inputs = []
 on = ["stable", "dispatch"]
@@ -1715,6 +1706,71 @@ inputs = []
 # here and run in a micro-VM as real root, where TILO_REQUIRE_CHOWN and TILO_REQUIRE_USERNS
 # turn a skip into a failure. The signed Flatpak restore fixture is not among them: it also
 # needs flatpak and ostree, which the builder image does not carry.
+[[check]]
+name = "launcher-root-build"
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "24GiB" }
+run = """
+set -eu
+mkdir -p "$CARGO_TARGET_DIR/vm"
+# Read every message before selecting: closing cargo's pipe early makes it
+# fail with a broken pipe while it is still writing build messages.
+select_executable() {
+  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1]))' "$1"
+}
+cp "$(cargo test --locked -p launcher --lib --no-run --message-format json | select_executable launcher)" "$CARGO_TARGET_DIR/vm/launcher-lib"
+# The integration tests copy the launcher binary from the path they were compiled with.
+cp "$(cargo test --locked -p launcher --test it --no-run --message-format json | select_executable it)" "$CARGO_TARGET_DIR/vm/launcher-it"
+"""
+outputs = ["/target/vm/launcher-lib", "/target/vm/launcher-it", "/target/debug/tilo-launcher"]
+cargo_packages = ["launcher"]
+inputs = []
+
+# The launcher's root-only fixtures: descriptors and protected trees owned by
+# root and other users, and capture readers confined in a mount namespace of
+# their own. The job sandbox gives neither, so they skip there and run here,
+# as root in a micro-VM. Their payloads are compiled with the guest's rustc.
+[[check]]
+name = "launcher-root"
+requires = ["arch=x86_64"]
+isolation = "vm"
+needs = ["launcher-root-build"]
+env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
+run = """
+set -eu
+if [ "$(id -u)" != "0" ]; then
+  echo "launcher-root: expected euid 0 in the micro-VM, got $(id -u)" >&2
+  exit 1
+fi
+mkdir -p "$TMPDIR"
+# A filter that matches fewer tests still exits 0, so compare the reported count.
+run_tests() {
+  expected=$1
+  shift
+  output=$("$@" 2>&1) || { status=$?; printf '%s\\n' "$output"; return "$status"; }
+  printf '%s\\n' "$output"
+  case "$output" in
+    *"skipping"*) echo "selected fixture skipped: $*" >&2; return 1 ;;
+  esac
+  actual=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+  if [ "${actual:-}" != "$expected" ]; then
+    echo "expected $expected passing tests, got ${actual:-none}: $*" >&2
+    return 1
+  fi
+}
+cd crates/packaging/launcher
+run_tests 3 /target/vm/launcher-lib --exact --test-threads=1 \\
+  owned_service::capture::output::tests::authenticated_output_proof_binds_real_descriptors_and_operation \\
+  owned_service::retained_io::selected_permit_tests::actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file \\
+  owned_service::retained_worker::tests::held_entry_walk_refuses_symlink_and_writable_parent
+# Not yet here: capture_service::openpgp_native (its `ostree` fixture step
+# fails in the guest) and capture_service::mounted_source (the mounted reader's
+# worker spawn fails with EINVAL in the guest). Both skip everywhere else.
+run_tests 1 /target/vm/launcher-it --exact --test-threads=1 \\
+  capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement
+"""
+inputs = []
+
 [[check]]
 name = "imager-root-build"
 requires = ["arch=x86_64"]
@@ -6970,3 +7026,4 @@ on = ["dispatch"]
 default = false
 cache = false
 cost = "minutes"
+
