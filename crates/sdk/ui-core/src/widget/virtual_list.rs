@@ -1112,7 +1112,15 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn row_at_cursor(&self) -> Option<(usize, M::Key)> {
-        let cursor = self.last_cursor?;
+        self.row_at(self.last_cursor?)
+    }
+
+    /// The key of the row at `point` (window coordinates), when one is drawn there.
+    pub fn key_at_point(&self, point: Point) -> Option<M::Key> {
+        self.row_at(point).map(|(_, key)| key)
+    }
+
+    fn row_at(&self, cursor: Point) -> Option<(usize, M::Key)> {
         if !self.rect.contains(cursor) {
             return None;
         }
@@ -1981,6 +1989,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn test_id(&self) -> Option<&str> {
         self.test_id.as_deref()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -3225,6 +3241,28 @@ mod tests {
         assert_eq!(list.focused_key(), Some(&700));
         assert!(list.visible_range().contains(&700));
         assert!(!list.reveal(&5000), "an unknown key reveals nothing");
+    }
+
+    #[test]
+    fn the_key_at_a_point_is_the_row_drawn_there() {
+        let mut list = plain_rows(10);
+        let _ = lay_out(&mut list, 300.0);
+        let middle = |index: usize| {
+            Point::new(
+                list.rect.center().x,
+                list.rect.y0
+                    + list.viewport.item_view_top(index).unwrap()
+                    + list.viewport.item_height(index).unwrap() / 2.0,
+            )
+        };
+        let (one, four) = (middle(1), middle(4));
+        assert_eq!(list.key_at_point(one), Some(1));
+        assert_eq!(list.key_at_point(four), Some(4));
+        assert_eq!(
+            list.key_at_point(Point::new(list.rect.x0 - 1.0, one.y)),
+            None,
+            "outside the list is no row"
+        );
     }
 
     #[test]
