@@ -177,9 +177,10 @@ fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>,
 /// Run `f` on the session's launches still opening, recovering from
 /// poisoning as [`lock_catalogue`] does.
 fn with_pending_launches<T>(f: impl FnOnce(&mut Vec<String>) -> T) -> T {
-    let session = launcher::LaunchSession::current();
-    let mut pending = session.opening_launches.lock_recover();
-    f(&mut pending)
+    launcher::LaunchSession::with(|session| {
+        let mut pending = session.opening_launches.lock_recover();
+        f(&mut pending)
+    })
 }
 
 /// The same search the launcher does for `tilo-launcher`, including its

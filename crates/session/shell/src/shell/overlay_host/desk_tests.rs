@@ -648,14 +648,13 @@ fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
     }
     let chrome = ChromeState::new(tree);
     let t0 = Instant::now();
-    {
-        let mut alone =
-            ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
-        alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
-        alone.update_desk(t0);
-        alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
-        assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
-    }
+    let mut alone =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    alone.update_desk(t0);
+    alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
+    assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
+    drop(alone);
 
     // Someone here: it rests in its glance form.
     let (mut host, _chrome, _) = desk();

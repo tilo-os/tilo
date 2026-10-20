@@ -60,7 +60,7 @@ impl ShellOverlayHost {
     fn click_palette_filter(
         &mut self,
         p: vello::kurbo::Point,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &ui::widget::EventCtx<'_>,
     ) -> bool {
         // A direct way to reach "nothing selected", not just
         // untick every chip one at a time. Targets are the pointer

@@ -210,7 +210,7 @@ impl ShellOverlayHost {
     fn portal_dialog_key(
         &mut self,
         logical_key: &Key,
-        physical_key: &winit::keyboard::PhysicalKey,
+        physical_key: winit::keyboard::PhysicalKey,
         modifiers: winit::event::Modifiers,
     ) {
         match logical_key {
@@ -249,7 +249,7 @@ impl ShellOverlayHost {
             }
             _ => {
                 if !self.portal_dialogs.edit_launcher_name(logical_key) {
-                    self.portal_dialogs.key(physical_key, modifiers);
+                    self.portal_dialogs.key(&physical_key, modifiers);
                 }
             }
         }
@@ -331,7 +331,7 @@ impl ShellOverlayHost {
                 } else if capture_chord {
                     self.portal_dialogs.key(physical_key, modifiers);
                 } else {
-                    self.portal_dialog_key(logical_key, physical_key, modifiers);
+                    self.portal_dialog_key(logical_key, *physical_key, modifiers);
                 }
             }
             WindowEvent::Ime(_) if self.portal_dialogs.is_text_entry() => {

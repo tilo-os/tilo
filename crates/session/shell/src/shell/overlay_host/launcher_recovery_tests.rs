@@ -205,7 +205,9 @@ fn palette_recovery_production_render_matrix() {
             Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
         ),
         ("narrow", 480, 600, Theme::dark()),
-    ] {
+    ]
+    .into_boxed_slice()
+    {
         let (mut h, attempts, _) = recovery_fixture();
         settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
         assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
