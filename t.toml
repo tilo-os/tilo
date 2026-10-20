@@ -1702,11 +1702,6 @@ run_tests 5 setpriv --reuid=1000 --regid=1000 --clear-groups \\
 """
 inputs = []
 
-# The imager's and its backend's fixtures that give files to another user or become one: in
-# the job sandbox (uid 0 without capabilities) they skip with that reason, so they are built
-# here and run in a micro-VM as real root, where TILO_REQUIRE_CHOWN and TILO_REQUIRE_USERNS
-# turn a skip into a failure. The signed Flatpak restore fixture is not among them: it also
-# needs flatpak and ostree, which the builder image does not carry.
 [[check]]
 name = "launcher-root-build"
 requires = ["arch=x86_64"]
@@ -1764,14 +1759,19 @@ run_tests 3 /target/vm/launcher-lib --exact --test-threads=1 \\
   owned_service::capture::output::tests::authenticated_output_proof_binds_real_descriptors_and_operation \\
   owned_service::retained_io::selected_permit_tests::actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file \\
   owned_service::retained_worker::tests::held_entry_walk_refuses_symlink_and_writable_parent
-# Not yet here: capture_service::openpgp_native (its `ostree` fixture step
-# fails in the guest) and capture_service::mounted_source (the mounted reader's
-# worker spawn fails with EINVAL in the guest). Both skip everywhere else.
-run_tests 1 /target/vm/launcher-it --exact --test-threads=1 \\
-  capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement
+# capture_service::openpgp_native joins once the pinned builder carries ostree
+# and gpgme-devel (os/Containerfile.builder).
+run_tests 2 /target/vm/launcher-it --exact --test-threads=1 \\
+  capture_service::signed_original_source_reader_drops_source_groups_only_after_namespace_confinement \\
+  capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
 """
 inputs = []
 
+# The imager's and its backend's fixtures that give files to another user or become one: in
+# the job sandbox (uid 0 without capabilities) they skip with that reason, so they are built
+# here and run in a micro-VM as real root, where TILO_REQUIRE_CHOWN and TILO_REQUIRE_USERNS
+# turn a skip into a failure. The signed Flatpak restore fixture is not among them: it also
+# needs flatpak and ostree, which the builder image does not carry.
 [[check]]
 name = "imager-root-build"
 requires = ["arch=x86_64"]
@@ -5290,4 +5290,5 @@ on = ["dispatch"]
 default = false
 cache = false
 cost = "minutes"
+
 

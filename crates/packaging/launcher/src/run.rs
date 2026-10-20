@@ -2010,6 +2010,12 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
             "service fd relocation floor overflowed RawFd",
         )
     })?;
+    // Capture descriptors sit at fixed numbers above 1024 (the original
+    // roots from 1800), and F_DUPFD refuses a floor at or above the soft
+    // descriptor limit with EINVAL. A login's soft limit is commonly 1024
+    // under a much higher hard one, so lift the soft limit far enough for
+    // the relocation; the sandbox's own limit is set right after placement.
+    unsafe { raise_soft_nofile(floor, pairs.len())? };
     for (src, _) in pairs.iter_mut() {
         // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
         // every target.
@@ -2050,6 +2056,38 @@ unsafe fn place_child_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
 /// contain workspace content or broker responses; an untrusted app also does not
 /// need an unbounded descriptor table. Both soft and hard limits are set so the
 /// app cannot raise them again.
+/// Lift the soft `RLIMIT_NOFILE` so descriptors from `floor` up to
+/// `floor + count` can be created, within the hard limit (EMFILE when the
+/// hard limit is lower). Async-signal-safe: only getrlimit and setrlimit,
+/// and errors carry an errno rather than an allocated message.
+unsafe fn raise_soft_nofile(floor: RawFd, count: usize) -> std::io::Result<()> {
+    let needed = u64::try_from(floor)
+        .ok()
+        .and_then(|floor| floor.checked_add(u64::try_from(count).ok()?))
+        .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: the pointer refers to an initialized rlimit for the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if limit.rlim_cur >= needed {
+        return Ok(());
+    }
+    if limit.rlim_max != libc::RLIM_INFINITY && limit.rlim_max < needed {
+        // No allocation after fork: the errno says it, the doc says why.
+        return Err(std::io::Error::from_raw_os_error(libc::EMFILE));
+    }
+    limit.rlim_cur = needed;
+    // SAFETY: as above.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
     let core = libc::rlimit {
         rlim_cur: 0,

@@ -14,7 +14,9 @@ fn command(program: &str, args: &[&str]) -> Vec<u8> {
         .unwrap();
     assert!(
         output.status.success(),
-        "native fixture tool {program} failed"
+        "native fixture tool {program} {args:?} failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
     output.stdout
 }
