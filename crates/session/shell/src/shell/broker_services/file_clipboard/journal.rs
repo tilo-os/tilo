@@ -202,6 +202,11 @@ struct Receipt {
     /// holding each chunk of [`Self::items`], which the header then omits.
     #[serde(default)]
     chunks: Vec<u64>,
+    /// The private staging folder of each batch begun, by its stable path,
+    /// recorded before anything is copied into it. Recovery removes the
+    /// folder of a batch no intent names.
+    #[serde(default)]
+    staging: Vec<Vec<u8>>,
 }
 impl Receipt {
     fn filename(&self) -> Result<String, String> {
@@ -282,6 +287,7 @@ impl Journal {
             settled: false,
             generation: 0,
             chunks: Vec::new(),
+            staging: Vec::new(),
         };
         let pending = Arc::new(PendingReceipt {
             directory: self.directory()?,
@@ -507,6 +513,7 @@ impl Journal {
                     dirty: Mutex::default(),
                     positions: Mutex::default(),
                 };
+                pending.clear_unintended_staging(tree, context)?;
                 pending.change(|receipt| {
                     receipt.settled = true;
                     receipt.error = None;
@@ -541,7 +548,18 @@ impl Journal {
                 dirty: Mutex::default(),
                 positions: Mutex::default(),
             };
-            match pending.undo(tree, context)? {
+            let undone = pending.undo(tree, context)?;
+            if matches!(
+                undone,
+                Reply::Settled {
+                    error: None,
+                    undone: true,
+                    ..
+                }
+            ) {
+                pending.clear_unintended_staging(tree, context)?;
+            }
+            match undone {
                 Reply::Settled {
                     error: None,
                     undone: true,
@@ -886,6 +904,65 @@ impl PendingReceipt {
             })?;
         }
         Ok(())
+    }
+
+    /// A batch begun: its private staging folder, by its stable path, is
+    /// recorded before anything is copied into it. One header write.
+    pub(super) fn batch_begun(&self, folder: &Path) -> Result<(), String> {
+        let mut receipt = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?;
+        receipt.staging.push(folder.as_os_str().as_bytes().into());
+        let persisted = self.persist(&mut receipt, false);
+        drop(receipt);
+        persisted
+    }
+
+    /// Remove the staging folder of every batch begun whose intent was never
+    /// written: it holds only copies whose sources were never touched. A
+    /// folder an intent names is the undo's to empty.
+    fn clear_unintended_staging(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+    ) -> Result<(), String> {
+        let receipt = self
+            .receipt
+            .lock()
+            .map_err(|_| "clipboard journal unavailable")?
+            .clone();
+        if receipt.staging.is_empty() {
+            return Ok(());
+        }
+        let root = decode_path(&receipt.destination.path)?;
+        let destination = receipt.destination.open(tree, context)?;
+        for folder in &receipt.staging {
+            let path = decode_path(folder)?;
+            let name = path.file_name().ok_or("saved staging has no name")?;
+            if path.parent() != Some(root.as_path())
+                || !name.as_bytes().starts_with(b".tilo-transfer-")
+            {
+                return Err("saved staging escaped its destination".into());
+            }
+            let intended = receipt.items.iter().any(|item| {
+                item.staged
+                    .as_ref()
+                    .and_then(|(staged, _)| decode_path(staged).ok())
+                    .is_some_and(|staged| staged.starts_with(&path))
+            });
+            if intended {
+                continue;
+            }
+            match fs::remove_dir_all(destination.anchored_root().join(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        File::open(destination.anchored_root())
+            .and_then(|folder| folder.sync_all())
+            .map_err(|error| error.to_string())
     }
 
     /// A batch's intent, before any of its sources or destinations is
@@ -1779,6 +1856,7 @@ mod chunk_tests {
             settled: false,
             generation: 0,
             chunks: Vec::new(),
+            staging: Vec::new(),
         };
         let name = receipt.filename().unwrap();
         let pending = PendingReceipt {
