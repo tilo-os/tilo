@@ -87,12 +87,20 @@ impl Frames {
         self.stack.pop()
     }
 
+    ///
+    /// # Errors
+    ///
+    /// A message when no guest frame is running.
     pub fn top(&self) -> Result<&Frame, String> {
         self.stack
             .last()
             .ok_or_else(|| "import called with no guest frame".to_owned())
     }
 
+    ///
+    /// # Errors
+    ///
+    /// A message when no guest frame is running.
     pub fn top_mut(&mut self) -> Result<&mut Frame, String> {
         self.stack
             .last_mut()
@@ -100,6 +108,10 @@ impl Frames {
     }
 
     /// Put a value in the current frame and return its handle.
+    ///
+    /// # Errors
+    ///
+    /// A message when no frame is running or the frame's table is full.
     pub fn alloc(&mut self, v: Value) -> Result<i32, String> {
         let frame = self.top_mut()?;
         let index = u32::try_from(frame.vals.len())
@@ -124,6 +136,10 @@ impl Frames {
         Ok((frame, at))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// A message when the handle was not issued to the running invocation.
     pub fn get(&self, h: i32) -> Result<&Value, String> {
         let (frame, at) = self.slot(h)?;
         frame
@@ -132,6 +148,10 @@ impl Frames {
             .ok_or_else(|| format!("invalid handle {h}"))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// A message when the handle was not issued to the running invocation.
     pub fn get_mut(&mut self, h: i32) -> Result<&mut Value, String> {
         let (_, at) = self.slot(h)?;
         self.top_mut()?

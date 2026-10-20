@@ -52,10 +52,8 @@ impl Space {
     pub fn orientation(&self) -> i64 {
         if self.height > 0.0 && self.width / self.height > ULTRAWIDE_RATIO {
             2
-        } else if self.width < self.height {
-            0
         } else {
-            1
+            i64::from(self.width >= self.height)
         }
     }
 

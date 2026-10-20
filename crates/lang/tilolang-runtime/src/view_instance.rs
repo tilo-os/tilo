@@ -208,7 +208,7 @@ impl ViewInstance {
     /// # Errors
     ///
     /// `NotFound` for a missing node or binding; `BadArgs` for a value the field cannot take.
-    pub fn edit(&self, key: &str, value: Value) -> Result<EditOutcome, RuntimeError> {
+    pub fn edit(&self, key: &str, value: &Value) -> Result<EditOutcome, RuntimeError> {
         let node = self
             .tree
             .find(key)
@@ -250,7 +250,7 @@ impl ViewInstance {
             Decision::Ask => return Ok(EditOutcome::NeedsApproval),
             Decision::Allow => {}
         }
-        let mutation = match (field.kind, &value) {
+        let mutation = match (field.kind, value) {
             (FieldKind::Text, Value::Text(t)) => Mutation::SetText {
                 field: field.id.clone(),
                 text: t.clone(),
@@ -269,7 +269,7 @@ impl ViewInstance {
         };
         let change = ChangeNote {
             action: "$edit".into(),
-            args: serde_json::json!([field.id, to_json(&value).map_err(RuntimeError::BadArgs)?]),
+            args: serde_json::json!([field.id, to_json(value).map_err(RuntimeError::BadArgs)?]),
             invoker: self.viewer.0.clone(),
             chain: vec![view_module.0.clone()],
             module: view_module.0,

@@ -229,6 +229,10 @@ impl Registry {
 
     /// Resolve a type name given by a caller outside any package: an id, or a name that
     /// exactly one loaded package declares.
+    ///
+    /// # Errors
+    ///
+    /// A message when no loaded package declares the type, or several do.
     pub fn resolve_global(&self, name: &str) -> Result<TypeId, String> {
         if self.types.contains_key(name) {
             return Ok(name.to_owned());

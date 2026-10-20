@@ -1,5 +1,7 @@
 //! Imports that build a view's UI tree. Views only.
 
+use std::collections::BTreeMap;
+
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
@@ -37,6 +39,30 @@ impl Core {
         ret_void()
     }
 
+    fn space_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let name = self.text(a.h(0)?)?;
+        let size = Space::is_size(&name);
+        if size != (imp == Imp::SpaceF) {
+            return trap(format!(
+                "`space.{name}` is read with {}",
+                if size { "space_f" } else { "space_i" }
+            ));
+        }
+        let v = self.with_view(|vs| {
+            let v = vs
+                .space
+                .field(&name)
+                .ok_or_else(|| format!("`space` has no field `{name}`"))?;
+            vs.space_reads.push((name.clone(), v));
+            Ok(v)
+        })?;
+        if size {
+            ret_f64(v)
+        } else {
+            ret_i64(float_to_class(v))
+        }
+    }
+
     pub(crate) fn ui_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::UiNode => {
@@ -45,10 +71,10 @@ impl Core {
                     vs.nodes.push(NodeBuild {
                         kind,
                         key,
-                        props: Default::default(),
+                        props: BTreeMap::default(),
                         children: Vec::new(),
                         binding: None,
-                        events: Default::default(),
+                        events: BTreeMap::default(),
                         anchor: None,
                     });
                     Ok(vs.nodes.len().saturating_sub(1))
@@ -119,29 +145,7 @@ impl Core {
                 })?;
                 ret_void()
             }
-            Imp::SpaceI | Imp::SpaceF => {
-                let name = self.text(a.h(0)?)?;
-                let size = Space::is_size(&name);
-                if size != (imp == Imp::SpaceF) {
-                    return trap(format!(
-                        "`space.{name}` is read with {}",
-                        if size { "space_f" } else { "space_i" }
-                    ));
-                }
-                let v = self.with_view(|vs| {
-                    let v = vs
-                        .space
-                        .field(&name)
-                        .ok_or_else(|| format!("`space` has no field `{name}`"))?;
-                    vs.space_reads.push((name.clone(), v));
-                    Ok(v)
-                })?;
-                if size {
-                    ret_f64(v)
-                } else {
-                    ret_i64(float_to_class(v))
-                }
-            }
+            Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
             _ => trap("not a ui import"),
         }
     }

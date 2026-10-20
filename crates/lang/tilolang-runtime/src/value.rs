@@ -31,6 +31,7 @@ impl ResourceRef {
         }
     }
 
+    #[must_use]
     /// The item inside collection `field` of this resource.
     pub fn item(&self, field: &str, item: &str, ty: impl Into<TypeId>) -> Self {
         let mut path = self.path.clone();
