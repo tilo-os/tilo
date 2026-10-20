@@ -14719,6 +14719,7 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-wallpapers",
  "tilo-winit",
+ "tilo-winit-x11",
  "tokio",
  "tokio-util",
  "toml 1.0.6+spec-1.1.0",
@@ -19677,6 +19678,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
+ "tilo-winit-x11",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -20052,6 +20054,13 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
+]
+
+[[package]]
+name = "tilo-winit-x11"
+version = "0.1.0"
+dependencies = [
+ "tilo-winit",
 ]
 
 [[package]]
@@ -23700,8 +23709,6 @@ dependencies = [
  "wgpu-core",
  "winnow 0.7.14",
  "writeable",
- "x11rb",
- "x11rb-protocol",
  "x25519-dalek 3.0.0",
  "yoke",
  "zbus",

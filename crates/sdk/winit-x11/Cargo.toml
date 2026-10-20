@@ -1,0 +1,25 @@
+[package]
+name = "tilo-winit-x11"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Turns on winit's X11 backend for the Tilo shell's hosted compositor and the toolkit's `x11` development feature."
+
+# The crate has no code: depending on it is how a member turns on winit's X11
+# backend. Every Tilo app runs as a Wayland client, so the shared runtime
+# builds winit without X11, while the shell's hosted backend and toolkit
+# builds with `x11` add it. cargo-hakari skips this crate during traversal
+# (.config/hakari.toml), so that deliberate second feature set of winit stays
+# out of the workspace hack and `cargo hakari verify` still holds every other
+# crate, winit included, to one feature set.
+[package.metadata.cargo-machete]
+ignored = ["winit"]
+
+[dependencies]
+winit = { workspace = true, features = ["x11"] }
+
+[lints]
+workspace = true
