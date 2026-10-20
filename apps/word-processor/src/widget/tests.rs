@@ -9088,3 +9088,49 @@ fn collaborator_presence_cannot_escape_the_canvas() {
     }
     assert!(inside > 50, "the partly visible selection is painted");
 }
+
+/// A larger UI grows the writing with the controls, and the enlarged sheet
+/// still fits its canvas with the review cards beside it, not over its text.
+#[test]
+fn ui_scaling_grows_the_writing_beside_the_review_cards() {
+    for scale in [1.0, 1.5, 2.0] {
+        let theme = Theme::dark().with_ui_scale(scale);
+        let mut state = crate::initialized_state();
+        let mut wp = WordProcessorWidget::detached();
+        wp.sync(&state.doc, &state.root);
+        seed_text(
+            &mut wp,
+            &mut state,
+            "A paragraph with enough words to wrap while keeping readable type.",
+        );
+        wp.sync(&state.doc, &state.root);
+        let block = wp.blocks[0].id.clone();
+        crate::model::comment_by(&mut state.doc, "Ada", &block, (0, 11), "Keep this.");
+        wp.sync(&state.doc, &state.root);
+        let framed = mount_themed(state, wp, 1440, 810, &theme);
+        let body = framed.laid.first().expect("the paragraph is laid");
+        assert!(
+            f64::from(body.size) * framed.zoom.factor() >= 16.0 * f64::from(scale) - 0.01,
+            "UI scale {scale}: the writing grows with the controls"
+        );
+        let to_window = framed.zoom.transform(Affine::IDENTITY);
+        let page = to_window.transform_rect_bbox(framed.page_rect);
+        let canvas = framed.zoom_viewport;
+        assert!(
+            page.x0 >= canvas.x0 && page.x1 <= canvas.x1,
+            "UI scale {scale}: the sheet fits its canvas: {page:?} in {canvas:?}"
+        );
+        let (review_x, _) = ReviewOverlay::column(
+            &theme,
+            &crate::review_overlay::ReviewPlacement {
+                canvas,
+                page_x1: page.x1,
+                to_window,
+            },
+        );
+        assert!(
+            review_x >= page.x1,
+            "UI scale {scale}: review cards stand beside the sheet"
+        );
+    }
+}

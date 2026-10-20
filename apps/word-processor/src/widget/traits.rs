@@ -263,7 +263,10 @@ impl Widget for WordProcessorWidget {
         self.chrome = ChromeColors::for_theme(theme);
         self.paper_theme = theme.on_ground(self.chrome.paper);
         self.desk_theme = theme.clone();
-        self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0));
+        // Document sizes are authored points, not theme text roles: apply
+        // both the text size and the UI scale before fitting the sheet, or a
+        // larger UI grows the controls while the writing stays small.
+        self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0) * theme.ui_scale);
         let full = self.rect;
         let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
 

@@ -61,7 +61,7 @@ impl WordProcessorWidget {
         let available = column.width();
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
-        let page_right = self.page_area_right(theme, column, mobile_page || accessible_page);
+        let page_right = self.page_area_right(theme, column, mobile_page);
         if self.view.auto_fit_page {
             // Phone-sized tiles use a responsive editing sheet instead of
             // shrinking an entire Letter page until its body copy is 7 px.
@@ -135,7 +135,7 @@ impl WordProcessorWidget {
         // window just shows more or less of it and centers it.
         let (page_w, m) = responsive_page_geometry(
             canvas_left,
-            canvas_right,
+            page_right,
             self.text_scale,
             self.margins,
             mobile_page,
@@ -202,6 +202,15 @@ impl WordProcessorWidget {
             return column.x1;
         }
         let reserve = ReviewOverlay::column_reserve(theme);
+        // An enlarged sheet reflows, and shares the canvas with review cards
+        // unless that would leave less than a readable paragraph column.
+        if self.text_scale > 1.01 {
+            return if column.width() - reserve >= 320.0 * self.text_scale {
+                column.x1 - reserve
+            } else {
+                column.x1
+            };
+        }
         let zoom = if self.view.auto_fit_page {
             ((column.width() - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
         } else {
