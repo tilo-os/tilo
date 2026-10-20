@@ -534,6 +534,15 @@ pub struct TimeDatePane {
     reading: Reading<ClockReading>,
     /// The revision of `reading` taken in.
     reading_seen: u64,
+    /// The revision of `reading` the last `update` reported. A reading
+    /// lands off the UI thread at any moment; `sync` takes in only what
+    /// `update` saw, so a frame that reported nothing syncs nothing, and a
+    /// later landing is taken up by the frame its wake asks for.
+    reading_reported: u64,
+    /// The minute the last `update` read the clock at, which `sync` builds
+    /// for when it is past the one shown: the clock moves on between the two
+    /// as well.
+    minute_reported: i64,
     /// Whether a reading has landed; until then the rows say the clock is
     /// being read.
     read: bool,
@@ -579,6 +588,8 @@ impl TimeDatePane {
             notice_shown: area.notice.get(),
             reading: area.reading.clone(),
             reading_seen: area.reading.revision(),
+            reading_reported: area.reading.revision(),
+            minute_reported: 0,
             read: false,
             timezone: String::new(),
             timezones: Vec::new(),
@@ -759,9 +770,14 @@ impl TimeDatePane {
 
     /// Whether the minute or the place picked on the globe moved on since
     /// the composition was built.
-    fn outdated(&self) -> bool {
+    /// A place picked on the globe since the composition was built.
+    fn globe_moved(&self) -> bool {
         self.globe.borrow().focus_revision != self.globe_revision.get()
-            || self.clock.unix_now().div_euclid(60) != self.minute.get()
+    }
+
+    /// The minute the clock reads now.
+    fn minute_now(&self) -> i64 {
+        self.clock.unix_now().div_euclid(60)
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -919,9 +935,12 @@ impl Widget for TimeDatePane {
     /// the clock took), an effect's notice, a new minute, a place picked on
     /// the globe. A frame that reports none of them does not sync.
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
-        let own = self.reading.revision() != self.reading_seen
+        self.reading_reported = self.reading.revision();
+        self.minute_reported = self.minute_now();
+        let own = self.reading_reported != self.reading_seen
             || self.notice.get() != self.notice_shown
-            || self.outdated();
+            || self.minute_reported > self.minute.get()
+            || self.globe_moved();
         let mut children = false;
         for child in self.children_mut() {
             children |= child.update(state, root);
@@ -930,7 +949,7 @@ impl Widget for TimeDatePane {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let revision = self.reading.revision();
+        let revision = self.reading_reported;
         if revision != self.reading_seen {
             self.reading_seen = revision;
             if let Some(reading) = self.reading.get() {
@@ -949,10 +968,17 @@ impl Widget for TimeDatePane {
         }
         // A place picked on the globe, or a new minute, changes the times
         // and cities shown.
-        if self.outdated() {
+        if self.minute_reported > self.minute.get() || self.globe_moved() {
             self.composed.invalidate();
         }
         self.composed.sync(state, root);
+    }
+
+    /// The minute deadline it asked for came: what `update` read just
+    /// before may still have been the old minute.
+    fn serve_deadline(&mut self, _now: ui::time::Instant) -> bool {
+        self.minute_reported = self.minute_now();
+        true
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -1215,7 +1241,7 @@ mod tests {
             "with no zones to place there is no globe, not an empty one: {text:#?}"
         );
         assert!(
-            !pane.outdated(),
+            pane.minute_now() == pane.minute.get() && !pane.globe_moved(),
             "a composition without the globe is current until the minute turns, \
              or the window would rebuild it on every pass and never settle"
         );
