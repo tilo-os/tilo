@@ -499,9 +499,11 @@ comment = "The unsigned package: standalone EXE, zip and Inno Setup installer, e
 name = "sign/windows-{arch}"
 run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target/windows/{arch}/package /target/windows/{arch}/signed"
 needs = ["build/windows-{arch}", "package/windows-{arch}"]
-inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**", "tools/ci/publish/lib.sh"]
 outputs = ["/target/windows/{arch}/signed/*"]
-secrets = ["TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY", "TILO_AUTHENTICODE_KMS_KEY", "TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
+id_token = ["sts.amazonaws.com"]
+env = { TILO_AUTHENTICODE_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-authenticode-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTPackageSigner" }
 on = ["tag:imager-v*"]
 requires = ["arch=x86_64"]
 cache = false
@@ -509,7 +511,8 @@ requirement = { cores = 2, memory = "4GiB" }
 comment = """
 Authenticode, for imager release tags only: re-checks the build's digest against the one
 the package carries, then packages that executable again signing the EXE and the installer
-with a key that never leaves AWS KMS. Its secrets reach release nodes only."""
+with a key that never leaves AWS KMS, as the role an identity token of the tag is
+exchanged for."""
 
 [[matrix.check]]
 name = "package/windows-winget"
