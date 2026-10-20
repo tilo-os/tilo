@@ -679,6 +679,12 @@ pub struct FileExplorerWidget {
     ops_drain: Option<ui::framework::Projection>,
     /// Operations this window queued, and what it shows when they settle.
     awaiting_ops: Vec<(crate::file_ops::FileOp, OpFollowUp)>,
+    /// The callers of queued operations, each answered once its operation
+    /// settles: a Paste is done when its files are, not when it is queued.
+    op_replies: Vec<(crate::file_ops::FileOp, ui::framework::EffectReply)>,
+    /// The operation the effect just started queued, for the reply
+    /// [`Self::await_effect`] is handed next.
+    answering_op: Option<crate::file_ops::FileOp>,
     /// Operations already seen carried out, so each settles once here.
     settled_ops: std::collections::HashSet<String>,
     ops_presented: bool,
@@ -1109,6 +1115,7 @@ impl FileExplorerWidget {
                     self.cloud_finished(outcome);
                 }
                 self.settle_op(follow, outcome);
+                self.answer_op(&op, outcome);
             } else {
                 for change in outcome.result() {
                     match change {
@@ -1829,6 +1836,8 @@ impl FileExplorerWidget {
             device: None,
             ops_drain: None,
             awaiting_ops: Vec::new(),
+            op_replies: Vec::new(),
+            answering_op: None,
             settled_ops: std::collections::HashSet::new(),
             ops_presented: false,
             local_outcomes: HashMap::new(),
@@ -2124,6 +2133,7 @@ impl FileExplorerWidget {
         invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<Ran, String> {
         use crate::effects::FilesEffect;
+        self.answering_op = None;
         let answer = match effect {
             FilesEffect::ClipboardStatus => return self.snapshot_clipboard(invocation),
             FilesEffect::RecoverClipboardTransfers => return self.recover_clipboard(invocation),
@@ -2173,8 +2183,8 @@ impl FileExplorerWidget {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
                     return self.paste_clipboard(invocation, paste_conflict(conflict.as_deref())?);
                 }
-                self.paste()?;
-                None
+                let queued = self.paste()?;
+                return Ok(self.answer_when_settled(queued));
             }
             FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
                 let path = PathBuf::from(path);
@@ -2369,12 +2379,12 @@ impl FileExplorerWidget {
                 None
             }
             FilesEffect::ImportOnce { entry, folder } => {
-                self.import_once(&entry, &folder)?;
-                None
+                let queued = self.import_once(&entry, &folder)?;
+                return Ok(self.answer_when_settled(queued));
             }
             FilesEffect::CopyTo { entry, folder } => {
-                self.copy_into_folder(&entry, &folder)?;
-                None
+                let queued = self.copy_into_folder(&entry, &folder)?;
+                return Ok(self.answer_when_settled(queued));
             }
             FilesEffect::Copy { entry } => {
                 if matches!(self.services, FileServices::Hosted(_)) || self.hosted_clipboard() {
@@ -2621,7 +2631,46 @@ impl FileExplorerWidget {
 
     /// Keep `reply` until the job [`Self::run_effect`] started settles.
     pub(crate) fn await_effect(&mut self, reply: ui::framework::EffectReply) {
-        self.effect_reply = Some(reply);
+        match self.answering_op.take() {
+            Some(op) => {
+                if let crate::file_ops::FileOp::Copy { paths, folder }
+                | crate::file_ops::FileOp::ImportMounted { paths, folder }
+                | crate::file_ops::FileOp::Move { paths, folder, .. } = &op
+                {
+                    let shown = Path::new(folder).file_name().map_or_else(
+                        || folder.clone(),
+                        |name| name.to_string_lossy().into_owned(),
+                    );
+                    let phase = t_args(
+                        if matches!(op, crate::file_ops::FileOp::Move { .. }) {
+                            "files-moving"
+                        } else {
+                            "files-copying"
+                        },
+                        &[
+                            arg("count", i64_of_usize(paths.len())),
+                            arg("folder", shown),
+                        ],
+                    );
+                    reply.progress().report(phase, None, None);
+                }
+                self.op_replies.push((op, reply));
+            }
+            None => self.effect_reply = Some(reply),
+        }
+    }
+
+    /// Answer the caller waiting on `op`, now that it settled as `outcome`.
+    fn answer_op(&mut self, op: &crate::file_ops::FileOp, outcome: &crate::file_ops::Outcome) {
+        self.op_replies.retain(|(_, reply)| !reply.is_cancelled());
+        let Some(at) = self.op_replies.iter().position(|(queued, _)| queued == op) else {
+            return;
+        };
+        let (_, reply) = self.op_replies.remove(at);
+        reply.finish(match outcome.reason() {
+            None => Ok(tilo_actions::ActionOutput::default()),
+            Some(error) => Err(error.to_owned()),
+        });
     }
 
     /// Answer the job awaiting its result, if one is.
@@ -2699,7 +2748,11 @@ impl FileExplorerWidget {
     /// Import uses the ordinary queued copy path: kernel reads hydrate the
     /// mounted source, while the destination contains independent local bytes.
     /// No credential, mount, pin or sync relationship is created here.
-    fn import_once(&mut self, entry: &str, folder: &str) -> Result<(), String> {
+    fn import_once(
+        &mut self,
+        entry: &str,
+        folder: &str,
+    ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
@@ -2724,22 +2777,19 @@ impl FileExplorerWidget {
         {
             return Err(t("files-import-local-destination"));
         }
-        self.queue(
-            crate::file_ops::FileOp::ImportMounted {
-                paths: vec![source.display().to_string()],
-                folder: destination.display().to_string(),
-            },
-            OpFollowUp::Paste {
-                count: 1,
-                cut: false,
-            },
-        );
-        Ok(())
+        self.queue_copy(crate::file_ops::FileOp::ImportMounted {
+            paths: vec![source.display().to_string()],
+            folder: destination.display().to_string(),
+        })
     }
 
     /// Copy the entry `entry` names into `folder`, keeping its name: a
     /// queued, undoable operation.
-    fn copy_into_folder(&mut self, entry: &str, folder: &str) -> Result<(), String> {
+    fn copy_into_folder(
+        &mut self,
+        entry: &str,
+        folder: &str,
+    ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
@@ -2747,17 +2797,42 @@ impl FileExplorerWidget {
         if !folder.is_absolute() || !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
-        self.queue(
-            crate::file_ops::FileOp::Copy {
-                paths: vec![source.display().to_string()],
-                folder: folder.display().to_string(),
-            },
-            OpFollowUp::Paste {
-                count: 1,
-                cut: false,
-            },
-        );
-        Ok(())
+        self.queue_copy(crate::file_ops::FileOp::Copy {
+            paths: vec![source.display().to_string()],
+            folder: folder.display().to_string(),
+        })
+    }
+
+    /// Queue the copy of one entry `op`: the operation queued, `None` when
+    /// it was carried out at once.
+    fn queue_copy(
+        &mut self,
+        op: crate::file_ops::FileOp,
+    ) -> Result<Option<crate::file_ops::FileOp>, String> {
+        let follow = OpFollowUp::Paste {
+            count: 1,
+            cut: false,
+        };
+        match self.queue(op.clone(), follow) {
+            Some(outcome) => outcome
+                .reason()
+                .map_or(Ok(None), |error| Err(format!("copy failed: {error}"))),
+            None => Ok(Some(op)),
+        }
+    }
+
+    /// What an effect that changed files came to: done when `queued` is
+    /// `None` (carried out at once), else a job answered once the device
+    /// carried the queued operation out, so a caller that hears it finished
+    /// finds the files there.
+    fn answer_when_settled(&mut self, queued: Option<crate::file_ops::FileOp>) -> Ran {
+        match queued {
+            Some(op) => {
+                self.answering_op = Some(op);
+                Ran::Pending
+            }
+            None => Ran::Done(None),
+        }
     }
 
     /// Show the collaborative record `record` in its folder, selected.
@@ -6748,7 +6823,10 @@ impl FileExplorerWidget {
     }
 
     /// Copy (or, after Cut, move) the clipboard into the folder shown.
-    fn paste(&mut self) -> Result<(), String> {
+    ///
+    /// The operation queued for this device to carry out, `None` when it
+    /// was carried out at once.
+    fn paste(&mut self) -> Result<Option<crate::file_ops::FileOp>, String> {
         if self.clipboard.is_empty() {
             return Err("The clipboard is empty".into());
         }
@@ -6769,11 +6847,11 @@ impl FileExplorerWidget {
         } else {
             crate::file_ops::FileOp::Copy { paths, folder }
         };
-        match self.queue(op, OpFollowUp::Paste { count, cut }) {
+        match self.queue(op.clone(), OpFollowUp::Paste { count, cut }) {
             Some(outcome) => outcome
                 .reason()
-                .map_or(Ok(()), |error| Err(format!("paste failed: {error}"))),
-            None => Ok(()),
+                .map_or(Ok(None), |error| Err(format!("paste failed: {error}"))),
+            None => Ok(Some(op)),
         }
     }
 

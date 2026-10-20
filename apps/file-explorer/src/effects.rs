@@ -88,7 +88,7 @@ pub enum FilesEffect {
     /// Paste.
     ///
     /// Copies (or moves, after Cut) what the window holds into the folder
-    /// shown.
+    /// shown, and finishes once the files are there.
     #[effect(job, cancellable)]
     Paste {
         #[param(
@@ -259,7 +259,7 @@ pub enum FilesEffect {
     ///
     /// Copies the mounted entry's bytes into a local folder. Supported native
     /// documents are converted; the copy has no sync relationship.
-    #[effect(row)]
+    #[effect(row, job)]
     ImportOnce {
         #[param("The cloud entry's published row id")]
         entry: String,
@@ -267,7 +267,7 @@ pub enum FilesEffect {
         folder: String,
     },
     /// Copy to folder…
-    #[effect(row)]
+    #[effect(row, job)]
     CopyTo {
         #[param("The entry's row id")]
         entry: String,

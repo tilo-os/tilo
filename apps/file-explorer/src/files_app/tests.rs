@@ -1566,20 +1566,14 @@ mod command_path_tests {
             })
             .unwrap();
         assert!(row.actions.iter().any(|action| action.id == "import-once"));
-        app.call_on(
+        // The import finishes once its copy is in place.
+        app.call_on_finished(
             row.id.as_str(),
             "import-once",
             serde_json::json!({"folder": destination}),
         )
         .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !destination.join("Folder/document.txt").exists()
-            || app.state().ops.pending().next().is_some()
-        {
-            assert!(std::time::Instant::now() < deadline);
-            app.settle();
-            std::thread::yield_now();
-        }
+        assert!(app.state().ops.pending().next().is_none());
         assert_eq!(
             std::fs::read(destination.join("Folder/document.txt")).unwrap(),
             b"original bytes"
