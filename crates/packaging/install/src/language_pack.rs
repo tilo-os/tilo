@@ -3,17 +3,19 @@
 
 use std::fs;
 
-use crate::{BlobDir, BlobFetcher, Candidate, Checked, Error};
+use crate::{BlobDir, BlobFetcher, Candidate, Checked, Error, PackageStore};
 
-/// The file in an installed language pack's directory naming the package
-/// and version it came from.
-const LANGUAGE_PACK_MARKER: &str = ".package";
+/// Where the installed versions of the packs are kept, under the packs'
+/// root; each locale's entry there is a link to its current version.
+const VERSIONS: &str = ".versions";
 
-/// Install a verified language pack: its one locale directory of
-/// catalogues replaces the one installed for that locale under
-/// [`tilo_paths::language_packs_dir`], whole, so a reader sees the old
-/// catalogues or the new ones and never a mix.
+/// Install a verified language pack: it is recorded in the package store
+/// like any package (so `update` brings its newer versions, as for apps and
+/// runtimes), and its locale's entry under [`tilo_paths::language_packs_dir`]
+/// is switched to the new catalogues in one rename, so a reader sees the
+/// old catalogues or the new ones and never a mix.
 pub(crate) fn install_language_pack(
+    store: &PackageStore,
     candidate: &Candidate,
     checked: &Checked,
     dry_run: bool,
@@ -76,16 +78,32 @@ pub(crate) fn install_language_pack(
             }
         };
         let unpacked = tree.join(&directory);
-        fs::write(
-            unpacked.join(LANGUAGE_PACK_MARKER),
-            format!("{} {}\n", checked.id(), checked.version()),
-        )?;
-        let dest = root.join(&directory);
-        let retired = staging.join("retired");
-        if dest.exists() {
-            fs::rename(&dest, &retired)?;
+        // Recorded like every package, so updates find it.
+        if !crate::record_package(store, candidate, checked, false, false, &sink)? {
+            return Ok(());
         }
-        fs::rename(&unpacked, &dest)?;
+        let versions = root.join(VERSIONS);
+        fs::create_dir_all(&versions)?;
+        let version = format!(
+            "{}-{}-{}",
+            directory.to_string_lossy(),
+            checked.version(),
+            std::process::id()
+        );
+        fs::rename(&unpacked, versions.join(&version))?;
+        let dest = root.join(&directory);
+        let previous = fs::read_link(&dest).ok();
+        if previous.is_none() && dest.is_dir() {
+            // A locale installed before the packs were versioned.
+            fs::rename(&dest, staging.join("retired"))?;
+        }
+        let link = root.join(format!(".{}.next", directory.to_string_lossy()));
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(std::path::Path::new(VERSIONS).join(&version), &link)?;
+        fs::rename(&link, &dest)?;
+        if let Some(previous) = previous {
+            let _ = fs::remove_dir_all(root.join(previous));
+        }
         println!(
             "installed language pack {} {}",
             checked.id(),

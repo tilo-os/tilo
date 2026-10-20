@@ -63,11 +63,10 @@ pub fn entry_to_app_for_channel(
     registry_name: &str,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> Option<CatalogueApp> {
-    // Runtimes and language packs are not apps a person opens.
-    if !v.trust.is_offerable()
-        || registry_types::is_runtime_package_id(&v.entry.package_id)
-        || registry_types::is_language_pack_package_id(&v.entry.package_id)
-    {
+    // A runtime comes with the apps that need it. A language pack is
+    // offered like an app, so its updates come the way an app's do; the
+    // Store does not list it among apps.
+    if !v.trust.is_offerable() || registry_types::is_runtime_package_id(&v.entry.package_id) {
         return None;
     }
     // Artifact version orders releases. A later publication timestamp must
@@ -367,23 +366,21 @@ pub fn language_pack_offers() -> Result<Vec<LanguagePackOffer>, String> {
     Ok(offers)
 }
 
-/// The version of the language pack installed for `locale`, if one is.
+/// The package id of `locale`'s language pack.
+#[must_use]
+pub fn language_pack_id(locale: &str) -> String {
+    format!(
+        "{}{}",
+        tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
+        locale.to_ascii_lowercase()
+    )
+}
+
+/// The version of the language pack installed for `locale`, if one is: the
+/// package store's record, as for any package.
 #[must_use]
 pub fn installed_language_pack(locale: &str) -> Option<String> {
-    let root = tilo_paths::language_packs_dir()?;
-    let marker = std::fs::read_dir(root)
-        .ok()?
-        .filter_map(Result::ok)
-        .find(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(locale))
-        })?
-        .path()
-        .join(".package");
-    let text = std::fs::read_to_string(marker).ok()?;
-    text.split_whitespace().nth(1).map(str::to_owned)
+    installed_version(&language_pack_id(locale)).ok().flatten()
 }
 
 /// The catalogue row offering exactly `version` of a verified entry.

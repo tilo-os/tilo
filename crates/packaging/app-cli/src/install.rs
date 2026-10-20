@@ -703,11 +703,7 @@ pub fn install_language_pack_from_enabled(
     locale: &str,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    let package_id = format!(
-        "{}{}",
-        tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
-        locale.to_ascii_lowercase()
-    );
+    let package_id = crate::language_pack_id(locale);
     let not_offered = || InstallError::NotOffered {
         package_id: package_id.clone(),
     };
@@ -718,10 +714,12 @@ pub fn install_language_pack_from_enabled(
         .find(|offer| offer.offer.package_id == package_id)
         .ok_or_else(not_offered)?
         .offer;
-    if crate::installed_language_pack(locale).as_deref() == Some(offer.version.as_str()) {
-        return Ok(());
+    match crate::installed_language_pack(locale) {
+        Some(installed) if installed == offer.version => Ok(()),
+        // An installed pack takes the update path apps and runtimes take.
+        Some(_) => update_app_reporting(&offer, on_progress),
+        None => install_or_update_app_reporting(&offer, on_progress, Change::Install),
     }
-    install_or_update_app_reporting(&offer, on_progress, Change::Install)
 }
 
 /// What [`install_or_update_app_reporting`] does with the verified package.

@@ -426,7 +426,10 @@ impl StoreItem {
     /// for Flatpak apps, whose install *is* the pin, and for bots and
     /// runtime components.
     pub fn pin_action(&self) -> Option<ActionKind> {
-        if self.bot.is_some() || ui::registry::is_runtime_package_id(&self.id) {
+        if self.bot.is_some()
+            || ui::registry::is_runtime_package_id(&self.id)
+            || ui::registry::is_language_pack_package_id(&self.id)
+        {
             return None;
         }
         match (&self.source, &self.installed) {
