@@ -27,13 +27,19 @@ fn start_cost() {
 
 /// What launching notes costs cold, one process per launch as on a device:
 /// from the process starting to its first frame drawn, fonts and every
-/// other per-process cache empty.
+/// other per-process cache empty. The first frame builds the window's
+/// widget tree once: its first layout lands on the tree it built.
 #[test]
 fn cold_start() {
-    ui::framework::testing::perf::cold_start(
+    let start = ui::framework::testing::perf::cold_start(
         "notes",
         std::path::Path::new(env!("CARGO_BIN_EXE_notes")),
         8,
-    )
-    .print();
+    );
+    start.print();
+    assert_eq!(
+        start.calls("frame", "ui.rebuild_structure"),
+        1,
+        "the first frame builds the tree once"
+    );
 }

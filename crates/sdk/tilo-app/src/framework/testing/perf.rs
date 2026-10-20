@@ -284,6 +284,7 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
         totals: Vec::new(),
         phases: BTreeMap::new(),
         marks: BTreeMap::new(),
+        calls: BTreeMap::new(),
     };
     for _ in 0..launches {
         let printed = launch();
@@ -331,6 +332,12 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
                     .unwrap_or_default()
                     .to_owned()
             };
+            let calls: u64 = field("calls=").parse().unwrap_or_default();
+            let most = cold
+                .calls
+                .entry(format!("{} {}", field("stage="), field("phase=")))
+                .or_default();
+            *most = (*most).max(calls);
             let name = format!(
                 "{} {} x{}",
                 field("stage="),
@@ -356,9 +363,22 @@ pub struct ColdStart {
     /// Each startup mark's microseconds since the process started, one per
     /// time it was marked.
     marks: BTreeMap<String, Vec<u64>>,
+    /// The most times one launch ran each named scope, by `stage phase`.
+    calls: BTreeMap<String, u64>,
 }
 
 impl ColdStart {
+    /// The most times one launch ran the named scope `phase` in `stage`
+    /// (`construction` or `frame`): how often the first frame did a piece of
+    /// work it should do once.
+    #[must_use]
+    pub fn calls(&self, stage: &str, phase: &str) -> u64 {
+        self.calls
+            .get(&format!("{stage} {phase}"))
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// The median launch, in milliseconds.
     #[must_use]
     pub fn p50_ms(&self) -> u64 {
