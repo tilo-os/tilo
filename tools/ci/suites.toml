@@ -808,7 +808,7 @@ readers = ["apps/tilolang/src/packages.rs"]
 [[cargo]]
 package = "tilolang-runtime"
 # The end-to-end tests compile the built-in packages from their sources.
-inputs = ["apps/tl/"]
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
 readers = [
   "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",

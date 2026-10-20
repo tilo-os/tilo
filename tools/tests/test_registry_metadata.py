@@ -71,7 +71,7 @@ class RegistryMetadataTests(unittest.TestCase):
                             else:
                                 self.assertEqual(image["kind"], "screenshot")
                                 self.assertIn(image["url"], archive_urls)
-                self.assertEqual(image_count, 86)
+                self.assertEqual(image_count, 87)
         with self.subTest(phase='audit reports the intended generic fleet'):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
