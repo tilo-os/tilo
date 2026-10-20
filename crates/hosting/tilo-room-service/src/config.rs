@@ -453,17 +453,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = model_id(var, "TILO_ROOMS_MODERATION_MODEL")?;
     let news_club_model = model_id(var, "TILO_ROOMS_NEWS_CLUB_MODEL")?;
-    let news_club_channel = var("TILO_ROOMS_NEWS_CLUB_CHANNEL")
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "general".to_owned());
-    ensure!(
-        news_club_channel.len() <= 64
-            && news_club_channel
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-        "TILO_ROOMS_NEWS_CLUB_CHANNEL names a channel of up to 64 lowercase letters, digits and -, not {news_club_channel:?}"
-    );
+    let news_club_channel = news_club_channel(var)?;
     // Unset: chat, a welcome note and a canvas, so a visitor has something
     // to do at once.
     let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
@@ -698,6 +688,22 @@ fn strips(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
         "TILO_ROOMS_STRIPS names a strip twice"
     );
     Ok(strips)
+}
+
+/// `TILO_ROOMS_NEWS_CLUB_CHANNEL`, a channel name; `general` when unset.
+fn news_club_channel(var: &impl Fn(&str) -> Option<String>) -> Result<String> {
+    let channel = var("TILO_ROOMS_NEWS_CLUB_CHANNEL")
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "general".to_owned());
+    ensure!(
+        channel.len() <= 64
+            && channel
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+        "TILO_ROOMS_NEWS_CLUB_CHANNEL names a channel of up to 64 lowercase letters, digits and -, not {channel:?}"
+    );
+    Ok(channel)
 }
 
 /// The model id variable `name` holds, if set.
@@ -1010,36 +1016,6 @@ mod tests {
             Some("claude-sonnet-5-5")
         );
         assert!(config(&[plaza, ingress, ("TILO_ROOMS_MODERATION_MODEL", "a b")]).is_err());
-        let quiet = config(&[plaza, ingress]).unwrap().persistent.unwrap();
-        assert_eq!(
-            quiet.news_club_key_file, None,
-            "the club runs only with a key"
-        );
-        assert_eq!(quiet.news_club_channel, "general");
-        let club = config(&[
-            plaza,
-            ingress,
-            ("TILO_ROOMS_NEWS_CLUB_KEY_FILE", "/secrets/club"),
-            ("TILO_ROOMS_NEWS_CLUB_CHANNEL", "front-page"),
-            ("TILO_ROOMS_NEWS_CLUB_MODEL", "claude-haiku-5-5"),
-        ])
-        .unwrap()
-        .persistent
-        .unwrap();
-        assert_eq!(
-            club.news_club_key_file,
-            Some(PathBuf::from("/secrets/club"))
-        );
-        assert_eq!(club.news_club_channel, "front-page");
-        assert_eq!(club.news_club_model.as_deref(), Some("claude-haiku-5-5"));
-        assert!(
-            config(&[
-                plaza,
-                ingress,
-                ("TILO_ROOMS_NEWS_CLUB_CHANNEL", "Front Page")
-            ])
-            .is_err()
-        );
         assert!(config(&[plaza, ingress, ("TILO_ROOMS_NAME", " ")]).is_err());
         assert!(config(&[("TILO_ROOMS_PERSISTENT", "../x"), ingress]).is_err());
         assert!(
@@ -1101,5 +1077,41 @@ mod tests {
         // A persistent room is reached through the ingress, directly or
         // locally, never through the short rooms' TLS front.
         assert!(config(&[plaza]).is_err());
+    }
+
+    #[test]
+    fn the_news_club_runs_only_with_a_key_in_a_valid_channel() {
+        let ingress = ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example");
+        let plaza = ("TILO_ROOMS_PERSISTENT", "plaza");
+        let quiet = config(&[plaza, ingress]).unwrap().persistent.unwrap();
+        assert_eq!(
+            quiet.news_club_key_file, None,
+            "the club runs only with a key"
+        );
+        assert_eq!(quiet.news_club_channel, "general");
+        let club = config(&[
+            plaza,
+            ingress,
+            ("TILO_ROOMS_NEWS_CLUB_KEY_FILE", "/secrets/club"),
+            ("TILO_ROOMS_NEWS_CLUB_CHANNEL", "front-page"),
+            ("TILO_ROOMS_NEWS_CLUB_MODEL", "claude-haiku-5-5"),
+        ])
+        .unwrap()
+        .persistent
+        .unwrap();
+        assert_eq!(
+            club.news_club_key_file,
+            Some(PathBuf::from("/secrets/club"))
+        );
+        assert_eq!(club.news_club_channel, "front-page");
+        assert_eq!(club.news_club_model.as_deref(), Some("claude-haiku-5-5"));
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_NEWS_CLUB_CHANNEL", "Front Page")
+            ])
+            .is_err()
+        );
     }
 }

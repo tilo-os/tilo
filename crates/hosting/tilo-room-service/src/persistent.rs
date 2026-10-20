@@ -442,7 +442,13 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
             command.arg("--moderation-model").arg(model);
         }
     }
-    // The News Club runs only with its own key.
+    news_club_args(&mut command, persistent);
+    Ok(command)
+}
+
+/// The News Club's settings, which it runs with only when it has its own
+/// key.
+fn news_club_args(command: &mut Command, persistent: &PersistentConfig) {
     if let Some(key) = &persistent.news_club_key_file {
         command.arg("--news-club-key-file").arg(key);
         command
@@ -452,7 +458,6 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
             command.arg("--news-club-model").arg(model);
         }
     }
-    Ok(command)
 }
 
 /// Size the relay's session limits and allocator for the room's caps.
