@@ -345,7 +345,7 @@ impl Reconciler {
             "heading" => self.text(node, Some(heading_role(node))),
             "text" => self.text(node, None),
             "section" | "card" | "form" | "field" => self.holder(node),
-            "facts" => self.facts(node),
+            "facts" => Self::facts(node),
             "toggle" => self.toggle(node),
             "choice" => self.choice(node),
             "avatar" => self.avatar(node),
@@ -894,7 +894,7 @@ impl Reconciler {
     }
 
     /// Facts: the native property list, a label and a value per fact.
-    fn facts(&self, node: &UiNode) -> Element {
+    fn facts(node: &UiNode) -> Element {
         let properties = node
             .children
             .iter()
@@ -927,7 +927,7 @@ impl Reconciler {
     }
 
     /// A choice of an enum's cases: segments for a few, a menu for more.
-    fn choice(&mut self, node: &UiNode) -> Element {
+    fn choice(&self, node: &UiNode) -> Element {
         let cases = token(node, "enum")
             .map(|id| (self.cases)(id))
             .unwrap_or_default();
@@ -1144,7 +1144,10 @@ fn holder_parts(node: &UiNode) -> Vec<&UiNode> {
 
 /// What a holder's widget is built from besides its parts' contents: its own props, and the
 /// key, kind and props of each part (a field's label).
-fn holder_shape(node: &UiNode) -> Vec<(String, String, Vec<(String, Value)>)> {
+/// One part of a holder as its shape compares: its key, its kind and its props.
+type PartShape = (String, String, Vec<(String, Value)>);
+
+fn holder_shape(node: &UiNode) -> Vec<PartShape> {
     let entry = |node: &UiNode| {
         (
             node.key.clone(),
@@ -1172,7 +1175,7 @@ fn holder_shape(node: &UiNode) -> Vec<(String, String, Vec<(String, Value)>)> {
 
 /// Every [`Pane`] under `widget`, in order, not looking inside a pane.
 fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a mut Pane>) {
-    if widget.as_any().is_some_and(|any| any.is::<Pane>()) {
+    if widget.as_any().is_some_and(<dyn std::any::Any>::is::<Pane>) {
         if let Some(pane) = widget
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<Pane>())

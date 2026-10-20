@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value};
 use ui::icons::Icon;
+use ui::vello::kurbo::Point;
 use ui::widget::virtual_list::ListModelChange;
 use ui::widget::{
     AppModel, ContextMenuArea, Decorator, Element, EmptyState, ListModel, ListRow, MenuEntry,
@@ -78,6 +79,12 @@ impl Rows {
     pub fn row(&self, index: usize) -> Option<&RowData> {
         self.rows.get(index)
     }
+
+    /// The row of `key`.
+    #[must_use]
+    pub fn find(&self, key: &str) -> Option<&RowData> {
+        self.index.get(key).and_then(|at| self.rows.get(*at))
+    }
 }
 
 impl ListModel for Rows {
@@ -105,7 +112,7 @@ pub fn changes(old: &[RowData], new: &[RowData]) -> Vec<ListModelChange<String>>
     let kept: HashSet<&str> = new.iter().map(|row| row.key.as_str()).collect();
     let mut order: Vec<&str> = old.iter().map(|row| row.key.as_str()).collect();
     for index in (0..order.len()).rev() {
-        if !kept.contains(order[index]) {
+        if order.get(index).is_some_and(|key| !kept.contains(key)) {
             order.remove(index);
             out.push(ListModelChange::RowsRemoved { index, count: 1 });
         }
@@ -221,35 +228,48 @@ fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
             move || requests.borrow_mut().push(invoke.clone()),
         );
     }
-    let row: Element = Box::new(row);
+    Box::new(row)
+}
+
+/// The menu of the row under `at` (its focused row when the keyboard opened it): every action
+/// on its item, destructive ones styled so. Opening it selects the row, as the next column shows.
+fn row_menu(list: &dyn Widget, at: Option<Point>, requests: &Requests) -> Vec<MenuEntry> {
+    let Some(list) = list
+        .as_any()
+        .and_then(|list| list.downcast_ref::<VirtualList<Rows>>())
+    else {
+        return Vec::new();
+    };
+    let key = match at {
+        Some(point) => list.key_at_point(point),
+        None => list.focused_key().cloned(),
+    };
+    let Some(data) = key.and_then(|key| list.model().find(&key)) else {
+        return Vec::new();
+    };
     if data.actions.is_empty() {
-        return row;
+        return Vec::new();
     }
-    let actions = Rc::clone(&data.actions);
-    let requests = Rc::clone(requests);
-    let data = data.clone();
-    Box::new(ContextMenuArea::new(
-        row,
-        Box::new(move |_| {
-            actions
-                .iter()
-                .map(|action| {
-                    let requests = Rc::clone(&requests);
-                    let invoke = invoke_request(&data, action);
-                    let run = move || requests.borrow_mut().push(invoke.clone());
-                    let entry = if action.destructive {
-                        MenuEntry::destructive(action.label.clone(), run)
-                    } else {
-                        MenuEntry::new(action.label.clone(), run)
-                    };
-                    match action.icon {
-                        Some(icon) => entry.with_icon(icon),
-                        None => entry,
-                    }
-                })
-                .collect()
-        }),
-    ))
+    requests
+        .borrow_mut()
+        .push(Request::Select(data.key.clone()));
+    data.actions
+        .iter()
+        .map(|action| {
+            let requests = Rc::clone(requests);
+            let invoke = invoke_request(data, action);
+            let run = move || requests.borrow_mut().push(invoke.clone());
+            let entry = if action.destructive {
+                MenuEntry::destructive(action.label.clone(), run)
+            } else {
+                MenuEntry::new(action.label.clone(), run)
+            };
+            match action.icon {
+                Some(icon) => entry.with_icon(icon),
+                None => entry,
+            }
+        })
+        .collect()
 }
 
 fn invoke_request(data: &RowData, action: &RowAction) -> Request {
@@ -273,7 +293,8 @@ pub struct Empty {
 }
 
 enum Body {
-    List(Box<VirtualList<Rows>>),
+    /// The list under the one context menu every row shares.
+    List(Box<ContextMenuArea>),
     Empty(Box<EmptyState>),
 }
 
@@ -305,30 +326,43 @@ impl ListPane {
         }
     }
 
-    fn list(&self, rows: Rows) -> VirtualList<Rows> {
+    fn list(&self, rows: Rows) -> ContextMenuArea {
         let requests = Rc::clone(&self.requests);
         let sink = Rc::clone(&self.sink);
         let selecting = Rc::clone(&self.requests);
         let activating = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 56.0, move |rows, index, key, _, _| {
-            rows.row(index).map_or_else(
-                || Box::new(ListRow::new(key.clone(), "")) as Element,
-                |data| row(data, &requests, &sink),
-            )
-        })
-        .filling()
-        .selection_follows_focus()
-        // Moving through the list shows the item without bringing it to the front of a narrow
-        // window; activating it does.
-        .on_select(move |key, selected| {
-            if selected {
-                selecting.borrow_mut().push(Request::Select(key));
-            }
-        })
-        .on_activate(move |key| activating.borrow_mut().push(Request::Activate(key)))
-        .with_id("tilolang.list")
-        .with_accessible_name(self.name.clone())
-        .with_semantic_key(Clone::clone)
+        let list =
+            VirtualList::with_selection_delegate(rows, 56.0, move |rows, index, key, _, _| {
+                rows.row(index).map_or_else(
+                    || Box::new(ListRow::new(key.clone(), "")) as Element,
+                    |data| row(data, &requests, &sink),
+                )
+            })
+            .filling()
+            .selection_follows_focus()
+            // Moving through the list shows the item without bringing it to the front of a narrow
+            // window; activating it does.
+            .on_select(move |key, selected| {
+                if selected {
+                    selecting.borrow_mut().push(Request::Select(key));
+                }
+            })
+            .on_activate(move |key| activating.borrow_mut().push(Request::Activate(key)))
+            .with_id("tilolang.list")
+            .with_accessible_name(self.name.clone())
+            .with_semantic_key(Clone::clone);
+        let menu = Rc::clone(&self.requests);
+        ContextMenuArea::over_content(Box::new(list), move |list, at| row_menu(list, at, &menu))
+    }
+
+    /// The list, when there are rows.
+    fn virtual_list(&mut self) -> Option<&mut VirtualList<Rows>> {
+        let Body::List(area) = &mut self.body else {
+            return None;
+        };
+        area.content_mut()
+            .as_any_mut()
+            .and_then(|list| list.downcast_mut::<VirtualList<Rows>>())
     }
 
     fn empty_state(empty: &Empty) -> EmptyState {
@@ -353,11 +387,13 @@ impl ListPane {
                 self.body = Body::Empty(Box::new(Self::empty_state(&empty)));
                 self.structure_dirty = true;
             }
-        } else if let Body::List(list) = &mut self.body {
+        } else if matches!(self.body, Body::List(_)) {
             let changes = changes(&self.rows, &rows);
             if !changes.is_empty() {
                 let next = Rows::new(rows.clone());
-                list.update_model_changes(&changes, move |model| *model = next);
+                if let Some(list) = self.virtual_list() {
+                    list.update_model_changes(&changes, move |model| *model = next);
+                }
             }
         } else {
             self.body = Body::List(Box::new(self.list(Rows::new(rows.clone()))));
@@ -378,11 +414,12 @@ impl ListPane {
     }
 
     fn select_shown(&mut self) {
-        if let Body::List(list) = &mut self.body {
+        let selected = self.selected.clone();
+        if let Some(list) = self.virtual_list() {
             let selection = list.selection_mut();
             selection.clear();
-            if let Some(key) = &self.selected {
-                selection.select_only(key.clone());
+            if let Some(key) = selected {
+                selection.select_only(key);
             }
         }
     }
@@ -439,6 +476,8 @@ impl Decorator for ListPane {
 
 #[cfg(test)]
 mod tests {
+    use ui::widget::MenuItem;
+
     use super::*;
 
     fn data(key: &str, title: &str) -> RowData {
@@ -463,7 +502,9 @@ mod tests {
         for change in changes {
             match change {
                 ListModelChange::RowsRemoved { index, count } => {
-                    keys.drain(*index..index + count);
+                    for _ in 0..*count {
+                        keys.remove(*index);
+                    }
                 }
                 ListModelChange::RowsInserted { index, .. } => {
                     keys.insert(*index, new[*index].key.clone());
@@ -501,6 +542,67 @@ mod tests {
         assert!(changes.contains(&ListModelChange::RowsChanged {
             keys: vec!["a".to_owned()]
         }));
+    }
+
+    fn action(label: &str, destructive: bool) -> RowAction {
+        RowAction {
+            label: label.to_owned(),
+            icon: None,
+            resource: "tl:notes:root".to_owned(),
+            action: label.to_lowercase(),
+            primary: false,
+            destructive,
+            args: Vec::new(),
+        }
+    }
+
+    /// The list selects and separates its rows only when each is the [`ListRow`] itself, so the
+    /// rows share one context menu over the list rather than each wearing its own.
+    #[test]
+    fn every_action_of_a_row_is_on_the_one_menu_over_the_list() {
+        let requests: Requests = Rc::default();
+        let sink: EventSink = Rc::default();
+        let actions: Rc<[RowAction]> = Rc::from(vec![action("Pin", false), action("Delete", true)]);
+        let rows: Vec<RowData> = ["a", "b"]
+            .into_iter()
+            .map(|key| RowData {
+                actions: Rc::clone(&actions),
+                ..data(key, &key.to_uppercase())
+            })
+            .collect();
+        let element = row(&rows[0], &requests, &sink);
+        assert!(
+            element
+                .as_any()
+                .is_some_and(|row| row.downcast_ref::<ListRow>().is_some()),
+            "a row is a bare ListRow"
+        );
+
+        let mut pane = ListPane::new(&requests, &sink, "Notes".to_owned());
+        pane.show(rows, Empty::default());
+        assert!(pane.virtual_list().expect("rows").reveal(&"b".to_owned()));
+        let Body::List(area) = &mut pane.body else {
+            panic!("rows show a list");
+        };
+        assert!(
+            area.open_at(Point::ZERO, false),
+            "the keyboard opens the focused row's menu"
+        );
+        let labels: Vec<Option<&str>> = area.menu().items().iter().map(MenuItem::label).collect();
+        assert_eq!(labels, vec![Some("Pin"), Some("Delete")]);
+        assert_eq!(
+            requests.borrow().last(),
+            Some(&Request::Select("b".to_owned())),
+            "opening the menu selects its row"
+        );
+        area.choose(1);
+        assert_eq!(
+            requests.borrow().last(),
+            Some(&Request::Invoke {
+                action: action("Delete", true),
+                title: "B".to_owned(),
+            })
+        );
     }
 
     #[test]

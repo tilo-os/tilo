@@ -82,6 +82,9 @@ pub(crate) struct HostInner {
     pub(crate) agents: Rc<RefCell<std::collections::HashSet<String>>>,
     /// What the person narrowed an agent's rights to, per app and kind of action.
     rights: AgentRights,
+    /// The resource the last action planned for the person at the window returned, with the
+    /// action: what a window opens after its primary action made it.
+    produced: RefCell<Option<(String, ResourceRef)>>,
 }
 
 thread_local! {
@@ -249,6 +252,11 @@ impl HostInner {
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
         match outcome {
+            InvokeOutcome::Done(Value::Ref(made))
+                if request.caller.is_none_or(|caller| !caller.agent) =>
+            {
+                *self.produced.borrow_mut() = Some((request.action_id.to_owned(), made.target));
+            }
             InvokeOutcome::Done(_) => {}
             // An action that needs a person's approval is not refused: it is recorded as a
             // suggested invocation, the answer an agent gets and a person decides.
@@ -354,6 +362,7 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
+            produced: RefCell::default(),
             agents,
             rights,
         });
@@ -444,6 +453,17 @@ impl Host {
     #[must_use]
     pub fn authority(&self) -> &TiloAuthority {
         &self.inner.authority
+    }
+
+    /// The resource `action` returned when the person last ran it here, once: a window opens
+    /// what its primary action made.
+    #[must_use]
+    pub fn take_produced(&self, action: &str) -> Option<ResourceRef> {
+        let mut produced = self.inner.produced.borrow_mut();
+        match produced.as_ref() {
+            Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
+            _ => None,
+        }
     }
 
     #[must_use]

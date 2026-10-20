@@ -673,7 +673,7 @@ mod tests {
         let replica = started("peer-1", AutoCommit::new(), &dev);
         assert_eq!(replica.page().open_app(), Some("so.tilo.counter"));
         assert_eq!(shown_count(&replica), "0");
-        assert_eq!(labels(&replica), ["-1", "+1"]);
+        assert_eq!(labels(&replica), ["Decrement", "Increment"]);
     }
 
     #[test]
@@ -682,14 +682,24 @@ mod tests {
         let dev = package.dev();
         let mut replica = started("peer-1", AutoCommit::new(), &dev);
         for _ in 0..3 {
-            press(&mut replica, "+1");
+            press(&mut replica, "Increment");
         }
         assert_eq!(shown_count(&replica), "3");
 
-        package.write("app.tl", &COUNTER.replace("\"+1\"", "\"Add one\""));
+        package.write(
+            "app.tl",
+            &COUNTER.replace(
+                "increment(c: Counter) (icon: .plus)",
+                "increment(c: Counter) (icon: .plus, label: \"Add one\")",
+            ),
+        );
         assert!(dev.borrow_mut().refresh(), "a new build");
         replica.frame();
-        assert_eq!(labels(&replica), ["-1", "Add one"], "the new code runs");
+        assert_eq!(
+            labels(&replica),
+            ["Decrement", "Add one"],
+            "the new code runs"
+        );
         assert_eq!(shown_count(&replica), "3", "the room kept its state");
         press(&mut replica, "Add one");
         assert_eq!(shown_count(&replica), "4");
@@ -701,7 +711,7 @@ mod tests {
         let package = Package::counter("newfile");
         let dev = package.dev();
         let mut replica = started("peer-1", AutoCommit::new(), &dev);
-        press(&mut replica, "+1");
+        press(&mut replica, "Increment");
         package.write(
             "reset.tl",
             "/// Ten at once.\naction jump(c: Counter) {\n    c.value += 10\n}\n",
@@ -709,14 +719,14 @@ mod tests {
         package.write(
             "app.tl",
             &COUNTER.replace(
-                "button(\"+1\", on: increment(c), style: .primary, size: .large) as plus",
-                "button(\"+1\", on: increment(c), style: .primary, size: .large) as plus\n        button(\"Jump\", on: jump(c)) as jump",
+                "button(increment(c)) as plus",
+                "button(increment(c)) as plus\n        button(jump(c)) as jump",
             ),
         );
         dev.borrow_mut().refresh();
         assert_eq!(dev.borrow().error(), None);
         replica.frame();
-        assert_eq!(labels(&replica), ["-1", "+1", "Jump"]);
+        assert_eq!(labels(&replica), ["Decrement", "Increment", "Jump"]);
         press(&mut replica, "Jump");
         assert_eq!(shown_count(&replica), "11");
         let ids = std::fs::read_to_string(package.0.join("app.ids")).unwrap();
@@ -732,7 +742,7 @@ mod tests {
         let package = Package::counter("errors");
         let dev = package.dev();
         let mut replica = started("peer-1", AutoCommit::new(), &dev);
-        press(&mut replica, "+1");
+        press(&mut replica, "Increment");
         package.write("app.tl", &COUNTER.replace("c.value += 1", "c.nothing += 1"));
         assert!(dev.borrow_mut().refresh());
         let error = dev.borrow().error().map(str::to_owned).expect("an error");
@@ -742,7 +752,7 @@ mod tests {
             replica.page().notice(),
             Some(t("tilolang-dev-errors").as_str())
         );
-        press(&mut replica, "+1");
+        press(&mut replica, "Increment");
         assert_eq!(shown_count(&replica), "2", "the last good build still runs");
 
         package.write("app.tl", COUNTER);
@@ -764,14 +774,14 @@ mod tests {
         ada.frame();
         grace.frame();
 
-        press(&mut ada, "+1");
+        press(&mut ada, "Increment");
         assert_eq!(shown_count(&grace), "0", "not merged yet");
         assert!(merge_replicas(&docs));
         grace.frame();
         assert_eq!(shown_count(&grace), "1");
 
-        press(&mut ada, "+1");
-        press(&mut grace, "+1");
+        press(&mut ada, "Increment");
+        press(&mut grace, "Increment");
         merge_replicas(&docs);
         ada.frame();
         grace.frame();
@@ -788,14 +798,20 @@ mod tests {
         let mut ada = started(&peer_name(0), room.fork(), &dev);
         let mut grace = started(&peer_name(1), room.fork(), &dev);
         let docs = [ada.doc(), grace.doc()];
-        press(&mut grace, "+1");
+        press(&mut grace, "Increment");
         merge_replicas(&docs);
-        package.write("app.tl", &COUNTER.replace("\"-1\"", "\"Take one\""));
+        package.write(
+            "app.tl",
+            &COUNTER.replace(
+                "decrement(c: Counter) (icon: .minus)",
+                "decrement(c: Counter) (icon: .minus, label: \"Take one\")",
+            ),
+        );
         dev.borrow_mut().refresh();
         ada.frame();
         grace.frame();
         for replica in [&ada, &grace] {
-            assert_eq!(labels(replica), ["Take one", "+1"]);
+            assert_eq!(labels(replica), ["Take one", "Increment"]);
             assert_eq!(shown_count(replica), "1");
         }
     }

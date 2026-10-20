@@ -49,15 +49,28 @@ fn notes_open() -> (HostedApp, String) {
     (app, root)
 }
 
+/// Every resource `resources` publishes, with the ones under them.
+fn flattened(resources: &[ui::tilo_actions::Resource]) -> Vec<&ui::tilo_actions::Resource> {
+    resources
+        .iter()
+        .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
+        .collect()
+}
+
 /// The id of the action called `name` of the published resource `resource`.
 fn action_id(app: &mut HostedApp, resource: &str, name: &str) -> String {
-    app.harness()
-        .resources()
+    let resources = app.harness().resources();
+    let all = flattened(&resources);
+    let published = all
         .iter()
-        .find(|published| published.id.as_str() == resource)
+        .find(|published| published.id.as_str() == resource);
+    published
         .and_then(|published| published.actions.iter().find(|action| action.label == name))
         .map_or_else(
-            || panic!("{resource} publishes no `{name}`"),
+            || {
+                let ids: Vec<&str> = all.iter().map(|published| published.id.as_str()).collect();
+                panic!("{resource} publishes no `{name}`; published: {ids:?}")
+            },
             |action| action.id.clone(),
         )
 }
