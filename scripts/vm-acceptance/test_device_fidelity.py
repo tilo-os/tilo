@@ -21,6 +21,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 
 from acceptance import core, report  # noqa: E402
 from acceptance.checks import agent, input_devices  # noqa: E402
@@ -239,19 +241,20 @@ class AgentDoorChecks(unittest.TestCase):
 
 
 class GuestClientTransport(unittest.TestCase):
-    def probe(self, server, assertions, timeout=3):
+    def probe(self, server, assertions):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "fake-mcp"
             binary.write_text("#!/usr/bin/env python3\nimport os, sys\n" + textwrap.dedent(server))
             binary.chmod(0o755)
             code = ("import runpy\n"
+                    f"HANG = {HANG_BOUND!r}\n"
                     f"module = runpy.run_path({str(agent.CLIENT)!r})\n"
                     "client = module['Client']()\n"
                     "try:\n" + textwrap.indent(textwrap.dedent(assertions), "    ") +
                     "\nfinally:\n    client.close()\n")
             # Bound regressions that previously blocked forever inside readline/close.
             proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=timeout)
+                                  env=dict(os.environ, ACC_MCP_BIN=str(binary)), timeout=HANG_BOUND)
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_coalesced_lines_do_not_disappear_in_text_buffering(self):
@@ -259,7 +262,7 @@ class GuestClientTransport(unittest.TestCase):
             os.write(1, b'{"id":1}\\n{"id":2}\\n')
             sys.stdin.read()
         ''', '''
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
             assert client.read(0.1) == {"id": 2}
         ''')
 
@@ -271,7 +274,7 @@ class GuestClientTransport(unittest.TestCase):
         ''', '''
             assert client.read(0.1) == "timeout"
             client.send({"continue": True})
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
         ''')
 
     def test_stderr_backpressure_cannot_block_protocol_reply(self):
@@ -279,7 +282,7 @@ class GuestClientTransport(unittest.TestCase):
             os.write(2, b'x' * 262144)
             os.write(1, b'{"id":1}\\n')
         ''', '''
-            assert client.read(1) == {"id": 1}
+            assert client.read(HANG) == {"id": 1}
         ''')
 
     def test_shutdown_reaps_a_server_that_ignores_eof(self):
@@ -292,7 +295,7 @@ class GuestClientTransport(unittest.TestCase):
             client.close = lambda: None
             assert client.proc.returncode == -9
             assert client.proc.stdout.closed
-        ''', timeout=8)
+        ''')
 
     def test_shutdown_drains_final_notifications_and_reaps_child(self):
         self.probe('''
