@@ -923,6 +923,13 @@ pub struct ChatApp {
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
+    /// A live window follows its person's own name: the identity generation
+    /// it last read the name at. `None` for a window that announces no one.
+    identity_generation: Option<u64>,
+    /// A name this person chose while the window was open, which the room
+    /// has not given back yet: until it does, the room's older name for
+    /// them does not replace it.
+    renamed_to: Option<String>,
     /// A live window tells its person about mentions of them that arrive
     /// while they look elsewhere.
     mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
@@ -994,6 +1001,7 @@ impl ChatApp {
     /// sync, under the name this device knows them by.
     pub(crate) fn announcing(mut self) -> Self {
         self.announce = Some(self.me.clone());
+        self.identity_generation = Some(ui::local_identity::generation());
         self.mention_alerts = Some(crate::mention_alerts::MentionAlerts::default());
         self
     }
@@ -1201,6 +1209,8 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             announce: None,
+            identity_generation: None,
+            renamed_to: None,
             mention_alerts: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -2214,12 +2224,39 @@ impl ChatApp {
         {
             self.former_ids.push(room_id.0.clone());
         }
-        if let Some(name) = presence.self_name()
-            && name != self.me.name
-        {
-            self.me.name = name.to_string();
-            self.me.initials = crate::identity::initials_for(name);
+        if let Some(name) = presence.self_name() {
+            if self.renamed_to.as_deref() == Some(name) {
+                self.renamed_to = None;
+            } else if self.renamed_to.is_none() && name != self.me.name {
+                self.me.name = name.to_string();
+                self.me.initials = crate::identity::initials_for(name);
+            }
         }
+    }
+
+    /// Take a name this window's person chose since it last looked: shown
+    /// at once, and introduced to the room again, so every member's roster
+    /// names them by it too. A change of identity that keeps the name, or
+    /// leaves none, changes nothing here.
+    fn follow_rename(&mut self) {
+        let Some(seen) = self.identity_generation else {
+            return;
+        };
+        let generation = ui::local_identity::generation();
+        if generation == seen {
+            return;
+        }
+        self.identity_generation = Some(generation);
+        let Some(name) = ui::local_identity::bound()
+            .map(|identity| identity.display_name.trim().to_owned())
+            .filter(|name| !name.is_empty() && *name != self.me.name)
+        else {
+            return;
+        };
+        self.me.initials = crate::identity::initials_for(&name);
+        self.me.name.clone_from(&name);
+        self.renamed_to = Some(name);
+        self.announce = Some(self.me.clone());
     }
 
     /// Whether `id` is this session's own participant, under its own id or
@@ -3252,9 +3289,10 @@ impl ChatApp {
         people
     }
 
-    /// Announce this window's person into the shared roster once, under the
-    /// name this device knows them by: what every member shows for them
-    /// until the room names them. A repeat writes nothing.
+    /// Announce this window's person into the shared roster, under the name
+    /// this device knows them by: what every member shows for them until the
+    /// room names them. Once when the window opens, and again when they
+    /// choose another name ([`Self::follow_rename`]). A repeat writes nothing.
     fn announce_me(&mut self, doc: &AutoCommit) {
         let Some(me) = self.announce.take() else {
             return;
@@ -4712,6 +4750,7 @@ impl Widget for ChatApp {
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.apply_realtime_stop();
         self.establish_realtime_target();
+        self.follow_rename();
         self.announce_me(doc);
         // A fold made on another of this person's devices.
         if let Some(preferences) = &self.preferences {
@@ -5699,213 +5738,7 @@ impl ChatApp {
 }
 
 #[cfg(test)]
-mod identity_on_screen {
-    use super::*;
-    use ui::widget::Widget;
-
-    /// A window's person joins the roster through `introduce`.
-    #[test]
-    fn a_live_peer_joins_through_the_user_action() {
-        let mut app = ChatApp::new(
-            crate::identity::LocalIdentity::for_participant("person-1"),
-            ChatRuntime::Unavailable,
-            ContentStore::memory(),
-        )
-        .announcing();
-        app.attach_framework(ui::framework::Dispatcher::detached(
-            "so.tilo.chat",
-            "person-1",
-        ));
-        let mut state = ui::State::new();
-        crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
-        Widget::sync(&mut app, &state.doc, &state.root);
-        app.land(&mut state.doc);
-        let recorded = app
-            .last_dispatched()
-            .expect("the live peer is submitted as introduce");
-        assert_eq!(
-            serde_json::to_value(&recorded).unwrap(),
-            crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-                crate::record::chat::Introduce {
-                    name: app.me.name.clone(),
-                    initials: app.me.initials.clone(),
-                    color: u32::try_from(app.me.color_idx).unwrap(),
-                }
-            ))
-        );
-        let joined = crate::testing::users(&state.doc)
-            .into_iter()
-            .find(|user| user.id == app.me.id)
-            .expect("the window's person is in the roster");
-        assert_eq!(
-            (joined.name, joined.initials, joined.status),
-            (
-                app.me.name.clone(),
-                app.me.initials.clone(),
-                crate::model::Presence::Online
-            )
-        );
-    }
-
-    #[test]
-    fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
-        use ui::widget::PrimaryScrollAction;
-        let mut app = ChatApp::new_ephemeral();
-        app.scroll_content = 1000.0;
-        app.scroll_viewport = 200.0;
-        app.scroll = 0.0;
-        assert_eq!(app.primary_vertical_scroll().unwrap().metrics.offset, 800.0);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
-        assert_eq!(app.scroll, 800.0);
-        assert!(!app.timeline_at_end);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::Line(1));
-        assert_eq!(app.scroll, 752.0);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
-        assert_eq!(app.scroll, 0.0);
-        assert!(app.timeline_at_end);
-        app.scroll_content = 100.0;
-        assert_eq!(
-            app.primary_vertical_scroll().unwrap().metrics.max_scroll(),
-            0.0
-        );
-    }
-
-    fn user(id: &str, is_agent: bool) -> User {
-        User {
-            id: id.into(),
-            name: id.into(),
-            initials: "U".into(),
-            color_idx: 0,
-            status: crate::model::Presence::Online,
-            is_agent,
-        }
-    }
-
-    #[test]
-    fn a_remote_saved_you_name_is_not_the_current_reader() {
-        use ui::widget::Widget as _;
-        let mut app = ChatApp::new_ephemeral();
-        let mut state = ui::State::new();
-        let stranger = "peer@9007495404254172154";
-        let mut room = crate::testing::Room::default();
-        crate::testing::starter(&mut room, stranger, "You", "Y");
-        crate::testing::say(&mut room, stranger, "c_chat", "Retained foreign message");
-        state.doc = room.chat.clone();
-        app.attach_room(&room);
-        app.sync(&state.doc, &state.root);
-        assert_eq!(
-            app.user(stranger)
-                .expect("observe the actual foreign author in the production roster")
-                .name,
-            "You"
-        );
-        let shown = app.user_name(stranger);
-        assert_ne!(
-            shown, "You",
-            "another person's stored name must not read as the current reader"
-        );
-        assert_eq!(
-            app.display_name(stranger),
-            shown,
-            "mentions and message headers name the same foreign person"
-        );
-        assert!(
-            shown.contains("2154"),
-            "ambiguous names must distinguish the actual participant"
-        );
-        assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
-        assert_eq!(
-            crate::testing::users(&state.doc)[0].name,
-            "You",
-            "presentation must not rewrite saved person data"
-        );
-    }
-
-    #[test]
-    fn people_on_screen_are_named_honestly_and_you_by_your_name() {
-        // Phase: roster_vocabulary_never_calls_an_agent_a_person.
-        {
-            let mut app = ChatApp::new_ephemeral();
-            app.users = vec![user("u_me", false), user("u_scribe", true)];
-            assert!(
-                app.has_other_collaborator(),
-                "the agent is another collaborator"
-            );
-            assert_eq!(app.roster_label(), "Collaborators");
-
-            app.users = vec![user("u_me", false), user("u_aria", false)];
-            assert_eq!(app.roster_label(), "People");
-        }
-
-        // Phase: an_unnamed_participant_is_not_shown_their_routing_token.
-        {
-            let app = ChatApp::new_ephemeral();
-            let stranger = "peer@9007495404254172154";
-            let shown = app.user_name(stranger);
-            assert!(
-                !shown.contains("9007495404254172154"),
-                "the id leaked onto the screen as `{shown}`"
-            );
-            assert!(
-                shown.starts_with("Someone"),
-                "an unnamed peer should read as somebody unnamed, got `{shown}`"
-            );
-            assert!(
-                shown.contains("2154"),
-                "two unnamed peers have to be distinguishable, got `{shown}`"
-            );
-        }
-
-        // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
-        {
-            let mut app = ChatApp::new_ephemeral();
-            app.me.name = "Quinten".to_string();
-            app.users.clear();
-            app.room_names.clear();
-            assert_eq!(
-                app.display_name(&app.me.id.clone()),
-                "Quinten",
-                "the name this process worked out for itself must be reachable",
-            );
-        }
-
-        // Phase: the_person_reading_the_screen_is_shown_their_name.
-        {
-            let app = ChatApp::new_ephemeral();
-            let me = app.me.id.clone();
-            assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
-        }
-
-        // Phase: people_sharing_a_name_are_numbered_as_the_room_numbers_them.
-        {
-            use ui::permissions::UserId;
-            let mut app = ChatApp::new_ephemeral();
-            let me = app.me.id.clone();
-            let mut presence = PresenceCtx::default();
-            presence.set_self_participant(UserId(me.clone()), "Sam");
-            presence.set_display_name(UserId("a-peer".into()), "sam");
-            presence.set_display_name(UserId("z-peer".into()), "Kim");
-            app.adopt_room(&presence);
-            assert_eq!(app.user_name("a-peer"), "sam (1)");
-            assert_eq!(app.user_name(&me), "Sam (2)");
-            assert_eq!(app.user_name("z-peer"), "Kim");
-            let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
-            assert!(
-                offered.contains(&"sam (1)".to_owned()),
-                "the @ picker offers the numbered name, got {offered:?}"
-            );
-
-            presence.set_display_name(UserId("a-peer".into()), "Alex");
-            app.adopt_room(&presence);
-            assert_eq!(app.user_name("a-peer"), "Alex");
-            assert_eq!(
-                app.user_name(&me),
-                "Sam",
-                "the number goes once nobody shares it"
-            );
-        }
-    }
-}
+mod identity_on_screen;
 
 #[cfg(test)]
 mod live_draft_presence {
