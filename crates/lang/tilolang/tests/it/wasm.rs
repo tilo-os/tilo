@@ -107,11 +107,6 @@ fn the_todo_app_validates() {
         "rec_new",
         "rec_set_h",
         "ui_bind",
-        "list_get_h",
-        "list_len",
-        "ref_id",
-        "str_concat",
-        "int_to_str",
     ] {
         assert!(names.contains(&want.to_string()), "{want} missing");
     }
@@ -190,19 +185,36 @@ fn enums_matches_and_block_values_validate() {
 }
 
 #[test]
-fn keys_inside_for_combine_the_call_id_with_the_item() {
+fn a_ui_loop_is_one_node_whose_rows_are_views_of_their_own() {
+    // The todo list's rows are an inline `row { ... }`: its body becomes a view on the item.
     let c = compile_fixture("todo.tl", &[]);
-    let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
-    assert!(names.contains(&"str_concat".to_string()) && names.contains(&"ref_id".to_string()));
+    let row = c
+        .meta
+        .views
+        .iter()
+        .find(|v| v.id.ends_with("~row0"))
+        .expect("the loop body's view");
+    assert_eq!(row.params[0].name, "item");
+    assert_eq!(row.params.last().map(|p| p.name.as_str()), Some("$key"));
+    // The host keys the rows (by the item's id, or a plain value's place): the module builds
+    // no keys and walks no list for the loop.
     let plain = compile(
         "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(x)\n    }\n}\n",
     );
     assert_shape(&plain);
-    let keyed_by_index = shape(&plain.wasm)
+    let names: Vec<String> = shape(&plain.wasm)
         .imports
-        .iter()
-        .any(|(_, n)| n == "int_to_str");
-    assert!(keyed_by_index, "plain lists key by index");
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect();
+    for unused in ["int_to_str", "list_get_i", "ref_id"] {
+        assert!(!names.contains(&unused.to_owned()), "{unused} in {names:?}");
+    }
+    // A body that is one view call on the item calls that view per row: no view is made.
+    let direct = compile(
+        "app t.d \"D\"\nview one(n: Int) {\n    text(n)\n}\nview v(l: List<Int>) {\n    column {\n        for x in l {\n            one(x)\n        }\n    }\n}\n",
+    );
+    assert_eq!(direct.meta.views.len(), 2, "{:?}", direct.meta.views);
 }
 
 #[test]

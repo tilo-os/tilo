@@ -108,6 +108,8 @@ mod cases {
         let mut list =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        list.set_lazy_rows(false).unwrap();
         assert!(
             of_kind(list.tree(), "input").is_empty(),
             "{}",
@@ -166,6 +168,8 @@ mod cases {
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        view.set_lazy_rows(false).unwrap();
         let roomy = of_kind(view.tree(), "text").len();
         assert_eq!(roomy, 1, "{}", dump(view.tree()));
         assert!(view.set_space("", Space::from_rem(20.0, 40.0)));
@@ -190,6 +194,8 @@ mod cases {
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        view.set_lazy_rows(false).unwrap();
         let rows = |v: &ViewInstance| -> Vec<String> {
             labels(v).into_iter().filter(|l| l.len() == 1).collect()
         };

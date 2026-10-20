@@ -189,6 +189,9 @@ impl Checker<'_> {
         let Some(elem) = self.element_of(&list.ty, iter.span) else {
             return;
         };
+        let Some(list) = self.rows_of(var, list, &elem, body, parent) else {
+            return;
+        };
         let mut fl = self.new_for(list, &elem);
         let part = if matches!(elem, Ty::Record(_)) {
             Ex::host(
@@ -248,7 +251,10 @@ impl Checker<'_> {
     }
 
     /// The name of the view being checked, for anchor lookups.
-    fn view_name(&self) -> String {
+    pub(super) fn view_name(&self) -> String {
+        if let Some(owner) = &self.st.owner_view {
+            return owner.clone();
+        }
         self.env
             .callables
             .iter()
@@ -356,7 +362,7 @@ impl Checker<'_> {
         self.fresh(Ty::Error)
     }
 
-    fn new_node(&mut self, kind: &str, key: Ex) -> LocalId {
+    pub(super) fn new_node(&mut self, kind: &str, key: Ex) -> LocalId {
         let n = self.fresh(Ty::View);
         self.emit(Stmt::Set(
             n,
@@ -413,7 +419,7 @@ impl Checker<'_> {
 
     /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of
     /// the primitive's own (`page(full)`).
-    fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
+    pub(super) fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
         let name = match &e.kind {
             ExprKind::Ident(n) => n,
             ExprKind::Call { callee, .. } => match &callee.kind {
@@ -429,7 +435,7 @@ impl Checker<'_> {
             || p.is_some_and(|p| p.flags.contains(&name.as_str()))
     }
 
-    fn flag_arg(&mut self, n: LocalId, e: &ast::Expr) {
+    pub(super) fn flag_arg(&mut self, n: LocalId, e: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         match &e.kind {
             ExprKind::Ident(name) if name == "fill" => {
@@ -554,7 +560,7 @@ impl Checker<'_> {
 
     /// Lowers one named argument of the UI call `prim` (empty for a view call) to its host
     /// call.
-    fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
+    pub(super) fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
@@ -801,7 +807,7 @@ impl Checker<'_> {
     }
 
     /// An argument of a view call, as a property of its node: any value a parameter takes.
-    fn arg_prop(&mut self, node: Ex, name: &str, v: Ex) {
+    pub(super) fn arg_prop(&mut self, node: Ex, name: &str, v: Ex) {
         let imp = match v.ty.repr() {
             None => return,
             Some(crate::types::Vt::I64) => Imp::UiPropI,
