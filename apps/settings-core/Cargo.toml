@@ -110,6 +110,8 @@ workspace-hack = { version = "0.1" }
 
 
 [dev-dependencies]
+# The installer service, for the language packs Region & formats offers.
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }
