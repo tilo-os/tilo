@@ -1680,17 +1680,105 @@ fn tells_where(payload: &collab_types::PeerPresencePayload) -> bool {
     )
 }
 
-/// Whether `visibility` lets `payload` leave this session.
+/// The app id the desktop publishes its own presence in a room under.
+pub(crate) const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
+
+/// Whether `presence`, which `app_id` publishes, is collaboration inside a
+/// shared resource: an app's pointer, caret, selection, typing or arrival
+/// in the record it shows (a note, a chat channel), keyed to a scope inside
+/// it. The others in that resource see it, as the document's business.
+/// Never the desktop's word, and never one keyed to the workspace, a tab
+/// (a window), or a pointer on the desktop or over a window, which say
+/// where the person is outside the resources they share.
+fn in_shared_resource(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
+    use collab_types::PeerPresencePayload as P;
+    use ui::presence::{PointerSpace, PresenceKey};
+    if app_id == DESKTOP_PRESENCE_APP
+        || !matches!(
+            presence.payload,
+            P::Pointer { .. }
+                | P::Caret { .. }
+                | P::Selection { .. }
+                | P::Typing { .. }
+                | P::Arrived
+                | P::Left
+                | P::InteractionJson(_)
+        )
+    {
+        return false;
+    }
+    match postcard::from_bytes::<PresenceKey>(&presence.key) {
+        Ok(
+            PresenceKey::Workspace { .. }
+            | PresenceKey::Tab { .. }
+            | PresenceKey::Pointer {
+                space: PointerSpace::Desktop { .. } | PointerSpace::Tile { .. },
+            },
+        )
+        | Err(_) => false,
+        Ok(
+            PresenceKey::Widget { .. }
+            | PresenceKey::App { .. }
+            | PresenceKey::View { .. }
+            | PresenceKey::Resource { .. }
+            | PresenceKey::Pointer {
+                space: PointerSpace::Surface { .. },
+            },
+        ) => true,
+    }
+}
+
+/// Whether `presence` is the desktop's word that the person is in the
+/// workspace, and nothing more: arriving, leaving, a status they typed
+/// themselves, how available they are, a wave. Never which window or tab is
+/// in front, whom they follow, what they say beside their pointer, or a
+/// status the machine inferred from what they do.
+fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
+    use collab_types::PeerPresencePayload as P;
+    app_id == DESKTOP_PRESENCE_APP
+        && matches!(
+            postcard::from_bytes::<ui::presence::PresenceKey>(&presence.key),
+            Ok(ui::presence::PresenceKey::Workspace { .. })
+        )
+        && matches!(
+            presence.payload,
+            P::Arrived
+                | P::Left
+                | P::Status {
+                    automatic: false,
+                    ..
+                }
+                | P::Availability { .. }
+                | P::Wave { .. }
+        )
+}
+
+/// Whether `visibility` lets `presence`, which `app_id` publishes, leave
+/// this session.
+///
+/// - "Where I am": everything.
+/// - "That I'm here": the desktop's word that the person is here
+///   ([`says_only_here`]), and their presence inside the resources they
+///   share with others ([`in_shared_resource`]). Nothing about their other
+///   windows and apps, where they are, or what the machine infers.
+/// - "Nothing": nothing, inside resources included.
+///
+/// Leaving is always said, so nobody keeps showing someone who turned
+/// invisible.
 fn visibility_allows(
     visibility: ui::PresenceVisibility,
-    payload: &collab_types::PeerPresencePayload,
+    app_id: &str,
+    presence: &collab_types::PeerPresence,
 ) -> bool {
-    if tells_where(payload) {
-        visibility.shows_where()
-    } else {
-        // Leaving is always said, so nobody keeps showing someone who
-        // turned invisible.
-        visibility.shows_presence() || matches!(payload, collab_types::PeerPresencePayload::Left)
+    if matches!(presence.payload, collab_types::PeerPresencePayload::Left) {
+        return true;
+    }
+    match visibility {
+        ui::PresenceVisibility::WhereIAm => true,
+        ui::PresenceVisibility::ThatImHere => {
+            says_only_here(app_id, presence) || in_shared_resource(app_id, presence)
+        }
+        ui::PresenceVisibility::Nothing => false,
     }
 }
 
@@ -3413,7 +3501,7 @@ impl ShellNetwork {
     ) {
         let visibility = self.presence_visibility(&cluster_id);
         if self.is_local_person_room(&cluster_id)
-            || !visibility_allows(visibility, &presence.payload)
+            || !visibility_allows(visibility, &app_id, &presence)
         {
             return;
         }
@@ -3436,7 +3524,9 @@ impl ShellNetwork {
 
     /// Publish an app's presence on the room's workspace-host live plane,
     /// where browsers and agents draw it: the pointer and caret in the
-    /// record, under this person's name.
+    /// record, under this person's name. It is presence inside a shared
+    /// resource, so "That I'm here" lets it out as it does over the room's
+    /// presence channel ([`visibility_allows`]).
     pub fn publish_live_presence(
         &self,
         app_id: &str,
@@ -3447,7 +3537,7 @@ impl ShellNetwork {
         let Some(room) = RoomId::parse(cluster_id).filter(|room| {
             !room.is_nil()
                 && self.person_root_of_room(*room).is_none()
-                && self.presence_visibility(cluster_id).shows_where()
+                && visibility_allows(self.presence_visibility(cluster_id), app_id, presence)
         }) else {
             return;
         };
@@ -3553,22 +3643,27 @@ impl ShellNetwork {
     ) -> bool {
         let shared = RoomId::parse(cluster_id)
             .is_some_and(|room| !room.is_nil() && self.person_root_of_room(room).is_none());
-        if !shared
-            || self.is_local_person_room(cluster_id)
-            || !visibility_allows(self.presence_visibility(cluster_id), &payload)
-        {
-            return false;
-        }
         let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
             id: cluster_id.to_owned(),
         }) else {
             return false;
         };
+        let presence = collab_types::PeerPresence { key, payload };
+        if !shared
+            || self.is_local_person_room(cluster_id)
+            || !visibility_allows(
+                self.presence_visibility(cluster_id),
+                DESKTOP_PRESENCE_APP,
+                &presence,
+            )
+        {
+            return false;
+        }
         self.publish_message(NeighbourMsg::AppPresenceV2 {
             peer: self.local_peer_id_hash(),
-            app_id: "tilo-shell".into(),
+            app_id: DESKTOP_PRESENCE_APP.into(),
             cluster_id: cluster_id.to_owned(),
-            presence: collab_types::PeerPresence { key, payload },
+            presence,
             colour: Some(crate::shell::state::local_presence_hue().id().to_owned()),
         })
     }

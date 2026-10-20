@@ -4335,6 +4335,9 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&pair.dir);
     }
 
+    #[path = "visibility_tests.rs"]
+    mod visibility;
+
     /// The moments after start, before the desktop has handed over what the
     /// person chose in a room: that room is held to the most private choice,
     /// so nothing of where they are leaves and nobody's pointer shows, never
@@ -4368,9 +4371,9 @@ mod two_sessions {
     }
 
     /// What people see, between two sessions: "That I'm here" sends no
-    /// pointer, caret or cursor chat (the guest stays in the roster through
-    /// its arrival); "Nothing" sends nothing, and its holder sees nobody's
-    /// pointer either.
+    /// desktop pointer, no caret outside a shared resource and no cursor
+    /// chat (the guest stays in the roster through its arrival); "Nothing"
+    /// sends nothing, and its holder sees nobody's pointer either.
     #[test]
     fn what_people_see_holds_back_where_you_are_and_nothing_hides_pointers_both_ways() {
         let mut pair = pair("visibility");
@@ -4394,13 +4397,17 @@ mod two_sessions {
         };
         pair.guest_net
             .publish_app_presence("so.tilo.notes".into(), room.clone(), caret);
-        assert!(pair.guest_cmds.try_recv().is_err(), "nor a caret");
-        let arrived = collab_types::PeerPresence {
-            key: vec![1],
-            payload: collab_types::PeerPresencePayload::Arrived,
-        };
+        assert!(
+            pair.guest_cmds.try_recv().is_err(),
+            "nor a caret in no resource it names"
+        );
+        let arrived = crate::shell::collab_presence::to_peer(
+            &PresenceKey::Workspace { id: room.clone() },
+            &PresencePayload::Arrived,
+        )
+        .expect("arrival encodes");
         pair.guest_net
-            .publish_app_presence("so.tilo.notes".into(), room.clone(), arrived);
+            .publish_app_presence("tilo-shell".into(), room.clone(), arrived);
         assert!(
             pair.guest_cmds.try_recv().is_ok(),
             "but being here is: the face shows"
