@@ -797,6 +797,28 @@ class AppResourceActionContractTests(unittest.TestCase):
                 self.assertIn("tilo-app", reasons)
                 self.assertIn("Widget::resources", reasons)
 
+    def test_a_part_crate_publishes_through_the_one_app_that_links_it(self):
+        facade = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+
+        def part_reasons(linked: bool) -> list[str]:
+            root = self.fixture("pub fn pane() {}\n", app_name="sample-parts")
+            owner = root / "apps" / "sample"
+            (owner / "src").mkdir(parents=True)
+            (owner / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (owner / "tilo-app.toml").write_text('[package]\nid="so.tilo.sample"\n', encoding="utf-8")
+            link = 'sample-parts={path="../sample-parts"}\n' if linked else ""
+            (owner / "Cargo.toml").write_text(
+                '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n' + facade + link,
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            return [item.reason for item in violations if "sample-parts" in str(item.path)]
+
+        with self.subTest(phase="linked by a launched app, the app's contract covers it"):
+            self.assertEqual(part_reasons(True), [])
+        with self.subTest(phase="linked by no app, it must publish its own surface"):
+            self.assertIn("app does not implement Widget::resources", part_reasons(False))
+
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
             root = self.fixture(
