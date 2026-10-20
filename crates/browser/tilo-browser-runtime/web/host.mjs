@@ -242,6 +242,12 @@ export async function mountDesktop(target,options={}) {
   });
   async function fetchAsset(request){
     if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
+    // A content address: the runtime hands one out only once its bytes are here.
+    if(request.url.startsWith('tilo-blob://')){
+      const bytes=runtime.blob_asset(id,request.loader,request.url);
+      if(!bytes)throw Error('asset unavailable: content not here');
+      return bytes;
+    }
     const url=new URL(request.url,location.href);
     if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
     // A cross-origin image goes through the host's fetch proxy when it offers

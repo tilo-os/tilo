@@ -304,6 +304,12 @@ struct Mount {
     semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    /// The window each loader draws for ([`crate::page_content`]).
+    image_owners: crate::page_content::ImageOwners,
+    /// Content-addressed image requests whose bytes the page does not hold
+    /// yet, by loader and URL: asked of the room, handed to the page once
+    /// they are here.
+    blob_waiting: RefCell<Vec<(usize, String)>>,
     /// The image requests the page is decoding, by loader and URL. Dropping
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
@@ -1012,6 +1018,7 @@ struct Presentation {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     checkout: Option<RecordCheckout>,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    image_owners: crate::page_content::ImageOwners,
     desktop: Option<Desktop>,
 }
 
@@ -1133,6 +1140,7 @@ fn present_desktop(
         stores: Rc::clone(&shared.stores),
         checkout: None,
         images: Rc::clone(&shared.images),
+        image_owners: Rc::clone(&shared.image_owners),
         desktop: Some(Desktop {
             handle,
             shared,
@@ -1235,11 +1243,19 @@ fn present_component(
     )
     .map_err(error)?;
     let checkout = component.record().clone();
+    let image_owners = crate::page_content::ImageOwners::default();
+    crate::page_content::own_loaders(
+        &image_owners,
+        0..loaders.borrow().len(),
+        definition.app_id,
+        checkout.id.as_str(),
+    );
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores: Rc::new(RefCell::new(vec![record])),
         checkout: Some(checkout),
         images: loaders,
+        image_owners,
         desktop: None,
     })
 }
@@ -1253,6 +1269,7 @@ fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
         stores: Rc::default(),
         checkout: None,
         images: Rc::default(),
+        image_owners: crate::page_content::ImageOwners::default(),
         desktop: None,
     })
 }
@@ -1293,6 +1310,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         stores,
         checkout,
         images,
+        image_owners,
         desktop,
     } = match definition {
         Some(definition) => present_component(definition, &config, dyn_store, permissions)?,
@@ -1424,6 +1442,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         semantic_targets: Vec::new(),
         status: status.clone(),
         images,
+        image_owners,
+        blob_waiting: RefCell::default(),
         image_tickets: RefCell::default(),
         error: None,
         oversized_scene: false,
@@ -3537,21 +3557,50 @@ pub fn asset_requests(id: u64) -> Result<String, JsValue> {
     // changes nothing the tree shows (a loaded image wakes its own frame).
     with_mount_quietly(id, |m| {
         let mut tickets = m.image_tickets.borrow_mut();
+        let mut loaders = m.images.borrow_mut();
+        let mut wanted: Vec<(usize, String)> = m.blob_waiting.take();
+        for (loader, images) in loaders.iter_mut().enumerate() {
+            wanted.extend(images.take_requests().into_iter().map(|url| (loader, url)));
+        }
         let mut requests = Vec::new();
-        for (loader, images) in m.images.borrow_mut().iter_mut().enumerate() {
-            for url in images.take_requests() {
-                let Some(ticket) = images.reserve(&url) else {
-                    continue;
-                };
-                requests.push(serde_json::json!({
-                    "loader": loader,
-                    "url": url,
-                    "maxDimension": ticket.max_dimension(),
-                }));
-                tickets.insert((loader, url), ticket);
+        for (loader, url) in wanted {
+            // Content the page lacks is asked of the room; the request waits
+            // here until it has arrived.
+            if !crate::page_content::image_ready(&m.image_owners, loader, &url) {
+                m.blob_waiting.borrow_mut().push((loader, url));
+                continue;
             }
+            let Some(ticket) = loaders
+                .get_mut(loader)
+                .and_then(|images| images.reserve(&url))
+            else {
+                continue;
+            };
+            requests.push(serde_json::json!({
+                "loader": loader,
+                "url": url,
+                "maxDimension": ticket.max_dimension(),
+            }));
+            tickets.insert((loader, url), ticket);
         }
         serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// The bytes of a content-addressed image request ([`asset_requests`]
+/// hands one out only once they are here), for the page to decode.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn blob_asset(id: u64, loader: usize, url: &str) -> Result<Option<Vec<u8>>, JsValue> {
+    with_mount_quietly(id, |m| {
+        Ok(crate::page_content::image_bytes(
+            &m.image_owners,
+            loader,
+            url,
+        ))
     })
 }
 
