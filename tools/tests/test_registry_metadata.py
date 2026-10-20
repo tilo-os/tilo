@@ -37,7 +37,7 @@ class RegistryMetadataTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
-                self.assertEqual(len(entries), 62)
+                self.assertEqual(len(entries), 63)
                 # Every screenshot, including the Notes image fixture, is archived.
                 # Observe the exact icon output and the original Settings image pin.
                 self.assertEqual({path.name for path in media.iterdir()},
@@ -76,7 +76,7 @@ class RegistryMetadataTests(unittest.TestCase):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["count"], 62)
+            self.assertEqual(report["count"], 63)
             self.assertIn("browser", report["apps"])
             self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])
