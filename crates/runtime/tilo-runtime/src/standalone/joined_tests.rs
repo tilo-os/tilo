@@ -360,8 +360,10 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     workspace.set_room(room);
     let room = room.to_string();
     let directory = tempfile::tempdir().unwrap();
-    let mut tree = WorkspaceTree::default();
-    tree.persist_path = Some(directory.path().join("workspace.json"));
+    let mut tree = WorkspaceTree {
+        persist_path: Some(directory.path().join("workspace.json")),
+        ..WorkspaceTree::default()
+    };
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()

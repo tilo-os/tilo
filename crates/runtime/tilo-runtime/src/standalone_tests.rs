@@ -29,13 +29,6 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 )]
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
-    if isolated_signing_identity(
-        "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
-    )
-    .is_none()
-    {
-        return;
-    }
     use tilo_action_broker::{
         collab_broker::CrdtRoute,
         collab_broker_capnp::{
@@ -43,16 +36,25 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
+    if isolated_signing_identity(
+        "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
+    )
+    .is_none()
+    {
+        return;
+    }
 
-    let (joined, _directory) = Joined::test_empty().await;
+    let (joined, directory) = Joined::test_empty().await;
     let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
     workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
-    let mut tree = WorkspaceTree::default();
-    tree.persist_path = Some(_directory.path().join("workspace.json"));
+    let mut tree = WorkspaceTree {
+        persist_path: Some(directory.path().join("workspace.json")),
+        ..WorkspaceTree::default()
+    };
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let (_origin, time) = execution_policy_clock().unwrap();
