@@ -218,3 +218,39 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
         "only the door's commit changes the room"
     );
 }
+
+#[test]
+fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
+    fn buttons(node: &tilolang_runtime::UiNode, out: &mut Vec<tilolang_runtime::UiNode>) {
+        if node.kind == "button" {
+            out.push(node.clone());
+        }
+        for child in &node.children {
+            buttons(child, out);
+        }
+    }
+    let (mut ada, _grace, meta) = counter_room();
+    let view = ada.view(APP);
+    view.press(&button_key(&view)).unwrap();
+    ada.commit();
+    let ids = ada.host.package(APP).unwrap().ids;
+    let v2 = COUNTER.replace("\"-1\"", "\"Take one\"");
+    let compiled =
+        tilolang::compile_package(&v2, &tilolang::IdsLock::parse(&ids).unwrap(), &[]).unwrap();
+    let before = ada.host.package(APP).unwrap().id;
+    let package = ada.host.load_compiled(&compiled).unwrap();
+    assert_ne!(package.id, before, "a new module");
+    assert_eq!(ada.host.packages().len(), 1, "it replaced the old version");
+    assert_eq!(count(&ada.root(APP), &meta), 1, "the room kept its state");
+    let view = ada.view(APP);
+    let label = |node: &tilolang_runtime::UiNode| node.props.get("label").cloned();
+    let mut found = Vec::new();
+    buttons(view.tree(), &mut found);
+    assert_eq!(
+        label(&found[0]),
+        Some(tilolang_runtime::Value::text("Take one"))
+    );
+    view.press(&found[0].key).unwrap();
+    ada.commit();
+    assert_eq!(count(&ada.root(APP), &meta), 0);
+}

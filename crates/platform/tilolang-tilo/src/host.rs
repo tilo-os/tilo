@@ -324,19 +324,36 @@ impl Host {
                         .join("\n"),
                 )
             })?;
-        let meta = compiled.meta;
-        meta.register_schemas();
+        self.load_compiled(&compiled)
+    }
+
+    /// Load a compiled package and trust it (a built-in package, or the package being developed).
+    /// A package of the same app that is already loaded is replaced: its resources keep their
+    /// state, and views opened over the old version must be opened again to run the new code.
+    ///
+    /// # Errors
+    /// The module does not link; the loaded version, if any, stays.
+    pub fn load_compiled(&self, compiled: &tilolang::Compiled) -> Result<Package, HostError> {
+        let meta = compiled.meta.clone();
         let id = self
             .inner
             .runtime
-            .load_package(&compiled.wasm, meta.clone())?;
+            .reload_package(&compiled.wasm, meta.clone())?;
+        meta.register_schemas();
         self.inner.authority.trust(&id);
         let package = Package {
             meta,
             id,
             ids: compiled.ids.to_text(),
         };
-        self.inner.packages.borrow_mut().push(package.clone());
+        let mut packages = self.inner.packages.borrow_mut();
+        match packages
+            .iter_mut()
+            .find(|loaded| loaded.meta.app == package.meta.app)
+        {
+            Some(loaded) => *loaded = package.clone(),
+            None => packages.push(package.clone()),
+        }
         Ok(package)
     }
 

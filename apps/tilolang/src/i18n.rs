@@ -34,6 +34,7 @@ mod tests {
             "tilolang-invocation-failed",
             "tilolang-invocation-denied",
             "tilolang-embed-error",
+            "tilolang-dev-errors",
         ] {
             let text = t(key);
             assert_ne!(text, key, "{key} has no entry in the catalogue");

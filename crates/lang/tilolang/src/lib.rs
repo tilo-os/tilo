@@ -28,6 +28,7 @@
 pub mod abi;
 pub mod ast;
 mod checker;
+pub mod cli;
 mod codegen;
 pub mod diag;
 mod effects;
@@ -42,6 +43,7 @@ pub mod parser;
 mod prims;
 pub mod print;
 pub mod resolve;
+pub mod source;
 pub mod types;
 
 pub use diag::{Diagnostic, Span, diagnostics_json};
@@ -49,10 +51,12 @@ pub use host::{HOST_APP, INVOCATION_TYPE, host_meta};
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
 pub use meta::{PackageMeta, custom_section};
 pub use package::{
-    BlockKind, Compiled, CompiledBlock, check, compile_block, compile_block_for, compile_package,
-    compile_package_with, parse,
+    BlockKind, Compiled, CompiledBlock, FileSyntax, check, check_package, compile_block,
+    compile_block_for, compile_package, compile_package_source, compile_package_source_with,
+    compile_package_with, parse, parse_package, parse_package_files,
 };
-pub use print::print_module;
+pub use print::{print_file, print_module};
+pub use source::{PackageSource, SourceFile};
 
 /// `a.b.c` as `"a.b.c"` when the expression is a dotted path.
 pub(crate) fn check_path(e: &ast::Expr) -> Option<String> {

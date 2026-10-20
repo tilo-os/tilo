@@ -12,8 +12,14 @@ homepage.workspace = true
 name = "tilolang"
 path = "src/lib.rs"
 
+# The compiler's command line, under its full name and its short one. `tilolang` is the host
+# app's binary: the full build tool, which adds `run`.
 [[bin]]
-name = "tilolang"
+name = "tilolangc"
+path = "src/main.rs"
+
+[[bin]]
+name = "tlc"
 path = "src/main.rs"
 
 [dependencies]

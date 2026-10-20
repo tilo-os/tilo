@@ -104,6 +104,33 @@ departs from them. The runtime agent should mirror the ABI additions.
   is `app agent.block.<run id>` (`main` for `compile_block`) and exports `memory` and `b_main`.
 - `module_hash` is the SHA-256 of the module without the `tilolang.meta` section.
 
+## Packages of several files
+
+- **A package is a directory.** Every `.tl` file directly in it is part of the one module
+  (`PackageSource`, `compile_package_source`, `check_package`, `parse_package`); the single-text
+  API (`compile_package`, `check`, `parse`) is a package of one file whose diagnostics name no
+  file. Exactly one file starts with the `app` header: none is E010, a second one (or a header
+  that is not first in its file) is E017. Declarations may use each other across files in any
+  order.
+- **Files are read in path order.** Node ids, and with them UI call keys, follow that order, so
+  the order files are given in does not change the module. A package whose files concatenate to
+  one file compiles to the same module as that file.
+- **Spans.** Each file is parsed at its own offset in one span space (the next file starts one
+  past the previous file's end); diagnostics are then moved back into their file
+  (`Diagnostic::file`, the span an offset in that file) and ordered by file and position.
+- **One ids lock per package** (`app.ids`), as before.
+- **Imports on disk.** `use` names an app id; the command line finds it among the package's
+  sibling directories, or in `--path` entries (a package directory or a directory of packages),
+  and compiles imports first (`source::dependency_order`, `source::compile_dirs`). A cycle is
+  refused.
+- **`fmt` keeps what people wrote.** The canonical form drops plain `//` comments (only `///`
+  doc comments are part of the tree), so `fmt` leaves a file that has any unchanged and names
+  it, rather than deleting them.
+- **The command line is a library module** (`cli::main`), so the host app's binary can run the
+  same commands and add `run`, which needs the platform. The names: `tilolang` is the full build
+  tool (the host binary, with `run`); the compiler crate's own binary is `tilolangc`, also
+  built as `tlc`, from the same `main.rs`, so neither clashes with `target/<profile>/tilolang`.
+
 ## Deviations to report
 
 - E072 (a block with no value) is defined but cannot be reached from source today.

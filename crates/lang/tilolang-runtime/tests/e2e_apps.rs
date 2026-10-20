@@ -975,24 +975,33 @@ mod cases {
     }
 
     #[test]
-    fn counter_stacks_when_compact_and_lines_up_when_wide() {
+    fn counter_is_centred_with_a_display_value_and_large_buttons_at_every_width() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let c = w.create("Counter");
         let mut v = w.view(&apps.counter, "main", vec![res(&c)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        differ(&compact, &wide);
-        assert_eq!(of_kind(&compact, "page")[0].children[0].kind, "stack");
-        assert_eq!(of_kind(&wide, "page")[0].children[0].kind, "row");
+        for tree in [&compact, &wide] {
+            let shown = of_kind(tree, "text")[0];
+            assert_eq!(shown.props["style"], Value::text("display"));
+            assert_eq!(
+                button_labelled(tree, "+1").props["style"],
+                Value::text("primary large")
+            );
+            assert_eq!(
+                button_labelled(tree, "-1").props["style"],
+                Value::text("large")
+            );
+        }
         let plus = button_labelled(&wide, "+1").key.clone();
         v.press(&plus).unwrap();
         v.poll_patches().unwrap();
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
-        assert_eq!(text_prop(of_kind(v.tree(), "heading")[0], "value"), "1");
+        assert_eq!(text_prop(of_kind(v.tree(), "text")[0], "value"), "1");
     }
 
     #[test]
-    fn todo_is_a_column_when_compact_and_a_grid_when_wide() {
+    fn todo_is_one_row_per_item_at_every_width() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("TodoList");
@@ -1002,11 +1011,9 @@ mod cases {
         let mut v = w.view(&apps.todo, "main", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         differ(&compact, &wide);
+        // One row per item at every width, also inside the card of another view.
         assert!(of_kind(&compact, "grid").is_empty());
-        assert_eq!(
-            of_kind(&wide, "grid")[0].props["min.rem"],
-            Value::Float(18.0)
-        );
+        assert!(of_kind(&wide, "grid").is_empty());
         assert_eq!(of_kind(&compact, "input").len(), 1);
         assert_eq!(of_kind(&wide, "input").len(), 2);
         assert_eq!(of_kind(&compact, "checkbox").len(), 2);
@@ -1029,32 +1036,39 @@ mod cases {
     }
 
     #[test]
-    fn notes_hide_the_body_preview_when_compact() {
+    fn notes_list_rows_carry_the_title_and_a_preview_and_the_split_navigates() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let nb = w.create("Notebook");
         w.call(&apps.notes, "new_note", vec![res(&nb)]);
         let mut v = w.view(&apps.notes, "main", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        differ(&compact, &wide);
-        assert!(of_kind(&compact, "text").len() < of_kind(&wide, "text").len());
+        for tree in [&compact, &wide] {
+            let rows = of_kind(tree, "list_row");
+            assert_eq!(rows.len(), 1);
+            assert!(rows[0].props.contains_key("secondary"));
+        }
         assert_eq!(
             of_kind(&wide, "split")[0].props["side"],
             Value::text("leading")
         );
+        assert_eq!(
+            of_kind(&wide, "split")[0].props["collapse"],
+            Value::text("navigate")
+        );
     }
 
     #[test]
-    fn letters_hide_the_recipient_when_compact() {
+    fn letters_list_rows_carry_the_subject_and_the_recipient() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let desk = w.create("Desk");
         w.call(&apps.letters, "new_draft", vec![res(&desk)]);
         let mut v = w.view(&apps.letters, "main", vec![res(&desk)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        differ(&compact, &wide);
-        assert!(captions(&compact).is_empty());
-        assert_eq!(captions(&wide).len(), 1);
+        for tree in [&compact, &wide] {
+            assert_eq!(of_kind(tree, "list_row").len(), 1);
+        }
         assert_eq!(
             of_kind(&wide, "split")[0].props["collapse"],
             Value::text("navigate")

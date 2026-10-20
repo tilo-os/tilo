@@ -25,6 +25,32 @@ pub fn parse_module(src: &str) -> (Option<Module>, Vec<Diagnostic>) {
     (module, diags)
 }
 
+/// One file of a package, parsed: its `app` header when it has one, and its items.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedFile {
+    pub header: Option<AppHeader>,
+    pub items: Vec<Item>,
+    /// The first node id after this file's: the next file of the package starts there.
+    pub next_node: NodeId,
+}
+
+/// Parses one file of a package whose first byte sits at `base` in the package's span space
+/// and whose first node id is `first_node`. The `app` header is optional here; the package
+/// decides which file must hold it.
+pub fn parse_file_at(src: &str, base: usize, first_node: NodeId) -> (ParsedFile, Vec<Diagnostic>) {
+    let (toks, mut diags) = lex_at(src, base);
+    let mut p = Parser::new_at(toks, src, base);
+    p.next_node = first_node;
+    let (header, items) = p.file();
+    diags.append(&mut p.diags);
+    let parsed = ParsedFile {
+        header,
+        items,
+        next_node: p.next_node,
+    };
+    (parsed, diags)
+}
+
 /// Parses one expression (a block of an agent answer). Returns the expression, or `None` when
 /// the text is not a single expression; the second value tells whether errors were reported.
 pub fn parse_expr_source(src: &str) -> (Option<Expr>, Vec<Diagnostic>) {
@@ -71,6 +97,8 @@ struct Parser<'a> {
     toks: Vec<Token>,
     pos: usize,
     src: &'a str,
+    /// Where `src` starts in the span space: spans are `base` + the offset in `src`.
+    base: usize,
     diags: Vec<Diagnostic>,
     next_node: NodeId,
 }
@@ -79,9 +107,13 @@ const ITEM_KWS: &[&str] = &["use", "type", "action", "flow", "view", "fn"];
 const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option"];
 
 impl<'a> Parser<'a> {
-    fn new(mut toks: Vec<Token>, src: &'a str) -> Self {
+    fn new(toks: Vec<Token>, src: &'a str) -> Self {
+        Self::new_at(toks, src, 0)
+    }
+
+    fn new_at(mut toks: Vec<Token>, src: &'a str, base: usize) -> Self {
         if toks.last().is_none_or(|t| t.tok != Tok::Eof) {
-            let end = src.len();
+            let end = base + src.len();
             toks.push(Token {
                 tok: Tok::Eof,
                 span: Span::new(end, end),
@@ -91,6 +123,7 @@ impl<'a> Parser<'a> {
             toks,
             pos: 0,
             src,
+            base,
             diags: Vec::new(),
             next_node: 0,
         }
@@ -326,6 +359,53 @@ impl<'a> Parser<'a> {
             }
         }
         Some(Module { app: header, items })
+    }
+
+    /// A file of a multi-file package: an optional header, then items.
+    fn file(&mut self) -> (Option<AppHeader>, Vec<Item>) {
+        self.skip_nl();
+        let start = self.span();
+        let mut header = None;
+        if self.is_kw("app") {
+            self.bump();
+            let id = self.app_id();
+            let title = id
+                .and_then(|id| Ok((id, self.plain_string("the app title in quotes")?)))
+                .ok();
+            match title {
+                Some((id, title)) => {
+                    header = Some(AppHeader {
+                        id,
+                        title,
+                        span: start.to(Span::new(self.prev_end(), self.prev_end())),
+                    });
+                }
+                None => self.recover_item(),
+            }
+        }
+        let mut items = Vec::new();
+        loop {
+            self.skip_nl();
+            if matches!(self.peek(), Tok::Eof) {
+                break;
+            }
+            if self.is_kw("app") {
+                let span = self.span();
+                self.diags.push(Diagnostic::new(
+                    "E017",
+                    span,
+                    "the `app` header comes first in its file, and only once in a package",
+                ));
+                self.bump();
+                self.recover_item();
+                continue;
+            }
+            match self.item() {
+                Ok(item) => items.push(item),
+                Err(Abort) => self.recover_item(),
+            }
+        }
+        (header, items)
     }
 
     fn docs(&mut self) -> Vec<String> {
@@ -1042,12 +1122,13 @@ impl<'a> Parser<'a> {
             match piece {
                 StrPiece::Lit(s) => out.push(StrPart::Lit(s)),
                 StrPiece::Interp { start, end } => {
-                    let Some(text) = self.src.get(start..end) else {
+                    let local = start.checked_sub(self.base).zip(end.checked_sub(self.base));
+                    let Some(text) = local.and_then(|(from, to)| self.src.get(from..to)) else {
                         return self.fail(Span::new(start, end), "invalid interpolation");
                     };
                     let (toks, mut diags) = lex_at(text, start);
                     self.diags.append(&mut diags);
-                    let mut sub = Parser::new(toks, self.src);
+                    let mut sub = Parser::new_at(toks, self.src, self.base);
                     sub.skip_nl();
                     let expr = sub.expr();
                     sub.skip_nl();

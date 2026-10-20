@@ -145,19 +145,23 @@ pub fn count(record: &DynRecord, meta: &Meta) -> i64 {
     }
 }
 
-/// The key of the button a person presses: the counter's "+1", else the first button.
+/// The key of the button that adds: the counter's `+1`, else the first button of a view.
 pub fn button_key(view: &ViewInstance) -> String {
-    fn find(node: &tilolang_runtime::UiNode, label: Option<&str>) -> Option<String> {
+    fn plus(node: &tilolang_runtime::UiNode) -> Option<String> {
         if node.kind == "button"
-            && label.is_none_or(|label| {
-                node.props.get("label") == Some(&tilolang_runtime::Value::text(label))
-            })
+            && node.props.get("label") == Some(&tilolang_runtime::Value::text("+1"))
         {
             return Some(node.key.clone());
         }
-        node.children.iter().find_map(|child| find(child, label))
+        node.children.iter().find_map(plus)
     }
-    find(view.tree(), Some("+1"))
-        .or_else(|| find(view.tree(), None))
+    fn find(node: &tilolang_runtime::UiNode) -> Option<String> {
+        if node.kind == "button" {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(find)
+    }
+    plus(view.tree())
+        .or_else(|| find(view.tree()))
         .expect("the view has a button")
 }
