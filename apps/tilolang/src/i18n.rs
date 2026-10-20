@@ -26,6 +26,7 @@ mod tests {
             "tilolang-ask-always",
             "tilolang-ask-denied",
             "tilolang-ask-needs-approval",
+            "tilolang-dev-errors",
         ] {
             let text = t(key);
             assert_ne!(text, key, "{key} has no entry in the catalogue");

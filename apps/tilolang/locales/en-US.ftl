@@ -15,3 +15,4 @@ tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
 tilolang-embed-source = Block
 tilolang-history-edit = Edited a field
+tilolang-dev-errors = The app has errors. The terminal that runs it lists them.
