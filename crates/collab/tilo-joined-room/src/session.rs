@@ -64,11 +64,11 @@ impl Connect {
             for entry in entries.into_iter().chain(view.peer().revocations()) {
                 revocations.insert(entry).map_err(|e| e.to_string())?;
             }
-            if revocations.is_revoked(&view.transport_hint().host.device_public_key) {
+            if revocations.is_revoked(&view.transport_hint()?.host.device_public_key) {
                 return Err("native relay host is revoked".into());
             }
             Ok((
-                view.transport_hint().clone(),
+                view.transport_hint()?.clone(),
                 cert,
                 revocations,
                 view.continuity(),
@@ -174,7 +174,7 @@ impl Scope {
         }
         self.connect.owner.with_current(self.connect.room, |view| {
             if view.device() != &self.device
-                || view.transport_hint() != &self.hint
+                || view.transport_hint()? != &self.hint
                 || view.continuity() != self.continuity()
             {
                 return Err("native refresh current owner changed".into());
@@ -271,7 +271,7 @@ impl Scope {
             std::time::SystemTime::now(),
             |view, outgoing| {
                 if view.device() != &self.device
-                    || view.transport_hint() != &self.hint
+                    || view.transport_hint()? != &self.hint
                     || view.continuity() != self.continuity()
                 {
                     return Err("native publication authority changed".into());

@@ -40,15 +40,10 @@ pub(crate) struct StoredRoom {
     pub workspace: u64,
     pub governor: DeviceCert,
     pub device: DeviceCert,
-    #[serde(with = "base64_bytes")]
-    pub invitation: Vec<u8>,
-    #[serde(with = "base64_bytes")]
-    pub enrollment_intent: Vec<u8>,
-    pub enrolled_at_ns: u64,
-    pub transport_hint: TransportHint,
-    pub host: Option<DeviceCert>,
-    pub locator: Option<TransportHint>,
-    pub hint: Option<TransportHint>,
+    /// How this device joined the room a host governs; `None` for a room
+    /// this device governs itself, which it joined by creating it.
+    #[serde(flatten)]
+    pub enrollment: Option<StoredEnrollment>,
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
@@ -57,7 +52,6 @@ pub(crate) struct StoredRoom {
     pub private_direct_conversations: crate::PrivateDirectConversationStore,
     pub generation: u64,
     pub continuity: u64,
-    pub floor: Option<DescriptorFloor>,
     /// Outgoing publication state; required on every committed room record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::publication::StoredPublication>,
@@ -98,6 +92,21 @@ impl StoredRoom {
         }
         (governor, revoked)
     }
+}
+/// The signed join a device enrolled in a host-governed room with, and the
+/// host it pinned then.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct StoredEnrollment {
+    #[serde(with = "base64_bytes")]
+    pub invitation: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub enrollment_intent: Vec<u8>,
+    pub enrolled_at_ns: u64,
+    pub transport_hint: TransportHint,
+    pub host: Option<DeviceCert>,
+    pub locator: Option<TransportHint>,
+    pub hint: Option<TransportHint>,
+    pub floor: Option<DescriptorFloor>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {

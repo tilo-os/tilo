@@ -54,7 +54,7 @@ fn queued_write_then_departure() -> Fixture {
     );
     let (hint, continuity) = owner
         .with_current(room, |view| {
-            Ok((view.transport_hint().clone(), view.continuity()))
+            Ok((view.transport_hint()?.clone(), view.continuity()))
         })
         .unwrap();
     let input = Arc::new(native_ingress::Scope::new(

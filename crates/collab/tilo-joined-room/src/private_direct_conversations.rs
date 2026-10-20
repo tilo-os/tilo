@@ -598,7 +598,7 @@ mod tests {
             let ns = crate::testing::ns(self.now).unwrap();
             let hint = self
                 .owner
-                .with_current(self.room, |v| Ok(v.record.transport_hint.clone()))
+                .with_current(self.room, |v| Ok(v.transport_hint()?.clone()))
                 .unwrap();
             let signed = join::issue_invitation(
                 join::InviteGrant {

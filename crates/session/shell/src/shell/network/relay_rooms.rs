@@ -264,7 +264,7 @@ impl ShellNetwork {
                     return Err("another person governs the room".into());
                 }
                 let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                         .map_err(|error| error.to_string())?;
                 if !view.governor().capabilities.can_act_as_host
                     || &hint.host_device_certificate != view.governor()
@@ -395,7 +395,7 @@ impl ShellNetwork {
                 return Err("the caller differs from admitted native custody".into());
             }
             let (hint, _) =
-                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                     .map_err(|error| error.to_string())?;
             if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
                 return Err("the room's host differs from its current admitted governor".into());
@@ -621,7 +621,7 @@ impl ShellNetwork {
                     return Err("host operation caller differs from admitted native custody".into());
                 }
                 let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
                         .map_err(|error| error.to_string())?;
                 if hint.room != room.to_string()
                     || &hint.governing_authority != view.governor()

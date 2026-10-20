@@ -21,10 +21,6 @@ pub(crate) fn validate_pending(
     }
     Ok(())
 }
-#[allow(
-    clippy::suspicious_operation_groupings,
-    reason = "a persisted floor stores the descriptor digest as `digest`"
-)]
 pub(crate) fn restore(
     room: RoomId,
     record: &StoredRoom,
@@ -38,36 +34,13 @@ pub(crate) fn restore(
     {
         return Err("invalid native committed room record".into());
     }
-    let intent = VerifiedNativeEnrollmentIntent::restore(&record.enrollment_intent)?;
-    let grant = intent.verified_join().grant();
-    if intent.room() != room
-        || record.governor != grant.authority
-        || record.workspace != grant.workspace_id
-        || record.device != *intent.local_device()
-        || record.transport_hint != *intent.transport_hint()
-        || record.invitation != intent.verified_join().signed_invitation()
-    {
-        return Err("native committed room differs from its authenticated enrollment".into());
-    }
-    if record.host.as_ref() != intent.delivery_host()
-        || record.locator.as_ref() != intent.delivery_locator()
-    {
-        return Err("native service pin differs from its unique signed enrollment locator".into());
-    }
-    if record.host.is_none() && (record.hint.is_some() || record.floor.is_some()) {
-        return Err("native descriptor has no independent service pin".into());
-    }
-    if record.hint.is_some() != record.floor.is_some() {
-        return Err("native persisted descriptor acknowledgement is incomplete".into());
-    }
-    if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
-            .map_err(|e| e.to_string())?;
-        if record.floor.as_ref().is_some_and(|floor| {
-            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
-        }) {
-            return Err("native persisted descriptor/floor mismatch".into());
+    match &record.enrollment {
+        Some(enrollment) => validate_enrollment(room, record, enrollment)?,
+        // A room this device created and governs: no join to check it against.
+        None if record.governor != record.device => {
+            return Err("a room governed here is governed by this device".into());
         }
+        None => {}
     }
     let (governor, revocations) = record.current_governor(now);
     let peer = StatePeer::restore(
@@ -89,6 +62,48 @@ pub(crate) fn restore(
     view.record.private_direct_conversations.validate()?;
     crate::effect_receipt::validate(&view)?;
     Ok(view)
+}
+#[allow(
+    clippy::suspicious_operation_groupings,
+    reason = "a persisted floor stores the descriptor digest as `digest`"
+)]
+fn validate_enrollment(
+    room: RoomId,
+    record: &StoredRoom,
+    enrollment: &crate::record::StoredEnrollment,
+) -> Result<(), String> {
+    let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
+    let grant = intent.verified_join().grant();
+    if intent.room() != room
+        || record.governor != grant.authority
+        || record.workspace != grant.workspace_id
+        || record.device != *intent.local_device()
+        || enrollment.transport_hint != *intent.transport_hint()
+        || enrollment.invitation != intent.verified_join().signed_invitation()
+    {
+        return Err("native committed room differs from its authenticated enrollment".into());
+    }
+    if enrollment.host.as_ref() != intent.delivery_host()
+        || enrollment.locator.as_ref() != intent.delivery_locator()
+    {
+        return Err("native service pin differs from its unique signed enrollment locator".into());
+    }
+    if enrollment.host.is_none() && (enrollment.hint.is_some() || enrollment.floor.is_some()) {
+        return Err("native descriptor has no independent service pin".into());
+    }
+    if enrollment.hint.is_some() != enrollment.floor.is_some() {
+        return Err("native persisted descriptor acknowledgement is incomplete".into());
+    }
+    if let (Some(hint), Some(host)) = (&enrollment.hint, &enrollment.host) {
+        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
+            .map_err(|e| e.to_string())?;
+        if enrollment.floor.as_ref().is_some_and(|floor| {
+            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
+        }) {
+            return Err("native persisted descriptor/floor mismatch".into());
+        }
+    }
+    Ok(())
 }
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
@@ -418,18 +433,20 @@ impl NativeWorkspaceOwner {
             workspace: bootstrap.workspace_id,
             governor: bootstrap.authority.clone(),
             device: enrollment.local_device().clone(),
-            invitation: enrollment.verified_join().signed_invitation().to_vec(),
-            enrollment_intent: pending.intent.clone(),
-            enrolled_at_ns: ns(now)?,
-            transport_hint: enrollment.transport_hint().clone(),
-            host: intent.delivery_host().cloned(),
-            locator: intent.delivery_locator().cloned(),
-            hint: enrollment.delivery_hint().cloned(),
+            enrollment: Some(crate::record::StoredEnrollment {
+                invitation: enrollment.verified_join().signed_invitation().to_vec(),
+                enrollment_intent: pending.intent.clone(),
+                enrolled_at_ns: ns(now)?,
+                transport_hint: enrollment.transport_hint().clone(),
+                host: intent.delivery_host().cloned(),
+                locator: intent.delivery_locator().cloned(),
+                hint: enrollment.delivery_hint().cloned(),
+                floor: None,
+            }),
             peer: peer.durable()?,
             private_direct_conversations: crate::PrivateDirectConversationStore::default(),
             generation: 1,
             continuity: 0,
-            floor: None,
             publication: Some(publication::StoredPublication::default()),
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
@@ -505,7 +522,8 @@ impl NativeWorkspaceOwner {
             .map_err(|e| e.to_string())?
             .is_some()
         {
-            if !publication::has_exact(&candidate, &outgoing)?
+            if !candidate.governed_here()
+                && !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
                 return Err("exact local admission has no retained publication custody".into());

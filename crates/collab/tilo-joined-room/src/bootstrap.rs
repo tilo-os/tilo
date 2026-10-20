@@ -193,8 +193,13 @@ impl NativeWorkspaceOwner {
                 .map_err(|e| e.to_string())?;
             Ok(view.clone())
         })?;
-        candidate.record.hint = Some(pending.hint);
-        candidate.record.floor = Some(record::DescriptorFloor {
+        let enrollment = candidate
+            .record
+            .enrollment
+            .as_mut()
+            .ok_or("the room is governed here, not joined through a host")?;
+        enrollment.hint = Some(pending.hint);
+        enrollment.floor = Some(record::DescriptorFloor {
             generation: response.generation,
             digest: response.descriptor_digest,
         });
