@@ -1,4 +1,9 @@
-//! The host's window: a home view listing the packages, and any package's `main` view.
+//! The host's window: a home view listing the packages, and the window of any package's root
+//! resource, shown through the default view of its type.
+//!
+//! `open(r)` in a view goes to the window of `r`. Until the workspace's window model lands this
+//! window shows it in place, through the default view of `r`'s type, and its back button
+//! returns to the view it was opened from.
 //!
 //! The widget owns a [`Host`] (the runtime on the platform), the open [`ViewInstance`] and the
 //! retained widgets of its tree. Each frame it
@@ -24,8 +29,8 @@ use tilolang_tilo::publish::{
     COMMIT, Committer, HOST_RESOURCE, Planner, host_resource, publish_package, publish_record,
 };
 use tilolang_tilo::runtime::{
-    ActionInfo, Decision, EditOutcome, InvokeOutcome, Principal, Resolution, Suggestion, UiNode,
-    Value, ViewInstance,
+    ActionInfo, BindTarget, Decision, EditOutcome, InvokeOutcome, Principal, Resolution,
+    Suggestion, UiNode, Value, ViewEvent, ViewInstance,
 };
 use ui::LocalState;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, Resource};
@@ -50,6 +55,8 @@ enum Mode {
     Open {
         app: String,
         view: Box<ViewInstance>,
+        /// The views `open(r)` left, the most recent last: back returns to them.
+        trail: Vec<ViewInstance>,
     },
 }
 
@@ -57,7 +64,8 @@ enum Mode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Nav {
     Open(String),
-    Home,
+    /// To the view an `open(r)` left, or home from the first one.
+    Back,
 }
 
 /// An answer to the Ask bar.
@@ -117,8 +125,12 @@ impl TilolangPage {
         let events: EventSink = Rc::default();
         let host: Rc<RefCell<Option<Host>>> = Rc::default();
         let shared = Rc::clone(&host);
-        // A bound control is announced by the name of the field it edits.
+        // A bound control is announced by the name of the field or view state it edits.
         let names = Rc::new(move |binding: &tilolang_tilo::runtime::Binding| {
+            let (target, field) = match &binding.target {
+                BindTarget::State { name, .. } => return name.clone(),
+                BindTarget::Field { target, field } => (target, field),
+            };
             shared
                 .borrow()
                 .as_ref()
@@ -128,12 +140,12 @@ impl TilolangPage {
                             .meta
                             .types
                             .iter()
-                            .find(|declared| declared.id == binding.target.ty)?;
+                            .find(|declared| declared.id == target.ty)?;
                         declared
                             .fields
                             .iter()
-                            .find(|field| field.id == binding.field)
-                            .map(|field| field.name.clone())
+                            .find(|declared| declared.id == *field)
+                            .map(|declared| declared.name.clone())
                     })
                 })
                 .unwrap_or_default()
@@ -351,7 +363,7 @@ impl TilolangPage {
                 let nav = Rc::clone(&self.inbox.nav);
                 let back = Button::new("tilolang-back", &t("tilolang-back"))
                     .role(ButtonRole::Plain)
-                    .on_view(move || nav.borrow_mut().push(Nav::Home));
+                    .on_view(move || nav.borrow_mut().push(Nav::Back));
                 Box::new(
                     Row::row()
                         .fill_width()
@@ -514,24 +526,87 @@ impl TilolangPage {
         };
         match host.open_main(app) {
             Ok(view) => {
-                let tree = view.tree().clone();
                 self.mode = Mode::Open {
                     app: app.to_owned(),
                     view: Box::new(view),
+                    trail: Vec::new(),
                 };
-                self.class = None;
-                self.last_size = None;
-                let body = self.reconciler.build(&tree);
-                self.body_tree = Some(tree);
-                self.set_slot(1, scrolling(body), Fit::fill(1.0));
-                self.rebuild_header();
-                self.commit_planned();
-                self.refresh_bound();
+                self.show_view();
             }
             Err(error) => {
                 tracing::warn!(app, %error, "an app did not open");
                 self.notice = Some(t("tilolang-open-failed"));
                 self.rebuild_chrome();
+            }
+        }
+    }
+
+    /// Build the body from the open view's whole tree.
+    fn show_view(&mut self) {
+        let Mode::Open { view, .. } = &self.mode else {
+            return;
+        };
+        let tree = view.tree().clone();
+        self.class = None;
+        self.last_size = None;
+        let body = self.reconciler.build(&tree);
+        self.body_tree = Some(tree);
+        self.set_slot(1, scrolling(body), Fit::fill(1.0));
+        self.rebuild_header();
+        self.commit_planned();
+        self.refresh_bound();
+    }
+
+    /// Go to the window of `target` (what `open(r)` asked for): shown here, in place of the
+    /// open view, which back returns to.
+    fn open_resource(&mut self, target: &tilolang_tilo::runtime::ResourceRef, with: Option<&str>) {
+        let Some(host) = self.current_host() else {
+            return;
+        };
+        match host.open_resource(target, with) {
+            Ok(next) => {
+                if let Mode::Open { view, trail, .. } = &mut self.mode {
+                    let left = std::mem::replace(view, Box::new(next));
+                    trail.push(*left);
+                }
+                self.show_view();
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a resource did not open");
+                self.notice = Some(t("tilolang-open-failed"));
+                self.rebuild_chrome();
+            }
+        }
+    }
+
+    /// Back: to the view an `open(r)` left, or home.
+    fn back(&mut self) {
+        let previous = match &mut self.mode {
+            Mode::Open { view, trail, .. } => {
+                trail.pop().map(|p| std::mem::replace(view, Box::new(p)))
+            }
+            Mode::Home => None,
+        };
+        if previous.is_some() {
+            if let Mode::Open { view, .. } = &mut self.mode {
+                // It missed what changed while it was away.
+                let _ = view.poll_patches();
+            }
+            self.show_view();
+        } else {
+            self.show_home();
+        }
+    }
+
+    /// Windows the open view asked to open.
+    fn follow_opens(&mut self) {
+        let opens = match &mut self.mode {
+            Mode::Open { view, .. } => view.poll_events(),
+            Mode::Home => Vec::new(),
+        };
+        for event in opens {
+            match event {
+                ViewEvent::Open { target, view } => self.open_resource(&target, view.as_deref()),
             }
         }
     }
@@ -570,12 +645,12 @@ impl TilolangPage {
         self.refresh_bound();
     }
 
-    /// Show what the bound fields hold now in the controls that edit them.
+    /// Show what the bound fields and view state hold now in the controls that edit them.
     fn refresh_bound(&self) {
-        let (Some(host), Some(tree)) = (self.current_host(), self.body_tree.clone()) else {
+        let (Mode::Open { view, .. }, Some(tree)) = (&self.mode, self.body_tree.as_ref()) else {
             return;
         };
-        visit_bound(self, &host, &tree);
+        visit_bound(self, view, tree);
     }
 
     /// Hand everything the runtime committed to the door.
@@ -603,7 +678,7 @@ impl TilolangPage {
             changed = true;
             match nav {
                 Nav::Open(app) => self.open(&app),
-                Nav::Home => self.show_home(),
+                Nav::Back => self.back(),
             }
         }
         let answers = std::mem::take(&mut *self.inbox.answers.borrow_mut());
@@ -651,22 +726,14 @@ impl TilolangPage {
             }
         }
         self.commit_planned();
+        self.follow_opens();
     }
 
     fn edit(&self, key: &str, value: Value) -> Result<(), String> {
         let Mode::Open { view, .. } = &self.mode else {
             return Ok(());
         };
-        let bound_to_number = view
-            .tree()
-            .find(key)
-            .and_then(|node| node.binding.as_ref())
-            .and_then(|binding| {
-                self.current_host()?
-                    .runtime()
-                    .read(&binding.target, &binding.field)
-                    .ok()
-            });
+        let bound_to_number = view.bound_value(key);
         let value = match (&value, bound_to_number) {
             (Value::Text(text), Some(Value::Int(_))) => {
                 Value::Int(text.trim().parse().map_err(|_| String::new())?)
@@ -764,9 +831,9 @@ impl TilolangPage {
     }
 }
 
-fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
-    if let Some(binding) = &node.binding
-        && let Ok(value) = host.runtime().read(&binding.target, &binding.field)
+fn visit_bound(page: &TilolangPage, view: &ViewInstance, node: &UiNode) {
+    if node.binding.is_some()
+        && let Some(value) = view.bound_value(&node.key)
     {
         match value {
             Value::Bool(flag) => page.reconciler.set_flag(&node.key, flag),
@@ -782,7 +849,7 @@ fn visit_bound(page: &TilolangPage, host: &Host, node: &UiNode) {
         }
     }
     for child in &node.children {
-        visit_bound(page, host, child);
+        visit_bound(page, view, child);
     }
 }
 
@@ -1060,6 +1127,77 @@ mod tests {
                 .find_map(|child| labelled(child, label))
         }
         labelled(node, Some("+1")).or_else(|| labelled(node, None))
+    }
+
+    fn button_labelled(node: &UiNode, label: &str) -> Option<String> {
+        if node.kind == "button" && node.props.get("label") == Some(&Value::text(label)) {
+            return Some(node.key.clone());
+        }
+        node.children
+            .iter()
+            .find_map(|child| button_labelled(child, label))
+    }
+
+    fn has_placeholder(node: &UiNode, placeholder: &str) -> bool {
+        node.props.get("placeholder") == Some(&Value::text(placeholder))
+            || node
+                .children
+                .iter()
+                .any(|child| has_placeholder(child, placeholder))
+    }
+
+    impl Room {
+        fn press(&mut self, label: &str) {
+            let tree = self.page.body_tree.as_ref().expect("a view is open");
+            let key = button_labelled(tree, label)
+                .unwrap_or_else(|| panic!("no button {label} in {tree:#?}"));
+            self.page.act(UiEvent::Press(key));
+            self.frame();
+            self.door();
+            self.frame();
+        }
+    }
+
+    // USER REQUIREMENT (2026-10-20): `open(r)` "the host minimally implements it as
+    // push-navigation to the resource's default view with back".
+    #[test]
+    fn a_notes_row_opens_the_note_in_place_and_back_returns_to_the_list() {
+        let mut room = Room::new();
+        room.open("so.tilo.notes");
+        room.press("New note");
+        room.press("Untitled");
+        let shown = room.page.shown().expect("a view is open");
+        assert!(
+            has_placeholder(shown, "Title"),
+            "the note's editor: {shown:#?}"
+        );
+
+        let title = {
+            fn find(node: &UiNode) -> Option<String> {
+                if node.props.get("placeholder") == Some(&Value::text("Title")) {
+                    return Some(node.key.clone());
+                }
+                node.children.iter().find_map(find)
+            }
+            find(shown).expect("the title input")
+        };
+        room.page.act(UiEvent::Edit(title, "Plans".to_owned()));
+        room.frame();
+        room.door();
+        room.frame();
+
+        room.page.inbox.nav.borrow_mut().push(Nav::Back);
+        room.frame();
+        let list = room.page.shown().expect("the notebook again");
+        assert!(!has_placeholder(list, "Title"));
+        assert!(
+            button_labelled(list, "Plans").is_some(),
+            "the list shows what the editor changed: {list:#?}"
+        );
+
+        room.page.inbox.nav.borrow_mut().push(Nav::Back);
+        room.frame();
+        assert_eq!(room.page.open_app(), None, "back from the root goes home");
     }
 
     #[test]

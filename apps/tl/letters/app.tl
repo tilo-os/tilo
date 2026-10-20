@@ -7,31 +7,33 @@ type Draft {
     sent: Bool = false
 }
 
+/// The workspace's letters.
 type Desk {
     drafts: Collection<Draft>
-    open: Option<Draft>
 }
 
-/// Starts a draft and opens it.
+/// Which letters the desk lists.
+enum Shelf {
+    /// Letters not sent yet.
+    drafts
+    /// Letters that went out.
+    sent
+}
+
+root Desk
+
+default view desk for Desk
+
+default view editor for Draft
+
+/// Starts a letter.
 action new_draft(desk: Desk) -> Draft {
-    let d = desk.drafts.insert(Draft(subject: "Untitled"))
-    desk.open = d
-    return d
+    desk.drafts.insert(Draft(subject: "Untitled"))
 }
 
-/// Opens a draft in the editor.
-action open_draft(desk: Desk, d: Draft) {
-    desk.open = d
-}
-
-/// Throws a draft away; the editor closes when it was the open one.
+/// Throws a letter away.
 action discard(desk: Desk, d: Draft) {
     desk.drafts.remove(d)
-    if desk.open.is_some() {
-        if desk.open.unwrap() == d {
-            desk.open = none
-        }
-    }
 }
 
 /// Posts the letter. This leaves the system, so it always asks first, showing the letter.
@@ -43,57 +45,58 @@ action send(d: Draft) proposal compose(d) {
 }
 
 view compose(d: Draft) {
-    stack(gap: related) {
+    stack(gap: .related) {
         heading("Send to {d.to}")
-        text(d.subject, style: "caption")
+        text(d.subject, style: .caption)
         text(d.body)
     }
 }
 
-view main(desk: Desk) {
-    page(full) {
-        split(side: leading, collapse: navigate) {
-            primary(min: 14rem) {
-                draft_list(desk)
+/// The desk's window: its letters, each opening in a window of its own. Which shelf it shows
+/// is the window's.
+view desk(desk: Desk) {
+    window shelf: Shelf = .drafts
+    page {
+        stack(gap: .section) {
+            row(distribute: .between) {
+                heading("Letters")
+                button("New letter", on: new_draft(desk), style: .primary) as new
             }
-            secondary(min: 24rem) {
-                if desk.open.is_some() {
-                    editor(desk, desk.open.unwrap())
+            row(gap: .related) {
+                button("Drafts", on: set(shelf, .drafts), style: if shelf == .drafts { .primary } else { .plain }) as drafts
+                button("Sent", on: set(shelf, .sent), style: if shelf == .sent { .primary } else { .plain }) as sent
+            }
+            scroll {
+                stack(gap: .related) {
+                    for d in desk.drafts.filter(d -> d.sent == (shelf == .sent)) {
+                        draft_row(desk, d)
+                    }
                 }
             }
         }
     }
 }
 
-view draft_list(desk: Desk) {
-    stack {
-        row(distribute: between) {
-            heading("Letters")
-            button("New letter", on: new_draft(desk)) #new
-        }
-        scroll {
-            for d in desk.drafts {
-                draft_row(desk, d)
-            }
-        }
-    }
-}
-
 view draft_row(desk: Desk, d: Draft) {
-    button(d.subject, on: open_draft(desk, d))
-    if not space.compact {
-        text(d.to, style: "caption", truncate)
+    row(distribute: .between) {
+        button(d.subject, on: open(d), style: .plain)
+        if not space.compact {
+            text(d.to, style: .caption, truncate)
+        }
+        button("Discard", on: discard(desk, d), style: .destructive)
     }
 }
 
-view editor(desk: Desk, d: Draft) {
-    stack(gap: section) {
-        input(bind: d.to, placeholder: "To")
-        input(bind: d.subject, placeholder: "Subject")
-        input(bind: d.body, placeholder: "Write your letter", fill)
-        row(distribute: end) {
-            button("Discard", on: discard(desk, d)) #discard
-            button("Send", on: send(d), enabled: not d.sent) #send
+/// A letter's window.
+view editor(d: Draft) {
+    page {
+        stack(gap: .section) {
+            input(bind: d.to, placeholder: "To")
+            input(bind: d.subject, placeholder: "Subject")
+            input(bind: d.body, placeholder: "Write your letter", fill)
+            row(distribute: .end) {
+                button("Send", on: send(d), enabled: not d.sent, style: .primary) as send
+            }
         }
     }
 }

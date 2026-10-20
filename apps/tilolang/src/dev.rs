@@ -709,8 +709,8 @@ mod tests {
         package.write(
             "app.tl",
             &COUNTER.replace(
-                "button(\"+1\", on: increment(c)) #plus",
-                "button(\"+1\", on: increment(c)) #plus\n        button(\"Jump\", on: jump(c)) #jump",
+                "button(\"+1\", on: increment(c), style: .primary) as plus",
+                "button(\"+1\", on: increment(c), style: .primary) as plus\n        button(\"Jump\", on: jump(c)) as jump",
             ),
         );
         dev.borrow_mut().refresh();
@@ -736,7 +736,7 @@ mod tests {
         package.write("app.tl", &COUNTER.replace("c.value += 1", "c.nothing += 1"));
         assert!(dev.borrow_mut().refresh());
         let error = dev.borrow().error().map(str::to_owned).expect("an error");
-        assert!(error.contains("app.tl:11:"), "{error}");
+        assert!(error.contains("app.tl:15:"), "{error}");
         replica.frame();
         assert_eq!(
             replica.page().notice(),

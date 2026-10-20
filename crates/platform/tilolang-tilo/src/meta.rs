@@ -69,7 +69,10 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
         }
         FieldKind::Register => {
             let schema = FieldSchema::new(&field.id, MergeKind::Register);
-            if matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text | Ty::Enum(_)) {
+            if matches!(
+                ty,
+                Ty::Int | Ty::Float | Ty::Bool | Ty::Text | Ty::Choice(_)
+            ) {
                 schema
             } else {
                 schema.composite()
