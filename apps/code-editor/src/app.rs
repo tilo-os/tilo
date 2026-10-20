@@ -45,6 +45,7 @@ mod chrome;
 mod dialogs;
 mod file_workflow;
 mod find_workflow;
+mod format_workflow;
 mod lsp_workflow;
 mod surface;
 #[cfg(test)]
@@ -639,6 +640,11 @@ pub struct CodeApp {
     /// A save an effect asked for, written on the next sync, where the
     /// buffer's text is.
     pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
+    /// The file the language server is formatting, and what follows once it
+    /// answered.
+    formatting: Option<format_workflow::PendingFormat>,
+    /// The server's answer to `formatting`, applied on the next settlement.
+    formatted: Option<Result<Vec<crate::lsp::TextEdit>, String>>,
     /// The screenshot scenario still being staged: the view state it shows is
     /// set once the file it is about is open and bound.
     staging: Option<Staging>,
@@ -990,6 +996,8 @@ impl CodeApp {
             structure_dirty: false,
             file_reply: None,
             pending_save: None,
+            formatting: None,
+            formatted: None,
             staging: None,
             staging_until: None,
             conflict: None,
@@ -2019,8 +2027,19 @@ impl CodeApp {
             Command::OpenFolder => self.request_open_folder(),
             Command::OpenFile => self.request_open_file(),
             Command::Save => {
-                let snapshot = doc.clone();
-                self.save_active(&snapshot);
+                if let Some(node) = self.session.active_buffer().map(|b| b.node)
+                    && let Some(after) =
+                        self.format_before_saving(doc, node, format_workflow::AfterFormat::Save)
+                {
+                    self.after_format(doc, node, after);
+                }
+            }
+            Command::FormatFile => {
+                if let Some(node) = self.session.active_buffer().map(|b| b.node)
+                    && !self.request_format(doc, node, format_workflow::AfterFormat::Nothing)
+                {
+                    self.note("No formatter is running for this file", true);
+                }
             }
             Command::SaveAs => {
                 if let Some(node) = self.session.active_buffer().map(|b| b.node) {
@@ -3061,13 +3080,12 @@ impl Widget for CodeApp {
         }
         if let Some((node, target)) = self.pending_save.take() {
             self.notice = None;
-            let saved = self.save_to(state, node, target);
-            self.finish_file_effect(if saved {
-                Ok(())
-            } else {
-                Err("file could not be saved".into())
-            });
+            let after = format_workflow::AfterFormat::SaveEffect(target);
+            if let Some(after) = self.format_before_saving(state, node, after) {
+                self.after_format(state, node, after);
+            }
         }
+        self.apply_formatted(state);
         self.record_missing_text(state);
         self.dispatch_editor_text_edits(state);
         self.drive_find(state);

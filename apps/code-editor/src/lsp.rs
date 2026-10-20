@@ -129,6 +129,15 @@ pub struct CompletionItem {
     pub insert_text: String,
 }
 
+/// One edit of a document's text, as a formatter answers: `range` replaced
+/// by `new_text`. Positions count UTF-16 code units, as LSP's default
+/// position encoding does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextEdit {
+    pub range: LspRange,
+    pub new_text: String,
+}
+
 /// A source location (go-to-definition result).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
@@ -343,6 +352,90 @@ fn parse_location(v: &Value) -> Option<Location> {
     None
 }
 
+/// Parse a `textDocument/formatting` response: the edits that format the
+/// document (none when it is formatted already), or the server's refusal.
+///
+/// # Errors
+/// Returns the server's error message when it answered with an error, or a
+/// description when the result is not a list of edits.
+pub fn parse_formatting(msg: &Value) -> Result<Vec<TextEdit>, String> {
+    if let Some(error) = msg.get("error") {
+        return Err(clip_display_text(
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("the formatter failed"),
+        ));
+    }
+    match msg.get("result").unwrap_or(&Value::Null) {
+        Value::Null => Ok(Vec::new()),
+        Value::Array(edits) => edits
+            .iter()
+            .map(|edit| {
+                Ok(TextEdit {
+                    range: parse_range(edit.get("range").ok_or("an edit without a range")?),
+                    new_text: edit
+                        .get("newText")
+                        .and_then(Value::as_str)
+                        .ok_or("an edit without text")?
+                        .to_owned(),
+                })
+            })
+            .collect::<Result<_, &str>>()
+            .map_err(str::to_owned),
+        _ => Err("the formatter answered something other than edits".into()),
+    }
+}
+
+/// The byte offset in `text` of an LSP position, its column counted in UTF-16
+/// code units. A position past the end of its line is the line's end, and a
+/// line past the last is the end of the text, as the protocol asks.
+fn byte_offset(text: &str, line_starts: &[usize], position: Position) -> usize {
+    let Some(&start) = line_starts.get(position.line as usize) else {
+        return text.len();
+    };
+    let mut units = 0;
+    for (offset, ch) in text.get(start..).unwrap_or_default().char_indices() {
+        if ch == '\n' || units >= position.character as usize {
+            return start + offset;
+        }
+        units += ch.len_utf16();
+    }
+    text.len()
+}
+
+/// `text` with `edits` applied. The edits are against `text` as it was and do
+/// not overlap, as the protocol guarantees.
+///
+/// # Errors
+/// Returns an error when two edits overlap, rather than guess at a result.
+pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, String> {
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let mut spans: Vec<(usize, usize, &str)> = edits
+        .iter()
+        .map(|edit| {
+            let start = byte_offset(text, &line_starts, edit.range.start);
+            let end = byte_offset(text, &line_starts, edit.range.end).max(start);
+            (start, end, edit.new_text.as_str())
+        })
+        .collect();
+    spans.sort_by_key(|&(start, end, _)| (start, end));
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (start, end, new_text) in spans {
+        if start < at {
+            return Err("the formatter's edits overlap".into());
+        }
+        out.push_str(text.get(at..start).unwrap_or_default());
+        out.push_str(new_text);
+        at = end;
+    }
+    out.push_str(text.get(at..).unwrap_or_default());
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // JSON-RPC framing
 // ---------------------------------------------------------------------------
@@ -441,6 +534,7 @@ enum Pending {
     Completion,
     Hover,
     Definition,
+    Formatting,
 }
 
 /// A long-running server task the user should be able to see, parsed from
@@ -476,6 +570,8 @@ pub enum LspEvent {
     Completion(Vec<CompletionItem>),
     Hover(Option<String>),
     Definition(Vec<Location>),
+    /// The edits that format the document, or why the server would not.
+    Formatted(Result<Vec<TextEdit>, String>),
     /// A `$/progress` update — the server is busy with something named.
     Progress(Progress),
     /// The server process exited or the stream errored.
@@ -776,23 +872,37 @@ impl LspClient {
         );
     }
 
-    fn send_request(&mut self, method: &str, params: &Value, kind: Pending) {
+    /// Ask for the edits that format the document (result arrives as an
+    /// [`LspEvent::Formatted`]). Returns whether the request went out.
+    pub fn request_formatting(&mut self, uri: &str, tab_size: u32, insert_spaces: bool) -> bool {
+        self.send_request(
+            "textDocument/formatting",
+            &json!({
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": tab_size, "insertSpaces": insert_spaces }
+            }),
+            Pending::Formatting,
+        )
+    }
+
+    fn send_request(&mut self, method: &str, params: &Value, kind: Pending) -> bool {
         let has_capacity = self
             .pending
             .lock()
             .is_ok_and(|pending| pending.len() < MAX_PENDING_REQUESTS);
         if !has_capacity {
-            return;
+            return false;
         }
         let Some(id) = self.take_request_id() else {
-            return;
+            return false;
         };
         let Ok(mut pending) = self.pending.lock() else {
-            return;
+            return false;
         };
         pending.insert(id, kind);
         drop(pending);
         self.send_request_raw(method, params, Some(id));
+        true
     }
 
     fn send_request_raw(&mut self, method: &str, params: &Value, id: Option<i64>) {
@@ -860,7 +970,14 @@ fn spawn_reader_thread(
                         }
                     }
                     if let Some(ev) = routed.event {
-                        if !try_send_event(&tx, ev) {
+                        // A save waits on the formatter's answer, so that one
+                        // is delivered, never dropped as a snapshot may be.
+                        let delivered = if matches!(ev, LspEvent::Formatted(_)) {
+                            tx.send(ev).is_ok()
+                        } else {
+                            try_send_event(&tx, ev)
+                        };
+                        if !delivered {
                             break;
                         }
                         wake.wake();
@@ -918,13 +1035,40 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
                     "hover": { "contentFormat": ["plaintext", "markdown"] },
                     "completion": { "completionItem": { "snippetSupport": false } },
                     "publishDiagnostics": {},
-                    "definition": {}
+                    "definition": {},
+                    "formatting": {}
                 }
             }
         }),
         None,
     );
     client.send_notification("initialized", &json!({}));
+}
+
+impl LspClient {
+    /// A client to a process that reads what it is sent and never answers.
+    #[cfg(test)]
+    pub(crate) fn inert() -> LspClient {
+        let child = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--list")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn inert test executable");
+        let mut child = child;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let (_tx, rx) = mpsc::channel();
+        LspClient {
+            child,
+            stdin: Arc::new(Mutex::new(stdin)),
+            events: rx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Some(1),
+            server_name: "test".into(),
+            root: PathBuf::from("/"),
+            progress: HashMap::new(),
+        }
+    }
 }
 
 impl Drop for LspClient {
@@ -1005,6 +1149,7 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
         Some(Pending::Completion) => LspEvent::Completion(parse_completion(msg)),
         Some(Pending::Hover) => LspEvent::Hover(parse_hover(msg)),
         Some(Pending::Definition) => LspEvent::Definition(parse_definition(msg)),
+        Some(Pending::Formatting) => LspEvent::Formatted(parse_formatting(msg)),
         // The `initialize` response (or any unmatched id) reports readiness.
         None => LspEvent::Initialized,
     };
@@ -1224,25 +1369,63 @@ mod tests {
     /// An `LspClient` with an inert child process, for exercising the pure
     /// progress-table logic. Every field the tests touch is real.
     fn fake_client() -> LspClient {
-        let child = Command::new(std::env::current_exe().expect("test executable"))
-            .arg("--list")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("spawn inert test executable");
-        let mut child = child;
-        let stdin = child.stdin.take().expect("piped stdin");
-        let (_tx, rx) = mpsc::channel();
-        LspClient {
-            child,
-            stdin: Arc::new(Mutex::new(stdin)),
-            events: rx,
-            pending: no_pending(),
-            next_id: Some(1),
-            server_name: "test".into(),
-            root: PathBuf::from("/"),
-            progress: HashMap::new(),
-        }
+        LspClient::inert()
+    }
+
+    /// A formatter's edits apply to the text it was asked about, columns
+    /// counted in UTF-16 units; a refusal and overlapping edits are errors.
+    #[test]
+    fn formatting_edits_apply_to_the_text_they_were_made_for() {
+        let edit = |start: (u32, u32), end: (u32, u32), text: &str| TextEdit {
+            range: LspRange {
+                start: Position {
+                    line: start.0,
+                    character: start.1,
+                },
+                end: Position {
+                    line: end.0,
+                    character: end.1,
+                },
+            },
+            new_text: text.into(),
+        };
+        let text = "fn main(){\nlet s=\"😀\";x\n}\n";
+        let edits = [
+            edit((0, 9), (0, 9), " "),
+            edit((1, 0), (1, 0), "    "),
+            // After the emoji, two UTF-16 units wide.
+            edit((1, 11), (1, 12), ""),
+            // Past the end of the text: its end.
+            edit((9, 0), (9, 4), ""),
+        ];
+        assert_eq!(
+            apply_text_edits(text, &edits).unwrap(),
+            "fn main() {\n    let s=\"😀\";\n}\n"
+        );
+        assert!(
+            apply_text_edits(text, &[edit((0, 0), (0, 4), ""), edit((0, 2), (0, 3), "")]).is_err()
+        );
+
+        let pending = Arc::new(Mutex::new(HashMap::from([(7, Pending::Formatting)])));
+        let answer = json!({"jsonrpc": "2.0", "id": 7, "result": [
+            {"range": {"start": {"line": 0, "character": 9}, "end": {"line": 0, "character": 9}},
+             "newText": " "}
+        ]});
+        let Some(LspEvent::Formatted(Ok(edits))) = route_message(&answer, &pending).event else {
+            panic!("a formatting answer is its edits");
+        };
+        assert_eq!(edits, [edit((0, 9), (0, 9), " ")]);
+        let pending = Arc::new(Mutex::new(HashMap::from([(8, Pending::Formatting)])));
+        let refusal = json!({"jsonrpc": "2.0", "id": 8,
+            "error": {"code": -32603, "message": "rustfmt failed"}});
+        let Some(LspEvent::Formatted(Err(reason))) = route_message(&refusal, &pending).event else {
+            panic!("a refusal is the formatter's reason");
+        };
+        assert_eq!(reason, "rustfmt failed");
+        assert_eq!(
+            parse_formatting(&json!({"id": 9, "result": null})),
+            Ok(Vec::new())
+        );
     }
 
     #[test]

@@ -228,6 +228,7 @@ fn native_text_continuation_restores_shared_resource_selection_and_view_after_of
         .settings::<crate::settings::CodeSettings>()
         .set(&crate::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     assert_foreign_view_refused(&mut target, &metadata);
@@ -299,6 +300,7 @@ fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
         .settings::<crate::settings::CodeSettings>()
         .set(&crate::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     target.settle();

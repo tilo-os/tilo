@@ -53,6 +53,7 @@ pub(crate) fn sample() -> Sample {
     app.settings::<crate::settings::CodeSettings>()
         .set(&crate::settings::CodeSettings {
             language_servers: false,
+            ..Default::default()
         })
         .unwrap();
     let mut app = app;

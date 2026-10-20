@@ -10,6 +10,7 @@ pub enum Command {
     Save,
     SaveAs,
     SaveAll,
+    FormatFile,
     RevertFile,
     Find,
     Replace,
@@ -30,13 +31,14 @@ pub enum Command {
 
 impl Command {
     #[cfg(test)]
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::NewFile,
         Self::OpenFolder,
         Self::OpenFile,
         Self::Save,
         Self::SaveAs,
         Self::SaveAll,
+        Self::FormatFile,
         Self::RevertFile,
         Self::Find,
         Self::Replace,

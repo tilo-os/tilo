@@ -1489,3 +1489,93 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
     assert!(restored["code-editor.file"].x1 <= restored["code.bottom-panel-toggle"].x0);
 }
+
+/// With format on save, the person's Save waits for the language server's
+/// edits and writes the formatted text; edits made meanwhile are not
+/// reformatted from a stale answer but saved as they are.
+#[test]
+fn format_on_save_writes_what_the_formatter_answered() {
+    fn at_start(text: &str) -> crate::lsp::TextEdit {
+        crate::lsp::TextEdit {
+            range: crate::lsp::LspRange::default(),
+            new_text: text.into(),
+        }
+    }
+    let mut sample = crate::test_support::sample();
+    sample.open("README.md");
+    sample
+        .app
+        .effect(&crate::effects::CodeEditorEffect::ToggleFormatOnSave)
+        .unwrap();
+    let path = sample.root.join("README.md");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let (waited, unchanged) = sample.with_doc({
+        let path = path.clone();
+        move |app, doc| {
+            let node = app.session.active_buffer().unwrap().node;
+            app.lsp = Some(crate::lsp::LspClient::inert());
+            app.lsp_uri = Some(app.node_uri(node));
+            app.lsp_status = LspStatus::Ready {
+                server: "test".into(),
+            };
+            app.apply_command(Command::Save, doc);
+            let waited = app.formatting.is_some();
+            let unchanged = std::fs::read_to_string(&path).unwrap();
+            app.formatted = Some(Ok(vec![at_start("formatted\n")]));
+            app.apply_formatted(doc);
+            (waited, unchanged)
+        }
+    });
+    assert!(waited, "the save waits for the formatter");
+    assert_eq!(unchanged, before, "nothing is written before it answered");
+    let formatted = format!("formatted\n{before}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), formatted);
+
+    let stale = sample.with_doc(move |app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        app.lsp = Some(crate::lsp::LspClient::inert());
+        app.lsp_uri = Some(app.node_uri(node));
+        app.lsp_status = LspStatus::Ready {
+            server: "test".into(),
+        };
+        app.apply_command(Command::Save, doc);
+        let key = app.buffer_key(node);
+        let text = EditorDoc::read_buffer_key(doc, &key).unwrap();
+        app.dispatch_text_action(doc, key, &text, &format!("{text}typed\n"))
+            .unwrap();
+        app.formatted = Some(Ok(vec![at_start("stale\n")]));
+        app.apply_formatted(doc);
+        app.formatting.is_some()
+    });
+    assert!(!stale, "the answer was taken up");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!("{formatted}typed\n"),
+        "the edit made meanwhile is saved, unformatted"
+    );
+
+    sample
+        .app
+        .effect(&crate::effects::CodeEditorEffect::ToggleFormatOnSave)
+        .unwrap();
+    let waited = sample.with_doc(move |app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        app.lsp = Some(crate::lsp::LspClient::inert());
+        app.lsp_uri = Some(app.node_uri(node));
+        app.lsp_status = LspStatus::Ready {
+            server: "test".into(),
+        };
+        let key = app.buffer_key(node);
+        let text = EditorDoc::read_buffer_key(doc, &key).unwrap();
+        app.dispatch_text_action(doc, key, &text, &format!("{text}off\n"))
+            .unwrap();
+        app.apply_command(Command::Save, doc);
+        app.formatting.is_some()
+    });
+    assert!(!waited, "without format on save, Save writes at once");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .ends_with("typed\noff\n")
+    );
+}
