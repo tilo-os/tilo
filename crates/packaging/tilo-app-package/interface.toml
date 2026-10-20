@@ -120,6 +120,7 @@ roots = ["Manifest", "Header", "SignedRegistrySnapshot", "CompactRegistrySnapsho
 "Kind::app" = "unit"
 "Kind::env-runtime" = "unit"
 "Kind::format-provider" = "unit"
+"Kind::language-pack" = "unit"
 "Kind::plugin" = "unit"
 "Kind::runtime" = "unit"
 "Kind::service" = "unit"
