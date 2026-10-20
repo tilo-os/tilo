@@ -20,13 +20,29 @@ fn refused() -> io::Error {
         "retained native session unavailable",
     )
 }
+/// Whether `binding` is the original copy's root launch lane, and whether
+/// it is a home lane (the retained home, or an edit in place of a selected
+/// file): only these receive the current identity directory.
+fn identity_lanes(binding: &RetainedLaunchBinding) -> (bool, bool) {
+    let copy = binding.resource_record == format!("original-copy:{}", binding.operation_id);
+    let home = binding.resource_record == "retained-home"
+        || binding
+            .resource_record
+            .strip_prefix("selected-open-v2:edit-in-parent:")
+            .is_some_and(|request| {
+                uuid::Uuid::parse_str(request)
+                    .is_ok_and(|id| !id.is_nil() && id.to_string() == request)
+            });
+    (copy, home)
+}
+
 impl NativePersonalSession {
     /// The ordinary Shell selection checks its original signed package and
     /// current author role alongside every certificate refresh.
     pub(crate) fn serve_retained_launch_proof_checked(
         self: Arc<Self>,
         stream: UnixStream,
-        binding: RetainedLaunchBinding,
+        binding: &RetainedLaunchBinding,
         selection: impl Fn() -> io::Result<()>,
     ) -> io::Result<()> {
         self.serve_retained_launch_proof_recipient(stream, binding, selection, None)
@@ -38,8 +54,8 @@ impl NativePersonalSession {
     pub(crate) fn serve_retained_daemon_proof_checked(
         self: Arc<Self>,
         stream: UnixStream,
-        binding: RetainedLaunchBinding,
-        recipient: Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>,
+        binding: &RetainedLaunchBinding,
+        recipient: &Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>,
         selection: impl Fn() -> io::Result<()>,
     ) -> io::Result<()> {
         self.serve_retained_launch_proof_recipient(stream, binding, selection, Some(recipient))
@@ -48,18 +64,18 @@ impl NativePersonalSession {
     fn serve_retained_launch_proof_recipient(
         self: Arc<Self>,
         mut stream: UnixStream,
-        binding: RetainedLaunchBinding,
+        binding: &RetainedLaunchBinding,
         selection: impl Fn() -> io::Result<()>,
-        recipient: Option<Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>>,
+        recipient: Option<&Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>>,
     ) -> io::Result<()> {
-        let check_recipient = |peer: &process_binding::ExecutingPeer| match &recipient {
-            Some(recipient) => recipient.check(peer, &binding),
+        let check_recipient = |peer: &process_binding::ExecutingPeer| match recipient {
+            Some(recipient) => recipient.check(peer, binding),
             None if peer.pid() == binding.root_pid && peer.current() => Ok(()),
             None => Err(refused()),
         };
         binding.validate()?;
         selection()?;
-        if binding.target_uid != unsafe { libc::geteuid() }
+        if binding.target_uid != rustix::process::geteuid().as_raw()
             || binding.target_pid != std::process::id()
             || binding.room.as_str() != self.caller.room().ok_or_else(refused)?
         {
@@ -89,15 +105,7 @@ impl NativePersonalSession {
         stream.write_all(&[1])?;
         // Only the original root launch lane receives the current identity
         // directory. A daemon proof never receives this first-login observer.
-        let copy = binding.resource_record == format!("original-copy:{}", binding.operation_id);
-        let home = binding.resource_record == "retained-home"
-            || binding
-                .resource_record
-                .strip_prefix("selected-open-v2:edit-in-parent:")
-                .is_some_and(|request| {
-                    uuid::Uuid::parse_str(request)
-                        .is_ok_and(|id| !id.is_nil() && id.to_string() == request)
-                });
+        let (copy, home) = identity_lanes(binding);
         if copy && recipient.is_some() {
             return Err(refused());
         }

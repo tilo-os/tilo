@@ -669,26 +669,8 @@ impl Session {
             self.video.showing = wanted.into_keys().collect();
             self.video.applied = Some((carrier, revision));
         }
-        if let (Some(camera), Some(own)) = (&self.video.camera, &self.video.own) {
-            const OWN: &str = "own/camera";
-            let (objects, gap) = camera.preview().take();
-            if gap {
-                self.video.inbox.behind(OWN, PictureSource::Camera);
-            }
-            for object in objects {
-                if let Ok(bytes) = object.encode() {
-                    self.video.inbox.admit(
-                        Picture {
-                            person: own.clone(),
-                            stream: OWN.into(),
-                            source: PictureSource::Camera,
-                            object: bytes,
-                        },
-                        object.keyframe,
-                    );
-                }
-            }
-        }
+        self.take_own_camera();
+        let ticket = &self.runtime.ticket;
         for _ in 0..video::RECEIVE_PER_TICK {
             let Some(received) = client.try_recv_picture() else {
                 break;
@@ -723,6 +705,29 @@ impl Session {
                 },
                 keyframe,
             );
+        }
+    }
+    /// This person's own camera pictures, into the inbox their tile shows.
+    fn take_own_camera(&mut self) {
+        if let (Some(camera), Some(own)) = (&self.video.camera, &self.video.own) {
+            const OWN: &str = "own/camera";
+            let (objects, gap) = camera.preview().take();
+            if gap {
+                self.video.inbox.behind(OWN, PictureSource::Camera);
+            }
+            for object in objects {
+                if let Ok(bytes) = object.encode() {
+                    self.video.inbox.admit(
+                        Picture {
+                            person: own.clone(),
+                            stream: OWN.into(),
+                            source: PictureSource::Camera,
+                            object: bytes,
+                        },
+                        object.keyframe,
+                    );
+                }
+            }
         }
     }
     /// Tell the governor what this device shows, off the call's tick.

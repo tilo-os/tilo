@@ -121,7 +121,8 @@ pub(super) struct State {
 
 impl ShellNetwork {
     fn pairing_root(&self) -> Result<Arc<dyn RootApproval>, String> {
-        if let Some(root) = self.device_approvals.root.lock_recover().clone() {
+        let known = self.device_approvals.root.lock_recover().clone();
+        if let Some(root) = known {
             return Ok(root);
         }
         let user_public_key = self
@@ -184,6 +185,7 @@ impl ShellNetwork {
         let now = tilo_clock::unix_now_ms();
         invites.retain(|open| open.expires_at_ms > now);
         invites.push(invite.clone());
+        drop(invites);
         Ok(invite)
     }
 

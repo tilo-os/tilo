@@ -259,6 +259,53 @@ impl Drop for FloatingSurfaceService {
     }
 }
 
+/// Write `connection`'s frames on a thread of its own, until an empty frame
+/// or a failed write ends it.
+fn spawn_writer(connection: u64, mut writer: UnixStream, frames: mpsc::Receiver<Vec<u8>>) {
+    let _ = std::thread::Builder::new()
+        .name(format!("tilo-shell-ui-writer-{connection}"))
+        .spawn(move || {
+            for frame in frames {
+                if frame.is_empty() {
+                    break;
+                }
+                if writer
+                    .write_all(&frame)
+                    .and_then(|()| writer.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+}
+
+/// Tell an app speaking another shell-ui version which one the shell
+/// speaks, and the shell that it came.
+fn refuse_version(
+    writer: &mut UnixStream,
+    events: &mpsc::Sender<FloatingServiceEvent>,
+    app_id: String,
+    app_version: Option<u16>,
+) {
+    if let Ok(mut answer) = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
+        shell: FLOATING_SURFACE_PROTOCOL_VERSION,
+    }) {
+        answer.push(b'\n');
+        let _ = writer.write_all(&answer).and_then(|()| writer.flush());
+    }
+    tracing::info!(
+        %app_id,
+        ?app_version,
+        shell = FLOATING_SURFACE_PROTOCOL_VERSION,
+        "shell-ui version mismatch"
+    );
+    let _ = events.send(FloatingServiceEvent::VersionMismatch {
+        app_id,
+        app_version,
+    });
+}
+
 // These channel handles are deliberately owned by the per-connection worker,
 // which can outlive the accept-loop stack frame.
 #[allow(
@@ -300,22 +347,7 @@ fn serve_connection(
     };
     let app_version = hello_version(&hello);
     if app_version != Some(FLOATING_SURFACE_PROTOCOL_VERSION) {
-        if let Ok(mut answer) = serde_json::to_vec(&FloatingSurfaceHostMessage::VersionMismatch {
-            shell: FLOATING_SURFACE_PROTOCOL_VERSION,
-        }) {
-            answer.push(b'\n');
-            let _ = writer.write_all(&answer).and_then(|()| writer.flush());
-        }
-        tracing::info!(
-            app_id = %handshake.app_id,
-            ?app_version,
-            shell = FLOATING_SURFACE_PROTOCOL_VERSION,
-            "shell-ui version mismatch"
-        );
-        let _ = events.send(FloatingServiceEvent::VersionMismatch {
-            app_id: handshake.app_id,
-            app_version,
-        });
+        refuse_version(&mut writer, &events, handshake.app_id, app_version);
         return;
     }
     let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
@@ -336,22 +368,7 @@ fn serve_connection(
     } else {
         return;
     }
-    let _ = std::thread::Builder::new()
-        .name(format!("tilo-shell-ui-writer-{connection}"))
-        .spawn(move || {
-            for frame in write_rx {
-                if frame.is_empty() {
-                    break;
-                }
-                if writer
-                    .write_all(&frame)
-                    .and_then(|()| writer.flush())
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+    spawn_writer(connection, writer, write_rx);
     let app_id = handshake.app_id;
     let launch = authenticated_launch(peer_pid, &app_id);
     let _ = events.send(FloatingServiceEvent::Connected {

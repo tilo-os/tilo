@@ -127,6 +127,7 @@ fn make_shell_drawn(fb: &mut FrameBuilder) -> u64 {
         };
         let id = tab.id;
         group.active_tab = id;
+        drop(rendered);
         id
     };
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);

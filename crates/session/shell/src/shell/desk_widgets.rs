@@ -65,11 +65,11 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 /// back, so a hand that overshoots its edge by a few pixels does not lose it.
 pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
-/// How a widget comes and goes is the standard ambient motion
-/// ([`ui::motion::Ambient`]): it leaves at once (the person started typing,
-/// covered the desk or let go of Super, and something leaving has nothing to
-/// say), arrives unasked slowly and opacity only, and arrives asked for
-/// (reaching for its edge, Super, a click) quickly.
+// How a widget comes and goes is the standard ambient motion
+// (`ui::motion::Ambient`): it leaves at once (the person started typing,
+// covered the desk or let go of Super, and something leaving has nothing to
+// say), arrives unasked slowly and opacity only, and arrives asked for
+// (reaching for its edge, Super, a click) quickly.
 
 /// The space kept clear around the text caret, so a widget near it never
 /// sits on the line being typed.

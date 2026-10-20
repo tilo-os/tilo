@@ -1711,10 +1711,13 @@ pub(crate) fn own_person_name_or(
     account: impl FnOnce() -> String,
 ) -> String {
     display_name
-        .as_deref()
         .filter(|name| runtime_identity::is_chosen_display_name(name))
-        .and_then(|name| tilo_user_identity::display_name(name).ok())
-        .map_or_else(account, str::to_owned)
+        .and_then(|name| {
+            tilo_user_identity::display_name(&name)
+                .ok()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(account)
 }
 
 /// Whether this person has given their identity a name of their own: the
@@ -3407,7 +3410,7 @@ impl ShellNetwork {
             live.update(
                 ws,
                 focus,
-                self.live_participant(),
+                Self::live_participant(),
                 presence,
                 std::time::Instant::now(),
             )
@@ -3551,7 +3554,7 @@ impl ShellNetwork {
             ui::num::f32_of_f64(pointer.0),
             ui::num::f32_of_f64(pointer.1),
         ];
-        let participant = self.live_participant();
+        let participant = Self::live_participant();
         let frame = self.live_presence.lock().ok().and_then(|mut live| {
             fold(
                 &mut live,
@@ -3649,7 +3652,7 @@ impl ShellNetwork {
     }
 
     /// How this device asks live members to draw it: the person's name.
-    fn live_participant(&self) -> tilo_relay_protocol::live::LiveParticipant {
+    fn live_participant() -> tilo_relay_protocol::live::LiveParticipant {
         // The person's name, never the device's: the people in a public
         // workspace learn nothing of this person's devices.
         let label =
@@ -3789,11 +3792,14 @@ impl ShellNetwork {
             _ => None,
         };
         if let Some(said) = said {
-            let within_bounds = said.chat.as_ref().is_none_or(|chat| chat.is_valid())
+            let within_bounds = said
+                .chat
+                .as_ref()
+                .is_none_or(tilo_relay_protocol::live::CursorChat::is_valid)
                 && said
                     .reaction
                     .as_ref()
-                    .is_none_or(|reaction| reaction.is_valid());
+                    .is_none_or(tilo_relay_protocol::live::LiveReaction::is_valid);
             if within_bounds && let Ok(mut chat) = self.live_chat.lock() {
                 chat.push(said);
             }

@@ -113,6 +113,13 @@ impl Default for Authority {
 
 impl Authority {
     /// The state writer this authority's queued jobs run on.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::unused_self,
+            reason = "tests give each authority a writer of its own; outside tests every authority shares the one writer"
+        )
+    )]
     fn writer(&self) -> &crate::shell::durable_writer::DurableWriter {
         #[cfg(test)]
         if let Some(writer) = self.writer.get() {
@@ -1006,9 +1013,11 @@ mod tests {
         let second = attach_to(authority.clone(), &app, room, &mut command).unwrap();
         assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 2);
         assert!(authority.next_deadline().is_some());
-        authority
-            .clone()
-            .tick(Instant::now() + Duration::from_secs(2));
+        authority.clone().tick(
+            Instant::now()
+                .checked_add(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now),
+        );
         writer.flush();
         let renewed: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

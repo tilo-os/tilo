@@ -264,6 +264,16 @@ enum Anchor {
     Row(RootRow),
 }
 
+/// Who owns the arrangement this page shows. Hosts that inject a model
+/// (tests, screenshots and embedders) must not silently rewrite the desktop
+/// user's persisted arrangement: only the normal session constructor owns
+/// that file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigOwner {
+    Session,
+    Injected,
+}
+
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
@@ -304,10 +314,7 @@ pub struct QuickSettingsRoot {
     // stop. Keyboard navigation sets it; the index follows it.
     root_focus: Option<RootStop>,
     config: QuickSettingsConfig,
-    // Hosts that inject a model (tests, screenshots and embedders) must not
-    // silently rewrite the desktop user's persisted arrangement. Only the
-    // normal session constructor owns that file.
-    persist_config: bool,
+    config_owner: ConfigOwner,
     edit_mode: bool,
     edit_drag: DragController<QuickSettingsControl>,
     /// How much of each section shows, on the disclosure motion: the open
@@ -376,7 +383,11 @@ impl QuickSettingsRoot {
             keyboard_focus: None,
             root_focus: None,
             config: config.normalised(),
-            persist_config,
+            config_owner: if persist_config {
+                ConfigOwner::Session
+            } else {
+                ConfigOwner::Injected
+            },
             edit_mode: false,
             edit_drag: DragController::vertical(),
             reveal: HashMap::new(),
@@ -610,7 +621,7 @@ impl QuickSettingsRoot {
                     QsSection::Devices => RootRow::Devices,
                     _ => RootRow::Clipboard,
                 };
-                return self.rows(state).contains(&row).then_some(Anchor::Row(row));
+                return Self::rows(state).contains(&row).then_some(Anchor::Row(row));
             }
             QsSection::Wifi => QuickSettingsControl::Wifi,
             QsSection::Bluetooth => QuickSettingsControl::Bluetooth,
@@ -713,7 +724,7 @@ impl QuickSettingsRoot {
     // ---------- layout ----------
 
     /// The rows under the tiles that this machine shows.
-    fn rows(&self, state: &QuickSettingsState) -> Vec<RootRow> {
+    fn rows(state: &QuickSettingsState) -> Vec<RootRow> {
         let mut rows = Vec::new();
         if state.battery.present
             || !state.power_profiles.is_empty()
@@ -820,7 +831,7 @@ impl QuickSettingsRoot {
         }
 
         y += section_gap;
-        for (index, row) in self.rows(state).into_iter().enumerate() {
+        for (index, row) in Self::rows(state).into_iter().enumerate() {
             if index > 0 {
                 y += self.scaled(ui::tokens::Spacing::BASE.s1.into());
             }
@@ -838,7 +849,7 @@ impl QuickSettingsRoot {
         layout.edit = Rect::new(x0, y, x0 + side, y + side);
         let count = FooterButton::ALL.len();
         for (index, button) in FooterButton::ALL.into_iter().enumerate() {
-            let from_end = f64_of_usize(count - index);
+            let from_end = f64_of_usize(count.saturating_sub(index));
             let x = x1 - from_end * side - (from_end - 1.0) * related_gap;
             layout
                 .footer
@@ -1125,7 +1136,7 @@ impl QuickSettingsRoot {
         let mut settled = Self::with_config(self.config.clone());
         settled.layout_scale = self.layout_scale;
         settled.text_scale = self.text_scale;
-        settled.display_names = self.display_names.clone();
+        settled.display_names.clone_from(&self.display_names);
         settled.sound = self.sound;
         settled.panel = if self.panel.width() > 0.0 {
             Rect::new(self.panel.x0, panel.y0, self.panel.x1, panel.y0)
@@ -1137,7 +1148,7 @@ impl QuickSettingsRoot {
     }
     fn save_config(&mut self) {
         self.config = self.config.clone().normalised();
-        if !self.persist_config {
+        if self.config_owner == ConfigOwner::Injected {
             // Interaction tests and embedded previews exercise the same
             // model, but never write a developer's real desktop settings.
             // Their caller owns persistence, if any.
@@ -1294,8 +1305,10 @@ impl QuickSettingsRoot {
     }
     /// Slider `i`'s geometry in a popover `panel`, for integration tests.
     pub fn slider_geometry(panel: Rect, i: usize) -> (Rect, f64) {
-        let mut root = Self::default();
-        root.panel = panel;
+        let root = Self {
+            panel,
+            ..Self::default()
+        };
         root.slider_geometry_for(root.sliders_block(), i)
     }
 
@@ -1407,7 +1420,7 @@ impl QuickSettingsRoot {
                     sections::stops(&slot.layout, state, self.section_metrics())
                         .into_iter()
                         .find(|(s, _)| *s == section_stop)
-                        .map(|(_, r)| r + slot.rect.origin().to_vec2())
+                        .map(|(_, r)| on_page(slot.rect, r))
                 })
                 .unwrap_or(Rect::ZERO),
             RootStop::Row(row) => layout
@@ -2118,7 +2131,7 @@ impl QuickSettingsRoot {
         if let Some(slot) = self.open_slot(&layout, state)
             && slot.clip().contains(point)
         {
-            let local = point - slot.rect.origin().to_vec2();
+            let local = Point::new(point.x - slot.rect.x0, point.y - slot.rect.y0);
             return sections::stop_at(&slot.layout, state, self.section_metrics(), local).map_or(
                 RootAction::None,
                 |stop| match stop {
@@ -2293,7 +2306,7 @@ impl QuickSettingsRoot {
             .items
             .iter()
             .find(|item| item.kind == sections::ItemKind::Hosted(index))
-            .map(|item| item.rect + slot.rect.origin().to_vec2())
+            .map(|item| on_page(slot.rect, item.rect))
     }
 
     pub fn wifi_password_field_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
@@ -2310,10 +2323,10 @@ impl QuickSettingsRoot {
             .items
             .iter()
             .find(|item| item.kind == sections::ItemKind::Password)?;
-        Some(
-            sections::password_field(item.rect, self.section_metrics())
-                + slot.rect.origin().to_vec2(),
-        )
+        Some(on_page(
+            slot.rect,
+            sections::password_field(item.rect, self.section_metrics()),
+        ))
     }
 
     /// The inline prompt's Cancel and Connect, while it shows.
@@ -2434,7 +2447,7 @@ impl QuickSettingsRoot {
             layout.edit,
         );
         for (button, rect) in &layout.footer {
-            self.draw_footer_button(ctx, &frame, *button, *rect);
+            Self::draw_footer_button(ctx, &frame, *button, *rect);
         }
     }
 
@@ -2514,8 +2527,7 @@ impl QuickSettingsRoot {
             }
             ui::icons::draw_icon(
                 scene,
-                transform
-                    * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
+                transform.pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
                 chevron,
                 ui::icons::Icon::ChevronRight,
                 colors.text_dim,
@@ -2619,11 +2631,9 @@ impl QuickSettingsRoot {
             face.paint_divider(scene, transform, theme, inset_y);
             let turn = self.chevron_turn(section, s);
             let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
-            let rotation =
-                Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center());
             ui::icons::draw_icon(
                 scene,
-                transform * rotation,
+                transform.pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
                 chevron,
                 ui::icons::Icon::ChevronRight,
                 ink,
@@ -2696,7 +2706,7 @@ impl QuickSettingsRoot {
                 origin,
                 cursor: cursor
                     .filter(|point| open && clip.contains(*point))
-                    .map(|point| point - origin.to_vec2()),
+                    .map(|point| Point::new(point.x - origin.x, point.y - origin.y)),
                 focused,
                 password_ready: self.password_ready,
             },
@@ -2734,7 +2744,8 @@ impl QuickSettingsRoot {
         let turn = self.chevron_turn(section, state);
         ui::icons::draw_icon(
             ctx.scene,
-            ctx.transform * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
+            ctx.transform
+                .pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
             slot,
             ui::icons::Icon::ChevronRight,
             ctx.theme.tokens.colors.text_dim,
@@ -2827,7 +2838,6 @@ impl QuickSettingsRoot {
 
     /// A footer button: quiet — its glyph and name, lifting on hover.
     fn draw_footer_button(
-        &self,
         ctx: &mut PaintCtx<'_>,
         frame: &RootFrame<'_>,
         button: FooterButton,
@@ -3490,6 +3500,12 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
     }
 }
 
+/// `rect`, laid out inside a section whose own rect on the page is
+/// `section`, in the page's coordinates.
+fn on_page(section: Rect, rect: Rect) -> Rect {
+    Affine::translate(section.origin().to_vec2()).transform_rect_bbox(rect)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3562,8 +3578,10 @@ mod tests {
     }
 
     fn laid_out(state: &QuickSettingsState) -> QuickSettingsRoot {
-        let mut root = QuickSettingsRoot::default();
-        root.panel = PANEL;
+        let mut root = QuickSettingsRoot {
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
         root.settle_sections(state);
         root
     }
@@ -3622,12 +3640,14 @@ mod tests {
     fn root_controls_reflect_present_hardware_and_migrated_config() {
         // Wired only: the network slot is the wired tile.
         let root = QuickSettingsRoot::default();
-        let mut state = QuickSettingsState::default();
-        state.wired = Some(os_actions::WiredInfo {
-            connected: true,
-            device: Some("enp0s31f6".into()),
-            ..Default::default()
-        });
+        let state = QuickSettingsState {
+            wired: Some(os_actions::WiredInfo {
+                connected: true,
+                device: Some("enp0s31f6".into()),
+                ..Default::default()
+            }),
+            ..QuickSettingsState::default()
+        };
         assert!(
             root.visible_controls(&state)
                 .contains(&QuickSettingsControl::Wifi)
@@ -4141,8 +4161,10 @@ mod tests {
     fn a_short_popover_scrolls_every_stop_into_view() {
         let mut state = laptop();
         state.open_section(QsSection::Wifi);
-        let mut root = QuickSettingsRoot::default();
-        root.panel = PANEL;
+        let mut root = QuickSettingsRoot {
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
         root.settle_sections(&state);
         let viewport = Rect::new(100.0, 48.0, 500.0, 448.0);
         let theme = Theme::dark();
@@ -4173,18 +4195,22 @@ mod tests {
     #[test]
     fn edit_mode_adds_removes_and_reorders_by_keyboard_pointer_and_explicit_remove() {
         // Keyboard reorder, then add from the available chips.
-        let mut root = QuickSettingsRoot::default();
         let state = laptop();
-        root.edit_mode = true;
-        root.panel = PANEL;
+        let mut root = QuickSettingsRoot {
+            edit_mode: true,
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
         root.keyboard_focus = Some(0);
         assert!(root.reorder_focused(&state, 1));
         assert_eq!(root.config.controls[1], QuickSettingsControl::Wifi);
 
         // The row body starts a reorder; only its explicit action removes.
-        let mut root = QuickSettingsRoot::default();
-        root.edit_mode = true;
-        root.panel = PANEL;
+        let mut root = QuickSettingsRoot {
+            edit_mode: true,
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
         let row = root.edit_row(PANEL, 1);
         let bluetooth = QuickSettingsControl::Bluetooth;
         assert_eq!(root.edit_click(row.center(), &state), RootAction::None);
@@ -4245,12 +4271,11 @@ mod tests {
         root.sync_displays(&state);
         assert_eq!(root.slider_count(), 3);
         assert_eq!(root.slider_name(1), "Brightness, Dell U2720Q");
-        let names: Vec<String> = root
-            .semantic_rects(&state)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert!(names.contains(&"quick_settings_brightness_1".to_owned()));
+        assert!(
+            root.semantic_rects(&state)
+                .into_iter()
+                .any(|(name, _)| name == "quick_settings_brightness_1")
+        );
         assert_eq!(
             root.slider_commit(&state, 1),
             SliderCommit::DisplayBrightness(1, 75.0)

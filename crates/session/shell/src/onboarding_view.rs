@@ -504,6 +504,52 @@ impl TourPage {
 }
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
+/// Restore an identity from the backup at `source` into `import_dir` and
+/// make it active, with the same root to device chain minting provisions.
+fn import_identity(
+    import_dir: &Path,
+    source: &Path,
+    passphrase: &[u8],
+) -> Result<MintedIdentity, String> {
+    let store = crate::identity_registry::IdentityRegistryStore::at(import_dir);
+    let profile = if passphrase.is_empty() {
+        // Explicit compatibility path for schema-1 exports from
+        // older Tilo builds. New backups always require a
+        // passphrase and never expose plaintext JSON.
+        store.import(source).map_err(|error| error.to_string())?
+    } else {
+        store
+            .import_portable(source, passphrase)
+            .map_err(|error| error.to_string())?
+    };
+    let runtime_id = profile
+        .record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
+    runtime_identity::set_active_identity(import_dir, runtime_id)
+        .map_err(|error| error.to_string())?;
+    // Restoring on a fresh machine must provision the exact same
+    // complete root -> device chain as minting. The narrower
+    // identity-keyed certificate helper leaves the legacy system
+    // owner/certificate absent until a later login repair.
+    crate::firstboot::ensure_collaboration_identity(
+        import_dir,
+        &crate::firstboot::collaboration_identity_paths(),
+    )
+    .map_err(|error| error.to_string())?;
+    crate::device_fleet::DeviceFleetStore::at(
+        import_dir,
+        crate::firstboot::collaboration_identity_paths(),
+    )
+    .register_current_device(&profile.id)
+    .map_err(|error| error.to_string())?;
+    Ok(MintedIdentity {
+        fingerprint: profile.id,
+        path: profile.record_path,
+    })
+}
+
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
 type BackupCapability = Box<dyn Fn(&Path) -> Result<bool, String> + Send>;
 fn canonical_backup_capability(path: &Path) -> Result<bool, String> {
@@ -877,45 +923,7 @@ impl OnboardingView {
         };
         let mut view = Self::with_all_handlers_in_context(
             minter,
-            Box::new(move |source, passphrase| {
-                let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
-                let profile = if passphrase.is_empty() {
-                    // Explicit compatibility path for schema-1 exports from
-                    // older Tilo builds. New backups always require a
-                    // passphrase and never expose plaintext JSON.
-                    store.import(source).map_err(|error| error.to_string())?
-                } else {
-                    store
-                        .import_portable(source, passphrase)
-                        .map_err(|error| error.to_string())?
-                };
-                let runtime_id = profile
-                    .record_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
-                runtime_identity::set_active_identity(&import_dir, runtime_id)
-                    .map_err(|error| error.to_string())?;
-                // Restoring on a fresh machine must provision the exact same
-                // complete root -> device chain as minting. The narrower
-                // identity-keyed certificate helper leaves the legacy system
-                // owner/certificate absent until a later login repair.
-                crate::firstboot::ensure_collaboration_identity(
-                    &import_dir,
-                    &crate::firstboot::collaboration_identity_paths(),
-                )
-                .map_err(|error| error.to_string())?;
-                crate::device_fleet::DeviceFleetStore::at(
-                    &import_dir,
-                    crate::firstboot::collaboration_identity_paths(),
-                )
-                .register_current_device(&profile.id)
-                .map_err(|error| error.to_string())?;
-                Ok(MintedIdentity {
-                    fingerprint: profile.id,
-                    path: profile.record_path,
-                })
-            }),
+            Box::new(move |source, passphrase| import_identity(&import_dir, source, passphrase)),
             Box::new(move |identity, destination, passphrase| {
                 runtime_identity::export_portable_backup(identity, destination, passphrase)
                     .map(|_| ())
@@ -1003,19 +1011,18 @@ impl OnboardingView {
                         }
                         match pending.portable_applications(identity_dir) {
                             Ok(Some(declaration)) => {
-                                match crate::onboarding_portable_applications::Pending::open(
-                                    home.clone(),
-                                    identity_dir.to_path_buf(),
-                                    declaration,
-                                ) {
-                                    Ok(applications) => {
-                                        self.portable_applications = Some(applications)
-                                    }
-                                    Err(_) => {
-                                        self.prepared_pending = true;
-                                        self.error =
-                                            Some(t("onboarding-portable-applications-unavailable"));
-                                    }
+                                if let Ok(applications) =
+                                    crate::onboarding_portable_applications::Pending::open(
+                                        home.clone(),
+                                        identity_dir.to_path_buf(),
+                                        declaration,
+                                    )
+                                {
+                                    self.portable_applications = Some(applications);
+                                } else {
+                                    self.prepared_pending = true;
+                                    self.error =
+                                        Some(t("onboarding-portable-applications-unavailable"));
                                 }
                             }
                             Ok(None) => (),
@@ -3214,7 +3221,7 @@ impl OnboardingView {
     ) -> Result<(), ()> {
         if !self
             .backup_status()
-            .is_some_and(|status| status["can_save"] == true)
+            .is_some_and(|status| json_flag(&status, "can_save"))
             || destination.len() > 4096
             || !Path::new(destination).is_absolute()
             || passphrase.len() > 4096
@@ -3249,21 +3256,22 @@ impl OnboardingView {
         self.invalidation.both();
         Ok(())
     }
-    pub(crate) fn invoke_migration(&mut self, op: &str, operation: Option<&str>) -> Result<(), ()> {
-        if op == "resume"
-            && !self.prepared_pending
+    /// Resume the deferred migration `operation` names (or the first one
+    /// deferred): the portable home, then its applications, then the
+    /// browser. `None` when nothing deferred is waiting.
+    fn resume_deferred(&mut self, operation: Option<&str>) -> Option<Result<(), ()>> {
+        if !self.prepared_pending
             && self.flow.is_done()
             && let Some(portable) = self.portable_home.as_mut()
         {
             if operation.is_some_and(|selected| portable.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = portable.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
         }
-        if op == "resume"
-            && !self.prepared_pending
+        if !self.prepared_pending
             && self.flow.is_done()
             && !self
                 .portable_home
@@ -3275,23 +3283,30 @@ impl OnboardingView {
                 .filter(|pending| pending.deferred())
         {
             if operation.is_some_and(|selected| applications.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = applications.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
         }
-        if op == "resume"
-            && !self.prepared_pending
+        if !self.prepared_pending
             && self.flow.is_done()
             && let Some(browser) = self.browser.as_mut().filter(|pending| pending.deferred())
         {
             if operation.is_some_and(|selected| browser.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = browser.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
+        }
+        None
+    }
+    pub(crate) fn invoke_migration(&mut self, op: &str, operation: Option<&str>) -> Result<(), ()> {
+        if op == "resume"
+            && let Some(resumed) = self.resume_deferred(operation)
+        {
+            return resumed;
         }
         if !self.migration_active() {
             return Err(());
@@ -3309,13 +3324,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = portable.invoke(op, &password).map_err(|_| ());
             clear_secret(&self.connect_passphrase);
             self.error = result
@@ -3338,13 +3347,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = applications.invoke(op, &password).map_err(|_| ());
             clear_secret(&self.connect_passphrase);
             self.error = result
@@ -3363,13 +3366,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = browser.invoke(op, &password).map_err(|_| ());
             crate::shell::launcher::set_browser_continuity(
                 browser.verified_projection().map(Path::to_owned),
@@ -3448,37 +3445,37 @@ impl OnboardingView {
         Ok(())
     }
 
+    /// What the migration page is titled: the step in hand.
+    fn migration_title_key(&self) -> &'static str {
+        if self
+            .portable_home
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_home::Pending::pending)
+        {
+            "onboarding-portable-home-title"
+        } else if self
+            .portable_applications
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_applications::Pending::pending)
+        {
+            "onboarding-portable-applications-title"
+        } else if self
+            .browser
+            .as_ref()
+            .is_some_and(crate::onboarding_browser::Pending::pending)
+        {
+            "onboarding-browser-title"
+        } else {
+            "onboarding-migration-title"
+        }
+    }
+
     fn migration_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s4)
-            .push(heading(
-                &t(
-                    if self
-                        .portable_home
-                        .as_ref()
-                        .is_some_and(crate::onboarding_portable_home::Pending::pending)
-                    {
-                        "onboarding-portable-home-title"
-                    } else if self
-                        .portable_applications
-                        .as_ref()
-                        .is_some_and(crate::onboarding_portable_applications::Pending::pending)
-                    {
-                        "onboarding-portable-applications-title"
-                    } else if self
-                        .browser
-                        .as_ref()
-                        .is_some_and(crate::onboarding_browser::Pending::pending)
-                    {
-                        "onboarding-browser-title"
-                    } else {
-                        "onboarding-migration-title"
-                    },
-                ),
-                theme,
-            ));
+            .push(heading(&t(self.migration_title_key()), theme));
         let status = self.migration_status().unwrap_or_default();
         let state = status
             .get("state")
@@ -3488,61 +3485,7 @@ impl OnboardingView {
             .get("retained_access")
             .and_then(serde_json::Value::as_bool)
             == Some(true);
-        let apps = status
-            .get("applications_only")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            || retained && matches!(state, "reviewed" | "ready-to-adopt");
-        let text = if status["browser"] == true {
-            "onboarding-browser-body"
-        } else if status
-            .get("portable_applications")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && matches!(state, "pending" | "failed" | "unavailable" | "cancelled")
-        {
-            "onboarding-portable-applications-body"
-        } else if retained && state == "pending" {
-            "onboarding-existing-files-body"
-        } else if apps && state == "reviewed" {
-            "onboarding-existing-files-apps-reviewed"
-        } else if apps && state == "ready-to-adopt" {
-            "onboarding-existing-files-apps-adopt"
-        } else if status
-            .get("portable_home")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && matches!(state, "pending" | "failed" | "unavailable")
-        {
-            "onboarding-portable-home-body"
-        } else {
-            match state {
-                "pending" => "onboarding-migration-body",
-                "reviewed" => "onboarding-migration-reviewed",
-                "ready-to-adopt" => "onboarding-migration-adopt-body",
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "running" =>
-                {
-                    "onboarding-migration-cleanup-running"
-                }
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "pending" =>
-                {
-                    "onboarding-migration-cleanup-pending"
-                }
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "unavailable" =>
-                {
-                    "onboarding-migration-cleanup-unavailable"
-                }
-                "complete" => "onboarding-migration-complete",
-                "existing-files-available" => "onboarding-existing-files-available",
-                "incomplete" => "onboarding-migration-incomplete",
-                "failed" | "unavailable" => "onboarding-migration-failed",
-                "cancelled" => "onboarding-migration-cancelled",
-                _ => "onboarding-migration-working",
-            }
-        };
+        let text = migration_body_key(&status, state, retained);
         body = body.push(paragraph(&t(text), theme));
         if self
             .portable_home
@@ -3592,26 +3535,9 @@ impl OnboardingView {
         )
     }
 
-    fn migration_actions(&self, state: &str) -> Box<dyn Widget> {
-        let cleanup = self.migration_status().unwrap_or_default();
-        let cleanup_pending =
-            cleanup["transfer_complete"] == true && cleanup["cleanup_state"] == "pending";
-        let cleanup_blocked =
-            cleanup["transfer_complete"] == true && cleanup["cleanup_state"] != "finished";
-        let busy = !cleanup_pending
-            && [
-                "copying",
-                "verifying",
-                "retirement-pending",
-                "restoring-applications",
-                "adopting",
-                "reviewing",
-                "cancelling",
-                "releasing-applications",
-                "activating-browser",
-            ]
-            .contains(&state);
-        let label = match state {
+    /// What the migration's main button says in `state`.
+    fn migration_next_label(&self, state: &str, cleanup_pending: bool) -> &'static str {
+        match state {
             _ if cleanup_pending => "onboarding-migration-cleanup-resume",
             "pending" | "unavailable" | "failed" | "cancelled" => "onboarding-migration-review",
             "reviewed"
@@ -3626,14 +3552,14 @@ impl OnboardingView {
             "reviewed"
                 if self
                     .migration_status()
-                    .is_some_and(|value| value["portable_applications"] == true) =>
+                    .is_some_and(|value| json_flag(&value, "portable_applications")) =>
             {
                 "onboarding-portable-applications-start"
             }
             "reviewed"
                 if self
                     .migration_status()
-                    .is_some_and(|value| value["browser"] == true) =>
+                    .is_some_and(|value| json_flag(&value, "browser")) =>
             {
                 "onboarding-browser-start"
             }
@@ -3642,7 +3568,57 @@ impl OnboardingView {
             "complete" | "existing-files-available" => "onboarding-continue",
             "incomplete" => "onboarding-migration-retry",
             _ => "onboarding-migration-working",
-        };
+        }
+    }
+
+    /// Whether the migration under way in `state` can still be cancelled.
+    fn migration_cancellable(&self, state: &str) -> bool {
+        state != "cancelling"
+            && (state != "reviewing"
+                || self
+                    .portable_home
+                    .as_ref()
+                    .is_some_and(crate::onboarding_portable_home::Pending::busy)
+                || self
+                    .portable_applications
+                    .as_ref()
+                    .is_some_and(crate::onboarding_portable_applications::Pending::busy)
+                || self
+                    .browser
+                    .as_ref()
+                    .is_some_and(crate::onboarding_browser::Pending::busy)
+                || self.migration_status().and_then(|value| {
+                    value
+                        .get("original_copy")
+                        .and_then(serde_json::Value::as_bool)
+                }) == Some(true)
+                || self.migration_status().and_then(|value| {
+                    value
+                        .get("retained_access")
+                        .and_then(serde_json::Value::as_bool)
+                }) == Some(true))
+    }
+
+    fn migration_actions(&self, state: &str) -> Box<dyn Widget> {
+        let cleanup = self.migration_status().unwrap_or_default();
+        let cleanup_pending = json_flag(&cleanup, "transfer_complete")
+            && json_text(&cleanup, "cleanup_state") == Some("pending");
+        let cleanup_blocked = json_flag(&cleanup, "transfer_complete")
+            && json_text(&cleanup, "cleanup_state") != Some("finished");
+        let busy = !cleanup_pending
+            && [
+                "copying",
+                "verifying",
+                "retirement-pending",
+                "restoring-applications",
+                "adopting",
+                "reviewing",
+                "cancelling",
+                "releasing-applications",
+                "activating-browser",
+            ]
+            .contains(&state);
+        let label = self.migration_next_label(state, cleanup_pending);
         let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
             self.pressed
                 .button(
@@ -3661,31 +3637,7 @@ impl OnboardingView {
                         &t("onboarding-migration-cancel"),
                         "onboarding.migration.cancel",
                     )
-                    .with_enabled(
-                        state != "cancelling"
-                            && (state != "reviewing"
-                                || self
-                                    .portable_home
-                                    .as_ref()
-                                    .is_some_and(crate::onboarding_portable_home::Pending::busy)
-                                || self.portable_applications.as_ref().is_some_and(
-                                    crate::onboarding_portable_applications::Pending::busy,
-                                )
-                                || self
-                                    .browser
-                                    .as_ref()
-                                    .is_some_and(crate::onboarding_browser::Pending::busy)
-                                || self.migration_status().and_then(|value| {
-                                    value
-                                        .get("original_copy")
-                                        .and_then(serde_json::Value::as_bool)
-                                }) == Some(true)
-                                || self.migration_status().and_then(|value| {
-                                    value
-                                        .get("retained_access")
-                                        .and_then(serde_json::Value::as_bool)
-                                }) == Some(true)),
-                    ),
+                    .with_enabled(self.migration_cancellable(state)),
             ));
         } else if !cleanup_blocked {
             actions.push(Box::new(
@@ -3739,18 +3691,7 @@ impl OnboardingView {
     fn activate_prepared(
         &self,
         mut imported: crate::onboarding_prepared::Imported,
-    ) -> Result<
-        (
-            MintedIdentity,
-            [u8; 32],
-            Option<crate::onboarding_prepared::PortableHome>,
-            Option<crate::onboarding_prepared::PortableApplications>,
-            Option<crate::onboarding_prepared::BrowserDeclaration>,
-            Option<crate::onboarding_prepared::ServiceSessions>,
-            Option<tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity>,
-        ),
-        (),
-    > {
+    ) -> Result<ActivatedPrepared, ()> {
         self.prepared_review
             .as_ref()
             .ok_or(())?
@@ -3880,42 +3821,105 @@ impl OnboardingView {
         }
     }
 
+    /// Start importing the prepared setup with the passphrase typed: its
+    /// targets made ready, then its worker started.
+    fn start_prepared_import(&mut self) {
+        self.prepared_secret_queued = false;
+        let result = (|| {
+            let home = crate::onboarding_prepared::session_home().ok_or(())?;
+            let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+            let password = typed_passphrase(&self.connect_passphrase)?;
+            let directory = self.identity_dir.clone().ok_or(())?;
+            pending.prepare_targets(&directory).map_err(|_| ())?;
+            if !self.persist_progress(PersistedStage::AcquiringIdentity) {
+                return Err(());
+            }
+            let worker = pending
+                .start(
+                    &directory,
+                    &password,
+                    self.context == OnboardingContext::HostDesktop,
+                )
+                .map_err(|_| ())?;
+            self.prepared_home_password = Some((pending.digest(), password));
+            self.prepared_review = Some(pending);
+            self.prepared_worker = Some(worker);
+            Ok::<(), ()>(())
+        })();
+        clear_secret(&self.connect_passphrase);
+        if result.is_err() {
+            self.prepared_home_password = None;
+        }
+        self.error = result.err().map(|()| t("onboarding-prepared-failed"));
+        self.invalidation.both();
+    }
+
+    /// Open what the prepared setup brings along, each part handed the
+    /// passphrase the installer was given, since that was the person's
+    /// consent.
+    fn open_prepared_parts(
+        &mut self,
+        (portable_home, portable_applications, browser): PreparedParts,
+        prepared_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
+    ) {
+        if let Some(declaration) = portable_home {
+            self.portable_home = crate::onboarding_prepared::session_home().and_then(|home| {
+                self.identity_dir.clone().and_then(|directory| {
+                    crate::onboarding_portable_home::Pending::open(home, directory, declaration)
+                        .ok()
+                })
+            });
+            if let (Some(portable), Some((digest, password))) =
+                (self.portable_home.as_mut(), prepared_password.as_ref())
+            {
+                // The authenticated installer selection is prior consent.
+                // The reducer continues it after activation; failures retain
+                // the ordinary explicit retry/password controls.
+                let _ =
+                    portable.receive_prepared_password(*digest, Zeroizing::new(password.to_vec()));
+            }
+            if self.portable_home.is_none() {
+                self.prepared_pending = true;
+                self.error = Some(t("onboarding-portable-home-unavailable"));
+            }
+        }
+        if let Some(declaration) = portable_applications {
+            self.portable_applications =
+                crate::onboarding_prepared::session_home().and_then(|home| {
+                    self.identity_dir.clone().and_then(|directory| {
+                        crate::onboarding_portable_applications::Pending::open(
+                            home,
+                            directory,
+                            declaration,
+                        )
+                        .ok()
+                    })
+                });
+            if let (Some(applications), Some((digest, password))) = (
+                self.portable_applications.as_mut(),
+                prepared_password.as_ref(),
+            ) {
+                let _ = applications
+                    .receive_prepared_password(*digest, Zeroizing::new(password.to_vec()));
+            }
+            if self.portable_applications.is_none() {
+                self.prepared_pending = true;
+                self.error = Some(t("onboarding-portable-applications-unavailable"));
+            }
+        }
+        if let Some(declaration) = browser {
+            self.load_browser_declaration(declaration);
+            if let (Some(browser), Some((digest, password))) =
+                (self.browser.as_mut(), prepared_password)
+            {
+                let _ = browser.receive_prepared_password(digest, password);
+            }
+        }
+    }
+
     fn sync_prepared(&mut self) {
         if self.pressed.take(KEY_PREPARED_IMPORT) && self.prepared_worker.is_none() {
-            self.prepared_secret_queued = false;
-            let result = (|| {
-                let home = crate::onboarding_prepared::session_home().ok_or(())?;
-                let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
-                let password = Zeroizing::new(
-                    self.connect_passphrase
-                        .lock()
-                        .map_err(|_| ())?
-                        .as_bytes()
-                        .to_vec(),
-                );
-                let directory = self.identity_dir.clone().ok_or(())?;
-                pending.prepare_targets(&directory).map_err(|_| ())?;
-                if !self.persist_progress(PersistedStage::AcquiringIdentity) {
-                    return Err(());
-                }
-                let worker = pending
-                    .start(
-                        &directory,
-                        &password,
-                        self.context == OnboardingContext::HostDesktop,
-                    )
-                    .map_err(|_| ())?;
-                self.prepared_home_password = Some((pending.digest(), password));
-                self.prepared_review = Some(pending);
-                self.prepared_worker = Some(worker);
-                Ok::<(), ()>(())
-            })();
-            clear_secret(&self.connect_passphrase);
-            if result.is_err() {
-                self.prepared_home_password = None;
-            }
-            self.error = result.err().map(|()| t("onboarding-prepared-failed"));
-            self.invalidation.both();
+            self.start_prepared_import();
         }
         let outcome = self
             .prepared_worker
@@ -3943,17 +3947,14 @@ impl OnboardingView {
                         self.invalidation.both();
                         return;
                     }
-                    let current_claim = match current_identity
+                    let Ok(current_claim) = current_identity
                         .as_ref()
-                        .map(|identity| identity.declaration())
+                        .map(tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity::declaration)
                         .transpose()
-                    {
-                        Ok(claim) => claim,
-                        Err(_) => {
-                            self.error = Some(t("onboarding-prepared-failed"));
-                            self.invalidation.both();
-                            return;
-                        }
+                    else {
+                        self.error = Some(t("onboarding-prepared-failed"));
+                        self.invalidation.both();
+                        return;
                     };
                     if self.persist_progress(if self.identity_ready_page {
                         PersistedStage::ReadyToEnter
@@ -3973,69 +3974,10 @@ impl OnboardingView {
                     }) {
                         self.prepared_pending = false;
                         self.error = None;
-                        if let Some(declaration) = portable_home {
-                            self.portable_home = crate::onboarding_prepared::session_home()
-                                .and_then(|home| {
-                                    self.identity_dir.clone().and_then(|directory| {
-                                        crate::onboarding_portable_home::Pending::open(
-                                            home,
-                                            directory,
-                                            declaration,
-                                        )
-                                        .ok()
-                                    })
-                                });
-                            if let (Some(portable), Some((digest, password))) =
-                                (self.portable_home.as_mut(), prepared_password.as_ref())
-                            {
-                                // The authenticated installer selection is prior consent.
-                                // The reducer continues it after activation; failures retain
-                                // the ordinary explicit retry/password controls.
-                                let _ = portable.receive_prepared_password(
-                                    *digest,
-                                    Zeroizing::new(password.to_vec()),
-                                );
-                            }
-                            if self.portable_home.is_none() {
-                                self.prepared_pending = true;
-                                self.error = Some(t("onboarding-portable-home-unavailable"));
-                            }
-                        }
-                        if let Some(declaration) = portable_applications {
-                            self.portable_applications = crate::onboarding_prepared::session_home()
-                                .and_then(|home| {
-                                    self.identity_dir.clone().and_then(|directory| {
-                                        crate::onboarding_portable_applications::Pending::open(
-                                            home,
-                                            directory,
-                                            declaration,
-                                        )
-                                        .ok()
-                                    })
-                                });
-                            if let (Some(applications), Some((digest, password))) = (
-                                self.portable_applications.as_mut(),
-                                prepared_password.as_ref(),
-                            ) {
-                                let _ = applications.receive_prepared_password(
-                                    *digest,
-                                    Zeroizing::new(password.to_vec()),
-                                );
-                            }
-                            if self.portable_applications.is_none() {
-                                self.prepared_pending = true;
-                                self.error =
-                                    Some(t("onboarding-portable-applications-unavailable"));
-                            }
-                        }
-                        if let Some(declaration) = browser {
-                            self.load_browser_declaration(declaration);
-                            if let (Some(browser), Some((digest, password))) =
-                                (self.browser.as_mut(), prepared_password)
-                            {
-                                let _ = browser.receive_prepared_password(digest, password);
-                            }
-                        }
+                        self.open_prepared_parts(
+                            (portable_home, portable_applications, browser),
+                            prepared_password,
+                        );
                         self.prepared_review = None;
                     } else {
                         self.error = Some(t("onboarding-prepared-failed"));
@@ -4286,9 +4228,6 @@ impl OnboardingView {
         }
         Box::new(page)
     }
-
-    /// The media codecs offer: what it enables, where it comes from, and the
-    /// live result once the owner chose to install.
 
     /// The offer to play more formats: a centred title and one short line
     /// over a single large Install button, with a quiet way past it. Nothing
@@ -4622,6 +4561,14 @@ fn labelled_secret_field(
                 placeholder,
             ))),
     )
+}
+
+/// The passphrase typed into `buffer`, copied out to be cleared after its
+/// one use.
+fn typed_passphrase(buffer: &Arc<Mutex<String>>) -> Result<Zeroizing<Vec<u8>>, ()> {
+    Ok(Zeroizing::new(
+        buffer.lock().map_err(|_| ())?.as_bytes().to_vec(),
+    ))
 }
 
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
@@ -5329,8 +5276,6 @@ impl Widget for OnboardingView {
             DENSE_PANEL_PREFERRED_HEIGHT
         } else if codecs_page {
             CODECS_PANEL_PREFERRED_HEIGHT
-        } else if ready_identity_page {
-            READY_PANEL_PREFERRED_HEIGHT
         } else {
             panel_height
         };
@@ -5354,8 +5299,6 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
             } else if codecs_page {
                 taffy::Dimension::length(CODECS_PANEL_PREFERRED_HEIGHT)
-            } else if ready_identity_page {
-                taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
             } else if intro_page {
                 taffy::Dimension::length(INTRO_PANEL_HEIGHT)
             } else {
@@ -5694,6 +5637,109 @@ struct Choice {
     key: &'static str,
 }
 
+/// The parts a prepared setup may bring along: a home, applications and a
+/// browser.
+type PreparedParts = (
+    Option<crate::onboarding_prepared::PortableHome>,
+    Option<crate::onboarding_prepared::PortableApplications>,
+    Option<crate::onboarding_prepared::BrowserDeclaration>,
+);
+
+/// What activating a prepared identity yields: the identity, its device
+/// key, and the parts of the old computer it brings along.
+type ActivatedPrepared = (
+    MintedIdentity,
+    [u8; 32],
+    Option<crate::onboarding_prepared::PortableHome>,
+    Option<crate::onboarding_prepared::PortableApplications>,
+    Option<crate::onboarding_prepared::BrowserDeclaration>,
+    Option<crate::onboarding_prepared::ServiceSessions>,
+    Option<tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity>,
+);
+
+/// What the migration page says for its `status` in `state`; `retained`
+/// when this device keeps the old computer's files where they are.
+fn migration_body_key(status: &serde_json::Value, state: &str, retained: bool) -> &'static str {
+    let apps = status
+        .get("applications_only")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || retained && matches!(state, "reviewed" | "ready-to-adopt");
+    if json_flag(status, "browser") {
+        "onboarding-browser-body"
+    } else if status
+        .get("portable_applications")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && matches!(state, "pending" | "failed" | "unavailable" | "cancelled")
+    {
+        "onboarding-portable-applications-body"
+    } else if retained && state == "pending" {
+        "onboarding-existing-files-body"
+    } else if apps && state == "reviewed" {
+        "onboarding-existing-files-apps-reviewed"
+    } else if apps && state == "ready-to-adopt" {
+        "onboarding-existing-files-apps-adopt"
+    } else if status
+        .get("portable_home")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && matches!(state, "pending" | "failed" | "unavailable")
+    {
+        "onboarding-portable-home-body"
+    } else {
+        match state {
+            "pending" => "onboarding-migration-body",
+            "reviewed" => "onboarding-migration-reviewed",
+            "ready-to-adopt" => "onboarding-migration-adopt-body",
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("running") =>
+            {
+                "onboarding-migration-cleanup-running"
+            }
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("pending") =>
+            {
+                "onboarding-migration-cleanup-pending"
+            }
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("unavailable") =>
+            {
+                "onboarding-migration-cleanup-unavailable"
+            }
+            "complete" => "onboarding-migration-complete",
+            "existing-files-available" => "onboarding-existing-files-available",
+            "incomplete" => "onboarding-migration-incomplete",
+            "failed" | "unavailable" => "onboarding-migration-failed",
+            "cancelled" => "onboarding-migration-cancelled",
+            _ => "onboarding-migration-working",
+        }
+    }
+}
+
+/// Whether `value`'s `key` is `true`.
+fn json_flag(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// `value`'s `key` as text.
+fn json_text<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// A step arriving now, on the drill.
+fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
+    let mut arriving = ui::motion::Presence::closed();
+    arriving.show(
+        true,
+        ui::motion::Drill::SPEC,
+        motion,
+        ui::tokens::MotionSource::Pointer,
+        ui::time::now(),
+    );
+    arriving
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
@@ -5884,6 +5930,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn migration_first_use_semantic_actions_are_bound_to_pending_operation_and_defer_truthfully() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
@@ -5936,6 +5983,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn composite_cleanup_retry_is_visible_semantic_and_retains_rw_fence() {
         use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         use std::os::unix::fs::PermissionsExt;
@@ -7960,16 +8008,16 @@ mod tests {
         })
     }
 
-    fn backup_console(view: &mut OnboardingView, request: serde_json::Value) -> serde_json::Value {
+    fn backup_console(view: &mut OnboardingView, request: &serde_json::Value) -> serde_json::Value {
         serde_json::from_str(&semantic::test_dispatch(
-            &serde_json::to_vec(&request).unwrap(),
+            &serde_json::to_vec(request).unwrap(),
             view,
             None,
         ))
         .unwrap()
     }
     fn backup_action_id(view: &mut OnboardingView, operation: &str) -> String {
-        let catalog = backup_console(view, serde_json::json!({"op":"actions_enumerate"}));
+        let catalog = backup_console(view, &serde_json::json!({"op":"actions_enumerate"}));
         catalog["answer"]["actions"]
             .as_array()
             .unwrap()
@@ -8007,6 +8055,7 @@ mod tests {
         view
     }
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn identity_ready_does_not_complete_visible_first_use() {
         const CHILD: &str = "TILO_ONBOARDING_CONTINUATION_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
@@ -8141,14 +8190,14 @@ mod tests {
         let passphrase = "synthetic private backup passphrase";
         let mismatch = backup_console(
             &mut view,
-            serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
+            &serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
             "args":{"destination":backup,"passphrase":passphrase,"confirmation":"different"}}),
         );
         assert!(mismatch.get("err").is_some());
         assert!(!backup.exists());
         let answer = backup_console(
             &mut view,
-            serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
+            &serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
             "args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}}),
         );
         assert_eq!(answer["answer"]["status"], "accepted");
@@ -8166,7 +8215,7 @@ mod tests {
             load_progress(&directory).unwrap(),
             Some(PersistedStage::IdentityReadyBackedUp)
         );
-        let status = backup_console(&mut view, serde_json::json!({"op":"actions_status"}));
+        let status = backup_console(&mut view, &serde_json::json!({"op":"actions_status"}));
         assert_eq!(status["answer"]["backup"]["state"], "verified");
         assert!(!status.to_string().contains(passphrase));
         assert!(!status.to_string().contains(backup.to_str().unwrap()));
@@ -8174,7 +8223,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8189,7 +8238,7 @@ mod tests {
             std::fs::read(directory.join("primary.json")).unwrap(),
             original
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":save,"args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":save,"args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}})).get("err").is_some());
         // Actual loaded recovery state preserves the verified backup after restart.
         let mut reopened = real_backup_view(&directory);
         reopened.restore_pending_progress_from_disk();
@@ -8210,13 +8259,13 @@ mod tests {
         let original = std::fs::read(directory.join("primary.json")).unwrap();
         let mut view = real_backup_view(&directory);
         let next = backup_action_id(&mut view, "backup.continue");
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})).get("err").is_some());
         assert!(!view.identity_ready_page);
         assert!(semantic::test_observe(&view).is_some());
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8257,7 +8306,7 @@ mod tests {
         let id = backup_action_id(view, operation);
         let reply = backup_console(
             view,
-            serde_json::json!({
+            &serde_json::json!({
                 "op":"actions_invoke", "provider":"onboarding", "id":id, "args":{}
             }),
         );
@@ -8287,10 +8336,10 @@ mod tests {
             load_progress(&directory).unwrap(),
             Some(PersistedStage::TourNavigate)
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":ready_finish,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":ready_finish,"args":{}})).get("err").is_some());
         let first_next = invoke_footer(&mut view, "onboarding.tour.next", &doc);
         assert_eq!(view.tour_step(), Some(2));
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":first_next,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":first_next,"args":{}})).get("err").is_some());
         invoke_footer(&mut view, "onboarding.tour.back", &doc);
         assert_eq!(view.tour_step(), Some(1));
         for step in [2, 3, 4] {
@@ -8300,13 +8349,13 @@ mod tests {
         }
         let last = invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(load_progress(&directory).unwrap(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             record
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":last,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":last,"args":{}})).get("err").is_some());
     }
 
     #[test]
@@ -8328,7 +8377,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8341,10 +8390,10 @@ mod tests {
         assert!(!view.codec_page_visible());
         assert!(fake.runs().is_empty());
         assert!(semantic::test_observe(&view).is_some());
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":stale_install,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":stale_install,"args":{}})).get("err").is_some());
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(load_progress(&directory).unwrap(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
@@ -8381,7 +8430,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8396,14 +8445,14 @@ mod tests {
             CodecAction::Install
         );
         assert!(view.codec_running.is_some());
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":install,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":install,"args":{}})).get("err").is_some());
         invoke_footer(&mut view, "onboarding.codecs.continue", &doc);
         assert!(!view.codec_page_visible());
         assert!(semantic::test_observe(&view).is_some());
         release.send(()).unwrap();
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             record
@@ -8466,7 +8515,7 @@ mod tests {
         );
         assert!(!view.backup_was_verified);
         assert!(semantic::test_observe(&view).is_some());
-        let catalog = backup_console(&mut view, serde_json::json!({"op":"actions_enumerate"}));
+        let catalog = backup_console(&mut view, &serde_json::json!({"op":"actions_enumerate"}));
         assert!(
             !catalog["answer"]["actions"]
                 .as_array()
@@ -9135,14 +9184,16 @@ mod tests {
             ),
         ];
 
-        for (width, height, theme) in [
+        for (width, height, theme) in vec![
             (1600.0, 900.0, Theme::dark()),
             (1366.0, 768.0, Theme::dark()),
             (1280.0, 720.0, Theme::dark()),
             (800.0, 600.0, Theme::dark()),
             (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
             (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
-        ] {
+        ]
+        .into_boxed_slice()
+        {
             for &(keys, action_ids, error_state) in scenarios {
                 let mut view = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
                     Ok(MintedIdentity {
@@ -9367,11 +9418,12 @@ mod tests {
                         .map(|rect| rect.y0)
                         .fold(f64::INFINITY, f64::min);
                     let gap = footer_top - invitation.y1;
+                    let ordered = heading.y1 <= invitation.y0;
                     assert!(
                         heading.area() > 0.0
                             && invitation.area() > 0.0
                             && heading.y0 >= content_viewport.y0
-                            && heading.y1 <= invitation.y0
+                            && ordered
                             && invitation.y1 <= content_viewport.y1,
                         "Ready title and invitation must be wholly visible, ordered and clear of the footer: heading={heading:?}, invitation={invitation:?}, viewport={content_viewport:?}"
                     );
@@ -9952,10 +10004,10 @@ mod tests {
                         .downcast_mut::<Scrollable>()
                         .unwrap();
                     scroll.scroll_into_view(
-                        (save.x0 - viewport.x0) as f32,
-                        (save.y0 - viewport.y0) as f32,
-                        save.width() as f32,
-                        save.height() as f32,
+                        ui::num::f32_of_f64(save.x0 - viewport.x0),
+                        ui::num::f32_of_f64(save.y0 - viewport.y0),
+                        ui::num::f32_of_f64(save.width()),
+                        ui::num::f32_of_f64(save.height()),
                     );
                 }
                 view.apply_layout(&taffy, node, Point::ZERO);
@@ -10253,17 +10305,4 @@ mod tests {
             }
         }
     }
-}
-
-/// A step arriving now, on the drill.
-fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
-    let mut arriving = ui::motion::Presence::closed();
-    arriving.show(
-        true,
-        ui::motion::Drill::SPEC,
-        motion,
-        ui::tokens::MotionSource::Pointer,
-        ui::time::now(),
-    );
-    arriving
 }

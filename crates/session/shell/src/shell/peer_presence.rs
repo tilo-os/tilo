@@ -4069,6 +4069,7 @@ mod two_sessions {
     /// the guest's name; it keeps the guest's resting pointer up while it
     /// shows; it lingers after Enter and goes; a lone emoji floats up once.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn cursor_chat_crosses_between_two_sessions_beside_the_pointer() {
         use crate::shell::live_presence::{Outbound, participant};
         use tilo_relay_protocol::live::{CursorChat, LiveRecord};
@@ -4082,7 +4083,7 @@ mod two_sessions {
         let mut on_host = PresenceCtx::default();
         pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
         let ada = pair.guest_user();
-        let key = PresenceKey::Workspace { id: room.clone() };
+        let key = PresenceKey::Workspace { id: room };
         assert!(
             on_host.pointer_for(&key, &ada).is_some(),
             "the guest's pointer is here"
@@ -4116,7 +4117,7 @@ mod two_sessions {
             .bubble(
                 &ada,
                 t0 + Duration::from_secs(1),
-                ui::tokens::EffectiveMotion::new(Default::default(), false),
+                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             )
             .expect("the host shows what the guest is typing");
         assert_eq!(
@@ -4148,7 +4149,7 @@ mod two_sessions {
             .bubble(
                 &ada,
                 later,
-                ui::tokens::EffectiveMotion::new(Default::default(), false),
+                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             )
             .expect("a sent message stays a moment");
         assert!(!sent.typing);
@@ -4165,7 +4166,7 @@ mod two_sessions {
                 .bubble(
                     &ada,
                     later + ui::presence::CURSOR_CHAT_LINGER,
-                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false)
                 )
                 .is_none()
         );
@@ -4189,7 +4190,7 @@ mod two_sessions {
                 .reaction(
                     &ada,
                     later,
-                    ui::tokens::EffectiveMotion::new(Default::default(), false)
+                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false)
                 )
                 .is_some_and(|float| float.emoji == "\u{1f389}")
         );
@@ -4218,7 +4219,7 @@ mod two_sessions {
         let mut on_host = PresenceCtx::default();
         pair.host.pump_at(&mut on_host, &DESK_TILES, t0);
         let ada = pair.guest_user();
-        let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
+        let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
         let deliver = |pair: &mut Pair| match published(&mut pair.guest_cmds) {
             NeighbourMsg::AppPresenceV2 {
                 peer,
@@ -4310,7 +4311,7 @@ mod two_sessions {
         };
         for (visibility, heard) in [
             (ui::PresenceVisibility::ThatImHere, None),
-            (ui::PresenceVisibility::WhereIAm, Some(call.clone())),
+            (ui::PresenceVisibility::WhereIAm, Some(call)),
         ] {
             pair.guest_net.set_presence_visibility(&room, visibility);
             let frame = crate::shell::collab_presence::to_peer(&key, &available)

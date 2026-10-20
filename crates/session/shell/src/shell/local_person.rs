@@ -183,6 +183,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn native_person_comes_from_protected_identity_and_borrows_live_ordinary_custody() {
         let directory = tempfile::tempdir().unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();

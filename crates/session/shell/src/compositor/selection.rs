@@ -575,10 +575,12 @@ pub fn history_item_text(store: &SharedSelection, id: [u8; 32]) -> Option<String
     let bytes = {
         let store = store.lock().ok()?;
         let item = store.history.iter().find(|item| item.id == id)?;
-        text_mime_types()
+        let bytes = text_mime_types()
             .iter()
             .find_map(|mime| item.values.get(mime))?
-            .clone()
+            .clone();
+        drop(store);
+        bytes
     };
     String::from_utf8(bytes)
         .ok()

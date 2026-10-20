@@ -71,6 +71,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn session_diagnostics_control_live_delivery_without_mutating_startup_environment() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_PROFILE_PRESENTATION");

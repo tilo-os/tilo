@@ -435,16 +435,20 @@ impl CustomWallpapers {
                     state.unreadable.insert(file.to_owned());
                 }
             }
+            drop(state);
             return image;
         }
         if state.decoding.insert(file.to_owned()) {
             self.decode_aside(file.to_owned());
         }
-        slot.and_then(|(workspace, target)| {
-            state.shown.get(&(workspace.to_owned(), target.to_owned()))
-        })
-        .and_then(|shown| state.images.get(shown))
-        .cloned()
+        let shown = slot
+            .and_then(|(workspace, target)| {
+                state.shown.get(&(workspace.to_owned(), target.to_owned()))
+            })
+            .and_then(|shown| state.images.get(shown))
+            .cloned();
+        drop(state);
+        shown
     }
 
     fn decode_aside(&'static self, file: String) {

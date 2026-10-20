@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn the_cpu_fallback_dithers_a_flat_colour_around_its_dimmed_value() {
         let dim = CpuDim::new(0.5);
-        let mut rgba = vec![200_u8, 200, 200, 77].repeat(16);
+        let mut rgba = [200_u8, 200, 200, 77].repeat(16);
         dim.apply(&mut rgba, 4);
         let target = dimmed_signal(200.0 / 255.0, 0.5, Transfer::Srgb) * 255.0;
         let reds: Vec<u8> = rgba.chunks_exact(4).map(|p| p[0]).collect();

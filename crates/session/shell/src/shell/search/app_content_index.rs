@@ -175,12 +175,12 @@ impl AppContentIndex {
     /// The delta is malformed.
     pub fn publish(&self, room: &str, app: &str, record: &str, delta: &[u8]) -> Result<(), String> {
         let delta = IndexDelta::decode(delta)?;
-        self.apply(SlotKey::new(app, room, record), delta);
+        self.apply(&SlotKey::new(app, room, record), delta);
         Ok(())
     }
 
     /// Apply `delta` to `key`'s slot, and keep the slot.
-    pub fn apply(&self, key: SlotKey, delta: IndexDelta) {
+    pub fn apply(&self, key: &SlotKey, delta: IndexDelta) {
         let writes = {
             let mut inner = self.inner.lock_recover();
             let mut secrets_moved = false;
@@ -208,9 +208,9 @@ impl AppContentIndex {
             }
             let entries: Vec<IndexEntry> = slot.values().cloned().collect();
             if entries.is_empty() {
-                inner.slots.remove(&key);
+                inner.slots.remove(key);
             }
-            let mut writes = vec![Write::slot(&key, &entries)];
+            let mut writes = vec![Write::slot(key, &entries)];
             if secrets_moved {
                 writes.push(Write::secrets(&inner.secrets));
             }
@@ -240,6 +240,7 @@ impl AppContentIndex {
                 }
             }
         }
+        drop(inner);
         contents
     }
 
@@ -496,7 +497,7 @@ mod tests {
         let index = AppContentIndex::in_memory();
         let key = SlotKey::new("so.tilo.notes", ROOM, "tab:0001");
         index.apply(
-            key.clone(),
+            &key,
             IndexDelta {
                 reset: true,
                 upsert: vec![entry("n1", "Groceries"), entry("n2", "Trip plan")],
@@ -510,7 +511,7 @@ mod tests {
 
         let before = index.generation();
         index.apply(
-            key.clone(),
+            &key,
             IndexDelta {
                 upsert: vec![entry("n1", "Groceries for Sunday")],
                 remove: vec!["n2".into()],
@@ -521,7 +522,7 @@ mod tests {
         assert_eq!(titles(&index.contents().visible), ["Groceries for Sunday"]);
 
         index.apply(
-            key,
+            &key,
             IndexDelta {
                 reset: true,
                 ..IndexDelta::default()
@@ -543,7 +544,7 @@ mod tests {
             ..entry("passwords.item:gh", "Work account")
         };
         index.apply(
-            key.clone(),
+            &key,
             IndexDelta {
                 reset: true,
                 upsert: vec![login],
@@ -556,7 +557,7 @@ mod tests {
 
         // Locked, the vault lists nothing: the entry is hidden, not gone.
         index.apply(
-            key.clone(),
+            &key,
             IndexDelta {
                 reset: true,
                 secrets_unlocked: Some(false),
@@ -567,7 +568,7 @@ mod tests {
         assert_eq!(titles(&index.contents().locked), ["Work account"]);
 
         index.apply(
-            key,
+            &key,
             IndexDelta {
                 secrets_unlocked: Some(true),
                 ..IndexDelta::default()
@@ -580,7 +581,7 @@ mod tests {
     fn an_app_that_never_said_unlocked_keeps_its_secrets_hidden() {
         let index = AppContentIndex::in_memory();
         index.apply(
-            SlotKey::new("so.tilo.passwords", ROOM, "tab:0001"),
+            &SlotKey::new("so.tilo.passwords", ROOM, "tab:0001"),
             IndexDelta {
                 reset: true,
                 upsert: vec![IndexEntry {
@@ -601,7 +602,7 @@ mod tests {
         {
             let index = AppContentIndex::persistent(dir.path().to_path_buf());
             index.apply(
-                key.clone(),
+                &key,
                 IndexDelta {
                     reset: true,
                     upsert: vec![IndexEntry {

@@ -1,4 +1,4 @@
-//! Native Files presentation, using the same live source bootstrap as OpenWith.
+//! Native Files presentation, using the same live source bootstrap as `OpenWith`.
 use runtime_collab::open_selected::{discovery as wire, v2::SelectedAccess};
 use std::{
     path::PathBuf,
@@ -31,7 +31,9 @@ fn discover(
         return Err("invalid selected discovery request".into());
     }
     context.authorize()?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
     if request
         .components
         .last()
@@ -41,9 +43,8 @@ fn discover(
         // backend which would inevitably refuse this particular selection.
         return Ok(wire::Reply::unavailable(request));
     }
-    let source = match super::open_selected::find(context.workspace(), context.executing()) {
-        Ok(source) => source,
-        Err(_) => return Ok(wire::Reply::unavailable(request)),
+    let Ok(source) = super::open_selected::find(context.workspace(), context.executing()) else {
+        return Ok(wire::Reply::unavailable(request));
     };
     let owner = tree
         .read()
@@ -83,59 +84,20 @@ fn discover(
         else {
             continue;
         };
-        let package = package_store::find_installed(&app.package_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("selected discovery package retired")?;
-        if package.manifest_path != app.manifest_path || package.payload_root != app.payload_root {
-            return Err("selected discovery package changed".into());
-        }
-        super::verified_gui_package(&package).map_err(|e| e.to_string())?;
-        let handles = mime_guess::from_path(&path)
-            .first_raw()
-            .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
-            .into_iter()
-            .chain(
-                path.extension()
-                    .and_then(|value| value.to_str())
-                    .and_then(|value| desktop_policy::ResourceKind::extension(value).ok()),
-            )
-            .any(|kind| super::super::revalidate_resource_claim(&app.package_id, &kind));
-        if !handles {
+        let package = verified_package(app)?;
+        if !handles(&app.package_id, &path) {
             continue;
         }
 
-        let current_access = super::super::native_app_open_access(
-            &owner,
-            room,
-            context.certificate(),
-            &app.package_id,
-        )?;
-        let query = |access| wire::QuerySelectedSupport {
-            schema: 1,
-            request_id: request.request_id.clone(),
-            app_id: app.package_id.clone(),
-            package_sha256: package.package_id_hex.clone(),
-            access,
-        };
-        let authorize = || context.authorize();
-        let read_only = source
-            .query_selected_support(query(SelectedAccess::ReadOnly), &authorize, deadline)
-            .map_err(|e| e.to_string())?;
-        let edit = current_access == super::super::NativeAppOpenAccess::Author
-            && source
-                .query_selected_support(query(SelectedAccess::EditInParent), &authorize, deadline)
-                .map_err(|e| e.to_string())?;
-        // This is current presentation only. The actual original action checks
-        // its caller and target Author again before exporting any descriptor.
-        context.authorize()?;
-        super::verified_gui_package(&package).map_err(|e| e.to_string())?;
-        let rechecked = super::super::native_app_open_access(
-            &owner,
-            room,
-            context.certificate(),
-            &app.package_id,
-        )?;
-        let Some(access) = supported_access(current_access, rechecked, read_only, edit) else {
+        let Some(access) = offered_access(
+            &source,
+            context,
+            (&owner, room),
+            (&package, &app.package_id),
+            request,
+            deadline,
+        )?
+        else {
             continue;
         };
         reply.targets.push(wire::Target {
@@ -158,6 +120,76 @@ fn discover(
         return Err("invalid selected discovery result".into());
     }
     Ok(reply)
+}
+
+/// The access the selected thing can be opened in with `package`, asked of
+/// the live `source` and checked again against the person's role in
+/// `room` after; `None` when neither is supported.
+fn offered_access(
+    source: &super::open_selected::Dispatcher,
+    context: &SelectedDiscoveryContext,
+    (owner, room): (
+        &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+        crate::shell::state::RoomId,
+    ),
+    (package, app_id): (&package_store::InstalledPackage, &str),
+    request: &wire::Request,
+    deadline: Instant,
+) -> Result<Option<SelectedAccess>, String> {
+    let current_access =
+        super::super::native_app_open_access(owner, room, context.certificate(), app_id)?;
+    let query = |access| wire::QuerySelectedSupport {
+        schema: 1,
+        request_id: request.request_id.clone(),
+        app_id: app_id.to_owned(),
+        package_sha256: package.package_id_hex.clone(),
+        access,
+    };
+    let authorize = || context.authorize();
+    let read_only = source
+        .query_selected_support(&query(SelectedAccess::ReadOnly), &authorize, deadline)
+        .map_err(|e| e.to_string())?;
+    let edit = current_access == super::super::NativeAppOpenAccess::Author
+        && source
+            .query_selected_support(&query(SelectedAccess::EditInParent), &authorize, deadline)
+            .map_err(|e| e.to_string())?;
+    // This is current presentation only. The actual original action checks
+    // its caller and target Author again before exporting any descriptor.
+    context.authorize()?;
+    super::verified_gui_package(package).map_err(|e| e.to_string())?;
+    let rechecked =
+        super::super::native_app_open_access(owner, room, context.certificate(), app_id)?;
+    Ok(supported_access(current_access, rechecked, read_only, edit))
+}
+
+/// The installed package `app` is, checked to be the one listed and a
+/// verified graphical package.
+fn verified_package(
+    app: &super::super::InstalledApp,
+) -> Result<package_store::InstalledPackage, String> {
+    let package = package_store::find_installed(&app.package_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("selected discovery package retired")?;
+    if package.manifest_path != app.manifest_path || package.payload_root != app.payload_root {
+        return Err("selected discovery package changed".into());
+    }
+    super::verified_gui_package(&package).map_err(|e| e.to_string())?;
+    Ok(package)
+}
+
+/// Whether `package_id` still claims the kind of file at `path`, by its
+/// type or its extension.
+fn handles(package_id: &str, path: &std::path::Path) -> bool {
+    mime_guess::from_path(path)
+        .first_raw()
+        .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
+        .into_iter()
+        .chain(
+            path.extension()
+                .and_then(|value| value.to_str())
+                .and_then(|value| desktop_policy::ResourceKind::extension(value).ok()),
+        )
+        .any(|kind| super::super::revalidate_resource_claim(package_id, &kind))
 }
 
 // Backend support is independent for each source access. A role change may

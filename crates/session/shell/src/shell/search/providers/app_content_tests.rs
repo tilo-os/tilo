@@ -93,6 +93,10 @@ fn state(generation: u64, secrets_unlocked: Option<bool>) -> IndexState {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_closed_apps_content_is_found_and_follows_its_updates_and_removals() {
     let (chrome, room) = chrome();
     let index = Arc::new(AppContentIndex::in_memory());
@@ -138,6 +142,10 @@ fn a_closed_apps_content_is_found_and_follows_its_updates_and_removals() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
     let (chrome, room) = chrome();
     let index = Arc::new(AppContentIndex::in_memory());
@@ -199,6 +207,10 @@ fn a_locked_vault_offers_one_unlock_row_and_an_unlocked_one_lists_its_logins() {
 // Spec test: "An unlocked vault with a login for github.com, with Passwords
 // closed: "github" lists that login. Locked: the unlock row."
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn an_unlocked_github_login_is_found_by_github_with_passwords_closed() {
     let (chrome, room) = chrome();
     let index = Arc::new(AppContentIndex::in_memory());
@@ -266,6 +278,10 @@ fn one_entry_published_from_two_rooms_is_one_row() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_hit_resolves_by_its_id() {
     let (chrome, room) = chrome();
     let index = Arc::new(AppContentIndex::in_memory());

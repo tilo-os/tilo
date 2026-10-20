@@ -99,13 +99,13 @@ async fn decoded_picture(client: &Client, what: &str) -> (VideoObject, media::Fr
                     config.output = media::DecodeOutput::Rgba;
                     decoder = Some(media::RealtimeDecoder::new(config).expect("an H.264 decoder"));
                 }
-                let decoded = decoder
+                let frame = decoder
                     .as_mut()
                     .unwrap()
                     .decode(&object.payload, Some(object.keyframe))
                     .expect("the picture decodes");
-                if let Some(decoded) = decoded {
-                    return (object, decoded.frame);
+                if let Some(frame) = frame {
+                    return (object, frame.frame);
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

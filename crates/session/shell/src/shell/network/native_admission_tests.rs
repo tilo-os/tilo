@@ -210,7 +210,7 @@ fn inputs_held_for_an_app_surface_are_admitted_again_once_one_is_named() {
         })
         .unwrap();
     let scope = Arc::new(native_ingress::Scope::new(
-        native_ingress::Connect::new(owner.clone(), room).unwrap(),
+        native_ingress::Connect::new(owner, room).unwrap(),
         hint,
         certificate,
         continuity,

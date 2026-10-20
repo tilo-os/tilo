@@ -387,7 +387,7 @@ fn an_unnamed_connection_is_this_network() {
     );
 }
 
-/// A network NetworkManager could not join on its own for want of a usable
+/// A network `NetworkManager` could not join on its own for want of a usable
 /// password: the person reads "Couldn't join <network>" once, and its
 /// action joins that connection as them, which asks for the password.
 #[test]

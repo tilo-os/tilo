@@ -232,8 +232,7 @@ fn refusal() -> io::Error {
     io::Error::other("Prepared setup is unavailable or changed")
 }
 fn current_uid() -> u32 {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 fn child(directory: &File, name: &str, flags: i32, mode: u32) -> io::Result<File> {
     let name = std::ffi::CString::new(name).map_err(|_| refusal())?;

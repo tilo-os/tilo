@@ -1173,6 +1173,10 @@ impl ChromeState {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one struct literal that names every field of the chrome state with its starting value"
+    )]
     fn from_inputs(
         tree_handle: WorkspaceTreeHandle,
         hosted_inputs: super::hosted_inputs::HostedTileInputs,
@@ -4872,6 +4876,7 @@ mod active_tab_tests {
             "relaunched as the same app: {:?}",
             group.tabs[0].tile
         );
+        drop(tree);
     }
 
     #[test]
@@ -5120,5 +5125,6 @@ mod new_workspace_tests {
             "and nothing in it"
         );
         assert!(!workspace.has_windows(), "so the launchpad shows");
+        drop(tree);
     }
 }

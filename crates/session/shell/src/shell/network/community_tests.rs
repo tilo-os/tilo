@@ -48,7 +48,7 @@ fn the_community_workspace_is_joined_by_default_and_leaving_it_lasts() {
     crate::shell::persist::wait_for_saves();
 
     // After a restart the person is still out of it.
-    let (net, tree) = computer(&computer_dir, ada.clone(), "Ada's computer");
+    let (net, tree) = computer(&computer_dir, ada, "Ada's computer");
     assert!(net.left_site(&site.entry));
     assert_eq!(net.keep_community(&site.entry), Pass::Idle);
     assert!(!holds(&tree, room));

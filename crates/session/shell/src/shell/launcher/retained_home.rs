@@ -164,9 +164,9 @@ impl PreparedRetainedHome {
     /// Explicit installed original-copy continuation for the genuine signed
     /// Imager selection. Ordinary Files bootstrap never enters this path.
     pub(crate) fn bootstrap_original_copy(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         installed_source_operation: &str,
-        cancel: Arc<std::sync::atomic::AtomicBool>,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
     ) -> io::Result<OriginalCopyBootstrapCustody> {
         bootstrap::establish_original_copy(self, installed_source_operation, cancel)
     }
@@ -306,7 +306,7 @@ impl PreparedRetainedHome {
             package_sha256: self.package.package_id_hex.clone(),
             room: self.room.to_string(),
             resource_record: RESOURCE.into(),
-            target_uid: unsafe { libc::geteuid() },
+            target_uid: rustix::process::geteuid().as_raw(),
             target_pid: std::process::id(),
             root_pid: authenticated_root_pid,
             context_sha256: hex::encode(Sha256::digest(self.context_bytes(operation)?)),
@@ -321,9 +321,9 @@ impl PreparedRetainedHome {
     pub(crate) fn serve_proof(
         self: Arc<Self>,
         stream: UnixStream,
-        binding: RetainedLaunchBinding,
+        binding: &RetainedLaunchBinding,
     ) -> io::Result<()> {
-        if self.binding(&binding.operation_id, binding.root_pid)? != binding {
+        if self.binding(&binding.operation_id, binding.root_pid)? != *binding {
             return Err(refused());
         }
         self.session
@@ -450,7 +450,9 @@ fn validate_command(
         let Some((index, _)) = positions.next() else {
             return Err(refused());
         };
-        if positions.next().is_some() || command.args.get(index + 1) != Some(&expected) {
+        if positions.next().is_some()
+            || command.args.get(index.saturating_add(1)) != Some(&expected)
+        {
             return Err(refused());
         }
     }
@@ -642,7 +644,7 @@ impl Registration {
         lease.ok_or_else(refused)?.retained_release(
             pid,
             self.prepared.room(),
-            &self.prepared.package(),
+            self.prepared.package(),
             &self.prepared.person(),
         )?;
         self.prepared.check(command)?;
@@ -944,6 +946,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn retained_certificate_rechecks_genuine_native_session_and_never_revives_old_epoch() {
         let fixture = tilo_action_broker::collab_broker_capnp::tests::certified_person_fixture();
         let lifecycle = LocalSessionAuthority::new();
@@ -986,6 +992,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
     fn files_home_caller_replays_native_source_and_ignores_ambient_location_path() {
         let directory = tempfile::tempdir().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();

@@ -424,7 +424,10 @@ impl DirectorySheet {
             Key::Named(NamedKey::ArrowDown) => {
                 let count = self.shown().len();
                 if count > 0 {
-                    self.selected = Some(self.selected.map_or(0, |at| (at + 1).min(count - 1)));
+                    self.selected = Some(
+                        self.selected
+                            .map_or(0, |at| at.saturating_add(1).min(count.saturating_sub(1))),
+                    );
                     self.keep_selection_in_view();
                 }
                 DirectoryOutcome::consumed()
@@ -432,7 +435,7 @@ impl DirectorySheet {
             Key::Named(NamedKey::ArrowUp) => {
                 self.selected = match self.selected {
                     Some(0) | None => None,
-                    Some(at) => Some(at - 1),
+                    Some(at) => Some(at.saturating_sub(1)),
                 };
                 self.keep_selection_in_view();
                 DirectoryOutcome::consumed()
@@ -493,8 +496,8 @@ impl DirectorySheet {
         let rows = self.rows_fitting();
         if row < self.scroll {
             self.scroll = row;
-        } else if rows > 0 && row >= self.scroll + rows {
-            self.scroll = row + 1 - rows;
+        } else if rows > 0 && row >= self.scroll.saturating_add(rows) {
+            self.scroll = row.saturating_add(1).saturating_sub(rows);
         }
     }
 
@@ -520,7 +523,7 @@ impl DirectorySheet {
                     // Joining already: say so, and that it opens by itself.
                     self.note = Some(t_args(
                         "directory-already-joining",
-                        &[("name", listing.entry.name.clone().into())],
+                        &[("name", listing.entry.name.into())],
                     ));
                     return DirectoryOutcome::consumed();
                 }
@@ -730,12 +733,12 @@ impl DirectorySheet {
             Status::Ready => None,
         };
         if let Some(empty) = empty {
-            let line = paint
+            let shown = paint
                 .text
                 .elide_to_width_style(&empty, f32_of_f64(avail), &caption);
             paint.text.draw_style(
                 paint.scene,
-                &line,
+                &shown,
                 colors.text_dim,
                 transform.pre_translate((rect.x0 + pad, y + gap).into()),
                 None,
@@ -755,7 +758,7 @@ impl DirectorySheet {
             if y + ROW_H > list_bottom + 0.5 {
                 break;
             }
-            let index = self.scroll + offset;
+            let index = self.scroll.saturating_add(offset);
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + ROW_H);
             if self.selected == Some(index) {
                 ui::chrome::shell::paint_row_selection(
@@ -870,19 +873,19 @@ impl DirectorySheet {
                     None,
                     &style,
                 );
-                let line = f64::from(style.line_height_px()).max(line_h);
+                let step = f64::from(style.line_height_px()).max(line_h);
                 if index == 0
                     && let Some(tag) = tag.as_deref()
                 {
                     let tag_x =
                         text_x + f64::from(paint.text.measure_style(&shown, None, &style).0) + gap;
                     ui::widget::BadgeFace::new(
-                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + line),
+                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + step),
                         tag,
                     )
                     .paint(paint.scene, transform, paint.text, theme);
                 }
-                line_y += line;
+                line_y += step;
             }
             y += ROW_H;
         }

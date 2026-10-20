@@ -263,6 +263,10 @@ fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
 /// your own avatar opens your profile card, and opening one closes the
 /// other.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     use shell::shell::overlay_host::ShellOverlayHost;
     use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};

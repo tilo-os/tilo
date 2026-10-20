@@ -26,6 +26,7 @@ pub(crate) fn connecting(ws: u64) {
     if !matches!(state, RoomSyncState::Synced) {
         *state = RoomSyncState::Connecting;
     }
+    drop(rooms);
 }
 
 /// A sync with the host of the room on topic `ws` completed.
@@ -47,6 +48,7 @@ pub(crate) fn other_version(ws: u64, theirs: u32) {
     if !matches!(current, RoomSyncState::Synced) {
         *current = state;
     }
+    drop(rooms);
 }
 
 /// The room on topic `ws` is no longer held: forget it.

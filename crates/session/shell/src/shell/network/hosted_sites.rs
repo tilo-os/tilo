@@ -237,7 +237,9 @@ impl State {
     pub(super) fn remember(&self, room: RoomId, hosted: HostedRoom) -> Result<(), String> {
         let mut rooms = self.rooms.lock_recover();
         rooms.rooms.insert(room.to_string(), hosted);
-        self.persist(&rooms)
+        let persisted = self.persist(&rooms);
+        drop(rooms);
+        persisted
     }
 
     /// Stop reaching `room` through a site.
@@ -246,7 +248,9 @@ impl State {
         if rooms.rooms.remove(&room.to_string()).is_none() {
             return Ok(());
         }
-        self.persist(&rooms)
+        let persisted = self.persist(&rooms);
+        drop(rooms);
+        persisted
     }
 
     /// Whether the person left `site`'s workspace.
@@ -485,7 +489,7 @@ pub(crate) async fn read_site(entry: &url::Url) -> Result<SiteEntry, SiteError> 
         .and_then(|directory| entry.join(directory).ok())
         .and_then(|directory| web_origin(directory.as_str()).ok());
     let home = match config.home {
-        Some(home) => Some(home_workspace(entry, home, directory.clone())?),
+        Some(home) => Some(home_workspace(entry, &home, directory.clone())?),
         None => None,
     };
     Ok(SiteEntry { home, directory })
@@ -494,7 +498,7 @@ pub(crate) async fn read_site(entry: &url::Url) -> Result<SiteEntry, SiteError> 
 /// The home workspace `home` of the site at `entry`.
 fn home_workspace(
     entry: &url::Url,
-    home: HomeJson,
+    home: &HomeJson,
     directory: Option<url::Url>,
 ) -> Result<SiteWorkspace, SiteError> {
     let origin = web_origin(&home.host.origin)?;
@@ -688,7 +692,7 @@ mod tests {
             admission: Some("https://eu1.tilo.coffee/".into()),
             app: app.map(str::to_owned),
         };
-        let read = |app| home_workspace(&entry, home(app), None).unwrap().app;
+        let read = |app| home_workspace(&entry, &home(app), None).unwrap().app;
         assert_eq!(read(Some("so.tilo.chat")).as_deref(), Some("so.tilo.chat"));
         assert_eq!(read(None), None);
         for refused in [

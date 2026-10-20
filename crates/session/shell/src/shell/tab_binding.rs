@@ -911,8 +911,8 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
 }
 
 /// What a foreign window's title says about where it is, without the app's
-/// own name: the bar already shows the app's icon, so "Q3 report.odt -
-/// LibreOffice Writer" is "Q3 report.odt". Only the app's exact name,
+/// own name: the bar already shows the app's icon, so `Q3 report.odt -
+/// LibreOffice Writer` is `Q3 report.odt`. Only the app's exact name,
 /// joined by one of the usual separators at either end, is removed; any
 /// other title is left as the app wrote it. A title that is nothing but the
 /// app's name stays its name: the app shows no location.
@@ -925,11 +925,12 @@ pub(crate) fn location_from_title(title: &str, app_name: &str) -> String {
     }
     for separator in SEPARATORS {
         let suffix = format!("{separator}{name}");
-        if trimmed.len() > suffix.len()
+        if let Some(split) = trimmed.len().checked_sub(suffix.len())
+            && split > 0
             && trimmed
-                .get(trimmed.len() - suffix.len()..)
+                .get(split..)
                 .is_some_and(|tail| tail.eq_ignore_ascii_case(&suffix))
-            && let Some(head) = trimmed.get(..trimmed.len() - suffix.len())
+            && let Some(head) = trimmed.get(..split)
         {
             return head.trim().to_owned();
         }

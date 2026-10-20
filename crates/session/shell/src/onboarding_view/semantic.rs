@@ -155,7 +155,7 @@ impl Snapshot {
 }
 
 /// The actual view owns this observation. It conveys only ceremony activity;
-/// native control_session_decision still independently authenticates root delivery.
+/// native `control_session_decision` still independently authenticates root delivery.
 pub(super) fn authentication_first_use_scope(view: &OnboardingView) -> Rc<dyn Fn() -> bool> {
     view.publish_semantic_state();
     let snapshot = Rc::downgrade(&view.semantic);
@@ -870,6 +870,153 @@ impl SearchProvider for Provider {
     }
 }
 
+/// Test adapter over the production provider, binder, admission and reducer.
+/// `accepted` reports an actual pending ticket; it never invents a completion.
+#[cfg(test)]
+pub(super) fn test_dispatch(
+    bytes: &[u8],
+    view: &mut OnboardingView,
+    _unused: Option<()>,
+) -> String {
+    use serde_json::json;
+    let refusal = |code: &str| json!({"err":{"code":code}}).to_string();
+    let Ok(request) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return refusal("invalid_arguments");
+    };
+    let chrome = test_owner_chrome();
+    view.publish_semantic_state();
+    let provider = Provider::new(view);
+    let mut doc = automerge::AutoCommit::new();
+    let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: true,
+        needle: "",
+        wanted: &[ResourceKind::Action],
+        chrome: &chrome.borrow(),
+        doc: &doc,
+        doc_root: &automerge::ROOT,
+    });
+    let scope = {
+        let snapshot = view.semantic.borrow();
+        format!("{}:{:?}", snapshot.phase, snapshot.tour_page)
+    };
+    let handle = |row: &SearchResult| {
+        if row.id.starts_with("onboarding.") {
+            format!("{}@{scope}", row.id)
+        } else {
+            row.id.clone()
+        }
+    };
+    if request["op"] == "actions_enumerate" {
+        return json!({"answer":{"actions":rows.iter().map(|row| json!({"provider":row.provider_id,"id":handle(row),"operation":row.id,"params":row.params})).collect::<Vec<_>>()}}).to_string();
+    }
+    let selected = if request["op"] == "actions_status" {
+        rows.iter().find(|row| row.id == "inspect")
+    } else if request["op"] == "actions_invoke" && request["provider"] == "onboarding" {
+        rows.iter()
+            .find(|row| request["id"].as_str() == Some(handle(row).as_str()))
+    } else {
+        None
+    };
+    let Some(row) = selected else {
+        return refusal("action_failed");
+    };
+    let empty = serde_json::Map::new();
+    let supplied = if request["op"] == "actions_status" {
+        &empty
+    } else {
+        let Some(args) = request["args"].as_object() else {
+            return refusal("invalid_arguments");
+        };
+        args
+    };
+    let Ok(args) = ActionArgs::bind_json(&row.params, supplied) else {
+        return refusal("invalid_arguments");
+    };
+    let Some(begin) = row.on_begin_invoke.as_ref() else {
+        return refusal("action_failed");
+    };
+    let disposition = match begin(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        &chrome,
+        &args,
+    ) {
+        Ok(disposition) => disposition,
+        Err(error) => return refusal(error.code()),
+    };
+    if let InvocationDisposition::Accepted(receipt) = &disposition
+        && request["op"] == "actions_status"
+    {
+        if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &receipt.update {
+            return json!({"answer":output.value}).to_string();
+        }
+        return refusal("action_failed");
+    }
+    drain(view);
+    view.publish_semantic_state();
+    match disposition {
+        InvocationDisposition::Pending(_) if !queued_operation(&row.id) => {
+            serde_json::json!({"answer":{"status":"accepted","pending":true}}).to_string()
+        }
+        InvocationDisposition::Pending(poll) => match poll() {
+            Err(error) => refusal(error.code()),
+            Ok(receipt) => json!({"answer":{"status":"accepted","pending":receipt.is_none(),"receipt":receipt}}).to_string(),
+        },
+        InvocationDisposition::Accepted(receipt) => json!({"answer":{"status":"accepted","receipt":receipt}}).to_string(),
+    }
+}
+
+#[cfg(test)]
+fn test_owner_chrome() -> crate::shell::chrome_state::Chrome {
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::{
+        FreshId as _, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
+    };
+    let mut tree = WorkspaceTree::default();
+    let id = WorkspaceId::new();
+    let mut workspace = Workspace::new(id, "First-use semantic fixture");
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+    tree.desktop.workspaces.push(workspace);
+    tree.desktop.active = id;
+    ChromeState::new_with_handle(WorkspaceTreeHandle::new(tree))
+}
+
+/// Observe the live first-use provider through its real read action. A finished
+/// or closed view has no published action, rather than a parallel pending flag.
+#[cfg(test)]
+pub(super) fn test_observe(view: &OnboardingView) -> Option<serde_json::Value> {
+    view.publish_semantic_state();
+    let provider = Provider::new(view);
+    let chrome = test_owner_chrome();
+    let mut doc = automerge::AutoCommit::new();
+    let rows = provider.query(SearchContext {
+        query_scope: None,
+        include_programmatic: true,
+        needle: "",
+        wanted: &[ResourceKind::Action],
+        chrome: &chrome.borrow(),
+        doc: &doc,
+        doc_root: &automerge::ROOT,
+    });
+    let inspect = rows.iter().find(|row| row.id == "inspect")?;
+    let begin = inspect.on_begin_invoke.as_ref()?;
+    let disposition = begin(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+        &chrome,
+        &ActionArgs::none(),
+    )
+    .expect("published owner inspect action");
+    match disposition {
+        InvocationDisposition::Accepted(receipt) => match receipt.update {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            _ => panic!("owner inspect must report its actual completed observation"),
+        },
+        InvocationDisposition::Pending(_) => panic!("inspect has no asynchronous side effect"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,153 +1112,5 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(view.flow.screen(), Screen::Intro);
-    }
-}
-
-/// Test adapter over the production provider, binder, admission and reducer.
-/// `accepted` reports an actual pending ticket; it never invents a completion.
-#[cfg(test)]
-pub(super) fn test_dispatch(
-    bytes: &[u8],
-    view: &mut OnboardingView,
-    _unused: Option<()>,
-) -> String {
-    use serde_json::json;
-    let refusal = |code: &str| json!({"err":{"code":code}}).to_string();
-    let Ok(request) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return refusal("invalid_arguments");
-    };
-    let chrome = test_owner_chrome();
-    view.publish_semantic_state();
-    let provider = Provider::new(view);
-    let mut doc = automerge::AutoCommit::new();
-    let rows = provider.query(SearchContext {
-        query_scope: None,
-        include_programmatic: true,
-        needle: "",
-        wanted: &[ResourceKind::Action],
-        chrome: &chrome.borrow(),
-        doc: &doc,
-        doc_root: &automerge::ROOT,
-    });
-    let scope = {
-        let snapshot = view.semantic.borrow();
-        format!("{}:{:?}", snapshot.phase, snapshot.tour_page)
-    };
-    let handle = |row: &SearchResult| {
-        if row.id.starts_with("onboarding.") {
-            format!("{}@{scope}", row.id)
-        } else {
-            row.id.clone()
-        }
-    };
-    if request["op"] == "actions_enumerate" {
-        return json!({"answer":{"actions":rows.iter().map(|row| json!({"provider":row.provider_id,"id":handle(row),"operation":row.id,"params":row.params})).collect::<Vec<_>>()}}).to_string();
-    }
-    let selected = if request["op"] == "actions_status" {
-        rows.iter().find(|row| row.id == "inspect")
-    } else if request["op"] == "actions_invoke" && request["provider"] == "onboarding" {
-        rows.iter()
-            .find(|row| request["id"].as_str() == Some(handle(row).as_str()))
-    } else {
-        None
-    };
-    let Some(row) = selected else {
-        return refusal("action_failed");
-    };
-    let empty = serde_json::Map::new();
-    let supplied = if request["op"] == "actions_status" {
-        &empty
-    } else {
-        let Some(args) = request["args"].as_object() else {
-            return refusal("invalid_arguments");
-        };
-        args
-    };
-    let args = match ActionArgs::bind_json(&row.params, supplied) {
-        Ok(args) => args,
-        Err(_) => return refusal("invalid_arguments"),
-    };
-    let Some(begin) = row.on_begin_invoke.as_ref() else {
-        return refusal("action_failed");
-    };
-    let disposition = match begin(
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-        &chrome,
-        &args,
-    ) {
-        Ok(disposition) => disposition,
-        Err(error) => return refusal(error.code()),
-    };
-    if let InvocationDisposition::Accepted(receipt) = &disposition {
-        if request["op"] == "actions_status" {
-            if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &receipt.update {
-                return json!({"answer":output.value}).to_string();
-            }
-            return refusal("action_failed");
-        }
-    }
-    drain(view);
-    view.publish_semantic_state();
-    match disposition {
-        InvocationDisposition::Pending(_) if !queued_operation(&row.id) => {
-            serde_json::json!({"answer":{"status":"accepted","pending":true}}).to_string()
-        }
-        InvocationDisposition::Pending(poll) => match poll() {
-            Err(error) => refusal(error.code()),
-            Ok(receipt) => json!({"answer":{"status":"accepted","pending":receipt.is_none(),"receipt":receipt}}).to_string(),
-        },
-        InvocationDisposition::Accepted(receipt) => json!({"answer":{"status":"accepted","receipt":receipt}}).to_string(),
-    }
-}
-
-#[cfg(test)]
-fn test_owner_chrome() -> crate::shell::chrome_state::Chrome {
-    use crate::shell::chrome_state::ChromeState;
-    use crate::shell::state::{
-        FreshId as _, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
-    };
-    let mut tree = WorkspaceTree::default();
-    let id = WorkspaceId::new();
-    let mut workspace = Workspace::new(id, "First-use semantic fixture");
-    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-    tree.desktop.workspaces.push(workspace);
-    tree.desktop.active = id;
-    ChromeState::new_with_handle(WorkspaceTreeHandle::new(tree))
-}
-
-/// Observe the live first-use provider through its real read action. A finished
-/// or closed view has no published action, rather than a parallel pending flag.
-#[cfg(test)]
-pub(super) fn test_observe(view: &OnboardingView) -> Option<serde_json::Value> {
-    view.publish_semantic_state();
-    let provider = Provider::new(view);
-    let chrome = test_owner_chrome();
-    let mut doc = automerge::AutoCommit::new();
-    let rows = provider.query(SearchContext {
-        query_scope: None,
-        include_programmatic: true,
-        needle: "",
-        wanted: &[ResourceKind::Action],
-        chrome: &chrome.borrow(),
-        doc: &doc,
-        doc_root: &automerge::ROOT,
-    });
-    let inspect = rows.iter().find(|row| row.id == "inspect")?;
-    let begin = inspect.on_begin_invoke.as_ref()?;
-    let disposition = begin(
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-        &chrome,
-        &ActionArgs::none(),
-    )
-    .expect("published owner inspect action");
-    match disposition {
-        InvocationDisposition::Accepted(receipt) => match receipt.update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
-            _ => panic!("owner inspect must report its actual completed observation"),
-        },
-        InvocationDisposition::Pending(_) => panic!("inspect has no asynchronous side effect"),
     }
 }

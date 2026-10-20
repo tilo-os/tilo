@@ -357,6 +357,10 @@ fn opening(
 /// Open the app at `entry`, as its person in the entry's room: the running
 /// app takes the invocation; a closed one is launched by the broker first.
 /// With nothing published that opens it, the app opens.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the action session stays open while its admission is polled"
+)]
 fn open_entry(
     door: Option<&OpenDoor>,
     chrome: &Chrome,

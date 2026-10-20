@@ -104,6 +104,32 @@ fn parameters(name: &str) -> Vec<ActionParam> {
     params
 }
 
+/// What a picker operation promises: one that grants access to a file asks
+/// first and cannot be taken back; every one answers with the picker's state.
+fn contract(grants: bool) -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Outside,
+        risk: if grants {
+            tilo_actions::RiskLevel::Destructive
+        } else {
+            tilo_actions::RiskLevel::None
+        },
+        confirmation: if grants {
+            tilo_actions::ConfirmationPolicy::Confirm
+        } else {
+            tilo_actions::ConfirmationPolicy::None
+        },
+        retry: tilo_actions::RetryPolicy::AtMostOnce,
+        execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type":"object", "required":["request_id", "application", "state", "completed", "entries"],
+                "properties": {"request_id":{"type":"string"}, "application":{"type":"string"},
+                    "state":{"type":"string"}, "completed":{"type":"boolean"}, "entries":{"type":"array"}}}),
+        },
+        ..Default::default()
+    }
+}
+
 impl SearchProvider for FilePickerProvider {
     fn id(&self) -> &str {
         PROVIDER_ID
@@ -163,27 +189,7 @@ impl SearchProvider for FilePickerProvider {
                 badge: Some(self.display_name()),
                 score: 0,
                 params,
-                contract: Some(tilo_actions::ActionContract {
-                    kind: tilo_actions::ActionKind::Outside,
-                    risk: if grants {
-                        tilo_actions::RiskLevel::Destructive
-                    } else {
-                        tilo_actions::RiskLevel::None
-                    },
-                    confirmation: if grants {
-                        tilo_actions::ConfirmationPolicy::Confirm
-                    } else {
-                        tilo_actions::ConfirmationPolicy::None
-                    },
-                    retry: tilo_actions::RetryPolicy::AtMostOnce,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: false },
-                    result: tilo_actions::ResultSpec::Json {
-                        schema: serde_json::json!({"type":"object", "required":["request_id", "application", "state", "completed", "entries"],
-                            "properties": {"request_id":{"type":"string"}, "application":{"type":"string"},
-                                "state":{"type":"string"}, "completed":{"type":"boolean"}, "entries":{"type":"array"}}}),
-                    },
-                    ..Default::default()
-                }),
+                contract: Some(contract(grants)),
                 on_open: Rc::new(|_, _, _, _| {
                     Err(ActionError::Explained(t("file-picker-declared-operation")))
                 }),

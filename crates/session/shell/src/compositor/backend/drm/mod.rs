@@ -3568,17 +3568,7 @@ fn paint_one_scanout(
     let sx = usize::try_from(px.max(0)).unwrap_or(0);
     let sy = usize::try_from(py.max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
-    // An ICC profile describes the panel's SDR response; while the output
-    // runs in HDR the PQ encode replaces it. Software dimming the CRTC
-    // cannot carry is done on this copy too, before the profile.
-    let dim = e.final_pass_dim().filter(|_| !hdr);
-    if e.cpu_dim
-        .as_ref()
-        .map(crate::shell::software_dim::CpuDim::light)
-        != dim
-    {
-        e.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
-    }
+    let dim = e.sync_cpu_dim(hdr);
     let copied = (e.color_transform.is_some() || dim.is_some()) && !hdr;
     let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
         if copied {

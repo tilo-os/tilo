@@ -9,7 +9,7 @@ pub(crate) mod native_ingress;
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
 /// the two devices has to update (`crate::shell::collaborator_versions`).
-fn relay_error(host: &iroh::EndpointId, error: tilo_relay_session::ClientError) -> String {
+fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
         crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
     }
@@ -2975,6 +2975,31 @@ impl ActorState {
 
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
+    /// Whether a message `peer` sent on `ws` is news. An advert describes
+    /// its sender rather than reporting an event: it is news when it differs
+    /// from the last one this membership took, so a peer evicted and back is
+    /// heard again though it says the same thing.
+    fn is_news(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        decoded: Option<&NeighbourMsg>,
+        fingerprint: [u8; 32],
+    ) -> bool {
+        let advert = match decoded {
+            Some(NeighbourMsg::IdentityHello { .. }) => Some(true),
+            Some(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
+            _ => None,
+        };
+        match advert {
+            Some(identity) => self
+                .peers_seen
+                .get_mut(&(ws, peer))
+                .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
+            None => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
+        }
+    }
+
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
         self.note_topic_linked(ws, &event);
         if matches!(event, GossipEvent::NeighborUp(_)) {
@@ -3026,25 +3051,7 @@ impl ActorState {
                     );
                 }
                 let fingerprint = message_fingerprint(&message.content);
-                // An advert describes its sender rather than reporting an
-                // event: it is news when it differs from the last one this
-                // membership took, so a peer evicted and back is heard again
-                // though it says the same thing.
-                let advert = match &decoded {
-                    Ok(NeighbourMsg::IdentityHello { .. }) => Some(true),
-                    Ok(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
-                    _ => None,
-                };
-                let new = match advert {
-                    Some(identity) => self
-                        .peers_seen
-                        .get_mut(&(ws, peer))
-                        .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
-                    None => {
-                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                    }
-                };
-                if !new {
+                if !self.is_news(ws, peer, decoded.as_ref().ok(), fingerprint) {
                     // A restarted device repeats a message already seen, such
                     // as its identity hello. The payload is old but the
                     // membership is new, and without a join the peer stays
@@ -4521,7 +4528,7 @@ impl HostRouteScheduler<'_> {
                 )
                 .await
                 .map_err(|_| "workspace host connection timed out".to_string())
-                .and_then(|result| result.map_err(|error| relay_error(&host, error)))
+                .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
                 .and_then(|client| {
                     RelayCoeditSession::join(
                         client,
@@ -4570,7 +4577,7 @@ impl HostRouteScheduler<'_> {
             })
             .await
             .map_err(|_| "workspace host connection timed out".to_string())
-            .and_then(|result| result.map_err(|error| relay_error(&host, error)))
+            .and_then(|result| result.map_err(|error| relay_error(&host, &error)))
             .and_then(|client| {
                 RelayCoeditSession::join(
                     client,

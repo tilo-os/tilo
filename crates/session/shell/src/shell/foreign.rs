@@ -6032,6 +6032,7 @@ mod tests {
     const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn foreign_window_status_copy_names_the_app_in_plain_words() {
         /// An app already on this machine can be on screen almost at once, so saying "on its way" that fast would flicker before anyone reads it.
         fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {

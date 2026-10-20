@@ -693,8 +693,9 @@ fn wait_for_captures(
                 ),
             };
             if let Some(why) = why {
-                left_alone[index].1 =
-                    format!("initial capture deferred; latest observation: {why}");
+                if let Some((_, note)) = left_alone.get_mut(index) {
+                    *note = format!("initial capture deferred; latest observation: {why}");
+                }
             } else {
                 // SAFETY: this thread belongs to our process; an exited thread
                 // simply makes tgkill fail. The handler was installed before dumping.
@@ -703,7 +704,7 @@ fn wait_for_captures(
                 };
                 left_alone.remove(index);
                 if sent == 0 {
-                    *signalled += 1;
+                    *signalled = signalled.saturating_add(1);
                 }
             }
         }
@@ -953,12 +954,13 @@ mod tests {
         // production, undumpable processes use the wait channel fallback.
         let deadline = Instant::now() + DUMP_WAIT;
         let initially_running = loop {
-            let running = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
-                Ok(syscall) => syscall.trim() == "running",
-                Err(_) => {
-                    let observed = report(tid, String::new());
-                    observed.state == "R" && not_interruptible_waiting_in(&observed.wait).is_some()
-                }
+            let running = if let Ok(syscall) =
+                std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+            {
+                syscall.trim() == "running"
+            } else {
+                let observed = report(tid, String::new());
+                observed.state == "R" && not_interruptible_waiting_in(&observed.wait).is_some()
             };
             if running {
                 break true;

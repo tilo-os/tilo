@@ -1819,6 +1819,10 @@ fn native_person_chat(
     Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the broker's composition root: one entry per service the shell gives it"
+)]
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,

@@ -124,6 +124,10 @@ fn app_reads(app: &mut FloatingSurfaceServiceClient) -> Vec<FloatingSurfaceHostM
 // per window or active tab" -- for an app that runs as its own window.
 #[test]
 #[serial_test::serial(process_env)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_history() {
     let runtime = tempfile::tempdir().expect("temporary runtime");
     let mut env = tilo_test_env::ScopedEnv::new();

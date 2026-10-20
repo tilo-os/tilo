@@ -421,8 +421,8 @@ pub fn refresh_shared() {
             let flathub = (flathub_read.as_ref() != Some(&read)).then(|| {
                 std::sync::Arc::new(app_catalogue::appstream::load_all(&sources, &read.1))
             });
-            let block_stamp = app_catalogue::block::current_stamp();
-            let blocks = (blocks_stamp != Some(block_stamp))
+            let blocks_now = app_catalogue::block::current_stamp();
+            let blocks = (blocks_stamp != Some(blocks_now))
                 .then(|| std::sync::Arc::new(app_catalogue::BlockList::load()));
             let changed = flathub.is_some() || blocks.is_some();
             {
@@ -439,9 +439,10 @@ pub fn refresh_shared() {
                 }
                 if let Some(blocks) = blocks {
                     state.catalogue.blocks = blocks;
-                    state.blocks_stamp = Some(block_stamp);
+                    state.blocks_stamp = Some(blocks_now);
                 }
                 state.checked_at = Some(Instant::now());
+                drop(guard);
             }
             if changed {
                 SHARED_REVISION.fetch_add(1, Ordering::Release);
@@ -745,7 +746,7 @@ pub(crate) fn install_flathub_and_open(
 ) {
     {
         let mut installs = FLATHUB_INSTALLS.lock_recover();
-        if installs.iter().any(|id| *id == app_id) {
+        if installs.contains(&app_id) {
             return;
         }
         installs.push(app_id.clone());

@@ -149,7 +149,8 @@ impl BrokerActionHost {
             // their ordinary door; never sign their displayed actor text.
             return Ok(None);
         };
-        if let Some(session) = self.retained_session(caller)? {
+        let retained = self.retained_session(caller)?;
+        if let Some(session) = retained {
             return if session.has_certificate(&certificate) {
                 Ok(Some(session))
             } else {
@@ -324,7 +325,8 @@ impl ActionHost for BrokerActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        match self.retained_session(caller)? {
+        let retained = self.retained_session(caller)?;
+        match retained {
             Some(session) => {
                 let (host, certified) = session.host_and_caller();
                 host.cancel(certified, id)
@@ -489,6 +491,7 @@ mod tests {
         struct WorkerOnly {
             ui_thread: std::thread::ThreadId,
             calls: std::sync::atomic::AtomicUsize,
+            on_ui_thread: std::sync::atomic::AtomicBool,
         }
         impl tilo_action_broker::services::LocalPersonServices for WorkerOnly {
             fn certificate(
@@ -496,7 +499,10 @@ mod tests {
                 _: &str,
                 _: &str,
             ) -> Result<tilo_user_identity::DeviceCert, String> {
-                assert_ne!(std::thread::current().id(), self.ui_thread);
+                if std::thread::current().id() == self.ui_thread {
+                    self.on_ui_thread
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.calls
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Err("seat refused".into())
@@ -505,6 +511,7 @@ mod tests {
         let service = Arc::new(WorkerOnly {
             ui_thread: std::thread::current().id(),
             calls: std::sync::atomic::AtomicUsize::new(0),
+            on_ui_thread: std::sync::atomic::AtomicBool::new(false),
         });
         let broker =
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
@@ -532,6 +539,12 @@ mod tests {
             Err(ActionHostError::NotPermitted)
         ));
         assert_eq!(service.calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert!(
+            !service
+                .on_ui_thread
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "the certificate is never resolved on the calling thread"
+        );
     }
 
     #[test]

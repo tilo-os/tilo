@@ -5490,7 +5490,7 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
             identities.to_vec(),
             display_name.to_string(),
         ));
-    })
+    });
 }
 
 /// Return the durable launch key recorded for a mapped window identity.
@@ -5760,7 +5760,7 @@ pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
             );
             lock(&session.vanished).insert(key);
         }
-    })
+    });
 }
 
 /// An action invocation was handed to the app of launch `key`. Driving an
@@ -5963,7 +5963,7 @@ pub fn set_pending_placement_for_identities(
             metric_spawned: false,
             diagnostic_reserved: false,
         });
-    })
+    });
 }
 
 /// The launch noted under `noted` turned out to be the host app `key` (a
@@ -6134,7 +6134,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
                 diagnostic_reserved: false,
             });
         }
-    })
+    });
 }
 
 /// Carry a previously validated continuation projection into the next launch
@@ -6210,7 +6210,7 @@ pub fn clear_pending_placement(package_id: &str) {
                 .event(note.launch_metric_id, launch_history::Phase::Retired);
             tilo_startup_metrics::launch_failed(note.launch_metric_id);
         }
-    })
+    });
 }
 
 /// Forget the one claimed placement belonging to a launch that reported a
@@ -6276,7 +6276,7 @@ pub(crate) fn hold_presentation_for(package_id: &str, extra: Duration) {
             note.present_before =
                 pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT.saturating_add(extra));
         }
-    })
+    });
 }
 
 fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
@@ -6289,7 +6289,7 @@ fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
         {
             note.retire_after = Some(deadline);
         }
-    })
+    });
 }
 
 /// Retire windowless clean launches without waiting for another application
@@ -6381,7 +6381,7 @@ pub fn clear_pending_placements() {
         lock(&session.session_helpers).clear();
         lock(&session.restartable_helpers).clear();
         lock(&session.presented).clear();
-    })
+    });
 }
 
 /// Test hook: publish a socket path directly (production goes through
