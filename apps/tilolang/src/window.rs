@@ -30,7 +30,7 @@ pub(crate) mod pane;
 mod tests;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -50,8 +50,8 @@ use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::controls::ControlResult;
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    AppModel, Button, ButtonRole, ContentKind, Element, EmptyState, MenuItem, ModelPath, NavItem,
-    NavList, NavPane, NavSection, NavShell, Scrollable, Spacer, Text, Widget,
+    Absent, AppModel, Button, ButtonRole, ContentKind, Element, EmptyState, MenuItem, ModelPath,
+    NavItem, NavList, NavPane, NavSection, NavShell, Scrollable, Spacer, Text, Widget,
 };
 
 pub use list::{RowAction, RowData};
@@ -336,6 +336,9 @@ pub struct Window {
     /// The destructive actions handed to the door and not yet answered, by action id, with the
     /// notice their undo shows.
     destructive: HashMap<String, String>,
+    /// The primary actions handed to the door and not yet answered, by action id: what each
+    /// makes opens when it is answered.
+    making: HashSet<String>,
     undo: ui::undo::UndoAccess,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
@@ -364,7 +367,7 @@ impl Window {
             .fill_height()
             .gap(Rhythm::Tight)
             .push_slot(slot(Box::new(NavShell::new()), Fit::fill(1.0)))
-            .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
+            .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
             .push_slot(slot(endpoint, Fit::hug()))
             .push_slot(slot(open_endpoint, Fit::hug()));
         Self {
@@ -392,6 +395,7 @@ impl Window {
             sink: RefCell::new(Some(Box::new(LogSink::dev()))),
             device: None,
             destructive: HashMap::new(),
+            making: HashSet::new(),
             undo: ui::undo::UndoAccess::new(),
             staged: None,
             started: false,
@@ -646,41 +650,74 @@ impl Window {
     }
 
     /// What the root's `list` frame shows.
-    fn listing(host: &Host, lane: &Lane, frame: &UiNode) -> Listing {
-        let mut rows = Vec::new();
-        let mut item_type = None;
-        for item in frame.children.iter().filter(|child| child.kind == "item") {
-            let Some(Value::Ref(reference)) = item.props.get("item") else {
-                continue;
-            };
-            let target = reference.target.clone();
-            item_type.get_or_insert_with(|| target.ty.clone());
-            let row = find_kind(item, "list_row").cloned();
-            let checked =
-                row.as_ref()
-                    .filter(|row| row.binding.is_some())
-                    .and_then(|row| match lane.view.bound_value(&row.key) {
-                        Some(Value::Bool(flag)) => Some(flag),
-                        Some(Value::Int(number)) => Some(number != 0),
-                        _ => None,
-                    });
-            let avatar = row.as_ref().and_then(|row| match row.props.get("avatar") {
-                Some(Value::Principal(who)) => Some((
-                    crate::reconcile::display(&Value::Principal(who.clone())),
-                    who.0.clone(),
-                )),
+    /// The row of the list item `item`, when it names what it shows.
+    fn row_of(host: &Host, lane: &Lane, item: &UiNode) -> Option<RowData> {
+        let Some(Value::Ref(reference)) = item.props.get("item") else {
+            return None;
+        };
+        let target = reference.target.clone();
+        let row = find_kind(item, "list_row").cloned();
+        let checked = row
+            .as_ref()
+            .filter(|row| row.binding.is_some())
+            .and_then(|row| match lane.view.bound_value(&row.key) {
+                Some(Value::Bool(flag)) => Some(flag),
+                Some(Value::Int(number)) => Some(number != 0),
                 _ => None,
             });
-            rows.push(RowData {
-                key: item.key.clone(),
-                label: describe::title_of(host, &target),
-                actions: describe::offered_in(host, &target, &lane.target),
-                item: target,
-                row,
-                checked,
-                avatar,
-            });
-        }
+        let avatar = row.as_ref().and_then(|row| match row.props.get("avatar") {
+            Some(Value::Principal(who)) => Some((
+                crate::reconcile::display(&Value::Principal(who.clone())),
+                who.0.clone(),
+            )),
+            _ => None,
+        });
+        Some(RowData {
+            key: item.key.clone(),
+            label: describe::title_of(host, &target),
+            actions: describe::offered_in(host, &target, &lane.target),
+            item: target,
+            row,
+            checked,
+            avatar,
+        })
+    }
+
+    /// The list `frame`'s choice `name` (`sort`, `filter`): its enum's cases, the one chosen
+    /// and how many items each holds.
+    fn choice(host: &Host, frame: &UiNode, name: &str) -> Option<Choice> {
+        let Some(Value::Text(id)) = frame.props.get(&format!("{name}.enum")) else {
+            return None;
+        };
+        let cases = describe::cases(host, id);
+        let selected = frame
+            .props
+            .get(&format!("{name}.selected"))
+            .and_then(describe::case_of);
+        let counts = cases
+            .iter()
+            .filter_map(
+                |(case, _)| match frame.props.get(&format!("{name}.count.{case}")) {
+                    Some(Value::Int(count)) => Some((case.clone(), *count)),
+                    _ => None,
+                },
+            )
+            .collect();
+        Some(Choice {
+            cases,
+            selected,
+            counts,
+        })
+    }
+
+    fn listing(host: &Host, lane: &Lane, frame: &UiNode) -> Listing {
+        let rows: Vec<RowData> = frame
+            .children
+            .iter()
+            .filter(|child| child.kind == "item")
+            .filter_map(|item| Self::row_of(host, lane, item))
+            .collect();
+        let item_type = rows.first().map(|row| row.item.ty.clone());
         let declared_item = match frame.props.get("item_type") {
             Some(Value::Text(ty)) => Some(ty.clone()),
             _ => item_type,
@@ -695,32 +732,8 @@ impl Window {
             .as_ref()
             .map(|(_, ty)| describe::noun(ty))
             .unwrap_or_default();
-        let choice = |name: &str| -> Option<Choice> {
-            let Some(Value::Text(id)) = frame.props.get(&format!("{name}.enum")) else {
-                return None;
-            };
-            let cases = describe::cases(host, id);
-            let selected = frame
-                .props
-                .get(&format!("{name}.selected"))
-                .and_then(describe::case_of);
-            let counts = cases
-                .iter()
-                .filter_map(
-                    |(case, _)| match frame.props.get(&format!("{name}.count.{case}")) {
-                        Some(Value::Int(count)) => Some((case.clone(), *count)),
-                        _ => None,
-                    },
-                )
-                .collect();
-            Some(Choice {
-                cases,
-                selected,
-                counts,
-            })
-        };
-        let filter = choice("filter");
-        let sort = choice("sort");
+        let filter = Self::choice(host, frame, "filter");
+        let sort = Self::choice(host, frame, "sort");
         // An empty list offers the frame's primary action when nothing was made yet; one a filter
         // emptied says only that.
         let filtered = filter.as_ref().is_some_and(|filter| {
@@ -841,7 +854,7 @@ impl Window {
         &mut self,
         column: &'static str,
         title: &str,
-        signature: String,
+        signature: &str,
         actions: impl FnOnce(&Self) -> Vec<Element>,
     ) {
         let signature = format!("{title}\u{1f}{signature}");
@@ -928,7 +941,7 @@ impl Window {
                 }
                 self.headers.insert("filter", signature);
             }
-            self.header("sidebar", &root_title, String::new(), |_| Vec::new());
+            self.header("sidebar", &root_title, "", |_| Vec::new());
         } else if let Some(sidebar) = part(&frame, "sidebar") {
             let node = side_stack(sidebar);
             let Self { body, root, .. } = self;
@@ -937,7 +950,7 @@ impl Window {
             {
                 fill(pane, &mut lane.reconciler, &mut lane.sidebar, &node);
             }
-            self.header("sidebar", &root_title, String::new(), |_| Vec::new());
+            self.header("sidebar", &root_title, "", |_| Vec::new());
         }
 
         // The list, or the root's content.
@@ -966,7 +979,7 @@ impl Window {
             let sort = listing.sort.clone();
             let key = listing.key.clone();
             let actions = Rc::clone(&root_actions);
-            self.header(column, &title, signature, |window| {
+            self.header(column, &title, &signature, |window| {
                 let mut buttons = window.action_buttons(&actions, &title);
                 if let Some(sort) = &sort {
                     buttons.push(window.sort_menu(&key, sort));
@@ -1011,7 +1024,7 @@ impl Window {
             );
             let actions = Rc::clone(&root_actions);
             let title = root_title.clone();
-            self.header("content", &root_title, signature, |window| {
+            self.header("content", &root_title, &signature, |window| {
                 let mut buttons = window.action_buttons(&actions, &title);
                 buttons.push(search());
                 buttons
@@ -1039,7 +1052,7 @@ impl Window {
                         .map(|action| &action.action)
                         .collect::<Vec<_>>()
                 );
-                self.header("content", &title, signature, |window| {
+                self.header("content", &title, &signature, |window| {
                     let mut buttons = window.action_buttons(&actions, &title);
                     if !overview {
                         buttons.push(search());
@@ -1193,7 +1206,7 @@ impl Window {
     fn rebuild_ask(&mut self) {
         let bar: Element = match &self.ask {
             Some(suggestion) => self.ask_bar(suggestion),
-            None => Box::new(Spacer::fixed(0.0)),
+            None => Box::new(Absent::new()),
         };
         self.set_body_slot(1, bar, Fit::hug());
     }
@@ -1280,7 +1293,7 @@ impl Window {
             match host.open_plan(&anchor) {
                 Ok(plan) => {
                     if let Some(target) = plan.target
-                        && target.path.len() + usize::from(plan.app != self.app) > 0
+                        && (!target.path.is_empty() || plan.app != self.app)
                     {
                         self.open_detail(&target, None, true);
                     }
@@ -1388,6 +1401,9 @@ impl Window {
                             )
                         };
                         self.destructive.insert(action.action.clone(), notice);
+                    }
+                    if action.primary {
+                        self.making.insert(action.action.clone());
                     }
                     let arguments = action
                         .args
@@ -1542,6 +1558,16 @@ impl Window {
                     }
                 }
                 Some(error) => self.notice(&error),
+            }
+            return true;
+        }
+        if self.making.remove(&address.action) && error.is_none() {
+            // What a primary action made opens beside the list, as the person asked for it.
+            if let Some(made) = self
+                .current_host()
+                .and_then(|host| host.take_produced(&address.action))
+            {
+                self.open_requests.borrow_mut().push(made.id_string());
             }
             return true;
         }

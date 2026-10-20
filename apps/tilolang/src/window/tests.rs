@@ -68,6 +68,8 @@ impl Room {
             .scenarios
             .first()
             .expect("the package declares a scenario");
+        // A scenario fills its package's root, which a room makes the first time it is wanted.
+        host.root_of(&meta.app).expect("the package has a root");
         host.runtime()
             .invoke_action(
                 &Principal::new("ada"),
@@ -248,19 +250,10 @@ impl Room {
                     .row
                     .as_ref()
                     .and_then(|node| node.props.get("title"))
-                    .map(crate::reconcile::display)
-                    .unwrap_or_else(|| row.label.clone());
+                    .map_or_else(|| row.label.clone(), crate::reconcile::display);
                 (row.key.clone(), title)
             })
             .collect()
-    }
-
-    fn row_key(&mut self, title: &str) -> String {
-        self.rows()
-            .into_iter()
-            .find(|(_, shown)| shown == title)
-            .map(|(key, _)| key)
-            .unwrap_or_else(|| panic!("no row {title}"))
     }
 
     /// Run what a shell control asks and let the window settle.
@@ -282,6 +275,27 @@ impl Room {
             action,
             title: String::new(),
         });
+    }
+
+    /// Whether the note published as `resource` is pinned.
+    fn pinned(&self, resource: &str) -> bool {
+        let host = self.window.current_host().unwrap();
+        let path = resource.strip_prefix("tl:so.tilo.notes:").unwrap();
+        let probe = tilolang_tilo::runtime::ResourceRef::parse_id(path, String::new()).unwrap();
+        let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe).unwrap();
+        let note = tilolang_tilo::runtime::ResourceRef::parse_id(path, ty).unwrap();
+        host.runtime().read(&note, "pinned").unwrap() == Value::Bool(true)
+    }
+
+    /// The states of the invocations the room record holds.
+    fn invocation_states(&self) -> Vec<String> {
+        let host = self.window.current_host().unwrap();
+        tilolang_tilo::action::resource_ids(&self.doc, tilolang_tilo::HOST_APP)
+            .iter()
+            .filter_map(|doc| host.invocation_ref(doc))
+            .filter_map(|invocation| host.runtime().read_invocation(&invocation).ok())
+            .map(|record| record.state)
+            .collect()
     }
 
     fn items_of(&self, app: &str, field: &str) -> usize {
@@ -409,7 +423,12 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
         "the action inserted a note"
     );
     assert_eq!(room.rows().len(), 1);
-    assert!(room.window.detail.is_some(), "and `open` showed it");
+    let made = room.list().rows[0].item.clone();
+    assert_eq!(
+        room.window.detail_target(),
+        Some(&made),
+        "and the note it made opened beside the list"
+    );
 }
 
 #[test]
@@ -461,7 +480,7 @@ fn a_destructive_row_action_runs_through_the_door_and_offers_undo() {
     );
     room.ask(Request::Invoke {
         action: delete,
-        title: row.label.clone(),
+        title: row.label,
     });
     assert_eq!(room.rows().len(), before - 1);
     assert!(room.shell().toast_text().is_some(), "the shell offers undo");
@@ -575,13 +594,319 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
         resource.contains('/'),
         "an item is addressed by its path: {resource}"
     );
-    let pinned_before = room.surveyed().len();
+    let before = room.pinned(&resource);
     room.applies_as(Some(task()), &resource, &action, &Json::Null)
         .unwrap();
+    assert_eq!(room.pinned(&resource), !before, "the agent pinned the note");
+
+    // A draft's send reaches outside: asked of an agent, it is recorded as a suggestion.
+    let mut desk = Room::seeded("letters");
+    let send = desk
+        .surveyed()
+        .into_iter()
+        .find(|d| d.resource_kind == "tl.so.tilo.letters.Draft" && d.action_label == "Send")
+        .expect("a draft publishes its send");
+    desk.applies_as(
+        Some(task()),
+        &send.address.resource,
+        &send.address.action,
+        &Json::Null,
+    )
+    .unwrap();
+    assert!(
+        desk.invocation_states()
+            .iter()
+            .any(|state| state == "suggested"),
+        "{:?}",
+        desk.invocation_states()
+    );
+    assert!(desk.sink.delivered().is_empty(), "nothing was sent");
+}
+
+/// The first draft on the desk of a letters room.
+fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
+    let host = room.window.current_host().expect("the host started");
+    let desk = host.root_of("so.tilo.letters").unwrap();
+    let Value::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
+        panic!("the desk lists its drafts");
+    };
+    let Some(Value::Ref(draft)) = drafts.first() else {
+        panic!("a draft is a reference");
+    };
+    draft.target.clone()
+}
+
+#[test]
+fn a_send_block_from_an_agent_becomes_a_suggested_invocation_a_person_decides() {
+    let mut room = Room::new("chat");
+    room.seed("letters");
+    let host = room.window.current_host().unwrap();
+    let source = format!(
+        "letters.send(@letters.Draft:{})",
+        first_draft(&room).id_string()
+    );
+    let output = room
+        .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(output["kind"], "invocation", "{output}");
     assert_eq!(
-        room.surveyed().len(),
-        pinned_before,
-        "the same verbs after the change"
+        output["state"], "suggested",
+        "an agent's send asks first: {output}"
+    );
+    // The invocation is a resource of the room record, so every replica shows it.
+    let id = output["invocation"].as_str().unwrap();
+    let invocation = host.invocation_ref(id).unwrap();
+    let in_record = tilolang_tilo::action::resource_ids(&room.doc, tilolang_tilo::HOST_APP);
+    assert!(
+        in_record.iter().any(|doc| doc == &invocation.doc),
+        "{in_record:?}"
+    );
+    // A person declines it, and nothing is sent.
+    host.runtime()
+        .resolve_invocation(
+            &invocation,
+            &Principal::new("ada"),
+            tilolang_tilo::runtime::Resolution::Decline,
+        )
+        .unwrap();
+    assert_eq!(
+        host.runtime().read_invocation(&invocation).unwrap().state,
+        "declined"
+    );
+    assert!(room.sink.delivered().is_empty());
+}
+
+fn person_decides(room: &mut Room, decision: &str, target: &str) -> Result<Json, String> {
+    room.invokes_as(
+        None,
+        HOST,
+        "resolve",
+        &serde_json::json!({"target": target, "decision": decision}),
+    )
+    .map(|output| output.value.unwrap_or_default())
+}
+
+#[test]
+fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
+    let mut room = Room::seeded("letters");
+    let key = room.rows()[0].0.clone();
+    room.ask(Request::Activate(key));
+    let draft = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the letter opened");
+    let host = room.window.current_host().unwrap();
+    let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
+    let send = node_with(
+        room.window.detail_tree().unwrap(),
+        "button",
+        "label",
+        "Send",
+    )
+    .expect("the letter's Send button")
+    .key
+    .clone();
+    room.window.act(true, UiEvent::Press(send));
+    room.settle();
+    assert!(room.window.ask.is_some(), "a send asks the person first");
+    assert!(
+        room.sink.delivered().is_empty(),
+        "nothing leaves before they say so"
+    );
+    room.window.answers.borrow_mut().push(Answer::Allow);
+    room.settle();
+    let delivered = room.sink.delivered();
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert_eq!(delivered[0].0, "post");
+    assert!(delivered[0].1.to_string().contains(&to), "{delivered:?}");
+    room.settle();
+    room.settle();
+    assert_eq!(room.sink.delivered().len(), 1, "settled once, not again");
+    // The record says it was delivered, so no device queues it again.
+    assert_eq!(
+        tilolang_tilo::runtime::store::Store::outbox_pending(host.store()).len(),
+        0
+    );
+}
+
+#[test]
+fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_once() {
+    let mut room = Room::new("chat");
+    room.seed("letters");
+    let host = room.window.current_host().unwrap();
+    let draft = first_draft(&room);
+    let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
+    let source = format!("letters.send(@letters.Draft:{})", draft.id_string());
+    let suggested = room
+        .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(suggested["state"], "suggested", "{suggested}");
+    let id = suggested["invocation"].as_str().unwrap().to_owned();
+    // The runtime knows the author as the task's delegate.
+    let record = host
+        .runtime()
+        .read_invocation(&host.invocation_ref(&id).unwrap())
+        .unwrap();
+    assert_eq!(record.author, Principal::new("agent-task:7"));
+    // An agent cannot approve what it suggested.
+    let refused = room.invokes_as(
+        Some(task()),
+        HOST,
+        "resolve",
+        &serde_json::json!({"target": id, "decision": "approve"}),
+    );
+    assert!(
+        refused.unwrap_err().contains("only a person"),
+        "agents never decide"
+    );
+    assert!(room.sink.delivered().is_empty());
+    let decided = person_decides(&mut room, "approve", &id).unwrap();
+    assert_eq!(decided["state"], "done", "{decided}");
+    let delivered = room.sink.delivered();
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert!(delivered[0].1.to_string().contains(&to), "{delivered:?}");
+    // Approving again changes nothing: the suggestion is decided.
+    assert!(person_decides(&mut room, "approve", &id).is_err());
+    room.settle();
+    assert_eq!(room.sink.delivered().len(), 1);
+}
+
+/// A board room with the todo list and the notebook it points at, each with its scenario, and
+/// how many of the todos are done.
+fn board_room() -> (Room, usize) {
+    let mut room = Room::new("board");
+    room.seed("todo");
+    room.seed("notes");
+    let host = room.window.current_host().unwrap();
+    let list = host.root_of("so.tilo.todo").unwrap();
+    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
+        panic!("the list holds items");
+    };
+    let done = items
+        .iter()
+        .filter(|item| match item {
+            Value::Ref(item) => {
+                host.runtime().read(&item.target, "done").ok() == Some(Value::Bool(true))
+            }
+            _ => false,
+        })
+        .count();
+    assert!(done > 0, "the saturday list has done items");
+    (room, done)
+}
+
+fn cleanup_args(room: &Room) -> Json {
+    let host = room.window.current_host().unwrap();
+    let list = host.root_of("so.tilo.todo").unwrap().id_string();
+    let notebook = host.root_of("so.tilo.notes").unwrap().id_string();
+    serde_json::json!({
+        "flow": "so.tilo.board.morning_cleanup",
+        "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
+    })
+}
+
+#[test]
+fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
+    let (mut room, done) = board_room();
+    let args = cleanup_args(&room);
+    let output = room
+        .agent_invokes(HOST, "run-flow", &args)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(output, serde_json::json!({"state": "done", "result": done}));
+}
+
+#[test]
+fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
+    let (mut room, done) = board_room();
+    let host = room.window.current_host().unwrap();
+    // The person narrowed this agent: changes to the todo app ask first.
+    host.set_agent_answer(
+        "so.tilo.todo",
+        tilolang_tilo::runtime::meta::EffectClass::Undoable,
+        Decision::Ask,
+    );
+    let todos = room.items_of("so.tilo.todo", "items");
+    let notes = room.items_of("so.tilo.notes", "notes");
+    let args = cleanup_args(&room);
+    let waiting = room
+        .agent_invokes(HOST, "run-flow", &args)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(waiting["state"], "suspended", "{waiting}");
+    assert!(
+        room.window.ask.is_some(),
+        "the window asks the person, as for a press"
+    );
+    assert_eq!(
+        room.items_of("so.tilo.todo", "items"),
+        todos,
+        "nothing went while it waits"
+    );
+    let run = waiting["run"].as_str().unwrap().to_owned();
+    // Each removal asks: the flow waits again until the person approved every one.
+    let mut approvals = 0;
+    let finished = loop {
+        let answer = person_decides(&mut room, "approve", &run).unwrap();
+        approvals += 1;
+        if answer["state"] != "suspended" || approvals > done {
+            break answer;
+        }
+    };
+    assert_eq!(finished["state"], "done", "{finished}");
+    assert_eq!(approvals, done, "one approval per removal");
+    assert_eq!(
+        room.items_of("so.tilo.todo", "items"),
+        todos - done,
+        "the done ones went, once"
+    );
+    assert_eq!(
+        room.items_of("so.tilo.notes", "notes"),
+        notes + 1,
+        "and one note says so"
+    );
+    assert!(
+        person_decides(&mut room, "approve", &run).is_err(),
+        "it completes once"
+    );
+    room.settle();
+    assert_eq!(room.items_of("so.tilo.todo", "items"), todos - done);
+    assert_eq!(room.items_of("so.tilo.notes", "notes"), notes + 1);
+}
+
+#[test]
+fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
+    let mut room = Room::seeded("chat");
+    let host = room.window.current_host().unwrap();
+    let entries = crate::resource::search_entries(&host);
+    let hit = entries
+        .iter()
+        .find(|entry| entry.title.contains("meet at the station"))
+        .unwrap_or_else(|| panic!("a message is found: {entries:#?}"));
+    // The persistent index keeps short fields, never a prose body.
+    assert!(
+        entries
+            .iter()
+            .flat_map(|entry| &entry.fields)
+            .all(|(text, _)| text.chars().count() <= 80)
+    );
+    let anchor = hit.anchor.clone().expect("a hit names its resource");
+    room.window.open_requests().borrow_mut().push(anchor);
+    room.settle();
+    let thread = room
+        .window
+        .detail_tree()
+        .expect("the hit opened its conversation");
+    assert!(
+        format!("{thread:?}").contains("Let's meet at the station at ten."),
+        "the conversation shows the message: {thread:#?}"
     );
 }
 

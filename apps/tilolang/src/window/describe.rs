@@ -79,8 +79,8 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
             return text;
         }
     }
-    if resource.path.is_empty() && meta.roots.iter().any(|root| *root == ty.id) {
-        return meta.title.clone();
+    if resource.path.is_empty() && meta.roots.contains(&ty.id) {
+        return meta.title;
     }
     sentence(&ty.name)
 }

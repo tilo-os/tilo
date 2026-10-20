@@ -33,31 +33,41 @@ pub struct RoomState {
 }
 
 thread_local! {
-    /// The runtime of the live window on this thread, which the record is published from.
-    static LIVE: RefCell<Option<Host>> = const { RefCell::new(None) };
+    /// The runtimes of the live windows on this thread, each with its hold, the latest last: the
+    /// record is published from the latest.
+    static LIVE: RefCell<Vec<(u64, Host)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_HOLD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// The live window's hold on publication: while it lives, the room's records are published
-/// from its runtime.
-pub struct Live(());
+/// from its runtime, unless a window registered after it still lives. Dropping a hold takes
+/// back only its own registration, so a window the framework built and dropped again never
+/// leaves the one that stays unpublished.
+pub struct Live(u64);
 
 impl Live {
     /// Publish from `host` until the returned hold is dropped.
     #[must_use]
     pub fn register(host: &Host) -> Self {
-        LIVE.with(|live| *live.borrow_mut() = Some(host.clone()));
-        Self(())
+        let hold = NEXT_HOLD.with(|next| {
+            let hold = next.get();
+            next.set(hold.wrapping_add(1));
+            hold
+        });
+        LIVE.with(|live| live.borrow_mut().push((hold, host.clone())));
+        Self(hold)
     }
 }
 
 impl Drop for Live {
     fn drop(&mut self) {
-        LIVE.with(|live| live.borrow_mut().take());
+        let hold = self.0;
+        let _ = LIVE.try_with(|live| live.borrow_mut().retain(|(held, _)| *held != hold));
     }
 }
 
 fn live() -> Option<Host> {
-    LIVE.with(|live| live.borrow().clone())
+    LIVE.with(|live| live.borrow().last().map(|(_, host)| host.clone()))
 }
 
 /// What the door admitted of an invoker, as the runtime reads it.
