@@ -742,24 +742,21 @@ impl StoreApp {
         if !crate::reports::valid_app_id(app) {
             return Err("invalid app identity".into());
         }
-        let path = app_catalogue::block::person_list_path()
+        let path = ui::registry::block::person_list_path()
             .ok_or_else(|| ui::i18n!("store-block-unavailable"))?;
         let mut list = BlockList::load();
         if block {
-            if list
-                .blockers(app)
-                .contains(&&app_catalogue::Blocker::Person)
-            {
+            if list.blockers(app).contains(&&ui::registry::Blocker::Person) {
                 return Ok(());
             }
             list.block(app);
         } else {
-            list.unblock(app, &app_catalogue::Blocker::Person)
+            list.unblock(app, &ui::registry::Blocker::Person)
                 .map_err(|error| match error {
-                    app_catalogue::UnblockError::NotTheBlocker(_) => {
+                    ui::registry::UnblockError::NotTheBlocker(_) => {
                         ui::i18n!("store-unblock-not-yours")
                     }
-                    app_catalogue::UnblockError::NotBlocked => {
+                    ui::registry::UnblockError::NotBlocked => {
                         ui::i18n!("store-unblock-not-blocked")
                     }
                 })?;
@@ -5742,7 +5739,7 @@ mod tests {
         let inspected = app.inspect_catalogue(Some("id.chess")).unwrap();
         assert_eq!(inspected["detail"]["blocked_by"][0]["kind"], "person");
         assert!(
-            app_catalogue::BlockList::load().is_blocked("id.chess"),
+            ui::registry::BlockList::load().is_blocked("id.chess"),
             "the person's list is the one desktop search reads"
         );
         app.admit(StoreEffect::UnblockApp {
@@ -5750,7 +5747,7 @@ mod tests {
         })
         .unwrap();
         assert!(!app.blocks.is_blocked("id.chess"));
-        assert!(!app_catalogue::BlockList::load().is_blocked("id.chess"));
+        assert!(!ui::registry::BlockList::load().is_blocked("id.chess"));
         app.set_blocks(BlockList::empty().with_workspace_policy("School", ["id.chess"]));
         assert!(
             app.admit(StoreEffect::UnblockApp {

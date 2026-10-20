@@ -137,7 +137,7 @@ pub struct Snapshot {
     /// refresh, so installed apps they list are described only locally.
     pub unanswered_repositories: Vec<String>,
     /// Who blocked which app, as the worker last read the block list.
-    pub blocks: app_catalogue::BlockList,
+    pub blocks: ui::registry::BlockList,
     /// The app Update all is updating now, so its row shows the progress.
     pub updating: Option<String>,
 }
@@ -331,8 +331,8 @@ struct State {
     /// than in the UI's snapshot-drain loop.
     directory: StoreDirectory,
     /// Apps blocked by the person, a workspace or the device's administrator:
-    /// the same list desktop search hides them by (`app_catalogue::BlockList`).
-    blocks: app_catalogue::BlockList,
+    /// the same list desktop search hides them by (`ui::registry::BlockList`).
+    blocks: ui::registry::BlockList,
     /// The person's repositories as the last refresh read them. Kept here so
     /// publishing the directory never asks the host again: each ask runs
     /// `app repo list` on the host.
@@ -372,7 +372,7 @@ fn initial_state(
         catalogue_error: None,
         unanswered_repositories: Vec::new(),
         details: LruCache::new(CACHE_CAP),
-        blocks: app_catalogue::BlockList::load(),
+        blocks: ui::registry::BlockList::load(),
         directory,
         registries: Vec::new(),
         flathub: crate::catalogue::flathub::load(),
@@ -1528,7 +1528,7 @@ mod tests {
             unanswered_repositories: Vec::new(),
             details: LruCache::new(CACHE_CAP),
             directory,
-            blocks: app_catalogue::BlockList::empty(),
+            blocks: ui::registry::BlockList::empty(),
             registries: Vec::new(),
             flathub: None,
             force_refresh: false,

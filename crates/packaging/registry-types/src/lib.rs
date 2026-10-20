@@ -58,6 +58,7 @@
 )]
 
 pub mod application;
+pub mod block;
 pub mod catalogue;
 pub mod change;
 pub mod compact;
@@ -81,6 +82,7 @@ pub mod upload;
 pub mod verify;
 pub mod version;
 
+pub use block::{Block, BlockList, Blocker, UnblockError};
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use compact::{
     CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry, CompactRegistrySnapshot,

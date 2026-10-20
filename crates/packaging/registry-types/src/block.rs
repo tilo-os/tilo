@@ -35,7 +35,7 @@ pub enum Blocker {
 /// One app one blocker blocked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    /// The app's catalogue id, as [`crate::CatalogueEntry::id`].
+    /// The app's catalogue id, as `app_catalogue::CatalogueEntry::id`.
     pub app_id: String,
     pub by: Blocker,
 }

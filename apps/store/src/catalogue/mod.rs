@@ -14,7 +14,7 @@
 //! * [`details`] is what an app's page adds (localized description,
 //!   screenshots, releases, size, licence, permissions), fetched by the
 //!   [`fetcher`] thread when the page opens and kept on disk;
-//! * blocking is the shared [`app_catalogue::BlockList`] desktop search
+//! * blocking is the shared [`ui::registry::BlockList`] desktop search
 //!   hides apps by too: the person's own list and the device's and
 //!   workspace's policies. Blocked apps are listed nowhere;
 //! * [`Home`] and [`search`] decide what the screens list and in which order,
@@ -29,8 +29,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use ui::search::{FieldWeight, ListIndex};
 
-pub use app_catalogue::{BlockList, Blocker};
 pub use details::{AppDetails, Permission, Release};
+pub use ui::registry::{BlockList, Blocker};
 
 use crate::model::{StoreItem, StoreSource};
 

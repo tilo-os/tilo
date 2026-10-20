@@ -686,7 +686,7 @@ mod tests {
                 Err(SnapshotError::OwnerSignature)
             );
             let mut added = with_bot(&plain);
-            added.owner_signature_hex = plain.owner_signature_hex.clone();
+            added.owner_signature_hex = plain.owner_signature_hex;
             assert_eq!(
                 verify_snapshot(&added, &owner_hex, 15),
                 Err(SnapshotError::OwnerSignature)
@@ -695,6 +695,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fail-closed test in phases, each tampering with a fresh snapshot"
+    )]
     fn snapshot_verification_fails_closed() {
         // phase: exact_snapshot_verifies_and_tamper_fails
         {
