@@ -10680,6 +10680,21 @@ pub fn run() {
     // each new generation of the settings document so changes take effect
     // this session, not the next, and only for the sections that changed.
     let mut settings_sections = settings_store::live::SectionFollower::new(&live_settings);
+    // The outputs were published before this baseline was taken, and a
+    // display change staged in between (Settings, or `tilo-vmd display-apply`
+    // right after a session start) is part of it, so it raises no change.
+    {
+        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState as S};
+        if DisplayTransaction::load().is_some_and(|t| {
+            matches!(
+                t.state,
+                S::Requested | S::ConfirmRequested | S::RevertRequested
+            )
+        }) {
+            backend.reload_display_settings();
+            outputs_dirty = true;
+        }
+    }
     let mut switch_control = SwitchControlRuntime::new(Instant::now(), &live_settings);
     let mut continuity_policy =
         crate::shell::continuity_policy::ContinuityPolicyCache::new(&live_settings);
