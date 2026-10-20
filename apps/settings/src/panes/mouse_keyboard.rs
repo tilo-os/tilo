@@ -1890,13 +1890,13 @@ impl MouseKeyboardPane {
         description: &str,
         field: tilo_resource::Path<InputPrefs, bool>,
         id: &str,
-        on: bool,
     ) -> Item {
         self.cx
             .row(t(label))
             .described(t(description))
             .id(id)
-            .toggle(&ui::LocalState::new(on), field)
+            .of(&self.input, field)
+            .toggle()
     }
 
     /// A dropdown over stable ids for one of a tablet's or pad's choices.
@@ -1999,14 +1999,12 @@ impl MouseKeyboardPane {
                     "input-touchpad-enabled-description",
                     InputPrefs::paths().touchpad_enabled,
                     "input.touchpad_enabled",
-                    last.touchpad_enabled,
                 ),
                 self.field_row(
                     "input-touchpad-disable-with-mouse",
                     "input-touchpad-disable-with-mouse-description",
                     InputPrefs::paths().touchpad_disabled_on_external_mouse,
                     "input.touchpad_disabled_on_external_mouse",
-                    last.touchpad_disabled_on_external_mouse,
                 ),
                 self.cx
                     .row(t("input-touchpad-speed"))
@@ -2024,42 +2022,36 @@ impl MouseKeyboardPane {
                     "input-touchpad-natural-scroll-description",
                     InputPrefs::paths().touchpad_natural_scroll,
                     "input.touchpad_natural_scroll",
-                    last.touchpad_natural_scroll,
                 ),
                 self.field_row(
                     "input-tap-to-click",
                     "input-tap-to-click-description",
                     InputPrefs::paths().tap_to_click,
                     "input.tap_click",
-                    last.tap_to_click,
                 ),
                 self.field_row(
                     "input-tap-drag",
                     "input-tap-drag-description",
                     InputPrefs::paths().tap_drag,
                     "input.tap_drag",
-                    last.tap_drag,
                 ),
                 self.field_row(
                     "input-tap-drag-lock",
                     "input-tap-drag-lock-description",
                     InputPrefs::paths().tap_drag_lock,
                     "input.tap_drag_lock",
-                    last.tap_drag_lock,
                 ),
                 self.field_row(
                     "input-disable-while-typing",
                     "input-disable-while-typing-description",
                     InputPrefs::paths().disable_while_typing,
                     "input.disable_while_typing",
-                    last.disable_while_typing,
                 ),
                 self.field_row(
                     "input-touchpad-gestures",
                     "input-touchpad-gestures-description",
                     InputPrefs::paths().touchpad_gestures,
                     "input.touchpad_gestures",
-                    last.touchpad_gestures,
                 ),
             ]),
         )
@@ -2123,7 +2115,6 @@ impl MouseKeyboardPane {
                     "input-mouse-natural-scroll-description",
                     InputPrefs::paths().mouse_natural_scroll,
                     "input.mouse_natural_scroll",
-                    last.mouse_natural_scroll,
                 ),
             ]),
         )
@@ -2142,14 +2133,12 @@ impl MouseKeyboardPane {
                     "input-left-handed-description",
                     InputPrefs::paths().left_handed,
                     "input.left_handed",
-                    self.last.left_handed,
                 ),
                 self.field_row(
                     "input-middle-emulation",
                     "input-middle-emulation-description",
                     InputPrefs::paths().middle_emulation,
                     "input.middle_emulation",
-                    self.last.middle_emulation,
                 ),
                 self.cx
                     .row(t("input-acceleration"))
@@ -2234,18 +2223,14 @@ impl MouseKeyboardPane {
                     .row(t("input-spell-check"))
                     .described(t("input-spell-check-desc"))
                     .id("text.check_spelling")
-                    .toggle(
-                        &ui::LocalState::new(self.text.get().check_spelling),
-                        TextAssistancePrefs::paths().check_spelling,
-                    ),
+                    .of(&self.text, TextAssistancePrefs::paths().check_spelling)
+                    .toggle(),
                 self.cx
                     .row(t("input-spell-auto"))
                     .described(t("input-spell-auto-desc"))
                     .id("text.auto_correct")
-                    .toggle(
-                        &ui::LocalState::new(self.text.get().auto_correct),
-                        TextAssistancePrefs::paths().auto_correct,
-                    ),
+                    .of(&self.text, TextAssistancePrefs::paths().auto_correct)
+                    .toggle(),
                 self.cx
                     .row(t("input-spell-language"))
                     .id("text.spelling_language")
