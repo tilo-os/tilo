@@ -57,6 +57,7 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
             accounts::AccountsArea::new(context.cx).with_account_root(context.account_root.clone()),
         )
     }),
+    (220, |_, _| Box::new(region::language::LanguageArea::new())),
 ];
 
 /// Every area's vocabulary, in the order the union declares them.
@@ -73,6 +74,7 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (190, speakers::SpeakerFlow::FAMILY),
     (200, agent_models::AgentModelsEffect::FAMILY),
     (210, device_mesh::DeviceMeshEffect::FAMILY),
+    (260, region::language::LanguageEffect::FAMILY),
     (230, accounts::AccountsEffect::FAMILY),
 ];
 
@@ -277,7 +279,12 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     },
     crate::area::PaneEntry {
         categories: &[Category::RegionFormats],
-        build: |app, _| Box::new(region::RegionPane::new(app.host().clone())),
+        build: |app, _| {
+            Box::new(region::RegionPane::new(
+                app.host().clone(),
+                region::language::area(app),
+            ))
+        },
     },
     crate::area::PaneEntry {
         categories: &[Category::Updates],

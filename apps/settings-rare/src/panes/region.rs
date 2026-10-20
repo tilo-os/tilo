@@ -13,9 +13,12 @@
 
 use ui::widget::{AppModel, ModelPath, Widget};
 
+use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
 use crate::prefs::AppearancePrefs;
+
+pub mod language;
 use crate::widgets::{Item, note, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
@@ -58,18 +61,90 @@ pub struct RegionPane {
     locale: Followed<Locale>,
     /// The interface language is the appearance section's.
     appearance: Followed<AppearancePrefs>,
+    /// The languages offered and the install under way, when the window
+    /// holds them.
+    languages: Option<Languages>,
     composed: ui::widget::Composed,
 }
 
+/// What the pane shows of [`language::LanguageArea`].
+struct Languages {
+    offered: crate::device_read::Reading<language::Offered>,
+    offered_seen: u64,
+    installing: ui::LocalState<Option<String>>,
+    failed: ui::LocalState<Option<String>>,
+    /// The revisions of `installing` and `failed` the page shows.
+    install_seen: (u64, u64),
+}
+
 impl RegionPane {
-    /// The pane over `cx`'s locale.
-    pub fn new(cx: PaneCx) -> Self {
+    /// The pane over `cx`'s locale, and the languages `languages` knows of.
+    pub fn new(cx: PaneCx, languages: Option<&language::LanguageArea>) -> Self {
+        let languages = languages.map(|area| {
+            // Ask the repositories what they offer as the page opens.
+            area.read();
+            Languages {
+                offered: area.offered.clone(),
+                offered_seen: area.offered.revision(),
+                installing: area.installing.clone(),
+                failed: area.failed.clone(),
+                install_seen: (area.installing.revision(), area.failed.revision()),
+            }
+        });
         Self {
             locale: cx.follow::<Locale>(),
             appearance: cx.follow::<AppearancePrefs>(),
+            languages,
             cx,
             composed: ui::widget::Composed::default(),
         }
+    }
+
+    /// The Language card: the language chosen, among the installed ones and
+    /// those offered, and an install under way or the reason one stopped.
+    fn language_card(&self) -> crate::widgets::SettingsSection {
+        let chosen = self.appearance.get().language.clone();
+        let offered = self
+            .languages
+            .as_ref()
+            .and_then(|languages| languages.offered.get())
+            .unwrap_or_default();
+        let names: Vec<String> = std::iter::once(language::name(None))
+            .chain(
+                language::choices(&offered)
+                    .iter()
+                    .map(|choice| language::name(Some(choice))),
+            )
+            .collect();
+        let current = ui::LocalState::new(language::name(chosen.as_deref()));
+        let mut items = vec![
+            self.cx
+                .row(t("settings-region-language"))
+                .id("region.language")
+                .choice_effect(
+                    names,
+                    &current,
+                    effect(language::LanguageEffect::CHOOSE_LANGUAGE),
+                ),
+        ];
+        if let Some(languages) = &self.languages {
+            if let Some(installing) = languages.installing.with(Clone::clone) {
+                items.push(note(&crate::i18n::t_args(
+                    "settings-region-language-installing",
+                    &[("language", language::name(Some(&installing)).into())],
+                )));
+            } else if let Some(failed) = languages.failed.with(Clone::clone) {
+                items.push(crate::widgets::error_row(
+                    &t("settings-region-language"),
+                    &crate::i18n::t_args(
+                        "settings-region-language-failed",
+                        &[("error", failed.into())],
+                    ),
+                ));
+            }
+        }
+        items.push(note(&t("settings-region-language-body")));
+        section(&t("settings-region-language-card"), rows(items))
     }
 
     pub fn locale(&self) -> Locale {
@@ -84,28 +159,7 @@ impl RegionPane {
         let loc = *self.locale.get();
         let paths = Locale::paths();
         let row = |label: &str, id: &str| self.cx.row(t(label)).id(id);
-        // The languages installed, and the device's own as the default.
-        let languages = std::iter::once(None)
-            .chain(
-                crate::i18n::languages()
-                    .into_iter()
-                    .map(|language| Some(language.to_owned())),
-            )
-            .collect::<Vec<_>>();
-        let language = section(
-            &t("settings-region-language-card"),
-            rows(vec![
-                row("settings-region-language", "region.language")
-                    .of(&self.appearance, AppearancePrefs::paths().language)
-                    .menu(languages, |language: &Option<String>| {
-                        language.as_deref().map_or_else(
-                            || t("settings-region-language-device"),
-                            ui::i18n::language_name,
-                        )
-                    }),
-                note(&t("settings-region-language-body")),
-            ]),
-        );
+        let language = self.language_card();
         let formats = section(
             &t("settings-region-formats-card"),
             rows(vec![
@@ -178,7 +232,18 @@ impl RegionPane {
 
 impl Widget for RegionPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.locale.refresh() | self.appearance.refresh() {
+        // What the repositories offer landed, or an install started or
+        // stopped.
+        let languages_moved = self.languages.as_mut().is_some_and(|languages| {
+            let seen = (
+                languages.offered.revision(),
+                (languages.installing.revision(), languages.failed.revision()),
+            );
+            let moved = seen != (languages.offered_seen, languages.install_seen);
+            (languages.offered_seen, languages.install_seen) = seen;
+            moved
+        });
+        if self.locale.refresh() | self.appearance.refresh() | languages_moved {
             // The preview card follows the values.
             self.composed.invalidate();
         }
@@ -240,7 +305,7 @@ mod tests {
     fn the_language_is_chosen_among_the_installed_ones() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let pane = RegionPane::new(cx);
+        let pane = RegionPane::new(cx, None);
         let language = AppearancePrefs::paths().language;
         let label = |language: &Option<String>| {
             language.as_deref().map_or_else(
@@ -266,6 +331,30 @@ mod tests {
         );
     }
 
+    /// Choosing an installed language takes effect at once; a language the
+    /// desktop neither has nor is offered is refused and changes nothing.
+    #[test]
+    fn choosing_an_installed_language_writes_it_at_once() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let choose = |language: &str| {
+            crate::effects::SettingsEffect::from(language::LanguageEffect::ChooseLanguage {
+                language: language.into(),
+            })
+        };
+        app.effect(&choose("Deutsch (Deutschland)")).unwrap();
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().language.as_deref(),
+            Some("de-DE")
+        );
+        assert!(app.effect(&choose("xx-XX")).is_err());
+        assert_eq!(
+            app.settings::<AppearancePrefs>().get().language.as_deref(),
+            Some("de-DE")
+        );
+        app.effect(&choose(language::DEVICE)).unwrap();
+        assert_eq!(app.settings::<AppearancePrefs>().get().language, None);
+    }
+
     /// With no date format or clock chosen the pane shows "Follow language"
     /// as each value and offers it first; ISO, 12-hour and 24-hour are
     /// explicit choices among the rest.
@@ -273,7 +362,7 @@ mod tests {
     fn the_date_format_and_clock_default_to_following_the_language() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let pane = RegionPane::new(cx);
+        let pane = RegionPane::new(cx, None);
         assert_eq!(pane.locale().date_format, DateStyle::Language);
         let paths = Locale::paths();
         assert_eq!(
@@ -305,7 +394,7 @@ mod tests {
                 ..Locale::default()
             })
             .unwrap();
-        let mut pane = RegionPane::new(cx.clone());
+        let mut pane = RegionPane::new(cx.clone(), None);
         let paths = Locale::paths();
         let currency = pane
             .locale

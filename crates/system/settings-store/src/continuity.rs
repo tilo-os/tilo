@@ -91,6 +91,9 @@ policies! {
         "tilo.appearance.reduce_transparency",
         "tilo.appearance.forced_colors",
         "tilo.appearance.workspace_temperatures",
+        // The person's language roams; a device without its pack shows
+        // English until the pack is installed there.
+        "tilo.appearance.language",
         "tilo.appearance.studio",
         "tilo.identity.colour",
         "tilo.locale.currency",

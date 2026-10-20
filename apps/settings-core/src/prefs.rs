@@ -722,8 +722,9 @@ pub struct AppearancePrefs {
     /// formats offers among [`crate::i18n::languages`]; `None` follows the
     /// device's (`settings_store::appearance::LANGUAGE`). Every app and the
     /// desktop show their copy in it, and a message with no translation in
-    /// English.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// English. Written even when `None` (as `null`), so following the
+    /// device again replaces a language chosen before.
+    #[serde(default)]
     pub language: Option<String>,
 }
 
