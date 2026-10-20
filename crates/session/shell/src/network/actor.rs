@@ -1664,6 +1664,12 @@ impl ActorState {
                 .await;
             }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
+                if !self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
+                    tracing::debug!(
+                        ws,
+                        "no host session to publish this session's windows on yet"
+                    );
+                }
                 if matches!(msg, NeighbourMsg::SyncResp { .. }) {
                     publish(
                         &self.topics,
