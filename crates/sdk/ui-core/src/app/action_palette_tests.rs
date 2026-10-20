@@ -67,16 +67,7 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 struct ConsumingKeyboardRoot;
 impl Widget for ConsumingKeyboardRoot {
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = tree.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
+    crate::testing::inert_widget_methods!(leaf_layout);
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
@@ -1089,16 +1080,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         fn name(&self) -> &str {
             "Native history fixture"
         }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
+        crate::testing::inert_widget_methods!(leaf_layout);
     }
     let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
         UndoStatus {

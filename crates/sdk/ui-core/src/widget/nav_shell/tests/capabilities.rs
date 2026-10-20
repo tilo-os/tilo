@@ -739,18 +739,6 @@ impl Widget for EdgeProbe {
         self.rect
     }
 
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
-    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
-
     fn name(&self) -> &'static str {
         "EdgeProbe"
     }

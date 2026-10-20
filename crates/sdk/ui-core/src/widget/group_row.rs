@@ -9473,15 +9473,6 @@ mod tests {
             taffy.fill_leaf(node_map, self)
         }
         crate::rect_geometry!();
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "MinWidthApp"
         }
@@ -9928,15 +9919,6 @@ mod tests {
             taffy.fill_leaf(node_map, self)
         }
         crate::rect_geometry!();
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "TreeMinimumApp"
         }

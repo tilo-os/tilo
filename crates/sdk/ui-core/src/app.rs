@@ -3020,7 +3020,6 @@ mod render_retry_tests {
 mod legacy_owner_routing_tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::collections::HashMap;
 
     struct OwnerProbe {
         label: &'static str,
@@ -3030,19 +3029,7 @@ mod legacy_owner_routing_tests {
     impl Widget for OwnerProbe {
         crate::provides!(dyn crate::component_lifecycle::ComponentLifecycle);
 
-        fn build_layout(
-            &mut self,
-            tree: &mut taffy::TaffyTree<()>,
-            _: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn name(&self) -> &'static str {
-            "LegacyOwnerProbe"
-        }
+        crate::testing::inert_widget_methods!(leaf_layout, name = "LegacyOwnerProbe");
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
             use crate::a11y::{AccessNode, AccessState, Role};
             Some(AccessNode::new(Role::Generic).with_children(vec![

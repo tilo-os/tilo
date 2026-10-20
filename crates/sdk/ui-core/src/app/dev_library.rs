@@ -473,20 +473,7 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
     struct ReloadedProbe;
 
     impl crate::widget::Widget for ReloadedProbe {
-        fn build_layout(
-            &mut self,
-            taffy: &mut taffy::TaffyTree<()>,
-            _theme: &crate::Theme,
-            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
-        ) -> taffy::NodeId {
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
-            node
-        }
-
-        fn name(&self) -> &str {
-            "reloaded"
-        }
+        crate::testing::inert_widget_methods!(leaf_layout, name = "reloaded");
     }
 
     impl crate::widget::AppWidget for ReloadedProbe {
