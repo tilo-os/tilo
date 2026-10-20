@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::flow::Journal;
 use crate::ids::{ModuleHash, Principal, RunId};
+use crate::space::Space;
 use crate::store::Txn;
 use crate::value::{ResourceRef, Value};
 use crate::view::NodeBuild;
@@ -39,6 +40,10 @@ pub struct FlowState {
 
 #[derive(Default)]
 pub struct ViewState {
+    /// The space this run of the view was offered.
+    pub space: Space,
+    /// Every `space` field read, with the value it had.
+    pub space_reads: Vec<(String, f64)>,
     /// Every `(document, field)` read, the view's dependencies.
     pub reads: Vec<(String, String)>,
     pub nodes: Vec<NodeBuild>,

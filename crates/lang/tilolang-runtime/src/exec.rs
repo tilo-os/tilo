@@ -14,6 +14,7 @@ use crate::handles::{ActionState, FlowState, FrameKind, Retained, ViewState};
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{EffectClass, ParamMeta, Repr, Ty};
 use crate::registry::Package;
+use crate::space::Space;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, Value, to_json};
 use crate::view::{NodeBuild, UiNode};
@@ -46,14 +47,15 @@ pub enum InvokeOutcome {
 pub struct Rendered {
     pub root: UiNode,
     pub reads: Vec<(String, String)>,
+    pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
 }
 
 fn push_chain(chain: &mut Vec<ModuleHash>, author: Option<&ModuleHash>) {
-    if let Some(a) = author {
-        if chain.last() != Some(a) {
-            chain.push(a.clone());
-        }
+    if let Some(a) = author
+        && chain.last() != Some(a)
+    {
+        chain.push(a.clone());
     }
 }
 
@@ -70,8 +72,8 @@ impl Core {
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Tuple(_), Value::Tuple(_))
-            | (Ty::Action, Value::Action(_)) => true,
-            (Ty::View, _) => true,
+            | (Ty::Action, Value::Action(_))
+            | (Ty::View, _) => true,
             _ => false,
         };
         if ok {
@@ -189,7 +191,7 @@ impl Core {
 
     // ----- actions -----------------------------------------------------------------------
 
-    fn note(&self, ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
+    fn note(ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
         ChangeNote {
             action: aref.action.clone(),
             args: Json::Array(
@@ -248,7 +250,7 @@ impl Core {
         self.frames.borrow_mut().pop();
         match result {
             Ok(v) => {
-                let note = self.note(ctx, &pkg, aref);
+                let note = Self::note(ctx, &pkg, aref);
                 self.store.borrow_mut().commit(txn, &note)?;
                 Ok(ActionOutcome::Done(v))
             }
@@ -685,7 +687,12 @@ impl Core {
     /// # Errors
     ///
     /// An unknown view, arguments that do not fit, a trap, or a malformed tree.
-    pub fn render(&self, view: &str, args: &[Value]) -> Result<Rendered, RuntimeError> {
+    pub fn render(
+        &self,
+        view: &str,
+        args: &[Value],
+        space: Space,
+    ) -> Result<Rendered, RuntimeError> {
         let pkg = self
             .registry
             .borrow()
@@ -695,9 +702,13 @@ impl Core {
             .view(view)
             .ok_or_else(|| RuntimeError::NotFound(format!("view {view}")))?
             .clone();
-        self.frames
-            .borrow_mut()
-            .push(pkg.hash.clone(), FrameKind::View(ViewState::default()));
+        self.frames.borrow_mut().push(
+            pkg.hash.clone(),
+            FrameKind::View(ViewState {
+                space,
+                ..ViewState::default()
+            }),
+        );
         let root = self.call_in_frame(&pkg, &format!("v_{view}"), &meta.params, args, Some("View"));
         let frame = self.frames.borrow_mut().pop();
         let Some(FrameKind::View(state)) = frame.map(|f| f.kind) else {
@@ -711,6 +722,7 @@ impl Core {
         Ok(Rendered {
             root: tree,
             reads: state.reads,
+            space_reads: state.space_reads,
             retained,
         })
     }
