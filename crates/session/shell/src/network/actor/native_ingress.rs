@@ -391,6 +391,12 @@ impl ActorState {
                 tracing::warn!(ws, %error, "held sealed write not sent to the room's relay");
             }
         }
+        // Pointers, cursor chat and reactions ride the room's live plane,
+        // which carries only what its members say: join it, as a workspace
+        // host's session does.
+        if let Err(error) = session.live_join() {
+            tracing::warn!(ws, %error, "could not join the room's live plane");
+        }
         self.native_media.reconnected(ws, &session);
         self.host_sessions.insert(
             (ws, host),
