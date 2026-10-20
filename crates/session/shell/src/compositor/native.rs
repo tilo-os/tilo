@@ -4709,6 +4709,9 @@ fn post_system_update_asks(frame_builder: &mut FrameBuilder, session: &SessionMa
     crate::shell::held_layers::start();
     let mut asks = crate::shell::system_update::drain();
     asks.extend(crate::shell::held_layers::drain());
+    // Networks NetworkManager could not join on its own for want of a
+    // password the person can give.
+    asks.extend(crate::network_secrets::drain_cannot_join());
     if asks.is_empty() {
         return false;
     }
@@ -6898,6 +6901,22 @@ fn apply_session_transition(
             | SessionTransition::Woke
             | SessionTransition::Suspend => {}
         }
+    }
+    // The flight record of every power transition, with the backlight as
+    // the kernel holds it: a screen that stays dark after a wake must say
+    // whether its backlight, its CRTC (the presenter's own line) or its
+    // input is what did not come back.
+    if matches!(
+        transition,
+        SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+    ) {
+        eprintln!(
+            "tilo compositor: session power {transition:?} backlight={}",
+            os_actions::display::backlight_state().unwrap_or_else(|| "none".into())
+        );
     }
     match transition {
         SessionTransition::Dimmed => dimmer.dim(),

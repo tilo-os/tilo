@@ -564,6 +564,25 @@ impl CrtcGamma {
         }
     }
 
+    /// The LUT as this process knows it, for the flight record: whether the
+    /// CRTC carries one, the light wanted and what the kernel holds
+    /// (`none` for no LUT, `unknown` after a resume).
+    pub(super) fn describe(&self) -> String {
+        let light = |(bits, pq): (u32, bool)| {
+            if (bits, pq) == UNDIMMED {
+                "none".to_owned()
+            } else {
+                format!("{:.3}{}", f32::from_bits(bits), if pq { "-pq" } else { "" })
+            }
+        };
+        format!(
+            "{}wanted={} applied={}",
+            if self.carries() { "" } else { "uncarried," },
+            light(self.wanted),
+            self.applied.map_or_else(|| "unknown".to_owned(), light),
+        )
+    }
+
     /// After a session resume the kernel state is unknown and a previous
     /// refusal may have been a transient master-less failure.
     pub(super) fn forget_applied(&mut self) {
@@ -629,6 +648,43 @@ mod tests {
 
     fn u16_at(blob: &[u8], offset: usize) -> u16 {
         u16::from_le_bytes([blob[offset], blob[offset.saturating_add(1)]])
+    }
+
+    /// Dim, blank, undim on the wake's input, wake: the dimmed LUT the CRTC
+    /// held through the blank is replaced by no LUT before anything shows,
+    /// and no dimming LUT is ever black. (The idle dim of a panel with a
+    /// backlight never touches the LUT; this is the software-dimmed one.)
+    #[test]
+    fn a_wake_after_a_dimmed_blank_shows_no_lut_and_no_lut_is_ever_black() {
+        use crate::shell::software_dim::{Transfer, gamma_lut};
+        let mut gamma = CrtcGamma::new(Some(handle()), 1024);
+        // Dimmed before the blank, and written while the CRTC scanned out.
+        gamma.want(0.3, false);
+        gamma.applied = Some(gamma.wanted);
+        assert_eq!(gamma.describe(), "wanted=0.300 applied=0.300");
+        // Blanked: nothing is written to a CRTC that is off. The wake's
+        // input restores the brightness before the panel lights.
+        gamma.want(1.0, false);
+        assert_eq!(
+            gamma.pending_write(),
+            Some((1.0, false)),
+            "the link-up write (on_link_up) takes the dimmed LUT off"
+        );
+        gamma.applied = Some(gamma.wanted);
+        assert_eq!(gamma.pending_write(), None);
+        assert_eq!(gamma.describe(), "wanted=none applied=none");
+        // A resume makes the kernel's LUT unknown: it is written again.
+        gamma.forget_applied();
+        assert_eq!(gamma.describe(), "wanted=none applied=unknown");
+        assert_eq!(gamma.pending_write(), Some((1.0, false)));
+        // The darkest dim the slider gives still lets light through.
+        let darkest = gamma_lut(
+            1024,
+            os_actions::brightness::SOFTWARE_DIM_FLOOR,
+            Transfer::Srgb,
+        );
+        let top = darkest.last().copied().expect("a LUT");
+        assert!(top > 0, "{top}");
     }
 
     #[test]
