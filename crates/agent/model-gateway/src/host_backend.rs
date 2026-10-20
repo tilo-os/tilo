@@ -419,7 +419,7 @@ mod tests {
             let peer = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(Duration::from_secs(60)))
                     .unwrap();
                 let mut reader = std::io::BufReader::new(&mut socket);
                 let mut length = 0;
@@ -446,7 +446,11 @@ mod tests {
                 Target::Standard,
                 ("model", &request),
                 "unused-key",
-                Instant::now() + Duration::from_secs(5),
+                // The deadline is not what this checks, and it covers the
+                // client's setup too: room for that on a loaded machine
+                // (5 s ran out there and turned the 429 into a timeout).
+                // The peer answers at once, and a retry would be refused.
+                Instant::now() + Duration::from_secs(60),
                 &ServiceCredentials::open_in(&dir.path().join("vault")),
             )
             .await
