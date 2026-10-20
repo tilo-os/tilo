@@ -1,0 +1,29 @@
+[package]
+name = "tilolang"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Compiler for tilolang, the Tilo app language: parser, canonical printer, ids lock, type and effect checker, wasm backend and package metadata."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilolang"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilolang"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-encoder = "0.252"
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+wasmparser = { version = "0.252", default-features = false, features = ["std", "validate", "features", "simd"] }
+
+[lints]
+workspace = true

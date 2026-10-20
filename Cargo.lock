@@ -20119,6 +20119,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-encoder",
+ "wasmparser 0.252.0",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
