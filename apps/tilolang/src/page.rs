@@ -494,14 +494,28 @@ impl TilolangPage {
             } => {
                 let nav = Rc::clone(&self.inbox.nav);
                 let detailed = self.detail_shown || !trail.is_empty();
-                let mut segments = vec![t("tilolang-back"), title.clone()];
+                // An installed app is the whole window: there is no list of apps to go back
+                // to, and the window's own chrome names it, so it has crumbs only in a detail.
+                let installed = self.runs.is_some();
+                if installed && !detailed {
+                    self.set_slot(0, Box::new(Spacer::fixed(0.0)), Fit::hug());
+                    return;
+                }
+                let mut segments = if installed {
+                    vec![title.clone()]
+                } else {
+                    vec![t("tilolang-back"), title.clone()]
+                };
                 if detailed {
                     segments.push(t("tilolang-detail"));
                 }
-                let crumbs = Breadcrumb::new(segments).on_navigate(move |index| match index {
-                    0 => nav.borrow_mut().push(Nav::Home),
-                    1 if detailed => nav.borrow_mut().push(Nav::Back),
-                    _ => {}
+                let back_at = usize::from(!installed);
+                let crumbs = Breadcrumb::new(segments).on_navigate(move |index| {
+                    if index == back_at && detailed {
+                        nav.borrow_mut().push(Nav::Back);
+                    } else if index == 0 && !installed {
+                        nav.borrow_mut().push(Nav::Home);
+                    }
                 });
                 Box::new(
                     PageLayout::full()
