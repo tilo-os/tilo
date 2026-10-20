@@ -13,9 +13,9 @@ does not fan out into unrelated builds:
 Continuous app packaging runs on relevant `main` pushes. It selects affected
 tapps, reuses unchanged members from the prior immutable collection, and advances
 the verified x86-64 channel only after publication succeeds. The guarded
-packaging coordinator remains inactive; its qualification path is separate. The
-[product matrix](ci-product-matrix.md) distinguishes available definitions from
-qualified targets, including Windows apps still awaiting release qualification.
+packaging coordinator remains inactive; its qualification path is separate.
+[Publishing with t](publishing-on-t.md) lists what each publishing workflow still
+needs, including the Windows qualification.
 OS publication happens through tags, explicit dispatches, and one nightly run
 on `main`; it never happens per push.
 

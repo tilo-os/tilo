@@ -242,7 +242,7 @@ have shipped repeatedly.
 headless compositor and prints `READY <socket>`; `_control.py` is the socket client to inline
 rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five seconds.
 
-**Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
+**Never** screenshot the user's real desktop.
 Debug overlays need `TILO_UI_DEBUG` **and** `debug_assertions`.
 
 ## Dev VMs
