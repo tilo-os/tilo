@@ -204,8 +204,8 @@ impl Transaction {
         attesting_helper(r);
         let display = |path: &str| r.join(path).display().to_string();
         let source = script(&[
-            ("/etc/tilo", display("etc"), 9),
-            ("/var/lib/tilo", display("state"), 12),
+            ("/etc/tilo", display("etc"), 10),
+            ("/var/lib/tilo", display("state"), 17),
             ("/var/home", display("home"), 2),
             (
                 r#""/home/$user""#,
