@@ -104,6 +104,17 @@ class ImageBuilderInputsTests(unittest.TestCase):
             "COPY os/scripts/build.sh /build/os/scripts/\n",
             "COPY os/scripts/build.sh os/scripts/compile-step.sh /build/os/scripts/\n")), [])
 
+    def test_what_a_copied_script_reads_beside_itself_must_be_copied(self) -> None:
+        self.write("os/scripts/build.sh", '#!/bin/sh\npython3 "$(dirname "${BASH_SOURCE[0]}")/../../tools/stamp.py"\n')
+        self.write("tools/stamp.py", "")
+        found = self.findings(NARROW)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not copy tools/stamp.py", found[0])
+        self.assertIn("os/scripts/build.sh:2 reads it", found[0])
+        self.assertEqual(self.findings(NARROW.replace(
+            "COPY os/data.txt /build/os/data.txt\n",
+            "COPY os/data.txt /build/os/data.txt\nCOPY tools/stamp.py /build/tools/stamp.py\n")), [])
+
     def test_a_workspace_member_root_must_be_copied(self) -> None:
         found = self.findings(NARROW.replace("COPY crates /build/crates\n", ""))
         self.assertTrue(any("does not copy crates to /build/crates" in f for f in found), found)

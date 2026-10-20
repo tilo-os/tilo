@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import shlex
 import sys
@@ -240,6 +241,30 @@ def script_references(repo: Path, script: str) -> list[tuple[int, str]]:
     return refs
 
 
+SCRIPT_RELATIVE = re.compile(r"dirname[^)]*\)\"?/((?:\.\./)+[A-Za-z0-9_.+/-]*[A-Za-z0-9_+-])")
+
+
+def copied_script_references(repo: Path, copies: list[Copy], tracked: list[str],
+                             roots: list[str]) -> list[tuple[str, str]]:
+    """Repository files the scripts copied for the stage (outside the workspace) read beside
+    themselves, as `$(dirname "${BASH_SOURCE[0]}")/../../<path>`: the stage runs them from its
+    copy, so what they read must be in it too."""
+    refs: list[tuple[str, str]] = []
+    for script in tracked:
+        if (not script.endswith((".sh", ".py")) or script.split("/", 1)[0] in roots
+                or not covered(script, copies)):
+            continue
+        base = Path(script).parent
+        for number, line in enumerate((repo / script).read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for match in SCRIPT_RELATIVE.finditer(line):
+                target = Path(os.path.normpath(base / match.group(1)))
+                if not str(target).startswith(".."):
+                    refs.append((f"{script}:{number}", str(target)))
+    return refs
+
+
 def audit_stage(repo: Path, containerfile: str, stage: str, scripts: tuple[str, ...], tracked: list[str],
                 includes: dict[str, list[str]], roots: list[str]) -> list[Finding]:
     text = (repo / containerfile).read_text(encoding="utf-8")
@@ -264,6 +289,7 @@ def audit_stage(repo: Path, containerfile: str, stage: str, scripts: tuple[str, 
         required.append((target, f"{readers[0]} include!s it"))
     refs = [(f"{containerfile}:{number}", path) for number, path in run_references(lines)]
     refs += [(f"{script}:{number}", path) for script in scripts for number, path in script_references(repo, script)]
+    refs += copied_script_references(repo, copies, tracked, roots)
     for where, path in refs:
         if path in tracked_set or any(t.startswith(path + "/") for t in tracked):
             required.append((path, f"{where} reads it"))
