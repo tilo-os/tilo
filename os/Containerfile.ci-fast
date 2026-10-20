@@ -40,7 +40,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # separate layer keeps the base cached.
 RUN dnf install -y --setopt=install_weak_deps=False \
       gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts bubblewrap \
-      dosfstools \
+      dosfstools systemd-udev util-linux \
     && dnf clean all \
     && bwrap --version \
     && test -x /usr/bin/cc \

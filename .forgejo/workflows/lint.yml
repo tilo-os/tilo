@@ -26,7 +26,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
     env:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.

@@ -75,7 +75,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -174,7 +174,7 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -208,7 +208,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -915,7 +915,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
