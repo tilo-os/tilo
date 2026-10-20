@@ -5132,6 +5132,7 @@ isolation = "vm"
 cost = "heavy"
 requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 7200
+on = ["idle"]
 default = false
 
 [check.matrix]

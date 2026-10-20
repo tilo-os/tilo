@@ -1106,6 +1106,9 @@ cost = "heavy"
 requirement = { cores = 12, memory = "24GiB" }
 timeout_secs = 7200
 default = false
+# As os-image-{arch}: on main's newest head when t has room, bisected to the commit that breaks
+# it, so a dev image that cannot build is on `t main` the day it breaks.
+on = ["idle"]
 
 [[matrix.check]]
 name = "nightly-os-image-{arch}"
