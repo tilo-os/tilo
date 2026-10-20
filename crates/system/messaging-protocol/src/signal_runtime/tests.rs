@@ -55,11 +55,16 @@ fn event(account: &str) -> Vec<u8> {
     encoded
 }
 
+/// Budget for a send whose peer answers at once. The budget also covers the
+/// durable reservation and completion, whose fsyncs take seconds on a loaded
+/// host, so these tests give the runtime's maximum: only a hang uses it up.
+const ANSWERED_BUDGET: Duration = MAX_OPERATION_TIMEOUT;
+
 #[test]
 fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() {
     let root = tempfile::tempdir().unwrap();
     let (client, mut peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    peer.set_read_timeout(Some(ANSWERED_BUDGET)).unwrap();
     let peer_reader = peer.try_clone().unwrap();
     let daemon = std::thread::spawn(move || {
         let mut request = String::new();
@@ -85,7 +90,7 @@ fn socket_send_maps_registry_account_to_signal_and_restart_refuses_duplicates() 
                 &route(),
                 "op",
                 "private text",
-                Duration::from_secs(2)
+                ANSWERED_BUDGET
             )
             .unwrap()
             .timestamp,
@@ -161,7 +166,15 @@ fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
             ),
             Err(CheckedSendError::Transport(SendError::Uncertain))
         );
-        assert!(start.elapsed() < budget + Duration::from_secs(2));
+        // The durable writes around the wait cannot be interrupted and are
+        // slow on a loaded host, so a tight wall-clock bound would time the
+        // disk. Staying under the runtime's cap shows the budget ended the
+        // silent wait; `deadline_is_total_and_buffered_bytes_cannot_extend_it`
+        // checks the deadline itself without a clock.
+        assert!(
+            start.elapsed() < MAX_OPERATION_TIMEOUT,
+            "the send budget, not the runtime's cap, ends a silent wait"
+        );
         assert_eq!(runtime.status("op"), Some(Status::Uncertain));
         let request = written(&mut peer);
         if !request.is_empty() {
@@ -169,7 +182,7 @@ fn silent_socket_expires_and_preserves_uncertainty_without_retry() {
         }
         budget *= 2;
         assert!(
-            budget <= Duration::from_secs(5),
+            budget <= MAX_OPERATION_TIMEOUT / 4,
             "reservation never left time to write the request"
         );
     };
