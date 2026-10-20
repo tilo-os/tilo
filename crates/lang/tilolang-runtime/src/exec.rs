@@ -452,6 +452,19 @@ impl Core {
         approver: &Principal,
         resolution: Resolution,
     ) -> Result<FlowOutcome, RuntimeError> {
+        let out = self.resolve_run(run, approver, resolution);
+        if out.is_ok() {
+            self.resolutions.set(self.resolutions.get().wrapping_add(1));
+        }
+        out
+    }
+
+    fn resolve_run(
+        &self,
+        run: &RunId,
+        approver: &Principal,
+        resolution: Resolution,
+    ) -> Result<FlowOutcome, RuntimeError> {
         let mut journal = self
             .store
             .borrow_mut()
@@ -683,7 +696,7 @@ impl Core {
 
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
-        let payload = to_json(&unboxed(self.val(payload_h)?))?;
+        let payload = outside_json(&unboxed(self.val(payload_h)?))?;
         if capability != "post" {
             return trap(format!("unknown outside capability `{capability}`"));
         }
@@ -765,6 +778,26 @@ impl Core {
             _ => trap("not an effect import"),
         }
     }
+}
+
+/// A payload as the outside world reads it: plain JSON, with lists and tuples as arrays and
+/// a resource as `{ref, type}`, rather than the tagged form journals and registers store.
+fn outside_json(v: &Value) -> Result<Json, String> {
+    Ok(match v {
+        Value::List(items) | Value::Tuple(items) => Json::Array(
+            items
+                .iter()
+                .map(outside_json)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Opt(Some(inner)) => outside_json(inner)?,
+        Value::Opt(None) => Json::Null,
+        Value::Ref(r) => serde_json::json!({
+            "ref": r.target.id_string(),
+            "type": r.target.ty,
+        }),
+        other => to_json(other)?,
+    })
 }
 
 fn entry_value(entry: &JournalEntry) -> Value {

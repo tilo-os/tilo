@@ -73,7 +73,49 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   (it compares equal); only a target of another type is refused. `ref_lit` stays strict.
 - **Set of Int/Float order.** Elements are keyed by their text form, so they iterate in text order.
 
+## Embedded blocks and apps
+
+- **`embed` nodes.** A node `embed` with `source` and `author` text is resolved while the tree
+  is built, like a foreign view. The host compiles the source with `tilolang::compile_block`
+  against the newest loaded package of every app (block modules are never visible), caches the
+  result by the blake3 of the source and the set of loaded package hashes, and registers the
+  block module. Diagnostics are cached too. The node's `state` prop says what it holds:
+  `view` (the view's tree, keys prefixed with the embed's key so every key stays unique in the
+  tree), `invocation`, `data` or `error`. Nothing an embed does fails the surrounding view.
+- **Principals as authors.** The author is a `Text` id, mapped to the authorship identity
+  `ModuleHash::principal(id)` (`principal:<id>`). The block runs with that identity as the
+  author of everything it creates: action references, bindings, view-frame handles. So the
+  authority chain for an embedded block is `[principal:<id>]`, never the block's own module
+  hash: a grant covers every block the principal writes (`SimpleAuthority::trust_principal`).
+  Nested foreign views and proposal views are their own package's code and keep their package
+  as author.
+- **Action blocks are run once.** Rendering must not repeat a side effect, so the outcome of an
+  embedded action application is remembered per (embed key, source hash, author). A suggestion
+  renders as `invocation` with `state` `suggested` and its `run`, plus the action's proposal
+  view as the only child; its state afterwards follows the run's journal (`done`, `declined`,
+  `failed`). A view that shows an invocation re-renders when any suggestion is resolved
+  (`Core::resolutions`), since resolving changes no document the view read. Remembered
+  outcomes live in the runtime, not the store: another replica, or a restart, evaluates the
+  block again.
+- **Data blocks** render through `project` as `column`/`row`/`heading`/`text` nodes (a record
+  is its label, type and fields). They do not record reads, so they refresh on re-render only.
+- **`outside` payloads are plain JSON** (lists and tuples as arrays, a resource as
+  `{ref, type}`), not the tagged form registers use; a sink reads them as is.
+- **Apps** (`apps/tl/<name>/app.tl` and a complete `app.ids`): counter, todo, notes, chat,
+  letters and board, each with `view main(root: T)`. Chat messages are a `Collection<Part>`
+  (`kind` `text` or `block`) plus an `author` text; `post` is the one action people and agents
+  use. Letters' `send` has a proposal view and asks as an Outside action. Board holds
+  `Option` references to the other apps' root resources and a flow, `morning_cleanup`, that
+  composes foreign actions.
+
 ## Gaps in the design
+
+- A chat message's `author` is plain data, so whoever can call `post` can post as an agent
+  and give its blocks that agent's grants. The authority should come from the change's
+  attribution (the invoker the store records), not a field the caller fills in.
+- Compiled blocks stay in the engine for the runtime's life: no eviction.
+- Embedded action outcomes are not shared across replicas (above), so two devices opening a
+  chat with a trusted agent's action block each run it once.
 
 - No descending `sort_by`, no `list_set`, no reference-valued maps.
 - A removed note leaves a dangling reference that a view cannot test for (no existence check).

@@ -16,6 +16,7 @@ pub mod amstore;
 pub mod authority;
 pub mod catalogue;
 mod core;
+mod embed;
 pub mod engine;
 pub mod error;
 mod exec;

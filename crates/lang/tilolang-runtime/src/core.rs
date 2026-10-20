@@ -5,7 +5,7 @@
 //! run an action (which pushes a frame, runs the guest and pops it) while the flow's own
 //! frame is live.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
@@ -56,6 +56,10 @@ pub struct Core {
     pub authority: Box<dyn Authority>,
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
+    /// Compiled embedded blocks and the invocations they made.
+    pub embeds: RefCell<crate::embed::EmbedState>,
+    /// How many suggestions have been decided; views showing invocations watch it.
+    pub resolutions: Cell<u64>,
 }
 
 /// Typed access to the wasm arguments of one import call.
@@ -143,6 +147,8 @@ impl Core {
             authority,
             models: RefCell::new(None),
             sink: RefCell::new(None),
+            embeds: RefCell::new(crate::embed::EmbedState::default()),
+            resolutions: Cell::new(0),
         }))
     }
 

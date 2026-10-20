@@ -44,6 +44,16 @@ impl ModuleHash {
     }
 }
 
+impl ModuleHash {
+    /// The authorship identity of code written by a person or an agent task rather than by a
+    /// compiled package: the principal's id, tagged so it can never equal a module hash.
+    /// An embedded block runs under it (implementation design 7.8), so the authority sees
+    /// "this code is the agent's" and a grant for the principal covers every block it wrote.
+    pub fn principal(id: &str) -> Self {
+        Self(format!("principal:{id}"))
+    }
+}
+
 impl fmt::Display for ModuleHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)

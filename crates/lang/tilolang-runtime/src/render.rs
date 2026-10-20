@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::{FrameKind, Retained, ViewState};
-use crate::ids::ModuleHash;
+use crate::ids::{ModuleHash, Principal};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
@@ -19,6 +19,8 @@ const MAX_VIEW_DEPTH: usize = 32;
 
 /// The prefix of the kind of a node that applies another package's view.
 const FOREIGN_VIEW: &str = "view:";
+/// The kind of a node that renders a block's source (`embed(source, author: who)`).
+pub(crate) const EMBED: &str = "embed";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
 
@@ -36,18 +38,72 @@ pub struct Rendered {
     pub reads: Vec<(String, String)>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
+    /// See [`Acc::runs`].
+    pub runs: bool,
 }
 
-struct Acc {
-    reads: Vec<(String, String)>,
-    space_reads: Vec<(String, f64)>,
-    retained: Vec<Retained>,
+pub(crate) struct Acc {
+    pub reads: Vec<(String, String)>,
+    pub space_reads: Vec<(String, f64)>,
+    pub retained: Vec<Retained>,
+    /// Whether the tree shows an embedded invocation, whose state changes when a suggestion
+    /// is resolved rather than when a document the view read changes.
+    pub runs: bool,
 }
 
-struct Build<'a> {
-    nodes: &'a [NodeBuild],
-    space: Space,
-    depth: usize,
+/// What a view boundary is offered: its space, the person looking at it and how deep the
+/// nesting is.
+#[derive(Clone, Copy)]
+pub(crate) struct Offer<'a> {
+    pub space: Space,
+    pub viewer: &'a Principal,
+    pub depth: usize,
+}
+
+impl Offer<'_> {
+    pub fn deeper(self) -> Self {
+        Self {
+            depth: self.depth.saturating_add(1),
+            ..self
+        }
+    }
+}
+
+pub(crate) struct Build<'a> {
+    pub nodes: &'a [NodeBuild],
+    pub offer: Offer<'a>,
+}
+
+/// Prefix every key of a nested tree with the key of the node that holds it. A view called
+/// per row, or a block embedded in two messages, would otherwise repeat its keys, and a key must name one node in the
+/// tree for a press or an edit to find it.
+pub(crate) fn scope(prefix: &str, mut tree: UiNode) -> UiNode {
+    // An anchored node keeps its key: the anchor is the address people and agents use.
+    if tree.anchor.is_none() {
+        tree.key = format!("{prefix}~{}", tree.key);
+    }
+    tree.children = tree
+        .children
+        .into_iter()
+        .map(|c| scope(prefix, c))
+        .collect();
+    tree
+}
+
+impl Acc {
+    /// Take on what a nested boundary read and retained.
+    pub fn absorb(
+        &mut self,
+        reads: Vec<(String, String)>,
+        space_reads: Vec<(String, f64)>,
+        retained: Vec<Retained>,
+        runs: bool,
+    ) {
+        self.reads.extend(reads);
+        self.space_reads.extend(space_reads);
+        self.retained.extend(retained);
+        self.runs |= runs;
+    }
 }
 
 impl Core {
@@ -82,17 +138,26 @@ impl Core {
         target: &ViewTarget,
         args: &[Value],
         space: Space,
+        viewer: &Principal,
     ) -> Result<Rendered, RuntimeError> {
-        self.render_at(target, args, space, 0)
+        let offer = Offer {
+            space,
+            viewer,
+            depth: 0,
+        };
+        self.render_at(target, args, offer, None)
     }
 
-    fn render_at(
+    /// Render a view as its own boundary. `author` replaces the module as the author of what
+    /// the view creates: an embedded block is written by its principal, not by its module.
+    pub(crate) fn render_at(
         &self,
         target: &ViewTarget,
         args: &[Value],
-        space: Space,
-        depth: usize,
+        offer: Offer<'_>,
+        author: Option<&ModuleHash>,
     ) -> Result<Rendered, RuntimeError> {
+        let (space, depth) = (offer.space, offer.depth);
         if depth > MAX_VIEW_DEPTH {
             return Err(RuntimeError::Package(format!(
                 "views are nested more than {MAX_VIEW_DEPTH} deep"
@@ -104,7 +169,7 @@ impl Core {
             .package(&target.module)
             .ok_or_else(|| RuntimeError::NotFound(format!("module {}", target.module)))?;
         self.frames.borrow_mut().push(
-            pkg.hash.clone(),
+            author.unwrap_or(&pkg.hash).clone(),
             FrameKind::View(ViewState {
                 space,
                 ..ViewState::default()
@@ -122,11 +187,11 @@ impl Core {
             reads: state.reads,
             space_reads: state.space_reads,
             retained: Vec::new(),
+            runs: false,
         };
         let cx = Build {
             nodes: &state.nodes,
-            space,
-            depth,
+            offer,
         };
         let tree = self.build_node(&cx, root, 0, &mut acc)?;
         Ok(Rendered {
@@ -134,6 +199,7 @@ impl Core {
             reads: acc.reads,
             space_reads: acc.space_reads,
             retained: acc.retained,
+            runs: acc.runs,
         })
     }
 
@@ -183,6 +249,17 @@ impl Core {
         };
         if let Some(target) = n.kind.strip_prefix(FOREIGN_VIEW) {
             self.resolve_foreign(cx, target, &mut node, acc)?;
+        } else if n.kind == EMBED {
+            self.resolve_embed(cx, &mut node, acc);
+        }
+        if node.kind == "fragment" {
+            // A view call: the callee's keys are the same at every call site.
+            let prefix = node.key.clone();
+            node.children = node
+                .children
+                .into_iter()
+                .map(|c| scope(&prefix, c))
+                .collect();
         }
         Ok(node)
     }
@@ -227,10 +304,13 @@ impl Core {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let nested = self.render_at(&vt, &args, cx.space, cx.depth.saturating_add(1))?;
-        acc.reads.extend(nested.reads);
-        acc.space_reads.extend(nested.space_reads);
-        acc.retained.extend(nested.retained);
+        let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
+        acc.absorb(
+            nested.reads,
+            nested.space_reads,
+            nested.retained,
+            nested.runs,
+        );
         "fragment".clone_into(&mut node.kind);
         node.props.retain(|name, _| !name.starts_with(ARG_PREFIX));
         node.children = vec![nested.root];
@@ -262,10 +342,15 @@ impl Core {
     /// # Errors
     ///
     /// A trap or a value of the wrong type.
-    pub fn eval_block(&self, pkg: &Package, value_type: &str) -> Result<Value, RuntimeError> {
+    pub fn eval_block(
+        &self,
+        pkg: &Package,
+        value_type: &str,
+        author: Option<&ModuleHash>,
+    ) -> Result<Value, RuntimeError> {
         self.frames
             .borrow_mut()
-            .push(pkg.hash.clone(), FrameKind::Pure);
+            .push(author.unwrap_or(&pkg.hash).clone(), FrameKind::Pure);
         let out = self.call_in_frame(pkg, "b_main", &[], &[], Some(value_type));
         self.frames.borrow_mut().pop();
         out

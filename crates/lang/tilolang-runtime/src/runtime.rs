@@ -180,7 +180,8 @@ impl Runtime {
                 Ok(BlockOutput::View(Box::new(view)))
             }
             BlockKind::Action => {
-                let Value::Action(aref) = self.core.eval_block(&pkg, &block.value_type)? else {
+                let Value::Action(aref) = self.core.eval_block(&pkg, &block.value_type, None)?
+                else {
                     return Err(RuntimeError::Package(
                         "the block did not produce an action".into(),
                     ));
@@ -189,9 +190,11 @@ impl Runtime {
                     self.core.invoke_direct(principal, &aref)?,
                 ))
             }
-            BlockKind::Data => Ok(BlockOutput::Data(
-                self.core.eval_block(&pkg, &block.value_type)?,
-            )),
+            BlockKind::Data => Ok(BlockOutput::Data(self.core.eval_block(
+                &pkg,
+                &block.value_type,
+                None,
+            )?)),
         }
     }
 
