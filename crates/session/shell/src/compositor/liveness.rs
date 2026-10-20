@@ -525,8 +525,11 @@ fn not_interruptible(syscall: &str) -> Option<String> {
 /// from the kernel function it sleeps in (`/proc/<tid>/wchan`): only the
 /// waits a blocked thread makes on a lock, a condvar, its event loop, a timer,
 /// a pipe or a socket, none of which the allocator makes with its lock held.
+/// Kernels rename these functions: newer ones sleep a futex waiter in
+/// `__futex_wait` and a pipe reader in `anon_pipe_read`, so both spellings
+/// are listed.
 fn not_interruptible_waiting_in(wchan: &str) -> Option<String> {
-    const BLOCKING_WAITS: [&str; 14] = [
+    const BLOCKING_WAITS: [&str; 15] = [
         "do_epoll_wait",
         "ep_poll",
         "do_sys_poll",
@@ -536,13 +539,14 @@ fn not_interruptible_waiting_in(wchan: &str) -> Option<String> {
         "do_nanosleep",
         "hrtimer_nanosleep",
         "pipe_read",
+        "anon_pipe_read",
         "pipe_wait_readable",
         "wait_woken",
         "unix_stream_data_wait",
         "unix_stream_read_generic",
         "skb_wait_for_more_packets",
     ];
-    if wchan.starts_with("futex_") || BLOCKING_WAITS.contains(&wchan) {
+    if wchan.trim_start_matches('_').starts_with("futex_") || BLOCKING_WAITS.contains(&wchan) {
         None
     } else if wchan.is_empty() || wchan == "0" {
         Some("it was running, and its system call state is unreadable".into())
@@ -821,6 +825,8 @@ mod tests {
         for wait in [
             "futex_do_wait",
             "futex_wait_queue",
+            "__futex_wait",
+            "anon_pipe_read",
             "do_epoll_wait",
             "do_nanosleep",
         ] {
