@@ -12,15 +12,21 @@
 #                        and fail when a tapp or the runtime is over its budget
 #                        (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
 #                        on each new head of stable and when dispatched, not on every commit.
-#   app-size ARCH APP    no credentials: one app's size, as `sizes` measures it. Compile APP (an
-#                        app directory) in the default collection's graph, package it with
-#                        throwaway keys and fail when its tapp is over its budget. The tapp names
-#                        the runtime it links, so the runtime bundle is built and signed too.
+#   thin-runtime ARCH    no credentials: what every app-size and runtime-size check shares, built
+#                        once. Compile the runtime and its engines in the default collection's
+#                        graph (as `sizes` does) and the packing tools, in a build directory of its
+#                        own ($CARGO_TARGET_DIR/thin-runtime), which keeps only this build's units
+#                        and lists them; t hands that directory to the checks that need this one.
+#   app-size ARCH APP    no credentials: one app's size, as `sizes` measures it. In the build
+#                        directory `thin-runtime` left, compile APP (an app directory) against the
+#                        shared runtime, package it with throwaway keys and fail when its tapp is
+#                        over its budget. The tapp names the runtime it links, so the runtime
+#                        bundle is baked and signed too.
 #   runtime-size ARCH APP...
-#                        no credentials: the shared runtime's size, as `sizes` measures it.
-#                        Compile the runtime, its engines and APPs (the apps the runtime budget
-#                        lists as playing no media, whose loaded libraries it also checks), and
-#                        fail when the runtime is over its budget. Nothing is packaged.
+#                        no credentials: the shared runtime's size, as `sizes` measures it. In the
+#                        build directory `thin-runtime` left, compile APPs (the apps the runtime
+#                        budget lists as playing no media, whose loaded libraries it also checks),
+#                        and fail when the runtime is over its budget. Nothing is packaged.
 #   binaries ARCH OUT    no credentials: compile the default collection as `build` does but keep
 #                        the symbol tables, and leave the apps, the runtime and its engines in
 #                        OUT, for reading what makes an app large (`t outputs app-binaries-ARCH`;
@@ -62,6 +68,26 @@ size_build() {
   # The thin graph compiles as a release's does (build-thin-apps.sh drops the release
   # profile's overrides); the packing tools need no optimisation to pack the same bytes.
   export TILO_RELEASE_APPS=$apps TILO_APP_RELEASE_OUT=$scratch/$name TILO_APP_TOOLS_PROFILE=dev
+}
+
+# The build directory `thin-runtime` builds the shared runtime, its engines and the packing tools
+# in, and the size checks that need it receive: the same path in both, as cargo's units record it.
+shared_target() {
+  printf '%s/thin-runtime' "$(realpath -m "${CARGO_TARGET_DIR:-target}")"
+}
+
+# The environment of a size check that builds on `thin-runtime`'s outputs (app-size,
+# runtime-size): size_build's, in its build directory. t restores those outputs with the time it
+# writes each, file by file, so cargo would see a library as newer than the units built on it and
+# rebuild them: the files `thin-runtime` listed get one time, now (thin_runtime_units.py stamp).
+shared_size_build() {
+  local arch=$1 apps=$2 name=$3 shared
+  shared=$(shared_target)
+  size_build "$arch" "$apps" "$name"
+  export CARGO_TARGET_DIR=$shared TILO_TEST_ASSET_CACHE=$shared/test-assets
+  [[ -f $shared/shared-files ]] \
+    || die "$shared/shared-files is missing: this check needs thin-runtime-$arch, whose outputs t puts there"
+  python3 -I tools/apps/thin_runtime_units.py stamp "$shared" --list "$shared/shared-files"
 }
 
 # The publication environment publish-collections.sh reads, for this trusted run.
@@ -123,18 +149,41 @@ case $command in
     dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS="tapp_size runtime_size" tools/apps/release-smoke.sh "$arch"
     ;;
+  thin-runtime)
+    arch=${1:?usage: t-release.sh thin-runtime ARCH}
+    (( $# == 1 )) || die "usage: t-release.sh thin-runtime ARCH"
+    size_build "$arch" "" thin-runtime
+    shared=$(shared_target)
+    export CARGO_TARGET_DIR=$shared TILO_TEST_ASSET_CACHE=$shared/test-assets
+    rm -f "$shared/shared-files"
+    python3 -I tools/apps/thin_runtime_units.py mark "$shared/thin-app"
+    TILO_APP_COMPILE_ONLY=1 TILO_APP_RUNTIME_ONLY=1 dist/apps/package-apps.sh
+    # What the size checks find in the profile directory besides the units: the runtime, its
+    # engines, their list and the programs build-thin-apps.sh checks them with.
+    top=(libruntime_dylib.so libruntime_dylib.d runtime-engines tilo-runtime-account-capability
+         tilo-runtime-account-capability.d)
+    while IFS= read -r engine; do
+      top+=("$engine" "${engine%.so}.d")
+    done < "$shared/thin-app/runtime-engines"
+    for manifest in crates/runtime/engines/*/Cargo.toml; do
+      engine=$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+      top+=("$engine-check" "$engine-check.d")
+    done
+    python3 -I tools/apps/thin_runtime_units.py keep "$shared/thin-app" "${top[@]/#/--top=}" \
+      --list "$shared/shared-files"
+    ;;
   app-size)
     arch=${1:?usage: t-release.sh app-size ARCH APP} app=${2:?usage: t-release.sh app-size ARCH APP}
     (( $# == 2 )) || die "usage: t-release.sh app-size ARCH APP"
-    size_build "$arch" "$app" app-size
-    dist/apps/package-apps.sh
+    shared_size_build "$arch" "$app" app-size
+    TILO_APP_TOOLS_BUILT=1 dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS=tapp_size tools/apps/release-smoke.sh "$arch"
     ;;
   runtime-size)
     arch=${1:?usage: t-release.sh runtime-size ARCH APP...}
     shift
     (( $# > 0 )) || die "usage: t-release.sh runtime-size ARCH APP..."
-    size_build "$arch" "$*" runtime-size
+    shared_size_build "$arch" "$*" runtime-size
     # The runtime's measurement reads only the compiled graph: no packing tools, no bundle.
     TILO_APP_COMPILE_ONLY=1 TILO_APP_SKIP_TOOLS=1 dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS=runtime_size tools/apps/release-smoke.sh "$arch"
@@ -201,6 +250,6 @@ case $command in
     printf 'Submitted the apps of %s to %s\n' "$T_COMMIT" "$registry_url"
     ;;
   *)
-    die "usage: t-release.sh build|sizes|app-size|runtime-size|binaries|sign|publish|submit ..."
+    die "usage: t-release.sh build|sizes|thin-runtime|app-size|runtime-size|binaries|sign|publish|submit ..."
     ;;
 esac

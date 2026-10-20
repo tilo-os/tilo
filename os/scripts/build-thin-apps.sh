@@ -9,6 +9,16 @@ REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
+# BUILD_RUNTIME_ONLY=1 builds the shared runtime, its engines and the account probe in the
+# collection's graph and no app binary: what every app's thin build has in common
+# (tools/apps/t-release.sh thin-runtime). Apps built later in the same build directory, with
+# the same packages and features, find these units fresh.
+BUILD_RUNTIME_ONLY="${BUILD_RUNTIME_ONLY:-}"
+case "$BUILD_RUNTIME_ONLY" in ""|1) ;; *) echo "BUILD_RUNTIME_ONLY must be 1 or unset" >&2; exit 1 ;; esac
+if [ "$BUILD_RUNTIME_ONLY" = 1 ] && { [ "$BUILD_PACKAGES" != "  " ] || [ "${BUILD_ROLE:-apps}" != apps ]; }; then
+    echo "BUILD_RUNTIME_ONLY builds no app: it takes no BUILD_PACKAGES and only the apps role" >&2
+    exit 1
+fi
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
 BUILD_ROLE="${BUILD_ROLE:-apps}"
@@ -63,7 +73,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         features+=(imager/capture-worker)
     fi
     binary_crates+=("${binary//-/_}")
-    if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
+    if [ "$BUILD_RUNTIME_ONLY" != 1 ] && { [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; }; then
         binaries+=("$binary")
         selected_crates+=("${binary//-/_}")
         build_targets+=(--bin "$binary")
@@ -91,7 +101,7 @@ for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
     binary_crates+=("${engine//-/_}_check")
     build_targets+=(--bin "$engine-check")
 done
-[ "${#binaries[@]}" -gt 0 ] || { echo "no tapp binaries selected" >&2; exit 1; }
+[ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
         echo "requested app is outside the runtime graph: $requested" >&2; exit 1;

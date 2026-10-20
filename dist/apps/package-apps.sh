@@ -10,7 +10,20 @@ native_arch=$(uname -m)
 CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/apps/app_package_isa.py" flags \
     --root "$repo_root" --arch "$native_arch")
 export CARGO_ENCODED_RUSTFLAGS
-apps=${TILO_RELEASE_APPS:?space-separated app directory names are required}
+# TILO_APP_RUNTIME_ONLY=1 (with TILO_APP_COMPILE_ONLY=1) compiles what every selection shares, the
+# runtime and its engines in the default collection's graph, and the packing tools, but no app
+# (tools/apps/t-release.sh thin-runtime).
+runtime_only=${TILO_APP_RUNTIME_ONLY:-}
+case $runtime_only in
+    '') apps=${TILO_RELEASE_APPS:?space-separated app directory names are required} ;;
+    1)
+        [[ ${TILO_APP_COMPILE_ONLY:-} == 1 && -z ${TILO_RELEASE_APPS:-} && -z ${TILO_APP_PREBUILT:-} ]] || {
+            printf 'TILO_APP_RUNTIME_ONLY compiles (TILO_APP_COMPILE_ONLY=1) no app (no TILO_RELEASE_APPS)\n' >&2
+            exit 2
+        }
+        apps= ;;
+    *) printf 'TILO_APP_RUNTIME_ONLY must be 1 or unset\n' >&2; exit 2 ;;
+esac
 out=${TILO_APP_RELEASE_OUT:-$repo_root/dist/app-release}
 identity=${TAPP_PUBLISHER_IDENTITY_FILE:-}
 runtime_identity=${RUNTIME_BUNDLE_IDENTITY_FILE:-}
@@ -50,6 +63,18 @@ case $tools_profile in
 esac
 release_dir=$target_dir/$tools_dir
 thin_app_dir=$target_dir/thin-app
+# TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run
+# (tools/apps/t-release.sh thin-runtime, whose outputs the size checks receive), so none is built.
+tools_built=${TILO_APP_TOOLS_BUILT:-}
+case $tools_built in
+    '') ;;
+    1)
+        for tool in tilo-app-package tilo-runtime-bundle; do
+            [[ -x $release_dir/$tool ]] \
+                || { printf 'TILO_APP_TOOLS_BUILT: %s is not built\n' "$release_dir/$tool" >&2; exit 2; }
+        done ;;
+    *) printf 'TILO_APP_TOOLS_BUILT must be 1 or unset\n' >&2; exit 2 ;;
+esac
 
 out=$(realpath -m "$out")
 [[ $out != / && $out != "$repo_root" ]] || {
@@ -69,7 +94,11 @@ find "$out" -mindepth 1 -depth -delete
 mkdir -p "$out/tapp" "$out/work"
 
 plan="$out/plan.json"
-python3 "$repo_root/tools/apps/app_release.py" --apps "$apps" > "$plan"
+if [[ $runtime_only == 1 ]]; then
+    printf '{"packages": [], "catalog": []}\n' > "$plan"
+else
+    python3 "$repo_root/tools/apps/app_release.py" --apps "$apps" > "$plan"
+fi
 if [[ -n ${TILO_APP_RELEASE_SOURCE:-} ]]; then
     [[ ${TILO_APP_RELEASE_SEQUENCE:-} =~ ^[1-9][0-9]*$ ]] || {
         printf 'TILO_APP_RELEASE_SEQUENCE must be a positive integer\n' >&2
@@ -90,7 +119,7 @@ features=$(jq -r '.features | join(",")' "$runtime_plan")
 if [[ -z $prebuilt ]]; then
 # A compile that only reads the apps (TILO_APP_SKIP_TOOLS=1 with TILO_APP_COMPILE_ONLY, the
 # app-binaries check) packs nothing, so it needs no packing tools.
-if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 ]]; then
+if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
     (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p runtime-bundle)
 fi
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
@@ -99,8 +128,9 @@ fi
 # emitted below.  This makes the runtime root independent of the partial app
 # selection and therefore safe to combine with unchanged tapps.
 INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_PACKAGES="${packages[*]}" APP_FEATURES="$features" \
-    "$repo_root/os/scripts/build-thin-apps.sh"
+    BUILD_RUNTIME_ONLY="$runtime_only" "$repo_root/os/scripts/build-thin-apps.sh"
 fi
+[[ $runtime_only != 1 ]] || exit 0
 mapfile -t app_binaries < <(
     jq -r --arg root "$thin_app_dir" \
         '.catalog[] | $root + "/" + .binary' "$plan"

@@ -23,10 +23,10 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
-- **`runtime-size-<arch>`** in t (`t test runtime-size-aarch64`) compiles the runtime, its
-  engines and the apps of `apps_without_media` as a release does
-  (`tools/apps/t-release.sh runtime-size`) and holds the dylib, its engines and those apps'
-  loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
+- **`runtime-size-<arch>`** in t (`t test runtime-size-aarch64`) compiles the apps of
+  `apps_without_media` as a release does, on the runtime and engines `thin-runtime-<arch>`
+  built (`tools/apps/t-release.sh runtime-size`), and holds the dylib, its engines and those
+  apps' loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
   not on main's commits; the whole collection's `app-sizes-<arch>` measures it too, on each new
   head of `stable`.
 - **Release / apps** (`Shared runtime within its size budget`) measures the

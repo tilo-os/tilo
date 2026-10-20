@@ -184,6 +184,19 @@ t test runtime-size-aarch64            # the shared runtime against its budget
 
 They don't run on `main`'s commits by default, so run the ones for the apps your change
 concerns: an app you rewrote, or `runtime-size-*` and a few apps for a change to the toolkit.
+
+What every one of them builds alike, the runtime, its engines and the packing tools,
+`thin-runtime-aarch64` and `thin-runtime-x86_64` build once (`tools/apps/t-release.sh
+thin-runtime`). The size checks need it: `t test app-size/notes-aarch64` brings it along, and
+receives its build directory, so the check itself compiles only Notes' own crates against the
+shared runtime, packs and measures it. Its result stays cached until the runtime, its engines,
+the packing tools or the collection's manifests change, which is far less often than any one app
+changes. On arm64 the shared build's command takes about 16 minutes from a cold build
+directory; with it cached, an app's check took 7 to 13 minutes on a loaded node, of which compiling
+the app's own crate is 3 to 6 minutes and the rest is baking the runtime bundle and packing. Both
+spend most of that waiting for the node's disk: the app's compile reads the shared build's
+metadata (about 2 GB) from it.
+
 The whole collection's gate, `app-sizes-x86_64` and `app-sizes-aarch64`, runs on each new head
 of `stable` and when dispatched. Budgets and how to raise one:
 [app package size](measurements/app-package-size.md), [runtime size](measurements/runtime-size.md).

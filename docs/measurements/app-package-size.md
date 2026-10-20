@@ -21,11 +21,14 @@ enforces the budgets in four places:
 - **One app's size, when a change concerns it** (`app-size/<app>-<arch>` in t, for example
   `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
   release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
-  its tapp to its budget. Its key is what the app is built from: its own crate and the local
-  crates it reaches, the shared runtime and its engines (the tapp names the signed runtime
-  bundle, which covers them), the packing tools, the manifests and lockfile Cargo resolves the
-  collection's graph from, and the packaging scripts. A change elsewhere, another app's code
-  included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
+  its tapp to its budget. What every app's check builds alike, the shared runtime, its engines
+  and the packing tools, `thin-runtime-<arch>` builds once (`tools/apps/t-release.sh
+  thin-runtime`): each `app-size` check needs it, receives its build directory and compiles only
+  its app on it. Its key is what the app is built from: its own crate and the local crates it
+  reaches, the manifests and lockfile Cargo resolves the collection's graph from, the packaging
+  scripts, and the key of `thin-runtime-<arch>` (the runtime, its engines and the packing
+  tools; the tapp names the signed runtime bundle, which covers them). A change elsewhere,
+  another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
   runtime (docs/measurements/runtime-size.md). None of these runs on main's commits by default:
   run the ones for the apps your change touches, before you push. `tools/ci/t_toml.py`
   generates one per app of the default collection, so a new app has its own.
