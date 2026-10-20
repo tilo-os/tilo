@@ -221,30 +221,18 @@ fn coverage_of(dir: &Path) -> Coverage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
-
-    fn wait_for_change(watch: &DirectoryWatch) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if watch.take_changes() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        false
-    }
 
     #[test]
-    fn a_file_created_in_the_watched_directory_is_reported_once_drained() {
+    fn an_entry_created_in_the_watched_directory_is_reported_once_drained() {
         let dir = tempfile::tempdir().unwrap();
         let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
         assert!(watch.point_at(Some(dir.path())));
         assert_ne!(watch.coverage(), Coverage::None);
         assert!(!watch.take_changes(), "nothing changed yet");
-        std::fs::write(dir.path().join("new.txt"), b"hello").unwrap();
-        assert!(wait_for_change(&watch), "the creation is reported");
-        std::thread::sleep(Duration::from_millis(100));
-        let _ = watch.take_changes();
+        // Making a directory is a single event, so once it is reported no
+        // other event of this change can still be on its way.
+        std::fs::create_dir(dir.path().join("new")).unwrap();
+        tilo_test_env::wait_until("the watch to report the creation", || watch.take_changes());
         assert!(!watch.take_changes(), "a drained watch reports nothing new");
     }
 

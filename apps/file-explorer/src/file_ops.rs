@@ -704,7 +704,7 @@ mod tests {
                 .unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while app.state().ops.pending().next().is_some() {
             assert!(std::time::Instant::now() < deadline);
             app.settle();

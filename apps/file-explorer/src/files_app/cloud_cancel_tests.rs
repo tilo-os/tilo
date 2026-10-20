@@ -86,7 +86,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.pending.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -100,9 +100,7 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     files.poll_cloud();
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    ready_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
     files.run_effect(FilesEffect::CancelCloud).unwrap();
     while files.cloud.transfer.is_some() {
         assert!(std::time::Instant::now() < deadline);

@@ -37,7 +37,7 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
             cut: false,
         },
     );
-    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.transfer.is_some() {
         assert!(Instant::now() < deadline);
         files.poll_cloud();

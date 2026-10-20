@@ -28,7 +28,7 @@ fn refuse_open(_drive: &str) -> Result<(), String> {
 
 /// Wait for the answer of a request that runs off the UI thread.
 fn settle(files: &mut FileExplorerWidget, done: impl Fn(&FileExplorerWidget) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while !done(files) {
         assert!(
             std::time::Instant::now() < deadline,
