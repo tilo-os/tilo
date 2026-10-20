@@ -75,10 +75,9 @@ pub struct Observed {
 /// process holding `SeSystemEnvironmentPrivilege` (an elevated administrator)
 /// read EFI variables, so the boot-variable fields are always left empty here
 /// — in the UI *and* in the elevated helper's re-probe, so `basis` equality
-/// holds. The helper reads the live `BootCurrent`/`BootOrder`/`BootNext`
-/// through [`super::live_firmware_facts`] when it records `original_firmware` and
-/// checks `boot-next-busy`; those checks run against the live values, never
-/// against the basis.
+/// holds. The helper reads the live `BootOrder`/`BootNext` itself when it
+/// records `original_firmware` and checks `boot-next-busy`; those checks run
+/// against the live values, never against the basis.
 pub fn basis_firmware(uefi: bool, secure_boot: bool) -> FirmwareFacts {
     FirmwareFacts {
         uefi,
