@@ -629,8 +629,21 @@ fn plan_dispatch_owner_ceiling_preserves_shorter_caller_and_transport_bounds() {
 fn plan_dispatch_timeout_is_unknown() {
     if let Some(observed) = run_case("plan_dispatch_timeout_is_unknown", "timeout") {
         // The peer holds the connection: only the 200 ms Plan timeout, not the
-        // 10 s one the other cases pass, ends the child before this bound.
-        assert!(observed.elapsed < Duration::from_secs(10));
+        // 10 s one the other cases pass, ends the call before this bound.
+        // Timed by the call's own log line, not around the child process,
+        // whose start-up on a loaded machine is not the call's.
+        assert!(
+            observed.stderr.contains("timeout_ms=200"),
+            "{}",
+            observed.stderr
+        );
+        let done_ms: u64 = observed
+            .stderr
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("done_ms="))
+            .and_then(|ms| ms.parse().ok())
+            .unwrap_or_else(|| panic!("the call logs its duration: {}", observed.stderr));
+        assert!(done_ms < 10_000, "the call took {done_ms} ms");
         assert_unknown(observed);
     }
 }
