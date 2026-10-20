@@ -209,7 +209,7 @@ async fn every_web_app_over_the_session() {
         [0x7c, 0x3a, 0xed],
         DelegateScope {
             rooms: vec![ROOM.into()],
-            apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
+            apps: catalogue.iter().map(|d| d.app_id().to_owned()).collect(),
         },
         now,
         now + 3_600_000_000_000,
@@ -282,7 +282,7 @@ async fn every_web_app_over_the_session() {
     );
     let mut failures = Vec::new();
     for definition in catalogue.iter() {
-        let app_id = definition.app_id;
+        let app_id = definition.app_id();
         let route = agent.open(app_id, None).unwrap();
         let (edit, refused) = find_edit(
             &mut Agent {

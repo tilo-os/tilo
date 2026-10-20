@@ -241,12 +241,12 @@ impl AttachedView {
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: room.to_owned(),
             }
         } else {
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: room.to_owned(),
                 record: checkout.id.as_str().into(),
             }
@@ -254,7 +254,7 @@ impl AttachedView {
         cache.hydrate(key, document, Some(me.as_bytes().to_vec()))?;
         let cache_kept = cache.clone();
         let records = RecordOwners::portable(cache.clone())
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(|error| error.to_string())?;
         let views =
             Rc::new(InstanceViewStore::portable(cache, room).map_err(|error| error.to_string())?);
@@ -350,7 +350,9 @@ impl AttachedView {
         self.frame
             .resources()
             .into_iter()
-            .filter_map(|resource| permissions.permitted_resource(self.definition.app_id, resource))
+            .filter_map(|resource| {
+                permissions.permitted_resource(self.definition.app_id(), resource)
+            })
             .collect()
     }
 
@@ -433,7 +435,7 @@ impl AttachedView {
         // whatever task the participant carries out.
         let ambient = self.context.clone().unwrap_or_default().enriched_by(
             &tilo_actions::ActionContext::default()
-                .with_app(self.definition.app_id, self.definition.title),
+                .with_app(self.definition.app_id(), self.definition.title()),
         );
         let (_, started) = self.frame.start_bound_job_within(
             Some(invoker),
@@ -721,7 +723,7 @@ impl AttachedView {
             format!(
                 "{} is not a part of a chain {} keeps",
                 record.as_str(),
-                self.definition.app_id
+                self.definition.app_id()
             )
         })?;
         if !self.records.is_ready(record) && self.records.try_open_record(&checkout).is_err() {
@@ -731,7 +733,7 @@ impl AttachedView {
             };
             self.cache.hydrate(
                 StorageKey::Record {
-                    package: self.definition.app_id.into(),
+                    package: self.definition.app_id().into(),
                     workspace: self.room.clone(),
                     record: record.as_str().into(),
                 },

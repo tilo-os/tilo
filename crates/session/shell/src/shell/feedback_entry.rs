@@ -27,7 +27,7 @@ pub(crate) fn open(st: &mut ChromeState) -> Result<(), ActionError> {
     crate::shell::window_actions::open_hosted(
         st,
         AppKind::Other(tilo_desktop::feedback::KIND.into()),
-        tilo_desktop::feedback::definition().title,
+        tilo_desktop::feedback::definition().title(),
         crate::shell::window_actions::Destination::Beside,
     );
     Ok(())

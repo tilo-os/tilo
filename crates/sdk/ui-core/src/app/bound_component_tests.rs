@@ -657,8 +657,8 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
         let views =
             Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "so.tilo.binding-probe",
-            title: "Probe",
+            app_id: "so.tilo.binding-probe".into(),
+            title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: crate::record::RecordKind::new("probe"),
 
@@ -962,8 +962,8 @@ impl ActionFixture {
             (12, strict_factory),
         ] {
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.binding-probe",
-                title: "Probe",
+                app_id: "so.tilo.binding-probe".into(),
+                title: "Probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: crate::record::RecordKind::new("probe"),
 
@@ -2569,8 +2569,8 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
         .unwrap(),
     );
     let definition = ApplicationDefinition {
-        app_id: "so.tilo.binding-probe",
-        title: "Probe",
+        app_id: "so.tilo.binding-probe".into(),
+        title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         record_kind: crate::record::RecordKind::new("probe"),
         room_record: true,

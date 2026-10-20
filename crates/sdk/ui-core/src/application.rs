@@ -12,6 +12,7 @@ use crate::view::{ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -26,8 +27,12 @@ pub type InstanceId = u64;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
-    pub app_id: &'static str,
-    pub title: &'static str,
+    /// The app's package id. Owned: a runtime that runs installed packages
+    /// (tilolang) learns it from the launch (`TILO_PACKAGE_ID`), not from its
+    /// source. [`Self::app_id`] borrows it for as long as the definition lives.
+    pub app_id: Cow<'static, str>,
+    /// The app's name, as the definition's runtime learns it.
+    pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
     pub record_kind: RecordKind,
     pub required: Vec<PermissionScope>,
@@ -46,6 +51,21 @@ pub struct ApplicationDefinition {
 /// The entry of [`ApplicationDefinition::opens`] that opens files of every
 /// type.
 pub const ANY_MEDIA_TYPE: &str = "*/*";
+
+impl ApplicationDefinition {
+    /// The app's package id, borrowed from the definition: `'static` for the
+    /// definitions every host keeps for the life of the process.
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    /// The app's name, borrowed from the definition.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+}
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -506,14 +526,14 @@ impl HostContext {
             author,
             action_context,
         } = inputs;
-        validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
+        validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or(LaunchError::BindingMismatch)?;
-        if package != definition.app_id
+        if package != definition.app_id()
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
             return Err(LaunchError::BindingMismatch);
@@ -2128,10 +2148,12 @@ impl ApplicationCatalog {
         &mut self,
         definition: &'static ApplicationDefinition,
     ) -> Result<(), LaunchError> {
-        if self.definitions.contains_key(definition.app_id) {
-            return Err(LaunchError::DuplicateApplication(definition.app_id.into()));
+        if self.definitions.contains_key(definition.app_id()) {
+            return Err(LaunchError::DuplicateApplication(
+                definition.app_id().into(),
+            ));
         }
-        self.definitions.insert(definition.app_id, definition);
+        self.definitions.insert(definition.app_id(), definition);
         Ok(())
     }
     /// # Errors
@@ -2305,8 +2327,8 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
@@ -2352,8 +2374,8 @@ mod bound_lifetime_tests {
         let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
-            title: "Mount probe",
+            app_id: "dev.tilo.mount-probe".into(),
+            title: "Mount probe".into(),
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
             required: vec![],
@@ -2413,8 +2435,8 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],
@@ -2501,8 +2523,8 @@ mod bound_lifetime_tests {
             let views =
                 Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
             let definition = ApplicationDefinition {
-                app_id: "so.tilo.mount-probe",
-                title: "Mount probe",
+                app_id: "so.tilo.mount-probe".into(),
+                title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 record_kind: RecordKind::new("probe"),
                 required: vec![],

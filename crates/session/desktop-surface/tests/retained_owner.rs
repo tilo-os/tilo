@@ -96,8 +96,8 @@ impl TileSource for Source {
         self.signals.borrow_mut().insert(tab.id, signal.clone());
         NEXT.with_borrow_mut(|slot| *slot = Some(signal));
         let definition = ApplicationDefinition {
-            app_id: APP,
-            title: "Retained owner",
+            app_id: APP.into(),
+            title: "Retained owner".into(),
             icon: IconDescriptor::Glyph("R"),
             record_kind: ui::record::RecordKind::new("retained-owner"),
             room_record: false,

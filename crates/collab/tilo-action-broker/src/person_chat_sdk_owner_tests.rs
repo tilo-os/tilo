@@ -169,7 +169,7 @@ fn chat_seed(room: &str) -> Vec<tilo_peer_state::SeedDocument> {
         Some(room)
     ));
     vec![tilo_peer_state::SeedDocument {
-        app_id: definition.app_id.into(),
+        app_id: definition.app_id().into(),
         record_id: record.as_str().into(),
         kind: definition.record_kind.as_str().into(),
         bytes: document.save(),
@@ -198,7 +198,7 @@ fn mount_chat(
     cache
         .hydrate(
             StorageKey::Record {
-                package: definition.app_id.into(),
+                package: definition.app_id().into(),
                 workspace: route.cluster_id.clone(),
                 record: record.as_str().into(),
             },
@@ -207,7 +207,7 @@ fn mount_chat(
         )
         .unwrap();
     let mut owners = RecordOwners::portable(cache.clone());
-    let records = owners.open(definition.app_id, &route.cluster_id).unwrap();
+    let records = owners.open(definition.app_id(), &route.cluster_id).unwrap();
     let views = Rc::new(
         ui::application_view::InstanceViewStore::portable(cache, &route.cluster_id).unwrap(),
     );

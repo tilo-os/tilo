@@ -89,8 +89,8 @@ pub fn definition() -> &'static ApplicationDefinition {
         // operation.
         ui::app_surface::register_package(APP_ID, &surface_bytes());
         ApplicationDefinition {
-            app_id: APP_ID,
-            title: "tilolang",
+            app_id: APP_ID.into(),
+            title: "tilolang".into(),
             icon: IconDescriptor::Named("code-editor".into()),
             record_kind: RecordKind::new(RECORD_KIND),
             required: vec![],

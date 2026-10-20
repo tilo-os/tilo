@@ -957,7 +957,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let wake = context.wake_handle();
         let mut bad = saved;
         match case {
-            "definition" => definition.app_id = "foreign.app",
+            "definition" => definition.app_id = "foreign.app".into(),
             "target" => {}
             "foreign" => bad.app_id = "foreign.app".into(),
             "malformed" => bad.view.viewport.height = f64::NAN,
@@ -1002,7 +1002,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
-        definition.app_id = APP;
+        definition.app_id = APP.into();
         *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
             "probe-author",
             &tilo_ui::permissions::TreePath::root(),

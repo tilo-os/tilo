@@ -45,8 +45,8 @@ fn absent_existing_record_cannot_reach_a_default_new_factory() {
     use std::{cell::RefCell, rc::Rc};
     let directory = tempfile::tempdir().unwrap();
     let definition = ApplicationDefinition {
-        app_id: "dev.tilo.cold-construction",
-        title: "Cold construction probe",
+        app_id: "dev.tilo.cold-construction".into(),
+        title: "Cold construction probe".into(),
         icon: crate::widget::IconDescriptor::Glyph("C"),
         record_kind: RecordKind::new("cold.probe"),
         required: vec![],

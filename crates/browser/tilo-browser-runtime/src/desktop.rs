@@ -54,7 +54,7 @@ pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
     applications()
         .into_iter()
         .chain(std::iter::once(crate::scratch::definition()))
-        .find(|definition| definition.app_id == app)
+        .find(|definition| definition.app_id() == app)
 }
 
 /// Every application the page can open, as `(id, title)` in launcher
@@ -63,8 +63,8 @@ pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
 pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
     let mut known = ui::application::registry::catalogue();
     for definition in applications() {
-        if !known.iter().any(|(id, _)| *id == definition.app_id) {
-            known.push((definition.app_id, definition.title));
+        if !known.iter().any(|(id, _)| *id == definition.app_id()) {
+            known.push((definition.app_id(), definition.title()));
         }
     }
     known
@@ -273,7 +273,7 @@ impl Shared {
         room: &str,
         definition: &'static ApplicationDefinition,
     ) -> Result<RecordStore, String> {
-        let home = (definition.app_id.to_owned(), room.to_owned());
+        let home = (definition.app_id().to_owned(), room.to_owned());
         if let Some(store) = self
             .stores
             .borrow()
@@ -285,7 +285,7 @@ impl Shared {
         // Clones share the owner registry: the same writer either way.
         let store = owners
             .clone()
-            .open(definition.app_id, room)
+            .open(definition.app_id(), room)
             .map_err(|error| error.to_string())?;
         self.stores.borrow_mut().push(store.clone());
         Ok(store)
@@ -674,13 +674,13 @@ struct Tiles {
 
 impl Tiles {
     fn store(&mut self, definition: &'static ApplicationDefinition) -> Result<RecordStore, String> {
-        if let Some(store) = self.stores.get(definition.app_id) {
+        if let Some(store) = self.stores.get(definition.app_id()) {
             return Ok(store.clone());
         }
         let store = self
             .shared
             .room_store(&self.inputs.owners, &self.inputs.room, definition)?;
-        self.stores.insert(definition.app_id, store.clone());
+        self.stores.insert(definition.app_id(), store.clone());
         Ok(store)
     }
 
@@ -721,7 +721,7 @@ impl Tiles {
             let checkout = RecordCheckout::new(id, definition.record_kind.clone());
             self.shared.records.borrow_mut().insert(tab.id, checkout);
         }
-        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+        if definition.app_id() == tilo_desktop::feedback::PACKAGE {
             return self.private_feedback(tab.id);
         }
         let store = self.store(definition)?;
@@ -765,14 +765,14 @@ impl Tiles {
         context.provide_models(self.inputs.models.clone());
         context.provide_content(crate::page_content());
         // Only registered control panels receive the administration capability.
-        if crate::host_services::provider_admin_app(definition.app_id) {
+        if crate::host_services::provider_admin_app(definition.app_id()) {
             crate::host_services::provide_provider_admin(
                 &mut context,
                 self.inputs.provider_admin.clone(),
             )?;
         }
         // Settings shows the person's linked accounts beside their others.
-        if definition.app_id == SETTINGS {
+        if definition.app_id() == SETTINGS {
             context.lend(self.shared.linked.clone());
         }
         let destination = Rc::clone(&self.shared.images);
@@ -788,7 +788,7 @@ impl Tiles {
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
-        let app_id = definition.app_id;
+        let app_id = definition.app_id();
         component
             .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
                 woken.store(true, Ordering::Release);

@@ -49,7 +49,7 @@ impl CanonicalRead {
             return Err("source record scope mismatch".into());
         }
         let read = ConfinedRead::prepare(
-            definition.app_id,
+            definition.app_id(),
             &route.cluster_id,
             &record,
             source.bytes,

@@ -27,7 +27,7 @@ fn app_id_for(
             "application has no primary room record",
         ));
     }
-    Ok(definition.app_id)
+    Ok(definition.app_id())
 }
 
 /// What a bot's changes to `record` build on: the record as the room holds

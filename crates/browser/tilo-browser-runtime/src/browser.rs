@@ -1152,11 +1152,11 @@ fn present_component(
     dyn_store: Rc<dyn durable_store::DurableStore>,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<Presentation, JsValue> {
-    if definition.app_id == tilo_desktop::feedback::PACKAGE {
+    if definition.app_id() == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
     }
     let record = RecordOwners::with_store(Rc::clone(&dyn_store))
-        .open(definition.app_id, &config.room)
+        .open(definition.app_id(), &config.room)
         .map_err(error)?;
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
