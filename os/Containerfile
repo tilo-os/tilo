@@ -398,7 +398,7 @@ COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py
 COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
-COPY tools/apps/language_packs.py /build/tools/apps/language_packs.py
+COPY tools/apps/language_packs.py tools/apps/stage_sdk_services.py /build/tools/apps/
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
