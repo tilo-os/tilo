@@ -164,9 +164,7 @@ class AuditTests(unittest.TestCase):
             base = {
                 "tools/security-boundary-invariants.txt": "os/tests/secure.sh\n",
                 "tools/policy/run.sh": "bash tools/tests/cargo_shim.sh\n",
-                "tools/policy/steps.toml": "",
-                ".forgejo/workflows/check.yml": "python3 os/tests/native.py\n",
-                ".forgejo/workflows/lint.yml": "\n",
+                "tools/policy/steps.toml": "[[step]]\nrun = \"python3 os/tests/native.py\"\n",
                 "os/tests/a.sh": "true\n",
                 "os/tests/b.py": "import helper\n",
                 "os/tests/helper.py": "\n",

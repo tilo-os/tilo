@@ -35,7 +35,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # Native fixture tools for the security-boundary invariants (EFI, RPM
 # signing, kernel modules, rendered fonts, runtime assembly confinement) and
 # the C linker cargo needs when
-# lint.yml compiles tilo-app-cli (`cc` is Fedora's alternatives symlink to gcc).
+# the app lints compile tilo-app-cli (`cc` is Fedora's alternatives symlink to gcc).
 # Baked in so those jobs neither wait on nor depend on a Fedora mirror; a
 # separate layer keeps the base cached.
 RUN dnf install -y --setopt=install_weak_deps=False \

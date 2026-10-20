@@ -5,9 +5,8 @@
 #
 # These crates are path dependencies outside the workspace, so the workspace's
 # `cargo test` builds them but never runs their tests. With no argument, runs
-# every crate in VENDORED_TEST_CRATES (tools/ci/affected_packages.py), which
-# also selects them for check.yml's `vendored` job when their files change;
-# ci-nightly.yml runs them all.
+# every crate in VENDORED_TEST_CRATES (tools/ci/package_sets.py); t.toml's
+# `vendored` check runs them when their files change.
 #
 # Each crate is its own workspace. Its lock file (ignored by git) starts as the
 # workspace's Cargo.lock, so its dependencies are tested at the versions Tilo
@@ -21,7 +20,7 @@ if [ "$#" -eq 0 ]; then
   read -r -a crates < <(python3 -c '
 import sys
 sys.path.insert(0, "tools")
-from ci.affected_packages import VENDORED_TEST_CRATES
+from ci.package_sets import VENDORED_TEST_CRATES
 print(" ".join(VENDORED_TEST_CRATES))
 ')
   set -- "${crates[@]}"

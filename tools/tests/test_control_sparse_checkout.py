@@ -9,12 +9,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ('dev-focused-test.yml', 'dev-mounted-reopen.yml',
-             'sdk-native-envelope.yml', 'web-size-native-envelope.yml',
-             'resolve-builder.yml')
-INPUTS = ('tools/ci/focused_test.py', 'tools/ci/mounted_reopen_probe.py',
-          'tools/ci/resolve_builder.py', 'tools/ci/images.toml',
-          'os/tests/named_public_trust_context.sh')
+WORKFLOWS = ('resolve-builder.yml',)
+INPUTS = ('tools/ci/resolve_builder.py', 'tools/ci/images.toml')
 
 
 def checkout_settings(name):
@@ -87,21 +83,6 @@ class ControlSparseCheckoutTests(unittest.TestCase):
                                         cwd=dest, env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('image=' + image, output.read_text())
-                if 'envelope' in name:
-                    self.assertEqual((dest / 'os/tests/named_public_trust_context.sh').read_bytes(),
-                                     (ROOT / 'os/tests/named_public_trust_context.sh').read_bytes())
-                if name in ('dev-focused-test.yml', 'dev-mounted-reopen.yml'):
-                    helper = 'focused_test.py' if name == 'dev-focused-test.yml' else 'mounted_reopen_probe.py'
-                    env.update(SOURCE_SHA='a' * 40, PACKAGE='shell', OPERATION='test',
-                               TEST_TARGET='it', TEST_NAME='module::case')
-                    result = subprocess.run([sys.executable, str(dest / 'tools/ci' / helper), 'validate'],
-                                            cwd=dest, env=env, capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn('source=' + 'a' * 40, output.read_text())
-                    env['SOURCE_SHA'] = 'main'
-                    result = subprocess.run([sys.executable, str(dest / 'tools/ci' / helper), 'validate'],
-                                            cwd=dest, env=env, capture_output=True, text=True)
-                    self.assertNotEqual(result.returncode, 0)
 
     def test_missing_registry_input_fails_on_actual_resolver(self):
         dest = self.sparse('resolve-builder.yml')

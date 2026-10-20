@@ -207,55 +207,19 @@ fails, is in `docs/measurements/`: [performance KPIs and A/B runs](docs/measurem
 
 ## Fast checks before assembly
 
-For a native integration test without a full workspace dispatch, use
-**Dev / focused test** (`dev-focused-test.yml`). Select a full source
-commit SHA, one Cargo package, integration target and exact Rust test path. For
-example: package `shell`, target `it`, test
-`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
-Use operation `check-tests` with the target/name empty to compile that package's
-test targets. Both modes use `--locked` on one native x86-64 runner and share the
-normal download/compiler caches. Missing or ignored tests fail. The job records
-source SHA, workflow SHA, builder digest and exit status; its diagnostic result
-does not replace required PR checks or trigger publication.
-
-For a related group, set `target_kind=lib` (leave `test_target` empty), or keep
-`target_kind=integration` and name the integration target. Supply `test_names` as
-a JSON array of up to 32 exact paths, leaving `test_name` empty. All names must
-exist before any case runs. Every case runs even if an earlier case fails, and
-the run fails if any case fails or is ignored. One job reuses one target tree;
-there is no workspace-wide selection or per-case runner dispatch.
-
-For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
-and submit directly through the scheduler (replace the example package and SHA):
+For a native integration test without a full workspace run, ask t for one
+test or one package's lints; it runs them on its warm builds, uncommitted
+changes included (docs/t.md):
 
 ```sh
-jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
-  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+t test test/shell --test 'concept_parity_spec::overview_add_workspace::' --priority high
+t cargo check -p shell --tests --priority high
+t test clippy/shell --priority high
 ```
 
-Use this structured request for lists: the installed `fgj workflow run` does not
-expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
-
-Do not reserve runners or ask another agent to allocate a slot. Each case's
-result and the exact source/workflow/builder identities appear in the run summary.
-
-Use operation `clippy` to meet CI's lint gate before pushing, including for
-the Linux-only code a Mac does not compile (`shell`, `tilo-relay`, `launcher`). It runs
-the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
-`-D warnings`, the workspace lint table), on the runner label, builder image,
-environment and checkout path of CI's `clippy` job, so the two share compiler
-cache entries and a warm package takes minutes. Name one `package`, or up to 64
-in `packages`; leave the test fields empty. A failure prints the rendered
-Clippy diagnostics; the run summary lists the compiler-cache statistics.
-
-```sh
-jq -n --arg source "$(git rev-parse HEAD)" \
-  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
-```
-
-The source commit must be pushed (any branch) so the runner can fetch it.
+`clippy/<package>` is CI's lint gate (all targets, `-D warnings`, the workspace
+lint table), including for the Linux-only code a Mac does not compile (`shell`,
+`tilo-relay`, `launcher`).
 
 On a Mac, `cargo check --locked -p shell --tests` and `-p tilo-relay --tests`
 compile locally. Code that needs Linux (the Wayland compositor state, `ush`,
@@ -429,60 +393,7 @@ shell changes finish with `$CARGO check --locked -p shell --tests`.
 [`cargo check`](https://doc.rust-lang.org/cargo/commands/cargo-check.html) omits
 code generation and can miss errors that appear in a test/build.
 
-For CI timing, use the repository run number from the Forgejo URL or `fgj actions
-run list`, not the Forgejo API's internal database ID:
-
-```sh
-python3 tools/ci/timing_report.py --repo tilo/tilo --run 11408 --output target/ci-timing.json
-```
-
-For an automatic before/after view of the newest comparable runs, no run IDs or
-manual receipts are needed:
-
-```sh
-python3 tools/ci/timing_report.py --repo tilo/tilo --recent 30 \
-  --workflow check.yml --compare-latest --output target/ci-experience.json
-```
-
-This uses your configured `fgj` authentication and reports queue time separately
-from run duration and the observed container pull-to-create interval. It does not
-sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
-credentials are not written to the report; use `--input` for saved local fixtures.
-Forgejo reruns retain the original run creation time, so the report labels the
-attempt and leaves its queue time unknown unless that attempt's creation is present.
-Schema 3 keeps the deprecated run-created-to-runner field for first attempts and
-reports it as unknown for reruns; its replacement is explicitly attempt-scoped.
-Pass two runs in baseline/current order with `--compare` to print queue, wall and
-same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
-the report can be read without a second API lookup.
-The recent view is keyed by workflow, event and exact commit. It separates queue,
-runner assignment, image pull/create, checkout, measured compile/test phases and
-total time, and includes sccache hit indicators when the job reports them. Its
-snapshot also flags superseded active runs, terminal runs with active tasks, runs
-which started without a runner, and observed runner time discarded by cancellation. These
-markers identify work to inspect; the runner broker remains authoritative for
-whether a Kubernetes runner resource is actually orphaned.
-An unavailable run or log is retained with a `collection_errors` evidence gap;
-it does not discard the remaining snapshot or become a comparison baseline.
-When too little complete evidence remains, the report records that the optional
-comparison is unavailable and still exits successfully with the snapshot.
-
-For a failing pull request, start with the exact-head contexts and then open only
-the failed run:
-
-```sh
-fgj pr checks <pr-number>
-fgj actions run view <run-number>
-fgj actions run logs <run-number>
-```
-
-The app plan and affected-package selector are workflow summaries, so inspect
-them before assuming CI built the whole workspace or app fleet. Main-branch
-check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
-modify `main` and are evidence for one source SHA and run ID only. A successful
-receipt does not qualify a package, OS release, registry deployment or hardware
-target. For queue/startup regressions, preserve the run number and compare it
-with `timing_report.py` instead of estimating from the web UI.
+For a failing check, `t log <check>` prints its whole log (docs/t.md).
 
 ## Preview affected applications
 
@@ -1840,7 +1751,7 @@ cargo hakari generate      # rewrite crates/workspace-hack/Cargo.toml
 cargo hakari manage-deps   # add `workspace-hack` to new members
 ```
 
-CI / fast quality runs `cargo hakari generate --diff`, `manage-deps --dry-run`
+t's `hakari` check runs `cargo hakari generate --diff`, `manage-deps --dry-run`
 and `verify`, and fails until both commands leave nothing to change. Neither
 moves a locked version; `Cargo.lock` only gains or loses `workspace-hack`
 edges. Never edit between the `HAKARI SECTION` markers by hand.
@@ -1886,19 +1797,19 @@ when history cannot be inspected. Existing exceptions remain migration work.
 The lines a commit adds carry no credential, merge-conflict marker or `dbg!`
 (`dbg!` only in Rust outside `vendor/`). One definition,
 `tools/policy/added_line_policy.py`, serves the hook, `scripts/scan-secrets.sh`
-and fast quality, which repeats it on every new commit, so `--no-verify` does
+and t's `changes` check, which repeats it on every new commit, so `--no-verify` does
 not get past it. A line counts as added when no parent's version of the file
 holds it: an existing string does not fire again when its file is touched, and
 a merge answers only for its resolution. A credential-shaped string that is not
 one needs `example` or `placeholder` on the same line; that is the only
 exception.
 
-`pre-commit` checks the staged change the way CI's quality job would: rustfmt
+`pre-commit` checks the staged change the way t's checks would: rustfmt
 on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+t's checks (`t.toml`). [`docs/policies.md`](docs/policies.md) maps
 every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged

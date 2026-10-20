@@ -3,10 +3,10 @@
 # Every file that looks like a test (see tools/ci/suites.py: SCOPE) is gated by
 # exactly one of:
 #
-#   * tools/security-boundary-invariants.txt, tools/policy/run.sh or a literal
-#     step in check.yml/lint.yml, which run on every applicable change;
+#   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
+#     on every applicable change;
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
-#     built image or network) that the "suites" job in check.yml runs whenever
+#     built image or network) whose `suite-<group>` check in t.toml runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
 #   * a [[covered]] entry: exercised by the named, already gated suite; or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
@@ -559,9 +559,11 @@ name = "perf-tools"
 requirement = { cores = 4, memory = "1GiB" }
 inputs = [
   "scripts/perf/", "apps/settings-core/src/categories.rs", "tools/perf/",
-  # tools/perf/test_compare.py and test_ab.py hold the workflows' groups and
-  # benchmarks equal to the budgets' lanes and the A/B groups.
-  ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
+  # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
+  # t checks and benchmarks, and vm-acceptance's groups equal to the budgets'
+  # lanes and the A/B groups.
+  "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh", "t.toml",
+  ".forgejo/workflows/vm-acceptance.yml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
@@ -699,8 +701,8 @@ name = "browser-runtime-web"
 requirement = { cores = 6, memory = "1GiB" }
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
-# app catalogue. The live transport suites load the MoQ library that check.yml
-# builds from scripts/moq-browser before the offline suites run.
+# app catalogue. The live transport suites load the MoQ library built from
+# scripts/moq-browser before the offline suites run.
 # bundle-update runs the split modules' loader that wasm-split's main.rs writes.
 inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
@@ -1570,10 +1572,6 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
-[[covered]]
-suite = "tools/ci/focused_test.py"
-by = "tools/tests/test_focused_test.py"
-
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1902,13 +1900,11 @@ workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
-reason = "destructive, root: loop devices"
-workflow = "ci-staging-loop.yml"
+reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
 
 [[unrequired]]
 suite = "os/tests/staging_reclaim_loop.sh"
-reason = "destructive, root: loop devices"
-workflow = "ci-staging-loop.yml"
+reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
@@ -1937,6 +1933,18 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
 reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
+
+[[unrequired]]
+suite = "os/tests/named_public_trust_context.sh"
+reason = "needs a container engine and builds images in it; run by hand where a backend needs qualifying (docs/development-signing.md)"
+
+[[unrequired]]
+suite = "tools/ci/test-vendored-crates.sh"
+reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
+
+[[unrequired]]
+suite = "tools/test-env.sh"
+reason = "the test environment tools/ci/t-nextest.sh sources, not a suite of its own"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"

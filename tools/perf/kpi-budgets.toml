@@ -35,8 +35,8 @@ baseline_runs = 5
 baseline_min_runs = 1
 min_delta = 0.0
 
-# Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
-# selected by its `kpis` input; its `compare` job runs with the default lane.
+# The scheduled run (tools/ci/perf-scheduled.sh): one t check per group,
+# perf-<group>; perf-scheduled compares them with the default lane.
 [lanes.perf-scheduled]
 groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser", "stream"]
 
@@ -1894,7 +1894,7 @@ enforce = true
 source = "KPI: Relay cost per active collaborator-hour"
 
 # A public room host at 100 guests: crates/dev/room-load, three runs on
-# runner-large (perf-scheduled.yml, `hosting-room`; adapters.py room-load),
+# runner-large (tools/ci/perf-scheduled.sh, `hosting-room`; adapters.py room-load),
 # each run one sample. 100 is the largest room the capacity sweep of
 # 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
 # capacity run 112979) admitted whole: there, 100 guests joined with join p99

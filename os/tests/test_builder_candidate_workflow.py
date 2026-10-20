@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = (ROOT / '.forgejo/workflows/build-ci-builder.yml').read_text()
-CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
+RESOLVE = (ROOT / '.forgejo/workflows/resolve-builder.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CANARY)
@@ -355,10 +355,9 @@ test() {
         with self.subTest(phase="ordinary_checks_resolve_the_builder_anonymously"):
             # The builder is public on registry.tilo.so; no credential reaches
             # the resolver.
-            block = CHECK.split('- name: Resolve the CI builder before starting job containers\n', 1)[1]
-            block = block.split('\n      - ', 1)[0]
+            block = RESOLVE.split('- name: Resolve the CI builder\n', 1)[1]
             self.assertIn('run: python3 tools/ci/resolve_builder.py', block)
-            self.assertNotIn('REGISTRY_TOKEN', block)
+            self.assertNotIn('REGISTRY_TOKEN', RESOLVE)
         with self.subTest(phase="feature_refs_never_publish_shared_aliases"):
             for ref in ['refs/heads/codex/arm64-tilo-integration', 'refs/tags/test-builder', 'refs/pull/1/head']:
                 with self.subTest(ref=ref):
@@ -370,55 +369,12 @@ test() {
             self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
             self.assertIn('runner: runner-arm64', BUILD)
             self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
-            # Native acceptance consumers must honor the resolved builder override.
-            # Compile-free selection/security use the qualified lean image.
-            # Extract actual jobs: a removed following-name delimiter must not
-            # let a security assertion accidentally observe a native job.
-            security_job = workflow_job(CHECK, 'security')
-            select_job = workflow_job(CHECK, 'select')
-            self.assertRegex(select_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}\n')
-            qualified_image = next(line.strip() for line in
-                                   (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
-                                   if line.strip().startswith('image: '))
-            self.assertIn(qualified_image, select_job)
-            self.assertIn(qualified_image, security_job)
-            self.assertNotIn('needs.builder.outputs.image', security_job)
-            self.assertIn('runs-on: runner-quality', security_job)
-            self.assertIn('run: bash tools/run-security-boundary-invariants.sh', security_job)
-            self.assertIn('runs-on: runner-quality', select_job)
-            self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
-            self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
-            self.assertIn('run: bash tools/ci/select.sh', select_job)
-            self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2',
-                          (ROOT / 'tools/ci/select.sh').read_text())
-            self.assertNotRegex(select_job, r'(?m)^    needs:')
-            self.assertNotIn('needs.', select_job)
-            self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
-            self.assertIn('needs: [select]', security_job)
-            self.assertNotIn('needs.builder.outputs.image', select_job)
-            shard_jobs = {name: workflow_job(CHECK, name)
-                          for name in ('test', 'check', 'clippy', 'android', 'wasm')}
-            for name, job in shard_jobs.items():
-                with self.subTest(job=name):
-                    self.assertIn('    needs: [builder, select, security]', job)
-                    self.assertIn('image: ${{ needs.builder.outputs.image }}', job)
-                    self.assertIn('      - name: Checkout exact change', job)
-                    self.assertIn('          fetch-depth: 1', job)
-                    self.assertNotIn('          fetch-depth: 0', job)
-            clippy_job = shard_jobs['clippy']
-            self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', clippy_job)
-            self.assertNotIn('needs.select.outputs.base', clippy_job)
-            builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
-            self.assertIn('image: registry.tilo.so/tilo/ci-control@sha256:', builder_job)
-            self.assertNotIn('needs.builder.outputs.image', builder_job)
-            self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
-            self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
 
     def resolve(self, requested):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
             result = subprocess.run(
-                ['bash', '-c', step_script(CHECK, 'Resolve the CI builder before starting job containers')],
+                ['bash', '-c', step_script(RESOLVE, 'Resolve the CI builder')],
                 env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output)},
                 cwd=ROOT,
                 text=True, capture_output=True,

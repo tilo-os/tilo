@@ -9,15 +9,10 @@ ACTION_PATH = ".forgejo/actions/restore-cargo-downloads"
 PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
     "build-ci-builder.yml": 2,
-    "lint.yml": 1,
     "release-apps.yml": 3,  # The scoped Signal build is also a Cargo consumer.
 }
 PREPARED_CONSUMERS = {
-    "check.yml": 7,
     "ci-legacy-apps.yml": 1,
-    "ci-nightly.yml": 3,
-    "dev-visual-baselines.yml": 1,
-    "ci-weekly-quality.yml": 1,
 }
 
 
@@ -26,10 +21,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         prepare = (ROOT / PREPARE_ACTION_PATH / "action.yml").read_text()
         self.assertIn("value: ${{ steps.cargo-downloads.outputs.cache-key }}", prepare)
         for name, producer, key_output, paths_output in (
-            ("check.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
-            ("ci-nightly.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
             ("build-ci-builder.yml", "cargo-cache", "cache-key", "paths"),
-            ("dev-focused-test.yml", "downloads", "cache-key", "paths"),
         ):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".forgejo/workflows" / name).read_text()

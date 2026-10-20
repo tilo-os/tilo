@@ -5,7 +5,7 @@
 #   tools/ci/clippy-android.sh [-p <app>]...   # default: every Android app
 #   CARGO=<any cargo drop-in> tools/ci/clippy-android.sh
 #
-# check.yml's `android` job runs it with the selected apps; the targets'
+# t.toml's `android` check runs it with the Android apps; the targets'
 # linkers come from the NDK (tools/ci/install-android-ndk.sh).
 set -euo pipefail
 cd "$(dirname "$0")/../.."

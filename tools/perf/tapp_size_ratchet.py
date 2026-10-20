@@ -4,7 +4,7 @@
 "Apps are ~2 MB" is a marketed claim. The KPI behind it ("App package size")
 is the bytes of the signed
 `.tapp` a person downloads, per architecture: median <= 2 MB, p90 <= 4 MB and
-max <= 6 MB, ratcheted per app. Three gates hold it:
+max <= 6 MB, ratcheted per app. Two gates hold it:
 
 - **Per app, when the tapp is packaged.** `measure DIR` reads what
   dist/apps/package-apps.sh wrote (`index.json` and `tapp/`): Release / apps
@@ -14,16 +14,8 @@ max <= 6 MB, ratcheted per app. Three gates hold it:
   `entries` index (Perf / scheduled, footprint group). Each budgeted app's
   newest tapp is held to its budget, and the median, p90 and max of those
   apps are held to the fleet ceilings.
-- **Before the merge.** `select --apps APPS` picks which of the apps a pull
-  request affects CI / affected packages packages (tools/ci/select.sh): the
-  ones closest to a budget in the registry, at most `PULL_REQUEST_APPS`, so a
-  toolkit change does not package the whole collection. Its `tapps` job
-  packages them on each architecture and runs `measure`. A pull
-  request runs its own head's workflow file, so `--workflow` names it, and
-  `select` fails when that file has no `tapps` job: the branch predates the
-  gate and would land the apps unmeasured.
 
-`check-budget --base REV` runs in CI / fast quality without building
+`check-budget --base REV` runs in t.toml's diff-based gates without building
 anything. It fails when a budget is larger than at REV beyond what the raise
 files new in the change add. It also fails when the budgeted apps are not
 exactly the default collection, so a new app brings its budget in the same
@@ -55,7 +47,6 @@ import re
 import subprocess
 import sys
 import tomllib
-import urllib.request
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -70,13 +61,6 @@ STATS = {"p50": 50.0, "p90": 90.0, "max": 100.0}
 SLACK = 0.01
 ROUNDING = 64 * 1024
 MIN_REASON = 20
-REGISTRY = "https://apps.tilo.so/entries"
-# A pull request packages at most this many of the apps it affects. Shared
-# code grows every app by about the same bytes, so the apps closest to a
-# budget are the ones a toolkit change pushes over first.
-PULL_REQUEST_APPS = 8
-# The job of .forgejo/workflows/check.yml that packages what `select` picks.
-TAPPS_JOB = re.compile(r"^  tapps:[ \t]*(?:#.*)?$", re.MULTILINE)
 
 
 def ints(table: Any) -> dict[str, int]:
@@ -183,11 +167,6 @@ def default_collection(root: pathlib.Path = REPO) -> set[str]:
     catalog = module.app_catalog(root)
     names = module.resolve_collection("default", catalog, module.config(root / "dist/apps/app-collections.toml"))
     return {catalog[name]["id"] for name in names}
-
-
-def app_ids(root: pathlib.Path = REPO) -> dict[str, str]:
-    """Each app directory's package id."""
-    return {name: app["id"] for name, app in app_release(root).app_catalog(root).items()}
 
 
 def budget_for(size: int, headroom: float) -> int:
@@ -323,59 +302,6 @@ def fleet(entries: dict[str, Any], budget: Budget) -> tuple[int, list[str]]:
     return status, lines
 
 
-def read_entries(source: str) -> dict[str, Any]:
-    """A registry index from an https URL or a file."""
-    if source.startswith("https://"):
-        # The registry's edge refuses Python's default User-Agent.
-        request = urllib.request.Request(source, headers={"User-Agent": "tilo-tapp-size-ratchet",
-                                                          "Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)
-    return json.loads(pathlib.Path(source).read_text(encoding="utf-8"))
-
-
-def headroom_of(app: str, budget: Budget, published: dict[tuple[str, str], int]) -> int | None:
-    """Bytes between `app`'s published tapp and its budget, on its tightest architecture."""
-    limits = budget.app_totals()
-    rooms = [limits[(app, arch)] - published[(app, arch)] for arch in budget.architectures
-             if (app, arch) in limits and (app, arch) in published]
-    return min(rooms) if rooms else None
-
-
-def select_apps(affected: list[str], ids: dict[str, str], budget: Budget,
-                published: dict[tuple[str, str], int] | None,
-                limit: int = PULL_REQUEST_APPS) -> tuple[list[str], list[str]]:
-    """The affected app directories a pull request packages and measures.
-
-    Only budgeted apps (the default collection) count. An app the registry
-    does not list goes first, since nothing says how close it is; then the
-    apps closest to a budget. Without a registry index the order is by name.
-    """
-    budgeted = sorted({name for name in affected if ids.get(name) in budget.apps()})
-    rooms = {name: headroom_of(ids[name], budget, published) if published is not None else None
-             for name in budgeted}
-
-    def rank(name: str) -> tuple[bool, int, str]:
-        room = rooms[name]
-        return (room is not None, room or 0, name)
-
-    ranked = sorted(budgeted, key=rank)
-    chosen = ranked[:limit]
-    if not chosen:
-        return [], ["no app of the default collection is affected: no tapp to measure"]
-    lines = [f"{len(budgeted)} affected apps of the default collection; measuring {len(chosen)}"]
-    if published is None:
-        lines.append("warning: no registry index, so the apps are taken by name, not by headroom")
-    for name in chosen:
-        room = rooms[name]
-        lines.append(f"  {name}: {room} bytes of headroom on its tightest architecture"
-                     if room is not None else f"  {name}: no published tapp to compare")
-    if ranked[limit:]:
-        lines.append("further from their budgets, measured on main by Release / apps: "
-                     + " ".join(ranked[limit:]))
-    return chosen, lines
-
-
 def shape_problems(budget: Budget) -> list[str]:
     problems = []
     arches = budget.architectures
@@ -493,44 +419,6 @@ def emit(status: int, lines: list[str], summary: pathlib.Path | None) -> int:
     return status
 
 
-def runs_tapps_job(workflow: str) -> bool:
-    """Whether a check.yml defines the `tapps` job, which packages and
-    measures what `select` picks."""
-    return TAPPS_JOB.search(workflow) is not None
-
-
-def stale_workflow(chosen: list[str], workflow: pathlib.Path | None) -> str | None:
-    """Why a pull request must not run with `workflow`, its own check.yml:
-    it affects apps to measure and has no job that would measure them."""
-    if not chosen or workflow is None or runs_tapps_job(workflow.read_text(encoding="utf-8")):
-        return None
-    return ("error: this pull request affects apps whose tapps CI holds to their size budgets "
-            f"({' '.join(chosen)}), but its own .forgejo/workflows/check.yml has no `tapps` job, "
-            "so it would land them unmeasured. Merge main into the branch, or rebase it "
-            "onto main, and push.")
-
-
-def select_command(args: argparse.Namespace, budget: Budget) -> int:
-    """`select`: print the apps to measure, and write them as `tapp_apps` and
-    `tapp_required` to a GitHub output file. Fails when `--workflow`, the
-    workflow file the run follows, cannot measure them."""
-    try:
-        published = newest_tapps(read_entries(args.entries))
-    except (OSError, ValueError, KeyError) as error:
-        print(f"warning: registry index {args.entries} unreadable: {error}", file=sys.stderr)
-        published = None
-    chosen, lines = select_apps(args.apps.split(), app_ids(), budget, published, args.limit)
-    stale = stale_workflow(chosen, args.workflow)
-    if stale is not None:
-        lines.append(stale)
-    emit(0 if stale is None else 1, lines, None)
-    if args.github_output is not None:
-        with args.github_output.open("a", encoding="utf-8") as output:
-            output.write(f"tapp_apps={' '.join(chosen)}\n")
-            output.write(f"tapp_required={'true' if chosen else 'false'}\n")
-    return 0 if stale is None else 1
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -538,13 +426,6 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("directory", type=pathlib.Path)
     measured.add_argument("--arch")
     measured.add_argument("--summary", type=pathlib.Path)
-    selected = commands.add_parser("select", help="which affected apps a pull request measures")
-    selected.add_argument("--apps", required=True, help="space-separated affected app directories")
-    selected.add_argument("--limit", type=int, default=PULL_REQUEST_APPS)
-    selected.add_argument("--entries", default=REGISTRY, help="registry index (https URL or file)")
-    selected.add_argument("--github-output", type=pathlib.Path)
-    selected.add_argument("--workflow", type=pathlib.Path,
-                          help="the check.yml the run follows; fail when it has no tapps job")
     fleet_parser = commands.add_parser("fleet", help="the registry index against the budgets and fleet ceilings")
     fleet_parser.add_argument("entries", type=pathlib.Path)
     fleet_parser.add_argument("--summary", type=pathlib.Path)
@@ -557,8 +438,6 @@ def main(argv: list[str] | None = None) -> int:
         current = load()
         if args.command == "measure":
             return emit(*measure(args.directory, current, args.arch), args.summary)
-        if args.command == "select":
-            return select_command(args, current)
         if args.command == "fleet":
             return emit(*fleet(json.loads(args.entries.read_text(encoding="utf-8")), current), args.summary)
         if args.command == "seed":

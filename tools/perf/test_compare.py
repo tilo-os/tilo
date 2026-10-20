@@ -8,6 +8,7 @@ import io
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -204,7 +205,14 @@ class Budgets(unittest.TestCase):
         self.assertIn("footprint.tapp.bytes.x86_64", budgets.kpis)
 
 
-WORKFLOWS = HERE.parents[1] / ".forgejo/workflows"
+ROOT = HERE.parents[1]
+WORKFLOWS = ROOT / ".forgejo/workflows"
+SCHEDULED = ROOT / "tools/ci/perf-scheduled.sh"
+
+
+def scheduled_groups() -> list[str]:
+    """The KPI groups tools/ci/perf-scheduled.sh measures, one t check each."""
+    return re.findall(r"^  ([a-z][a-z-]*)\)$", SCHEDULED.read_text(), re.M)
 
 
 def lane_budgets(**lanes: compare.Lane) -> compare.Budgets:
@@ -274,12 +282,15 @@ class Lanes(unittest.TestCase):
 
     def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
-        workflow = (WORKFLOWS / "perf-scheduled.yml").read_text()
-        [known] = re.findall(r"^\s*known=\(([^)]*)\)$", workflow, re.M)
-        self.assertEqual(set(known.split()), budgets.lane_groups("perf-scheduled"))
-        for group in known.split():
-            self.assertIn(f"\n  {group}:\n", workflow, f"perf-scheduled.yml has a {group} job")
-        self.assertIn("--lane perf-scheduled", workflow)
+        groups = scheduled_groups()
+        # hosting-room records are hosting's, footprint-image's footprint's
+        # (tools/ci/perf-compare.sh).
+        self.assertEqual({group.split("-")[0] for group in groups}, budgets.lane_groups("perf-scheduled"))
+        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        self.assertEqual(set(checks["perf-scheduled"]["needs"]), {f"perf-{group}" for group in groups})
+        for group in groups:
+            self.assertEqual(checks[f"perf-{group}"]["run"], f"bash tools/ci/perf-scheduled.sh {group}")
+        self.assertIn("--lane perf-scheduled", (ROOT / "tools/ci/perf-compare.sh").read_text())
 
     def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)

@@ -25,8 +25,8 @@ preflight fails records nothing.
 
 | Lane | When | What it checks |
 |---|---|---|
-| **CI / render counters** (`ci-render-counters.yml`) | Changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw gate's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw gate's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
-| **Perf / scheduled**, group `render` (`perf-scheduled.yml`) | Nightly, and by dispatch with `kpis=render` | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events) and `render.shell.redraw_us.4k` (the 1,000 `redraw_bench` clicks), then the same counters. |
+| t's `render-counters` check | Changes to `crates/sdk/ui-core`, the vendored renderer stack (`vello*`, `wgpu*`, `cosmic-text`) or this harness. It is not a required check. | `render_bench.py counters`: the 4K redraw gate's allocator calls and bytes per redraw and its raster pixels per redraw (200 events), and the no-redraw gate's allocations per 1,000 events (100,000 events). It uses the budgets below and never compares a clock. |
+| t's `perf-render` check (`tools/ci/perf-scheduled.sh render`) | Nightly, and by `t test perf-render` | `render_bench.py timing`: `render.ui.frame_us.4k` (redrawing frames of 1,000 dashboard events) and `render.shell.redraw_us.4k` (the 1,000 `redraw_bench` clicks), then the same counters. |
 
 Both lanes run on the shared `runner` class, which has no GPU. Lavapipe
 rasterises on the CPU, so the nightly records carry `renderer=lavapipe` and are

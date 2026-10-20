@@ -279,8 +279,7 @@ grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
 
 grep -Fxq 'os/tests/imager_linux_release_trust.sh' \
     "$repo/tools/security-boundary-invariants.txt" \
-  && grep -Fq 'bash tools/run-security-boundary-invariants.sh' \
-    "$repo/.forgejo/workflows/check.yml" \
+  && grep -Fqx 'run = "bash tools/run-security-boundary-invariants.sh"' "$repo/t.toml" \
   && ok 'Linux release trust tamper test runs in required checks' \
   || bad 'Linux release trust tamper test is not wired into CI'
 

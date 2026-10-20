@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+SCHEDULED = HERE.parents[1] / "tools/ci/perf-scheduled.sh"
 sys.path.insert(0, str(HERE))
 
 import ab  # noqa: E402
@@ -345,24 +346,17 @@ class Groups(unittest.TestCase):
             self.assertIs(ab.side_group(selected, repo), selected)
 
     def test_every_build_lane_but_footprint_has_an_ab_group(self):
-        workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        scheduled = SCHEDULED.read_text()
         for name in ab.GROUPS:
-            self.assertIn(f"\n  {name}:\n", workflow, f"{name} is a perf-scheduled group")
+            self.assertIn(f"\n  {name})\n", scheduled, f"{name} is a perf-scheduled group")
         self.assertNotIn("footprint", ab.GROUPS)
 
-    def test_the_workflow_accepts_every_ab_group(self):
-        # The plan job refuses a group it does not list before ab.py runs.
-        workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
-        listed = re.search(r"ab_known=\(([^)]*)\)", workflow)
-        self.assertIsNotNone(listed, "perf-scheduled.yml lists its A/B groups")
-        self.assertEqual(set(listed.group(1).split()), set(ab.GROUPS))
-
     def test_every_group_builds_the_benchmarks_its_nightly_job_builds(self):
-        # An A/B group that skips one of its nightly job's benchmarks cannot
+        # An A/B group that skips one of its nightly group's benchmarks cannot
         # pair that benchmark's KPIs (the render group once left out strip pans).
-        workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        scheduled = SCHEDULED.read_text()
         for name, group in ab.GROUPS.items():
-            job = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+            job = scheduled.split(f"\n  {name})\n", 1)[1].split("\n    ;;\n", 1)[0]
             nightly = set(re.findall(r"--example (\S+)", job))
             commands = [*group.builds, *(command for _, command, _ in group.optional.values())]
             built = {command[command.index("--example") + 1] for command in commands if "--example" in command}

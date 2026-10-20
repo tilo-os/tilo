@@ -27,7 +27,7 @@ push_only = """
 # (tracked in #4035). Required shards
 # (pull requests and pushes to main) skip them; nightly still runs them, so
 # the stall stays visible. The fix removes its entry; the last removal also
-# drops this key and the check.yml clause, since nextest rejects "not ()".
+# drops this key and its clause in tools/ci/t-nextest.sh, since nextest rejects "not ()".
 quarantine = """
 (package(shell) and test(=shell::network::idle_quiet_tests::a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute))
 """

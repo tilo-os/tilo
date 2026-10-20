@@ -6,7 +6,7 @@
 # - Perf / scheduled fails when a published app is over its budget, or when
 #   the median (p50), p90 or max of the apps in the registry is over its
 #   fleet ceiling.
-# - CI / fast quality fails when a budget grows without a raise file new in
+# - t's `changes` check fails when a budget grows without a raise file new in
 #   the same change, and when the apps below are not exactly the default
 #   collection (dist/apps/app-collections.toml).
 #

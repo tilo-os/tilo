@@ -175,7 +175,6 @@ class PlanProducerTests(unittest.TestCase):
                 ('app_packaging_product', 'app_packaging_product.py'),
                 ('app_packaging_contract', 'app_packaging_contract.py'),
                 ('ci.resolve_builder', 'ci/resolve_builder.py'),
-                ('ci.affected_packages', 'ci/affected_packages.py'),
                 ('ci.workspace_graph', 'ci/workspace_graph.py'),
             ):
                 with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:

@@ -10,12 +10,10 @@ fail=0
 
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/release-desktop.yml"
-check_workflow="$workflows/check.yml"
 kernel_workflow="$workflows/build-kernel.yml"
 rpm_snapshot_workflow="$workflows/build-rpms.yml"
 containerfile="$repo/os/Containerfile"
-nightly_workflow="$workflows/ci-nightly.yml"
-visual_refresh_workflow="$workflows/dev-visual-baselines.yml"
+visual_baselines="$repo/tools/ci/visual-baselines.sh"
 github_cache_workflows=(
   "$workflows/build-ci-builder.yml"
   "$workflows/build-image.yml"
@@ -46,23 +44,6 @@ release_signed_workflows=(
 if python3 "$repo/tools/policy/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
 else
-  fail=1
-fi
-
-if ! grep -Fq 'dnf install -y openssl' "$check_workflow"; then
-  printf 'ok    affected-package CI does not install OpenSSL for security invariants\n'
-else
-  printf 'affected-package CI still installs OpenSSL for security invariants\n' >&2
-  fail=1
-fi
-
-if grep -Fq 'group: check-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$check_workflow" \
-   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$check_workflow" \
-   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$workflows/lint.yml" \
-   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$workflows/lint.yml"; then
-  printf 'ok    check and lint keep every push result and replace only superseded PR runs\n'
-else
-  printf 'check or lint events may replace required results\n' >&2
   fail=1
 fi
 
@@ -136,19 +117,15 @@ else
   fail=1
 fi
 
-# Both render on the builder every job resolves; the refresh records it with
-# its candidates and the nightly verifies against the recorded one.
-if grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$nightly_workflow" \
-  && grep -Fq 'image: ${{ needs.builder.outputs.image }}' "$visual_refresh_workflow" \
-  && grep -Fq 'golden-image.sh check "$BUILDER_IMAGE"' "$nightly_workflow" \
-  && grep -Fq 'golden-image.sh record "$BUILDER_IMAGE"' "$visual_refresh_workflow" \
+# The refresh renders on the project's builder and records it with its
+# candidates; the goldens check renders on the recorded one.
+if grep -Fq 'bash tools/ci/golden-image.sh record "$image"' "$visual_baselines" \
   && grep -Eq '^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$' \
     "$repo/.config/visual-goldens-image" \
-  && grep -Fq 'Upload candidates for visual review' "$visual_refresh_workflow" \
-  && grep -Fq 'xargs -0 -r git add -N --' "$visual_refresh_workflow" \
-  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' \
-    "$visual_refresh_workflow" \
-  && ! grep -Fq 'git push origin' "$visual_refresh_workflow"; then
+  && grep -Fqx "image = \"$(cat "$repo/.config/visual-goldens-image")\"" "$repo/t.toml" \
+  && grep -Fq 'xargs -0 -r git add -N --' "$visual_baselines" \
+  && grep -Fq 'sha256sum candidates.patch > candidates.patch.sha256' "$visual_baselines" \
+  && ! grep -Fq 'git push' "$visual_baselines"; then
   printf 'ok    visual verification and reviewed candidates name one recorded builder\n'
 else
   printf 'visual candidates must record the builder the nightly verifies on and never auto-commit pixels\n' >&2

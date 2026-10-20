@@ -8,7 +8,7 @@
 #   tools/ci/check-wasm.sh [-p <browser crate>]...
 #   CARGO=<any cargo drop-in> tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
 #
-# check.yml's `wasm` job runs it with the selected browser crates. A lint, not
+# t.toml's `wasm` check runs it with the browser crates. A lint, not
 # a build: the link and the web runtime's post-processing need wasm-bindgen
 # and binaryen.
 set -euo pipefail

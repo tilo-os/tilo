@@ -39,7 +39,7 @@ Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
   measures its dylib and holds it to the same budgets (Perf / scheduled,
   footprint group). `--measurements FILE` writes what it measured, which
   `adapters.py runtime-sizes` turns into `footprint.runtime.*` records.
-- **The change.** `check-budget --base REV` (CI / fast quality) fails when a
+- **The change.** `check-budget --base REV` (t's `changes` check) fails when a
   budget grows beyond what raise files new in the change add.
 
 `tools/perf/runtime-size-budget/budget.toml` holds the budgets: a measurement

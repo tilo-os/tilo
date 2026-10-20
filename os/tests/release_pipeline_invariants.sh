@@ -141,11 +141,10 @@ if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/b
   && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-ci-builder.yml" \
   && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-ci-builder.yml" \
   && grep -Fq 'runner: runner-arm64' "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml" \
-  && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml"; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
 else
-  bad 'native CI builder or affected-package architecture coverage is missing'
+  bad 'native CI builder publication can skip cache acceptance on an architecture'
 fi
 
 kernel_verify="$repo/os/dev/verify-kernel-provenance.sh"
@@ -486,11 +485,6 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
        "$repo/tools/reuse_prior_app_collection.sh" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
-
-grep -Fq "CARGO_BUILD_JOBS: \${{ matrix.arch == 'aarch64' && '1' || '4' }}" \
-    "$workflows/check.yml" \
-  && ok 'affected-package CI serializes memory-heavy ARM links' \
-  || bad 'affected-package CI can OOM the native ARM runner with parallel links'
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \

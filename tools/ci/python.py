@@ -32,7 +32,6 @@ class TrustedLocalModules:
     sources = {
         'ci': 'ci/__init__.py',
         'ci.resolve_builder': 'ci/resolve_builder.py',
-        'ci.affected_packages': 'ci/affected_packages.py',
         'ci.workspace_graph': 'ci/workspace_graph.py',
         'ci.runner_labels': 'ci/runner_labels.py',
         'app_release': 'apps/app_release.py',

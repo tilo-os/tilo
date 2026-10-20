@@ -32,8 +32,8 @@ jobs:
 class BuilderPlanTests(unittest.TestCase):
     def test_builder_plan_rebuilds_for_every_contract_input_and_fails_closed(self):
         with self.subTest(phase='pr97 qualification change reuses promoted builder'):
-            changed = [plan.WORKFLOW, "tools/ci/affected_packages.py",
-                       "tools/tests/test_cargo_download_cache_action.py", "tools/tests/test_ci_select.py"]
+            changed = [plan.WORKFLOW, "tools/ci/suites.py",
+                       "tools/tests/test_cargo_download_cache_action.py", "tools/tests/test_suites.py"]
             self.assertEqual(plan.choose("push", changed, workflow(), workflow("echo seed cache"))[0], "reuse")
         with self.subTest(phase='every image and publication input rebuilds'):
             for path in sorted(plan.REBUILD_PATHS) + [".forgejo/actions/install-cosign/action.yml"]:

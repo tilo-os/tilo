@@ -954,10 +954,8 @@ memory pressure. Both take seconds once the shell tests are built.
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
 ```
 
-It is part of the shell test target, so it runs in the required
-`CI / affected packages` check. `tools/ci/affected_packages.py`
-(`DESKTOP_GATE`) also runs it, as just that filter, when a change reaches the
-shell without scheduling the shell's tests.
+It is part of the shell test target, so t's `test-x86_64/shell` check runs it
+whenever a change reaches the shell.
 
 **Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
 compositor also binds `<control socket>.live`

@@ -213,8 +213,6 @@ class OsDevLaneTests(unittest.TestCase):
         with self.subTest(phase='a pull request builds the architectures os-dev chose'):
             _, _, lanes = plan("refs/pull/12/head", "workflow_call", "", arches='["x86_64"]')
             self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
-            self.assertIn("arches: ${{ needs.arches.outputs.arches }}",
-                          (ROOT / ".forgejo/workflows/os-dev.yml").read_text())
         with self.subTest(phase='a newer commit of the ref supersedes the build'):
             self.assertEqual(
                 concurrency_group("refs/pull/12/head", "workflow_call", ""),
@@ -231,13 +229,7 @@ class OsDevLaneTests(unittest.TestCase):
                 concurrency_group("refs/heads/main", "workflow_call", "", source_revision="a" * 40),
                 "tilo-os-dev-" + "a" * 40,
             )
-        with self.subTest(phase='explicit image requests queue without cancelling useful progress'):
-            caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
-            self.assertIn("name: Build / OS dev", caller)
-            self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
-            self.assertIn("branches: [main]", caller)
-            self.assertIn('- "os/**"', caller)
-            self.assertIn("group: os-dev-x86-native\n  cancel-in-progress: false", caller)
+        with self.subTest(phase='the image workflow remains callable'):
             self.assertIn("  workflow_call:", WORKFLOW.read_text())
         with self.subTest(phase='the dev build publishes images and skips the disk install'):
             workflow = WORKFLOW.read_text()
