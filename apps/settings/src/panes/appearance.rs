@@ -70,6 +70,11 @@ fn installed_thumbnails() -> &'static [(
     })
 }
 
+/// The persisted values of `table`, each `(label, value)`.
+fn values(table: &[(&str, &str)]) -> impl Iterator<Item = String> {
+    table.iter().map(|(_, value)| (*value).to_owned())
+}
+
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
 /// `(label, persisted value)` of which workspaces a new wallpaper covers.
@@ -89,17 +94,6 @@ pub const TIMES: [&str; 48] = [
     "15:00", "15:30", "16:00", "16:30", "17:00", "17:30", "18:00", "18:30", "19:00", "19:30",
     "20:00", "20:30", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30",
 ];
-
-fn value_for_shown<'a>(
-    table: &[(&'a str, &'a str)],
-    label: &str,
-    shown: fn(&str) -> String,
-) -> Option<&'a str> {
-    table
-        .iter()
-        .find(|(english, value)| *english == label || shown(value) == label)
-        .map(|(_, value)| *value)
-}
 
 /// The spacing densities offered, `(ftl key, density)`.
 const DENSITIES: [(&str, f32); 3] = [
@@ -186,11 +180,6 @@ pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
         .map_or("100%", |(label, _)| *label)
 }
 
-/// Map a UI-scale label back to its factor, if recognised.
-fn ui_scale_factor(label: &str) -> Option<f64> {
-    UI_SCALES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
-}
-
 /// The offered text sizes as `(display label, scale factor)`. The label is
 /// what the dropdown shows and stores; the factor is what
 /// [`AppearancePrefs::text_scale`] persists.
@@ -214,36 +203,6 @@ pub fn text_size_label(scale: f64) -> String {
         .map_or("Default", |(label, _)| *label);
     t(text_size_ftl(english))
 }
-
-/// Map a text-size label back to its scale factor, if recognised. Shared with
-/// the Accessibility pane. Accepts the English source label or the
-/// localised one so a test or a German dropdown both resolve.
-pub fn text_size_scale(label: &str) -> Option<f64> {
-    TEXT_SIZES
-        .iter()
-        .find(|(english, _)| *english == label || t(text_size_ftl(english)) == label)
-        .map(|(_, s)| *s)
-}
-
-/// The text scale a text-size label (English or shown) stands for, as
-/// the text-size dropdowns store it.
-///
-/// # Errors
-/// The label names no offered size.
-pub fn text_size_value(label: &str) -> Result<f64, String> {
-    text_size_scale(label).ok_or_else(|| format!("`{label}` is not a text size"))
-}
-
-/// Localised labels for the shared text-size dropdown.
-pub fn text_size_options() -> Vec<String> {
-    TEXT_SIZES
-        .iter()
-        .map(|(english, _)| t(text_size_ftl(english)))
-        .collect()
-}
-
-/// The UI-scale steps an effect takes.
-pub const UI_SCALE_NAMES: [&str; 5] = ["90%", "100%", "110%", "125%", "150%"];
 
 /// The person's current appearance selectors and controls, before the OS
 /// resolves Automatic mode. Theme documents and their private content are not
@@ -406,59 +365,6 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     ))
 }
 
-/// What the pane's controls show: the stored preferences, as labels.
-struct Shown {
-    theme: LocalState<String>,
-    density: LocalState<String>,
-    ui_scale: LocalState<String>,
-    text_size: LocalState<String>,
-    high_contrast: LocalState<bool>,
-    reduce_motion: LocalState<bool>,
-    schedule: LocalState<String>,
-    sunrise: LocalState<String>,
-    sunset: LocalState<String>,
-    wallpaper_scope: LocalState<String>,
-    wallpaper_target: LocalState<String>,
-    hide_top_bar: LocalState<bool>,
-}
-
-impl Shown {
-    fn of(prefs: &AppearancePrefs) -> Self {
-        let shown = Self {
-            theme: LocalState::new(String::new()),
-            density: LocalState::new(String::new()),
-            ui_scale: LocalState::new(String::new()),
-            text_size: LocalState::new(String::new()),
-            high_contrast: LocalState::new(false),
-            reduce_motion: LocalState::new(false),
-            schedule: LocalState::new(String::new()),
-            sunrise: LocalState::new(String::new()),
-            sunset: LocalState::new(String::new()),
-            wallpaper_scope: LocalState::new(String::new()),
-            wallpaper_target: LocalState::new(String::new()),
-            hide_top_bar: LocalState::new(false),
-        };
-        shown.show(prefs);
-        shown
-    }
-
-    fn show(&self, prefs: &AppearancePrefs) {
-        self.theme.set(prefs.theme_choice());
-        self.density.set(density_label(prefs.density));
-        self.ui_scale.set(ui_scale_label(prefs.ui_scale).to_owned());
-        self.text_size.set(text_size_label(prefs.text_scale));
-        self.high_contrast.set(prefs.high_contrast);
-        self.reduce_motion.set(prefs.reduce_motion);
-        self.schedule.set(schedule_label(&prefs.schedule));
-        self.sunrise.set(prefs.sunrise.clone());
-        self.sunset.set(prefs.sunset.clone());
-        self.wallpaper_scope
-            .set(scope_label(&prefs.wallpaper_scope));
-        self.wallpaper_target
-            .set(target_label(&prefs.wallpaper_target));
-    }
-}
-
 pub struct AppearancePane {
     cx: PaneCx,
     prefs: Followed<AppearancePrefs>,
@@ -467,7 +373,6 @@ pub struct AppearancePane {
     desktop: Followed<DesktopControls>,
     /// The desk widgets' choices, edited on this pane too.
     desk: Followed<crate::prefs::DeskWidgetsPrefs>,
-    shown: Shown,
     /// Where the last wallpaper request stands, written by its effect.
     wallpaper_status: LocalState<Option<String>>,
     status_shown: Option<String>,
@@ -481,15 +386,12 @@ impl AppearancePane {
         let prefs = cx.follow::<AppearancePrefs>();
         let desktop = cx.follow::<DesktopControls>();
         let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
-        let shown = Shown::of(prefs.get());
-        shown.hide_top_bar.set(desktop.get().hide_top_bar);
         let status_shown = wallpaper_status.get();
         Self {
             cx,
             prefs,
             desktop,
             desk,
-            shown,
             wallpaper_status,
             status_shown,
             composed: ui::widget::Composed::default(),
@@ -503,50 +405,35 @@ impl AppearancePane {
     /// The theme, the interface scale and the text size.
     fn theme_card(&self) -> SettingsSection {
         let cx = &self.cx;
+        let paths = AppearancePrefs::paths();
         section(
             &t("settings-appearance-theme-card"),
             rows(vec![
                 // Each theme drawn in its own colours, the chosen one ringed.
                 block(Box::new(cx.bind_verb(
-                    ThemeTiles::new(self.shown.theme.get()),
+                    ThemeTiles::new(self.prefs().theme_choice()),
                     AppearancePrefs::PICK_THEME,
                 ))),
                 cx.row(t("settings-appearance-density"))
                     .described(t("settings-appearance-density-desc"))
                     .id("appearance.density")
-                    .choice(
-                        DENSITIES
-                            .iter()
-                            .map(|(_, value)| density_label(f64::from(*value))),
-                        &self.shown.density,
-                        AppearancePrefs::paths().density,
-                        |shown: String| {
-                            DENSITIES
-                                .iter()
-                                .find(|(_, value)| density_label(f64::from(*value)) == shown)
-                                .map(|(_, value)| f64::from(*value))
-                                .ok_or_else(|| format!("`{shown}` is not a density"))
-                        },
+                    .of(&self.prefs, paths.density)
+                    .among(
+                        DENSITIES.iter().map(|(_, density)| f64::from(*density)),
+                        |density: &f64| density_label(*density),
                     ),
                 cx.row(t("settings-appearance-ui-scale"))
                     .id("appearance.ui_scale")
-                    .choice(
-                        UI_SCALE_NAMES.iter().copied(),
-                        &self.shown.ui_scale,
-                        AppearancePrefs::paths().ui_scale,
-                        |shown: String| {
-                            ui_scale_factor(&shown)
-                                .ok_or_else(|| format!("`{shown}` is not a UI scale"))
-                        },
-                    ),
+                    .of(&self.prefs, paths.ui_scale)
+                    .among(UI_SCALES.iter().map(|(_, scale)| *scale), |scale: &f64| {
+                        ui_scale_label(*scale).to_owned()
+                    }),
                 cx.row(t("settings-appearance-text-size"))
                     .id("appearance.text_size")
-                    .choice(
-                        text_size_options(),
-                        &self.shown.text_size,
-                        AppearancePrefs::paths().text_scale,
-                        |label: String| text_size_value(&label),
-                    ),
+                    .of(&self.prefs, paths.text_scale)
+                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
+                        text_size_label(*scale)
+                    }),
             ]),
         )
     }
@@ -560,18 +447,14 @@ impl AppearancePane {
                     .row(t("settings-appearance-high-contrast"))
                     .described(t("settings-appearance-high-contrast-desc"))
                     .id("appearance.high_contrast")
-                    .toggle(
-                        &self.shown.high_contrast,
-                        AppearancePrefs::paths().high_contrast,
-                    ),
+                    .of(&self.prefs, AppearancePrefs::paths().high_contrast)
+                    .toggle(),
                 self.cx
                     .row(t("settings-appearance-reduce-motion"))
                     .described(t("settings-appearance-reduce-motion-desc"))
                     .id("appearance.reduce_motion")
-                    .toggle(
-                        &self.shown.reduce_motion,
-                        AppearancePrefs::paths().reduce_motion,
-                    ),
+                    .of(&self.prefs, AppearancePrefs::paths().reduce_motion)
+                    .toggle(),
             ]),
         );
 
@@ -582,10 +465,8 @@ impl AppearancePane {
                     .row(t("settings-appearance-hide-top-bar"))
                     .described(t("settings-appearance-hide-top-bar-desc"))
                     .id("appearance.hide_top_bar")
-                    .toggle(
-                        &self.shown.hide_top_bar,
-                        DesktopControls::paths().hide_top_bar,
-                    ),
+                    .of(&self.desktop, DesktopControls::paths().hide_top_bar)
+                    .toggle(),
             ]),
         );
 
@@ -605,30 +486,16 @@ impl AppearancePane {
             block(Box::new(self.wallpaper_picker())),
             cx.row(t("settings-appearance-use-for"))
                 .id("appearance.wallpaper_scope")
-                .choice(
-                    WALLPAPER_SCOPES.iter().map(|(_, value)| scope_label(value)),
-                    &self.shown.wallpaper_scope,
-                    AppearancePrefs::paths().wallpaper_scope,
-                    |shown: String| {
-                        value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
-                            .map(str::to_owned)
-                            .ok_or_else(|| format!("`{shown}` is not offered"))
-                    },
-                ),
+                .of(&self.prefs, AppearancePrefs::paths().wallpaper_scope)
+                .among(values(&WALLPAPER_SCOPES), |scope: &String| {
+                    scope_label(scope)
+                }),
             cx.row(t("settings-appearance-show-on"))
                 .id("appearance.wallpaper_target")
-                .choice(
-                    WALLPAPER_TARGETS
-                        .iter()
-                        .map(|(_, value)| target_label(value)),
-                    &self.shown.wallpaper_target,
-                    AppearancePrefs::paths().wallpaper_target,
-                    |shown: String| {
-                        value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
-                            .map(str::to_owned)
-                            .ok_or_else(|| format!("`{shown}` is not offered"))
-                    },
-                ),
+                .of(&self.prefs, AppearancePrefs::paths().wallpaper_target)
+                .among(values(&WALLPAPER_TARGETS), |target: &String| {
+                    target_label(target)
+                }),
         ];
         if let Some(status) = &self.status_shown {
             body.push(note(status));
@@ -687,47 +554,29 @@ impl AppearancePane {
 
     fn schedule_card(&self) -> SettingsSection {
         let cx = &self.cx;
-        let times = || {
-            TIMES
-                .iter()
-                .map(|time| (*time).to_string())
-                .collect::<Vec<_>>()
-        };
+        let paths = AppearancePrefs::paths();
+        let times = || TIMES.iter().map(|time| (*time).to_owned());
         let mut body = vec![
             cx.row(t("settings-appearance-schedule"))
                 .id("appearance.schedule")
-                .choice(
-                    SCHEDULES.iter().map(|(_, value)| schedule_label(value)),
-                    &self.shown.schedule,
-                    AppearancePrefs::paths().schedule,
-                    |shown: String| {
-                        value_for_shown(&SCHEDULES, &shown, schedule_label)
-                            .map(str::to_owned)
-                            .ok_or_else(|| format!("`{shown}` is not offered"))
-                    },
-                ),
+                .of(&self.prefs, paths.schedule)
+                .among(values(&SCHEDULES), |schedule: &String| {
+                    schedule_label(schedule)
+                }),
         ];
         let schedule = self.prefs().schedule();
         if !schedule.config.follow_sun {
             body.push(
                 cx.row(t("settings-appearance-day-starts"))
                     .id("appearance.sunrise")
-                    .choice(
-                        times(),
-                        &self.shown.sunrise,
-                        AppearancePrefs::paths().sunrise,
-                        Ok,
-                    ),
+                    .of(&self.prefs, paths.sunrise)
+                    .among(times(), String::clone),
             );
             body.push(
                 cx.row(t("settings-appearance-night-starts"))
                     .id("appearance.sunset")
-                    .choice(
-                        times(),
-                        &self.shown.sunset,
-                        AppearancePrefs::paths().sunset,
-                        Ok,
-                    ),
+                    .of(&self.prefs, paths.sunset)
+                    .among(times(), String::clone),
             );
         }
         let today = schedule
@@ -761,13 +610,10 @@ impl AppearancePane {
 impl Widget for AppearancePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.prefs.refresh() {
-            self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.
             self.composed.invalidate();
         }
-        if self.desktop.refresh() {
-            self.shown.hide_top_bar.set(self.desktop.get().hide_top_bar);
-        }
+        self.desktop.refresh();
         let status = self.wallpaper_status.get();
         if status != self.status_shown {
             self.status_shown = status;
@@ -910,9 +756,17 @@ mod tests {
             })
             .unwrap();
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        assert_eq!(pane.shown.theme.get(), "Dark cool");
-        assert_eq!(pane.shown.text_size.get(), text_size_label(1.15));
-        assert_eq!(pane.shown.ui_scale.get(), "125%");
+        let paths = AppearancePrefs::paths();
+        assert_eq!(pane.prefs().theme_choice(), "Dark cool");
+        let text_size = pane
+            .prefs
+            .shown(&paths.text_scale, |scale| text_size_label(*scale));
+        assert_eq!(text_size.get(), text_size_label(1.15));
+        let ui_scale = pane
+            .prefs
+            .shown(&paths.ui_scale, |scale| ui_scale_label(*scale).to_owned());
+        assert_eq!(ui_scale.get(), "125%");
+        let reduce_motion = pane.prefs.shown(&paths.reduce_motion, bool::clone);
 
         cx.settings::<AppearancePrefs>()
             .update(|prefs| {
@@ -922,8 +776,8 @@ mod tests {
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.shown.theme.get(), "Dark graphite");
-        assert!(pane.shown.reduce_motion.get());
+        assert_eq!(pane.prefs().theme_choice(), "Dark graphite");
+        assert!(reduce_motion.get());
         assert!(pane.take_structure_dirty());
 
         let intent = pane
@@ -960,13 +814,16 @@ mod tests {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        assert!(!pane.shown.hide_top_bar.get(), "visible by default");
+        let hidden = pane
+            .desktop
+            .shown(&DesktopControls::paths().hide_top_bar, bool::clone);
+        assert!(!hidden.get(), "visible by default");
         cx.settings::<DesktopControls>()
             .update(|controls| controls.hide_top_bar = true)
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
-        assert!(pane.shown.hide_top_bar.get());
+        assert!(hidden.get());
 
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
