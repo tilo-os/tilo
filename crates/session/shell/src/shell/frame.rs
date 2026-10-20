@@ -3293,6 +3293,16 @@ impl FrameBuilder {
         self.align_strip_pans();
     }
 
+    /// The presenter keeps every layer in a canvas of its own, strips in
+    /// canvas coordinates up to `width` scene pixels wide: every frame the
+    /// layers can express comes as layers ([`LayerPolicy::Always`]), so the
+    /// presenter never needs the screen drawn whole after a pan.
+    pub fn keep_strip_canvases(&mut self, width: u32) {
+        self.set_layer_policy(LayerPolicy::Always);
+        self.set_retained_layer_width(Some(width));
+        self.align_strip_pans();
+    }
+
     /// Tell the producer whether its presenter keeps its target between
     /// frames and can move pixels within it before it repaints the damage
     /// ([`FramePaint::scroll_copies`]): a scroll in an in-process app then

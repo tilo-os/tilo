@@ -31,14 +31,10 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
-use tilo_cpu_raster::{CpuRasterizer, Options, Region, SceneChanges, Target};
 use vello::FineDamageRect;
 use vello::Scene;
-use vello::peniko::Color;
 
-/// Canvas validity is tracked in tiles of this edge, the same 16 pixels the
-/// shell snaps its damage to.
-const TILE: u32 = 16;
+use super::retained_canvas::{Damage, RetainedCanvas, region_rect};
 
 /// Copies of at least this many pixels are split across threads: one
 /// Cortex-A55 core does not saturate the memory bus.
@@ -196,20 +192,10 @@ impl CpuFrameStats {
 /// The CPU renderer's retained canvas and the screen damage not yet
 /// presented.
 pub struct CpuRenderer {
-    raster: CpuRasterizer,
-    canvas: Vec<u8>,
-    width: u32,
-    height: u32,
+    canvas: RetainedCanvas,
     screen: (u32, u32),
-    /// Bumped whenever the canvas is reallocated; part of the scanout
-    /// history identity, so no dumb buffer claims pixels of an old canvas.
-    generation: u64,
     /// Scene revision the valid tiles hold; `None` when unversioned.
     revision: Option<u64>,
-    tiles_x: u32,
-    tiles_y: u32,
-    valid: Vec<bool>,
-    want: Vec<bool>,
     /// Screen damage since the last presented frame.
     pending: Vec<FineDamageRect>,
     pending_full: bool,
@@ -220,15 +206,13 @@ pub struct CpuRenderer {
     finished: Option<CpuFrameStats>,
     started: Option<Instant>,
     copy_measured: bool,
-    /// The rasterizer holds a decoded scene.
-    prepared: bool,
     copy_threads: usize,
 }
 
 impl std::fmt::Debug for CpuRenderer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CpuRenderer")
-            .field("canvas", &(self.width, self.height))
+            .field("canvas", &self.canvas.size())
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
@@ -248,20 +232,9 @@ impl CpuRenderer {
         let threads = u16::try_from(threads).unwrap_or(1);
         eprintln!("tilo compositor: CPU renderer threads={threads}");
         Self {
-            raster: CpuRasterizer::new(Options {
-                threads,
-                ..Options::default()
-            }),
-            canvas: Vec::new(),
-            width: 0,
-            height: 0,
+            canvas: RetainedCanvas::new(threads),
             screen: (0, 0),
-            generation: 0,
             revision: None,
-            tiles_x: 0,
-            tiles_y: 0,
-            valid: Vec::new(),
-            want: Vec::new(),
             pending: Vec::new(),
             pending_full: true,
             presented_revision: 0,
@@ -269,13 +242,37 @@ impl CpuRenderer {
             finished: None,
             started: None,
             copy_measured: false,
-            prepared: false,
             copy_threads: usize::from(threads.max(1)),
         }
     }
 
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.canvas.generation()
+    }
+
+    /// The screen as the canvas holds it.
+    pub fn canvas(&self) -> &RetainedCanvas {
+        &self.canvas
+    }
+
+    /// Threads the rasterizer draws large regions with.
+    pub fn threads(&self) -> u16 {
+        u16::try_from(self.copy_threads).unwrap_or(1)
+    }
+
+    /// A frame begins: its costs are recorded from here, whoever draws it.
+    pub fn start_frame(&mut self, revision: u64, previous_revision: Option<u64>) {
+        self.started = Some(Instant::now());
+        self.stats = CpuFrameStats {
+            revision,
+            previous_revision,
+            ..CpuFrameStats::default()
+        };
+    }
+
+    /// What this frame cost so far, for whoever draws it.
+    pub fn stats_mut(&mut self) -> &mut CpuFrameStats {
+        &mut self.stats
     }
 
     pub fn presented_revision(&self) -> u64 {
@@ -359,305 +356,39 @@ impl CpuRenderer {
     /// Bring the canvas up to date with `frame` for a `screen`-sized
     /// output and record what changed on screen.
     pub fn update(&mut self, frame: CpuFrame<'_>, screen: (u32, u32)) {
-        self.started = Some(Instant::now());
-        self.stats = CpuFrameStats {
-            revision: frame.revision,
-            previous_revision: frame.previous_revision,
-            ..CpuFrameStats::default()
-        };
-        if screen != (self.width, self.height) {
-            self.resize(screen);
+        self.start_frame(frame.revision, frame.previous_revision);
+        if screen != self.canvas.size() {
+            self.canvas.resize(screen.0, screen.1);
+            self.screen = screen;
+            self.revision = None;
+            self.invalidate_screen();
         }
 
         let chained = frame.revision != 0
             && self.revision.is_some()
             && frame.previous_revision == self.revision;
-        // The shell's damage: `None` when it does not know what changed.
-        let shell_damage: Option<&[FineDamageRect]> = if chained {
+        // The shell's damage: unknown when it does not know what changed.
+        let damage = if chained {
             self.stats.fill = if frame.regions.is_some() {
                 "damage"
             } else {
                 "full"
             };
-            frame.regions
+            match frame.regions {
+                Some([]) => Damage::None,
+                Some(rects) => Damage::Within(rects),
+                None => Damage::Unknown,
+            }
         } else {
             self.stats.fill = "full";
-            None
+            Damage::Unknown
         };
-        // A reused scene is the one decoded last; anything else is decoded
-        // now, so it can be rendered and compared with its predecessor.
-        if shell_damage.is_none_or(|rects| !rects.is_empty()) || !self.prepared {
-            let started = Instant::now();
-            self.raster.prepare(frame.scene.encoding());
-            self.stats.decode = started.elapsed();
-            self.prepared = true;
-        }
-        let mut moved = Vec::new();
-        match shell_damage {
-            Some([]) => {}
-            // The shell's rectangles bound a section; the changed draws inside
-            // it are usually far smaller (a clock's digits in the top bar).
-            Some(rects) => {
-                let area = |w: u32, h: u32| u64::from(w) * u64::from(h);
-                let shell_area: u64 = rects.iter().map(|r| area(r.width, r.height)).sum();
-                match self
-                    .raster
-                    .changes(self.width, self.height)
-                    .filter(|changes| {
-                        changes
-                            .regions
-                            .iter()
-                            .map(|r| area(r.width, r.height))
-                            .sum::<u64>()
-                            < shell_area
-                    }) {
-                    Some(changes) => {
-                        self.stats.fill = "damage-diff";
-                        moved = self.apply_changes(changes);
-                    }
-                    None => {
-                        for rect in rects {
-                            self.invalidate(*rect);
-                        }
-                    }
-                }
-            }
-            // Where the shell cannot say, the decoded draws can: the valid
-            // tiles hold the scene decoded before this one, and only pixels
-            // under a draw that differs between the two can change.
-            None => {
-                if let Some(changes) = self.raster.changes(self.width, self.height) {
-                    self.stats.fill = "diff";
-                    moved = self.apply_changes(changes);
-                } else {
-                    self.valid.fill(false);
-                    self.invalidate_screen();
-                }
-            }
-        }
+        let moved = self.canvas.apply(frame.scene, damage, &mut self.stats);
         self.revision = (frame.revision != 0).then_some(frame.revision);
-
-        for region in &moved {
-            self.push_pending(region_rect(*region));
+        let drawn = self.canvas.rasterize(None, &mut self.stats);
+        for region in moved.into_iter().chain(drawn) {
+            self.push_pending(region_rect(region));
         }
-        let regions = self.invalid_regions();
-        if regions.is_empty() {
-            return;
-        }
-        let started = Instant::now();
-        let (width, height) = (self.width, self.height);
-        let Ok(mut target) = Target::new(&mut self.canvas, width, height, width as usize * 4)
-        else {
-            return;
-        };
-        // The produced scene owns the desktop ground. Clear invalid canvas
-        // regions to transparent before replaying that scene.
-        self.raster
-            .render_prepared(&mut target, Some(&regions), Color::TRANSPARENT);
-        self.stats.raster = started.elapsed();
-        self.stats.raster_regions = regions.len();
-        for region in &regions {
-            self.stats.raster_px = self
-                .stats
-                .raster_px
-                .saturating_add(u64::from(region.width) * u64::from(region.height));
-            self.mark_valid(*region);
-            self.push_pending(region_rect(*region));
-        }
-    }
-
-    /// Invalidate what changed, after moving the pixels a pan or scroll
-    /// only moved. Returns the regions that were moved and are now valid.
-    fn apply_changes(&mut self, changes: SceneChanges) -> Vec<Region> {
-        let mut moved = Vec::new();
-        self.stats.motion = match (&changes.motion, &changes.not_a_motion) {
-            (Some(motion), _) => format!(
-                "{},{} opaque={} obstacles={}",
-                motion.dx,
-                motion.dy,
-                motion.opaque.len(),
-                motion.obstacles.len()
-            ),
-            (None, Some(reason)) => reason.clone(),
-            (None, None) => String::new(),
-        };
-        if let Some(motion) = &changes.motion {
-            let (dx, dy) = (i64::from(motion.dx), i64::from(motion.dy));
-            for run in motion.movable(self.width, self.height, TILE) {
-                // Tile by tile: the source pixels must all be valid.
-                let mut x = run.x;
-                while x < run.x + run.width {
-                    let width = TILE.min(run.x + run.width - x);
-                    let source = FineDamageRect {
-                        x: u32::try_from(i64::from(x) - dx).unwrap_or(u32::MAX),
-                        y: u32::try_from(i64::from(run.y) - dy).unwrap_or(u32::MAX),
-                        width,
-                        height: run.height,
-                    };
-                    if self.all_valid(source) {
-                        match moved.last_mut() {
-                            Some(Region {
-                                x: px,
-                                y,
-                                width: pw,
-                                height,
-                            }) if *y == run.y && *height == run.height && *px + *pw == x => {
-                                *pw += width;
-                            }
-                            _ => moved.push(Region::new(x, run.y, width, run.height)),
-                        }
-                    }
-                    x += width;
-                }
-            }
-            if !moved.is_empty() {
-                let (width, height) = (self.width, self.height);
-                if let Ok(mut target) =
-                    Target::new(&mut self.canvas, width, height, width as usize * 4)
-                {
-                    let started = Instant::now();
-                    tilo_cpu_raster::move_pixels(&mut target, &moved, motion.dx, motion.dy);
-                    self.stats.move_time = started.elapsed();
-                } else {
-                    moved.clear();
-                }
-            }
-        }
-        for region in changes.regions {
-            self.invalidate(region_rect(region));
-        }
-        for region in &moved {
-            self.mark_valid(*region);
-            self.stats.moved_px = self
-                .stats
-                .moved_px
-                .saturating_add(u64::from(region.width) * u64::from(region.height));
-        }
-        moved
-    }
-
-    /// Every tile under `rect` holds the current canvas.
-    fn all_valid(&self, rect: FineDamageRect) -> bool {
-        if rect.x.saturating_add(rect.width) > self.width
-            || rect.y.saturating_add(rect.height) > self.height
-        {
-            return false;
-        }
-        let (x0, y0, x1, y1) = self.tile_span(rect);
-        (y0..y1).all(|ty| {
-            let row = (ty * self.tiles_x) as usize;
-            self.valid
-                .get(row + x0 as usize..row + x1 as usize)
-                .is_some_and(|tiles| tiles.iter().all(|valid| *valid))
-        })
-    }
-
-    fn resize(&mut self, (width, height): (u32, u32)) {
-        self.width = width;
-        self.height = height;
-        self.screen = (width, height);
-        self.canvas = vec![0; width as usize * height as usize * 4];
-        self.tiles_x = width.div_ceil(TILE);
-        self.tiles_y = height.div_ceil(TILE);
-        let tiles = self.tiles_x as usize * self.tiles_y as usize;
-        self.valid = vec![false; tiles];
-        self.want = vec![false; tiles];
-        self.revision = None;
-        self.generation = self.generation.wrapping_add(1);
-        self.invalidate_screen();
-    }
-
-    fn tile_span(&self, rect: FineDamageRect) -> (u32, u32, u32, u32) {
-        let x0 = (rect.x / TILE).min(self.tiles_x);
-        let y0 = (rect.y / TILE).min(self.tiles_y);
-        let x1 = rect
-            .x
-            .saturating_add(rect.width)
-            .div_ceil(TILE)
-            .min(self.tiles_x);
-        let y1 = rect
-            .y
-            .saturating_add(rect.height)
-            .div_ceil(TILE)
-            .min(self.tiles_y);
-        (x0, y0, x1, y1)
-    }
-
-    fn invalidate(&mut self, rect: FineDamageRect) {
-        let (x0, y0, x1, y1) = self.tile_span(rect);
-        for ty in y0..y1 {
-            let row = (ty * self.tiles_x) as usize;
-            if let Some(tiles) = self.valid.get_mut(row + x0 as usize..row + x1 as usize) {
-                tiles.fill(false);
-            }
-        }
-    }
-
-    fn mark_valid(&mut self, region: Region) {
-        let (x0, y0, x1, y1) = self.tile_span(region_rect(region));
-        for ty in y0..y1 {
-            let row = (ty * self.tiles_x) as usize;
-            if let Some(tiles) = self.valid.get_mut(row + x0 as usize..row + x1 as usize) {
-                tiles.fill(true);
-            }
-        }
-    }
-
-    /// Invalid tiles, merged into rectangles: runs along a tile row, joined
-    /// with identical runs in the rows below.
-    fn invalid_regions(&mut self) -> Vec<Region> {
-        for (want, valid) in self.want.iter_mut().zip(&self.valid) {
-            *want = !*valid;
-        }
-        // (x0, x1, y0, y1) in tiles.
-        let mut open: Vec<(u32, u32, u32, u32)> = Vec::new();
-        let mut closed: Vec<(u32, u32, u32, u32)> = Vec::new();
-        for ty in 0..self.tiles_y {
-            let row = (ty * self.tiles_x) as usize;
-            let mut runs = Vec::new();
-            let mut tx = 0;
-            while tx < self.tiles_x {
-                if self.want.get(row + tx as usize).copied().unwrap_or(false) {
-                    let start = tx;
-                    while tx < self.tiles_x
-                        && self.want.get(row + tx as usize).copied().unwrap_or(false)
-                    {
-                        tx += 1;
-                    }
-                    runs.push((start, tx));
-                } else {
-                    tx += 1;
-                }
-            }
-            let mut next_open = Vec::with_capacity(runs.len());
-            for (start, end) in runs {
-                if let Some(position) = open
-                    .iter()
-                    .position(|&(x0, x1, _, _)| x0 == start && x1 == end)
-                {
-                    let (x0, x1, y0, _) = open.swap_remove(position);
-                    next_open.push((x0, x1, y0, ty + 1));
-                } else {
-                    next_open.push((start, end, ty, ty + 1));
-                }
-            }
-            closed.append(&mut open);
-            open = next_open;
-        }
-        closed.append(&mut open);
-        closed
-            .into_iter()
-            .map(|(x0, x1, y0, y1)| {
-                let x = x0 * TILE;
-                let y = y0 * TILE;
-                Region::new(
-                    x,
-                    y,
-                    (x1 * TILE).min(self.width) - x,
-                    (y1 * TILE).min(self.height) - y,
-                )
-            })
-            .collect()
     }
 
     fn push_pending(&mut self, rect: FineDamageRect) {
@@ -699,8 +430,8 @@ impl CpuRenderer {
             return 0;
         };
         let canvas = Canvas {
-            bytes: &self.canvas,
-            stride: self.width as usize * 4,
+            bytes: self.canvas.pixels(),
+            stride: self.canvas.stride(),
         };
         if threads <= 1 {
             canvas.copy_rows(band, pitch, rect, rect.y);
@@ -720,7 +451,7 @@ impl CpuRenderer {
     /// cannot take sparse copies for (several outputs, rotation, colour
     /// management).
     pub fn screen_rgba(&self) -> &[u8] {
-        &self.canvas
+        self.canvas.pixels()
     }
 
     /// Time a full-screen copy into cached memory, once, next to the copy
@@ -805,15 +536,6 @@ fn full_rect((width, height): (u32, u32)) -> FineDamageRect {
     }
 }
 
-fn region_rect(region: Region) -> FineDamageRect {
-    FineDamageRect {
-        x: region.x,
-        y: region.y,
-        width: region.width,
-        height: region.height,
-    }
-}
-
 fn intersect(a: FineDamageRect, b: FineDamageRect) -> Option<FineDamageRect> {
     let x0 = a.x.max(b.x);
     let y0 = a.y.max(b.y);
@@ -852,6 +574,7 @@ fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
 mod tests {
     use super::*;
     use vello::kurbo::{Affine, Rect};
+    use vello::peniko::Color;
 
     fn rect(x: u32, y: u32, width: u32, height: u32) -> FineDamageRect {
         FineDamageRect {
@@ -1000,7 +723,7 @@ mod tests {
             },
             (64, 48),
         );
-        assert_eq!(&renderer.canvas[..4], &[0, 0, 0, 0]);
+        assert_eq!(&renderer.canvas.pixels()[..4], &[0, 0, 0, 0]);
         assert_eq!(pixel(&renderer, 20, 20), [255, 0, 0, 255]);
         renderer.mark_presented(1);
 
@@ -1014,7 +737,7 @@ mod tests {
             (64, 48),
         );
         assert!(
-            renderer.canvas.iter().all(|byte| *byte == 0),
+            renderer.canvas.pixels().iter().all(|byte| *byte == 0),
             "removing a draw clears its retained pixels without inventing a ground"
         );
         assert_eq!(renderer.stats().fill, "diff");
