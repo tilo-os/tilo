@@ -563,6 +563,34 @@ impl ProviderProfile {
     }
 }
 
+/// Whether `profile` is a model runner the gateway supervises on this device:
+/// OpenAI-compatible and reachable only on loopback. Work that must stay on
+/// the device (its image operations, private history prose) admits nothing
+/// else, and apps discovering such a model apply this same rule so they never
+/// offer one the gateway would refuse.
+#[must_use]
+pub fn is_supervised_loopback(profile: &ProviderProfile) -> bool {
+    profile.location == EndpointLocation::ThisDevice
+        && profile.protocol == ProviderProtocol::OpenAiCompatible
+        && loopback_http_endpoint(&profile.endpoint)
+}
+
+fn loopback_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
 /// The hosted providers of a configuration, as they roam with the person:
 /// each names an endpoint on the internet and a reference to its key, never
 /// the key, which each device keeps in its own vault.
@@ -1301,3 +1329,19 @@ mod tests {
 
 /// Typed local-speech configuration and its private worker wire format.
 pub mod speech;
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::*;
+
+    #[test]
+    fn on_device_work_never_routes_to_a_lan_or_hosted_endpoint() {
+        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+        assert!(!loopback_http_endpoint(
+            "http://localhost.evil.test:8123/v1"
+        ));
+    }
+}

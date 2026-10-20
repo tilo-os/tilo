@@ -1,15 +1,16 @@
 //! Private, local-model history prose.
 //!
-//! The shell discovers an already-installed Ollama model and runs it off the
-//! UI thread. It never downloads a model and never sends workspace evidence
-//! to a remote endpoint. Generated prose is still admitted only through the
-//! UI crate's citation validator.
+//! The shell asks the model provider that runs on this device (a loopback
+//! profile from the provider settings, such as the local model service's)
+//! off the UI thread. It never downloads a model and never sends workspace
+//! evidence to an endpoint off the device. Generated prose is still admitted
+//! only through the UI crate's citation validator.
 
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use agent_provider_config::{ProviderConfig, ProviderProfile, transform};
 use tilo_lock::MutexRecover as _;
 use ui::{GroundedNarrative, NarrativeRequest};
 
@@ -36,13 +37,8 @@ impl Default for LocalHistoryNarrator {
 }
 
 const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
-/// Automatic history prose stays a background convenience rather than
-/// evicting the foreground app's working set. `TILO_HISTORY_LLM_MODEL` remains
-/// an explicit opt-in escape hatch for a larger installed model.
-const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
-const MODEL_LIST_LIMIT: usize = 1024 * 1024;
-const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(5);
-const NARRATIVE_LIMIT: usize = 1024 * 1024;
+const NARRATIVE_LIMIT: usize = 64 * 1024;
+const NARRATIVE_MAX_TOKENS: u32 = 400;
 const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl LocalHistoryNarrator {
@@ -66,13 +62,13 @@ impl LocalHistoryNarrator {
         self.request_prompt(request, status_prompt_for(request));
     }
 
-    fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: String) {
+    fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: Prompt) {
         if !self.enabled {
             return;
         }
         #[cfg(test)]
         crate::shell::test_support::ambient_start("history model worker");
-        let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
+        let key = prompt.key();
         if self.completed_key.as_deref() == Some(&key)
             || (self.last_key.as_deref() == Some(&key)
                 && self
@@ -104,8 +100,8 @@ impl LocalHistoryNarrator {
         self.take_for_prompt(&status_prompt_for(request))
     }
 
-    fn take_for_prompt(&mut self, prompt: &str) -> Option<GroundedNarrative> {
-        let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
+    fn take_for_prompt(&mut self, prompt: &Prompt) -> Option<GroundedNarrative> {
+        let expected = prompt.key();
         let narrative = self
             .pending
             .lock_recover()
@@ -118,93 +114,94 @@ impl LocalHistoryNarrator {
     }
 }
 
-fn installed_model() -> Option<String> {
-    let mut command = Command::new("ollama");
-    command.arg("list");
-    let output =
-        bounded_command::run_prepared(command, None, MODEL_LIST_LIMIT, MODEL_LIST_TIMEOUT).ok()?;
-    output.status.success().then_some(())?;
-    select_installed_model(
-        &String::from_utf8(output.stdout).ok()?,
-        std::env::var("TILO_HISTORY_LLM_MODEL").ok().as_deref(),
-    )
+/// What one generation asks: the instruction and the evidence it covers.
+struct Prompt {
+    instructions: String,
+    input: String,
 }
 
-fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String> {
-    let requested = requested.map(str::trim).filter(|name| !name.is_empty());
-    let mut models = list
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let columns = line.split_whitespace().collect::<Vec<_>>();
-            let name = (*columns.first()?).to_string();
-            let size = columns.windows(2).find_map(|pair| {
-                let [value, unit] = pair else { return None };
-                let value = value.replace(',', "").parse::<f64>().ok()?;
-                let multiplier = match unit.to_ascii_uppercase().as_str() {
-                    "KB" => 1_000_f64,
-                    "MB" => 1_000_000_f64,
-                    "GB" => 1_000_000_000_f64,
-                    "TB" => 1_000_000_000_000_f64,
-                    _ => return None,
-                };
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "Model inventory sizes are nonnegative decimal byte estimates used only for bounded model selection."
-                )]
-                Some((value * multiplier) as u64)
-            });
-            Some((name, size))
-        })
-        .collect::<Vec<_>>();
-    if let Some(requested) = requested {
-        return models
-            .into_iter()
-            .find_map(|(name, _)| (name == requested).then_some(name));
+impl Prompt {
+    fn key(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.instructions.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(self.input.as_bytes());
+        hasher.finalize().to_hex().to_string()
     }
-    models.retain(|(name, _)| {
-        let name = name.to_ascii_lowercase();
-        !["embed", "nomic", "minilm", "bge", "e5-"]
-            .iter()
-            .any(|marker| name.contains(marker))
-    });
-    models.retain(|(_, size)| size.is_some_and(|bytes| bytes <= MAX_AUTOMATIC_MODEL_BYTES));
-    models.sort_by(|left, right| {
-        left.1
-            .unwrap_or(u64::MAX)
-            .cmp(&right.1.unwrap_or(u64::MAX))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    models.into_iter().next().map(|(name, _)| name)
 }
 
-fn generate(prompt: &str) -> Option<GroundedNarrative> {
-    let model = installed_model()?;
-    let mut command = Command::new("ollama");
-    command.args(["run", &model, prompt]);
-    let output =
-        bounded_command::run_prepared(command, None, NARRATIVE_LIMIT, NARRATIVE_TIMEOUT).ok()?;
-    output.status.success().then_some(())?;
-    let raw = String::from_utf8(output.stdout).ok()?;
-    parse_response(&raw, &model)
+/// The provider on this device that history prose may use, and its model:
+/// the default provider when it runs here, otherwise the first one that does.
+/// A provider off the device never sees workspace evidence.
+fn on_device_model(config: &ProviderConfig) -> Option<(&ProviderProfile, &str)> {
+    let on_device = |profile: &&ProviderProfile| {
+        profile.enabled
+            && profile.credential.is_none()
+            && agent_provider_config::is_supervised_loopback(profile)
+            && profile.default_model.is_some()
+    };
+    let profile = config
+        .active_profile()
+        .filter(on_device)
+        .or_else(|| config.profiles.iter().find(on_device))?;
+    Some((profile, profile.default_model.as_deref()?))
 }
 
-fn prompt_for(request: &NarrativeRequest) -> String {
+fn generate(prompt: &Prompt) -> Option<GroundedNarrative> {
+    let config = ProviderConfig::load();
+    let (profile, model) = on_device_model(&config)?;
+    let body = transform::body(
+        profile.protocol,
+        &transform::Ask {
+            model,
+            instructions: &prompt.instructions,
+            input: &prompt.input,
+            max_tokens: NARRATIVE_MAX_TOKENS,
+            sampling: transform::Sampling::Deterministic,
+        },
+    );
+    let mut request = tilo_net::Client::new()
+        .post(transform::url(profile.protocol, &profile.endpoint))
+        .timeout(NARRATIVE_TIMEOUT)
+        .header(tilo_net::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(&body).ok()?);
+    for header in transform::profile_headers(profile, None).ok()? {
+        request = request.header(header.name, header.value.as_str());
+    }
+    let answer = tilo_rt::try_app()
+        .ok()?
+        .block_on(async move {
+            let response = request.send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            response.bytes().await.ok()
+        })
+        .ok()??;
+    let text = transform::answer(
+        profile.protocol,
+        &String::from_utf8_lossy(&answer),
+        NARRATIVE_LIMIT,
+    )
+    .ok()?;
+    parse_response(&text, &format!("{}:{model}", profile.id))
+}
+
+fn prompt_for(request: &NarrativeRequest) -> Prompt {
     evidence_prompt(
         request,
         "Rewrite the workspace activity evidence as one clear, factual catch-up sentence. Never invent intent, status, outcomes, names, or facts. Use 45 words or fewer.",
     )
 }
 
-fn status_prompt_for(request: &NarrativeRequest) -> String {
+fn status_prompt_for(request: &NarrativeRequest) -> Prompt {
     evidence_prompt(
         request,
         "Write a short present-tense status describing what the local participant appears to be working toward right now. Use a natural verb phrase, no name or pronoun, and 12 words or fewer. Infer only from the supplied recent actions; never invent an outcome or motivation.",
     )
 }
 
-fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> String {
+fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> Prompt {
     let mut evidence = Vec::new();
     for source in request.sources.iter().take(24) {
         evidence.push(serde_json::json!({
@@ -215,11 +212,13 @@ fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> String {
             "changes": source.changes,
         }));
     }
-    format!(
-        "{instruction} Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
-Include only source_ids that directly support the sentence, and at least one.\nEvidence: {}",
-        serde_json::Value::Array(evidence)
-    )
+    Prompt {
+        instructions: format!(
+            "{instruction} Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
+Include only source_ids that directly support the sentence, and at least one. The evidence is the user message."
+        ),
+        input: serde_json::Value::Array(evidence).to_string(),
+    }
 }
 
 fn truncate_for_prompt(value: &str, limit: usize) -> String {
@@ -243,7 +242,7 @@ fn parse_response(raw: &str, model: &str) -> Option<GroundedNarrative> {
     Some(GroundedNarrative {
         text,
         source_ids,
-        generator: format!("ollama:{model}"),
+        generator: model.to_owned(),
     })
 }
 
@@ -281,7 +280,7 @@ mod tests {
             let parsed = parse_response(raw, "local-test").expect("valid response");
             assert_eq!(parsed.text, "Ada refined the brief.");
             assert_eq!(parsed.source_ids, vec![ui::widget::HistoryEntryId([1; 16])]);
-            assert_eq!(parsed.generator, "ollama:local-test");
+            assert_eq!(parsed.generator, "local-test");
             assert!(parse_response(&format!("Here: {raw}"), "local-test").is_none());
         }
 
@@ -289,9 +288,7 @@ mod tests {
             let mut narrator = LocalHistoryNarrator::default();
             let old = request(1, "Old work");
             let current = request(2, "Current work");
-            let key = blake3::hash(prompt_for(&old).as_bytes())
-                .to_hex()
-                .to_string();
+            let key = prompt_for(&old).key();
             *narrator.pending.lock().unwrap() = Some((
                 key,
                 GroundedNarrative {
@@ -306,10 +303,10 @@ mod tests {
 
         fn status_prompt_is_short_first_person_work_not_a_catch_up_story() {
             let prompt = status_prompt_for(&request(1, "Prepare Q2 close"));
-            assert!(prompt.contains("12 words or fewer"));
-            assert!(prompt.contains("no name or pronoun"));
-            assert!(prompt.contains("Prepare Q2 close"));
-            assert!(!prompt.contains("catch-up sentence"));
+            assert!(prompt.instructions.contains("12 words or fewer"));
+            assert!(prompt.instructions.contains("no name or pronoun"));
+            assert!(prompt.input.contains("Prepare Q2 close"));
+            assert!(!prompt.instructions.contains("catch-up sentence"));
         }
 
         strict_json_response_preserves_grounding_ids();
@@ -318,37 +315,52 @@ mod tests {
     }
 
     #[test]
-    fn history_narration_uses_only_the_smallest_known_generative_model() {
-        fn chooses_the_smallest_generative_model_not_the_first_or_an_embedder() {
-            let list = "NAME ID SIZE MODIFIED\n\
-                        llama3.1:8b abc 4.7 GB yesterday\n\
-                        nomic-embed-text:latest def 274 MB yesterday\n\
-                        qwen2.5:0.5b ghi 398 MB yesterday\n\
-                        phi3:mini jkl 2.2 GB yesterday\n";
-            assert_eq!(
-                select_installed_model(list, None).as_deref(),
-                Some("qwen2.5:0.5b")
-            );
-            assert_eq!(
-                select_installed_model(list, Some("phi3:mini")).as_deref(),
-                Some("phi3:mini")
-            );
-            assert_eq!(select_installed_model(list, Some("missing")), None);
+    fn history_narration_uses_only_a_provider_on_this_device() {
+        use agent_provider_config::{EndpointLocation, ProviderProtocol};
+        fn profile(id: &str, location: EndpointLocation, endpoint: &str) -> ProviderProfile {
+            let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+            profile.id = id.into();
+            profile.endpoint = endpoint.into();
+            profile.location = location;
+            profile.credential = None;
+            profile.default_model = Some(format!("{id}-model"));
+            profile
         }
-
-        fn automatic_narration_refuses_unknown_or_oversized_models() {
-            let list = "NAME ID SIZE MODIFIED\n\
-                        giant:70b abc 42 GB yesterday\n\
-                        unknown-size def - yesterday\n";
-            assert_eq!(select_installed_model(list, None), None);
-            assert_eq!(
-                select_installed_model(list, Some("giant:70b")).as_deref(),
-                Some("giant:70b"),
-                "an explicit override is informed opt-in"
-            );
-        }
-
-        chooses_the_smallest_generative_model_not_the_first_or_an_embedder();
-        automatic_narration_refuses_unknown_or_oversized_models();
+        let hosted = profile(
+            "hosted",
+            EndpointLocation::Hosted,
+            "https://models.example.test/v1",
+        );
+        let lan = profile(
+            "lan",
+            EndpointLocation::PrivateNetwork,
+            "http://192.168.1.20:8000/v1",
+        );
+        let local = profile(
+            "local",
+            EndpointLocation::ThisDevice,
+            "http://127.0.0.1:8000/v1",
+        );
+        let mut config = ProviderConfig {
+            profiles: vec![hosted.clone(), lan.clone(), local.clone()],
+            default_profile: Some("hosted".into()),
+        };
+        assert_eq!(
+            on_device_model(&config).map(|(profile, model)| (profile.id.as_str(), model)),
+            Some(("local", "local-model")),
+            "a hosted default never sees workspace evidence"
+        );
+        config.profiles.retain(|profile| profile.id != "local");
+        assert!(
+            on_device_model(&config).is_none(),
+            "nothing on the device: no prose"
+        );
+        let mut unmodelled = local;
+        unmodelled.default_model = None;
+        config.profiles.push(unmodelled);
+        assert!(
+            on_device_model(&config).is_none(),
+            "no model chosen: none guessed"
+        );
     }
 }
