@@ -9844,6 +9844,9 @@ pub fn run() {
         backend.pixel_aligned_strip_pan(),
         backend.composites_strip_layers(),
     );
+    if let Some(width) = backend.strip_layer_canvas() {
+        frame_builder.keep_strip_canvases(width);
+    }
     frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
     // A peer stream's picture finishes on a media thread after its frame's
     // push returned (the loop never waits for a decode); this wakes the loop

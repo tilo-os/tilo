@@ -708,6 +708,14 @@ pub trait Backend {
         false
     }
 
+    /// The presenter keeps each layer in a canvas of its own, strips in
+    /// canvas coordinates as wide as this, and wants every frame as layers
+    /// (`FrameBuilder::keep_strip_canvases`). `None` for a presenter that
+    /// gets layers only while strips pan.
+    fn strip_layer_canvas(&self) -> Option<u32> {
+        None
+    }
+
     /// The presenter keeps its target between frames and copies what a
     /// scroll in an in-process app moved within it
     /// (`FramePaint::scroll_copies`) before it repaints the damage.
