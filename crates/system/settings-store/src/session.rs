@@ -141,6 +141,14 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
     })
 }
 
+/// Whether something other than a file (a directory) stands at `path`.
+fn not_a_file(path: &Path) -> bool {
+    tilo_files::file_at(path)
+        .ok()
+        .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name).ok())
+        .is_some_and(|found| found.kind != tilo_files::Kind::File)
+}
+
 /// Whether the copy is not what `state` last wrote or read. Size and time
 /// answer unless the copy is recent enough that a second write could share
 /// both; then its contents do.
@@ -720,6 +728,38 @@ impl SessionSettings {
             CopyAccess::Checked(_) => {}
         }
         let (copy, identity) = self.copy_access.read()?;
+        self.take_in_read(state, copy, identity)
+    }
+
+    /// [`Self::take_in_copy`] for a write to the records. Something that is
+    /// not a file standing where the legacy copy goes (a directory) holds no
+    /// edit to take in: the records are the durable store and the copy only
+    /// their compatibility mirror, so the write goes on and reports the copy
+    /// for repair, leaving the obstruction alone. A copy file that cannot be
+    /// read may hold another process's edit, so it still blocks the write
+    /// until that edit is readable; so does any checked copy that cannot be
+    /// read, and a record that cannot be written is still an error.
+    fn take_in_copy_for_write(&self, state: &mut State) -> std::io::Result<Option<std::io::Error>> {
+        let CopyAccess::Legacy(path) = &self.copy_access else {
+            return self.take_in_copy(state).map(|()| None);
+        };
+        if !copy_changed(path, state) {
+            return Ok(None);
+        }
+        match self.copy_access.read() {
+            Ok((copy, identity)) => self.take_in_read(state, copy, identity).map(|()| None),
+            Err(error) if not_a_file(path) => Ok(Some(error)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Apply the copy just read, and persist what it changed in the records.
+    fn take_in_read(
+        &self,
+        state: &mut State,
+        copy: Map<String, Value>,
+        identity: Option<CopyIdentity>,
+    ) -> std::io::Result<()> {
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
@@ -782,7 +822,7 @@ impl SessionSettings {
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
         let _lock = self.copy_access.lock()?;
-        self.take_in_copy(&mut state)?;
+        let unread = self.take_in_copy_for_write(&mut state)?;
         // Writes the loop accepted come first, so this one is decided and
         // ordered after them.
         self.apply_pending(&mut state);
@@ -807,10 +847,19 @@ impl SessionSettings {
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
-        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
+        Ok(self.mirror(&mut state, unread))
+    }
+
+    /// Bring the copy up to date after a write to the records, unless what
+    /// stands in its place is not a file ([`Self::take_in_copy_for_write`]).
+    fn mirror(&self, state: &mut State, unread: Option<std::io::Error>) -> ConditionalUpdate {
+        if let Some(error) = unread {
+            return ConditionalUpdate::StoredWithCopyRepair(error);
+        }
+        match self.copy_access.write_copy(&self.paths, state) {
             Ok(()) => ConditionalUpdate::Stored,
             Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
-        })
+        }
     }
 }
 
@@ -876,7 +925,7 @@ impl SettingsSource for SessionSettings {
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
         let _lock = self.copy_access.lock()?;
-        self.take_in_copy(&mut state)?;
+        let unread = self.take_in_copy_for_write(&mut state)?;
         self.apply_pending(&mut state);
         if !update.matches(&state.projection()) {
             return Ok(ConditionalUpdate::Superseded);
@@ -912,10 +961,7 @@ impl SettingsSource for SessionSettings {
         if touched.device {
             self.publish_committed(&state);
         }
-        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
-            Ok(()) => ConditionalUpdate::Stored,
-            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
-        })
+        Ok(self.mirror(&mut state, unread))
     }
 
     fn revision(&self) -> u64 {
@@ -1158,6 +1204,37 @@ mod tests {
         assert_eq!(session.load()["appearance"]["dark_theme"], "light");
         assert_eq!(
             load_at(&session.paths.person)["appearance"]["dark_theme"],
+            "light"
+        );
+    }
+
+    #[test]
+    fn a_directory_where_the_copy_goes_does_not_block_the_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        session
+            .update_section("appearance", object(json!({"dark_theme": "dark"})))
+            .unwrap();
+        std::fs::remove_file(&session.paths.copy).unwrap();
+        std::fs::create_dir(&session.paths.copy).unwrap();
+
+        // A directory holds no edit to take in: the record takes the write
+        // and the copy is reported for repair, left as it is.
+        let stored = session
+            .update_section_report("appearance", object(json!({"dark_theme": "light"})))
+            .unwrap();
+        assert!(matches!(stored, ConditionalUpdate::StoredWithCopyRepair(_)));
+        assert_eq!(
+            load_at(&session.paths.person)["appearance"]["dark_theme"],
+            "light"
+        );
+        assert!(session.paths.copy.is_dir());
+        assert_eq!(session.load()["appearance"]["dark_theme"], "light");
+
+        std::fs::remove_dir(&session.paths.copy).unwrap();
+        session.refresh();
+        assert_eq!(
+            load_at(&session.paths.copy)["appearance"]["dark_theme"],
             "light"
         );
     }
