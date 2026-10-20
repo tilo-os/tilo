@@ -340,14 +340,14 @@ impl ChangedBuilder {
                 self.any(doc, &resource);
                 return;
             };
-            let below = &keys[at + 1..];
+            let below = keys.get(at.saturating_add(1)..).unwrap_or_default();
             let item_record = spec.record.as_deref().and_then(lookup);
             match (spec.kind, below, item_record) {
                 // An item's value changed below its `v`: descend into the item.
                 (MergeKind::Collection, [Some(item), Some("v"), _, ..], Some(item_schema)) => {
                     resource = format!("{resource}/{field}:{item}");
                     schema = item_schema;
-                    at += 3;
+                    at = at.saturating_add(3);
                 }
                 // The item itself was put or replaced: the collection and every field of the item.
                 (MergeKind::Collection, [Some(item), Some("v")], _) => {
@@ -395,4 +395,60 @@ impl ChangedBuilder {
             unplaced: self.unplaced,
         }
     }
+}
+
+/// The first non-empty text of the resource map `obj` of type `schema` at `path`, and the path
+/// of the resource that holds it, in the order [`crate::DynRecord`]'s text collection visits:
+/// fields by id, a collection's items in order, nested records in place. It stops at the first,
+/// so naming a resource reads the few fields before its first text, not the whole resource.
+#[must_use]
+pub fn first_text(
+    doc: &Doc,
+    obj: &ObjId,
+    schema: &TypeSchema,
+    path: &str,
+) -> Option<(String, String)> {
+    let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
+    fields.sort_by(|a, b| a.id.cmp(&b.id));
+    for field in fields {
+        let id = field.id.as_str();
+        match field.kind {
+            MergeKind::Text => {
+                let text: String = read_key(doc, obj, id).ok()?;
+                if !text.is_empty() {
+                    return Some((text, path.to_owned()));
+                }
+            }
+            MergeKind::Record => {
+                let nested = field.record.as_deref().and_then(lookup);
+                if let (Some(map), Some(nested)) = (map_at(doc, obj, id), nested)
+                    && let Some(found) = first_text(doc, &map, nested, path)
+                {
+                    return Some(found);
+                }
+            }
+            MergeKind::Collection => {
+                let (Some(coll), Some(item_schema)) = (
+                    map_at(doc, obj, id),
+                    field.record.as_deref().and_then(lookup),
+                ) else {
+                    continue;
+                };
+                for item in stored_ids(doc, &coll) {
+                    if let Some(Some(value)) = stored_item(doc, &coll, item.as_str())
+                        && let Some(found) = first_text(
+                            doc,
+                            &value,
+                            item_schema,
+                            &format!("{path}/{id}:{}", item.as_str()),
+                        )
+                    {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

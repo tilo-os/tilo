@@ -23,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
 use tilo_actions::{ActionContext, ActionInvoker};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
 use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
@@ -32,8 +33,10 @@ use tilolang_runtime::{Decision, Principal, UiNode, ViewInstance};
 
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::host::Host;
+use crate::publish::{Planner, Publications};
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{MergeKind, lookup};
+use crate::search::SearchIndex;
 
 type Doc = tilo_resource::Doc;
 
@@ -70,9 +73,12 @@ pub struct Record {
 
 impl Record {
     fn nearest_rank(ordered: &[f64], percentile: usize) -> f64 {
-        let n = ordered.len();
-        let rank = (n * percentile).div_ceil(100).max(1);
-        ordered.get(rank - 1).copied().unwrap_or(0.0)
+        let rank = ordered
+            .len()
+            .saturating_mul(percentile)
+            .div_ceil(100)
+            .max(1);
+        ordered.get(rank.saturating_sub(1)).copied().unwrap_or(0.0)
     }
 
     /// The value at the nearest-rank percentile `p` of the samples.
@@ -127,25 +133,11 @@ fn hardware() -> String {
 fn now_utc() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let days = i64::try_from(secs / 86_400).unwrap_or(0);
-    let rem = secs % 86_400;
-    // Civil from days (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    chrono::DateTime::from_timestamp(secs, 0)
+        .unwrap_or_default()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 /// The packages `dir` needs, compiled, the package itself last.
@@ -286,6 +278,9 @@ struct Room {
     host: Host,
     list: ViewInstance,
     phases: Phases,
+    search: SearchIndex,
+    published: Publications,
+    planner: std::sync::Arc<dyn Planner>,
 }
 
 /// Where a frame's time went, per sample.
@@ -299,6 +294,10 @@ struct Phases {
     sync: Vec<f64>,
     /// The views re-running what changed.
     poll: Vec<f64>,
+    /// Search reindexing what changed.
+    search: Vec<f64>,
+    /// Publication republishing what changed.
+    publish: Vec<f64>,
 }
 
 impl Phases {
@@ -321,6 +320,8 @@ impl Phases {
             "execute_p50_ms": p50(&mut self.execute),
             "sync_p50_ms": p50(&mut self.sync),
             "poll_p50_ms": p50(&mut self.poll),
+            "search_p50_ms": p50(&mut self.search),
+            "publish_p50_ms": p50(&mut self.publish),
         })
     }
 }
@@ -339,11 +340,24 @@ impl Room {
                 list.row(&key, i).map_err(|e| e.to_string())?;
             }
         }
+        let indexing = Instant::now();
+        let mut search = SearchIndex::new(&host);
+        search.update(&host);
+        let publishing = Instant::now();
+        let planner: std::sync::Arc<dyn Planner> = std::sync::Arc::new(host.handle());
+        let mut published = Publications::new(&host);
+        published.update(&host, &planner);
+        let mut phases = Phases::default();
+        phases.search.push(ms(publishing.duration_since(indexing)));
+        phases.publish.push(ms(publishing.elapsed()));
         Ok(Self {
             doc,
             host,
             list,
-            phases: Phases::default(),
+            phases,
+            search,
+            published,
+            planner,
         })
     }
 
@@ -359,11 +373,17 @@ impl Room {
         let synced = Instant::now();
         let mut patches = self.list.poll_patches().map_err(|e| e.to_string())?.len();
         for view in others {
-            patches += view.poll_patches().map_err(|e| e.to_string())?.len();
+            patches = patches.saturating_add(view.poll_patches().map_err(|e| e.to_string())?.len());
         }
-        self.phases.execute.push(ms(executed - start));
-        self.phases.sync.push(ms(synced - executed));
-        self.phases.poll.push(ms(synced.elapsed()));
+        let polled = Instant::now();
+        self.search.update(&self.host);
+        let searched = Instant::now();
+        self.published.update(&self.host, &self.planner);
+        self.phases.execute.push(ms(executed.duration_since(start)));
+        self.phases.sync.push(ms(synced.duration_since(executed)));
+        self.phases.poll.push(ms(polled.duration_since(synced)));
+        self.phases.search.push(ms(searched.duration_since(polled)));
+        self.phases.publish.push(ms(searched.elapsed()));
         Ok(patches)
     }
 }
@@ -373,7 +393,7 @@ fn ms(d: Duration) -> f64 {
 }
 
 fn size_name(n: usize) -> String {
-    if n >= 1000 && n % 1000 == 0 {
+    if n >= 1000 && n.is_multiple_of(1000) {
         format!("{}k", n / 1000)
     } else {
         n.to_string()
@@ -404,19 +424,18 @@ fn list_key(node: &UiNode) -> Option<String> {
     node.children.iter().find_map(list_key)
 }
 
-/// Context switches so far, voluntary and not: of the calling thread, and of every other
-/// thread of this process.
+/// Voluntary context switches so far (each a sleep that ended in a wakeup): of the calling
+/// thread, and of every other thread of this process.
 fn context_switches() -> (u64, u64) {
     let switches = |status: &str| {
         status
             .lines()
-            .filter(|l| l.contains("ctxt_switches"))
+            // A wakeup is a voluntary switch; the kernel preempting a running thread is not one.
+            .filter(|l| l.starts_with("voluntary_ctxt_switches"))
             .filter_map(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
             .sum::<u64>()
     };
-    let own = std::fs::read_to_string("/proc/thread-self/status")
-        .map(|s| switches(&s))
-        .unwrap_or(0);
+    let own = std::fs::read_to_string("/proc/thread-self/status").map_or(0, |s| switches(&s));
     let all: u64 = std::fs::read_dir("/proc/self/task")
         .into_iter()
         .flatten()
@@ -425,6 +444,46 @@ fn context_switches() -> (u64, u64) {
         .map(|s| switches(&s))
         .sum();
     (own, all.saturating_sub(own))
+}
+
+/// One size of one package: what every scenario needs.
+struct Sized<'a> {
+    config: &'a BenchConfig,
+    packages: &'a [Compiled],
+    meta: &'a Meta,
+    shape: &'a Shape,
+    short: &'a str,
+    n: usize,
+    base: Doc,
+}
+
+impl Sized<'_> {
+    fn record(&self, scenario: &str, unit: &'static str, samples: Vec<f64>, extra: Json) -> Record {
+        let mut meta = json!({"items": self.n, "package": self.meta.app});
+        if let (Some(m), Json::Object(extra)) = (meta.as_object_mut(), extra) {
+            m.extend(extra.into_iter().filter(|(_, v)| !v.is_null()));
+        }
+        Record {
+            kpi: format!("tilolang.{scenario}.{}.{}", self.short, size_name(self.n)),
+            unit,
+            samples,
+            meta,
+        }
+    }
+
+    fn open(&self) -> Result<Room, String> {
+        Room::open(self.base.clone(), self.packages, &self.meta.app)
+    }
+
+    /// The item the edits go to: on screen, in the middle of the list or of the page a
+    /// virtual list shows.
+    fn target(&self, room: &Room) -> usize {
+        if list_key(room.list.tree()).is_some() {
+            PAGE.min(self.n) / 2
+        } else {
+            self.n / 2
+        }
+    }
 }
 
 /// Run every scenario at every size.
@@ -445,168 +504,217 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         emit,
     };
     for &n in &config.sizes {
-        let size = size_name(n);
-        let kpi = |scenario: &str| format!("tilolang.{scenario}.{short}.{size}");
-        let base = seeded_room(&shape, n)?;
-        let meta_json = |extra: Json| {
-            let mut m = json!({"items": n, "package": meta.app});
-            if let (Some(m), Json::Object(extra)) = (m.as_object_mut(), extra) {
-                m.extend(extra);
-            }
-            m
+        let sized = Sized {
+            config,
+            packages: &packages,
+            meta: &meta,
+            shape: &shape,
+            short: &short,
+            n,
+            base: seeded_room(&shape, n)?,
         };
-
-        // open
-        let mut samples = Vec::new();
-        let mut nodes = 0;
-        for _ in 0..config.samples {
-            let doc = base.clone();
-            let start = Instant::now();
-            let room = Room::open(doc, &packages, &meta.app)?;
-            samples.push(ms(start.elapsed()));
-            nodes = room.list.tree().count();
+        out.push(open(&sized)?);
+        let mut room = sized.open()?;
+        for record in index_everything(&sized, &room) {
+            out.push(record);
         }
-        out.push(Record {
-            kpi: kpi("open"),
-            unit: "ms",
-            samples,
-            meta: meta_json(json!({"nodes": nodes})),
-        });
-
-        // keystroke
-        let mut room = Room::open(base.clone(), &packages, &meta.app)?;
         room.frame(&mut [])?;
         room.phases.take();
-        // An item on screen: the middle of the list, or of the page a virtual list shows.
-        let target_index = if list_key(room.list.tree()).is_some() {
-            PAGE.min(n) / 2
-        } else {
-            n / 2
-        };
-        let root = ResourceRef::root(root_id(&shape), shape.root_ty.clone());
-        let item = root.item(
-            &shape.list_field,
-            &item_id(target_index),
-            shape.item_ty.clone(),
-        );
-        let mut editor = room
-            .host
-            .open_resource(&item, None)
-            .map_err(|e| e.to_string())?;
-        let title = shape.texts.first().cloned().unwrap_or_default();
-        let input = bound_input(editor.tree(), &title)
-            .ok_or("the item's view has no input bound to its title")?;
-        let mut samples = Vec::new();
-        let mut text = format!("Item {target_index}");
-        for _ in 0..config.samples {
-            text.push('x');
-            let start = Instant::now();
-            editor
-                .edit(&input, &Value::text(text.clone()))
-                .map_err(|e| e.to_string())?;
-            room.phases.edit.push(ms(start.elapsed()));
-            room.frame(&mut [&mut editor])?;
-            samples.push(ms(start.elapsed()));
+        out.push(keystroke(&sized, &mut room)?);
+        out.push(peer_edit(&sized, &mut room)?);
+        if let Some(record) = scroll(&sized, &mut room)? {
+            out.push(record);
         }
-        out.push(Record {
-            kpi: kpi("keystroke"),
-            unit: "ms",
-            samples,
-            meta: meta_json(room.phases.take()),
-        });
-        drop(editor);
-
-        // peer edit
-        let mut peer = room.doc.fork();
-        let mut samples = Vec::new();
-        for s in 0..config.samples {
-            let edit = Edit::new(
-                vec![
-                    Segment::Field(shape.list_field.clone()),
-                    Segment::Item(Id::from_raw(item_id(target_index))),
-                    Segment::Field(title.clone()),
-                ],
-                EditOp::Replace {
-                    text: format!("Peer title {s}"),
-                },
-            );
-            let action = DynAction {
-                app: shape.app.clone(),
-                kind: format!("tl.{}.edit", shape.app),
-                action_id: "$edit".into(),
-                args: Json::Null,
-                authorship: Authorship::default(),
-                edits: vec![DynEdit::Edit {
-                    id: root_id(&shape),
-                    edit,
-                }],
-            };
-            execute(&mut peer, &action, "peer")?;
-            let start = Instant::now();
-            room.doc.merge(&mut peer).map_err(|e| e.to_string())?;
-            room.phases.edit.push(ms(start.elapsed()));
-            room.frame(&mut [])?;
-            samples.push(ms(start.elapsed()));
-        }
-        out.push(Record {
-            kpi: kpi("peer_edit"),
-            unit: "ms",
-            samples,
-            meta: meta_json(room.phases.take()),
-        });
-
-        // scroll: a virtual list shows the rows that came into view and forgets those that left
-        if let Some(list) = list_key(room.list.tree()) {
-            let len = room.list.list_len(&list).unwrap_or(0);
-            let mut samples = Vec::new();
-            let mut first = 0;
-            for _ in 0..config.samples {
-                if first + PAGE + SCROLL_STEP > len {
-                    first = 0;
-                }
-                let start = Instant::now();
-                let next = first + SCROLL_STEP;
-                room.list.hide_rows(&list, next..next + PAGE);
-                for i in next..(next + PAGE).min(len) {
-                    room.list.row(&list, i).map_err(|e| e.to_string())?;
-                }
-                samples.push(ms(start.elapsed()));
-                first = next;
-            }
-            let stats = room.list.stats();
-            out.push(Record {
-                kpi: kpi("scroll"),
-                unit: "ms",
-                samples,
-                meta: meta_json(json!({
-                    "rows_per_frame": SCROLL_STEP,
-                    "shown": PAGE,
-                    "boundaries": stats.boundaries,
-                    "unrendered": stats.unrendered,
-                })),
-            });
-        }
-
-        // idle: after a frame, nothing runs until something changes
-        room.frame(&mut [])?;
-        let (own_before, others_before) = context_switches();
-        let start = Instant::now();
-        std::thread::sleep(config.idle);
-        let (own_after, others_after) = context_switches();
-        let secs = start.elapsed().as_secs_f64();
-        // A frame the loop would run now does nothing: nothing changed.
-        let patches = room.frame(&mut [])?;
-        // The sleep itself switches the calling thread out once.
-        let wakeups = own_after.saturating_sub(own_before).saturating_sub(1)
-            + others_after.saturating_sub(others_before);
-        out.push(Record {
-            kpi: kpi("idle_wakeups"),
-            unit: "count",
-            samples: vec![wakeups as f64],
-            meta: meta_json(json!({"seconds": secs, "patches": patches})),
-        });
+        out.push(idle(&sized, &mut room)?);
     }
     Ok(out.records)
+}
+
+/// Opening the package's main view on a room of the size, through the first frame.
+fn open(sized: &Sized<'_>) -> Result<Record, String> {
+    let mut samples = Vec::new();
+    let mut nodes = 0;
+    let mut phases = Phases::default();
+    for _ in 0..sized.config.samples {
+        let start = Instant::now();
+        let mut room = sized.open()?;
+        samples.push(ms(start.elapsed()));
+        nodes = room.list.tree().count();
+        phases.search.append(&mut room.phases.search);
+        phases.publish.append(&mut room.phases.publish);
+    }
+    let mut extra = phases.take();
+    if let Json::Object(m) = &mut extra {
+        m.insert("nodes".into(), json!(nodes));
+    }
+    Ok(sized.record("open", "ms", samples, extra))
+}
+
+/// What the window did on every change before search and publication were incremental:
+/// index and publish every record anew.
+fn index_everything(sized: &Sized<'_>, room: &Room) -> [Record; 2] {
+    let (mut search, mut publish) = (Vec::new(), Vec::new());
+    for _ in 0..sized.config.samples.min(5) {
+        let start = Instant::now();
+        for (package, _, doc) in room.host.records() {
+            if let Ok(record) = room.host.store().record(&doc) {
+                std::hint::black_box(crate::search::hits(&package.meta, &record, &doc));
+            }
+        }
+        search.push(ms(start.elapsed()));
+        let start = Instant::now();
+        for (package, type_name, doc) in room.host.records() {
+            let label = room.host.label_of(&doc);
+            if let Ok(record) = room.host.store().record(&doc) {
+                std::hint::black_box(crate::publish::publish_tree(
+                    &package.meta,
+                    &record,
+                    &type_name,
+                    &doc,
+                    &label,
+                    &room.planner,
+                ));
+            }
+        }
+        publish.push(ms(start.elapsed()));
+    }
+    [
+        sized.record("reindex_all", "ms", search, json!({})),
+        sized.record("republish_all", "ms", publish, json!({})),
+    ]
+}
+
+/// Typing into the title of an item, in the item's own window, one letter a frame.
+fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    let shape = sized.shape;
+    let target = sized.target(room);
+    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone()).item(
+        &shape.list_field,
+        &item_id(target),
+        shape.item_ty.clone(),
+    );
+    let mut editor = room
+        .host
+        .open_resource(&item, None)
+        .map_err(|e| e.to_string())?;
+    let title = shape.texts.first().cloned().unwrap_or_default();
+    let input = bound_input(editor.tree(), &title)
+        .ok_or("the item's view has no input bound to its title")?;
+    let mut samples = Vec::new();
+    let mut text = format!("Item {target}");
+    for _ in 0..sized.config.samples {
+        text.push('x');
+        let start = Instant::now();
+        editor
+            .edit(&input, &Value::text(text.clone()))
+            .map_err(|e| e.to_string())?;
+        room.phases.edit.push(ms(start.elapsed()));
+        room.frame(&mut [&mut editor])?;
+        samples.push(ms(start.elapsed()));
+    }
+    Ok(sized.record("keystroke", "ms", samples, room.phases.take()))
+}
+
+/// A peer retitling the same item, its change merged into the room.
+fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    let shape = sized.shape;
+    let target = sized.target(room);
+    let title = shape.texts.first().cloned().unwrap_or_default();
+    let mut peer = room.doc.fork();
+    let mut samples = Vec::new();
+    for sample in 0..sized.config.samples {
+        let edit = Edit::new(
+            vec![
+                Segment::Field(shape.list_field.clone()),
+                Segment::Item(Id::from_raw(item_id(target))),
+                Segment::Field(title.clone()),
+            ],
+            EditOp::Replace {
+                text: format!("Peer title {sample}"),
+            },
+        );
+        let action = DynAction {
+            app: shape.app.clone(),
+            kind: format!("tl.{}.edit", shape.app),
+            action_id: "$edit".into(),
+            args: Json::Null,
+            authorship: Authorship::default(),
+            edits: vec![DynEdit::Edit {
+                id: root_id(shape),
+                edit,
+            }],
+        };
+        execute(&mut peer, &action, "peer")?;
+        let start = Instant::now();
+        room.doc
+            .merge_incoming(&mut peer)
+            .map_err(|e| e.to_string())?;
+        room.phases.edit.push(ms(start.elapsed()));
+        room.frame(&mut [])?;
+        samples.push(ms(start.elapsed()));
+    }
+    Ok(sized.record("peer_edit", "ms", samples, room.phases.take()))
+}
+
+/// A virtual list scrolled a few rows a frame: it shows the rows that came into view and
+/// forgets those that left. Only for a package whose main view has a `list`.
+fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+    let Some(list) = list_key(room.list.tree()) else {
+        return Ok(None);
+    };
+    let len = room.list.list_len(&list).unwrap_or(0);
+    let mut samples = Vec::new();
+    let mut first = 0usize;
+    for _ in 0..sized.config.samples {
+        let mut next = first.saturating_add(SCROLL_STEP);
+        if next.saturating_add(PAGE) > len {
+            next = 0;
+        }
+        let shown = next..next.saturating_add(PAGE).min(len);
+        let start = Instant::now();
+        room.list.hide_rows(&list, shown.clone());
+        for i in shown {
+            room.list.row(&list, i).map_err(|e| e.to_string())?;
+        }
+        samples.push(ms(start.elapsed()));
+        first = next;
+    }
+    let stats = room.list.stats();
+    Ok(Some(sized.record(
+        "scroll",
+        "ms",
+        samples,
+        json!({
+            "rows_per_frame": SCROLL_STEP,
+            "shown": PAGE,
+            "boundaries": stats.boundaries,
+            "unrendered": stats.unrendered,
+        }),
+    )))
+}
+
+/// The room left alone: after a frame, nothing runs until something changes.
+fn idle(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
+    room.frame(&mut [])?;
+    let (own_before, others_before) = context_switches();
+    let start = Instant::now();
+    std::thread::sleep(sized.config.idle);
+    let (own_after, others_after) = context_switches();
+    let secs = start.elapsed().as_secs_f64();
+    // A frame the loop would run now does nothing: nothing changed.
+    let patches = room.frame(&mut [])?;
+    // The sleep itself switches the calling thread out once.
+    let wakeups = own_after
+        .saturating_sub(own_before)
+        .saturating_sub(1)
+        .saturating_add(others_after.saturating_sub(others_before));
+    let wakeups = u32::try_from(wakeups).map_or_else(|_| f64::from(u32::MAX), f64::from);
+    Ok(sized.record(
+        "idle_wakeups",
+        "count",
+        vec![wakeups],
+        json!({"seconds": secs, "patches": patches}),
+    ))
 }
 
 struct Recorder<'a> {
@@ -652,7 +760,11 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
-        let mut value = || it.next().cloned().ok_or(format!("{arg} needs a value"));
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{arg} needs a value"))
+        };
         match arg.as_str() {
             "--sizes" => {
                 config.sizes = value()?

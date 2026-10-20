@@ -640,16 +640,11 @@ impl Host {
     /// The resource kind and label of a published record.
     #[must_use]
     pub fn label_of(&self, doc: &str) -> String {
-        self.inner
-            .store
-            .record(doc)
-            .ok()
-            .and_then(|record| {
-                let mut text = Vec::new();
-                tilo_resource::Model::collect_text(&record, &mut text);
-                text.into_iter().next()
-            })
-            .unwrap_or_else(|| doc.to_owned())
+        let store = &self.inner.store;
+        let ty = store.resource_type(doc).unwrap_or_default();
+        store
+            .first_text(&ResourceRef::root(doc, ty))
+            .map_or_else(|| doc.to_owned(), |(text, _)| text)
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).

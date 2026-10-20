@@ -251,32 +251,310 @@ fn item_resources(
         };
         for (item_id, item) in items.iter() {
             let path = format!("{parent}/{}:{}", field.id, item_id.as_str());
-            let type_name = item.schema().name.clone();
-            let kind = meta.kind_of(&type_name);
-            let label = item_label(item).unwrap_or_else(|| type_name.clone());
-            let mut resource = Resource::new(resource_id(&meta.app, &path), kind.clone(), label)
-                .with_action(open_spec(&path));
-            for action in &meta.actions {
-                let on_type = meta
-                    .subject_of(&action.params)
-                    .is_some_and(|subject| subject.name == type_name);
-                if on_type {
-                    resource = resource.with_action(action_spec(
-                        meta,
-                        &kind,
-                        Some(&path),
-                        action,
-                        planner,
-                    ));
-                }
-            }
-            for child in item_resources(meta, item, &path, planner) {
-                resource = resource.with_child(child);
-            }
-            out.push(resource);
+            out.push(item_resource(meta, item, &path, planner));
         }
     }
     out
+}
+
+/// The item `item` at `path`, published with its type's actions and its own items.
+fn item_resource(
+    meta: &Meta,
+    item: &crate::record::DynRecord,
+    path: &str,
+    planner: &Arc<dyn Planner>,
+) -> Resource {
+    let type_name = item.schema().name.clone();
+    let kind = meta.kind_of(&type_name);
+    let label = item_label(item).unwrap_or_else(|| type_name.clone());
+    let mut resource = Resource::new(resource_id(&meta.app, path), kind.clone(), label)
+        .with_action(open_spec(path));
+    for action in &meta.actions {
+        let on_type = meta
+            .subject_of(&action.params)
+            .is_some_and(|subject| subject.name == type_name);
+        if on_type {
+            resource = resource.with_action(action_spec(meta, &kind, Some(path), action, planner));
+        }
+    }
+    for child in item_resources(meta, item, path, planner) {
+        resource = resource.with_child(child);
+    }
+    resource
+}
+
+/// What a room publishes of its records, kept up to date by republishing only what changed.
+///
+/// A record whose item changed is republished by rebuilding that item (its top-level item, which
+/// names it) in the record's cached tree; items added or removed are added to or removed from it.
+/// Only a record that appeared, or one that changed as a whole, is read and built in full.
+pub struct Publications {
+    watch: crate::store::Watch,
+    trees: std::collections::BTreeMap<String, Resource>,
+    /// Per record, the resource whose text names it now.
+    named_by: std::collections::BTreeMap<String, Option<String>>,
+}
+
+impl Publications {
+    /// Nothing published yet; the first [`Self::update`] publishes every record.
+    #[must_use]
+    pub fn new(host: &crate::host::Host) -> Self {
+        Self {
+            watch: host.store().watch(),
+            trees: std::collections::BTreeMap::new(),
+            named_by: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// The published records, by document id.
+    #[must_use]
+    pub fn trees(&self) -> &std::collections::BTreeMap<String, Resource> {
+        &self.trees
+    }
+
+    /// Republish what changed since the last update. Returns the documents whose published tree
+    /// changed (or went away).
+    pub fn update(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
+        use std::collections::BTreeSet;
+
+        use tilolang_runtime::store::ANY_FIELD;
+
+        let changes = self.watch.take();
+        let mut touched = Vec::new();
+        let records = host.records();
+        let now: BTreeSet<&str> = records.iter().map(|(_, _, doc)| doc.as_str()).collect();
+        let gone: Vec<String> = self
+            .trees
+            .keys()
+            .filter(|doc| !now.contains(doc.as_str()))
+            .cloned()
+            .collect();
+        for doc in gone {
+            self.trees.remove(&doc);
+            self.named_by.remove(&doc);
+            touched.push(doc);
+        }
+        for (package, type_name, doc) in &records {
+            let Some(schema) = package
+                .meta
+                .types
+                .iter()
+                .find(|t| &t.name == type_name)
+                .and_then(|t| crate::schema::lookup(&t.id))
+            else {
+                continue;
+            };
+            let at = Published {
+                store: host.store(),
+                meta: &package.meta,
+                schema,
+                doc,
+                planner,
+            };
+            let whole = changes.everything
+                || changes.whole.contains(doc)
+                || !self.trees.contains_key(doc)
+                || changes.docs.get(doc).is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|key| key.resource == *doc && key.field == ANY_FIELD)
+                });
+            if whole {
+                let (label, named_by) = at.label();
+                self.trees.insert(doc.clone(), at.whole(type_name, &label));
+                self.named_by.insert(doc.clone(), named_by);
+                touched.push(doc.clone());
+                continue;
+            }
+            let (Some(fields), Some(tree)) = (changes.docs.get(doc), self.trees.get_mut(doc))
+            else {
+                continue;
+            };
+            let named_by = self.named_by.get(doc).cloned().flatten();
+            let mut rework = at.rework(fields, named_by.as_deref());
+            for field in &rework.collections {
+                at.membership(tree, field, &mut rework.items);
+            }
+            at.rebuild(tree, &rework.items);
+            if rework.relabel {
+                let (label, named_by) = at.label();
+                tree.label = label;
+                self.named_by.insert(doc.clone(), named_by);
+            }
+            touched.push(doc.clone());
+        }
+        touched
+    }
+}
+
+/// What to rebuild of a published record.
+struct Rework {
+    /// The top-level items that changed.
+    items: std::collections::BTreeSet<String>,
+    /// The record's collections whose membership or order changed.
+    collections: std::collections::BTreeSet<String>,
+    /// Whether the text that names the record may have changed.
+    relabel: bool,
+}
+
+/// One record being republished.
+struct Published<'a> {
+    store: &'a crate::store::TiloStore,
+    meta: &'a Meta,
+    schema: &'static crate::schema::TypeSchema,
+    doc: &'a str,
+    planner: &'a Arc<dyn Planner>,
+}
+
+impl Published<'_> {
+    fn root(&self) -> tilolang_runtime::value::ResourceRef {
+        tilolang_runtime::value::ResourceRef::root(self.doc, self.schema.id.clone())
+    }
+
+    /// The text that names the record, and the resource that holds it.
+    fn label(&self) -> (String, Option<String>) {
+        let named = self.store.first_text(&self.root());
+        let label = named
+            .as_ref()
+            .map_or_else(|| self.doc.to_owned(), |(text, _)| text.clone());
+        (label, named.map(|(_, at)| at))
+    }
+
+    /// The record published in full.
+    fn whole(&self, type_name: &str, label: &str) -> Resource {
+        match self.store.record(self.doc) {
+            Ok(record) => {
+                publish_tree(self.meta, &record, type_name, self.doc, label, self.planner)
+            }
+            Err(_) => publish_record(self.meta, type_name, self.doc, label, self.planner),
+        }
+    }
+
+    fn rework(
+        &self,
+        fields: &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
+        named_by: Option<&str>,
+    ) -> Rework {
+        let mut rework = Rework {
+            items: std::collections::BTreeSet::new(),
+            collections: std::collections::BTreeSet::new(),
+            relabel: false,
+        };
+        for key in fields {
+            if key.resource == self.doc {
+                let kind = self.schema.field(&key.field).map(|f| f.kind);
+                if kind == Some(crate::schema::MergeKind::Collection) {
+                    rework.collections.insert(key.field.clone());
+                }
+                rework.relabel = true;
+            } else if let Some(top) = top_item(self.doc, &key.resource) {
+                if named_by.is_some_and(|at| at == top || at.starts_with(&format!("{top}/"))) {
+                    rework.relabel = true;
+                }
+                rework.items.insert(top);
+            }
+        }
+        rework
+    }
+
+    /// Bring the children of `tree` from the collection `field` in line with its items: keep the
+    /// unchanged ones, build the new and the changed ones (taking them out of `items`).
+    fn membership(
+        &self,
+        tree: &mut Resource,
+        field: &str,
+        items: &mut std::collections::BTreeSet<String>,
+    ) {
+        use tilolang_runtime::store::Store as _;
+
+        let (doc, app) = (self.doc, &self.meta.app);
+        let spec = tilolang_runtime::store::FieldSpec {
+            id: field.to_owned(),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        let ids = match self.store.read(&self.root(), &spec) {
+            Ok(tilolang_runtime::store::FieldValue::Items(ids)) => ids,
+            _ => Vec::new(),
+        };
+        let prefix = resource_id(app, &format!("{doc}/{field}:"));
+        let mut held = std::collections::BTreeMap::new();
+        let mut others = Vec::new();
+        for child in std::mem::take(&mut tree.children) {
+            if child.id.as_str().starts_with(&prefix) {
+                held.insert(child.id.as_str().to_owned(), child);
+            } else {
+                others.push(child);
+            }
+        }
+        let mut members = Vec::with_capacity(ids.len());
+        for id in ids {
+            let path = format!("{doc}/{field}:{id}");
+            match held.remove(&resource_id(app, &path)) {
+                Some(child) if !items.contains(&path) => members.push(child),
+                _ => {
+                    items.remove(&path);
+                    members.extend(self.item(&path));
+                }
+            }
+        }
+        // The record's collections in its fields' order, as `publish_tree` has them.
+        let mut ordered = Vec::with_capacity(others.len().saturating_add(members.len()));
+        let mut members = Some(members);
+        for f in &self.schema.fields {
+            if f.kind != crate::schema::MergeKind::Collection {
+                continue;
+            }
+            if f.id == field {
+                ordered.extend(members.take().unwrap_or_default());
+            } else {
+                let p = resource_id(app, &format!("{doc}/{}:", f.id));
+                ordered.extend(
+                    others
+                        .iter()
+                        .filter(|c| c.id.as_str().starts_with(&p))
+                        .cloned(),
+                );
+            }
+        }
+        tree.children = ordered;
+    }
+
+    /// Rebuild the top-level items at `paths` in place; drop those gone.
+    fn rebuild(&self, tree: &mut Resource, paths: &std::collections::BTreeSet<String>) {
+        for path in paths {
+            let published = resource_id(&self.meta.app, path);
+            let at = tree
+                .children
+                .iter()
+                .position(|child| child.id.as_str() == published);
+            match (at, self.item(path)) {
+                (Some(i), Some(child)) => {
+                    if let Some(slot) = tree.children.get_mut(i) {
+                        *slot = child;
+                    }
+                }
+                (Some(i), None) => {
+                    tree.children.remove(i);
+                }
+                // A new item arrives with its collection's membership.
+                (None, _) => {}
+            }
+        }
+    }
+
+    /// The item at `path`, read from the store and published.
+    fn item(&self, path: &str) -> Option<Resource> {
+        let at = tilolang_runtime::value::ResourceRef::parse_id(path, self.schema.id.clone())?;
+        let item = self.store.record_at(&at).ok()?;
+        Some(item_resource(self.meta, &item, path, self.planner))
+    }
+}
+
+/// The top-level item an item path is in: `doc/field:item`.
+fn top_item(doc: &str, path: &str) -> Option<String> {
+    let rest = path.strip_prefix(doc)?.strip_prefix('/')?;
+    let first = rest.split('/').next()?;
+    Some(format!("{doc}/{first}"))
 }
 
 /// What names an item: the first of its texts.

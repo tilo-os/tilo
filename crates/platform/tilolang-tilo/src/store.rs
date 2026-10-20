@@ -28,19 +28,20 @@ use std::rc::Rc;
 
 use automerge::{ChangeHash, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, RunId, TypeId};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Mutation,
-    NewRecord, OutboxEntry, Scalar, Store, StoreError, SubId, Txn,
+    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Mutation, NewRecord,
+    OutboxEntry, Scalar, Store, StoreError, SubId, Txn,
 };
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
     Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
-use crate::reads::{changed_by, collection_len, locate_ref, read_field, type_at};
+use crate::reads::{changed_by, collection_len, first_text, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{TYPE_KEY, lookup};
 
@@ -103,6 +104,12 @@ struct Inner {
     next_txn: u64,
     subs: Vec<Subscription>,
     next_sub: u64,
+    /// What each [`Watch`] has not taken yet.
+    watches: Vec<std::rc::Weak<RefCell<Changes>>>,
+    /// Trial runs under way (checkpoints not rewound yet).
+    trials: usize,
+    /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
+    held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
     /// Handed to the host and not yet answered by the door.
     handed: BTreeMap<u64, DynAction>,
@@ -116,8 +123,53 @@ struct Inner {
     counter: u64,
 }
 
+/// What changed in the mirror since a [`Watch`] last took it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Changes {
+    /// Per document, the fields that changed (see [`FieldKey`]).
+    pub docs: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The documents that may have changed anywhere.
+    pub whole: BTreeSet<DocId>,
+    /// Anything anywhere may have changed: the mirror was copied from the record anew.
+    pub everything: bool,
+}
+
+impl Changes {
+    fn add(&mut self, summary: &ChangeSummary) {
+        if summary.fields.is_empty() {
+            self.whole.insert(summary.doc.clone());
+        } else {
+            self.docs
+                .entry(summary.doc.clone())
+                .or_default()
+                .extend(summary.fields.iter().cloned());
+        }
+    }
+
+    /// Whether nothing changed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty() && self.whole.is_empty() && !self.everything
+    }
+}
+
+/// A cursor over the mirror's changes; see [`TiloStore::watch`].
+pub struct Watch {
+    changes: Rc<RefCell<Changes>>,
+}
+
+impl Watch {
+    /// What changed since the last call.
+    #[must_use]
+    pub fn take(&self) -> Changes {
+        std::mem::take(&mut self.changes.borrow_mut())
+    }
+}
+
 /// The mirror as it was, to put back after a trial run; see [`TiloStore::checkpoint`].
 pub struct Checkpoint {
+    /// How many changes were held from the trial runs under way.
+    held: usize,
     /// How many of the store's writes the mirror held.
     local: usize,
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -247,6 +299,9 @@ impl TiloStore {
                 next_txn: 1,
                 subs: Vec::new(),
                 next_sub: 1,
+                watches: Vec::new(),
+                trials: 0,
+                held: Vec::new(),
                 committed: VecDeque::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -273,7 +328,7 @@ impl TiloStore {
         inner.local.clear();
         let changed = if inner.mirror.get_heads() == inner.seen {
             let changes = record.committed_document().get_changes(&inner.seen);
-            let applied = inner.mirror.apply_changes(changes.iter().cloned());
+            let applied = inner.mirror.apply_incoming(changes.iter().cloned());
             write_as_a_known_actor(&mut inner.mirror);
             applied
                 .ok()
@@ -282,29 +337,26 @@ impl TiloStore {
             None
         };
         inner.seen = heads;
-        match changed {
-            Some(changed) => {
-                inner.stats.incremental_syncs += 1;
-                if changed.structure || changed.unplaced {
-                    inner.index = scan(&inner.mirror);
-                }
-                if changed.unplaced {
-                    inner.notify_all();
-                } else {
-                    for (doc, fields) in changed.docs {
-                        inner.notify(&ChangeSummary { doc, fields });
-                    }
-                }
-            }
-            None => {
-                // The mirror held a change of its own, which only a copy of the record removes.
-                inner.stats.full_syncs += 1;
-                inner.mirror = record.clone();
-                inner.mirror.rollback();
-                write_as_a_known_actor(&mut inner.mirror);
+        if let Some(changed) = changed {
+            inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+            if changed.structure || changed.unplaced {
                 inner.index = scan(&inner.mirror);
-                inner.notify_all();
             }
+            if changed.unplaced {
+                inner.notify_all();
+            } else {
+                for (doc, fields) in changed.docs {
+                    inner.notify(&ChangeSummary { doc, fields });
+                }
+            }
+        } else {
+            // The mirror held a change of its own, which only a copy of the record removes.
+            inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
+            inner.mirror = record.clone();
+            inner.mirror.rollback();
+            write_as_a_known_actor(&mut inner.mirror);
+            inner.index = scan(&inner.mirror);
+            inner.notify_all();
         }
         true
     }
@@ -384,30 +436,35 @@ impl TiloStore {
     /// commit makes a change.
     #[must_use]
     pub fn checkpoint(&self) -> Checkpoint {
-        let inner = self.inner.borrow();
+        let mut inner = self.inner.borrow_mut();
+        inner.trials = inner.trials.saturating_add(1);
         Checkpoint {
+            held: inner.held.len(),
             local: inner.local.len(),
             index: inner.index.clone(),
             notes: inner.notes.clone(),
         }
     }
 
-    /// Put the mirror back as the checkpoint held it and tell the subscribers of what the trial
-    /// run wrote.
+    /// Put the mirror back as the checkpoint held it. What the trial run wrote was told to
+    /// nobody (not the views, not search or publication), so taking it back tells nobody
+    /// either: planning an action, as publishing every item's actions does, changes nothing
+    /// anyone follows.
     pub fn rewind(&self, checkpoint: Checkpoint) {
         let mut inner = self.inner.borrow_mut();
         let kept = checkpoint.local.min(inner.local.len());
-        let undone: Vec<LocalWrite> = inner.local.split_off(kept);
+        inner.local.truncate(kept);
         inner.reapply();
         inner.index = checkpoint.index;
         inner.notes = checkpoint.notes;
-        let mut docs: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        for write in &undone {
-            let (doc, keys) = write.touched();
-            docs.entry(doc).or_default().extend(keys);
-        }
-        for (doc, fields) in docs {
-            inner.notify(&ChangeSummary { doc, fields });
+        inner.held.truncate(checkpoint.held);
+        inner.trials = inner.trials.saturating_sub(1);
+        if inner.trials == 0 {
+            // What arrived from elsewhere during the trial (nothing does today: a trial run is
+            // one synchronous call) is told now.
+            for summary in std::mem::take(&mut inner.held) {
+                inner.notify(&summary);
+            }
         }
     }
 
@@ -431,6 +488,25 @@ impl TiloStore {
         }
         inner.committed = kept;
         taken
+    }
+
+    /// A cursor over what changes in the mirror from now on, for a consumer that keeps
+    /// something derived from many resources (search, publication) up to date by redoing only
+    /// what changed.
+    #[must_use]
+    pub fn watch(&self) -> Watch {
+        let changes = Rc::new(RefCell::new(Changes::default()));
+        self.inner
+            .borrow_mut()
+            .watches
+            .push(Rc::downgrade(&changes));
+        Watch { changes }
+    }
+
+    /// The type of the resource `doc`.
+    #[must_use]
+    pub fn resource_type(&self, doc: &str) -> Option<TypeId> {
+        self.inner.borrow().index.get(doc).map(|(_, ty)| ty.clone())
     }
 
     /// Whether the resource `doc` exists in the mirror.
@@ -462,6 +538,32 @@ impl TiloStore {
             .get(doc)
             .ok_or_else(|| not_found(format!("resource {doc}")))?;
         read_resource(&inner.mirror, app, doc).map_err(backend)
+    }
+
+    /// The mirror's record of the resource at `at` (a document or an item in one), as the
+    /// runtime sees it now: an item is read without reading its siblings.
+    ///
+    /// # Errors
+    /// The resource does not exist or its type is not registered.
+    pub fn record_at(&self, at: &ResourceRef) -> Result<DynRecord, StoreError> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner.locate(at)?;
+        let located = locate_ref(&inner.mirror, (&app, &ty), at)?;
+        let obj = located
+            .obj
+            .ok_or_else(|| not_found(format!("resource {}", at.id_string())))?;
+        <DynRecord as tilo_resource::Fields>::read_fields(&inner.mirror, &obj).map_err(backend)
+    }
+
+    /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
+    /// and the path of the resource that holds it: what names a resource.
+    #[must_use]
+    pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner.locate(at).ok()?;
+        let located = locate_ref(&inner.mirror, (&app, &ty), at).ok()?;
+        let obj = located.obj?;
+        first_text(&inner.mirror, &obj, located.schema, &at.id_string())
     }
 
     /// Create the resource `id` as one committed change: how a per-room singleton gets the same
@@ -498,61 +600,31 @@ impl TiloStore {
     }
 }
 
-impl LocalWrite {
-    /// The document the write is in and the fields it changed.
-    fn touched(&self) -> (DocId, Vec<FieldKey>) {
-        let mut edit = &self.edit;
-        while let DynEdit::In { edit: inner, .. } = edit {
-            edit = inner;
-        }
-        match edit {
-            DynEdit::Edit { id, edit } => {
-                // The edit's path is field, then item and field per step down.
-                let mut resource = id.clone();
-                let mut segments = edit.path().iter().peekable();
-                let mut field = String::new();
-                while let Some(segment) = segments.next() {
-                    match segment {
-                        Segment::Field(name) => {
-                            if let Some(Segment::Item(item)) = segments.peek() {
-                                if segments.clone().nth(1).is_some() {
-                                    resource = format!("{resource}/{name}:{}", item.as_str());
-                                    segments.next();
-                                    continue;
-                                }
-                            }
-                            name.clone_into(&mut field);
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-                (id.clone(), vec![FieldKey { resource, field }])
-            }
-            DynEdit::Create { id, .. }
-            | DynEdit::Remove { id }
-            | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. } => (
-                id.clone(),
-                vec![FieldKey {
-                    resource: id.clone(),
-                    field: ANY_FIELD.to_owned(),
-                }],
-            ),
-            DynEdit::In { .. } => (String::new(), Vec::new()),
-        }
-    }
-}
-
 impl Inner {
     fn notify(&mut self, summary: &ChangeSummary) {
+        if self.trials > 0 {
+            self.held.push(summary.clone());
+            return;
+        }
+        self.watched(|changes| changes.add(summary));
         for sub in self.subs.iter_mut().filter(|sub| sub.doc == summary.doc) {
             (sub.callback)(summary);
         }
     }
 
+    fn watched(&mut self, mut f: impl FnMut(&mut Changes)) {
+        self.watches.retain(|watch| match watch.upgrade() {
+            Some(changes) => {
+                f(&mut changes.borrow_mut());
+                true
+            }
+            None => false,
+        });
+    }
+
     /// Tell every subscriber that anything in its document may have changed.
     fn notify_all(&mut self) {
+        self.watched(|changes| changes.everything = true);
         let docs: BTreeSet<DocId> = self.subs.iter().map(|sub| sub.doc.clone()).collect();
         for doc in docs {
             self.notify(&ChangeSummary {
