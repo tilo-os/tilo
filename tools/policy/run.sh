@@ -119,5 +119,7 @@ run 'Vendored crates carry licence and provenance' \
   python3 tools/policy/check_vendor_provenance.py
 run 'At most eight parameters, no escape hatch' \
   python3 tools/policy/check_too_many_arguments.py
+run 'Rust files stay under their size ceiling' \
+  python3 tools/policy/check_source_file_size.py
 
 printf '\nRepository policy suite OK\n'
