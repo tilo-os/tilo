@@ -563,8 +563,10 @@ impl ShellOverlayHost {
             });
             // A window the followed person just opened reaches this
             // device's desktop after where they are does: the view waits
-            // for it rather than letting go.
+            // for it rather than letting go. The window it followed them
+            // into closing is the end of it.
             let unavailable = participant.is_none()
+                || (tab.is_some() && target.is_none() && tab == self.followed_tab)
                 || (self.followed_tab.is_some() && tab.is_none())
                 || self.followed_session.is_some_and(|session| {
                     participant.is_none_or(|participant| participant.session != Some(session))

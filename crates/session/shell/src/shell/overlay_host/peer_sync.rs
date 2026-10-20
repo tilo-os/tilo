@@ -236,11 +236,14 @@ impl ShellOverlayHost {
             self.published_active_tab = current;
             return;
         };
-        if let Some((room, tab)) = self.published_active_tab {
-            bridge(room, tab, false);
-        }
+        // Where this person is now goes out before where they were is
+        // withdrawn: in between, a follower would find them nowhere and let
+        // go.
         if let Some((room, tab)) = current {
             bridge(room, tab, true);
+        }
+        if let Some((room, tab)) = self.published_active_tab {
+            bridge(room, tab, false);
         }
         self.published_active_tab = current;
     }
