@@ -287,7 +287,7 @@ fn diff_children(
             .get(j)
             .is_some_and(|c| moved.contains(c.key.as_str()))
         {
-            j += 1;
+            j = j.saturating_add(1);
         }
         let Some(o) = survivors.get(n.key.as_str()) else {
             out.push(Patch::Insert {
@@ -298,7 +298,7 @@ fn diff_children(
             continue;
         };
         if current.get(j).is_some_and(|c| c.key == n.key) {
-            j += 1;
+            j = j.saturating_add(1);
         } else {
             out.push(Patch::Move {
                 parent: path.to_vec(),

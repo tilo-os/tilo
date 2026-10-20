@@ -209,14 +209,8 @@ impl Live {
     }
 
     pub fn stats(&self) -> LiveStats {
-        let live = self.bounds.iter().flatten();
-        let (mut boundaries, mut unrendered) = (0, 0);
-        for b in live {
-            boundaries += 1;
-            if !b.rendered {
-                unrendered += 1;
-            }
-        }
+        let boundaries = self.bounds.iter().flatten().count();
+        let unrendered = self.bounds.iter().flatten().filter(|b| !b.rendered).count();
         LiveStats {
             renders: self.renders,
             boundaries,
@@ -408,7 +402,7 @@ impl Live {
             self.drop_bound(*gone);
         }
         let rendered = rendered?;
-        self.renders += 1;
+        self.renders = self.renders.saturating_add(1);
         let Rendered {
             root,
             reads,
@@ -441,17 +435,14 @@ impl Live {
 
     fn add_bound(&mut self, b: Bound) -> BoundId {
         let key = b.key.clone();
-        let id = match self.free.pop() {
-            Some(id) => {
-                if let Some(slot) = self.bounds.get_mut(id) {
-                    *slot = Some(b);
-                }
-                id
+        let id = if let Some(id) = self.free.pop() {
+            if let Some(slot) = self.bounds.get_mut(id) {
+                *slot = Some(b);
             }
-            None => {
-                self.bounds.push(Some(b));
-                self.bounds.len() - 1
-            }
+            id
+        } else {
+            self.bounds.push(Some(b));
+            self.bounds.len().saturating_sub(1)
         };
         self.by_key.insert(key, id);
         id
@@ -671,9 +662,9 @@ impl Live {
         {
             return Some(node);
         }
-        let mut at = key.len();
-        while let Some(cut) = key[..at].rfind('~') {
-            if let Some(b) = self.by_key.get(&key[..cut]).and_then(|id| self.bound(*id))
+        let mut rest = key;
+        while let Some((prefix, _)) = rest.rsplit_once('~') {
+            if let Some(b) = self.by_key.get(prefix).and_then(|id| self.bound(*id))
                 && let Some(node) = self.node_at(&b.path)
             {
                 if let Some(found) = node.find(key) {
@@ -681,7 +672,7 @@ impl Live {
                 }
                 break;
             }
-            at = cut;
+            rest = prefix;
         }
         self.tree.find(key)
     }
