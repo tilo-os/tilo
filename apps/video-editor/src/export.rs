@@ -591,6 +591,13 @@ impl Drop for ExportJob {
 /// The message a cancelled render reports.
 pub const CANCELLED: &str = "Export cancelled";
 
+/// How long an export waits for one decoded frame of a source before it
+/// draws the source's representative fill instead. The preview's bound
+/// (two seconds) keeps a scrub responsive; an export has nobody waiting on
+/// a single frame, and a fill there is a wrong frame in the user's file.
+/// A source that answers nothing three times running is still written off.
+const EXPORT_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Start a render on a worker thread, writing to `destination`.
 ///
 /// Returns immediately. Poll [`ExportJob::status`] for progress.
@@ -860,10 +867,15 @@ mod gst_pipeline {
         //
         // `Exact` because an export has no interactive deadline to miss
         // and every frame must be the right one; the preview asks the
-        // same sources for `Responsive` instead.
+        // same sources for `Responsive` instead. For the same reason a
+        // frame gets [`EXPORT_FRAME_TIMEOUT`], not the preview's bound: a
+        // busy machine that takes longer than that to open a source and
+        // land its first picture would otherwise encode the representative
+        // fill in its place.
         let mut compositor =
             crate::gpu::HeadlessCompositor::new().map_err(|e| format!("export compositor: {e}"))?;
-        let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact);
+        let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact)
+            .with_timeout(super::EXPORT_FRAME_TIMEOUT);
         let mut pcm = crate::audio::DecodedPcm::new(project);
         // Whether any frame of this render actually got a decoded picture.
         //
