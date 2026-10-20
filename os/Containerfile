@@ -3402,6 +3402,9 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-no-cisco-openh264.sh \
     # The rpmdb finaliser ran after every package change; none comes now.
     && rm -f /usr/libexec/tilo/finalize-rpmdb \
+    # The base image's tool for deriving base images, a Python program no
+    # package owns; a derived image never runs it.
+    && rm -f /usr/libexec/bootc-base-imagectl \
     && bash /usr/local/bin/verify-no-python-runtime.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
              /usr/local/bin/verify-no-cisco-openh264.sh /usr/local/bin/verify-no-python-runtime.sh \
