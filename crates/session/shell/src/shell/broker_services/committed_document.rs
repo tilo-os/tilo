@@ -148,7 +148,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             .ok_or("invalid committed document room")?;
         let owner = &self.opened_owner("native document owner unavailable")?;
         let read = owner.with_current(room, |view| {
-            match view.read_document_with_history(
+            view.read_document_with_history(
                 context.certificate().device_public_key,
                 (&route.app_id, &route.record_id),
                 known_revision,
@@ -161,26 +161,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                         .ok_or("committed history keys unavailable")?
                         .open_history_write(room, envelope)
                 },
-            ) {
-                Ok(read) => Ok(Some(read)),
-                // The room carries a governed checkpoint's coverage whose
-                // body has not arrived: the read is refused until it does,
-                // which the reader waits out rather than failing on.
-                Err(_)
-                    if view
-                        .peer()
-                        .checkpoint_pending(&route.app_id, &route.record_id) =>
-                {
-                    Ok(None)
-                }
-                Err(error) => Err(error),
-            }
+            )
         });
         let read = read.inspect_err(|error| self.note_unreadable(context, room, error))?;
         self.authorize(context)?;
-        let Some(read) = read else {
-            return Ok(NativeDocumentRead::Pending);
-        };
         Ok(match read {
             DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
             DocumentRead::Captured(document) => NativeDocumentRead::Captured {

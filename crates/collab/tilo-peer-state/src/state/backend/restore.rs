@@ -112,8 +112,8 @@ pub(in crate::state) fn restore(
             .map(crate::resources::native::NativeDocument::read);
         governed_snapshot_matches(
             read.as_ref(),
-            &document.route.app,
-            &document.route.record,
+            (&document.route.app, &document.route.record),
+            &document.covered,
             document.covered_snapshot.as_deref(),
             &BoundedCoverage {
                 limits: limits.policy,

@@ -50,6 +50,15 @@ impl RouteValue {
             Self::Full(coverage) => coverage.payload_hash,
         }
     }
+    /// Whether a document whose admitted checkpoints reach `covered` (per
+    /// hex author) already holds this row's checkpoint.
+    pub(crate) fn admitted_in(&self, covered: &BTreeMap<String, u64>) -> bool {
+        let (author, sequence) = match self {
+            Self::Compact(compact) => (compact.author, compact.sequence),
+            Self::Full(coverage) => (coverage.author, coverage.sequence),
+        };
+        covered.get(&hex::encode(author)).copied().unwrap_or(0) >= sequence
+    }
     fn expand(self, key: &str) -> Result<Coverage, String> {
         match self {
             Self::Full(coverage) => Ok(coverage),
