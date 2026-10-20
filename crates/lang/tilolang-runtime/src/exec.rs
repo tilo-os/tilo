@@ -51,6 +51,11 @@ pub struct Rendered {
     pub retained: Vec<Retained>,
 }
 
+enum Step {
+    Replay(Value),
+    Live(ExecCtx),
+}
+
 fn push_chain(chain: &mut Vec<ModuleHash>, author: Option<&ModuleHash>) {
     if let Some(a) = author
         && chain.last() != Some(a)
@@ -431,17 +436,17 @@ impl Core {
                 let aref = ActionRef::new(pending.action.clone(), pending.args.clone());
                 match self.run_action(&ctx, &aref)? {
                     ActionOutcome::Done(result) => JournalEntry::Invoked {
-                        action: pending.action.clone(),
+                        action: pending.action,
                         result,
                     },
                     ActionOutcome::Failed(reason) => JournalEntry::Failed {
-                        action: pending.action.clone(),
+                        action: pending.action,
                         reason,
                     },
                 }
             }
             Resolution::Decline => JournalEntry::Denied {
-                action: pending.action.clone(),
+                action: pending.action,
                 reason: format!("declined by {approver}"),
             },
         };
@@ -475,30 +480,23 @@ impl Core {
         let Value::Action(aref) = self.val(h)? else {
             return trap("expected an action reference");
         };
-        enum Step {
-            Replay(Value),
-            Live(ExecCtx),
-        }
         let step = {
             let mut frames = self.frames.borrow_mut();
             let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
                 return trap("invoke is only available in flows");
             };
-            match fs.journal.entries.get(fs.cursor) {
-                Some(entry) => {
-                    let v = replay_value(entry, &aref.action)?;
-                    fs.cursor = fs.cursor.saturating_add(1);
-                    Step::Replay(v)
-                }
-                None => {
-                    let mut chain = fs.journal.chain.clone();
-                    push_chain(&mut chain, aref.author.as_ref());
-                    Step::Live(ExecCtx {
-                        invoker: fs.invoker.clone(),
-                        chain,
-                        approved_by: None,
-                    })
-                }
+            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+                let v = replay_value(entry, &aref.action)?;
+                fs.cursor = fs.cursor.saturating_add(1);
+                Step::Replay(v)
+            } else {
+                let mut chain = fs.journal.chain.clone();
+                push_chain(&mut chain, aref.author.as_ref());
+                Step::Live(ExecCtx {
+                    invoker: fs.invoker.clone(),
+                    chain,
+                    approved_by: None,
+                })
             }
         };
         let ctx = match step {
@@ -516,14 +514,14 @@ impl Core {
                 let (entry, value) = match outcome {
                     ActionOutcome::Done(result) => (
                         JournalEntry::Invoked {
-                            action: aref.action.clone(),
+                            action: aref.action,
                             result: result.clone(),
                         },
                         result,
                     ),
                     ActionOutcome::Failed(reason) => (
                         JournalEntry::Failed {
-                            action: aref.action.clone(),
+                            action: aref.action,
                             reason: reason.clone(),
                         },
                         Value::Error(reason),
@@ -535,7 +533,7 @@ impl Core {
             Decision::Deny => {
                 let reason = "denied by authority".to_owned();
                 self.journal_push(JournalEntry::Denied {
-                    action: aref.action.clone(),
+                    action: aref.action,
                     reason: reason.clone(),
                 })?;
                 self.ret_h(Value::Error(reason))

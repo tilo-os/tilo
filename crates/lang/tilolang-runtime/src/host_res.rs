@@ -5,6 +5,7 @@
 //! frame (so a transaction), and the action's module must own the resource's type (the
 //! compiler guarantees both; the host does not trust it).
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -163,13 +164,13 @@ impl Core {
     }
 
     /// Re-create the references inside a stored value as the reading module's.
-    fn adopt(&self, v: Value, author: &Option<ModuleHash>) -> Result<Value, String> {
+    fn adopt(&self, v: Value, author: Option<&ModuleHash>) -> Result<Value, String> {
         Ok(match v {
             Value::Ref(r) => {
                 self.verify_ref(&r.target)?;
                 Value::Ref(RefValue {
                     target: r.target,
-                    author: author.clone(),
+                    author: author.cloned(),
                 })
             }
             Value::List(items) => Value::List(self.adopt_all(items, author)?),
@@ -182,12 +183,12 @@ impl Core {
     fn adopt_all(
         &self,
         items: Vec<Value>,
-        author: &Option<ModuleHash>,
+        author: Option<&ModuleHash>,
     ) -> Result<Vec<Value>, String> {
         items.into_iter().map(|x| self.adopt(x, author)).collect()
     }
 
-    fn scalar_value(&self, s: Scalar, author: &Option<ModuleHash>) -> Result<Value, String> {
+    fn scalar_value(&self, s: Scalar, author: Option<&ModuleHash>) -> Result<Value, String> {
         Ok(match s {
             Scalar::Bool(b) => Value::Bool(b),
             Scalar::Int(i) => Value::Int(i),
@@ -220,7 +221,7 @@ impl Core {
         &self,
         target: &ResourceRef,
         field: &FieldInfo,
-        author: &Option<ModuleHash>,
+        author: Option<&ModuleHash>,
     ) -> Result<Value, String> {
         let fv = self
             .store
@@ -246,7 +247,7 @@ impl Core {
                         .map(|id| {
                             Value::Ref(RefValue {
                                 target: target.item(&field.id, id, item.id.clone()),
-                                author: author.clone(),
+                                author: author.cloned(),
                             })
                         })
                         .collect(),
@@ -277,7 +278,7 @@ impl Core {
         owner: &crate::registry::Package,
         field: &FieldInfo,
         keys: Vec<String>,
-        author: &Option<ModuleHash>,
+        author: Option<&ModuleHash>,
     ) -> Result<Value, String> {
         let items = keys
             .into_iter()
@@ -296,7 +297,7 @@ impl Core {
                     self.verify_ref(&target)?;
                     Ok(Value::Ref(RefValue {
                         target,
-                        author: author.clone(),
+                        author: author.cloned(),
                     }))
                 }
                 _ => Ok(Value::Text(k)),
@@ -309,10 +310,10 @@ impl Core {
         let r = self.ref_arg(rh)?;
         let field = self.text(fh)?;
         let (_, f) = self.lookup_field(&r.target, &field)?;
-        let author = Some(self.module_of_frame()?);
-        let v = self.read_value(&r.target, &f, &author)?;
+        let author = self.module_of_frame()?;
+        let v = self.read_value(&r.target, &f, Some(&author))?;
         if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
-            vs.reads.push((r.target.doc.clone(), f.id));
+            vs.reads.push((r.target.doc, f.id));
         }
         Ok(v)
     }
@@ -538,6 +539,38 @@ impl Core {
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()
             }
+            Imp::SetAdd | Imp::SetRemove | Imp::MapPut | Imp::MapRemove => {
+                self.set_map_import(imp, a)
+            }
+            Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
+            Imp::RefLit => {
+                let (_app, ty, id) = (
+                    self.text(a.h(0)?)?,
+                    self.text(a.h(1)?)?,
+                    self.text(a.h(2)?)?,
+                );
+                let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+                    return trap(format!("`{id}` is not a reference id"));
+                };
+                self.type_of_ref(&ty)?;
+                self.verify_ref(&target)?;
+                let author = Some(self.module_of_frame()?);
+                self.ret_h(Value::Ref(RefValue { target, author }))
+            }
+            Imp::RefEq => {
+                let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
+                ret_i32(i32::from(x.target == y.target))
+            }
+            Imp::RefId => {
+                let r = self.ref_arg(a.h(0)?)?;
+                self.ret_h(Value::Text(r.target.id_string()))
+            }
+            _ => trap("not a resource import"),
+        }
+    }
+
+    fn set_map_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::SetAdd | Imp::SetRemove => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
                 if ctx.field.kind != FieldKind::Set {
@@ -570,30 +603,7 @@ impl Core {
                 self.apply_mut(&ctx, &m)?;
                 ret_void()
             }
-            Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
-            Imp::RefLit => {
-                let (_app, ty, id) = (
-                    self.text(a.h(0)?)?,
-                    self.text(a.h(1)?)?,
-                    self.text(a.h(2)?)?,
-                );
-                let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
-                    return trap(format!("`{id}` is not a reference id"));
-                };
-                self.type_of_ref(&ty)?;
-                self.verify_ref(&target)?;
-                let author = Some(self.module_of_frame()?);
-                self.ret_h(Value::Ref(RefValue { target, author }))
-            }
-            Imp::RefEq => {
-                let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
-                ret_i32(i32::from(x.target == y.target))
-            }
-            Imp::RefId => {
-                let r = self.ref_arg(a.h(0)?)?;
-                self.ret_h(Value::Text(r.target.id_string()))
-            }
-            _ => trap("not a resource import"),
+            _ => trap("not a set or map import"),
         }
     }
 
@@ -603,7 +613,7 @@ impl Core {
             self.type_of_ref(&ty)?;
             return self.ret_h(Value::Rec(RecordInit {
                 ty,
-                fields: Default::default(),
+                fields: BTreeMap::default(),
             }));
         }
         let rec_h = a.h(0)?;

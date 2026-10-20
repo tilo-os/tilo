@@ -18,6 +18,14 @@ pub struct Wat {
     funcs: Vec<String>,
 }
 
+fn wat_types(kind: &str, sig: &str) -> String {
+    let mut out = String::new();
+    for c in sig.chars() {
+        write!(out, " ({kind} {})", wat_type(c)).unwrap();
+    }
+    out
+}
+
 fn wat_type(c: char) -> &'static str {
     match c {
         'l' => "i64",
@@ -50,14 +58,8 @@ impl Wat {
             if !used {
                 continue;
             }
-            let p: String = params
-                .chars()
-                .map(|c| format!(" (param {})", wat_type(c)))
-                .collect();
-            let r: String = result
-                .chars()
-                .map(|c| format!(" (result {})", wat_type(c)))
-                .collect();
+            let p = wat_types("param", params);
+            let r = wat_types("result", result);
             writeln!(src, "(import \"tl\" \"{name}\" (func $tl_{name}{p}{r}))").unwrap();
         }
         src.push_str("(memory (export \"memory\") 1)\n");
@@ -70,7 +72,7 @@ impl Wat {
                 text.len()
             )
             .unwrap();
-            offset += text.len();
+            offset = offset.saturating_add(text.len());
         }
         src.push_str(&body);
         src.push_str("\n)");
@@ -170,7 +172,7 @@ pub fn counter_wasm() -> Vec<u8> {
         .build()
 }
 
-fn action(id: &str, name: &str, class: &str, params: Json) -> Json {
+fn action(id: &str, name: &str, class: &str, params: &Json) -> Json {
     json!({"id": id, "name": name, "class": class, "params": params})
 }
 
@@ -182,10 +184,10 @@ pub fn counter_meta() -> Meta {
                    "fields": [{"id": "fv", "name": "value", "type": "Int", "merge": "counter"}]}],
         "actions": [
             {"id": "inc", "name": "increment", "doc": "Add one to the counter.", "class": "undoable", "params": c},
-            action("bad", "bad", "undoable", c.clone()),
-            action("spin", "spin", "undoable", c.clone()),
-            action("grow", "grow", "undoable", c.clone()),
-            action("forge", "forge", "undoable", c.clone()),
+            action("bad", "bad", "undoable", &c),
+            action("spin", "spin", "undoable", &c),
+            action("grow", "grow", "undoable", &c),
+            action("forge", "forge", "undoable", &c),
         ],
         "views": [
             {"id": "vc", "name": "counter", "params": c, "anchors": [{"id": "p", "name": "plus"}]},
@@ -207,16 +209,16 @@ pub struct World {
 
 impl World {
     pub fn new() -> Self {
-        Self::with(AmStore::new(), EngineLimits::default())
+        Self::with(&AmStore::new(), EngineLimits::default())
     }
 
-    pub fn with(store: AmStore, limits: EngineLimits) -> Self {
+    pub fn with(store: &AmStore, limits: EngineLimits) -> Self {
         let auth = SimpleAuthority::new();
         let rt = Runtime::with_limits(store.clone(), auth.clone(), limits).unwrap();
         let counter = rt.load_package(&counter_wasm(), counter_meta()).unwrap();
         Self {
             rt,
-            store,
+            store: store.clone(),
             auth,
             counter,
             me: me(),

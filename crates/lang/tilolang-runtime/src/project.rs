@@ -31,7 +31,7 @@ impl Default for ProjectOptions {
 
 pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
     match v {
-        Value::Unit => Json::Null,
+        Value::Unit | Value::Opt(None) => Json::Null,
         Value::Int(i) => json!(i),
         Value::Float(f) => {
             serde_json::Number::from_f64(*f).map_or_else(|| json!(f.to_string()), Json::Number)
@@ -53,7 +53,6 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             Json::Object(m)
         }
         Value::Tuple(items) => Json::Array(items.iter().map(|x| project(core, x, opts)).collect()),
-        Value::Opt(None) => Json::Null,
         Value::Opt(Some(x)) => project(core, x, opts),
         Value::Ref(r) => project_ref(core, r, opts),
         Value::Action(a) => json!({
@@ -78,7 +77,6 @@ fn project_ref(core: &Core, r: &RefValue, opts: ProjectOptions) -> Json {
     let Some((_, info)) = core.registry.borrow().type_info(&r.target.ty) else {
         return json!({ "type": r.target.ty, "id": r.target.id_string() });
     };
-    let author = None;
     let mut label = None;
     let mut fields = Map::new();
     let deeper = ProjectOptions {
@@ -86,15 +84,15 @@ fn project_ref(core: &Core, r: &RefValue, opts: ProjectOptions) -> Json {
         ..opts
     };
     for f in &info.fields {
-        let Ok(value) = core.read_value(&r.target, f, &author) else {
+        let Ok(value) = core.read_value(&r.target, f, None) else {
             continue;
         };
-        if f.kind == FieldKind::Text {
-            if let Value::Text(t) = &value {
-                let named = matches!(f.name.as_str(), "title" | "name" | "label");
-                if named || label.is_none() {
-                    label = Some(t.chars().take(opts.max_text_chars).collect::<String>());
-                }
+        if f.kind == FieldKind::Text
+            && let Value::Text(t) = &value
+        {
+            let named = matches!(f.name.as_str(), "title" | "name" | "label");
+            if named || label.is_none() {
+                label = Some(t.chars().take(opts.max_text_chars).collect::<String>());
             }
         }
         if opts.depth > 0 {

@@ -126,7 +126,13 @@ pub fn diff(old: &UiNode, new: &UiNode, same_event: EventEq<'_>) -> Vec<Patch> {
         return vec![Patch::SetRoot(new.clone())];
     }
     let mut out = Vec::new();
-    diff_node(old, new, &[new.key.clone()], same_event, &mut out);
+    diff_node(
+        old,
+        new,
+        std::slice::from_ref(&new.key),
+        same_event,
+        &mut out,
+    );
     out
 }
 
