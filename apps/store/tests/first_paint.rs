@@ -29,9 +29,12 @@ fn budget(optimised: Duration) -> Duration {
 /// each with its own id and name.
 fn flathub_sized() -> Vec<store::StoreItem> {
     let base = store::fixture::fixture_catalog();
-    (0..3000)
-        .map(|index| {
-            let mut item = base[index % base.len()].clone();
+    base.iter()
+        .cycle()
+        .take(3000)
+        .enumerate()
+        .map(|(index, item)| {
+            let mut item = item.clone();
             item.id = format!("{}.n{index}", item.id);
             item.name = format!("{} {index}", item.name);
             item

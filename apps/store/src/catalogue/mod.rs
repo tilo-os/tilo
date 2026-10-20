@@ -441,7 +441,7 @@ mod tests {
         second.listing.updated_at_unix = 30;
         let notes = tilo("so.tilo.notes", "Notes");
         let blocked = tilo("so.tilo.tube", "Tube");
-        let items = vec![second.clone(), popular, notes, blocked];
+        let items = vec![second, popular, notes, blocked];
         let blocks = BlockList::empty().with_workspace_policy("School", ["so.tilo.tube"]);
         let mut home = Home::compute(&items, &blocks);
         assert_eq!(
