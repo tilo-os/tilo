@@ -20,14 +20,6 @@ backups-size-in-files = { $count ->
     [one] { $size } in one file
    *[other] { $size } in { $files } files
 }
-backups-restored-files = { $count ->
-    [one] Restored and checked one file
-   *[other] Restored and checked { $files } files
-}
-backups-verified-files = { $count ->
-    [one] Checked one file, { $size }
-   *[other] Checked { $files } files, { $size }
-}
 backups-progress-files = { $count ->
     [one] One file copied, { $size }
    *[other] { $files } files copied, { $size }

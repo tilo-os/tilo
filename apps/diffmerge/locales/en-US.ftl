@@ -11,18 +11,11 @@ merge-status-changes =
         [one] 1 change, { $resolved } resolved
        *[other] { $count } changes, { $resolved } resolved
     }
-merge-status-conflicts =
-    { $count ->
-        [0] All conflicts resolved
-        [one] 1 conflict remaining
-       *[other] { $count } conflicts remaining
-    }
 
 ## Resource labels
 merge-title = Merge of { $name }
 merge-title-pair = Merge of { $ours } and { $theirs }
 merge-title-empty = Merged result
-compare-title-empty = Local comparison
 
 ## Merged result
 merged-title = Merged result
@@ -32,8 +25,6 @@ merged-conflicts =
        *[other] { $count } conflicts
     }
 merged-resolved = All resolved
-merged-saved = Saved merged result (original inputs unavailable)
-merged-unavailable = Original inputs are unavailable for this saved output. Load new inputs to resolve changes.
 
 ## Change resolution
 hunk-conflict = Conflict
