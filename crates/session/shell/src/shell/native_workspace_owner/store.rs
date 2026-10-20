@@ -185,6 +185,16 @@ pub(super) struct Runtime {
     document: crate::shell::persist::DocLog,
     /// The action policy this writer's tree has published.
     action_authority: Arc<crate::shell::launcher::action_authority::Authority>,
+    /// An owner publication between taking its sequence and installing its
+    /// record, and whether a snapshot of the tree was taken meanwhile. Read
+    /// and changed only with the tree held, so a snapshot and the install
+    /// are ordered by the tree's lock.
+    in_flight: Mutex<Option<InFlight>>,
+}
+/// See [`Runtime::in_flight`].
+#[derive(Default)]
+struct InFlight {
+    snapshotted: bool,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -201,6 +211,7 @@ impl Default for Runtime {
             companions: Mutex::new([0; 1]),
             document: crate::shell::persist::DocLog::default(),
             action_authority: Arc::default(),
+            in_flight: Mutex::new(None),
         }
     }
 }
@@ -418,28 +429,56 @@ impl NativeStateRuntime {
         sequence: StateSequence,
     ) -> io::Result<Publication> {
         let mut writer = self.0.writer.lock();
+        let written = self.write_held(&mut writer, path, base, next, encoded, sequence);
+        match written {
+            Ok(Publication::Written) => {
+                *self.0.accepted.lock() = Some(encoded.authority);
+                writer.published = sequence.0;
+                Ok(Publication::Written)
+            }
+            Ok(Publication::Superseded) => Ok(Publication::Superseded),
+            Err(error) => {
+                drop(writer);
+                Err(self.fence_if_uncertain(error))
+            }
+        }
+    }
+
+    /// The write of [`Self::publish`], with `writer` held, that leaves the
+    /// record it wrote for its caller to accept. An error is the atomic
+    /// replace's, for [`Self::fence_if_uncertain`] once `writer` is let go.
+    fn write_held(
+        &self,
+        writer: &mut Writer,
+        path: &Path,
+        base: [u8; 32],
+        next: &NativeAuthorityStorage,
+        encoded: &crate::shell::persist::EncodedTree,
+        sequence: StateSequence,
+    ) -> Result<Publication, WriteError> {
         if sequence.0 < writer.published {
             return Ok(Publication::Superseded);
         }
         if !self.healthy() {
-            return Err(io::Error::other(
+            return Err(WriteError::Refused(io::Error::other(
                 "native state writer is fenced after uncertain publication",
-            ));
+            )));
         }
-        self.bind_held(&mut writer, path, base)?;
+        self.bind_held(writer, path, base)
+            .map_err(WriteError::Refused)?;
         if *self.0.accepted.lock() != Some(base) {
-            return Err(io::Error::other("stale native authority snapshot refused"));
+            return Err(WriteError::Refused(io::Error::other(
+                "stale native authority snapshot refused",
+            )));
         }
+        #[cfg(test)]
+        test_seam::before_write();
         match tilo_files::native::atomic::replace(
             path,
             &encoded.bytes,
             tilo_files::native::atomic::Privacy::OwnerOnly,
         ) {
-            Ok(()) => {
-                *self.0.accepted.lock() = Some(encoded.authority);
-                writer.published = sequence.0;
-                Ok(Publication::Written)
-            }
+            Ok(()) => Ok(Publication::Written),
             Err(error) => {
                 if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
                     {
@@ -447,16 +486,61 @@ impl NativeStateRuntime {
                         uncertain.extend(next.rooms());
                     }
                     self.0.healthy.store(false, Ordering::Release);
-                    drop(writer);
-                    let owner = self.owner();
-                    if let Some(owner) = owner {
-                        owner.fence_all();
-                    }
+                    return Err(WriteError::Uncertain(error.into_io_error()));
                 }
-                Err(error.into_io_error())
+                Err(WriteError::Refused(error.into_io_error()))
             }
         }
     }
+
+    /// The error of a write, after fencing the owner when the write may
+    /// have reached the file. Called with the writer let go.
+    fn fence_if_uncertain(&self, error: WriteError) -> io::Error {
+        match error {
+            WriteError::Refused(error) => error,
+            WriteError::Uncertain(error) => {
+                if let Some(owner) = self.owner() {
+                    owner.fence_all();
+                }
+                error
+            }
+        }
+    }
+
+    /// Start an owner publication: take the writer, which it keeps until
+    /// its record is installed. Taken before the tree, so a save holding
+    /// the tree never waits on the writer behind it.
+    pub(super) fn begin(&self) -> PublicationTurn<'_> {
+        PublicationTurn {
+            runtime: self,
+            writer: Some(self.0.writer.lock()),
+            written: None,
+            failed: None,
+        }
+    }
+
+    /// Note a snapshot of the tree being taken, with the tree held: whether
+    /// an owner publication is in flight, whose install then saves the tree
+    /// again (see [`PublicationTurn::finish`]).
+    pub(crate) fn snapshot_during_publication(&self) -> bool {
+        let mut in_flight = self.0.in_flight.lock();
+        in_flight.as_mut().is_some_and(|in_flight| {
+            in_flight.snapshotted = true;
+            true
+        })
+    }
+
+    /// Whether the state file has moved past the record whose digest is
+    /// `base`: a snapshot carrying it was overtaken by a publication.
+    pub(crate) fn moved_past(&self, base: [u8; 32]) -> bool {
+        self.healthy()
+            && self
+                .0
+                .accepted
+                .lock()
+                .is_some_and(|accepted| accepted != base)
+    }
+
     /// Own the state file at `path`, unless this writer already does. Once
     /// bound, this is a check of [`Runtime::path`] that waits for nothing,
     /// however long a publication holds the writer.
@@ -568,6 +652,134 @@ impl NativeStateRuntime {
         // Set only here, with the writer held and unbound, so exactly once.
         let _ = self.0.path.set(path.into());
         Ok(())
+    }
+}
+
+/// What a write of the state file refused, or failed at after it may have
+/// reached the file.
+enum WriteError {
+    Refused(io::Error),
+    Uncertain(io::Error),
+}
+
+/// One owner publication's hold of the writer, from before its sequence is
+/// taken until its record is installed (see [`NativeStateRuntime::begin`]).
+pub(super) struct PublicationTurn<'a> {
+    runtime: &'a NativeStateRuntime,
+    writer: Option<parking_lot::MutexGuard<'a, Writer>>,
+    /// The record written and the sequence it carries, until accepted.
+    written: Option<([u8; 32], u64)>,
+    /// A failed write, whose fencing waits until the writer is let go.
+    failed: Option<WriteError>,
+}
+
+impl PublicationTurn<'_> {
+    /// Take this publication's sequence and mark it in flight. Called with
+    /// the tree held.
+    pub(super) fn start(&self) -> StateSequence {
+        *self.runtime.0.in_flight.lock() = Some(InFlight::default());
+        self.runtime.next_sequence()
+    }
+
+    /// Write the state file; the record it holds is accepted by
+    /// [`Self::accept`], when it is installed.
+    pub(super) fn write(
+        &mut self,
+        path: &Path,
+        base: [u8; 32],
+        next: &NativeAuthorityStorage,
+        encoded: &crate::shell::persist::EncodedTree,
+        sequence: StateSequence,
+    ) -> io::Result<()> {
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| io::Error::other("native publication already ended"))?;
+        match self
+            .runtime
+            .write_held(writer, path, base, next, encoded, sequence)
+        {
+            Ok(Publication::Written) => {
+                self.written = Some((encoded.authority, sequence.0));
+                Ok(())
+            }
+            // The turn holds the writer from before its sequence was
+            // taken, so no later write can have landed first.
+            Ok(Publication::Superseded) => {
+                Err(io::Error::other("native owner publication was superseded"))
+            }
+            Err(error) => {
+                let shown = match &error {
+                    WriteError::Refused(error) | WriteError::Uncertain(error) => {
+                        io::Error::new(error.kind(), error.to_string())
+                    }
+                };
+                self.failed = Some(error);
+                Err(shown)
+            }
+        }
+    }
+
+    /// Accept the record [`Self::write`] wrote. Called with the tree held,
+    /// in the write that installs it.
+    pub(super) fn accept(&mut self) {
+        if let (Some((authority, sequence)), Some(writer)) = (self.written.take(), &mut self.writer)
+        {
+            *self.runtime.0.accepted.lock() = Some(authority);
+            writer.published = sequence;
+        }
+    }
+
+    /// End the publication's flight, with the tree held: whether a snapshot
+    /// was taken meanwhile, so the caller saves the tree again. That
+    /// snapshot still carries the old record; the file refuses it once
+    /// this record is in, and its save then stands down for this one.
+    pub(super) fn finish(&self) -> bool {
+        self.runtime
+            .0
+            .in_flight
+            .lock()
+            .take()
+            .is_some_and(|in_flight| in_flight.snapshotted)
+    }
+}
+
+impl Drop for PublicationTurn<'_> {
+    fn drop(&mut self) {
+        self.runtime.0.in_flight.lock().take();
+        drop(self.writer.take());
+        if let Some(error) = self.failed.take() {
+            drop(self.runtime.fence_if_uncertain(error));
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_seam {
+    //! A hook run on the publishing thread just before the state file is
+    //! replaced, with the writer held, so a test can hold a publication
+    //! there as a slow disk would.
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BEFORE_WRITE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn before_write() {
+        BEFORE_WRITE.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook();
+            }
+        });
+    }
+
+    /// Run `body` with `hook` called before each state-file write this
+    /// thread makes.
+    pub(crate) fn with_before_write<T>(hook: impl Fn() + 'static, body: impl FnOnce() -> T) -> T {
+        let previous = BEFORE_WRITE.with(|slot| slot.borrow_mut().replace(Box::new(hook)));
+        let value = body();
+        BEFORE_WRITE.with(|slot| *slot.borrow_mut() = previous);
+        value
     }
 }
 

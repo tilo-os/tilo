@@ -464,6 +464,9 @@ pub struct TreeSnapshot {
     durable: DurableTree,
     runtime: super::native_workspace_owner::NativeStateRuntime,
     sequence: super::native_workspace_owner::store::StateSequence,
+    /// Taken while an owner publication was in flight, whose install saves
+    /// the tree again.
+    during_publication: bool,
 }
 
 impl TreeSnapshot {
@@ -473,6 +476,7 @@ impl TreeSnapshot {
         tree.native_runtime.document_log().cut(&tree.doc);
         Self {
             sequence: tree.native_runtime.next_sequence(),
+            during_publication: tree.native_runtime.snapshot_during_publication(),
             runtime: tree.native_runtime.clone(),
             durable: DurableTree::of(tree),
         }
@@ -490,13 +494,21 @@ impl TreeSnapshot {
     ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
         let encoded = encode_durable(&self.durable)?;
         // A snapshot changes no record: it holds the one the file holds.
-        let published = self.runtime.publish(
+        let published = match self.runtime.publish(
             path,
             encoded.authority,
             &self.durable.native_authority,
             &encoded,
             self.sequence,
-        )?;
+        ) {
+            // Taken while an owner publication was writing, it carries the
+            // record that publication replaced. The publication saves the
+            // tree again once installed, which holds all of this snapshot.
+            Err(_) if self.during_publication && self.runtime.moved_past(encoded.authority) => {
+                super::native_workspace_owner::store::Publication::Superseded
+            }
+            published => published?,
+        };
         // Superseded or not, the changes cut for this snapshot are written:
         // the snapshot that superseded it may have been cut before them.
         write_document(&self.runtime, path);
@@ -533,6 +545,24 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     // Refuse a malformed authority before copying anything.
     check_authority(&tree.native_authority)?;
     TreeSnapshot::of(tree).write_to(path).map(drop)
+}
+
+/// [`save_tree_to`] for the shared tree: the snapshot is taken with the tree
+/// held and written once it is let go. An owner publication takes the state
+/// file's writer before the tree, so a save must not hold the tree while it
+/// waits for the writer.
+///
+/// # Errors
+/// As [`save_tree_to`].
+pub fn save_shared_tree_to(
+    tree: &super::state::WorkspaceTreeHandle,
+    path: &Path,
+) -> std::io::Result<()> {
+    let held = tree.read();
+    check_authority(&held.native_authority)?;
+    let snapshot = TreeSnapshot::of(&held);
+    drop(held);
+    snapshot.write_to(path).map(drop)
 }
 
 /// Save `tree` to `path` on the state writer thread, then run
@@ -673,7 +703,10 @@ fn write_meta(state: &Path, actor: &str) -> std::io::Result<()> {
 /// Write the tree document's pending changes beside the state file at
 /// `path`, and its meta after them. Best-effort: `state.json` is already
 /// durable, and on load it is what the desktop is rebuilt from.
-fn write_document(runtime: &super::native_workspace_owner::NativeStateRuntime, path: &Path) {
+pub(crate) fn write_document(
+    runtime: &super::native_workspace_owner::NativeStateRuntime,
+    path: &Path,
+) {
     if let Err(error) =
         runtime
             .document_log()
@@ -683,13 +716,6 @@ fn write_document(runtime: &super::native_workspace_owner::NativeStateRuntime, p
     {
         tracing::warn!(path = %path.display(), %error, "could not save the tree document");
     }
-}
-
-/// Write `tree`'s document beside the state file at `path` now, for a
-/// publication that encoded and published `tree` itself.
-pub(crate) fn save_document(tree: &WorkspaceTree, path: &Path) {
-    tree.native_runtime.document_log().cut(&tree.doc);
-    write_document(&tree.native_runtime, path);
 }
 
 /// Keep a document and log that cannot be opened for recovery, out of the

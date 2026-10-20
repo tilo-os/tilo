@@ -1168,9 +1168,8 @@ impl WorkspaceTree {
     }
 
     /// A copy of the tree with an empty [`Self::doc`] and no
-    /// [`Self::room_docs`]: a candidate to encode and maybe install, without
-    /// copying every document and its whole history. Before installing it,
-    /// [`Self::adopt_documents_of`] the tree it was copied from.
+    /// [`Self::room_docs`]: a candidate to encode, without copying every
+    /// document and its whole history.
     pub(crate) fn clone_without_documents(&mut self) -> Self {
         let doc = std::mem::replace(&mut self.doc, AutoCommit::new());
         let room_docs = std::mem::take(&mut self.room_docs);
@@ -1178,17 +1177,6 @@ impl WorkspaceTree {
         self.doc = doc;
         self.room_docs = room_docs;
         copy
-    }
-
-    /// Take `source`'s documents into a tree made by
-    /// [`Self::clone_without_documents`]. A room document this tree already
-    /// holds is newer than `source`'s and stays. Anything written to this
-    /// tree's placeholder [`Self::doc`] is dropped: reseed it from the cache.
-    pub(crate) fn adopt_documents_of(&mut self, source: &mut Self) {
-        self.doc = std::mem::replace(&mut source.doc, AutoCommit::new());
-        for (room, doc) in source.room_docs.drain() {
-            self.room_docs.entry(room).or_insert(doc);
-        }
     }
 
     /// Snapshot of the current automerge change-graph heads, the

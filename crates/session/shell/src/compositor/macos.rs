@@ -171,7 +171,7 @@ fn run_session(options: Options) -> Result<(), Error> {
             .run();
     }
     records.try_flush()?;
-    persist::save_tree_to(&tree.read(), &options.state_dir.join("state.json"))?;
+    persist::save_shared_tree_to(&tree, &options.state_dir.join("state.json"))?;
     persist::wait_for_saves();
     Ok(())
 }
