@@ -492,13 +492,16 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 
 impl Widget for PersonalAppsPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        // A relayout keeps the choosers; a changed choice rebuilds them, as
+        // each names the app it shows.
         if self.prefs.refresh() {
             self.show();
+            self.composed.invalidate();
         }
         self.composed.sync(state, root);
     }
 
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn name(&self) -> &'static str {
         "PersonalAppsPane"

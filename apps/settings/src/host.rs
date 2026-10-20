@@ -608,7 +608,8 @@ impl<T: SettingsSchema + Clone + PartialEq> Followed<T> {
 impl<T: Section> Followed<T> {
     /// The field at `path` as `show` makes it for a control, kept current
     /// as the value changes. Every control of the field shown as the same
-    /// type shares one state.
+    /// type shares one state, shown the way the latest asked: a page
+    /// rebuilt in another language relabels the controls it keeps.
     pub fn shown<V, S>(
         &self,
         path: &ui::tilo_resource::Path<T, V>,
@@ -620,26 +621,27 @@ impl<T: Section> Followed<T> {
     {
         let key = (path.segments().to_vec(), TypeId::of::<S>());
         let mut all = self.shown.borrow_mut();
-        if let Some(state) = all
+        let state = all
             .iter()
             .find(|shown| shown.key == key)
             .and_then(|shown| shown.state.downcast_ref::<LocalState<S>>())
-        {
-            return state.clone();
-        }
-        let state = LocalState::new(path.get(&self.value).map(&show).unwrap_or_default());
+            .cloned()
+            .unwrap_or_else(|| LocalState::new(S::default()));
         let path = path.clone();
         let follows = state.clone();
+        let show = move |value: &T| {
+            if let Some(now) = path.get(value).map(&show)
+                && follows.with(|was| *was != now)
+            {
+                follows.set(now);
+            }
+        };
+        show(&self.value);
+        all.retain(|shown| shown.key != key);
         all.push(Shown {
             key,
             state: Box::new(state.clone()),
-            show: Box::new(move |value: &T| {
-                if let Some(now) = path.get(value).map(&show)
-                    && follows.with(|was| *was != now)
-                {
-                    follows.set(now);
-                }
-            }),
+            show: Box::new(show),
         });
         state
     }

@@ -524,7 +524,7 @@ impl Widget for AccessibilityPane {
         self.composed.sync(state, root);
     }
 
-    crate::panes::composed_pane!();
+    crate::panes::composed_pane!(kept);
 
     fn name(&self) -> &'static str {
         "AccessibilityPane"
@@ -711,9 +711,13 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         let access = AccessibilitySettings::paths();
         // The rows' own states, which a field shown as text shares.
-        let zoom = pane.access.shown(&access.magnifier_zoom, |_| String::new());
+        let zoom = pane.access.shown(&access.magnifier_zoom, |zoom| {
+            magnifier::zoom_label(*zoom).to_owned()
+        });
         assert_eq!(zoom.get(), "5×");
-        let cursor = pane.access.shown(&access.cursor_size, |_| String::new());
+        let cursor = pane.access.shown(&access.cursor_size, |size| {
+            AccessibilitySettings::cursor_size_label(*size).to_owned()
+        });
         assert_eq!(cursor.get(), "Largest");
 
         cx.settings::<AppearancePrefs>()

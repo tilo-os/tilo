@@ -69,7 +69,32 @@ pub(crate) fn pane_node(
 /// `build_layout` for a pane whose content is `self.build_composition()`
 /// held in `self.composed`, wrapped in [`pane_node`], plus forwarding the
 /// rest of the widget to that composition.
+///
+/// `composed_pane!(kept)` keeps the composition across layouts, so a resize
+/// or a theme change leaves its controls (and their hover, press and focus)
+/// in place: for a pane whose controls follow their fields
+/// ([`crate::row::SettingRow`]) and that invalidates `self.composed` when
+/// what it builds the page from directly changes.
 macro_rules! composed_pane {
+    (kept) => {
+        fn build_layout(
+            &mut self,
+            taffy: &mut ui::taffy::TaffyTree<()>,
+            theme: &ui::theme::Theme,
+            node_map: &mut std::collections::HashMap<
+                ui::taffy::NodeId,
+                *mut dyn ui::widget::Widget,
+            >,
+        ) -> ui::taffy::NodeId {
+            let mut composed = std::mem::take(&mut self.composed);
+            let child =
+                composed.build_layout_kept(|| self.build_composition(), taffy, theme, node_map);
+            self.composed = composed;
+            crate::panes::pane_node(taffy, child, node_map, self)
+        }
+
+        ui::forward_to_composed!(composed);
+    };
     () => {
         fn build_layout(
             &mut self,

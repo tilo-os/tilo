@@ -4,7 +4,6 @@
 //! reads.
 
 use settings_store::desk_widgets::{DockEdge, ShowMode, WidgetId, WidgetPrefs};
-use ui::LocalState;
 use ui::tilo_resource;
 
 use super::AppearancePane;
@@ -28,20 +27,6 @@ fn edge_label(edge: DockEdge) -> String {
         DockEdge::BottomLeft => "settings-desk-edge-bottom-left",
         DockEdge::BottomRight => "settings-desk-edge-bottom-right",
     })
-}
-
-fn show_from_label(label: &str) -> Result<ShowMode, String> {
-    ShowMode::ALL
-        .into_iter()
-        .find(|mode| show_label(*mode) == label)
-        .ok_or_else(|| format!("`{label}` is not offered"))
-}
-
-fn edge_from_label(label: &str) -> Result<DockEdge, String> {
-    DockEdge::ALL
-        .into_iter()
-        .find(|edge| edge_label(*edge) == label)
-        .ok_or_else(|| format!("`{label}` is not offered"))
 }
 
 impl AppearancePane {
@@ -104,30 +89,23 @@ impl AppearancePane {
             self.cx
                 .row(name)
                 .id(format!("{key}.enabled"))
-                .toggle(&LocalState::new(widget.enabled), enabled),
+                .of(&self.desk, enabled)
+                .toggle(),
         ];
         if widget.enabled {
             items.push(
                 self.cx
                     .row(t("settings-desk-when"))
                     .id(format!("{key}.show"))
-                    .choice(
-                        ShowMode::ALL.into_iter().map(show_label),
-                        &LocalState::new(show_label(widget.show)),
-                        show,
-                        |label: String| show_from_label(&label),
-                    ),
+                    .of(&self.desk, show)
+                    .among(ShowMode::ALL, |mode: &ShowMode| show_label(*mode)),
             );
             items.push(
                 self.cx
                     .row(t("settings-desk-edge"))
                     .id(format!("{key}.edge"))
-                    .choice(
-                        DockEdge::ALL.into_iter().map(edge_label),
-                        &LocalState::new(edge_label(widget.edge)),
-                        edge,
-                        |label: String| edge_from_label(&label),
-                    ),
+                    .of(&self.desk, edge)
+                    .among(DockEdge::ALL, |edge: &DockEdge| edge_label(*edge)),
             );
         }
         items
@@ -138,14 +116,12 @@ impl AppearancePane {
 mod tests {
     use super::*;
 
+    /// A chooser tells its choices apart by their labels.
     #[test]
-    fn every_offered_label_reads_back_as_its_choice() {
-        for mode in ShowMode::ALL {
-            assert_eq!(show_from_label(&show_label(mode)), Ok(mode));
-        }
-        for edge in DockEdge::ALL {
-            assert_eq!(edge_from_label(&edge_label(edge)), Ok(edge));
-        }
-        assert!(show_from_label("Sometimes").is_err());
+    fn every_offered_label_names_one_choice() {
+        let shows: std::collections::HashSet<_> = ShowMode::ALL.map(show_label).into();
+        assert_eq!(shows.len(), ShowMode::ALL.len());
+        let edges: std::collections::HashSet<_> = DockEdge::ALL.map(edge_label).into();
+        assert_eq!(edges.len(), DockEdge::ALL.len());
     }
 }
