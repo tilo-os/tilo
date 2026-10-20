@@ -294,6 +294,7 @@ capnp = [
 "capnp:collab.capnp:ChannelContext.historyAgents" = "@6 :List(HistoryAgent)"
 "capnp:collab.capnp:ChannelContext.historyAgentsChanged" = "@7 :Bool"
 "capnp:collab.capnp:ChannelContext.permissions" = "@1 :List(Text)"
+"capnp:collab.capnp:ChannelContext.recordsArrived" = "@8 :List(Text)"
 "capnp:collab.capnp:ChannelContext.snapshotRequested" = "@4 :Bool"
 "capnp:collab.capnp:ChannelHandle" = "interface"
 "capnp:collab.capnp:ChannelHandle.actionCatalogue" = "@19 ()->(catalogueJson:Text)"

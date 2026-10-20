@@ -16,6 +16,7 @@
 mod approved_checks;
 mod external_moderation;
 mod local_document_action;
+mod subscriptions;
 pub use approved_checks::{ApprovedCheckContext, ApprovedCheckServices};
 mod execution_activity;
 #[cfg(test)]
@@ -1570,6 +1571,8 @@ enum ContextEnvelope {
     Handoff(Vec<u8>),
     /// The room's delegated agents the session verified, for history.
     HistoryAgents(Vec<ui::history_source::RosterAgent>),
+    /// Records of the application's trees a peer wrote and no window holds.
+    RecordsArrived(Vec<String>),
 }
 
 /// One inert operation published by a live application connection: the one
@@ -7801,7 +7804,15 @@ impl CapnpBrokerState {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
             CollabEvent::Handoff { request } => {
-                Self::fanout_handoff(channels, except, request.encode());
+                let handoff = ContextEnvelope::Handoff(request.encode());
+                subscriptions::context_frame(channels, except, &handoff);
+            }
+            CollabEvent::RecordsArrived { records } => {
+                subscriptions::context_frame(
+                    channels,
+                    except,
+                    &ContextEnvelope::RecordsArrived(records.clone()),
+                );
             }
             CollabEvent::ActionArrived { type_id, .. } => {
                 // Unreachable today; said out loud, not silently dropped.
@@ -7992,22 +8003,6 @@ impl CapnpBrokerState {
     /// Session-local handoff control for the instance(s) on the addressed
     /// primary route. Like Follow, it rides the context stream tagged so the
     /// client never mistakes it for a roster.
-    fn fanout_handoff<'a>(
-        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
-        except: u64,
-        message: Vec<u8>,
-    ) {
-        let env = ContextEnvelope::Handoff(message);
-        for subs in channels {
-            subs.context.retain(|sub| {
-                if sub.peer_id == except {
-                    return true;
-                }
-                sub.tx.send(env.clone()).is_ok()
-            });
-        }
-    }
-
     fn ensure_channel(&self, channel_id: &str) {
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
@@ -8015,8 +8010,11 @@ impl CapnpBrokerState {
         }
     }
 
+    /// Subscribe to `channel_id`'s ops, after what was admitted before
+    /// ([`subscriptions::admitted_ops`]).
     fn subscribe_ops(&self, channel_id: &str, peer_id: u64) -> mpsc::UnboundedReceiver<OpEnvelope> {
         let (tx, rx) = mpsc::unbounded_channel();
+        subscriptions::admitted_ops(&self.broker_channels, channel_id, &tx);
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -13582,6 +13580,15 @@ impl context_stream::Server for ContextStreamServer {
                 }
                 ContextEnvelope::HistoryAgents(agents) => {
                     encode_history_agents(&mut ctx, &agents)?;
+                    return Ok(());
+                }
+                ContextEnvelope::RecordsArrived(records) => {
+                    let count = u32::try_from(records.len())
+                        .map_err(|_| capnp::Error::failed("context: too many records".into()))?;
+                    let mut arrived = ctx.init_records_arrived(count);
+                    (0..count)
+                        .zip(&records)
+                        .for_each(|(i, r)| arrived.set(i, r.as_str()));
                     return Ok(());
                 }
             };

@@ -412,6 +412,17 @@ impl App {
             .then_some("a live document owner has no usable publication route");
         let mut sends = vec![];
         for entry in &mut self.document_routes.owners {
+            if entry.opening {
+                if !self
+                    .collaboration
+                    .manager
+                    .document_route_publishable(&entry.route)
+                {
+                    // Its whole document goes out once the route opens.
+                    continue;
+                }
+                entry.opening = false;
+            }
             let Some(owner) = entry.owners.first() else {
                 blocked.get_or_insert("a document route has no owner");
                 continue;
@@ -614,6 +625,29 @@ impl App {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
+    }
+
+    /// Peers wrote `records` of this window's trees (a chain's next part, a
+    /// container's child) that it does not hold: every store a live owner
+    /// reads from is told, so whatever follows a tree there holds them, and
+    /// they sync on their own routes from then on
+    /// ([`crate::history_mode::routes`]).
+    pub(super) fn records_arrived(&mut self, records: &[String]) {
+        let records: Vec<crate::record::RecordId> = records
+            .iter()
+            .filter_map(|record| crate::record::RecordId::parse(record))
+            .collect();
+        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+        for owner in live_document_owners(self.root_widget.as_ref()) {
+            let (store, _) = owner.store_checkout();
+            if !stores.iter().any(|known| known.same_owner(store)) {
+                stores.push(store.clone());
+            }
+        }
+        for store in &stores {
+            store.announce(records.iter().cloned());
+        }
+        self.needs_sync = true;
     }
 
     pub(super) fn pump_document_routes(&mut self) {

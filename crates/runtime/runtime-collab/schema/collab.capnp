@@ -948,6 +948,12 @@ struct ChannelContext {
   # it reads an empty roster frame, and roster rows are upserts.
   historyAgents @6 :List(HistoryAgent);
   historyAgentsChanged @7 :Bool;
+  # Session-local control frame: records of this application's trees (a
+  # chain's next part, a container's child) that a peer wrote and no window
+  # here holds. Clients leave the roster snapshot untouched and hold them as
+  # their trees' own. Empty on every other frame; never relayed to peers.
+  # Additive: a client that predates it reads an empty roster frame.
+  recordsArrived @8 :List(Text);
 }
 
 # One verified delegated agent in a `ChannelContext.historyAgents` frame.

@@ -264,6 +264,17 @@ impl RecordId {
         (!id.is_empty()).then(|| (Self(base.to_owned()), id.to_owned()))
     }
 
+    /// The record whose tree `self` belongs to: the chain of a
+    /// [`Self::part`], the parent of a [`Self::child`]; `None` for a record
+    /// of its own. Such a record lives and syncs with its tree: whatever
+    /// holds the tree holds it, whether or not a view shows it.
+    #[must_use]
+    pub fn tree(&self) -> Option<Self> {
+        self.chain_part()
+            .map(|(chain, _)| chain)
+            .or_else(|| self.child_of().map(|(parent, _)| parent))
+    }
+
     /// `self` declared on-demand: a room's host does not replay it to a
     /// joining device, and sends it to a device when it opens it. The wire
     /// form is `neighbour_wire::on_demand_record`'s.
@@ -1328,6 +1339,9 @@ pub struct RecordSet {
     /// How many times a record arrived in the backend without being
     /// opened here ([`RecordStore::note_kept`]).
     kept: std::cell::Cell<u64>,
+    /// Records of this store's trees peers wrote that it does not hold yet
+    /// ([`RecordStore::announce`]).
+    announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1396,6 +1410,7 @@ impl RecordSet {
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -1424,6 +1439,7 @@ impl RecordSet {
             native_initial: None,
             storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -2482,6 +2498,7 @@ impl RecordOwners {
                 .flatten(),
             storage_wake: None,
             kept: std::cell::Cell::new(0),
+            announced: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -3243,6 +3260,35 @@ impl RecordStore {
         if let Ok(set) = self.0.try_borrow() {
             set.kept.set(set.kept.get().wrapping_add(1));
         }
+    }
+
+    /// Peers wrote `records` of this store's trees ([`RecordId::tree`]),
+    /// which it does not hold: whatever follows those trees takes them up
+    /// at once ([`Self::announced_parts`]), as after [`Self::note_kept`].
+    /// Callable while a frame reads the store.
+    pub fn announce(&self, records: impl IntoIterator<Item = RecordId>) {
+        if let Ok(set) = self.0.try_borrow() {
+            set.announced
+                .borrow_mut()
+                .extend(records.into_iter().filter(|record| record.tree().is_some()));
+            set.kept.set(set.kept.get().wrapping_add(1));
+        }
+    }
+
+    /// The numbers of the parts of the chain `base` peers wrote
+    /// ([`Self::announce`]), in order.
+    #[must_use]
+    pub fn announced_parts(&self, base: &RecordId) -> Vec<u64> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        let announced = set.announced.borrow();
+        announced
+            .iter()
+            .filter_map(RecordId::chain_part)
+            .filter(|(chain, _)| chain == base)
+            .map(|(_, index)| index)
+            .collect()
     }
 
     /// Moves whenever [`Self::note_kept`] is called.
@@ -4332,6 +4378,19 @@ impl RecordStore {
     /// Every record this store holds.
     pub fn open_records(&self) -> Vec<RecordCheckout> {
         self.0.borrow().open_records()
+    }
+
+    /// The open records that belong to another's tree ([`RecordId::tree`]),
+    /// ready to read; none while a frame holds the store.
+    pub(crate) fn open_tree_records(&self) -> Vec<RecordCheckout> {
+        let Ok(set) = self.0.try_borrow() else {
+            return Vec::new();
+        };
+        set.open
+            .iter()
+            .filter(|(id, parked)| parked.doc.is_some() && id.tree().is_some())
+            .map(|(id, parked)| RecordCheckout::new(id.clone(), parked.kind.clone()))
+            .collect()
     }
 
     /// Offer every open record to its writer. Once per idle tick.

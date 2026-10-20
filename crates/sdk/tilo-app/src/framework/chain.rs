@@ -261,13 +261,22 @@ impl<P: Chained> ChainState<P> {
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
-        let Some(newest) = self.room.store.held_parts(&P::chain()).last().copied() else {
+        let kept = self.room.store.held_parts(&P::chain()).last().copied();
+        // A part a peer started is the same record here (each part's genesis
+        // is the same everywhere): started here, it syncs on its route.
+        let started = self.room.store.announced_parts(&P::chain()).last().copied();
+        let Some(newest) = kept.max(started) else {
             return false;
         };
         if head.is_some_and(|head| newest <= head) {
             return false;
         }
-        self.hold(newest)
+        let opened = if kept.is_some_and(|kept| kept >= newest) {
+            self.hold(newest)
+        } else {
+            self.start(newest)
+        };
+        opened
             .map_err(|error| {
                 tracing::debug!(kind = P::KIND, part = newest, %error, "chain head not opened");
             })

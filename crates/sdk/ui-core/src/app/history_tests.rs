@@ -861,15 +861,15 @@ fn owned_routes_isolate_documents_and_admit_only_custodied_bytes() {
     }
 }
 
-struct RoutedOwners {
-    app: App,
-    records: crate::RecordStore,
+pub(crate) struct RoutedOwners {
+    pub(crate) app: App,
+    pub(crate) records: crate::RecordStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
     _owners: crate::record::RecordOwners,
     _temp: tempfile::TempDir,
 }
 impl RoutedOwners {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         use crate::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
         use crate::application_test_support::{
             APP, author, provenance, runner_permissions, runner_probe_definition,

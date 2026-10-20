@@ -704,6 +704,12 @@ pub enum CollabEvent {
         cluster_id: String,
         agents: Vec<crate::history_source::RosterAgent>,
     },
+    /// Records of this application's trees (a chain's next part, a
+    /// container's child) that a peer wrote and no window here holds:
+    /// whatever follows those trees holds them. Session-local.
+    RecordsArrived {
+        records: Vec<String>,
+    },
     /// Session chrome asked this app to bind its viewport/view mode to a
     /// participant, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
@@ -1854,16 +1860,22 @@ impl CollaborationManager {
         }
     }
 
-    /// Test-only: whether `route` has resolved its document mode, so a
-    /// document mutation on it would be admitted rather than refused.
-    #[cfg(test)]
-    pub(crate) fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
+    /// Whether `route` takes documents now: joined, and its original
+    /// history applied.
+    pub(crate) fn document_route_publishable(&self, route: &RouteSpec) -> bool {
         match &self.backend {
             Backend::Transport(transport) => {
                 transport.document_publishable(Some(&route.channel_id()))
             }
             Backend::Disabled(_) => false,
         }
+    }
+
+    /// Test-only: whether `route` has resolved its document mode, so a
+    /// document mutation on it would be admitted rather than refused.
+    #[cfg(test)]
+    pub(crate) fn document_route_publishable_for_test(&self, route: &RouteSpec) -> bool {
+        self.document_route_publishable(route)
     }
 
     /// [`Self::send_to_route`] with the reason a request was not handed off.
