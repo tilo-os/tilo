@@ -1403,18 +1403,19 @@ impl Operation {
             state,
             offer: Some(self.offer.clone()),
         };
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(tree))).is_err() {
-            let completed = self.records.lock_recover().len();
-            *self.reply.lock_recover() = Some(Reply::Settled {
+        let reply = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(tree)))
+            .unwrap_or_else(|_| Reply::Settled {
                 operation: self.id.clone(),
-                completed,
+                completed: self.records.lock_recover().len(),
                 error: Some(
                     "clipboard worker stopped; inspect recorded changes before retrying".into(),
                 ),
                 undone: false,
             });
-        }
+        // Free the worker slot before answering: whoever reads the answer may
+        // Undo at once, and compensation refuses while a worker is counted.
         drop(permit);
+        *self.reply.lock_recover() = Some(reply);
         #[cfg(test)]
         test_support::finished(&self.destination.path);
     }
@@ -1451,21 +1452,19 @@ impl Operation {
         self.destination
             .check(tree, self.context.workspace(), self.context.owner())
     }
-    fn run(&self, tree: &WorkspaceTreeHandle) {
+    /// Carry out the paste and say how it settled.
+    fn run(&self, tree: &WorkspaceTreeHandle) -> Reply {
         if let Err(error) = self.journal.begin(self).and_then(|receipt| {
             self.receipt
                 .set(receipt)
                 .map_err(|_| "clipboard receipt already initialized".into())
         }) {
-            if let Ok(mut reply) = self.reply.lock() {
-                *reply = Some(Reply::Settled {
-                    operation: self.id.clone(),
-                    completed: 0,
-                    error: Some(error),
-                    undone: false,
-                });
-            }
-            return;
+            return Reply::Settled {
+                operation: self.id.clone(),
+                completed: 0,
+                error: Some(error),
+                undone: false,
+            };
         }
         let mut error = None;
         let mut next = 0;
@@ -1482,13 +1481,11 @@ impl Operation {
             error =
                 Some(error.map_or_else(|| reason.clone(), |error| format!("{error}; {reason}")));
         }
-        if let Ok(mut reply) = self.reply.lock() {
-            *reply = Some(Reply::Settled {
-                operation: self.id.clone(),
-                completed,
-                error,
-                undone: false,
-            });
+        Reply::Settled {
+            operation: self.id.clone(),
+            completed,
+            error,
+            undone: false,
         }
     }
     /// Paste the next batch of the offer's entries from `next` on, through
