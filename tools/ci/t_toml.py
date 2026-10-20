@@ -20,13 +20,17 @@ so t.toml carries both, generated between markers:
     test or run (`cargo_packages`, whose sources, local dependencies and
     external crates t derives from the manifests and the lockfile), and the
     files outside those packages they or the packages read, so a change
-    elsewhere in the tree doesn't run them again.
+    elsewhere in the tree doesn't run them again;
+  * the size checks: `app-size/<app>-<arch>` for each app of the default
+    collection and `runtime-size-<arch>`, each keyed by what building and
+    measuring its subject reads (tools/apps/t-release.sh app-size, runtime-size).
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -319,6 +323,112 @@ CARGO_CHECKS: dict[str, dict] = {
 }
 
 
+# The size checks (tools/apps/t-release.sh app-size and runtime-size). Each compiles in the
+# default collection's graph, as a release does (dist/apps/package-apps.sh), and reads:
+SIZE_ARCHES = [("x86_64", "arch=x86_64"), ("aarch64", "arch=arm64")]
+# to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
+# app's manifests and the collections), the architecture guard, package-apps.sh up to its
+# compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
+SIZE_COMPILE = ["tools/apps/t-release.sh", "tools/apps/release-lib.sh", "tools/ci/publish/lib.sh",
+                "tools/ci/python.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py",
+                "tools/ci/workspace_graph.py", "tools/apps/app_release.py", "dist/apps/app-collections.toml",
+                "apps/*/tilo-app.toml", "os/dev/assert-native-arch.sh", "dist/apps/package-apps.sh",
+                "tools/apps/app_package_isa.py", "crates/packaging/tilo-app-package/max-app-bytes",
+                "os/scripts/build-thin-apps.sh", "tools/ci/rustc-thin-app-wrapper.sh",
+                "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/thin-app/**", "os/scripts/verify-elf-hardening.sh",
+                "tools/apps/release-smoke.sh", "tools/perf/tapp_size_ratchet.py", "tools/perf/record.py"]
+# to package one app: the signed runtime bundle its tapp names (the font catalog, the bake, the
+# closure check), the manifest's staging and the packing of the runtime package, then its budget;
+APP_SIZE_PACKAGING = ["tools/font-catalog.py", "os/scripts/bake-runtime-bundle.sh",
+                      "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh",
+                      "tools/apps/dev_app_versions.py", "os/scripts/stamp-runtime.sh",
+                      "tools/apps/stage_sdk_services.py", "tools/apps/pack-runtime-package.sh",
+                      "tools/perf/tapp-size-budget/**"]
+# to measure the runtime: its budget.
+RUNTIME_SIZE_MEASURE = ["tools/perf/runtime_size_ratchet.py", "tools/perf/runtime-size-budget/**"]
+# The packages package-apps.sh compiles for every selection: the runtime, its engines (the runtime
+# bundle and so every tapp's runtime id cover them) and the packing tools.
+SIZE_PACKING_TOOLS = {"tilo-app-package-cli", "runtime-bundle"}
+RUNTIME_SIZE_BUDGET = ROOT / "tools/perf/runtime-size-budget/budget.toml"
+
+
+def app_release_module():
+    """tools/apps/app_release.py, which knows the apps, the collections and the engines."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("app_release", ROOT / "tools/apps/app_release.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def resolution_manifests(packages: dict[str, dict], names: set[str]) -> list[str]:
+    """What Cargo reads to resolve the default collection's graph, beyond what t derives for a
+    check's own packages: features unify across every package the build selects, and versions
+    across the lockfile, so the manifests of every package that graph reaches (and of the crates
+    patched in) and the whole lockfile."""
+    tops = {Path(packages[name]["manifest_path"]).resolve().relative_to(ROOT).parts[0]
+            for name in local_closure(packages, names, False)}
+    import tomllib
+    root = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    for table in root.get("patch", {}).values():
+        tops |= {Path(spec["path"]).parts[0] for spec in table.values() if isinstance(spec, dict) and "path" in spec}
+    return ["Cargo.toml", "Cargo.lock", *(f"{top}/**/Cargo.toml" for top in sorted(tops))]
+
+
+def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
+    """One `app-size/<app>-<arch>` check per app of the default collection, and one
+    `runtime-size-<arch>`: none runs by default; an agent names the one its change concerns."""
+    module = app_release_module()
+    catalog = module.app_catalog(ROOT)
+    apps = module.resolve_collection("default", catalog, module.config(ROOT / "dist/apps/app-collections.toml"))
+    engines = module.runtime_engines(ROOT)
+    runtime = {"runtime-dylib", *engines}
+    import tomllib
+    without_media = tomllib.loads(RUNTIME_SIZE_BUDGET.read_text(encoding="utf-8"))["apps_without_media"]
+    by_binary = {catalog[app]["binary"]: app for app in apps}
+    missing = sorted(set(without_media) - by_binary.keys())
+    if missing:
+        raise ValueError(f"{RUNTIME_SIZE_BUDGET.relative_to(ROOT)}: apps_without_media names no app of the "
+                         f"default collection: {', '.join(missing)}")
+    media_free = sorted(by_binary[binary] for binary in without_media)
+    graph = runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"] for app in apps}
+    manifests = resolution_manifests(packages, graph)
+
+    # The engines by the pattern their packages follow, where it names them all; a package it
+    # names besides them only adds inputs.
+    engine_names = (["tilo-*-engine"] if all(fnmatch.fnmatchcase(engine, "tilo-*-engine") for engine in engines)
+                    else sorted(engines))
+
+    def check(name: str, run: str, node: str, names: set[str], inputs: list[str]) -> str:
+        spec = {"packages": lambda packages, root: names, "dev": False, "inputs": inputs, "drop_covered": True,
+                "cargo_packages": sorted(names - engines) + engine_names}
+        return "\n".join([
+            "[[check]]",
+            f"name = {json.dumps(name)}",
+            f"run = {json.dumps(run)}",
+            f"requires = [{json.dumps(node)}]",
+            # The runtime library's link and an app's one-unit codegen run side by side.
+            'requirement = { cores = 16, memory = "32GiB" }',
+            "timeout_secs = 5400",
+            'cost = "heavy"',
+            "default = false",
+        ]) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
+
+    blocks = []
+    for arch, node in SIZE_ARCHES:
+        blocks.append(check(f"runtime-size-{arch}", f"bash tools/apps/t-release.sh runtime-size {arch} {' '.join(media_free)}",
+                            node, runtime | {catalog[app]["package"] for app in media_free},
+                            [*SIZE_COMPILE, *RUNTIME_SIZE_MEASURE, *(f"apps/{app}/**" for app in media_free),
+                             *manifests]))
+    for app in apps:
+        for arch, node in SIZE_ARCHES:
+            blocks.append(check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",
+                                node, runtime | SIZE_PACKING_TOOLS | {catalog[app]["package"]},
+                                [*SIZE_COMPILE, *APP_SIZE_PACKAGING, f"apps/{app}/**", *manifests]))
+    return "\n".join(blocks)
+
+
 def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:
     """`names` and the workspace packages they reach through normal and build dependencies,
     and with `dev` through their own dev-dependencies, as t derives a check's packages."""
@@ -360,6 +470,17 @@ def compiled_reads(reader: suites.CargoReader) -> set[str]:
     return found
 
 
+def covered(path: str, packages: dict[str, dict], reach: set[str], root: Path) -> bool:
+    """Whether t already counts `path` (a file, or a directory's `/**`) as a file of a package in
+    `reach`: t gives a file to the deepest package directory it lies in."""
+    target = (root / path.removesuffix("/**")).resolve()
+    dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
+    if path.endswith("/**") and any(target in d.parents for d in dirs):
+        return False
+    owners = [d for d in dirs if d == target or d in target.parents]
+    return bool(owners) and dirs[max(owners, key=lambda d: len(d.parts))] in reach
+
+
 def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict[str, dict], root: Path) -> str:
     """A CARGO_CHECKS check's packages and the files it reads beyond them: its own, and those
     suites.toml says its packages read outside their directories (for packages it only builds,
@@ -375,9 +496,11 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
     for reader in manifest.cargo:
         if reader.package in reach:
             reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
+    if spec.get("drop_covered"):
+        reads = {path for path in reads if not covered(path, packages, reach, root)}
     inputs = list(dict.fromkeys([*spec["inputs"], *sorted(reads - set(spec["inputs"]))]))
     return "\n".join([
-        f"cargo_packages = {array(sorted(names))}",
+        f"cargo_packages = {array(spec.get('cargo_packages', sorted(names)))}",
         *([] if dev else ["cargo_dev_dependencies = false"]),
         f"inputs = {array(inputs)}",
     ]) + "\n"
@@ -386,7 +509,9 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
     metadata = metadata if metadata is not None else workspace_graph.cargo_metadata(ROOT)
     packages = {p["name"]: p for p in metadata["packages"]}
-    return {f"{name}-reads": cargo_check(name, spec, manifest, packages, ROOT) for name, spec in CARGO_CHECKS.items()}
+    return {**{f"{name}-reads": cargo_check(name, spec, manifest, packages, ROOT)
+               for name, spec in CARGO_CHECKS.items()},
+            "size-checks": size_checks(manifest, packages)}
 
 
 def generated(manifest: suites.Manifest) -> dict[str, str]:

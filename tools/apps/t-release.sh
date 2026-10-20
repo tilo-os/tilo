@@ -7,11 +7,20 @@
 #                        aarch64), package them with throwaway keys, run the release smoke
 #                        tests and the reproducibility check, and keep what signing needs in
 #                        OUT/compiled
-#   sizes ARCH           no credentials: the size gate on main. Compile every app of the default
-#                        collection as `build` does, package them with throwaway keys, and fail
-#                        when a tapp or the runtime is over its budget
+#   sizes ARCH           no credentials: the whole collection's size gate. Compile every app of
+#                        the default collection as `build` does, package them with throwaway keys,
+#                        and fail when a tapp or the runtime is over its budget
 #                        (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
-#                        on every commit of main, so the commit that took an app over is named.
+#                        on each new head of stable and when dispatched, not on every commit.
+#   app-size ARCH APP    no credentials: one app's size, as `sizes` measures it. Compile APP (an
+#                        app directory) in the default collection's graph, package it with
+#                        throwaway keys and fail when its tapp is over its budget. The tapp names
+#                        the runtime it links, so the runtime bundle is built and signed too.
+#   runtime-size ARCH APP...
+#                        no credentials: the shared runtime's size, as `sizes` measures it.
+#                        Compile the runtime, its engines and APPs (the apps the runtime budget
+#                        lists as playing no media, whose loaded libraries it also checks), and
+#                        fail when the runtime is over its budget. Nothing is packaged.
 #   binaries ARCH OUT    no credentials: compile the default collection as `build` does but keep
 #                        the symbol tables, and leave the apps, the runtime and its engines in
 #                        OUT, for reading what makes an app large (`t outputs app-binaries-ARCH`;
@@ -38,6 +47,21 @@ registry_owner_pubkey=55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa
 
 default_apps() {
   python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | jq -r '.apps | join(" ")'
+}
+
+# The environment of the size checks (sizes, app-size, runtime-size): APPS (app directories)
+# compiled for ARCH in the default collection's graph, as a release compiles them, into
+# $scratch/NAME.
+size_build() {
+  local arch=$1 apps=$2 name=$3 target
+  os/dev/assert-native-arch.sh "$arch"
+  target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+  export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
+  export CARGO_INCREMENTAL=0
+  export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(cargo_jobs)}
+  # The thin graph compiles as a release's does (build-thin-apps.sh drops the release
+  # profile's overrides); the packing tools need no optimisation to pack the same bytes.
+  export TILO_RELEASE_APPS=$apps TILO_APP_RELEASE_OUT=$scratch/$name TILO_APP_TOOLS_PROFILE=dev
 }
 
 # The publication environment publish-collections.sh reads, for this trusted run.
@@ -94,17 +118,26 @@ case $command in
     ;;
   sizes)
     arch=${1:?usage: t-release.sh sizes ARCH}
-    os/dev/assert-native-arch.sh "$arch"
-    target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
     apps=$(default_apps)
-    export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
-    export CARGO_INCREMENTAL=0
-    export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-$(cargo_jobs)}
-    # The thin graph compiles as a release's does (build-thin-apps.sh drops the release
-    # profile's overrides); the packing tools need no optimisation to pack the same bytes.
-    export TILO_RELEASE_APPS=$apps TILO_APP_RELEASE_OUT=$scratch/app-sizes TILO_APP_TOOLS_PROFILE=dev
+    size_build "$arch" "$apps" app-sizes
     dist/apps/package-apps.sh
     RELEASE_SMOKE_STEPS="tapp_size runtime_size" tools/apps/release-smoke.sh "$arch"
+    ;;
+  app-size)
+    arch=${1:?usage: t-release.sh app-size ARCH APP} app=${2:?usage: t-release.sh app-size ARCH APP}
+    (( $# == 2 )) || die "usage: t-release.sh app-size ARCH APP"
+    size_build "$arch" "$app" app-size
+    dist/apps/package-apps.sh
+    RELEASE_SMOKE_STEPS=tapp_size tools/apps/release-smoke.sh "$arch"
+    ;;
+  runtime-size)
+    arch=${1:?usage: t-release.sh runtime-size ARCH APP...}
+    shift
+    (( $# > 0 )) || die "usage: t-release.sh runtime-size ARCH APP..."
+    size_build "$arch" "$*" runtime-size
+    # The runtime's measurement reads only the compiled graph: no packing tools, no bundle.
+    TILO_APP_COMPILE_ONLY=1 TILO_APP_SKIP_TOOLS=1 dist/apps/package-apps.sh
+    RELEASE_SMOKE_STEPS=runtime_size tools/apps/release-smoke.sh "$arch"
     ;;
   binaries)
     arch=${1:?usage: t-release.sh binaries ARCH OUT} out=${2:?}
@@ -168,6 +201,6 @@ case $command in
     printf 'Submitted the apps of %s to %s\n' "$T_COMMIT" "$registry_url"
     ;;
   *)
-    die "usage: t-release.sh build|sizes|binaries|sign|publish|submit ..."
+    die "usage: t-release.sh build|sizes|app-size|runtime-size|binaries|sign|publish|submit ..."
     ;;
 esac

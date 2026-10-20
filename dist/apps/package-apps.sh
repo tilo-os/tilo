@@ -40,7 +40,7 @@ if [[ -n $prebuilt ]]; then
     target_dir=$(realpath -e "$prebuilt")
 fi
 # The profile the packing tools (tilo-app-package, tilo-runtime-bundle) are built with. A release
-# builds them optimised; the size gate on main (tools/apps/t-release.sh sizes) takes `dev`, which
+# builds them optimised; the size checks (tools/apps/t-release.sh sizes, app-size) take `dev`, which
 # packs the same bytes and builds in seconds where an optimised link takes minutes.
 tools_profile=${TILO_APP_TOOLS_PROFILE:-release}
 case $tools_profile in
