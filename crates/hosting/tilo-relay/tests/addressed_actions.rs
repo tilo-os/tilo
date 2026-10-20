@@ -284,13 +284,20 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn addressed_actions_are_private_live_and_demultiplexed_from_v1_state() {
+    // The relay is still running: an atomic write's temporary file can go
+    // between listing and reading, and its contents land in the file it
+    // replaced.
     fn scan(path: &std::path::Path) {
         for entry in std::fs::read_dir(path).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 scan(&path);
             } else {
-                let data = std::fs::read(path).unwrap();
+                let data = match std::fs::read(&path) {
+                    Ok(data) => data,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => panic!("read {}: {error}", path.display()),
+                };
                 assert!(!data.windows(13).any(|v| v == b"private-phase"));
                 assert!(!data.windows(14).any(|v| v == b"private-result"));
             }
