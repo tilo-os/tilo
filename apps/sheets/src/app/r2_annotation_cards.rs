@@ -1,5 +1,4 @@
-//! Alignment regressions for the floating chart / comment annotation cards
-//! (`SheetsApp::draw_charts`, `draw_comment_threads`).
+//! Alignment regressions for the docked chart and comment annotation cards.
 //!
 //! The card rows come from measured line boxes and spacing tokens
 //! ([`ChromeMetrics::comment_rows`], [`ChromeMetrics::plot_h`]) and the
@@ -43,7 +42,7 @@ fn annotation_cards_keep_rows_and_targets_clear() {
                 "the card ends with its action row"
             );
             assert!(
-                (m.plot_h() - m.lh_caption - m.s1 - (m.s16 + m.s6)).abs() < 0.01,
+                (m.plot_h() - m.lh_caption - m.s1 - m.s16).abs() < 0.01,
                 "a plot is content-sized under its legend's line"
             );
             heights.push(rows.height);
@@ -60,6 +59,7 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         // Tall enough at 2× text that the dock is not given up for the grid.
         let (mut app, mut tr, theme) = measured_app(1800.0, 1600.0, 2.0);
         seed_annotations(&mut app);
+        app.managed_chart = Some("c1".into());
         paint_frame(&mut app, &mut tr, &theme);
 
         let m = app.metrics.clone();
