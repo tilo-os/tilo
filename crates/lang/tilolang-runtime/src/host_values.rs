@@ -93,6 +93,11 @@ impl Core {
                 })?;
                 self.element(imp, item)
             }
+            Imp::ListSortByKey => {
+                let items = self.list_items(a.h(0)?)?;
+                let keys = self.list_items(a.h(1)?)?;
+                self.ret_h(Value::List(sorted_by_keys(&items, &keys)?))
+            }
             Imp::TupleNew => {
                 let n = index(i64::from(a.h(0)?), "tuple size")?;
                 self.ret_h(Value::Tuple(vec![Value::Unit; n]))
@@ -142,6 +147,13 @@ impl Core {
         }
     }
 
+    fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
+        self.with_val(h, |v| match v {
+            Value::List(items) => Ok(items.clone()),
+            other => trap(format!("expected a list, got {}", other.kind_name())),
+        })
+    }
+
     /// Hand an element, tuple member or unwrapped value to the guest in the form the import
     /// name promises.
     fn element(&self, imp: Imp, item: Value) -> HResult<Option<Wasm>> {
@@ -172,5 +184,43 @@ impl Core {
             other => return trap(format!("expected a tuple, got {}", other.kind_name())),
         }
         ret_void()
+    }
+}
+
+/// The items ordered by their parallel keys, ascending and stable. Keys of one list must be
+/// all ints, all floats, all text or all bools.
+fn sorted_by_keys(items: &[Value], keys: &[Value]) -> HResult<Vec<Value>> {
+    if items.len() != keys.len() {
+        return trap(format!("{} keys for {} items", keys.len(), items.len()));
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    let mut failure: Option<String> = None;
+    order.sort_by(|x, y| match (keys.get(*x), keys.get(*y)) {
+        (Some(a), Some(b)) => compare_keys(a, b).unwrap_or_else(|e| {
+            failure.get_or_insert(e);
+            std::cmp::Ordering::Equal
+        }),
+        _ => std::cmp::Ordering::Equal,
+    });
+    if let Some(e) = failure {
+        return trap(e);
+    }
+    Ok(order
+        .into_iter()
+        .filter_map(|i| items.get(i).cloned())
+        .collect())
+}
+
+fn compare_keys(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
+        (Value::Float(x), Value::Float(y)) => Ok(x.total_cmp(y)),
+        (Value::Text(x), Value::Text(y)) => Ok(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
+        _ => Err(format!(
+            "sort keys must be of one type, found {} and {}",
+            a.kind_name(),
+            b.kind_name()
+        )),
     }
 }

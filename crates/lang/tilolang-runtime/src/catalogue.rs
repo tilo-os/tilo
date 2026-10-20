@@ -1,7 +1,7 @@
 //! Discovery (implementation design 6.3): signatures an agent reads, built from the
 //! metadata, doc comments included.
 
-use crate::meta::{FieldMeta, Meta, ParamMeta};
+use crate::meta::{FieldMeta, MergeKind, PackageMeta, ParamMeta};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignatureKind {
@@ -47,28 +47,36 @@ fn params(ps: &[ParamMeta]) -> String {
 }
 
 fn result(r: Option<&String>) -> String {
-    r.map_or_else(String::new, |t| format!(" -> {t}"))
+    r.filter(|t| t.as_str() != "()")
+        .map_or_else(String::new, |t| format!(" -> {t}"))
 }
 
 fn field(f: &FieldMeta) -> String {
-    match &f.merge {
-        Some(m) => format!("{}: {} merge {m}", f.name, f.ty),
-        None => format!("{}: {}", f.name, f.ty),
+    match f.merge {
+        MergeKind::Counter | MergeKind::Register if f.ty == "Text" => {
+            format!("{}: {} merge {}", f.name, f.ty, f.merge.name())
+        }
+        MergeKind::Counter => format!("{}: {} merge counter", f.name, f.ty),
+        _ => format!("{}: {}", f.name, f.ty),
     }
 }
 
+fn doc(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 /// Signatures of everything the given apps declare.
-pub fn catalogue(apps: &[&Meta]) -> Vec<Signature> {
+pub fn catalogue(apps: &[&PackageMeta]) -> Vec<Signature> {
     let mut out = Vec::new();
     for m in apps {
         let app = m.app.clone();
-        let mut push = |kind, name: &str, id: &str, doc: &Option<String>, text: String| {
+        let mut push = |kind, name: &str, id: &str, text_doc: &str, text: String| {
             out.push(Signature {
                 kind,
                 app: app.clone(),
                 name: name.to_owned(),
                 id: id.to_owned(),
-                doc: doc.clone(),
+                doc: doc(text_doc),
                 text,
             });
         };
@@ -83,10 +91,9 @@ pub fn catalogue(apps: &[&Meta]) -> Vec<Signature> {
             );
         }
         for a in &m.actions {
-            let proposal = a
-                .proposal
-                .as_ref()
-                .map_or_else(String::new, |p| format!(" proposal {p}"));
+            let proposal = a.proposal.as_ref().map_or_else(String::new, |p| {
+                format!(" proposal {}({})", p.name, p.args.join(", "))
+            });
             push(
                 SignatureKind::Action,
                 &a.name,
@@ -129,12 +136,7 @@ pub fn catalogue(apps: &[&Meta]) -> Vec<Signature> {
                 &f.name,
                 &f.id,
                 &f.doc,
-                format!(
-                    "fn {app}.{}({}){}",
-                    f.name,
-                    params(&f.params),
-                    result(f.result.as_ref())
-                ),
+                format!("fn {app}.{}({}) -> {}", f.name, params(&f.params), f.result),
             );
         }
     }

@@ -40,6 +40,7 @@ imports! {
     (ListGetI, "list_get_i", "il", "l"),
     (ListGetF, "list_get_f", "il", "f"),
     (ListGetH, "list_get_h", "il", "i"),
+    (ListSortByKey, "list_sort_by_key", "ii", "i"),
 
     (TupleNew, "tuple_new", "i", "i"),
     (TupleSetI, "tuple_set_i", "iil", ""),
@@ -74,6 +75,8 @@ imports! {
     (SetRemove, "set_remove", "iii", ""),
     (MapPut, "map_put", "iiii", ""),
     (MapRemove, "map_remove", "iii", ""),
+    (MapGetH, "map_get_h", "iii", "i"),
+    (MapKeys, "map_keys", "ii", "i"),
     (RecNew, "rec_new", "i", "i"),
     (RecSetI, "rec_set_i", "iil", ""),
     (RecSetF, "rec_set_f", "iif", ""),
@@ -84,6 +87,7 @@ imports! {
 
     (ActRef, "act_ref", "ii", "i"),
     (Invoke, "invoke", "i", "i"),
+    (IsError, "is_error", "i", "i"),
     (Outside, "outside", "ii", "i"),
     (ModelCall, "model_call", "ii", "i"),
 

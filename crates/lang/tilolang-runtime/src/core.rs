@@ -198,30 +198,28 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActRef, CollInsert, CollMove, CollRemove, FloatToStr, IntToStr, Invoke, IsSome,
-            ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI,
-            MapPut, MapRemove, ModelCall, NoneV, Outside, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
-            RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp, StrConcat,
-            StrEq, StrLen, StrLit, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiAnchor, UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF,
-            UnwrapH, UnwrapI,
+            Abort, ActRef, CollInsert, CollMove, CollRemove, FloatToStr, IntToStr, Invoke, IsError,
+            IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
+            ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV,
+            Outside, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI,
+            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove,
+            SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp, StrConcat, StrEq, StrLen, StrLit,
+            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor,
+            UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
                 self.text_import(imp, mem, a)
             }
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
-            | ListGetH | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI | TupleGetF
-            | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => {
-                self.aggregate_import(imp, a)
-            }
+            | ListSortByKey | ListGetH | TupleNew | TupleSetI | TupleSetF | TupleSetH
+            | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
+            | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | SetAdd | SetRemove | MapPut
-            | MapRemove | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefId => {
-                self.resource_import(imp, a)
-            }
-            ActRef | Invoke | Outside | ModelCall => self.effect_import(imp, a),
+            | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
+            | RefEq | RefId => self.resource_import(imp, a),
+            ActRef | Invoke | IsError | Outside | ModelCall => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF => self.ui_import(imp, a),
             Abort => {

@@ -107,6 +107,7 @@ impl Core {
                 let binding = Binding {
                     target: r.target,
                     field: f.id,
+                    author: self.module_of_frame()?,
                 };
                 self.with_view(|vs| {
                     vs.nodes.get_mut(node).ok_or("unknown ui node")?.binding = Some(binding);
