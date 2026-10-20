@@ -51,6 +51,7 @@ use ui::TextRole;
 
 mod controller;
 mod desk;
+mod device_local_chips;
 pub use desk::SuperSurface;
 mod device_fabric;
 pub(crate) mod dictation_layer;
@@ -998,6 +999,9 @@ pub struct ShellOverlayHost {
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// The tabs whose bar says "Only on this device", and the tree
+    /// generation they were read at ([`device_local_chips`]).
+    device_local: device_local_chips::DeviceLocal,
     /// The tooltip naming the window bar's button under the pointer.
     bar_tooltip: ui::widget::tooltip::TooltipHost,
     /// The tiles shown and the pointer, kept current for a presence pump

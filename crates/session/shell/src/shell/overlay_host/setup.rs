@@ -574,6 +574,7 @@ impl ShellOverlayHost {
             bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),
+            device_local: device_local_chips::DeviceLocal::default(),
             bar_tooltip: ui::widget::tooltip::TooltipHost::new(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
