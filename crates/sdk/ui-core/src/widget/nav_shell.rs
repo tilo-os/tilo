@@ -1548,6 +1548,14 @@ pub struct NavShell {
     /// The room that row leaves before the sync status, where a document
     /// says how its save is going ([`Self::header_status_slot`]).
     status_slot: Rect,
+    /// The status changed since the last frame drawn: only where it was
+    /// ([`Self::status_drawn`]) and where it is repaint, not the whole shell.
+    status_dirty: bool,
+    /// The status text's box as last drawn.
+    status_drawn: Rect,
+    /// The span of the header row the status was last painted into; empty
+    /// until the shell has painted, when where the status goes is unknown.
+    status_span: Rect,
 }
 
 impl Default for NavShell {
@@ -1638,6 +1646,9 @@ impl NavShell {
             toasts_dirty: false,
             sync_status: crate::widget::HeaderStatus::default(),
             status_slot: Rect::ZERO,
+            status_dirty: false,
+            status_drawn: Rect::ZERO,
+            status_span: Rect::ZERO,
         }
     }
 
@@ -3460,6 +3471,7 @@ impl NavShell {
     /// its trailing controls, wherever the row has room.
     fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
         self.status_slot = Rect::ZERO;
+        self.status_span = Rect::ZERO;
         let g = &self.geometry;
         let column = g.history_column.unwrap_or(Column::Content);
         let row = g.header(column);
@@ -3503,6 +3515,9 @@ impl NavShell {
         .map(|rect| rect.x1)
         .fold(row.x0, f64::max)
             + gap;
+        if x1 > x0 {
+            self.status_span = Rect::new(x0, row.y0, x1, row.y1);
+        }
         self.sync_status
             .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
         let said = self.sync_status.get_rect();
@@ -4189,9 +4204,9 @@ impl Widget for NavShell {
             .iter()
             .filter_map(|part| self.exposed(*part))
             .collect();
-        if self.sync_status.text().is_some() {
-            children.push(&self.sync_status);
-        }
+        // Always listed, with or without text: the status changes by paint
+        // alone, so its coming and going must not change the tree's shape.
+        children.push(&self.sync_status);
         if !self.toasts.is_empty() {
             children.push(&self.toasts);
         }
@@ -4206,9 +4221,7 @@ impl Widget for NavShell {
                 visitor(widget);
             }
         }
-        if self.sync_status.text().is_some() {
-            visitor(&self.sync_status);
-        }
+        visitor(&self.sync_status);
         if !self.toasts.is_empty() {
             visitor(&self.toasts);
         }
@@ -4307,9 +4320,7 @@ impl Widget for NavShell {
                 out.push(widget);
             }
         }
-        if sync_status.text().is_some() {
-            out.push(sync_status);
-        }
+        out.push(sync_status);
         if !toasts.is_empty() {
             out.push(toasts);
         }
@@ -4388,6 +4399,7 @@ impl Widget for NavShell {
 
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
+            || self.status_dirty
             || self.toasts_dirty
             || self.toasts_expired()
             || self.animating
@@ -4400,6 +4412,8 @@ impl Widget for NavShell {
 
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
+        self.status_dirty = false;
+        self.status_drawn = self.sync_status.get_rect();
         self.toasts_dirty = false;
         self.toasts_drawn = self.toasts_painted;
         self.toasts_drawn_scene.clone_from(&self.toasts_scene);
@@ -4421,6 +4435,21 @@ impl Widget for NavShell {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
+            // The status where it was and where it may be now.
+            if self.status_dirty {
+                if self.status_span.is_zero_area() {
+                    // Not painted yet: where the status goes is not known.
+                    regions.push(self.rect);
+                } else {
+                    // Damage is collected after the frame painted, so the
+                    // status's box is where it now is.
+                    regions.extend(
+                        [self.status_drawn, self.sync_status.get_rect()]
+                            .into_iter()
+                            .filter(|rect| !rect.is_zero_area()),
+                    );
+                }
+            }
             // The notices where they were and are, shadows included.
             if self.toasts_changed() {
                 regions.extend(
@@ -4486,7 +4515,7 @@ impl WindowHeader for NavShell {
 
     fn set_sync_status(&mut self, status: Option<&str>) -> bool {
         if self.sync_status.set(status) {
-            self.paint_dirty = true;
+            self.status_dirty = true;
             self.invalidation.invalidate();
         }
         true
