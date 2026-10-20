@@ -307,7 +307,9 @@ pub(crate) fn name_history_run(
 /// The History host's door for descriptions of its resource's changes: one
 /// forward change through the resource's owner, under the same authority a
 /// restore needs, written only while no edit is open. Like a name, it is
-/// neither a row nor an undo step.
+/// neither a row nor an undo step. Only the native runner hears from the
+/// shell that describes changes.
+#[cfg(feature = "native")]
 pub(crate) fn describe_history(
     state: &mut State,
     source: &crate::history_mode::HistorySourceRegistration,
@@ -426,6 +428,7 @@ pub(crate) enum RestoreWrite<'a> {
     },
     /// Write what changes did, as a model described them, for those the
     /// document does not describe yet: no content moves.
+    #[cfg(feature = "native")]
     Describe {
         current: &'a [ChangeHash],
         described: &'a [(crate::HistoryEntryId, String, String)],
@@ -437,8 +440,9 @@ impl RestoreWrite<'_> {
             Self::Content(prepared) => prepared.current_heads(),
             Self::WholeDocument { current, .. }
             | Self::Changes { current, .. }
-            | Self::Name { current, .. }
-            | Self::Describe { current, .. } => current,
+            | Self::Name { current, .. } => current,
+            #[cfg(feature = "native")]
+            Self::Describe { current, .. } => current,
         }
     }
 }
@@ -514,6 +518,7 @@ impl<'a> OwnedContentAction<'a> {
                     RestoreOutcome::Unchanged
                 }
             }
+            #[cfg(feature = "native")]
             RestoreWrite::Describe { described, .. } => {
                 let mut wrote = false;
                 for (id, text, generator) in described {
