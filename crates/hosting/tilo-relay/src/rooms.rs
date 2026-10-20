@@ -232,7 +232,17 @@ impl GovernedRoom {
             now,
         )?;
         select_exact_admission(&mut peer)?;
-        peer.install_seed(empty_workspace(&room, authority, &roster, name)?, key, now)?;
+        peer.install_seed(
+            tilo_peer_state::workspace_seed(
+                &room,
+                authority,
+                &roster,
+                name,
+                rand::random::<u16>().max(1),
+            )?,
+            key,
+            now,
+        )?;
         prepare_governance(&mut peer, key, now)?;
         let outgoing = peer
             .durable_bootstrap_messages(key, now, 1)?
@@ -592,53 +602,6 @@ fn publication(
     Ok(Publication {
         bytes: postcard::to_stdvec(message).map_err(|error| error.to_string())?,
         checkpoint: kind == Retention::Checkpoint,
-    })
-}
-
-/// A new workspace: governance and topology custody, no app records.
-fn empty_workspace(
-    room: &str,
-    authority: &DeviceCert,
-    roster: &[DeviceCert],
-    name: &str,
-) -> Result<tilo_peer_state::SeedState, String> {
-    use automerge::{AutoCommit, Change, ObjType, ROOT, transaction::Transactable};
-    use tilo_automerge::ApplyIncoming as _;
-
-    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
-        authority.device_public_key.to_vec(),
-    ));
-    let changes = tilo_peer_state::seed_room(room, authority, roster)?
-        .into_iter()
-        .map(Change::from_bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    doc.apply_incoming(changes)
-        .map_err(|error| error.to_string())?;
-    doc.put(ROOT, "name", name)
-        .map_err(|error| error.to_string())?;
-    doc.put_object(ROOT, "contents", ObjType::Map)
-        .map_err(|error| error.to_string())?;
-    let owners = doc
-        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
-        .map_err(|error| error.to_string())?;
-    let salt = rand::random::<u16>().max(1);
-    doc.put(
-        owners,
-        format!("{salt:04x}"),
-        hex::encode(authority.device_public_key),
-    )
-    .map_err(|error| error.to_string())?;
-    doc.put(ROOT, "desktop_counter_v1", 1_u64)
-        .map_err(|error| error.to_string())?;
-    doc.commit();
-    Ok(tilo_peer_state::SeedState {
-        room_changes: doc
-            .get_changes(&[])
-            .iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect(),
-        documents: vec![],
     })
 }
 

@@ -29,7 +29,7 @@ pub use state::{
     PeerRoomAccess, PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ReceiveOutcome,
     RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState,
     StatePeer, TransportOrigin, committed_document_revision, decide_with_surfaces,
-    default_surfaces, peer_handle, seed_room, succeeded_authority,
+    default_surfaces, peer_handle, seed_room, succeeded_authority, workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;
