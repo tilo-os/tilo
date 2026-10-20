@@ -58,6 +58,8 @@ pub const PRIMS: &[Prim] = &[
     prim_of("image", &["src"], &["alt", "width", "height"]),
     prim_of("progress", &["value"], &[]),
     prim_of("divider", &[], &[]),
+    // A block's source rendered inline; both arguments are `Text` (implementation.md 7.8).
+    prim_of("embed", &["source"], &["author"]),
 ];
 
 /// Sizing and placement arguments accepted by every UI call, including view calls.

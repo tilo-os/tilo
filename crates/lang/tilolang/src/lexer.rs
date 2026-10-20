@@ -421,8 +421,13 @@ impl Lexer<'_> {
         }
         self.pos += 1;
         let id_start = self.pos;
-        while self.at(0).is_some_and(|b| is_ident_char(b) || b == b'-') {
+        self.id_chars();
+        // A resource nested in another is written `doc/field:item`, one step per nesting.
+        while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
+            self.id_chars();
+            self.pos += 1;
+            self.id_chars();
         }
         let id = self.slice(id_start, self.pos).to_string();
         if id.is_empty() {
@@ -451,6 +456,26 @@ impl Lexer<'_> {
             version,
         };
         self.push(Tok::Ref(lit), start);
+    }
+
+    fn id_chars(&mut self) {
+        while self.at(0).is_some_and(|b| is_ident_char(b) || b == b'-') {
+            self.pos += 1;
+        }
+    }
+
+    /// Whether the `/` at the cursor starts a `/field:item` step of a reference id.
+    fn step_follows(&self) -> bool {
+        let is_id = |b: u8| is_ident_char(b) || b == b'-';
+        let mut i = self.pos + 1;
+        let field = i;
+        while self.bytes.get(i).is_some_and(|b| is_id(*b)) {
+            i += 1;
+        }
+        if i == field || self.bytes.get(i) != Some(&b':') {
+            return false;
+        }
+        self.bytes.get(i + 1).is_some_and(|b| is_id(*b))
     }
 
     fn string(&mut self, start: usize) {
