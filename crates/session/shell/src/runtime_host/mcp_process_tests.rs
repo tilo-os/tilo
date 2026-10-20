@@ -441,14 +441,16 @@ fn mcp_process_owns_and_reaps_its_children() {
             let started = started.clone();
             crate::shell::persist::queue_save(&tree.read(), &path, move || {
                 started.send(()).unwrap();
-                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                tilo_test_env::recv("the controller to release the shutdown save", &released);
             });
         });
         session.broker.local_session_lifecycle().watch(&listener);
         let returned = Arc::new(AtomicBool::new(false));
         let observed = returned.clone();
         let controller = std::thread::spawn(move || {
-            saving.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Closing a session under load can take longer than any fixed
+            // budget before its final save starts; only a hang is a failure.
+            tilo_test_env::recv("the shutdown save to start", &saving);
             // Keep the actual final writer occupied while checking retirement.
             std::thread::sleep(Duration::from_millis(100));
             let waited = !observed.load(Ordering::SeqCst);
