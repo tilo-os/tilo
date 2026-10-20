@@ -7,7 +7,7 @@ use crate::pane_model::model_pane;
 
 use crate::panes::{
     accessibility, appearance, audio, bluetooth, disk_unlock, display, keyboard_shortcuts,
-    mouse_keyboard, network, notifications, permissions, personal_apps, power, time_date,
+    mouse_keyboard, network, notifications, permissions, personal_apps, power,
 };
 
 /// Every area the window holds, in the order they are made: an area made
@@ -22,9 +22,6 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     }),
     (30, |context, _| {
         Box::new(personal_apps::DefaultAppsArea::new(context.cx))
-    }),
-    (40, |context, _| {
-        Box::new(time_date::TimeDateArea::new(context.cx))
     }),
     (50, |context, _| {
         Box::new(mouse_keyboard::InputArea::new(context.cx))
@@ -52,7 +49,6 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (20, appearance::AppearanceEffect::FAMILY),
     (30, accessibility::AccessibilityEffect::FAMILY),
     (40, personal_apps::DefaultAppsEffect::FAMILY),
-    (50, time_date::TimeDateEffect::FAMILY),
     (60, keyboard_shortcuts::ShortcutEffect::FAMILY),
     (70, mouse_keyboard::InputEffect::FAMILY),
     (80, power::PowerEffect::FAMILY),
@@ -245,18 +241,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
         categories: &[Category::KeyboardShortcuts],
         build: |app, _| Box::new(keyboard_shortcuts::ShortcutPane::new(app.host().clone())),
-    },
-    crate::area::PaneEntry {
-        categories: &[Category::TimeDate],
-        build: |app, _| {
-            time_date::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    Box::new(time_date::TimeDatePane::new(app.host().clone(), area))
-                        as Box<dyn ui::widget::Widget>
-                },
-            )
-        },
     },
     crate::area::PaneEntry {
         categories: &[Category::Power],

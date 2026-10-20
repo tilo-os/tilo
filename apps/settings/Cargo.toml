@@ -40,9 +40,6 @@ settings-rare = { path = "../settings-rare" }
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 # The outlines the keyboard preview draws.
 tilo-pc-keyboard-geometry = { path = "../../crates/platform/pc-keyboard-geometry" }
-# The Date & Time pane's globe.
-tilo-zone-globe = { path = "../../crates/platform/zone-globe" }
-tilo-locale = { path = "../../crates/platform/tilo-locale" }
 # The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }

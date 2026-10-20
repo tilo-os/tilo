@@ -29,13 +29,12 @@ pub mod notifications;
 pub mod permissions;
 pub mod personal_apps;
 pub mod power;
-pub mod time_date;
 
 // The panes people rarely open are `settings-rare`'s, loaded from the
 // Settings engine library; they are named here as panes of Settings too.
 pub use settings_rare::panes::{
     about, accounts, agent_models, agent_vertex, device_mesh, disk_unlock, drives, printers,
-    region, speakers, storage, updates, users,
+    region, speakers, storage, time_date, updates, users,
 };
 
 pub use crate::pane_model as model;

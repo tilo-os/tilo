@@ -1,7 +1,7 @@
 [package]
 name = "settings-rare"
 version = "0.1.0"
-description = "The panes of Settings people rarely open (accounts, agent models, devices and sync, speakers, storage, drives, disk unlock, printers, users, region, updates, about), loaded from the Settings engine library"
+description = "The panes of Settings people rarely open (accounts, agent models, devices and sync, speakers, storage, drives, disk unlock, printers, users, region, date and time with its globe, updates, about), loaded from the Settings engine library"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
