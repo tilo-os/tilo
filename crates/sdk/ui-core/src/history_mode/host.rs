@@ -465,6 +465,26 @@ impl HistoryHost {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
+    /// Take a new sync status where it already shows, without rebuilding:
+    /// closed, the status is quiet text in the live app's header row, which
+    /// repaints just that text when it changes, and this bar's own layout
+    /// does not depend on it. Returns `false`, changing nothing here, when
+    /// the status would move or appear in this bar instead; the caller then
+    /// refreshes it whole ([`Self::set_sync_status`]).
+    pub(crate) fn set_sync_status_in_place(
+        &mut self,
+        status: Option<&str>,
+        live: &mut dyn Widget,
+    ) -> bool {
+        if self.open || self.invalid_owner || !self.app_presents_status {
+            return false;
+        }
+        if !crate::widget::window_header::offer_sync_status(live, status) {
+            return false;
+        }
+        self.sync_status = status.map(str::to_owned);
+        true
+    }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
         let _phase = tilo_resource::profiling::Phase::start("ui.history_root_validation");
         self.registration

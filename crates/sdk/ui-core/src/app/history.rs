@@ -155,6 +155,17 @@ impl App {
         let status = self
             .document_sync_status()
             .map(std::borrow::Cow::into_owned);
+        // A status that only changes the text where it already shows repaints
+        // that text; it is no reason to rebuild History or the app.
+        crate::history_mode::embedded::set_sync_status_in_place(
+            self.root_widget.as_mut(),
+            status.as_deref(),
+        );
+        if let Some(history) = &mut self.history
+            && !history.sync_status_matches(status.as_deref())
+        {
+            history.set_sync_status_in_place(status.as_deref(), self.root_widget.as_mut());
+        }
         let nested = crate::history_mode::embedded::needs_refresh(
             self.root_widget.as_ref(),
             &self.state.doc,

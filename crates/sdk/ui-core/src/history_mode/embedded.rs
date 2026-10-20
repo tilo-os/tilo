@@ -281,6 +281,16 @@ pub(crate) fn finish_pending_command(
         }
     });
 }
+/// Hand `status` to every History surface under `root` that can take it
+/// where it already shows ([`super::host::HistoryHost::set_sync_status_in_place`]),
+/// so a status-only change repaints that text instead of rebuilding.
+pub(crate) fn set_sync_status_in_place(root: &mut dyn Widget, status: Option<&str>) {
+    crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
+        if !history.sync_status_matches(status) {
+            history.set_sync_status_in_place(status, live);
+        }
+    });
+}
 /// Called only after the runner has discarded all raw widget maps.
 pub(crate) fn refresh(
     root: &mut dyn Widget,
