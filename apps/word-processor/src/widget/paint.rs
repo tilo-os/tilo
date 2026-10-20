@@ -1285,6 +1285,16 @@ impl WordProcessorWidget {
         presence: &PresenceCtx,
     ) {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        // This pass runs after the page layer was popped. Clip every
+        // collaborator's mark and label to the canvas, so a scrolled-away
+        // caret or highlight cannot reach the toolbar or other panes.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &canvas_clip,
+        );
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
         for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
@@ -1338,16 +1348,6 @@ impl WordProcessorWidget {
             if rects.is_empty() {
                 continue;
             }
-            // This pass runs after the page layer was popped. Clip semantic
-            // highlights and their labels explicitly so they cannot reach
-            // the toolbar, other panes, or the surrounding host chrome.
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &canvas_clip,
-            );
             let user = UserId(interaction.actor.id.clone());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
@@ -1363,18 +1363,22 @@ impl WordProcessorWidget {
                     3.0,
                 );
             }
-            scene.pop_layer();
         }
+        // A name is window chrome, not document text: page zoom moves the
+        // caret but does not magnify its label.
+        let page_to_window = self.zoom.transform(Affine::IDENTITY);
+        let window = ctf * page_to_window.inverse();
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
                 scene,
                 theme,
                 text_renderer,
-                ctf,
+                window,
                 &c.user,
                 &c.label,
-                c.rect,
+                page_to_window.transform_rect_bbox(c.rect),
             );
         }
+        scene.pop_layer();
     }
 }
