@@ -485,18 +485,31 @@ impl Host {
     /// # Errors
     /// The module does not link; the loaded version, if any, stays.
     pub fn load_compiled(&self, compiled: &tilolang::Compiled) -> Result<Package, HostError> {
-        let meta = compiled.meta.clone();
-        let id = self
-            .inner
-            .runtime
-            .reload_package(&compiled.wasm, meta.clone())?;
+        self.load_module(
+            &compiled.wasm,
+            compiled.meta.clone(),
+            compiled.ids.to_text(),
+        )
+    }
+
+    /// Load a package from its compiled module alone, with the metadata the module embeds, and
+    /// trust it: how a launcher starts a built-in package compiled when Tilo was built, so that
+    /// launching compiles no tilolang. The package has no ids lock to write back.
+    ///
+    /// # Errors
+    /// The module embeds no metadata, or does not load.
+    pub fn load_wasm(&self, wasm: &[u8]) -> Result<Package, HostError> {
+        let meta = PackageMeta::from_wasm(wasm).ok_or_else(|| {
+            HostError::Compile("the module embeds no tilolang metadata".to_owned())
+        })?;
+        self.load_module(wasm, meta, String::new())
+    }
+
+    fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
+        let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         meta.register_schemas();
         self.inner.authority.trust(&id);
-        let package = Package {
-            meta,
-            id,
-            ids: compiled.ids.to_text(),
-        };
+        let package = Package { meta, id, ids };
         let mut packages = self.inner.packages.borrow_mut();
         match packages
             .iter_mut()

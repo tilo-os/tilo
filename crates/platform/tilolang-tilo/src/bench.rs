@@ -29,7 +29,7 @@ use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Decision, Principal, UiNode, ViewInstance};
+use tilolang_runtime::{Decision, EngineProfile, Principal, Translation, UiNode, ViewInstance};
 
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::host::Host;
@@ -51,6 +51,11 @@ pub struct BenchConfig {
     pub samples: usize,
     /// How long the idle scenario waits.
     pub idle: Duration,
+    /// How the process's wasm engine translates modules.
+    pub translation: Translation,
+    /// Whether to count where the time of calls into wasm goes (it costs a clock read per
+    /// import).
+    pub profile: bool,
     pub env: Env,
 }
 
@@ -298,6 +303,25 @@ struct Phases {
     search: Vec<f64>,
     /// Publication republishing what changed.
     publish: Vec<f64>,
+    /// Time inside wasm, the host's imports excluded, and in the imports.
+    wasm: Vec<f64>,
+    imports: Vec<f64>,
+    /// Time compiling wasm modules.
+    compile: Vec<f64>,
+}
+
+impl Phases {
+    /// What the engine profiled between `before` and `after`, if it profiles.
+    fn engine(&mut self, before: Option<EngineProfile>, after: Option<EngineProfile>) {
+        if let (Some(before), Some(after)) = (before, after) {
+            let calls = after.in_calls.saturating_sub(before.in_calls);
+            let imports = after.in_imports.saturating_sub(before.in_imports);
+            self.wasm.push(ms(calls.saturating_sub(imports)));
+            self.imports.push(ms(imports));
+            self.compile
+                .push(ms(after.compiling.saturating_sub(before.compiling)));
+        }
+    }
 }
 
 impl Phases {
@@ -322,16 +346,21 @@ impl Phases {
             "poll_p50_ms": p50(&mut self.poll),
             "search_p50_ms": p50(&mut self.search),
             "publish_p50_ms": p50(&mut self.publish),
+            "wasm_p50_ms": p50(&mut self.wasm),
+            "imports_p50_ms": p50(&mut self.imports),
+            "compile_p50_ms": p50(&mut self.compile),
         })
     }
 }
 
 impl Room {
-    fn open(doc: Doc, packages: &[Compiled], app: &str) -> Result<Self, String> {
+    fn open(doc: Doc, packages: &[Compiled], app: &str, profile: bool) -> Result<Self, String> {
         let host = Host::new(&doc, Principal::new("bench"), |_, _| Decision::Allow)
             .map_err(|e| e.to_string())?;
+        host.runtime().engine().profile(profile);
+        // As a launcher does: from the modules built with Tilo, compiling no source.
         for compiled in packages {
-            host.load_compiled(compiled).map_err(|e| e.to_string())?;
+            host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
         }
         let mut list = host.open_main(app).map_err(|e| e.to_string())?;
         // A virtual list shows what fits, as the host does before its first frame.
@@ -350,6 +379,8 @@ impl Room {
         let mut phases = Phases::default();
         phases.search.push(ms(publishing.duration_since(indexing)));
         phases.publish.push(ms(publishing.elapsed()));
+        let profiled = host.runtime().engine().profiled();
+        phases.engine(profiled.map(|_| EngineProfile::default()), profiled);
         Ok(Self {
             doc,
             host,
@@ -364,6 +395,7 @@ impl Room {
     /// What a frame does after a change: commit what the runtime committed through the
     /// executor, bring the store up to date with the record, and run what went stale.
     fn frame(&mut self, others: &mut [&mut ViewInstance]) -> Result<usize, String> {
+        let profiled = self.host.runtime().engine().profiled();
         let start = Instant::now();
         for committed in self.host.take_committed() {
             execute(&mut self.doc, &committed.action, "bench")?;
@@ -384,6 +416,8 @@ impl Room {
         self.phases.poll.push(ms(polled.duration_since(synced)));
         self.phases.search.push(ms(searched.duration_since(polled)));
         self.phases.publish.push(ms(searched.elapsed()));
+        let after = self.host.runtime().engine().profiled();
+        self.phases.engine(profiled, after);
         Ok(patches)
     }
 }
@@ -459,7 +493,12 @@ struct Sized<'a> {
 
 impl Sized<'_> {
     fn record(&self, scenario: &str, unit: &'static str, samples: Vec<f64>, extra: Json) -> Record {
-        let mut meta = json!({"items": self.n, "package": self.meta.app});
+        let translation = match self.config.translation {
+            Translation::Lazy => "lazy",
+            Translation::Eager => "eager",
+        };
+        let mut meta =
+            json!({"items": self.n, "package": self.meta.app, "translation": translation});
         if let (Some(m), Json::Object(extra)) = (meta.as_object_mut(), extra) {
             m.extend(extra.into_iter().filter(|(_, v)| !v.is_null()));
         }
@@ -472,7 +511,12 @@ impl Sized<'_> {
     }
 
     fn open(&self) -> Result<Room, String> {
-        Room::open(self.base.clone(), self.packages, &self.meta.app)
+        Room::open(
+            self.base.clone(),
+            self.packages,
+            &self.meta.app,
+            self.config.profile,
+        )
     }
 
     /// The item the edits go to: on screen, in the middle of the list or of the page a
@@ -491,7 +535,15 @@ impl Sized<'_> {
 /// # Errors
 /// The package does not compile or a scenario fails.
 pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Record>, String> {
+    let translation = tilolang_runtime::set_translation(config.translation);
+    if translation != config.translation {
+        return Err(format!(
+            "the process's engine already translates {translation:?}"
+        ));
+    }
+    let compiling = Instant::now();
     let packages = compile(&config.package)?;
+    let compiled_in = ms(compiling.elapsed());
     let main = packages.last().ok_or("no package")?;
     for compiled in &packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
@@ -503,6 +555,14 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         records: Vec::new(),
         emit,
     };
+    // What a launcher that compiled the package's source would add to every open; one
+    // that loads the module built with Tilo (`Host::load_wasm`, as `open` does) does not.
+    out.push(Record {
+        kpi: format!("tilolang.compile_source.{short}"),
+        unit: "ms",
+        samples: vec![compiled_in],
+        meta: json!({"package": meta.app, "packages": packages.len()}),
+    });
     for &n in &config.sizes {
         let sized = Sized {
             config,
@@ -542,6 +602,9 @@ fn open(sized: &Sized<'_>) -> Result<Record, String> {
         nodes = room.list.tree().count();
         phases.search.append(&mut room.phases.search);
         phases.publish.append(&mut room.phases.publish);
+        phases.wasm.append(&mut room.phases.wasm);
+        phases.imports.append(&mut room.phases.imports);
+        phases.compile.append(&mut room.phases.compile);
     }
     let mut extra = phases.take();
     if let Json::Object(m) = &mut extra {
@@ -752,6 +815,8 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
         sizes: vec![10, 1000, 10_000],
         samples: 20,
         idle: Duration::from_secs(10),
+        translation: Translation::default(),
+        profile: false,
         env: Env {
             commit: std::env::var("TILO_COMMIT").unwrap_or_else(|_| "unknown".into()),
             virtualization: "none".into(),
@@ -777,6 +842,14 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
                 config.idle =
                     Duration::from_secs_f64(value()?.parse().map_err(|e| format!("{e}"))?);
             }
+            "--translation" => {
+                config.translation = match value()?.as_str() {
+                    "lazy" => Translation::Lazy,
+                    "eager" => Translation::Eager,
+                    other => return Err(format!("unknown translation {other}")),
+                };
+            }
+            "--profile" => config.profile = true,
             "--commit" => config.env.commit = value()?,
             "--runner" => config.env.runner = value()?,
             "--virtualization" => config.env.virtualization = value()?,

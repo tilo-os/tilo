@@ -41,11 +41,13 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   the view's module declares the resource's type) and returns `NeedsApproval` on Ask.
 - **Outbox.** `outside` queues an entry on the document of the action's first resource argument;
   only the `"post"` capability exists, and only an action classed `outside` may call it.
-- **Reactivity.** Local commits notify with the exact fields; sync notifies the whole document.
-  A view re-runs when a field it read, or a `space` value it read, changed.
+- **Reactivity.** Commits and syncs notify with the exact fields that changed (a `FieldKey` is
+  the resource, an item path included, and the field id); a notification with no fields means
+  the whole document. A boundary re-runs when a field it read, or a `space` value it read,
+  changed; no other boundary runs. See "Performance by default" below.
 - **`space`.** Read through `space_i` (classes, flags, enums as ints) and `space_f` (width and
-  height in rem). In v1 nested view calls are inlined by the compiler and inherit the root's
-  space, so `set_space` consults only the root boundary.
+  height in rem). Every view call is a boundary, and each is offered the root's space, so
+  `set_space` consults only the root boundary.
 - **Projection** needs the store to read fields, so it is `Runtime::project(value)`, not a free
   function of `(value, meta)`.
 - **Text diff.** Prefix and suffix trimmed, then LCS while the middle is under about a million
@@ -129,7 +131,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 
 ## Gaps in the design
 
-- Compiled blocks stay in the engine for the runtime's life: no eviction.
+- Compiled modules and blocks stay in the process's module cache: no eviction.
 - Two replicas can approve the same suggestion at once: each runs the action before the
   other's state change arrives, so it runs twice. Exactly-once needs a claim that merges
   (for example a register the approver sets before running, resolved deterministically).
@@ -193,3 +195,76 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Roots.** The host opens `roots[0]` of a package through its default view, over the per-room
   resource of that type (`tilolang_tilo::host::Package::main`), replacing the old `view main`
   convention.
+
+## Performance by default (native-apps.md §4)
+
+What a host relies on. A tilolang app that misses a budget is a bug in the runtime.
+
+- **Every view call is a boundary.** The compiler emits each view call as a `view:` stub; the
+  runtime keeps one memo per call (its arguments, the fields and `space` values it read, its
+  subtree). A change re-runs the boundaries that read it, and a boundary whose arguments and
+  reads are unchanged keeps its subtree without running. A `for` body that renders inline
+  (no view call) belongs to the enclosing boundary, so the whole loop re-runs: write rows as
+  view calls. `ViewInstance::stats()` counts renders, boundaries and unrendered rows.
+- **Patch stream.** `ViewInstance::poll_patches()` returns the patches that turn the last tree
+  into the new one, in the order they apply, empty when nothing changed (an idle view costs
+  nothing: no runtime timer, no polling of its own). Patches address nodes by path, the keys from
+  the root down to the node (`parent` for structural patches): `SetRoot(node)`,
+  `Insert{parent, index, node}`, `Remove{parent, key}`, `Move{parent, key, to}`,
+  `SetProp{path, name, value}` (`None` removes it), `SetBinding`, `SetEvent`, `SetAnchor`.
+  Keys are stable across renders, so a host keeps a key-to-widget map and applies each patch to
+  one widget. `ViewInstance::tree()` is always the tree after the last patch, for a host that
+  rebuilds instead.
+- **Virtual lists.** A `list { for ... }` whose rows are view calls renders no row until the host
+  shows it. The list node always has one keyed child per row; a row not shown is an empty
+  `fragment`. `list_len(list)` and `row_key(list, i)` cost nothing; `row(list, i)` renders the
+  row if needed and returns it (the host draws what is returned: showing a row is not patched).
+  From then on changes to a shown row come as patches, and rows inserted, removed or moved come
+  as patches on the list. `hide_rows(list, keep)` forgets rows outside `keep` and returns the
+  patches that empty them; a forgotten row no longer runs. Showing and hiding cost the rows
+  concerned, not the list's length. A host that draws the whole tree calls
+  `set_lazy_rows(false)` before its first poll and reads `tree()` after it.
+- **Store changes for the host.** `TiloStore::watch()` gives a cursor; `Watch::take()` returns the
+  `Changes` since the last take: changed fields per document, documents changed anywhere
+  (`whole`), or `everything` after the mirror was copied anew. Planning an action (a trial run
+  that is rolled back) tells nobody: its notifications are dropped with its writes.
+  `TiloStore::stats()` counts incremental and full syncs; a full sync happens only when the
+  mirror held a change of its own when the record moved, and should stay at 0.
+- **Search and publication are incremental.** `SearchIndex::new(&host)` then
+  `update(&host) -> SearchDelta { upserted, removed }` each frame, `hits()` for the index;
+  `Publications::new(&host)` then `update(&host, &planner) -> Vec<DocId>` (the documents whose
+  published tree changed) and `trees()`. Both consume a `Watch`, so a frame costs what changed.
+  They replace re-indexing and re-publishing every record per frame (`search::refresh` and
+  `published()` in the window), which cost 393 ms and 1356 ms per frame at 10k items. Build
+  them after the first frame is drawn: at 10k items the first `update` is 454 ms (search) and
+  1429 ms (publication), most of it planning every item's parameterless actions.
+- **No needless commit.** The host commits the room record when the executor wrote something.
+  An empty `commit()` on automerge used to add and remove the actor (6.6 ms at 10k items); the
+  vendored patch makes it free, but the call is still not needed.
+- **One engine per process.** All runtimes share one `wasmi::Engine` and a module cache keyed by
+  the module hash, so a package loaded again (a second window, a reload of unchanged code)
+  compiles nothing. Each runtime keeps its own linker, limits and instance pools; an instance
+  caches its export functions and their result types, so a call looks nothing up by name.
+  `set_translation(Lazy|Eager)` picks how modules are translated, once, before the first
+  runtime. `Engine::profile(true)` (via `Runtime::engine()`) counts calls, time in wasm, time
+  in the host's imports and compile time.
+- **No compiling at launch.** `Host::load_wasm(bytes)` loads a package from its module alone,
+  with the metadata the module embeds; a launcher ships built-in packages compiled with Tilo.
+  Compiling a package's source takes 0.8 to 1.3 ms (notes_list, notes, chat; release, aarch64),
+  so this saves little time; it removes the compiler from the launch path. wasmi cannot
+  serialize translated code, so there is no on-disk cache, and none is needed (below).
+- **Engine: wasmi, lazy translation.** Measured with `tilolang bench --profile` (release,
+  aarch64, notes_list at 10k items, 20 samples). Time inside wasm, imports excluded, is 28 ms of
+  a 2035 ms open (search 454 ms, publication 1429 ms, imports 773 ms) and 0.013 to 0.017 ms of
+  a 0.55 ms keystroke (imports 0.10 ms); a peer edit has 0.007 ms of wasm in 0.46 ms. Compiling
+  the module is 0.10 ms lazy and 0.17 ms eager; lazy and eager give the same open (2035 vs
+  2034 ms) and keystroke (0.54 vs 0.55 ms). Even an engine that ran guest code in no time would
+  take at most 1.4% off open and 3% off a keystroke, while every budget the guest's share
+  touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
+  for that. The time is in the host (store reads behind imports, search, publication), which is
+  where the work goes. Revisit when a profile shows guest time as the larger share.
+- **Bench and budgets.** `tilolang bench <package> [--sizes] [--samples] [--idle SECONDS]
+  [--translation lazy|eager] [--profile]` prints one JSON record per scenario and size: open,
+  keystroke, peer edit, scroll (packages with a virtual list), idle wakeups and patches, and the
+  cost of re-indexing and re-publishing everything for comparison, and how long compiling the
+  package's source takes. Records are `tools/perf/record.py`'s JSON.
