@@ -29,7 +29,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
@@ -44,9 +45,9 @@ use ui::state::{DocumentFrontier, DocumentReplica};
 /// The desktop document's route. Changing it splits rooms by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
 pub(crate) const DESKTOP_RECORD: &str = "desktop";
-/// How often a page asks again whether the room lets its person moderate
-/// the shared desktop: a role the room grants while they are in it reaches
-/// their page within this.
+/// How often a page asks again what the room lets its person do: a role the
+/// room grants or withdraws while they are in it reaches their page within
+/// this.
 const MODERATION_ASK_EVERY_MS: u64 = 15_000;
 /// How soon a page asks again when the room could not answer (the page was
 /// between connections): what it knew stands meanwhile.
@@ -67,6 +68,10 @@ pub(crate) struct Attachment {
     /// Who the mount's person is: the desktop changes it publishes name
     /// them, so every page's Activity says whose they were.
     pub author: String,
+    /// What the mount's apps may offer their person: set to the role the
+    /// room answers they hold, so an app does not offer what the room
+    /// would refuse.
+    pub permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
 }
 
 struct Replica {
@@ -111,9 +116,33 @@ pub(crate) struct Room {
     moderates: Arc<AtomicBool>,
     /// When the page next asks the room that (Unix milliseconds; 0: now).
     moderation_due_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// The role the room last answered this page's person holds
+    /// ([`STANDINGS`] position plus one; 0 until it answered).
+    standing: Arc<AtomicU8>,
+    /// The standing the mounts' permissions were last set to.
+    followed: u8,
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
+}
+
+/// The roles a room answers a page's person holds, as [`Room::standing`]
+/// counts them.
+const STANDINGS: [tilo_action_policy::Role; 5] = [
+    tilo_action_policy::Role::Viewer,
+    tilo_action_policy::Role::Commenter,
+    tilo_action_policy::Role::Editor,
+    tilo_action_policy::Role::Moderator,
+    tilo_action_policy::Role::Owner,
+];
+
+/// `role` as [`Room::standing`] holds it.
+fn standing_code(role: tilo_action_policy::Role) -> u8 {
+    STANDINGS
+        .iter()
+        .position(|held| *held == role)
+        .and_then(|at| u8::try_from(at + 1).ok())
+        .unwrap_or(0)
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -167,6 +196,8 @@ pub(crate) fn open(
         authored: 0,
         moderates: Arc::default(),
         moderation_due_ms: Arc::default(),
+        standing: Arc::default(),
+        followed: 0,
         content: ContentWants::default(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
@@ -252,8 +283,10 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             room.moderates = Arc::clone(&shared.moderates);
-            room.moderation_due_ms.store(0, Ordering::Relaxed);
         }
+        room.moderation_due_ms.store(0, Ordering::Relaxed);
+        // The new mount's apps learn what the room answered.
+        room.followed = 0;
         room.mounts.insert(
             mount,
             Mounted {
@@ -293,7 +326,8 @@ pub(crate) fn publish(id: u32) {
         room.ask_content();
         // Every frame passes here, so the room is asked again on time
         // whether or not anything arrived from it.
-        room.ask_moderation_when_due();
+        room.ask_standing_when_due();
+        room.follow_standing();
     }
 }
 
@@ -311,16 +345,13 @@ fn warn(message: &str) {
 }
 
 impl Room {
-    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], whether it
-    /// lets this page's person close and move what others made on its
-    /// shared desktop; the answer sets the desktop's flag and wakes it.
-    fn ask_moderation_when_due(&self) {
-        if !self.ready
-            || !self
-                .mounts
-                .values()
-                .any(|mounted| mounted.attachment.desktop.is_some())
-        {
+    /// Ask the room, at most every [`MODERATION_ASK_EVERY_MS`], what it
+    /// lets this page's person do: whether they write, moderate (and so
+    /// close and move what others made on its shared desktop) and govern
+    /// it. The answers set the desktop's flag and the role the mounts' apps
+    /// follow, and wake them.
+    fn ask_standing_when_due(&self) {
+        if !self.ready || self.mounts.is_empty() {
             return;
         }
         let now = crate::shell::now_ms();
@@ -331,48 +362,86 @@ impl Room {
             now.saturating_add(MODERATION_ASK_EVERY_MS),
             Ordering::Relaxed,
         );
-        let moderates = Arc::clone(&self.moderates);
-        let due = Arc::clone(&self.moderation_due_ms);
         let wake: Vec<_> = self
             .mounts
             .values()
             .map(|mounted| Arc::clone(&mounted.attachment.notify))
             .collect();
-        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-            room: self.uuid.clone(),
-            node: tilo_desktop_model::ownership::moderation_node(&self.uuid).to_string(),
-        };
-        if let Err(error) = self.peer.rooms_then(
-            request,
-            Box::new(move |answer| {
-                let now = match &answer {
-                    Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
-                    Ok(other) => {
-                        warn(&format!(
-                            "the room did not say what this page may moderate: {other:?}"
-                        ));
-                        false
-                    }
-                    Err(_) => {
-                        due.store(
-                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                            Ordering::Relaxed,
-                        );
+        let asked = tilo_action_policy::roles::telling_nodes(&self.uuid);
+        let answers: Arc<Mutex<[Option<bool>; 3]>> = Arc::default();
+        for (index, node) in asked.into_iter().enumerate() {
+            let answers = Arc::clone(&answers);
+            let moderates = Arc::clone(&self.moderates);
+            let standing = Arc::clone(&self.standing);
+            let due = Arc::clone(&self.moderation_due_ms);
+            let wake = wake.clone();
+            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                room: self.uuid.clone(),
+                node: node.to_string(),
+            };
+            if let Err(error) = self.peer.rooms_then(
+                request,
+                Box::new(move |answer| {
+                    let may = match &answer {
+                        Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) => *may,
+                        Ok(other) => {
+                            warn(&format!(
+                                "the room did not say what this page may do: {other:?}"
+                            ));
+                            false
+                        }
+                        Err(_) => {
+                            due.store(
+                                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                                Ordering::Relaxed,
+                            );
+                            return;
+                        }
+                    };
+                    let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+                    answers[index] = Some(may);
+                    let [Some(writes), Some(moderating), Some(governs)] = *answers else {
                         return;
+                    };
+                    let role =
+                        tilo_action_policy::roles::role_answered([writes, moderating, governs]);
+                    let code = standing_code(role);
+                    let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
+                    if standing.swap(code, Ordering::Relaxed) != code || moved {
+                        for wake in &wake {
+                            wake();
+                        }
                     }
-                };
-                if moderates.swap(now, Ordering::Relaxed) != now {
-                    for wake in &wake {
-                        wake();
-                    }
-                }
-            }),
-        ) {
-            warn(&format!(
-                "could not ask the room what this page may moderate: {error}"
-            ));
-            self.moderation_due_ms
-                .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+                }),
+            ) {
+                warn(&format!(
+                    "could not ask the room what this page may do: {error}"
+                ));
+                self.moderation_due_ms
+                    .store(now.saturating_add(MODERATION_RETRY_MS), Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+
+    /// Give every mount's apps the role the room last answered, once per
+    /// answer that changed it.
+    fn follow_standing(&mut self) {
+        let standing = self.standing.load(Ordering::Relaxed);
+        if standing == self.followed {
+            return;
+        }
+        let Some(role) = standing
+            .checked_sub(1)
+            .and_then(|at| STANDINGS.get(usize::from(at)).copied())
+        else {
+            return;
+        };
+        self.followed = standing;
+        for mounted in self.mounts.values() {
+            let attachment = &mounted.attachment;
+            *attachment.permissions.borrow_mut() =
+                ui::permissions::PermissionContext::member(attachment.author.clone(), role);
         }
     }
 
