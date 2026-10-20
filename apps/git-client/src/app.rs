@@ -1756,6 +1756,36 @@ impl GitClientApp {
         });
     }
 
+    /// The open screen's title and what to do, from `at` down; returns
+    /// where the path row starts.
+    fn paint_open_intro(ctx: &mut PaintCtx<'_>, at: Point, width: f32) -> f64 {
+        let theme = ctx.theme;
+        let s = &theme.tokens.spacing;
+        let mut y = at.y;
+        let title = t("git-open-title");
+        let title_h = ctx
+            .measure_role(&title, TextRole::Title, Some(width))
+            .height;
+        ctx.text_role(
+            &title,
+            TextRole::Title,
+            theme.text_primary,
+            Point::new(at.x, y),
+            Some(width),
+        );
+        y += title_h + f64::from(s.s2);
+        let hint = t("git-open-hint");
+        let hint_h = ctx.measure_role(&hint, TextRole::Body, Some(width)).height;
+        ctx.text_role(
+            &hint,
+            TextRole::Body,
+            theme.text_dim,
+            Point::new(at.x, y),
+            Some(width),
+        );
+        y + hint_h + f64::from(s.s6)
+    }
+
     /// The "open a repository" screen: the window's header row (empty: no
     /// repository has screens yet), then what to do, the path field and the
     /// Open button, and the reason the last attempt failed.
@@ -1780,29 +1810,11 @@ impl GitClientApp {
             .gutter(f64::from(s.s6))
             .layout(body);
         let width = ui::num::f32_of_f64(lane.width());
-        let mut y = body.y0 + body.height() / 3.0;
-        let title = t("git-open-title");
-        let title_h = ctx
-            .measure_role(&title, TextRole::Title, Some(width))
-            .height;
-        ctx.text_role(
-            &title,
-            TextRole::Title,
-            theme.text_primary,
-            Point::new(lane.x0, y),
-            Some(width),
+        let y = Self::paint_open_intro(
+            ctx,
+            Point::new(lane.x0, body.y0 + body.height() / 3.0),
+            width,
         );
-        y += title_h + f64::from(s.s2);
-        let hint = t("git-open-hint");
-        let hint_h = ctx.measure_role(&hint, TextRole::Body, Some(width)).height;
-        ctx.text_role(
-            &hint,
-            TextRole::Body,
-            theme.text_dim,
-            Point::new(lane.x0, y),
-            Some(width),
-        );
-        y += hint_h + f64::from(s.s6);
 
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let label = t("git-open");
@@ -3667,7 +3679,7 @@ impl GitClientApp {
         }
         match effect {
             GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
-            GitClientEffect::ChooseRepository => return Ok(self.choose_repository(cx)),
+            GitClientEffect::ChooseRepository => return Ok(Self::choose_repository(cx)),
             GitClientEffect::RunApprovedCheck { check_id } => {
                 let checked = cx.approved_check_reported(&check_id)?;
                 return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
@@ -3755,10 +3767,7 @@ impl GitClientApp {
 impl GitClientApp {
     /// Ask the system's file chooser for the repository's folder, then
     /// open it; cancelling leaves the window as it was.
-    fn choose_repository(
-        &mut self,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
-    ) -> Effected {
+    fn choose_repository(cx: &mut EffectCx<crate::resource::GitClient, Self>) -> Effected {
         let picker =
             ui::portal::PickRequest::writable_directory(&t("git-choose-title"), &t("git-open"))
                 .thread_name("git-repository-picker")

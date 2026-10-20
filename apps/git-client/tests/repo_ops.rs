@@ -881,7 +881,7 @@ fn dangling_symlinks_can_be_staged_and_discarded() {
         .unwrap()
         .get_path(Path::new("link"), 0)
         .unwrap();
-    assert_eq!(entry.mode, 0o120000);
+    assert_eq!(entry.mode, 0o120_000);
     assert_eq!(
         repository.find_blob(entry.id).unwrap().content(),
         b"missing-target"
@@ -897,7 +897,7 @@ fn dangling_symlinks_can_be_staged_and_discarded() {
         .unwrap()
         .get_path(Path::new("link"), 0)
         .unwrap();
-    assert_eq!(entry.mode, 0o120000);
+    assert_eq!(entry.mode, 0o120_000);
     assert_eq!(
         repository.find_blob(entry.id).unwrap().content(),
         b"another-missing-target"
