@@ -41,17 +41,18 @@ const TEST_ROOM: &str = "test-workspace";
 const TEST_DEVICE: &str = "test-device";
 
 /// A fresh directory for a test's or a capture's private profile, removed
-/// with it. On Linux it is in memory (`/dev/shm`) where the system has one:
+/// with it. It is in memory where the system has one
+/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux):
 /// the store still syncs every write as it does for a person, but a sync of
 /// a profile that is deleted moments later then costs nothing, where on a
 /// shared disk it waits for every other writer's data to reach it, and a
 /// capture syncs on each staged edit. Elsewhere it is the system's
 /// temporary directory.
 fn profile_directory() -> std::io::Result<tempfile::TempDir> {
-    #[cfg(target_os = "linux")]
-    if let Ok(directory) = tempfile::Builder::new()
-        .prefix("tilo-profile-")
-        .tempdir_in("/dev/shm")
+    if let Some(memory) = tilo_paths::memory_temp_dir()
+        && let Ok(directory) = tempfile::Builder::new()
+            .prefix("tilo-profile-")
+            .tempdir_in(memory)
     {
         return Ok(directory);
     }

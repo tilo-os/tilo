@@ -410,6 +410,18 @@ pub fn temp_dir() -> Option<PathBuf> {
     (available(Feature::NativePaths)).then(std::env::temp_dir)
 }
 
+/// A temporary directory kept in memory, where the platform has one
+/// (`/dev/shm` on Linux): for scratch data that is synced like a person's
+/// but deleted moments later (a test's profile), whose syncs then cost
+/// nothing instead of waiting on a shared disk. `None` elsewhere.
+#[must_use]
+pub fn memory_temp_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    Some(PathBuf::from("/dev/shm")).filter(|directory| directory.is_dir())
+}
+
 /// Directories the system and the user install fonts into, most general
 /// first, whether or not they exist: the system font trees on Linux and
 /// other Unix (not the user's own), `/System/Library/Fonts`, `/Library/Fonts` and
