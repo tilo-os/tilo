@@ -13,8 +13,7 @@ D1 = 1
 D2 = 2
 
 [apps.browser]
-D1 = 1
-D2 = 4
+D2 = 3
 
 [apps.calendar]
 D2 = 6

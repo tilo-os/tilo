@@ -5,45 +5,45 @@ use std::io;
 use std::path::{Component, Path};
 
 /// App adapter; the backend owns the engine lease and complete lifecycle.
-pub(crate) struct Profile(NativeProfile);
+pub struct Profile(NativeProfile);
 
 impl Profile {
-    pub(crate) fn prepare(session: &SessionCookies) -> io::Result<Self> {
+    pub fn prepare(session: &SessionCookies) -> io::Result<Self> {
         let root = crate::storage::data_dir().ok_or_else(unavailable)?;
         Self::prepare_in(&root, session)
     }
 
-    pub(crate) fn prepare_in(root: &Path, session: &SessionCookies) -> io::Result<Self> {
+    pub fn prepare_in(root: &Path, session: &SessionCookies) -> io::Result<Self> {
         // Validate before root admission can create any directories.
         session.validate()?;
         NativeProfile::prepare(&GrantedRoot::admit_native(root)?, session).map(Self)
     }
 
-    pub(crate) fn path(&self) -> io::Result<&Path> {
+    pub fn path(&self) -> io::Result<&Path> {
         self.0.path()
     }
 
-    pub(crate) fn needs_import(&self) -> bool {
+    pub fn needs_import(&self) -> bool {
         self.0.needs_import()
     }
 
-    pub(crate) fn complete(&mut self) -> io::Result<()> {
+    pub fn complete(&mut self) -> io::Result<()> {
         self.0.complete()
     }
 
-    pub(crate) fn cancel_after_engine_exit(&mut self) -> io::Result<()> {
+    pub fn cancel_after_engine_exit(&mut self) -> io::Result<()> {
         self.0.cancel_after_engine_exit()
     }
 
-    pub(crate) fn begin_forget(&mut self) -> io::Result<()> {
+    pub fn begin_forget(&mut self) -> io::Result<()> {
         self.0.begin_forget()
     }
 
-    pub(crate) fn cleanup_after_engine_exit(&mut self) -> io::Result<()> {
+    pub fn cleanup_after_engine_exit(&mut self) -> io::Result<()> {
         self.0.cleanup_after_engine_exit()
     }
 
-    pub(crate) fn forget_closed(person: [u8; 32], id: &str) -> io::Result<()> {
+    pub fn forget_closed(person: [u8; 32], id: &str) -> io::Result<()> {
         let root = crate::storage::data_dir().ok_or_else(unavailable)?;
         if id.is_empty()
             || !matches!(

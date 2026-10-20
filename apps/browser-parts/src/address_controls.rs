@@ -27,7 +27,7 @@ enum Action {
     ConfirmDelete,
     CancelDelete,
 }
-pub(crate) struct AddressControls {
+pub struct AddressControls {
     private: bool,
     book: Option<PersonRecord<AddressBook>>,
     enabled: bool,
@@ -120,7 +120,7 @@ impl AddressControls {
         })
     }
     /// Review fixture: autofill on, with two saved profiles, one chosen.
-    pub(crate) fn stage_for_review(&mut self) {
+    pub fn stage_for_review(&mut self) {
         self.private = false;
         self.enabled = true;
         self.profiles = vec![

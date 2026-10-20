@@ -154,8 +154,12 @@ INDIRECT = {"apps/settings-core"}
 # (apps/settings-core/src/i18n.rs).
 FALLBACK = {"apps/settings-core": ["crates/sdk/provider-settings-ui"]}
 # Crates whose copy is another crate's catalogue: Settings' panes, in the
-# app and in settings-rare, resolve settings-core's.
-SOURCES = {"apps/settings-core": ["apps/settings", "apps/settings-rare"]}
+# app and in settings-rare, resolve settings-core's; Browser resolves
+# browser-parts'.
+SOURCES = {
+    "apps/settings-core": ["apps/settings", "apps/settings-rare"],
+    "apps/browser-parts": ["apps/browser"],
+}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:

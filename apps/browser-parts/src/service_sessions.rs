@@ -6,13 +6,13 @@ use ui::webview::{
 };
 
 mod forget;
-pub(crate) use forget::PendingForget;
+pub use forget::PendingForget;
 
 const ANCHOR: &str = "service:";
-use crate::resource::CATALOG;
+use crate::CATALOG;
 
 #[derive(Clone)]
-pub(crate) struct Selection {
+pub struct Selection {
     pub id: String,
     pub service: Service,
     binding: String,
@@ -54,7 +54,7 @@ impl Selection {
     }
 }
 
-pub(crate) fn identity(person: &str) -> Option<[u8; 32]> {
+pub fn identity(person: &str) -> Option<[u8; 32]> {
     if person.bytes().any(|b| b.is_ascii_uppercase()) || person.len() != 64 {
         return None;
     }
@@ -65,7 +65,7 @@ pub(crate) fn identity(person: &str) -> Option<[u8; 32]> {
     (key != [0; 32]).then_some(key)
 }
 
-pub(crate) fn selection(
+pub fn selection(
     value: ui::collaboration::browser_service_sessions::BrowserServiceSessionDescriptor,
 ) -> Selection {
     Selection {
@@ -76,7 +76,7 @@ pub(crate) fn selection(
 }
 
 /// Private admission stays pending until both the broker and native startup settle.
-pub(crate) struct PendingView {
+pub struct PendingView {
     pub opening: ui::LocalState<Option<String>>,
     id: String,
     destination: Option<crate::service_destinations::Destination>,
@@ -103,6 +103,7 @@ impl PendingView {
             waker: None,
         }
     }
+    #[must_use]
     pub fn with_destination(
         mut self,
         destination: Option<crate::service_destinations::Destination>,
@@ -198,7 +199,7 @@ impl Drop for PendingView {
     }
 }
 
-pub(crate) struct ServiceView {
+pub struct ServiceView {
     selection: Selection,
     destination: Option<crate::service_destinations::Destination>,
     session: Option<SessionCookies>,
@@ -447,7 +448,7 @@ impl ServiceView {
             self.waker.clone(),
         ));
     }
-    pub(crate) fn forget(&mut self, id: &str) -> Result<serde_json::Value, String> {
+    pub fn forget(&mut self, id: &str) -> Result<serde_json::Value, String> {
         if self.selection.id != id {
             return Err(CATALOG.t("browser-service-forget-open-first"));
         }
@@ -506,7 +507,7 @@ impl ServiceView {
         cleanup.finish()
     }
     /// A public observation of the engine's navigation, not remote login success.
-    pub(crate) fn destination_navigation_observed(&self, engine_uri: &str) -> bool {
+    pub fn destination_navigation_observed(&self, engine_uri: &str) -> bool {
         self.status == "imported-unverified"
             && self
                 .destination
@@ -597,14 +598,6 @@ impl native::Engine for EngineAdapter {
             verify_only: true,
             session,
         })
-    }
-}
-impl native::Profile for crate::service_profiles::Profile {
-    fn path(&self) -> std::io::Result<&std::path::Path> {
-        self.path()
-    }
-    fn cleanup_after_engine_exit(&mut self) -> std::io::Result<()> {
-        self.cleanup_after_engine_exit()
     }
 }
 fn native_wake(waker: Option<ui::WakeHandle>) -> Option<native::Wake> {

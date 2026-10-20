@@ -11,7 +11,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Container, Divider, Element, ListRow, ProgressBar, Row, Widget};
 
 /// A row with its commands beside it, ending at the list's trailing edge.
-pub(crate) fn with_buttons(row: ListRow, buttons: Vec<Button>) -> Row {
+pub fn with_buttons(row: ListRow, buttons: Vec<Button>) -> Row {
     let mut line = Row::new().no_wrap().push(Box::new(
         Container::new()
             .with_no_padding()
@@ -25,11 +25,7 @@ pub(crate) fn with_buttons(row: ListRow, buttons: Vec<Button>) -> Row {
 }
 
 /// `line` with a progress bar under its text, on the text's leading edge.
-pub(crate) fn with_progress(
-    line: impl Widget + 'static,
-    bar: ProgressBar,
-    theme: &Theme,
-) -> Element {
+pub fn with_progress(line: impl Widget + 'static, bar: ProgressBar, theme: &Theme) -> Element {
     let spacing = &theme.tokens.spacing;
     Box::new(
         Column::new()
@@ -48,7 +44,7 @@ pub(crate) fn with_progress(
 
 /// `rows` as one list: touching, with a hairline between neighbours inset
 /// like the separators of a plain `Section` list.
-pub(crate) fn separated(rows: Vec<Element>, theme: &Theme) -> Element {
+pub fn separated(rows: Vec<Element>, theme: &Theme) -> Element {
     let spacing = &theme.tokens.spacing;
     let count = rows.len();
     let mut list = Column::new()
@@ -76,11 +72,24 @@ pub(crate) fn separated(rows: Vec<Element>, theme: &Theme) -> Element {
     clippy::cast_possible_truncation,
     reason = "a transfer fraction only needs a few digits"
 )]
-pub(crate) fn transfer_bar(received: u64, total: Option<u64>) -> ProgressBar {
+pub fn transfer_bar(received: u64, total: Option<u64>) -> ProgressBar {
     match total {
         Some(total) if total > 0 => {
             ProgressBar::new((received.min(total) as f64 / total as f64) as f32)
         }
         _ => ProgressBar::indeterminate(),
     }
+}
+
+/// Whether every word of `query` is in one of `fields`, case aside: what the
+/// library's filter field keeps.
+#[must_use]
+pub fn library_filter_matches(query: &str, fields: &[&str]) -> bool {
+    let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+    terms.is_empty()
+        || terms.iter().all(|term| {
+            fields
+                .iter()
+                .any(|field| field.to_lowercase().contains(term))
+        })
 }

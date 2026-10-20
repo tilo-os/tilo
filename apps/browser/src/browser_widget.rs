@@ -221,25 +221,11 @@ impl PipFeedback {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LibrarySection {
-    History,
-    Bookmarks,
-    Downloads,
-    Extensions,
-}
+pub(crate) use crate::effects::{BrowserOperation, LibrarySection};
 
 const MAX_LIBRARY_FILTER_BYTES: usize = 256;
 
-pub(crate) fn library_filter_matches(query: &str, fields: &[&str]) -> bool {
-    let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
-    terms.is_empty()
-        || terms.iter().all(|term| {
-            fields
-                .iter()
-                .any(|field| field.to_lowercase().contains(term))
-        })
-}
+pub(crate) use browser_parts::rows::library_filter_matches;
 
 fn bounded_library_filter(query: &str) -> String {
     let query = query.trim();
@@ -251,80 +237,6 @@ fn bounded_library_filter(query: &str) -> String {
         end = end.saturating_sub(1);
     }
     query.get(..end).unwrap_or_default().to_string()
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum BrowserOperation {
-    BookmarkPersonalPage {
-        url: String,
-        title: String,
-    },
-    ImportPersonalBookmarks {
-        bundle: String,
-    },
-    ReadContinuity,
-    OpenServiceSession,
-    ForgetServiceSession,
-    ReadServiceSession,
-    ListServiceSessions,
-    RetryContinuity,
-    RemovePersonalBookmark {
-        url: String,
-    },
-    RemovePersonalImportedNode {
-        source: String,
-        id: String,
-    },
-    ShowPersonalBookmarkFolder {
-        source: String,
-        id: Option<String>,
-        offset: u32,
-    },
-    Back,
-    Forward,
-    Reload,
-    Stop,
-    Navigate {
-        url: String,
-    },
-    /// Offer the engine runtime's install through the Store.
-    InstallEngine,
-    /// Another Browser in a desktop tab right after this one.
-    OpenInNewTab {
-        url: String,
-        background: bool,
-    },
-    ShowLibrary {
-        section: LibrarySection,
-    },
-    SetLibraryFilter {
-        query: String,
-    },
-    ClearLibraryFilter,
-    ShowSettings,
-    ShowPage,
-    ClearHistory,
-    RequestWebsiteDataClear,
-    TogglePictureInPicture,
-    /// Show the page's article in reader view, or the page again.
-    ToggleReaderView,
-    ToggleHistoryPause,
-    StartDownload {
-        url: String,
-    },
-    CancelDownload {
-        id: String,
-    },
-    RetryDownload {
-        id: String,
-    },
-    OpenDownload {
-        id: String,
-    },
-    RevealDownload {
-        id: String,
-    },
-    Page(PageRequest),
 }
 
 fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {

@@ -202,11 +202,11 @@ impl AutofillStore {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use super::*;
     use crate::browsing_mode::BrowsingMode;
 
-    pub(crate) fn profile(id: &str) -> AddressProfile {
+    pub fn profile(id: &str) -> AddressProfile {
         AddressProfile {
             id: id.into(),
             label: "Home".into(),
@@ -222,7 +222,7 @@ pub(crate) mod tests {
     }
 
     /// The person's address book, as a capture's profile keeps it.
-    pub(crate) fn address_book() -> (
+    pub fn address_book() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
         PersonRecord<AddressBook>,
     ) {
