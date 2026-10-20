@@ -3392,7 +3392,7 @@ on = ["main", "dispatch", "stable"]
 name = "canary-ci-builder-cache-cold-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 run = "bash tools/ci/publish/ci-builder-canary.sh cold /target/publish/ci-builder/{arch}/canary"
-inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+inputs = ["tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
 cargo_packages = ["tilo-advisory-lock"]
 cargo_dev_dependencies = false
 outputs = ["/target/publish/ci-builder/{arch}/canary/prefix"]
@@ -3407,7 +3407,7 @@ arch = ["x86_64", "aarch64"]
 name = "canary-ci-builder-cache-warm-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 run = "bash tools/ci/publish/ci-builder-canary.sh warm /target/publish/ci-builder/{arch}/canary"
-inputs = ["tools/ci/sccache-canary.sh", "tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
+inputs = ["tools/ci/measure.sh", "tools/ci/publish/ci-builder-canary.sh", "tools/ci/publish/ci-builder.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh"]
 cargo_packages = ["tilo-advisory-lock"]
 cargo_dev_dependencies = false
 needs = ["canary-ci-builder-cache-cold-{arch}"]
