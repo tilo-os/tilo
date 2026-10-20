@@ -143,8 +143,6 @@ pub struct DeliveryProgress {
 pub type Observer<'a> = dyn FnMut(DeliveryProgress) -> io::Result<()> + 'a;
 
 #[cfg(target_os = "linux")]
-mod codec;
-#[cfg(target_os = "linux")]
 mod native;
 
 #[cfg(target_os = "linux")]
@@ -156,18 +154,6 @@ fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
         ));
     }
     Ok(())
-}
-
-/// The framing purpose is authenticated, not inferred from the filename.
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum Purpose {
-    Home,
-    PreparedSetup,
-    PreparationAccounts,
-    FlatpakApplications,
-    BrowserProfiles,
 }
 
 /// Opaque, nonserializable ownership of password-authenticated ciphertext.
