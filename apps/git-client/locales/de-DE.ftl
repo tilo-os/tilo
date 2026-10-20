@@ -1,10 +1,6 @@
 git-remote-running = Remote-Vorgang läuft…
 git-remote-busy = Warte, bis der aktuelle Remote-Vorgang abgeschlossen ist.
 git-remote-worker-stopped = Der Remote-Prozess wurde unerwartet beendet. Prüfe den Repository-Zustand vor einem erneuten Versuch.
-git-remote-fetching = Wird abgerufen…
-git-remote-pulling = Wird gepullt…
-git-remote-pushing = Wird gepusht…
-git-error-no-repository = Kein Git-Repository unter { $path }
 
 # Screens
 git-screen-changes = Änderungen
@@ -152,26 +148,6 @@ git-choose-title = Repository auswählen
 git-open-name = Repository öffnen
 git-repository-path = Repository-Pfad
 
-# Palette
-git-action-open-diff = Diff öffnen
-git-action-open-commit = Commit öffnen
-git-action-check-out-branch = Branch auschecken
-git-action-fetch-remote = Remote abrufen
-git-action-layout-split = Diff-Ansicht: nebeneinander
-git-action-layout-unified = Diff-Ansicht: einspaltig
-git-action-syntax-off = Syntaxhervorhebung ausschalten
-git-action-syntax-on = Syntaxhervorhebung einschalten
-git-action-whitespace-hide = Leerzeichen ausblenden
-git-action-whitespace-show = Leerzeichen anzeigen
-git-action-wrap-off = Lange Zeilen nicht umbrechen
-git-action-wrap-on = Lange Zeilen umbrechen
-git-action-show-changes = Änderungen anzeigen
-git-action-show-history = Verlauf anzeigen
-git-action-show-branches = Branches und Remotes anzeigen
-git-action-commit = Vorgemerkte Änderungen committen
-git-action-commit-description = Einen Commit aus den vorgemerkten Änderungen erstellen
-git-action-stash = Änderungen im Arbeitsverzeichnis stashen
-git-action-stash-message = Stash-Nachricht
 git-collection-repository = Repository
 
 git-section-worktrees = Arbeitsverzeichnisse

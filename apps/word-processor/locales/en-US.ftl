@@ -34,16 +34,10 @@ a11y-underline = Underline
 a11y-strikethrough = Strikethrough
 a11y-superscript = Superscript
 a11y-subscript = Subscript
-a11y-body-text = Body text
-a11y-bulleted-list = Bulleted list
-a11y-align-left = Align left
-a11y-align-center = Align center
-a11y-align-right = Align right
 a11y-line-spacing = Line spacing
 a11y-font = Font
 a11y-size-up = Increase font size
 a11y-size-down = Decrease font size
-a11y-font-size = Font size
 a11y-insert-image = Insert image
 a11y-hyperlink = Add or change hyperlink
 a11y-insert-table = Insert table
@@ -61,7 +55,6 @@ a11y-text-color = Text colour #{ $hex }
 a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
-
 
 ## Status bar
 status-untitled = Untitled
@@ -121,8 +114,6 @@ panel-style = Paragraph style
 # the toolbar formats the selection; this section edits the shared style.
 panel-style-hint = Edits below change every paragraph in this style.
 panel-caret-hint = Place the caret in a paragraph
-panel-paragraph-styles = Paragraph styles
-panel-style-properties = Style properties
 panel-font = Font
 panel-font-serif = Serif
 panel-font-mono = Mono
@@ -142,7 +133,6 @@ panel-num-indent = Indent
 ## Image inspector (styles panel, when an image is selected)
 panel-image = Image
 panel-image-size = Size
-panel-image-width = Width
 panel-image-flip = Flip
 panel-image-flip-h = Horizontal
 panel-image-flip-v = Vertical
@@ -164,7 +154,6 @@ style-menu-duplicate = Duplicate style
 ## Transient toasts (confirmation cues)
 toast-toc-empty = Add headings first — a table of contents lists them
 toast-save-failed = Could not save the document
-toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
 toast-file-dialog-failed = Could not open the file chooser
 
@@ -214,7 +203,6 @@ color-yellow = yellow
 color-cyan = cyan
 color-pink = pink
 color-orange = orange
-a11y-version-history = Version history
 panel-close = Close
 
 # A selected file differs from the current admitted workspace document.
@@ -239,7 +227,6 @@ panel-align-left = Left
 panel-align-center = Centre
 panel-align-right = Right
 panel-align-justify = Justify
-a11y-more-tools = More formatting and document tools
 
 ## History: what each change did, by field and by verb
 word-processor-document-body = { $op ->

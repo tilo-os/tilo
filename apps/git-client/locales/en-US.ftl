@@ -1,10 +1,6 @@
 git-remote-running = Working with remote…
 git-remote-busy = Wait for the current remote operation to finish.
 git-remote-worker-stopped = The remote worker stopped unexpectedly. Check repository state before retrying.
-git-remote-fetching = Fetching…
-git-remote-pulling = Pulling…
-git-remote-pushing = Pushing…
-git-error-no-repository = No git repository at { $path }
 
 # Screens
 git-screen-changes = Changes
@@ -152,26 +148,6 @@ git-choose-title = Choose a repository
 git-open-name = Open repository
 git-repository-path = Repository path
 
-# Palette
-git-action-open-diff = Open diff
-git-action-open-commit = Open commit
-git-action-check-out-branch = Check out branch
-git-action-fetch-remote = Fetch remote
-git-action-layout-split = Diff layout: side-by-side
-git-action-layout-unified = Diff layout: unified
-git-action-syntax-off = Turn off syntax highlighting
-git-action-syntax-on = Turn on syntax highlighting
-git-action-whitespace-hide = Hide whitespace
-git-action-whitespace-show = Show whitespace
-git-action-wrap-off = Stop wrapping long lines
-git-action-wrap-on = Wrap long lines
-git-action-show-changes = Show changes
-git-action-show-history = Show history
-git-action-show-branches = Show branches and remotes
-git-action-commit = Commit staged changes
-git-action-commit-description = Create a commit from the currently staged changes
-git-action-stash = Stash working changes
-git-action-stash-message = Stash message
 git-collection-repository = Repository
 
 git-section-worktrees = Working directories

@@ -30,8 +30,6 @@ notes-menu-delete = Delete
 notes-a11y-new-child-under = New sub-note in
 notes-a11y-more-actions-for = More actions for
 
-notes-view-editor = Editor
-
 ## History: what each change did, by field and by verb
 
 notes-page-body = Edited { $item }
