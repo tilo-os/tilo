@@ -225,6 +225,17 @@ enum FocusedRow {
     Entry(HistoryEntryId),
 }
 
+/// The icon and spoken name of an action work group's kind, for the kinds
+/// the system writes.
+fn work_icon(kind: &str) -> Option<(crate::icons::Icon, &'static str)> {
+    match kind {
+        "task" | "issue" => Some((crate::icons::Icon::ListChecks, "history-work-task")),
+        "agent-run" => Some((crate::icons::Icon::Bot, "history-work-agent-run")),
+        "shortcut" => Some((crate::icons::Icon::Play, "history-work-shortcut")),
+        _ => None,
+    }
+}
+
 impl RowGroup {
     /// What the band's second line shows: where the work happened while
     /// the band is collapsed (its members do not say), then its facts, the
@@ -245,9 +256,10 @@ impl RowGroup {
 
     /// The second line as a screen reader says it: each fact, in order.
     fn spoken_facts(&self) -> String {
-        self.meta_facts()
+        self.work
+            .map(|(_, kind)| crate::i18n::I18nManager::lookup_plain(kind))
             .into_iter()
-            .map(|fact| fact.text)
+            .chain(self.meta_facts().into_iter().map(|fact| fact.text))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -276,6 +288,9 @@ struct RowGroup {
     restorable: bool,
     /// Calendar heading (Today / Yesterday / …), not a collapsible band.
     is_section: bool,
+    /// What kind of work the band is (a task, an agent's run, a shortcut),
+    /// drawn before its title.
+    work: Option<(crate::icons::Icon, &'static str)>,
 }
 
 /// A band header's hover chips, in the order they are laid out.
@@ -1697,6 +1712,7 @@ impl ActivityTimeline {
             expanded,
             restorable,
             is_section: false,
+            work: g.work.as_deref().and_then(work_icon),
         });
         rows.push(VisualRow::Group(gi));
         if !expanded {
@@ -2002,6 +2018,7 @@ impl ActivityTimeline {
             expanded: true,
             restorable: false,
             is_section: true,
+            work: None,
         });
         rows.push(VisualRow::Group(gi));
     }
@@ -2433,10 +2450,26 @@ impl ActivityTimeline {
         );
         Self::draw_group_row_chrome(ctx, full_row, row, rg, emphasis);
 
+        let mut title_x = row.x0 + 26.0;
+        if let Some((icon, _)) = rg.work {
+            // The band's kind of work leads its title: the task or run is
+            // what the band is.
+            let side = f64::from(ctx.theme.tokens.metrics.icon_sm);
+            let top = row.y0 + 15.0 - side / 2.0;
+            crate::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(title_x, top, title_x + side, top + side),
+                icon,
+                ctx.theme.tokens.colors.text_dim,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            title_x += side + 6.0;
+        }
         let band = BandHeader {
             rg,
             row,
-            title_x: row.x0 + 26.0,
+            title_x,
             title_style: ctx.theme.text(TextRole::Label),
         };
         let chips = self.group_chip_rects_local(row, rg);
@@ -4191,8 +4224,53 @@ mod tests {
             assert_eq!(timeline.author_pill_rect(), Rect::ZERO);
         }
 
+        fn a_task_band_says_it_is_a_task_and_a_named_run_does_not() {
+            use tilo_actions::ActionContext;
+            let mut entries = vec![
+                entry(EntryKind::Text, "Alice", 10, 1),
+                entry(EntryKind::Text, "Bob", 11, 2),
+            ];
+            for entry in &mut entries {
+                entry.context =
+                    Some(ActionContext::default().with_group("task:7", "Prepare budget", "task"));
+            }
+            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+            timeline.set_all_expanded(false);
+            let spoken = |timeline: &ActivityTimeline| {
+                let group = (0..timeline.row_count())
+                    .find(|row| timeline.group_at_row(*row).is_some())
+                    .expect("one band");
+                Widget::accessibility(timeline)
+                    .expect("timeline semantics")
+                    .children[group]
+                    .description
+                    .clone()
+                    .unwrap_or_default()
+            };
+            let task = crate::i18n::I18nManager::lookup_plain("history-work-task");
+            assert!(
+                spoken(&timeline).starts_with(&task),
+                "{}",
+                spoken(&timeline)
+            );
+
+            for entry in &mut timeline.entries {
+                entry.context = None;
+            }
+            timeline.set_named_ranges(vec![NamedRange {
+                id: "tilo:group:01".into(),
+                label: "Budget".into(),
+                start: timeline.entries[0].id,
+                end: Some(timeline.entries[1].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            }]);
+            assert!(!spoken(&timeline).starts_with(&task));
+        }
+
         ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets();
         provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows();
+        a_task_band_says_it_is_a_task_and_a_named_run_does_not();
         host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
     }
 

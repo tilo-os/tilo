@@ -131,6 +131,9 @@ pub struct HistoryGroup {
     /// Record id of the naming, so a rename can address it.
     pub record_id: Option<String>,
     pub named_by: Option<HistoryAuthor>,
+    /// The kind of explicit work unit (`task`, `agent-run`, `shortcut`, …)
+    /// the band is, when its changes share one rather than a person's name.
+    pub work: Option<String>,
     /// True while the range is still absorbing new changes.
     pub open: bool,
     pub start: usize,
@@ -290,6 +293,8 @@ struct Placed {
     /// have a stable projection id but nothing in the CRDT to update yet.
     persisted: bool,
     named_by: Option<HistoryAuthor>,
+    /// The kind of the action work group (task, agent run, shortcut) this is.
+    work: Option<String>,
     start: usize,
     end: usize,
     open: bool,
@@ -352,6 +357,7 @@ pub fn group_entries(
             label: r.label.clone(),
             persisted: true,
             named_by: r.named_by.clone(),
+            work: None,
             start,
             end,
             open,
@@ -390,6 +396,7 @@ pub fn group_entries(
                 label: group.label.clone(),
                 persisted: false,
                 named_by: None,
+                work: Some(group.kind.clone()),
                 start: run_start,
                 end: run_end,
                 open: false,
@@ -606,6 +613,7 @@ fn finish_group(
             .filter(|named| named.persisted)
             .map(|named| named.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
+        work: named.and_then(|n| n.work.clone()),
         open: named.is_some_and(|n| n.open),
         start,
         end,
@@ -795,6 +803,11 @@ mod tests {
             );
             assert_eq!(groups[0].authors.len(), 2);
             assert_eq!(groups[0].families.len(), 2);
+            assert_eq!(
+                groups[0].work.as_deref(),
+                Some("issue"),
+                "the band knows its kind"
+            );
         }
 
         a_typing_run_by_one_person_is_one_group();

@@ -184,6 +184,9 @@ history-selection-count = { $count ->
    *[other] { $count } Änderungen ausgewählt
 }
 history-selection-name = Benennen
+history-work-task = Aufgabe
+history-work-agent-run = Agentenlauf
+history-work-shortcut = Kurzbefehl
 history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.

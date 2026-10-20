@@ -187,6 +187,9 @@ history-selection-count = { $count ->
    *[other] { $count } changes selected
 }
 history-selection-name = Name these
+history-work-task = Task
+history-work-agent-run = Agent run
+history-work-shortcut = Shortcut
 history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
