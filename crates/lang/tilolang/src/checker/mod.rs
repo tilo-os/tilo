@@ -5,6 +5,9 @@
 mod call;
 mod enums;
 mod expr;
+mod native;
+#[cfg(test)]
+mod tests;
 mod ui;
 
 use crate::abi::Imp;
@@ -56,6 +59,14 @@ struct FnState {
     try_invoke: bool,
     /// The view state the view declares, by name.
     states: HashMap<String, StateRef>,
+    /// Set while checking a scenario, where `root T` names a root resource.
+    scenario: bool,
+    /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
+    /// `inspector` sit directly in a frame, a fact directly in `facts`.
+    ui_parent: &'static str,
+    /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block or
+    /// as a row view's body.
+    list_row_ok: bool,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
@@ -96,8 +107,14 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Item::Action(a) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
-            Item::View(v) => c.run_view(&callable, &v.body),
-            Item::Use(_) | Item::Type(_) | Item::Enum(_) | Item::Root(_) | Item::DefaultView(_) => {
+            Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
+            Item::View(v) => c.run_view(&callable, v),
+            Item::Use(_)
+            | Item::Type(_)
+            | Item::Enum(_)
+            | Item::Root(_)
+            | Item::DefaultView(_)
+            | Item::RowView(_) => {
                 continue;
             }
         };
@@ -223,6 +240,7 @@ impl Checker<'_> {
 
     fn run_body(&mut self, c: &Callable, kind: FuncKind, ctx: Ctx, body: &ast::Block) -> ir::Func {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
+        self.st.scenario = c.scenario;
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
             // A body that ends in an expression returns its value.
@@ -266,9 +284,21 @@ impl Checker<'_> {
         f
     }
 
-    fn run_view(&mut self, c: &Callable, body: &[ast::UiStmt]) -> ir::Func {
+    fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
-        let rest = self.view_state(&c.name, body);
+        let rest = self.view_state(&c.name, &v.body);
+        let env = self.env;
+        if let Some((key, _)) = env.default_views.iter().find(|(_, view)| *view == c.name) {
+            self.window_frame(&c.name, &key.name, &rest, v.body_span);
+        }
+        let row_of = env
+            .row_views
+            .iter()
+            .find(|(key, view)| key.app == env.app && *view == c.name);
+        if let Some((key, _)) = row_of {
+            self.row_view_body(&c.name, &key.name, &rest, v.body_span);
+            self.st.list_row_ok = true;
+        }
         self.view_body(&rest);
         let mut f = self.end(FuncKind::View, &c.name, &format!("v_{}", c.id));
         f.nparams = c.params.len();

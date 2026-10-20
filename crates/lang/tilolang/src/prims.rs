@@ -24,37 +24,39 @@ const fn prim_of(
 }
 
 pub const PRIMS: &[Prim] = &[
+    // Frames: what a window's view is (native-apps.md section 3.1).
+    prim_of("list", &["items"], &["sort", "filter", "empty"]),
+    prim_of("document", &[], &[]),
+    prim_of("page", &[], &[]),
+    prim_of("canvas", &[], &[]),
+    // The frame's side columns.
+    prim_of("sidebar", &[], &[]),
+    prim_of("inspector", &["item"], &[]),
+    // Content groups and native controls (section 3.3).
+    prim_of("section", &["title"], &[]),
+    prim_of("facts", &[], &[]),
+    prim_of("form", &[], &[]),
+    prim_of("field", &["label"], &[]),
+    prim_of("toggle", &["label"], &["bind", "enabled"]),
+    prim_of("choice", &[], &["bind"]),
+    prim_of("card", &["item"], &[]),
+    prim_of("avatar", &["who"], &[]),
+    // Layout for content.
     prim_of("stack", &[], &["gap", "align"]),
     // `column` is the older name of `stack`.
     prim_of("column", &[], &["gap", "padding", "align"]),
-    prim_of(
-        "row",
-        &[],
-        &["gap", "padding", "align", "distribute", "wrap"],
-    ),
+    // With a block, a layout row; with a title and no block, a list row (`ListRow`).
+    prim_of("row", &[], LAYOUT_ROW_ARGS),
     prim_of("grid", &[], &["min", "columns", "gap"]),
     prim_of("split", &[], &["side", "ratio", "collapse", "gap"]),
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
-    Prim {
-        name: "page",
-        positional: &[],
-        named: &[],
-        flags: &["full"],
-    },
     prim_of("layers", &[], &[]),
     prim_of("scroll", &[], &["axis"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
-    prim_of("text", &["value"], &["style"]),
-    prim_of("heading", &["value"], &["level"]),
-    prim_of("button", &["label"], &["on", "style", "size", "enabled"]),
-    // A row of a list: a title, a secondary line, activation and whether it is the selected one.
-    prim_of(
-        "list_row",
-        &["title"],
-        &["secondary", "on", "selected", "checked"],
-    ),
+    prim_of("text", &["value"], &["role"]),
+    prim_of("button", &["label"], &["on", "enabled"]),
     prim_of("checkbox", &["label"], &["bind", "on_change", "enabled"]),
     prim_of(
         "input",
@@ -68,6 +70,12 @@ pub const PRIMS: &[Prim] = &[
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
 ];
+
+/// The frames: one of them is the whole of a window's view.
+pub const FRAMES: &[&str] = &["list", "document", "page", "canvas"];
+
+/// The named arguments of a layout row: `row(gap: ...) { ... }`.
+pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];
 
 /// Sizing and placement arguments accepted by every UI call, including view calls.
 pub const NODE_ARGS: &[&str] = &[
@@ -134,21 +142,9 @@ pub const CHOICES: &[Choice] = &[
         variants: &["vertical", "horizontal"],
     },
     Choice {
-        kind: "button_style",
-        name: "ButtonStyle",
-        variants: &["secondary", "primary", "destructive", "plain"],
-    },
-    Choice {
-        kind: "control_size",
-        name: "ControlSize",
-        variants: &["small", "regular", "large"],
-    },
-    Choice {
-        kind: "text_style",
-        name: "TextStyle",
-        variants: &[
-            "body", "title", "heading", "caption", "label", "code", "display",
-        ],
+        kind: "text_role",
+        name: "TextRole",
+        variants: &["body", "title", "caption", "numeric"],
     },
     Choice {
         kind: "width_class",
@@ -181,9 +177,7 @@ pub fn arg_choice(prim: &str, arg: &str) -> Option<&'static str> {
         (_, "side") => "side",
         (_, "at") => "at",
         (_, "axis") => "axis",
-        ("button", "style") => "button_style",
-        ("button", "size") => "control_size",
-        ("text", "style") => "text_style",
+        ("text", "role") => "text_role",
         _ => return None,
     })
 }
@@ -208,4 +202,285 @@ pub fn prim(name: &str) -> Option<&'static Prim> {
 
 pub fn prim_names() -> String {
     PRIMS.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+}
+
+/// The icons a declaration or a row can name: the platform's icon set (`ui::icons`), in its
+/// kebab-case names. Source writes them as dot literals in snake case (`.more_horizontal`).
+pub const ICONS: &[&str] = &[
+    "a-arrow-down",
+    "a-arrow-up",
+    "accessibility",
+    "a-large-small",
+    "alarm-clock",
+    "align-center",
+    "align-center-horizontal",
+    "align-center-vertical",
+    "align-end-horizontal",
+    "align-end-vertical",
+    "align-horizontal-distribute-center",
+    "align-justify",
+    "align-left",
+    "align-right",
+    "align-start-horizontal",
+    "align-start-vertical",
+    "align-vertical-distribute-center",
+    "app-window",
+    "archive",
+    "arrow-big-up",
+    "arrow-down",
+    "arrow-down-left",
+    "arrow-down-right",
+    "arrow-left",
+    "arrow-right",
+    "arrow-up",
+    "arrow-up-down",
+    "arrow-up-left",
+    "arrow-up-right",
+    "ban",
+    "bar-chart",
+    "baseline",
+    "battery",
+    "battery-charging",
+    "bed-double",
+    "beer",
+    "bell",
+    "bell-off",
+    "bluetooth",
+    "bold",
+    "bookmark",
+    "bot",
+    "box",
+    "bring-to-front",
+    "brush",
+    "calendar",
+    "camera",
+    "check",
+    "chevron-down",
+    "chevron-left",
+    "chevron-right",
+    "chevron-up",
+    "circle",
+    "circle-alert",
+    "circle-check",
+    "circle-dashed",
+    "clipboard-paste",
+    "clock",
+    "cloud",
+    "cloud-download",
+    "cloud-rain",
+    "cloud-snow",
+    "code",
+    "coffee",
+    "columns-2",
+    "command",
+    "contrast",
+    "copy",
+    "corner-down-left",
+    "corner-up-left",
+    "corner-up-right",
+    "crop",
+    "delete",
+    "disc-3",
+    "download",
+    "droplet",
+    "eraser",
+    "ethernet-port",
+    "external-link",
+    "eye",
+    "eye-off",
+    "file",
+    "file-code",
+    "file-plus",
+    "file-text",
+    "film",
+    "fingerprint",
+    "flag",
+    "flame",
+    "folder",
+    "folder-open",
+    "folder-plus",
+    "forward",
+    "gallery-vertical-end",
+    "gauge",
+    "globe",
+    "hand",
+    "hard-drive",
+    "hash",
+    "heading-1",
+    "heading-2",
+    "headphones",
+    "heart",
+    "highlighter",
+    "history",
+    "home",
+    "hospital",
+    "hourglass",
+    "image",
+    "inbox",
+    "info",
+    "italic",
+    "keyboard",
+    "landmark",
+    "lasso",
+    "layers",
+    "layout-grid",
+    "lightbulb",
+    "link",
+    "list",
+    "list-checks",
+    "list-music",
+    "list-ordered",
+    "list-tree",
+    "list-video",
+    "locate-fixed",
+    "lock",
+    "lock-open",
+    "mail",
+    "mail-open",
+    "map-pin",
+    "maximize-2",
+    "menu",
+    "message-circle",
+    "message-square",
+    "mic",
+    "mic-off",
+    "minimize-2",
+    "minus",
+    "monitor",
+    "monitor-smartphone",
+    "moon",
+    "more-horizontal",
+    "mouse",
+    "mouse-pointer-2",
+    "music",
+    "navigation",
+    "paint-bucket",
+    "palette",
+    "panel-left",
+    "panel-right",
+    "paperclip",
+    "pause",
+    "paw-print",
+    "pencil",
+    "pen-tool",
+    "phone",
+    "phone-off",
+    "picture-in-picture-2",
+    "pin",
+    "pipette",
+    "plane",
+    "play",
+    "plus",
+    "power",
+    "printer",
+    "qr-code",
+    "quote",
+    "redo-2",
+    "refresh",
+    "repeat",
+    "repeat-1",
+    "reply",
+    "reply-all",
+    "rotate-ccw",
+    "rotate-cw",
+    "rss",
+    "ruler",
+    "scan-line",
+    "scissors",
+    "screen-share",
+    "sd-card",
+    "search",
+    "send",
+    "send-to-back",
+    "settings",
+    "settings-2",
+    "shield",
+    "shopping-bag",
+    "shuffle",
+    "skip-back",
+    "skip-forward",
+    "slash",
+    "smile",
+    "smile-plus",
+    "sparkles",
+    "speaker",
+    "square",
+    "square-dashed",
+    "squares-exclude",
+    "squares-intersect",
+    "squares-subtract",
+    "squares-unite",
+    "square-terminal",
+    "star",
+    "strikethrough",
+    "subscript",
+    "sun",
+    "superscript",
+    "switch-camera",
+    "table",
+    "tag",
+    "terminal",
+    "thumbs-down",
+    "thumbs-up",
+    "timer",
+    "train-front",
+    "trash",
+    "trash-2",
+    "trees",
+    "triangle-alert",
+    "trophy",
+    "type",
+    "underline",
+    "undo-2",
+    "unlink",
+    "upload",
+    "usb",
+    "user",
+    "user-plus",
+    "users",
+    "utensils",
+    "video",
+    "volume-2",
+    "volume-x",
+    "wand-sparkles",
+    "wifi",
+    "wifi-off",
+    "wind",
+    "x",
+];
+
+/// The kebab-case icon a dot literal names (`more_horizontal` is `more-horizontal`), when the
+/// platform has it.
+pub fn icon(snake: &str) -> Option<&'static str> {
+    let kebab = snake.replace('_', "-");
+    ICONS.iter().find(|i| **i == kebab).copied()
+}
+
+/// The error for the unknown icon `.snake`, with close ones when there are.
+pub fn unknown_icon(snake: &str) -> String {
+    let close = icon_suggestions(snake);
+    let hint = if close.is_empty() {
+        "; icons are the platform's icon set in snake case, such as `.plus`, `.pin` or `.more_horizontal`".to_string()
+    } else {
+        format!("; close ones: {}", close.join(", "))
+    };
+    format!("there is no icon `.{snake}`{hint}")
+}
+
+/// Up to three known icons whose names share a word with `snake`, for messages.
+fn icon_suggestions(snake: &str) -> Vec<String> {
+    let words: Vec<&str> = snake.split('_').filter(|w| w.len() > 2).collect();
+    let mut out: Vec<String> = ICONS
+        .iter()
+        .filter(|i| {
+            i.split('-').filter(|part| part.len() > 2).any(|part| {
+                words
+                    .iter()
+                    .any(|w| part.starts_with(w) || w.starts_with(part))
+            })
+        })
+        .map(|i| format!(".{}", i.replace('-', "_")))
+        .collect();
+    out.truncate(3);
+    out
 }

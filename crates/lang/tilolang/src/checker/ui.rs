@@ -117,16 +117,26 @@ impl Checker<'_> {
         }
     }
 
-    /// Lowers a whole view body and returns its root node.
+    /// Lowers a whole view body and returns its root node. A body of `let`s and one call has
+    /// that call as its root.
     pub(super) fn view_body(&mut self, body: &[UiStmt]) {
-        let root = match body {
-            [
+        let lets_then_call = match body.split_last() {
+            Some((
                 UiStmt {
                     kind: UiKind::Call(c),
                     ..
                 },
-            ] => self.ui_call(c, None),
-            _ => {
+                lets,
+            )) if lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. })) => Some((lets, c)),
+            _ => None,
+        };
+        let root = match lets_then_call {
+            Some((lets, c)) => {
+                let dead = self.fresh(Ty::Error);
+                self.ui_stmts(lets, dead);
+                self.ui_call(c, None)
+            }
+            None => {
                 let root = self.fresh(Ty::View);
                 let key = Ex::str(&self.st.view_id.clone());
                 self.emit(Stmt::Set(
@@ -166,6 +176,9 @@ impl Checker<'_> {
                 UiKind::For { var, iter, body } => self.ui_for(&var.name, iter, body, parent),
                 UiKind::Match { scrutinee, arms } => {
                     self.match_ui(scrutinee, arms, parent, s.span);
+                }
+                UiKind::Fact { node, label, value } => {
+                    self.fact(*node, label, value, parent, s.span);
                 }
                 UiKind::State(d) => {
                     self.err(
@@ -220,7 +233,7 @@ impl Checker<'_> {
     }
 
     /// The key of a node: its call id, combined with the identity of the enclosing items.
-    fn node_key(&self, c: &UiCall) -> Ex {
+    pub(super) fn node_key(&self, c: &UiCall) -> Ex {
         let base = match &c.anchor {
             Some(a) => {
                 let id = self
@@ -237,13 +250,23 @@ impl Checker<'_> {
             }
             None => format!("{}.{}", self.st.view_id, c.node),
         };
+        self.keyed(&base)
+    }
+
+    /// The key of the statement `node` that is not a call (a fact).
+    pub(super) fn stmt_key(&self, node: ast::NodeId) -> Ex {
+        self.keyed(&format!("{}.{}", self.st.view_id, node))
+    }
+
+    /// `base` combined with the identity of the enclosing items.
+    fn keyed(&self, base: &str) -> Ex {
         match self.st.keys.last() {
             Some(k) => Ex::host(
                 Imp::StrConcat,
-                vec![Ex::str(&base), Ex::local(*k, Ty::Text)],
+                vec![Ex::str(base), Ex::local(*k, Ty::Text)],
                 Ty::Text,
             ),
-            None => Ex::str(&base),
+            None => Ex::str(base),
         }
     }
 
@@ -280,8 +303,22 @@ impl Checker<'_> {
                     self.err("E060", span, format!("`{name}` is a variable of type {}; only a View variable can be placed in a view", self.show(&ty)));
                     return self.dead_node();
                 }
+                if self.st.ui_parent == "facts" {
+                    self.err("E098", span, "`facts { }` holds facts, one `\"Label\": value` per line; put other content outside it");
+                    return self.dead_node();
+                }
+                if let Some(msg) = removed_prim(name) {
+                    self.err("E096", span, msg);
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return self.dead_node();
+                }
                 if let Some(p) = prims::prim(name) {
-                    self.primitive(p, c, args)
+                    match self.native(p, c, args) {
+                        Some(n) => n,
+                        None => self.primitive(p, c, args),
+                    }
                 } else if let Some(v) = env.own_callable(name) {
                     let v = v.clone();
                     self.view_call(&v, c, args, span)
@@ -352,11 +389,11 @@ impl Checker<'_> {
     }
 
     /// A node local for statements that failed to check, so lowering can go on.
-    fn dead_node(&mut self) -> LocalId {
+    pub(super) fn dead_node(&mut self) -> LocalId {
         self.fresh(Ty::Error)
     }
 
-    fn new_node(&mut self, kind: &str, key: Ex) -> LocalId {
+    pub(super) fn new_node(&mut self, kind: &str, key: Ex) -> LocalId {
         let n = self.fresh(Ty::View);
         self.emit(Stmt::Set(
             n,
@@ -365,7 +402,8 @@ impl Checker<'_> {
         n
     }
 
-    fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+    pub(super) fn primitive(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        self.placement(p.name, c.call.span);
         let key = self.node_key(c);
         let n = self.new_node(p.name, key);
         let mut pos = 0usize;
@@ -383,9 +421,18 @@ impl Checker<'_> {
             self.embed_complete(c, args);
         }
         if let Some(block) = &c.block {
-            self.ui_stmts(block, n);
+            self.child_block(p.name, block, n);
         }
         n
+    }
+
+    /// The statements of a primitive's block, as children of `n`.
+    pub(super) fn child_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
+        let saved = (self.st.ui_parent, self.st.list_row_ok);
+        self.st.ui_parent = prim;
+        self.st.list_row_ok = false;
+        self.ui_stmts(block, n);
+        (self.st.ui_parent, self.st.list_row_ok) = saved;
     }
 
     /// `embed` renders a block with its author as the code author, so both are required.
@@ -413,7 +460,7 @@ impl Checker<'_> {
 
     /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of
     /// the primitive's own (`page(full)`).
-    fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
+    pub(super) fn is_flag(&self, p: Option<&Prim>, e: &ast::Expr) -> bool {
         let name = match &e.kind {
             ExprKind::Ident(n) => n,
             ExprKind::Call { callee, .. } => match &callee.kind {
@@ -429,7 +476,7 @@ impl Checker<'_> {
             || p.is_some_and(|p| p.flags.contains(&name.as_str()))
     }
 
-    fn flag_arg(&mut self, n: LocalId, e: &ast::Expr) {
+    pub(super) fn flag_arg(&mut self, n: LocalId, e: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         match &e.kind {
             ExprKind::Ident(name) if name == "fill" => {
@@ -510,6 +557,10 @@ impl Checker<'_> {
         let allowed = p.positional.contains(&name.as_str())
             || p.named.contains(&name.as_str())
             || prims::NODE_ARGS.contains(&name.as_str());
+        if let Some(msg) = removed_arg(p.name, &name) {
+            self.err("E096", a.value.span, msg);
+            return;
+        }
         if !allowed {
             let props: Vec<&str> = p
                 .positional
@@ -549,12 +600,15 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
+        if self.typed_arg(p.name, n, &name, &a.value) {
+            return;
+        }
         self.apply_arg(n, p.name, &name, &a.value);
     }
 
     /// Lowers one named argument of the UI call `prim` (empty for a view call) to its host
     /// call.
-    fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
+    pub(super) fn apply_arg(&mut self, n: LocalId, prim: &str, name: &str, value: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
@@ -631,7 +685,7 @@ impl Checker<'_> {
         )));
     }
 
-    fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
+    pub(super) fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
         match &v.ty {
             Ty::Error => {}
             Ty::Length(u) => {
@@ -658,13 +712,23 @@ impl Checker<'_> {
         }
     }
 
-    fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
+    pub(super) fn bind_arg(&mut self, node: &Ex, value: &ast::Expr) {
+        self.bind_typed(node, value, &[Ty::Int, Ty::Float, Ty::Bool, Ty::Text]);
+    }
+
+    /// `bind:` to a field or view state whose type is one of `allowed`.
+    pub(super) fn bind_typed(&mut self, node: &Ex, value: &ast::Expr, allowed: &[Ty]) {
+        let names = allowed
+            .iter()
+            .map(|t| self.show(t))
+            .collect::<Vec<_>>()
+            .join(", ");
         if let ExprKind::Ident(n) = &value.kind
             && let Some(state) = self.state_named(n)
         {
-            if !matches!(state.ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text) {
+            if !allowed.contains(&state.ty) {
                 let t = self.show(&state.ty);
-                self.err("E062", value.span, format!("`bind:` edits view state of type Int, Float, Bool or Text; `{n}` is {t}; change it with `on: set({n}, value)`"));
+                self.err("E062", value.span, format!("this binds view state of type {names}; `{n}` is {t}; change it with `on: set({n}, value)`"));
                 return;
             }
             let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
@@ -711,15 +775,12 @@ impl Checker<'_> {
             );
             return;
         };
-        if f.ty.is_container() || !matches!(f.ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text) {
+        if f.ty.is_container() || !allowed.contains(&f.ty) {
             let t = self.show(&f.ty);
             self.err(
                 "E062",
                 value.span,
-                format!(
-                    "`bind:` edits a field of type Int, Float, Bool or Text; `{}` is {t}",
-                    f.name
-                ),
+                format!("this binds a field of type {names}; `{}` is {t}", f.name),
             );
             return;
         }
@@ -772,7 +833,13 @@ impl Checker<'_> {
         node
     }
 
-    fn view_node(&mut self, v: &Callable, bound: Vec<Ex>, key: Ex, span: Span) -> LocalId {
+    pub(super) fn view_node(
+        &mut self,
+        v: &Callable,
+        bound: Vec<Ex>,
+        key: Ex,
+        span: Span,
+    ) -> LocalId {
         if let (true, Some(f)) = (v.own, v.func) {
             let wrapper = self.new_node("fragment", key);
             self.st.facts.views.insert(f);
@@ -793,4 +860,30 @@ impl Checker<'_> {
         }
         n
     }
+}
+
+/// What replaced a primitive that is gone, for its error.
+fn removed_prim(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "heading" => {
+            "`heading` is gone: the window's title is the root resource's `(title)` field, and the platform draws it in the header. Group content with `section(\"Title\") { }`, or write `text(x, role: .title)`"
+        }
+        "list_row" => {
+            "`list_row` is now `row(title, secondary: ...)`, inside a list's item block (`list(xs) { x -> row(x.title) }`) or as a `row view`"
+        }
+        _ => return None,
+    })
+}
+
+/// What replaced an argument that is gone, for its error.
+pub(super) fn removed_arg(prim: &str, arg: &str) -> Option<&'static str> {
+    Some(match (prim, arg) {
+        ("text", "style") => {
+            "text has a role, not a style: `text(x, role: .title)`; the roles are .body, .title, .caption and .numeric"
+        }
+        ("button", "style" | "size") => {
+            "a button takes its look from its action: mark the action `primary action` or `destructive action` and write `button(act(x))`; there is no `style:` or `size:`"
+        }
+        _ => return None,
+    })
 }

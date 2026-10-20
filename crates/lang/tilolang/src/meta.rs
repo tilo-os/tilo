@@ -28,6 +28,25 @@ pub struct PackageMeta {
     /// The view a window of each type uses unless changed (`default view v for T`).
     #[serde(default)]
     pub default_views: Vec<DefaultViewMeta>,
+    /// The app's icon (`app ... (icon: .name)`), a kebab-case name of the platform's icon set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The row a list of each type shows per item (`row view v for T`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_views: Vec<DefaultViewMeta>,
+    /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenarios: Vec<ScenarioMeta>,
+}
+
+/// A `scenario`: its name and the hidden action (listed in `actions` with `scenario: true`)
+/// that fills a workspace with its data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenarioMeta {
+    pub id: String,
+    pub name: String,
+    /// The id of the scenario's action.
+    pub action: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +71,10 @@ pub struct VariantMeta {
     pub id: String,
     pub name: String,
     pub doc: String,
+    /// What a control shows for the variant: its doc's first line, or its name in sentence
+    /// case.
+    #[serde(default)]
+    pub label: String,
     /// The payload fields, in order. Their merge is always `register`.
     pub fields: Vec<FieldMeta>,
 }
@@ -85,6 +108,9 @@ pub struct FieldMeta {
     pub doc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// `title` or `body`: what the field is to the platform (`title: Text (title)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +149,19 @@ pub struct ActionMeta {
     pub class: EffectClass,
     pub proposal: Option<ProposalMeta>,
     pub reaches: Vec<Reach>,
+    /// What the platform calls the action: `label:`, else its doc's first line when that is
+    /// shorter than its name in sentence case, else that.
+    #[serde(default)]
+    pub label: String,
+    /// `icon:`, a kebab-case name of the platform's icon set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// `primary` or `destructive`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// The hidden action of a scenario: never offered, run only to seed a workspace.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scenario: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +209,19 @@ impl PackageMeta {
             .iter()
             .find(|d| d.ty == ty)
             .map(|d| d.view.as_str())
+    }
+
+    /// The id of the row view of the type `ty` (an id), when the package declares one.
+    pub fn row_view(&self, ty: &str) -> Option<&str> {
+        self.row_views
+            .iter()
+            .find(|d| d.ty == ty)
+            .map(|d| d.view.as_str())
+    }
+
+    /// The actions the platform offers: every action but the hidden ones of scenarios.
+    pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
+        self.actions.iter().filter(|a| !a.scenario)
     }
 
     /// The JSON bytes embedded in the `tilolang.meta` section.

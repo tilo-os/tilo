@@ -4,8 +4,8 @@ use crate::common::{codes, compile_body, validate};
 
 const LIBRARY: &str = "type Album {\n    title: Text\n    artist: Text\n}\ntype Library {\n    albums: Collection<Album>\n}\n\
 view album_card(a: Album) {\n    layers {\n        image(a.title, aspect: 16/9)\n        text(a.artist, at: .bottom_trailing)\n    }\n    text(a.title, lines: 1, truncate)\n    if not space.compact {\n        text(a.artist)\n    }\n}\n\
-view library(l: Library) {\n    page {\n        heading(\"Albums\")\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
-view detail(a: Album) {\n    page(full) {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
+view library(l: Library) {\n    page {\n        text(\"Albums\", role: .title)\n        grid(min: 11rem) {\n            for a in l.albums {\n                album_card(a, fill(2))\n            }\n        }\n    }\n}\n\
+view detail(a: Album) {\n    canvas {\n        split(side: .leading, collapse: .drawer) {\n            primary(min: 18rem) {\n                text(a.title)\n            }\n            secondary(min: 22rem) {\n                scroll {\n                    text(a.artist, min: 4dp, max: 1.5rem)\n                }\n            }\n        }\n    }\n}\n\
 view bar(a: Album) {\n    if space.compact {\n        row(distribute: .between) { text(a.title); spacer }\n    } else {\n        row(gap: .section) {\n            text(a.title)\n            spacer\n            text(a.artist, fill)\n        }\n    }\n    if space.width_class == .wide and space.orientation != .portrait {\n        text(\"{space.width}\")\n    }\n}";
 
 fn contains(wasm: &[u8], needle: &str) -> bool {
@@ -81,7 +81,7 @@ fn options_are_dot_literals_of_the_primitives_enums() {
             .is_empty()
     );
     assert!(
-        codes("view v(b: Bool) {\n    stack(gap: if b { .tight } else { .group }) {\n        button(\"x\", style: .primary)\n        text(\"y\", style: .caption, truncate, min: 11rem)\n    }\n}")
+        codes("view v(b: Bool) {\n    stack(gap: if b { .tight } else { .group }) {\n        text(\"x\", role: .title)\n        text(\"y\", role: .caption, truncate, min: 11rem)\n    }\n}")
             .is_empty(),
         "an option can be chosen at run time; flags and units stay"
     );
@@ -103,10 +103,10 @@ fn options_are_dot_literals_of_the_primitives_enums() {
 #[test]
 fn a_chosen_option_reaches_the_host_as_its_name() {
     let c = compile_body(
-        "view v(b: Bool) {\n    button(\"x\", style: if b { .destructive } else { .plain })\n}",
+        "view v(b: Bool) {\n    text(\"x\", role: if b { .numeric } else { .caption })\n}",
     );
     validate(&c.wasm);
-    for want in ["destructive", "plain", "primary", "secondary"] {
+    for want in ["numeric", "caption", "title", "body"] {
         assert!(
             contains(&c.wasm, want),
             "{want} is not in the module's strings"

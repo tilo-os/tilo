@@ -27,6 +27,7 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         merge: MergeKind::Register,
         doc: doc.to_string(),
         default: None,
+        role: None,
     }
 }
 

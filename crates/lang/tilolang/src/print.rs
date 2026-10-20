@@ -21,7 +21,12 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         level: 0,
     };
     if let Some(app) = header {
-        p.line(&format!("app {} {}", app.id, quote(&app.title)));
+        let icon = app
+            .icon
+            .as_ref()
+            .map(|i| format!(" (icon: .{})", i.name))
+            .unwrap_or_default();
+        p.line(&format!("app {} {}{icon}", app.id, quote(&app.title)));
     }
     let mut prev_use = false;
     for (index, item) in items.iter().enumerate() {
@@ -268,6 +273,7 @@ fn expr_text(e: &Expr, min: u8, level: usize) -> String {
             )
         }
         ExprKind::Try(x) => format!("try {}", expr_text(x, 7, level)),
+        ExprKind::Root(t) => format!("root {}", print_type(t)),
     };
     if prec_of(e) < min {
         format!("({body})")
@@ -354,9 +360,24 @@ impl Printer {
                 d.view.name,
                 print_type(&d.ty)
             )),
+            Item::RowView(d) => self.line(&format!(
+                "row view {} for {}",
+                d.view.name,
+                print_type(&d.ty)
+            )),
+            Item::Scenario(sc) => {
+                self.docs(&sc.doc);
+                self.line(&format!("scenario {} {{", quote(&sc.name)));
+                self.block_body(&sc.body);
+                self.line("}");
+            }
             Item::Action(a) => {
                 self.docs(&a.doc);
-                let mut head = format!("action {}{}", a.name.name, Self::params(&a.params));
+                let role = a
+                    .role
+                    .map(|(r, _)| format!("{} ", r.word()))
+                    .unwrap_or_default();
+                let mut head = format!("{role}action {}{}", a.name.name, Self::params(&a.params));
                 if let Some(r) = &a.result {
                     head.push_str(&format!(" -> {}", print_type(r)));
                 }
@@ -366,6 +387,14 @@ impl Printer {
                         let names: Vec<&str> = args.iter().map(|i| i.name.as_str()).collect();
                         head.push_str(&format!("({})", names.join(", ")));
                     }
+                }
+                if !a.opts.is_empty() {
+                    let opts: Vec<String> = a
+                        .opts
+                        .iter()
+                        .map(|o| format!("{}: {}", o.name.name, self.ex(&o.value)))
+                        .collect();
+                    head.push_str(&format!(" ({})", opts.join(", ")));
                 }
                 head.push_str(" {");
                 self.line(&head);
@@ -412,6 +441,9 @@ impl Printer {
         let mut text = format!("{}: {}", f.name.name, print_type(&f.ty));
         if let Some(m) = &f.merge {
             text.push_str(&format!(" merge {}", m.kind.name()));
+        }
+        if let Some(m) = &f.marker {
+            text.push_str(&format!(" ({})", m.name));
         }
         if let Some(d) = &f.default {
             text.push_str(&format!(" = {}", self.ex(d)));
@@ -523,6 +555,11 @@ impl Printer {
                 self.level -= 1;
                 self.line("}");
             }
+            UiKind::Fact { label, value, .. } => {
+                let l = self.ex(label);
+                let v = self.ex(value);
+                self.line(&format!("{l}: {v}"));
+            }
             UiKind::Call(c) => self.ui_call(c),
         }
     }
@@ -560,10 +597,15 @@ impl Printer {
             .map(|a| format!(" as {}", a.name))
             .unwrap_or_default();
         let head = self.ex(&c.call);
+        let item = c
+            .item
+            .as_ref()
+            .map(|i| format!(" {} ->", i.name))
+            .unwrap_or_default();
         match &c.block {
             None => self.line(&format!("{head}{anchor}")),
             Some(stmts) => {
-                self.line(&format!("{head} {{"));
+                self.line(&format!("{head} {{{item}"));
                 self.ui_body(stmts);
                 self.line(&format!("}}{anchor}"));
             }
