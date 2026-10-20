@@ -61,6 +61,9 @@ pub(crate) fn image_ready(owners: &ImageOwners, loader: usize, url: &str) -> boo
         return true;
     }
     let Some((store, hash)) = blob(owners, loader, url) else {
+        web_sys::console::warn_1(
+            &format!("content image {url}: loader {loader} draws for no window").into(),
+        );
         return false;
     };
     if store.has(&hash) {
@@ -68,6 +71,11 @@ pub(crate) fn image_ready(owners: &ImageOwners, loader: usize, url: &str) -> boo
     }
     // Opening content the store lacks asks the record's route for it.
     let _ = store.read(&hash);
+    if let Some((app, record)) = owners.borrow().get(&loader) {
+        web_sys::console::debug_1(
+            &format!("content image {hash}: asked on {app} record {record}").into(),
+        );
+    }
     false
 }
 
