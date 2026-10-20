@@ -8,6 +8,9 @@ import {createInterface} from 'node:readline';
 import {launch} from '../../../../../tools/web/chrome.mjs';
 import {mountChat} from './mount-chat.mjs';
 import {observe} from './observe.mjs';
+// A channel's latest messages, as the page reads them; a refusal is the
+// answer, so a failed read says why.
+const READ_MESSAGES = "(() => { try { return mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32}); } catch (error) { return {state:'threw', error:String(error?.message ?? error)}; } })()";
 
 const bundle = resolve(process.argv[2]);
 assert.ok(existsSync(join(bundle, 'app/index.html')), 'built full-tab entry page is required');
@@ -84,8 +87,8 @@ try {
   await tab.waitFor('document.querySelector("canvas")?.width > 0');
   assert.ok((await tab.evaluate('mount.actions(fixture.reference.id)')).some(action => action.address.action === 'reveal-message-range'));
   if (fixture.encryptedRestart) {
-    const read = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
-    assert.equal(read.state, 'completed');
+    const read = await tab.evaluate(READ_MESSAGES);
+    assert.equal(read.state, 'completed', JSON.stringify(read));
     const original = read.output.value.messages.find(message => message.id === fixture.reference.id.split('/').pop());
     assert.ok(original, 'the exact original message must be readable');
     assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
@@ -98,15 +101,21 @@ try {
   assert.ok(initialShot?.length, 'the mounted fixture must produce a rendered frame');
   writeFileSync(join(evidence, 'mounted-chat-range.png'), initialShot);
   // Sharing live context reaches outside the record, which a room's viewer
-  // may not; an editor shares it, and stops, without video.
+  // may not; an editor, once the page has learned the role the room gives
+  // them, confirms sharing it and stopping, without video.
   const contextActions = ['live-context-status', 'share-live-context', 'stop-sharing-live-context'];
   if (fixture.disconnectRetry) {
+    await tab.waitFor(`(() => {
+      const offered = mount.actions().map(row => row.address.action);
+      return ${JSON.stringify(contextActions)}.every(action => offered.includes(action));
+    })()`);
     const context = await tab.evaluate(`(() => {
       const all = mount.actions();
       const call = action => {
         const descriptor = all.find(row=>row.address.action === action);
         if (!descriptor) throw Error('missing public context action: ' + action);
-        return mount.invokeAction(descriptor.address.resource, action);
+        // The room asks an editor before an outside action: they confirm.
+        return mount.invokeAction(descriptor.address.resource, action, {}, {confirm:true});
       };
       const before = call('live-context-status');
       call('share-live-context');
@@ -187,8 +196,8 @@ try {
     await tab.waitFor('!peer.getSnapshot().health.transport.authenticated && peer.getSnapshot().health.transport.phase !== "connected"');
     stage('browser-offline');
     assert.equal(JSON.parse((await lines.next()).value).nativePublished, true);
-    const offlineRead = await tab.evaluate("mount.invokeAction(fixture.channel, 'read-messages', {pageSize:32})");
-    assert.equal(offlineRead.state, 'completed');
+    const offlineRead = await tab.evaluate(READ_MESSAGES);
+    assert.equal(offlineRead.state, 'completed', JSON.stringify(offlineRead));
     assert.equal(offlineRead.output.value.messages.filter(message =>
       message.text === 'Native fixture while browser disconnected').length, 0,
     'the disconnected browser must not already have received the new native post');
