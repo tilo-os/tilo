@@ -37,11 +37,12 @@ struct Grants {
     denied_modules: HashSet<ModuleHash>,
     denied_actions: HashSet<ActionId>,
     granted_outside: HashSet<ActionId>,
+    denied_invokers: HashSet<Principal>,
 }
 
 /// The reference authority (spec 4.3):
 ///
-/// * deny wins over everything;
+/// * deny wins over everything, including a denied invoker;
 /// * an outside action asks, unless an explicit grant covers it and every author is trusted;
 /// * otherwise the action is allowed when every author in the chain is trusted, the action's
 ///   own module counting as trusted for its own actions, and asks when not.
@@ -85,6 +86,16 @@ impl SimpleAuthority {
         self.lock().denied_modules.insert(module.clone());
     }
 
+    /// A principal with no authority: nothing it invokes, directly or through code it wrote,
+    /// runs, and it cannot confirm a suggestion.
+    pub fn deny_invoker(&self, who: &Principal) {
+        self.lock().denied_invokers.insert(who.clone());
+    }
+
+    pub fn allow_invoker(&self, who: &Principal) {
+        self.lock().denied_invokers.remove(who);
+    }
+
     pub fn deny_action(&self, action: &str) {
         self.lock().denied_actions.insert(action.to_owned());
     }
@@ -100,8 +111,9 @@ impl SimpleAuthority {
 }
 
 impl Grants {
-    fn decide(&self, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
         if self.denied_actions.contains(&action.action)
+            || self.denied_invokers.contains(invoker)
             || chain.iter().any(|m| self.denied_modules.contains(m))
         {
             return Decision::Deny;
@@ -127,7 +139,7 @@ impl Grants {
 }
 
 impl Authority for SimpleAuthority {
-    fn decide(&self, _invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        self.lock().decide(chain, action)
+    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        self.lock().decide(invoker, chain, action)
     }
 }

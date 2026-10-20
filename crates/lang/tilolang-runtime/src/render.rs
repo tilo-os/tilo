@@ -38,17 +38,12 @@ pub struct Rendered {
     pub reads: Vec<(String, String)>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
-    /// See [`Acc::runs`].
-    pub runs: bool,
 }
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
-    /// Whether the tree shows an embedded invocation, whose state changes when a suggestion
-    /// is resolved rather than when a document the view read changes.
-    pub runs: bool,
 }
 
 /// What a view boundary is offered: its space, the person looking at it and how deep the
@@ -97,12 +92,10 @@ impl Acc {
         reads: Vec<(String, String)>,
         space_reads: Vec<(String, f64)>,
         retained: Vec<Retained>,
-        runs: bool,
     ) {
         self.reads.extend(reads);
         self.space_reads.extend(space_reads);
         self.retained.extend(retained);
-        self.runs |= runs;
     }
 }
 
@@ -187,7 +180,6 @@ impl Core {
             reads: state.reads,
             space_reads: state.space_reads,
             retained: Vec::new(),
-            runs: false,
         };
         let cx = Build {
             nodes: &state.nodes,
@@ -199,7 +191,6 @@ impl Core {
             reads: acc.reads,
             space_reads: acc.space_reads,
             retained: acc.retained,
-            runs: acc.runs,
         })
     }
 
@@ -305,12 +296,7 @@ impl Core {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
-        acc.absorb(
-            nested.reads,
-            nested.space_reads,
-            nested.retained,
-            nested.runs,
-        );
+        acc.absorb(nested.reads, nested.space_reads, nested.retained);
         "fragment".clone_into(&mut node.kind);
         node.props.retain(|name, _| !name.starts_with(ARG_PREFIX));
         node.children = vec![nested.root];

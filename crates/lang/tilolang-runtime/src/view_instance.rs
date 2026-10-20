@@ -48,10 +48,6 @@ pub struct ViewInstance {
     watch: Rc<RefCell<Watch>>,
     subs: Vec<SubId>,
     subscribed: HashSet<DocId>,
-    /// Whether the tree shows an embedded invocation, and the resolution count it was
-    /// rendered at: deciding a suggestion re-renders such a view.
-    shows_runs: bool,
-    resolutions_seen: u64,
 }
 
 impl ViewInstance {
@@ -75,8 +71,6 @@ impl ViewInstance {
             watch: Rc::new(RefCell::new(Watch::default())),
             subs: Vec::new(),
             subscribed: HashSet::new(),
-            shows_runs: false,
-            resolutions_seen: 0,
         };
         me.adopt(rendered);
         Ok(me)
@@ -114,13 +108,6 @@ impl ViewInstance {
         }
         self.retained = rendered.retained;
         self.tree = rendered.root;
-        self.shows_runs = rendered.runs;
-        self.resolutions_seen = self.core.resolutions.get();
-    }
-
-    /// A suggestion was decided since this view rendered an invocation.
-    fn runs_changed(&self) -> bool {
-        self.shows_runs && self.core.resolutions.get() != self.resolutions_seen
     }
 
     /// The current tree.
@@ -157,7 +144,7 @@ impl ViewInstance {
 
     /// Whether a field the view read has changed since the last render.
     pub fn is_stale(&self) -> bool {
-        self.watch.borrow().dirty || self.runs_changed()
+        self.watch.borrow().dirty
     }
 
     /// Re-run the view if a field it read changed and return the patches from the old tree
@@ -167,7 +154,7 @@ impl ViewInstance {
     ///
     /// As rendering: a trap or a malformed tree.
     pub fn poll_patches(&mut self) -> Result<Vec<Patch>, RuntimeError> {
-        if !self.is_stale() {
+        if !self.watch.borrow().dirty {
             return Ok(Vec::new());
         }
         self.watch.borrow_mut().dirty = false;

@@ -75,47 +75,64 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 
 ## Embedded blocks and apps
 
-- **`embed` nodes.** A node `embed` with `source` and `author` text is resolved while the tree
-  is built, like a foreign view. The host compiles the source with `tilolang::compile_block`
-  against the newest loaded package of every app (block modules are never visible), caches the
-  result by the blake3 of the source and the set of loaded package hashes, and registers the
-  block module. Diagnostics are cached too. The node's `state` prop says what it holds:
-  `view` (the view's tree, keys prefixed with the embed's key so every key stays unique in the
-  tree), `invocation`, `data` or `error`. Nothing an embed does fails the surrounding view.
-- **Principals as authors.** The author is a `Text` id, mapped to the authorship identity
-  `ModuleHash::principal(id)` (`principal:<id>`). The block runs with that identity as the
-  author of everything it creates: action references, bindings, view-frame handles. So the
-  authority chain for an embedded block is `[principal:<id>]`, never the block's own module
-  hash: a grant covers every block the principal writes (`SimpleAuthority::trust_principal`).
-  Nested foreign views and proposal views are their own package's code and keep their package
-  as author.
-- **Action blocks are run once.** Rendering must not repeat a side effect, so the outcome of an
-  embedded action application is remembered per (embed key, source hash, author). A suggestion
-  renders as `invocation` with `state` `suggested` and its `run`, plus the action's proposal
-  view as the only child; its state afterwards follows the run's journal (`done`, `declined`,
-  `failed`). A view that shows an invocation re-renders when any suggestion is resolved
-  (`Core::resolutions`), since resolving changes no document the view read. Remembered
-  outcomes live in the runtime, not the store: another replica, or a restart, evaluates the
-  block again.
-- **Data blocks** render through `project` as `column`/`row`/`heading`/`text` nodes (a record
-  is its label, type and fields). They do not record reads, so they refresh on re-render only.
+- **Principals.** `Value::Principal` is a host handle tagged like a resource reference. The
+  host makes one in `invoker` (the invoker of the running action frame) and when reading back
+  a field it wrote; no guest import builds one from text, and a `Text` handle does not fit a
+  `Principal` field or parameter. A principal's authorship identity is
+  `ModuleHash::principal(id)` (`principal:<id>`); only the host resolves one (an embed's
+  `author` prop, an invocation's author). `SimpleAuthority::trust_principal` grants every block
+  the principal wrote; `deny_invoker` removes a principal's authority altogether.
+- **`embed` nodes** are resolved while the tree is built, like foreign views. The host
+  compiles the source with `tilolang::compile_block` against the newest loaded package of
+  every app (block modules are never visible), caches the result by the blake3 of the source
+  and the set of loaded package hashes, and registers the block module. Diagnostics are cached
+  too. The node's `state` prop is `view` (the block's tree, keys prefixed with the embed's
+  key), `invocation`, `data` or `error`. Nothing an embed does fails the surrounding view.
+  View and data blocks are pure and evaluate at render, under the author's identity; nested
+  foreign and proposal views are their own package's code.
+- **Action blocks run when posted, never when rendered.** `run_block` queues a step in the
+  action frame. After the action commits (`run_action`, so also when it runs as an approved
+  suggestion or inside a flow) the host compiles the block, and when it applies an action runs
+  it through the authority as the invoker with `[principal:<invoker>]` as the authorship
+  chain: it runs, or becomes a suggestion, or is denied. The outcome is created as an
+  `Invocation` resource (a host-registered type, `tilo.host`) and stored in the part's
+  `invocation` field as two further changes attributed to the poster. A block that does not
+  compile, or is not an action, records nothing; the embed shows the diagnostics or renders it.
+  The runtime keeps no run-once memo: the invocation resource is the memory, and it syncs.
+- **Invocation cards.** An `embed` of an action part only reads the resource: an `invocation`
+  child with `state` (`pending` before the host recorded one, then `done`, `suggested`,
+  `declined`, `failed`, `denied`), `action`, `app`, `author`, `result`, the `invocation`
+  reference, and for a suggestion `run`, `can_resolve` and the action's proposal view. Its
+  reads join the view's, so a change to the resource, local or synced, refreshes the card.
+  `Core::resolutions` is gone.
+- **Deciding a suggestion** is `Runtime::resolve_invocation(invocation, approver, resolution)`.
+  It needs no journal, so it works on any replica that has the documents. The authority must
+  not deny the approver (`decide(approver, [], action)`; an Ask is the decision being made);
+  `Denied` otherwise. Approving runs the action once, on that replica, with the poster as its
+  invoker, `[principal:<poster>]` as chain and the approver recorded as `approved_by`, then
+  writes `state`, `result` and `run` back. Declining writes `declined`. A flow whose steps
+  suspend again keeps `suggested` with the new local `run`.
 - **`outside` payloads are plain JSON** (lists and tuples as arrays, a resource as
   `{ref, type}`), not the tagged form registers use; a sink reads them as is.
+- **Keys of nested trees are scoped.** A view call (`fragment`) and an embed prefix the keys
+  below them with their own key, except anchored nodes, so a key names one node in the tree.
 - **Apps** (`apps/tl/<name>/app.tl` and a complete `app.ids`): counter, todo, notes, chat,
-  letters and board, each with `view main(root: T)`. Chat messages are a `Collection<Part>`
-  (`kind` `text` or `block`) plus an `author` text; `post` is the one action people and agents
-  use. Letters' `send` has a proposal view and asks as an Outside action. Board holds
-  `Option` references to the other apps' root resources and a flow, `morning_cleanup`, that
-  composes foreign actions.
+  letters and board, each with `view main(root: T)`. Chat's `post(c, text, block)` records
+  `author = invoker`; a message is a `Collection<Part>` (`kind` `text` or `block`, plus the
+  part's `invocation`). Letters' `send` has a proposal view and asks as an Outside action.
+  Board holds `Option` references to the other apps' root resources and a flow,
+  `morning_cleanup`, that composes foreign actions.
 
 ## Gaps in the design
 
-- A chat message's `author` is plain data, so whoever can call `post` can post as an agent
-  and give its blocks that agent's grants. The authority should come from the change's
-  attribution (the invoker the store records), not a field the caller fills in.
 - Compiled blocks stay in the engine for the runtime's life: no eviction.
-- Embedded action outcomes are not shared across replicas (above), so two devices opening a
-  chat with a trusted agent's action block each run it once.
+- Two replicas can approve the same suggestion at once: each runs the action before the
+  other's state change arrives, so it runs twice. Exactly-once needs a claim that merges
+  (for example a register the approver sets before running, resolved deterministically).
+- A principal is a plain string id from the runtime's caller. Binding it to a verified
+  identity (device keys, the platform's authenticated session) is the platform's job.
+- A block that applies a flow records one invocation; later suspensions inside the flow are
+  decided with `resolve(run)` on the device that has the journal, and do not update the card.
 
 - No descending `sort_by`, no `list_set`, no reference-valued maps.
 - A removed note leaves a dangling reference that a view cannot test for (no existence check).
