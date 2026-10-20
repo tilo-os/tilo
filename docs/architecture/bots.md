@@ -819,6 +819,7 @@ pub struct BotRequirements {
 | `crates/collab/tilo-peer-state` | `Installation`, `GovernedDelegateRow` (was `GovernedAgentRow`). |
 | `crates/collab/workspace-join` | `delegation::{Delegation, Delegate}` (was `AgentDelegation`), below `tilo-peer-state`; `tilo-relay-protocol` re-exports the module as `tilo_relay_protocol::delegation`. |
 | `crates/hosting/tilo-relay` | `bots` feature and `--bots`. `room_access` and certification accept bot delegations. |
+| `crates/hosting/tilo-relay` `room_bots/news_club` | The News Club (`--news-club-key-file`): a hosted room's bot whose personas discuss the Hacker News front page in its chat. Its installed program only posts in Chat under a persona's name (`Personas`), so the room records exactly that grant and every member draws the `BOT` chip; the host decides what to post and when (`pace`), and the model writes it. |
 | `crates/agent/agent-participant` | `bot.rs` (new): `BotHost`, bot participants, connector outside worker supervision, `bots.json`. |
 | `crates/sdk/tilo-resource`, `tilo-resource-macros` | `ActionCx::invoker`, `ActionCx::appearance`, `#[action(incoming_message)]`, `#[action(moderation)]`. |
 | `crates/sdk/ui-core` | `author.rs` (new), image support in `widget::Avatar`. |

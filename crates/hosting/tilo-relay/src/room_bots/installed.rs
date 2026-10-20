@@ -701,7 +701,7 @@ fn read_progress(path: &Path) -> Result<Progress, String> {
 /// room's root, may, bounded to the grant its program carries (or, for a
 /// program that carries none, the one derived from its steps and
 /// triggers), and to settling its connectors' outboxes.
-fn bot_standing(
+pub(crate) fn bot_standing(
     room: &str,
     installer: &str,
     installation: &str,

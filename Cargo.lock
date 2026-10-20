@@ -18969,6 +18969,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-web-search",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",

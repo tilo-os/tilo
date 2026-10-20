@@ -155,6 +155,28 @@ pub struct PersistentArgs {
         requires = "moderation_key_file"
     )]
     pub moderation_model: Option<String>,
+    /// The model API key the room's News Club writes with, mounted from
+    /// the operator's encrypted secrets; kept in this host's secret store.
+    /// With it, the club's bot personas talk about the Hacker News front
+    /// page in the room's chat, always shown as the club's bot.
+    #[arg(long = "news-club-key-file", value_name = "PATH")]
+    pub news_club_key_file: Option<PathBuf>,
+    /// The channel the News Club talks in, by name.
+    #[arg(
+        long = "news-club-channel",
+        value_name = "NAME",
+        default_value = "general",
+        value_parser = crate::room_seed::channel_name,
+        requires = "news_club_key_file"
+    )]
+    pub news_club_channel: String,
+    /// The model the News Club writes with.
+    #[arg(
+        long = "news-club-model",
+        value_name = "MODEL",
+        requires = "news_club_key_file"
+    )]
+    pub news_club_model: Option<String>,
     /// Where avatars of authors a bot bridged out are published.
     #[arg(
         long = "public-avatars",
@@ -1078,6 +1100,7 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    let club = start_news_club(&rooms, &room, &host_cert, &root, &persistent, &state)?;
     // Bots the room's members ask for, beside the operator's.
     let requested =
         tilo_relay::room_bots::requested::spawn(tilo_relay::room_bots::requested::Follower {
@@ -1113,6 +1136,7 @@ pub(crate) async fn run(
     for runner in moderator
         .into_iter()
         .chain(runners)
+        .chain(club)
         .chain(std::iter::once(requested))
     {
         runner.abort();
@@ -1255,6 +1279,63 @@ async fn start_bots(
         runners.push(tokio::spawn(runner.run()));
     }
     Ok(runners)
+}
+
+/// Run the room's News Club when the operator mounted its model key: the
+/// club installed once as the room's bot (a restart finds the same
+/// installation), kept a governed member like every bot, and run on this
+/// host.
+fn start_news_club(
+    rooms: &Rooms,
+    room: &str,
+    host_cert: &DeviceCert,
+    root: &SigningKey,
+    persistent: &PersistentArgs,
+    state: &Path,
+) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+    use tilo_relay::room_bots::news_club;
+    let Some(key_file) = &persistent.news_club_key_file else {
+        return Ok(Vec::new());
+    };
+    let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
+    let writer = news_club::model::Anthropic::import(
+        &store,
+        key_file,
+        persistent.news_club_model.as_deref(),
+    )
+    .map_err(|error| anyhow::anyhow!("load the News Club's model key: {error}"))?;
+    let dir = state.join("bots").join(news_club::ENTRY);
+    // The club's program names the channel it posts in by id; a channel
+    // seeded by name has the id the room's seed gives it.
+    let channel = crate::room_seed::channel_id(&persistent.news_club_channel);
+    let bot = news_club::install(&dir, &channel).map_err(|error| anyhow::anyhow!("{error}"))?;
+    tracing::info!(model = writer.model(), installation = %bot.installation, channel = %persistent.news_club_channel, "news club installed");
+    let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
+    let club = news_club::NewsClub::new(
+        news_club::Placement {
+            rooms: rooms.clone(),
+            room: room.to_owned(),
+            host: host_cert.clone(),
+            bot_key: certifier.device_key(&bot.installation),
+            bot: bot.clone(),
+            channel: persistent.news_club_channel.clone(),
+            state_file: dir.join("club.json"),
+        },
+        writer,
+        news_club::hn::FrontPage::new(news_club::hn::API),
+        news_club::pace::Pace::default(),
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(vec![
+        tokio::spawn(tilo_relay::room_bots::membership::keep_renewed(
+            rooms.clone(),
+            room.to_owned(),
+            host_cert.clone(),
+            certifier,
+            bot,
+        )),
+        tokio::spawn(club.run()),
+    ])
 }
 
 /// A file name for directory entry or program path `entry`.

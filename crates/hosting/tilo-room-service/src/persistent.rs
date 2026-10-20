@@ -442,6 +442,16 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
             command.arg("--moderation-model").arg(model);
         }
     }
+    // The News Club runs only with its own key.
+    if let Some(key) = &persistent.news_club_key_file {
+        command.arg("--news-club-key-file").arg(key);
+        command
+            .arg("--news-club-channel")
+            .arg(&persistent.news_club_channel);
+        if let Some(model) = &persistent.news_club_model {
+            command.arg("--news-club-model").arg(model);
+        }
+    }
     Ok(command)
 }
 
