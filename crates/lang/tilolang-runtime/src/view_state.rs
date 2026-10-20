@@ -60,6 +60,11 @@ impl ViewStates {
         self.slots.get(key).map_or(0, |(_, g)| *g)
     }
 
+    /// A number that moves with every change of any slot.
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+
     /// Change a slot.
     pub fn set(&mut self, key: StateKey, value: Value) {
         self.clock = self.clock.saturating_add(1);
