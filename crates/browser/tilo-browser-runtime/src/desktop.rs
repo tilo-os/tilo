@@ -728,23 +728,7 @@ impl Tiles {
             return self.private_feedback(tab.id);
         }
         let store = self.store(definition)?;
-        let saved = self.shared.records.borrow().get(&tab.id).cloned();
-        let (target, named_new) = match saved {
-            Some(checkout) => (
-                LaunchTarget::Record {
-                    checkout,
-                    reveal: None,
-                },
-                None,
-            ),
-            None if definition.keeps_room_record() => (
-                definition
-                    .unsaved_target(&store)
-                    .map_err(|error| error.to_string())?,
-                None,
-            ),
-            None => self.unbound_target(definition, &store, tab.id)?,
-        };
+        let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
         let restore = self
             .inputs
             .views
@@ -851,6 +835,33 @@ impl Tiles {
         // Its ephemeral draft owner never enters Shared.stores/records:
         // neither replication nor desktop restore can publish raw text.
         Ok(component)
+    }
+
+    /// The record `tab` opens: its saved one, the room's own record, or a
+    /// new one.
+    fn launch_target(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: &RecordStore,
+        tab: TabId,
+    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+        let saved = self.shared.records.borrow().get(&tab).cloned();
+        match saved {
+            Some(checkout) => Ok((
+                LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+                None,
+            )),
+            None if definition.keeps_room_record() => Ok((
+                definition
+                    .unsaved_target(store)
+                    .map_err(|error| error.to_string())?,
+                None,
+            )),
+            None => self.unbound_target(definition, store, tab),
+        }
     }
 
     /// What a tab no record is bound to opens: the room's default record

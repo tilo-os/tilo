@@ -204,7 +204,7 @@ impl RelayCollabTransport {
             }
             CollabRequest::Presence { key, payload } => self.presence(route, &key, &payload),
             CollabRequest::RequestDocumentSnapshot => Ok(()),
-            CollabRequest::WantContent { hash } => self.want_content(route, hash),
+            CollabRequest::WantContent { hash } => self.want_content(route, &hash),
             _ => Err(TransportError::Unsupported),
         }
     }
@@ -216,7 +216,7 @@ impl RelayCollabTransport {
 
     /// Ask the room for content `route`'s record references, unless it was
     /// asked for within [`WANT_TTL_MS`].
-    fn want_content(&mut self, route: &RouteSpec, hash: String) -> Result<(), TransportError> {
+    fn want_content(&mut self, route: &RouteSpec, hash: &str) -> Result<(), TransportError> {
         let workspace = workspace(route).ok_or(TransportError::Unsupported)?;
         let hash = hash.to_ascii_lowercase();
         let now = tilo_clock::unix_now_ms();
