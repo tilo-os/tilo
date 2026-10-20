@@ -53,7 +53,7 @@ class AppSdkPolicyTriggersTests(unittest.TestCase):
                     self.assertTrue(any(fnmatch.fnmatchcase(path, pattern) for pattern in paths))
 
     def test_unconsumed_checkers_stay_in_required_quality_without_sdk_builds(self):
-        policy = (ROOT / 'tools/policy/run.sh').read_text()
+        policy = (ROOT / 'tools/policy/steps.toml').read_text()
         quality = (ROOT / '.forgejo/workflows/lint.yml').read_text()
         self.assertIn('bash tools/policy/run.sh', quality)
         for name in ('resource_action_contract', 'text_contract', 'content_store'):

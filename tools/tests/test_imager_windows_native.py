@@ -124,7 +124,7 @@ class DeferredWindowsNative(unittest.TestCase):
         self.assertNotIn("'--test', 'profile_transport'", self.script)
 
     def test_contract_runs_through_required_unittest_discovery(self):
-        policy = (ROOT / "tools/policy/run.sh").read_text()
+        policy = (ROOT / "tools/policy/steps.toml").read_text()
         self.assertIn("python3 tools/policy/run_unit_tests.py tools/tests", policy)
         runner = (ROOT / "tools/policy/run_unit_tests.py").read_text()
         self.assertIn('PATTERN = "test_*.py"', runner)

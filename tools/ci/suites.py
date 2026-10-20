@@ -32,6 +32,7 @@ CONTROL_INPUTS = frozenset({MANIFEST, "tools/ci/suites.py", "tools/tests/test_su
 # Always-run gates: a suite referenced here already runs on every applicable change.
 ALWAYS_RUN_SOURCES = (
     "tools/policy/run.sh",
+    "tools/policy/steps.toml",
     ".forgejo/workflows/check.yml",
     ".forgejo/workflows/lint.yml",
 )
@@ -333,7 +334,11 @@ def always_run(root: Path) -> set[str]:
         if line.strip() and not line.lstrip().startswith("#")
     }
     for source in ALWAYS_RUN_SOURCES:
-        gated.update(re.findall(r"[A-Za-z0-9_./-]+\.(?:py|sh)\b", (root / source).read_text(encoding="utf-8")))
+        text = (root / source).read_text(encoding="utf-8")
+        if source.endswith(".toml"):
+            # The policy steps' commands, not the files they list as inputs.
+            text = "\n".join(step["run"] for step in tomllib.loads(text).get("step", []))
+        gated.update(re.findall(r"[A-Za-z0-9_./-]+\.(?:py|sh)\b", text))
     return gated
 
 
