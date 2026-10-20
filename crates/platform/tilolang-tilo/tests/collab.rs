@@ -196,3 +196,25 @@ fn a_set_and_text_edited_concurrently_merge() {
         assert_eq!(set.len(), 2);
     }
 }
+
+#[test]
+fn planning_an_action_leaves_the_mirror_as_it_was() {
+    let (ada, _grace, meta, root) = todo_room();
+    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let args = json!({"text": "milk"}).as_object().cloned().unwrap();
+    for _ in 0..3 {
+        ada.host
+            .plan(&PlanRequest {
+                app: "so.tilo.todo",
+                kind: "tl.so.tilo.todo.TodoList",
+                action_id: &action.id,
+                resource: Some(&root),
+                args: &args,
+            })
+            .unwrap();
+    }
+    assert!(
+        item_ids(&ada, &meta, &root).is_empty(),
+        "only the door's commit changes the room"
+    );
+}

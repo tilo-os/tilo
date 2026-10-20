@@ -36,9 +36,12 @@ use ui::widget::arrange::{
 };
 use ui::widget::controls::ControlResult;
 use ui::widget::{
-    AppKind, AppModel, AppWidget, Button, ButtonRole, Element, IconDescriptor, ModelPath, Spacer,
-    Text, Widget,
+    AppKind, AppModel, AppWidget, Breadcrumb, Button, ButtonRole, Element, IconDescriptor,
+    ModelPath, Spacer, Text, Widget,
 };
+
+mod stage;
+pub use stage::SCENARIOS;
 
 use crate::i18n::t;
 use crate::packages::EMBEDDED;
@@ -47,7 +50,10 @@ use crate::reconcile::{EventSink, Reconciler, UiEvent};
 /// Where the window is.
 enum Mode {
     Home,
-    Open { view: Box<ViewInstance> },
+    Open {
+        view: Box<ViewInstance>,
+        title: String,
+    },
 }
 
 /// A navigation the person asked for.
@@ -96,6 +102,10 @@ pub struct TilolangPage {
     last_size: Option<(f32, f32)>,
     /// Whether the first frame built the host.
     started: bool,
+    /// The room record moved while the host was fetched outside `sync`.
+    moved: std::cell::Cell<bool>,
+    /// What a capture stages before it is drawn: empty on every live path.
+    stage: VecDeque<stage::Step>,
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -105,6 +115,14 @@ fn slot(element: Element, fit: Fit) -> Slot {
 }
 
 impl TilolangPage {
+    /// A window that stages `scenario` before it is first drawn: for captures only.
+    #[must_use]
+    pub fn staged(me: String, scenario: &str) -> Self {
+        let mut page = Self::new(me);
+        page.stage = stage::script(scenario);
+        page
+    }
+
     #[must_use]
     pub fn new(me: String) -> Self {
         let events: EventSink = Rc::default();
@@ -132,6 +150,8 @@ impl TilolangPage {
                 .unwrap_or_default()
         });
         let root = Stack::stack()
+            .fill_width()
+            .fill_height()
             .gap(Rhythm::Tight)
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::hug()))
             .push_slot(slot(Box::new(Spacer::fixed(0.0)), Fit::fill(1.0)))
@@ -154,6 +174,8 @@ impl TilolangPage {
             rem: 16.0,
             last_size: None,
             started: false,
+            moved: std::cell::Cell::new(false),
+            stage: VecDeque::new(),
         }
     }
 
@@ -161,7 +183,9 @@ impl TilolangPage {
     /// record is at hand.
     fn host_for(&self, doc: &ui::automerge::AutoCommit) -> Host {
         if let Some(host) = self.host.borrow().as_ref() {
-            host.sync_from(doc);
+            if host.sync_from(doc) {
+                self.moved.set(true);
+            }
             return host.clone();
         }
         let built = Host::new(
@@ -242,16 +266,19 @@ impl TilolangPage {
     fn rebuild_header(&mut self) {
         let header: Element = match self.mode {
             Mode::Home => Box::new(Spacer::fixed(0.0)),
-            Mode::Open { .. } => {
+            Mode::Open { ref title, .. } => {
                 let nav = Rc::clone(&self.inbox.nav);
-                let back = Button::new("tilolang-back", &t("tilolang-back"))
-                    .role(ButtonRole::Plain)
-                    .on_view(move || nav.borrow_mut().push(Nav::Home));
+                let crumbs = Breadcrumb::new(vec![t("tilolang-back"), title.clone()]).on_navigate(
+                    move |index| {
+                        if index == 0 {
+                            nav.borrow_mut().push(Nav::Home);
+                        }
+                    },
+                );
                 Box::new(
-                    Row::row()
-                        .fill_width()
-                        .push_slot(slot(Box::new(back), Fit::hug()))
-                        .with_id("tilolang-header"),
+                    PageLayout::full()
+                        .with_id("tilolang-header")
+                        .push_slot(slot(Box::new(crumbs), Fit::hug())),
                 )
             }
         };
@@ -410,7 +437,14 @@ impl TilolangPage {
         match host.open_main(app) {
             Ok(view) => {
                 let tree = view.tree().clone();
+                let title = host
+                    .packages()
+                    .into_iter()
+                    .find(|package| package.meta.app == app)
+                    .map(|package| package.meta.title)
+                    .unwrap_or_default();
                 self.mode = Mode::Open {
+                    title,
                     view: Box::new(view),
                 };
                 self.class = None;
@@ -530,6 +564,7 @@ impl TilolangPage {
             },
             UiEvent::Edit(key, text) => self.edit(key, Value::Text(text.clone())),
             UiEvent::Toggle(key, checked) => self.edit(key, Value::Bool(*checked)),
+            UiEvent::Resolve(key, approve) => self.resolve(key, *approve),
         };
         match outcome {
             Ok(()) => {
@@ -545,6 +580,30 @@ impl TilolangPage {
             }
         }
         self.commit_planned();
+    }
+
+    /// Allow or decline the suggestion an invocation card shows, as this person.
+    fn resolve(&self, key: &str, approve: bool) -> Result<(), String> {
+        let (Mode::Open { view, .. }, Some(host)) = (&self.mode, self.current_host()) else {
+            return Ok(());
+        };
+        let target = view
+            .tree()
+            .find(key)
+            .and_then(|card| match card.props.get("invocation") {
+                Some(Value::Ref(reference)) => Some(reference.target.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| t("tilolang-open-failed"))?;
+        let resolution = if approve {
+            Resolution::Approve
+        } else {
+            Resolution::Decline
+        };
+        host.runtime()
+            .resolve_invocation(&target, &Principal::new(self.me.clone()), resolution)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     fn edit(&self, key: &str, value: Value) -> Result<(), String> {
@@ -770,7 +829,8 @@ impl Widget for TilolangPage {
             self.show_home();
             self.rebuild_chrome();
         }
-        if host.sync_from(doc) {
+        let moved = host.sync_from(doc) | self.moved.take();
+        if moved {
             self.refresh_bound();
         }
         if self.poll_view() {
@@ -780,7 +840,8 @@ impl Widget for TilolangPage {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let changed = self.handle_events();
+        let staging = self.play_stage();
+        let changed = self.handle_events() || staging;
         let child = self.root.update(state, path);
         changed || child
     }
@@ -936,8 +997,9 @@ mod tests {
             first_text(tree).unwrap_or_default()
         }
 
-        fn button(&self) -> String {
-            first_button(self.page.body_tree.as_ref().expect("a view is open")).expect("a button")
+        fn button(&self, label: &str) -> String {
+            labelled_button(self.page.body_tree.as_ref().expect("a view is open"), label)
+                .expect("a button")
         }
     }
 
@@ -948,11 +1010,29 @@ mod tests {
         node.children.iter().find_map(first_text)
     }
 
-    fn first_button(node: &UiNode) -> Option<String> {
-        if node.kind == "button" {
+    fn rows(node: &UiNode, out: &mut Vec<String>) {
+        if node.kind == "list_row" {
+            out.push(
+                node.props
+                    .get("title")
+                    .map(crate::reconcile::display)
+                    .unwrap_or_default(),
+            );
+        }
+        for child in &node.children {
+            rows(child, out);
+        }
+    }
+
+    fn labelled_button(node: &UiNode, label: &str) -> Option<String> {
+        if node.kind == "button"
+            && node.props.get("label") == Some(&tilolang_tilo::runtime::Value::text(label))
+        {
             return Some(node.key.clone());
         }
-        node.children.iter().find_map(first_button)
+        node.children
+            .iter()
+            .find_map(|child| labelled_button(child, label))
     }
 
     #[test]
@@ -978,7 +1058,7 @@ mod tests {
     fn a_press_counts_through_the_runtime_and_the_door() {
         let mut room = Room::new();
         room.open("so.tilo.counter");
-        let key = room.button();
+        let key = room.button("+1");
         for expected in ["1", "2", "3"] {
             room.page
                 .events
@@ -1002,12 +1082,13 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names, reason = "the room and the notebook's root")]
     fn the_notes_package_opens_and_a_new_note_is_created_through_the_door() {
         let mut room = Room::new();
         room.open("so.tilo.notes");
         let host = room.page.current_host().expect("the host started");
         // The notes are items of the notebook's collection, not resources of their own.
-        let notes = |host: &Host| {
+        let count_notes = |host: &Host| {
             let (package, _, root) = host
                 .records()
                 .into_iter()
@@ -1031,12 +1112,57 @@ mod tests {
                 other => panic!("not a collection: {other:?}"),
             }
         };
-        assert_eq!(notes(&host), 0, "no notes yet");
-        let key = room.button();
+        assert_eq!(count_notes(&host), 0, "no notes yet");
+        let key = room.button("New note");
         room.page.events.borrow_mut().push(UiEvent::Press(key));
         room.frame();
         room.door();
         room.frame();
-        assert_eq!(notes(&host), 1, "the press inserted a note");
+        assert_eq!(count_notes(&host), 1, "the press inserted a note");
+    }
+
+    #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "the package and the pack of notes it holds"
+    )]
+    fn a_staged_scenario_adds_exactly_its_notes() {
+        let mut room = Room {
+            doc: AutoCommit::new(),
+            page: TilolangPage::staged("ada".to_owned(), "notes"),
+        };
+        for _ in 0..6 {
+            room.frame();
+            room.door();
+        }
+        let host = room.page.current_host().expect("the host started");
+        let (package, _, root) = host
+            .records()
+            .into_iter()
+            .find(|(_, ty, _)| ty == "Notebook")
+            .expect("the notebook exists");
+        let field = package
+            .meta
+            .types
+            .iter()
+            .find(|declared| declared.name == "Notebook")
+            .and_then(|declared| declared.fields.iter().find(|field| field.name == "notes"))
+            .map(|field| field.id.clone())
+            .expect("the notebook has notes");
+        let on_disk = tilolang_tilo::action::read_resource(&room.doc, "so.tilo.notes", &root)
+            .expect("the record has it");
+        let Some(tilolang_tilo::DynValue::Collection(stored)) = on_disk.get(&field) else {
+            panic!("not a collection");
+        };
+        assert_eq!(stored.len(), 3, "three notes, however many frames ran");
+        // And the open view lists exactly those three.
+        let tree = room
+            .page
+            .body_tree
+            .as_ref()
+            .expect("the notes view is open");
+        let mut notes = Vec::new();
+        rows(tree, &mut notes);
+        assert_eq!(notes.len(), 3, "{notes:?}");
     }
 }

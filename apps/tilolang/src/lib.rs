@@ -60,11 +60,19 @@ fn create(
             .map_err(LaunchError::Record)?;
     }
     let me = context.author().0.clone();
+    // A capture names the scenario it stages; the live path never reads one.
+    let scenario = context
+        .capture()
+        .and_then(|capture| capture.scenario())
+        .map(str::to_owned);
     let mut registry = ui::tilo_actions::ActionRegistry::new();
     tilolang_tilo::register_actions(&mut registry);
     Ok(AppComponent::new(
         context,
-        Box::new(page::TilolangPage::new(me)),
+        Box::new(match scenario {
+            Some(scenario) => page::TilolangPage::staged(me, &scenario),
+            None => page::TilolangPage::new(me),
+        }),
         registry,
     ))
 }
@@ -88,4 +96,24 @@ pub fn definition() -> &'static ApplicationDefinition {
             create,
         }
     })
+}
+
+/// What a capture does after the window is mounted and before it is drawn: let the staged state
+/// reach the record and the frames settle.
+#[allow(clippy::unnecessary_wraps, reason = "the capture hook's signature")]
+fn settle_capture(
+    driver: &mut ui::headless::FrameHarness,
+    _args: &ui::launch::LaunchArgs,
+) -> Result<(), LaunchError> {
+    for _ in 0..4 {
+        driver.settle_for_capture(ui::time::Duration::from_secs(10));
+    }
+    Ok(())
+}
+
+/// How the host launches: the live window, or a capture of one of the staged scenarios.
+pub fn launch_spec() -> ui::launch::LaunchSpec {
+    ui::framework::definition_launch_spec(definition())
+        .scenarios(page::SCENARIOS)
+        .capture_scenario(settle_capture)
 }

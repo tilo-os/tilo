@@ -80,6 +80,13 @@ struct Inner {
     counter: u64,
 }
 
+/// The mirror as it was, to put back after a trial run; see [`TiloStore::checkpoint`].
+pub struct Checkpoint {
+    mirror: Doc,
+    index: BTreeMap<DocId, (AppId, TypeId)>,
+    notes: BTreeMap<DocId, Vec<ChangeNote>>,
+}
+
 /// The runtime's store over the room record. A cheap handle: clones share the mirror.
 #[derive(Clone)]
 pub struct TiloStore {
@@ -280,6 +287,34 @@ impl TiloStore {
     #[must_use]
     pub fn next_ticket(&self) -> u64 {
         self.inner.borrow().next_ticket
+    }
+
+    /// The mirror as it is now. A trial run (planning an action for the door) writes into the
+    /// mirror like any run; [`Self::rewind`] takes those writes back, since only the door's
+    /// commit makes a change.
+    #[must_use]
+    pub fn checkpoint(&self) -> Checkpoint {
+        let inner = self.inner.borrow();
+        Checkpoint {
+            mirror: inner.mirror.clone(),
+            index: inner.index.clone(),
+            notes: inner.notes.clone(),
+        }
+    }
+
+    /// Put the mirror back as the checkpoint held it and tell every subscriber.
+    pub fn rewind(&self, checkpoint: Checkpoint) {
+        let mut inner = self.inner.borrow_mut();
+        inner.mirror = checkpoint.mirror;
+        inner.index = checkpoint.index;
+        inner.notes = checkpoint.notes;
+        let docs: BTreeSet<DocId> = inner.subs.iter().map(|sub| sub.doc.clone()).collect();
+        for doc in docs {
+            inner.notify(&ChangeSummary {
+                doc,
+                fields: Vec::new(),
+            });
+        }
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.

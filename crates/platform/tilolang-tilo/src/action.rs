@@ -69,6 +69,20 @@ pub enum DynEdit {
     Edit { id: String, edit: Edit<DynRecord> },
     /// Remove the resource.
     Remove { id: String },
+    /// An edit of a resource of another app than the action's: the host's own `Invocation`
+    /// records, which an action's follow-up changes write beside the package's resources.
+    In { app: String, edit: Box<DynEdit> },
+}
+
+impl DynEdit {
+    /// The same edit, addressed to the resources of `app`.
+    #[must_use]
+    pub fn in_app(self, app: &str) -> Self {
+        Self::In {
+            app: app.to_owned(),
+            edit: Box::new(self),
+        }
+    }
 }
 
 /// A tilolang action as recorded: what was invoked, by whom, and exactly what it wrote.
@@ -114,8 +128,15 @@ impl DynAction {
     pub fn resources(&self) -> Vec<&str> {
         let mut ids: Vec<&str> = Vec::new();
         for edit in &self.edits {
+            let mut edit = edit;
+            while let DynEdit::In { edit: inner, .. } = edit {
+                edit = inner;
+            }
             let (DynEdit::Create { id, .. } | DynEdit::Edit { id, .. } | DynEdit::Remove { id }) =
-                edit;
+                edit
+            else {
+                continue;
+            };
             if !ids.contains(&id.as_str()) {
                 ids.push(id.as_str());
             }
@@ -142,28 +163,43 @@ pub fn apply_edits(
     }
     let mut cx = ActionCx::for_write(doc, seed);
     let records = ensure_map(doc, &ROOT, RECORDS_KEY)?;
-    let app = ensure_map(doc, &records, app)?;
     for edit in edits {
-        match edit {
-            DynEdit::Create { id, record } => {
-                let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
-                record
-                    .store(doc, Slot::Key(&app, id))
-                    .map_err(|error| refused(&error))?;
-            }
-            DynEdit::Edit { id, edit } => {
-                let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                    return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-                };
-                DynRecord::edit_fields(doc, &obj, edit.path(), edit.op(), &mut cx)
-                    .map_err(|error| refused(&error))?;
-            }
-            DynEdit::Remove { id } => {
-                if doc.get(&app, id.as_str())?.is_some() {
-                    doc.delete(&app, id.as_str())?;
-                }
+        apply_one(doc, &records, app, edit, &mut cx)?;
+    }
+    Ok(())
+}
+
+fn apply_one(
+    doc: &mut Doc,
+    records: &automerge::ObjId,
+    app: &str,
+    edit: &DynEdit,
+    cx: &mut ActionCx,
+) -> Result<(), ActionError> {
+    if let DynEdit::In { app, edit } = edit {
+        return apply_one(doc, records, app, edit, cx);
+    }
+    let app = ensure_map(doc, records, app)?;
+    match edit {
+        DynEdit::Create { id, record } => {
+            let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+            record
+                .store(doc, Slot::Key(&app, id))
+                .map_err(|error| refused(&error))?;
+        }
+        DynEdit::Edit { id, edit } => {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+            };
+            DynRecord::edit_fields(doc, &obj, edit.path(), edit.op(), cx)
+                .map_err(|error| refused(&error))?;
+        }
+        DynEdit::Remove { id } => {
+            if doc.get(&app, id.as_str())?.is_some() {
+                doc.delete(&app, id.as_str())?;
             }
         }
+        DynEdit::In { .. } => {}
     }
     Ok(())
 }

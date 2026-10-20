@@ -153,6 +153,15 @@ impl HostInner {
     }
 
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
+        // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
+        // for an action (to describe it, to offer it) never changes the room.
+        let checkpoint = self.store.checkpoint();
+        let planned = self.plan_in_mirror(request);
+        self.store.rewind(checkpoint);
+        planned
+    }
+
+    fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
             .meta
@@ -199,7 +208,16 @@ impl HostInner {
             edits: Vec::new(),
         };
         for entry in committed {
-            planned.edits.extend(entry.action.edits);
+            // Follow-up changes of the host itself (an action block's invocation record) belong
+            // to another app's resources than the action's.
+            let other = entry.action.app != planned.app;
+            for edit in entry.action.edits {
+                planned.edits.push(if other {
+                    edit.in_app(&entry.action.app)
+                } else {
+                    edit
+                });
+            }
         }
         Ok(planned)
     }
@@ -216,6 +234,8 @@ impl Host {
         viewer: Principal,
         invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
     ) -> Result<Self, HostError> {
+        // The host's own record types (`Invocation`) are stored like any other resource.
+        tilolang::host_meta().register_schemas();
         let store = TiloStore::new(record);
         let authority = TiloAuthority::new(invoker);
         let runtime = Runtime::new(store.clone(), authority.clone())?;
