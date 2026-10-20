@@ -10,6 +10,7 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod accessibility;
 mod agent_actions;
 mod agent_markers;
 mod ask_agent;
@@ -274,73 +275,32 @@ mod window_focus;
 mod workspace_content;
 mod ws_settings;
 
+use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
+use collaborators::{CollaborationPreferences, collaborators_screen_exposure};
+#[cfg(test)]
+use overview_layout::OVERVIEW_PANEL_START_SCALE;
+use overview_layout::{
+    OVERVIEW_FACE_AWAY_ALPHA, OVERVIEW_FACE_RADIUS_PX, OVERVIEW_FACE_STEP_PX, OVERVIEW_FACES_MAX,
+    OVERVIEW_PANEL_RISE_PX, OVERVIEW_SCROLL_FADE_PX, OVERVIEW_SHARES_MAX_ROWS, OverviewMetrics,
+    overview_panel_curve,
+};
+use overview_paint::OverviewPanelCache;
+pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};
+use qs_state::{
+    QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics, focus_quick_settings_accessibility,
+    quick_settings_settled_bounds, radio_field, scanned_wifi_security, sound_outputs_of,
+};
+use room_activity::ActivityRefreshGate;
+#[cfg(test)]
+use room_activity::{
+    ACTIVITY_AWARENESS_FALLBACK, enter_activity_workspace, grounded_intent_fallback,
+    prepare_status_evidence, should_reveal_activity_on_entry, take_pending_activity_reveal,
+};
+use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
+
 /// How long the follow bar says "Stopped following" after the person's own
 /// input ended it.
 const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// Which grant-composer control a click landed on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ComposerHit {
-    Subject,
-    Capability,
-    /// Index into [`EXPIRY_CHOICES`].
-    Expiry(usize),
-    Submit,
-}
-
-/// The Public card of workspace settings, from what the host last answered
-/// about the active workspace's publication.
-fn public_card(
-    state: Option<&crate::shell::chrome_state::PublicationState>,
-) -> tilo_desktop::workspace_settings::overlay::PublicCard {
-    use crate::shell::chrome_state::PublicationState;
-    use tilo_desktop::workspace_settings::overlay::PublicCard;
-    match state {
-        None | Some(PublicationState::Asking) => PublicCard::Asking,
-        Some(PublicationState::Unavailable(why)) => PublicCard::Unavailable(why.clone()),
-        Some(PublicationState::Known(known)) => PublicCard::Known {
-            public: known.public,
-            description: known.description.clone(),
-            default_role: match known.default_role {
-                tilo_relay_protocol::rooms::RoomRole::Viewer => {
-                    crate::shell::state::CapRole::Viewer
-                }
-                tilo_relay_protocol::rooms::RoomRole::Commenter => {
-                    crate::shell::state::CapRole::Commenter
-                }
-                tilo_relay_protocol::rooms::RoomRole::Editor => {
-                    crate::shell::state::CapRole::Editor
-                }
-                tilo_relay_protocol::rooms::RoomRole::Moderator => {
-                    crate::shell::state::CapRole::Moderator
-                }
-            },
-        },
-    }
-}
-
-/// The role a public workspace hands out after `role`: the card's cycle,
-/// Viewer, Commenter, Editor, and round again.
-fn next_door_role(
-    role: tilo_relay_protocol::rooms::RoomRole,
-) -> tilo_relay_protocol::rooms::RoomRole {
-    use tilo_relay_protocol::rooms::RoomRole;
-    match role {
-        RoomRole::Viewer => RoomRole::Commenter,
-        RoomRole::Commenter => RoomRole::Editor,
-        RoomRole::Editor | RoomRole::Moderator => RoomRole::Viewer,
-    }
-}
-
-fn workspace_settings_composer_hit(outcome: &WorkspaceSettingsOutcome) -> Option<ComposerHit> {
-    match outcome {
-        WorkspaceSettingsOutcome::ComposerSubject => Some(ComposerHit::Subject),
-        WorkspaceSettingsOutcome::ComposerCapability => Some(ComposerHit::Capability),
-        WorkspaceSettingsOutcome::ComposerExpiry(index) => Some(ComposerHit::Expiry(*index)),
-        WorkspaceSettingsOutcome::ComposerSubmit => Some(ComposerHit::Submit),
-        _ => None,
-    }
-}
 
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
@@ -389,96 +349,7 @@ pub enum WifiSecretAction {
     },
 }
 
-/// The authentication mode the last Wi-Fi scan listed for `ssid`.
-fn scanned_wifi_security(
-    networks: &[crate::shell::quick_settings::WifiNetwork],
-    ssid: &str,
-) -> Option<os_actions::WifiSecurity> {
-    networks
-        .iter()
-        .find(|network| network.ssid == ssid)
-        .map(|network| network.security)
-}
-
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShortcutGuideFocus {
-    Binding(settings_store::hardware::ShortcutAction),
-    Reset(
-        settings_store::hardware::ShortcutAction,
-        settings_store::hardware::ShortcutAction,
-    ),
-    Done,
-}
-
-/// The keyboard guide's navigation rows: a label and the previous/next pair
-/// it edits. The guide paints these and Tab walks these, so a binding is
-/// focusable exactly when it is drawn.
-const SHORTCUT_GUIDE_ROWS: [(
-    &str,
-    settings_store::hardware::ShortcutAction,
-    settings_store::hardware::ShortcutAction,
-); 9] = {
-    use settings_store::hardware::ShortcutAction as A;
-    [
-        (
-            "guide-row-windows",
-            A::FocusPreviousWindow,
-            A::FocusNextWindow,
-        ),
-        ("guide-row-tabs", A::PreviousTab, A::NextTab),
-        ("guide-row-move-tab", A::AttachTabLeft, A::AttachTabRight),
-        ("guide-row-maximize", A::MaximizeWindow, A::RestoreWindow),
-        ("guide-row-strips", A::PreviousStrip, A::NextStrip),
-        (
-            "guide-row-workspaces",
-            A::PreviousWorkspace,
-            A::NextWorkspace,
-        ),
-        ("guide-row-move-group", A::MoveGroupLeft, A::MoveGroupRight),
-        ("guide-row-resize", A::ResizeNarrower, A::ResizeWider),
-        (
-            "guide-row-move-group-strip",
-            A::MoveGroupToPreviousStrip,
-            A::MoveGroupToNextStrip,
-        ),
-    ]
-};
-
-/// The result of asking whether the global Print Screen shortcut may change
-/// the desktop's modal stack. Capture is a temporary input owner: it may sit
-/// above an OOBE, portal, consent, or file-selection dialog, but it must not
-/// mutate that dialog's state. Escaping capture returns to the exact workflow
-/// the person was inspecting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrintScreenArbitration {
-    /// Close only presentation-only chrome and enter Capture Studio.
-    OpenCapture,
-    /// Do not stack a second capture over an in-progress capture/markup flow.
-    Blocked(&'static str),
-}
-
-/// Where the desktop-control preferences come from. The persisted variant
-/// caches the last snapshot read from settings storage; the compositor
-/// refreshes it at its settings reload point, so key dispatch and paint
-/// never read the file.
-enum DesktopControlsSource {
-    Persisted(settings_store::hardware::DesktopControlsConfig),
-    Explicit(settings_store::hardware::DesktopControlsConfig),
-}
-
-impl DesktopControlsSource {
-    fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
-        match self {
-            Self::Persisted(config) | Self::Explicit(config) => *config,
-        }
-    }
-
-    fn is_explicit(&self) -> bool {
-        matches!(self, Self::Explicit(_))
-    }
-}
 
 struct OverlayInputs {
     search_registry: crate::shell::search::SearchRegistry,
@@ -543,13 +414,6 @@ struct PendingLaunchpadApp {
 /// How often a launchpad card's app action, delivered once its app is up,
 /// is asked whether it was admitted.
 const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
-/// How often the open Wi-Fi section scans for networks again: often enough
-/// that walking into range shows up while the person looks, rarely enough
-/// that the radio is not kept busy.
-const QS_WIFI_RESCAN: Duration = Duration::from_secs(10);
-
-/// Copies the Clipboard section shows at once.
-const QS_CLIPBOARD_ROWS: usize = 6;
 
 /// A launchpad card's app action awaiting admission: the app may be
 /// launching first. The card's title names it if it is refused.
@@ -561,16 +425,6 @@ struct PendingLaunchpadAction {
             tilo_actions::remote::ActionHostError,
         >,
     >,
-}
-
-/// The one local source a Quick Settings device click routes to another device.
-#[derive(Clone, Debug, PartialEq)]
-enum QsDeviceSource {
-    Media(String),
-    Realtime(String),
-    Gamepad(u64),
-    RemoteAudio(u64),
-    RemoteCapture(crate::shell::remote_capture::device::RemoteCaptureKind),
 }
 
 #[allow(
@@ -1076,7 +930,8 @@ pub struct ShellOverlayHost {
     activity_awareness_workspace: Option<u64>,
     /// What the passive Activity awareness last refreshed from, and when.
     /// A frame whose key is unchanged skips the refresh (and its tree write
-    /// lock and record reads) until [`ACTIVITY_AWARENESS_FALLBACK`] passes.
+    /// lock and record reads) until
+    /// [`room_activity::ACTIVITY_AWARENESS_FALLBACK`] passes.
     activity_refresh: ActivityRefreshGate,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as
@@ -1396,17 +1251,6 @@ const PAIRING_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// The file manager Super+E opens.
 const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
 
-/// The magnifier step a shortcut performs, if it is a magnifier shortcut.
-fn magnifier_step(action: settings_store::hardware::ShortcutAction) -> Option<MagnifierStep> {
-    use settings_store::hardware::ShortcutAction as A;
-    match action {
-        A::ToggleMagnifier => Some(MagnifierStep::Toggle),
-        A::MagnifierZoomIn => Some(MagnifierStep::ZoomIn),
-        A::MagnifierZoomOut => Some(MagnifierStep::ZoomOut),
-        _ => None,
-    }
-}
-
 /// Make the next keyboard input source the active one in the session's
 /// settings, so it survives a settings reload and the next session, and
 /// return the keyboard group to select and the source's name. `None` with a
@@ -1460,41 +1304,6 @@ fn select_next_input_source(scope: &str) -> Option<(usize, String)> {
     Some((group, name))
 }
 
-/// The Shift+Print capture: everything on `viewport`, saved and copied.
-fn instant_screen_capture(viewport: Rect) -> ui::widget::CaptureIntent {
-    instant_capture(ui::widget::SourceMode::Display, vec![viewport], Vec::new())
-}
-
-/// The Alt+Print capture: the focused window as it is on screen.
-fn instant_window_capture(target: ui::widget::CaptureTarget) -> ui::widget::CaptureIntent {
-    instant_capture(
-        ui::widget::SourceMode::Window,
-        vec![target.visible_rect],
-        vec![target],
-    )
-}
-
-fn instant_capture(
-    source: ui::widget::SourceMode,
-    regions: Vec<Rect>,
-    targets: Vec<ui::widget::CaptureTarget>,
-) -> ui::widget::CaptureIntent {
-    ui::widget::CaptureIntent {
-        mode: ui::widget::CaptureMode::Screenshot,
-        source,
-        destination: ui::widget::CaptureDestination::FileAndClipboard,
-        regions,
-        include_pointer: false,
-        audio: ui::widget::AudioCaptureMode::None,
-        extent: ui::widget::CaptureExtent::Visible,
-        pip_layout: ui::widget::PipLayout::Auto,
-        targets,
-        recording_command: None,
-        replay_command: None,
-        screenshot_command: None,
-    }
-}
-
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
 // This file's layout math is all in `f64` (to match `kurbo`), but
@@ -1533,370 +1342,6 @@ const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;
 /// desktop.
 pub use crate::shell::output_scene::OutputGeometry;
 
-fn should_reveal_activity_on_entry(
-    entering_workspace: bool,
-    away_changes: usize,
-    overlays: crate::shell::chrome_state::OverlayFlags,
-) -> bool {
-    entering_workspace
-        && away_changes > 0
-        && overlays == crate::shell::chrome_state::OverlayFlags::default()
-}
-
-fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) -> bool {
-    // Restoring the initial workspace is not a user-initiated workspace
-    // transition. Its unread history belongs in the passive glance badge;
-    // otherwise startup can raise a modal before a newly mapped application
-    // receives its first keyboard focus.
-    let entering = last_workspace.is_some_and(|previous| previous != workspace);
-    *last_workspace = Some(workspace);
-    entering
-}
-
-/// The longest the passive Activity awareness goes without a refresh while
-/// nothing it can observe cheaply has changed: a record rewritten on disk by
-/// an app, or the clock crossing the away recap's threshold, is caught here.
-const ACTIVITY_AWARENESS_FALLBACK: Duration = Duration::from_secs(1);
-
-/// Everything the passive Activity awareness reads that a frame can compare
-/// without the tree's write lock: chrome and external tree revisions, the
-/// active workspace, the desktop document's heads, the open records'
-/// content and the rooms' record corpus.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ActivityRefreshKey {
-    chrome_revision: u64,
-    external_revision: u64,
-    active: u64,
-    tree_heads: Vec<automerge::ChangeHash>,
-    tree_pending: usize,
-    records: String,
-    room_records: (u64, u64),
-}
-
-/// Decides when the passive Activity awareness refreshes: when its key
-/// moved, when asked to, or once [`ACTIVITY_AWARENESS_FALLBACK`] passed.
-#[derive(Debug, Default)]
-struct ActivityRefreshGate {
-    key: Option<ActivityRefreshKey>,
-    at: Option<Instant>,
-}
-
-impl ActivityRefreshGate {
-    /// Whether a frame with `key` at `now` must refresh; records the refresh
-    /// when it must.
-    fn due(&mut self, key: ActivityRefreshKey, force: bool, now: Instant) -> bool {
-        let stale = self
-            .at
-            .is_none_or(|at| now.saturating_duration_since(at) >= ACTIVITY_AWARENESS_FALLBACK);
-        if !force && !stale && self.key.as_ref() == Some(&key) {
-            return false;
-        }
-        self.key = Some(key);
-        self.at = Some(now);
-        true
-    }
-
-    /// Refresh on the next frame whatever the key says.
-    fn invalidate(&mut self) {
-        self.key = None;
-    }
-
-    /// The state a refresh left behind is the state it saw.
-    fn settle(&mut self, key: ActivityRefreshKey) {
-        if self.key.is_some() {
-            self.key = Some(key);
-        }
-    }
-}
-
-fn take_pending_activity_reveal(
-    pending: &mut Option<u64>,
-    entering: bool,
-    workspace: u64,
-    away_changes: usize,
-    overlays: crate::shell::chrome_state::OverlayFlags,
-) -> bool {
-    if entering {
-        *pending = (away_changes > 0).then_some(workspace);
-    } else if away_changes == 0 && *pending == Some(workspace) {
-        *pending = None;
-    }
-    if overlays.room_activity {
-        *pending = None;
-        return false;
-    }
-    if *pending == Some(workspace) && should_reveal_activity_on_entry(true, away_changes, overlays)
-    {
-        *pending = None;
-        return true;
-    }
-    false
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct CollaborationPreferences {
-    sharing: ui::StatusSharing,
-    manual_status: Option<String>,
-    /// How available the person says they are.
-    availability: ui::Availability,
-    /// What the people in each workspace see, where the person chose.
-    visibility: std::collections::BTreeMap<crate::shell::state::RoomId, ui::PresenceVisibility>,
-    /// Public workspaces whose people the person was told about.
-    introduced: std::collections::BTreeSet<crate::shell::state::RoomId>,
-}
-
-/// Human-readable projection of the compositor's screen-share authority for
-/// the People popover. Unlike room presence, every clause names the exact
-/// surface a participant or agent can presently see or control.
-fn collaborators_screen_exposure(
-    state: &crate::shell::chrome_state::ChromeState,
-) -> Option<String> {
-    let tree = state.tree();
-    let clauses = state
-        .active_exposures()
-        .iter()
-        .map(|exposure| {
-            let participant = tree.desktop.workspaces.iter().find_map(|workspace| {
-                workspace
-                    .collaborators
-                    .iter()
-                    .find(|person| person.session == Some(exposure.peer))
-                    .map(|person| (workspace, person))
-            });
-            let (name, kind) = participant.map_or_else(
-                || {
-                    (
-                        crate::shell::state::session_handle(exposure.peer),
-                        t("host-exposure-kind-unidentified"),
-                    )
-                },
-                |(workspace, person)| {
-                    let agent = workspace.agent_members().iter().any(|(agent, _)| {
-                        agent.eq_ignore_ascii_case(&person.id)
-                            || agent.eq_ignore_ascii_case(&person.name)
-                    });
-                    (
-                        person.name.clone(),
-                        if agent {
-                            t("host-exposure-kind-agent")
-                        } else {
-                            t("host-exposure-kind-person")
-                        },
-                    )
-                },
-            );
-            let target = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find_map(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .flat_map(|strip| &strip.window_groups)
-                        .flat_map(|group| &group.tabs)
-                        .find(|tab| {
-                            matches!(
-                                &tab.tile,
-                                crate::shell::state::TileContent::Foreign { surface_id, .. }
-                                    if *surface_id == exposure.surface
-                            )
-                        })
-                        .map(|tab| {
-                            if workspace.id == tree.desktop.active {
-                                tab.title.clone()
-                            } else {
-                                t_args(
-                                    "host-exposure-window-in-workspace",
-                                    &[
-                                        ("window", tab.title.as_str().into()),
-                                        ("workspace", workspace.name.as_str().into()),
-                                    ],
-                                )
-                            }
-                        })
-                })
-                // A window the tree does not list has no name a person knows;
-                // its surface number would mean nothing to them.
-                .unwrap_or_else(|| t("host-exposure-surface"));
-            let args = [
-                ("name", ui::i18n::ArgValue::from(name)),
-                ("kind", ui::i18n::ArgValue::from(kind)),
-                ("target", ui::i18n::ArgValue::from(target)),
-            ];
-            if exposure.can_control {
-                t_args("host-exposure-controls", &args)
-            } else {
-                t_args("host-exposure-views", &args)
-            }
-        })
-        .collect::<Vec<_>>();
-    (!clauses.is_empty()).then(|| clauses.join("; "))
-}
-
-impl CollaborationPreferences {
-    fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let sharing = match values
-            .get("status_sharing")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("off") => ui::StatusSharing::Off,
-            Some("automatic") | None => ui::StatusSharing::Automatic,
-            // "manual", and any value this build does not know, shares nothing
-            // automatically.
-            Some(_) => ui::StatusSharing::ManualOnly,
-        };
-        let manual_status = values
-            .get("manual_status")
-            .and_then(serde_json::Value::as_str)
-            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|text| !text.is_empty() && text.chars().count() <= ui::MAX_STATUS_CHARS);
-        let availability = values
-            .get("availability")
-            .and_then(serde_json::Value::as_str)
-            .and_then(ui::Availability::from_id)
-            .filter(|chosen| *chosen != ui::Availability::Idle)
-            .unwrap_or_default();
-        // A room or choice this build does not read is left out: that
-        // workspace takes its default, never something looser.
-        let visibility = values
-            .get("presence_visibility")
-            .and_then(serde_json::Value::as_object)
-            .map(|rooms| {
-                rooms
-                    .iter()
-                    .filter_map(|(room, choice)| {
-                        Some((
-                            crate::shell::state::RoomId::parse(room)?,
-                            ui::PresenceVisibility::from_id(choice.as_str()?)?,
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let introduced = values
-            .get("presence_introduced")
-            .and_then(serde_json::Value::as_array)
-            .map(|rooms| {
-                rooms
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .filter_map(crate::shell::state::RoomId::parse)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self {
-            sharing,
-            manual_status,
-            availability,
-            visibility,
-            introduced,
-        }
-    }
-
-    /// The settings section these preferences own as a whole.
-    const SECTION: &'static str = "collaboration";
-
-    fn load() -> Self {
-        Self::from_values(&settings_store::load_section(Self::SECTION))
-    }
-
-    fn values(&self) -> serde_json::Map<String, serde_json::Value> {
-        let mut values = serde_json::Map::new();
-        let sharing = match self.sharing {
-            ui::StatusSharing::Automatic => "automatic",
-            ui::StatusSharing::ManualOnly => "manual",
-            ui::StatusSharing::Off => "off",
-        };
-        values.insert("status_sharing".into(), sharing.into());
-        values.insert(
-            "manual_status".into(),
-            self.manual_status
-                .clone()
-                .map_or(serde_json::Value::Null, serde_json::Value::String),
-        );
-        values.insert("availability".into(), self.availability.id().into());
-        values.insert(
-            "presence_introduced".into(),
-            serde_json::Value::Array(
-                self.introduced
-                    .iter()
-                    .map(|room| room.to_string().into())
-                    .collect(),
-            ),
-        );
-        values.insert(
-            "presence_visibility".into(),
-            serde_json::Value::Object(
-                self.visibility
-                    .iter()
-                    .map(|(room, choice)| (room.to_string(), choice.id().into()))
-                    .collect(),
-            ),
-        );
-        values
-    }
-}
-
-fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> String {
-    let Some(entry) = entries.first() else {
-        return String::new();
-    };
-    if let Some(context) = entry.context.as_ref() {
-        if let Some(purpose) = context
-            .purpose
-            .as_deref()
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-        {
-            return purpose.to_string();
-        }
-        if let Some(group) = context
-            .group
-            .as_ref()
-            .map(|group| group.label.trim())
-            .filter(|text| !text.is_empty())
-        {
-            return t_args("host-activity-working-on", &[("target", group.into())]);
-        }
-        if let Some(resource) = context
-            .resource
-            .as_ref()
-            .map(|resource| resource.label.trim())
-            .filter(|text| !text.is_empty())
-        {
-            return t_args("host-activity-working-on", &[("target", resource.into())]);
-        }
-        if let Some(app) = context
-            .app
-            .as_ref()
-            .map(|app| app.label.trim())
-            .filter(|text| !text.is_empty())
-        {
-            return t_args("host-activity-working-in", &[("app", app.into())]);
-        }
-    }
-    match entry.entry_kind {
-        ui::widget::EntryKind::Text => t("host-activity-editing"),
-        ui::widget::EntryKind::Move => t("host-activity-organizing"),
-        ui::widget::EntryKind::Details => t("host-activity-updating-details"),
-        ui::widget::EntryKind::Comment => t("host-activity-reviewing-discussion"),
-        ui::widget::EntryKind::Delete => t("host-activity-cleaning-up"),
-        ui::widget::EntryKind::Restore => t("host-activity-restoring"),
-        ui::widget::EntryKind::Access => t("host-activity-managing-access"),
-        ui::widget::EntryKind::Compaction => t("host-activity-maintaining-history"),
-        ui::widget::EntryKind::Redaction => t("host-activity-reviewing-sensitive"),
-    }
-}
-
-fn prepare_status_evidence(
-    mut newest_first: Vec<ui::widget::history::HistoryEntry>,
-) -> (String, Vec<ui::widget::history::HistoryEntry>) {
-    let fallback = grounded_intent_fallback(&newest_first);
-    newest_first.reverse();
-    (fallback, newest_first)
-}
-
 /// What the palette's filter band shows: each registered kind with its
 /// label, the chosen kinds, and each scope with its label.
 #[derive(Clone, Debug, PartialEq)]
@@ -1911,39 +1356,6 @@ struct SearchFilterInputs {
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
 type GroupsPerStrip = Vec<(StripId, Vec<(u64, Vec<u64>)>)>;
-
-/// This machine's sound outputs as Quick Settings lists them.
-fn sound_outputs_of(view: &DeviceFabricView) -> Vec<crate::shell::quick_settings::SoundOutput> {
-    view.local_outputs
-        .iter()
-        .map(|output| crate::shell::quick_settings::SoundOutput {
-            node: output.node_id,
-            name: output.label.clone(),
-            current: output.is_default,
-        })
-        .collect()
-}
-
-/// The control a radio change writes.
-const fn radio_field(change: os_actions::RadioChange) -> QsField {
-    match change {
-        os_actions::RadioChange::Wifi(_) => QsField::Wifi,
-        os_actions::RadioChange::Airplane(_) => QsField::Airplane,
-    }
-}
-
-/// The panel's three-way profile, from the daemon's.
-const fn ui_power_profile(
-    profile: crate::shell::quick_settings::actions::PowerProfile,
-) -> crate::shell::quick_settings::PowerProfile {
-    use crate::shell::quick_settings::PowerProfile as UiPP;
-    use crate::shell::quick_settings::actions::PowerProfile as ActPP;
-    match profile {
-        ActPP::Saver => UiPP::Saver,
-        ActPP::Balanced => UiPP::Balanced,
-        ActPP::Performance => UiPP::Performance,
-    }
-}
 
 type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 
@@ -1998,161 +1410,6 @@ fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersStat
 
 // Overview layout constants. Module-level so the draw path,
 // `hit_test_overview` and the unit tests share one geometry oracle.
-
-/// Widest the rooms panel ever gets, matching the workspace-settings
-/// modal so the shell's floating surfaces are one family.
-const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
-/// Most share rows drawn before the rest collapse into "+N more" — the
-/// panel says whether things leave this room, the permissions pane has
-/// the full list.
-const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
-
-/// Overview panel density, resolved from the theme once per layout pass
-/// (`ShellOverlayHost::build_layout`) and cached on the host, so the
-/// geometry helpers hit-testing calls — with no theme in hand — read the
-/// same numbers paint does.
-///
-/// Every vertical extent is a line height at the size the text is drawn
-/// with, plus spacing steps. Fixed pixel heights put "Private to you",
-/// "Shared out of here" and the share row on top of one another at 200 %
-/// text; measured ones grow the panel instead.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct OverviewMetrics {
-    /// Inset from the viewport edge, and the smallest gap the panel keeps
-    /// from the top and bottom of the screen (`s12`).
-    margin: f64,
-    /// Inner padding of the panel (HIG §9.6: Panel padding `s4`).
-    pad: f64,
-    /// Gap between the "you are here" block and the room list (§9.6: `s4`).
-    section_gap: f64,
-    /// Corner radius of the panel (Panel role, `radii.panel`).
-    panel_radius: f64,
-    /// Corner radius of a room row and the selection frame (Control role,
-    /// `radii.control`).
-    row_radius: f64,
-    /// Line height of the current room's name (`x3l`); the face stack is
-    /// centred on it.
-    name_lh: f64,
-    /// Height of the "you are here" block: the name line, `s1`, the
-    /// access line, and `s6` of air before the next caption.
-    here_h: f64,
-    /// Height of a section caption: `s2` above the text, `s1` below it.
-    caption_h: f64,
-    /// Where the caption's text sits inside its band (`s2`).
-    caption_text_dy: f64,
-    /// Height of one share row: a `base` line plus `s3`.
-    share_row_h: f64,
-    /// Height of one room row: an `lg` name line, `s1`, an `sm` sub-line,
-    /// and `s3` above and below.
-    room_row_h: f64,
-    /// Gutter between room rows (`s2`).
-    room_row_gap: f64,
-    /// Inner horizontal padding of a room row and of the add row (`s4`).
-    row_pad: f64,
-    /// Height of the "You are here" chip: its `sm` label plus `s2`.
-    chip_h: f64,
-    /// Gutter between preview tiles, and above their row (`s3`).
-    window_gap: f64,
-    /// Air between a preview well and its title (`s1`).
-    window_title_gap: f64,
-    /// Line height of a preview tile's `sm` title.
-    window_title_lh: f64,
-    /// Corner radius of a preview well (`radii.control`).
-    window_radius: f64,
-    /// The air closing the "you are here" block (`s6`); the preview row
-    /// takes its place.
-    here_air: f64,
-}
-
-impl OverviewMetrics {
-    fn for_theme(theme: &Theme) -> Self {
-        let tokens = &theme.tokens;
-        let spacing = &tokens.spacing;
-        // The single-line height of a role: the resolved style every
-        // `measure_style`/`draw_style` call in this panel paints with.
-        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
-        let s1 = f64::from(spacing.s1);
-        let s2 = f64::from(spacing.s2);
-        let s3 = f64::from(spacing.s3);
-        let s4 = f64::from(spacing.s4);
-        let s6 = f64::from(spacing.s6);
-        let name_lh = lh(TextRole::Display);
-        let access_lh = lh(TextRole::Body);
-        let caption_lh = lh(TextRole::Caption);
-        let body_lh = lh(TextRole::Body);
-        let row_name_lh = lh(TextRole::Heading);
-        let row_sub_lh = lh(TextRole::Caption);
-        Self {
-            margin: f64::from(spacing.s12),
-            pad: s4,
-            section_gap: s4,
-            panel_radius: f64::from(tokens.radii.panel),
-            row_radius: f64::from(tokens.radii.control),
-            name_lh,
-            here_h: name_lh + s1 + access_lh + s6,
-            caption_h: s2 + caption_lh + s1,
-            caption_text_dy: s2,
-            share_row_h: body_lh + s3,
-            room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
-            room_row_gap: s2,
-            row_pad: s4,
-            chip_h: lh(TextRole::Caption) + s2,
-            window_gap: s3,
-            window_title_gap: s1,
-            window_title_lh: lh(TextRole::Caption),
-            window_radius: f64::from(tokens.radii.control),
-            here_air: s6,
-        }
-    }
-}
-
-impl Default for OverviewMetrics {
-    /// The default theme's density, for a host that has not laid out yet.
-    fn default() -> Self {
-        Self::for_theme(&Theme::default())
-    }
-}
-
-/// Radius of an avatar in a face stack.
-const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
-/// Horizontal step between overlapping faces.
-const OVERVIEW_FACE_STEP_PX: f64 = 18.0;
-/// How much of their own colour an away member's face keeps, the rest
-/// being the panel behind it. At a third it vanished against a light
-/// ground and lost the member altogether.
-const OVERVIEW_FACE_AWAY_ALPHA: f32 = 0.55;
-/// Most faces drawn before the rest collapse into a "+N" disc.
-const OVERVIEW_FACES_MAX: usize = 4;
-/// How far the panel rises as it opens, matching the workspace-settings
-/// modal so the shell's floating surfaces arrive the same way.
-const OVERVIEW_PANEL_RISE_PX: f64 = 20.0;
-/// Scale the panel starts its entrance at.
-const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
-/// Height of the fade over the bottom of an overflowing room list, so a
-/// clipped row reads as "there is more" rather than unfinished.
-const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
-
-fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &[usize]) -> bool {
-    let Some(chrome) = host.chrome.clone() else {
-        return false;
-    };
-    let notifications_open = matches!(
-        chrome.borrow().quick_settings.current_level(),
-        crate::shell::quick_settings::QsLevel::Notifications
-    );
-    if notifications_open
-        && let [0, dialog_path @ ..] = child_path
-        && host.notification_center.focus_accessibility_path(
-            &ChromeNotifications::new(&chrome).with_agents(&host.room_activity),
-            &host.qs_notification_layout(),
-            dialog_path,
-        )
-    {
-        return true;
-    }
-    host.qs_root
-        .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
-}
 
 /// The semantic target of the open palette's query field, as the palette
 /// widget publishes it.
@@ -2215,76 +1472,6 @@ impl Drop for UpdateSteps {
     }
 }
 
-/// `(alpha, dy, scale)` for the panel of workspaces at the overview zoom's
-/// `progress` (already on the zoom's spring, so the exit is the same motion
-/// reversed): it rises the last 20px and settles from 0.97 as the windows
-/// arrive in the picture beside it.
-fn overview_panel_curve(progress: f32) -> (f32, f64, f64) {
-    let o = f64::from(progress.clamp(0.0, 1.0));
-    let alpha = f32_of_f64(o);
-    let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
-    let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
-    (alpha, dy, scale)
-}
-
-/// Map the prompt widget's choice onto the portal's outcome vocabulary.
-/// Two enums for one decision because they belong to different layers;
-/// keeping the mapping in one place stops them drifting.
-pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
-    use crate::portal::PromptOutcome;
-    match choice {
-        PromptChoice::Allow => PromptOutcome::AllowOnce,
-        PromptChoice::Session => PromptOutcome::AllowSession,
-        PromptChoice::Always => PromptOutcome::AllowAlways,
-        PromptChoice::Deny => PromptOutcome::Deny,
-    }
-}
-
-/// Human-readable label for the inline permission prompt from a
-/// [`Capability`] payload.
-/// What a pending prompt asks, as the person reads it.
-pub(crate) fn prompt_label(request: &crate::shell::chrome_state::PromptRequest) -> String {
-    match request {
-        crate::shell::chrome_state::PromptRequest::Capability(capability) => {
-            capability_label(capability)
-        }
-        crate::shell::chrome_state::PromptRequest::AgentAdmission(admission) => admission.label(),
-    }
-}
-
-pub(crate) fn capability_label(cap: &Capability) -> String {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => {
-            let path = path.display().to_string();
-            match mode {
-                crate::shell::state::FsMode::Read => {
-                    t_args("capability-filesystem-read", &[("path", path.into())])
-                }
-                crate::shell::state::FsMode::ReadWrite => {
-                    t_args("capability-filesystem-read-write", &[("path", path.into())])
-                }
-            }
-        }
-        Capability::Camera { .. } => t("capability-camera"),
-        Capability::Microphone { .. } => t("capability-microphone"),
-        Capability::Screencast { .. } => t("capability-screencast"),
-        Capability::RemoteDesktop { .. } => t("capability-remote-desktop"),
-        Capability::Print { .. } => t("capability-print"),
-        Capability::HostShell { .. } => t("capability-host-shell"),
-        Capability::SystemInfo { .. } => t("capability-system-info"),
-        Capability::Processes { .. } => t("capability-processes"),
-        Capability::ProcessCommands { .. } => t("capability-process-commands"),
-        Capability::IoUring { .. } => t("capability-io-uring"),
-        Capability::Network { hosts, .. } => match hosts {
-            Some(h) if !h.is_empty() => t_args(
-                "capability-network-hosts",
-                &[("hosts", h.join(", ").into())],
-            ),
-            _ => t("capability-network"),
-        },
-    }
-}
-
 /// Is the local user the owner of the active workspace? Gates the
 /// permission prompt's "Always" button and the Permissions tab's Revoke
 /// buttons, via the workspace's capability model (recorded owner, or
@@ -2300,49 +1487,6 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
     tree.desktop
         .active_workspace()
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
-}
-
-/// Route a click on a grant-composer control. The pickers only move the
-/// draft; `Submit` is the one that writes, and it writes through
-/// [`tilo_desktop::workspace_settings::apply_grant_draft`] so the
-/// authority check runs on the production path.
-fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
-    // A flat match over every variant, rather than peeling `Submit` off
-    // first and re-matching the rest — the latter needed an `other =>`
-    // catch-all whose own exhaustive sub-match required an `unreachable!`
-    // arm for `Submit`, a real panic site in a `panic = "abort"` crate
-    // even though it could never fire.
-    match hit {
-        ComposerHit::Submit => {
-            let draft = chrome.borrow().ws_grant_draft;
-            let _ = crate::shell::membership::edit_active_workspace_policy(
-                &mut chrome.borrow_mut(),
-                move |ws, actor| {
-                    tilo_desktop::workspace_settings::apply_grant_draft(ws, actor, &draft)
-                },
-            );
-        }
-        ComposerHit::Subject => {
-            let mut st = chrome.borrow_mut();
-            let subject_count = st.tree().desktop.active_workspace().map_or(0, |ws| {
-                tilo_desktop::workspace_settings::grant_subjects(ws).len()
-            });
-            st.ws_grant_draft.cycle_subject(subject_count);
-            st.bump();
-        }
-        ComposerHit::Capability => {
-            let mut st = chrome.borrow_mut();
-            st.ws_grant_draft.cycle_choice();
-            st.bump();
-        }
-        ComposerHit::Expiry(i) => {
-            let mut st = chrome.borrow_mut();
-            if let Some(expiry) = EXPIRY_CHOICES.get(i) {
-                st.ws_grant_draft.expiry = *expiry;
-            }
-            st.bump();
-        }
-    }
 }
 
 /// The kind chips a picker opened by "give me a new window" starts lit.
@@ -2624,36 +1768,6 @@ fn palette_surface_theme(theme: &Theme) -> Theme {
     themed
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct OverviewPanelCacheKey {
-    scroll_bits: u64,
-    selection: Option<usize>,
-    window_selection: Option<crate::shell::state::TabId>,
-    press: Option<(u64, u8, u64, u64)>,
-    panel: (u64, u64, u64, u64),
-    chrome_revision: u64,
-    reduce_motion: bool,
-}
-
-struct OverviewPanelCache {
-    scene: Scene,
-    key: OverviewPanelCacheKey,
-}
-
-/// Exact conservative extent of Quick Settings after its animation layer has settled. This must
-/// track both shadows that `draw_quick_settings` emits, rather than a theme-independent margin.
-/// Damage bounds of the settled quick-settings card: the card plus the
-/// full reach of its `e4` shadow (3σ of the blur, the downward offset, and
-/// the one-pixel card stroke centred on its edge). The shadow is the
-/// token's own — the same `ui::surface::shadow` call paints it — so this
-/// is derived from the token rather than restating a sprite's spread.
-fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
-    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
-        + f64::from(theme.tokens.elevation.floating.offset_y)
-        + 0.5;
-    transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
-}
-
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
@@ -2783,24 +1897,4 @@ pub(crate) fn install_fixture_search_provider(
     provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
 ) {
     host.search_registry.register_or_replace(provider);
-}
-
-/// The quick settings panel's theme-resolved size: the list Panel width
-/// grown with the text, and the floating Panel margin it keeps inside its
-/// display.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct QsPanelMetrics {
-    width: f64,
-    margin: f64,
-}
-
-impl QsPanelMetrics {
-    fn for_theme(theme: &Theme) -> Self {
-        Self {
-            // A list Panel's width: two tiles side by side keep their
-            // names whole.
-            width: f64::from(theme.tokens.metrics.panel_width_list * theme.text_growth()),
-            margin: ui::widget::floating_surface::viewport_margin(theme),
-        }
-    }
 }

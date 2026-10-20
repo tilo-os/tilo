@@ -1126,3 +1126,126 @@ impl ShellOverlayHost {
                 .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here)
     }
 }
+
+/// The authentication mode the last Wi-Fi scan listed for `ssid`.
+pub(super) fn scanned_wifi_security(
+    networks: &[crate::shell::quick_settings::WifiNetwork],
+    ssid: &str,
+) -> Option<os_actions::WifiSecurity> {
+    networks
+        .iter()
+        .find(|network| network.ssid == ssid)
+        .map(|network| network.security)
+}
+
+/// How often the open Wi-Fi section scans for networks again: often enough
+/// that walking into range shows up while the person looks, rarely enough
+/// that the radio is not kept busy.
+pub(super) const QS_WIFI_RESCAN: Duration = Duration::from_secs(10);
+
+/// Copies the Clipboard section shows at once.
+pub(super) const QS_CLIPBOARD_ROWS: usize = 6;
+
+/// The one local source a Quick Settings device click routes to another device.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum QsDeviceSource {
+    Media(String),
+    Realtime(String),
+    Gamepad(u64),
+    RemoteAudio(u64),
+    RemoteCapture(crate::shell::remote_capture::device::RemoteCaptureKind),
+}
+
+/// This machine's sound outputs as Quick Settings lists them.
+pub(super) fn sound_outputs_of(
+    view: &DeviceFabricView,
+) -> Vec<crate::shell::quick_settings::SoundOutput> {
+    view.local_outputs
+        .iter()
+        .map(|output| crate::shell::quick_settings::SoundOutput {
+            node: output.node_id,
+            name: output.label.clone(),
+            current: output.is_default,
+        })
+        .collect()
+}
+
+/// The control a radio change writes.
+pub(super) const fn radio_field(change: os_actions::RadioChange) -> QsField {
+    match change {
+        os_actions::RadioChange::Wifi(_) => QsField::Wifi,
+        os_actions::RadioChange::Airplane(_) => QsField::Airplane,
+    }
+}
+
+/// The panel's three-way profile, from the daemon's.
+pub(super) const fn ui_power_profile(
+    profile: crate::shell::quick_settings::actions::PowerProfile,
+) -> crate::shell::quick_settings::PowerProfile {
+    use crate::shell::quick_settings::PowerProfile as UiPP;
+    use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+    match profile {
+        ActPP::Saver => UiPP::Saver,
+        ActPP::Balanced => UiPP::Balanced,
+        ActPP::Performance => UiPP::Performance,
+    }
+}
+
+pub(super) fn focus_quick_settings_accessibility(
+    host: &mut ShellOverlayHost,
+    child_path: &[usize],
+) -> bool {
+    let Some(chrome) = host.chrome.clone() else {
+        return false;
+    };
+    let notifications_open = matches!(
+        chrome.borrow().quick_settings.current_level(),
+        crate::shell::quick_settings::QsLevel::Notifications
+    );
+    if notifications_open
+        && let [0, dialog_path @ ..] = child_path
+        && host.notification_center.focus_accessibility_path(
+            &ChromeNotifications::new(&chrome).with_agents(&host.room_activity),
+            &host.qs_notification_layout(),
+            dialog_path,
+        )
+    {
+        return true;
+    }
+    host.qs_root
+        .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+}
+
+/// Exact conservative extent of Quick Settings after its animation layer has settled. This must
+/// track both shadows that `draw_quick_settings` emits, rather than a theme-independent margin.
+/// Damage bounds of the settled quick-settings card: the card plus the
+/// full reach of its `e4` shadow (3σ of the blur, the downward offset, and
+/// the one-pixel card stroke centred on its edge). The shadow is the
+/// token's own — the same `ui::surface::shadow` call paints it — so this
+/// is derived from the token rather than restating a sprite's spread.
+pub(super) fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
+    let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.floating.blur) * 3.0
+        + f64::from(theme.tokens.elevation.floating.offset_y)
+        + 0.5;
+    transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
+}
+
+/// The quick settings panel's theme-resolved size: the list Panel width
+/// grown with the text, and the floating Panel margin it keeps inside its
+/// display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct QsPanelMetrics {
+    pub(super) width: f64,
+    pub(super) margin: f64,
+}
+
+impl QsPanelMetrics {
+    pub(super) fn for_theme(theme: &Theme) -> Self {
+        Self {
+            // A list Panel's width: two tiles side by side keep their
+            // names whole.
+            width: f64::from(theme.tokens.metrics.panel_width_list * theme.text_growth()),
+            margin: ui::widget::floating_surface::viewport_margin(theme),
+        }
+    }
+}

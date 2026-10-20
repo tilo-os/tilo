@@ -651,3 +651,155 @@ impl ShellOverlayHost {
                 && self.layers.emoji_picker.card_rect().contains(p))
     }
 }
+
+/// Widest the rooms panel ever gets, matching the workspace-settings
+/// modal so the shell's floating surfaces are one family.
+pub(super) const OVERVIEW_PANEL_WIDTH_PX: f64 = 720.0;
+
+/// Most share rows drawn before the rest collapse into "+N more" — the
+/// panel says whether things leave this room, the permissions pane has
+/// the full list.
+pub(super) const OVERVIEW_SHARES_MAX_ROWS: usize = 4;
+
+/// Overview panel density, resolved from the theme once per layout pass
+/// (`ShellOverlayHost::build_layout`) and cached on the host, so the
+/// geometry helpers hit-testing calls — with no theme in hand — read the
+/// same numbers paint does.
+///
+/// Every vertical extent is a line height at the size the text is drawn
+/// with, plus spacing steps. Fixed pixel heights put "Private to you",
+/// "Shared out of here" and the share row on top of one another at 200 %
+/// text; measured ones grow the panel instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct OverviewMetrics {
+    /// Inset from the viewport edge, and the smallest gap the panel keeps
+    /// from the top and bottom of the screen (`s12`).
+    pub(super) margin: f64,
+    /// Inner padding of the panel (HIG §9.6: Panel padding `s4`).
+    pub(super) pad: f64,
+    /// Gap between the "you are here" block and the room list (§9.6: `s4`).
+    pub(super) section_gap: f64,
+    /// Corner radius of the panel (Panel role, `radii.panel`).
+    pub(super) panel_radius: f64,
+    /// Corner radius of a room row and the selection frame (Control role,
+    /// `radii.control`).
+    pub(super) row_radius: f64,
+    /// Line height of the current room's name (`x3l`); the face stack is
+    /// centred on it.
+    pub(super) name_lh: f64,
+    /// Height of the "you are here" block: the name line, `s1`, the
+    /// access line, and `s6` of air before the next caption.
+    pub(super) here_h: f64,
+    /// Height of a section caption: `s2` above the text, `s1` below it.
+    pub(super) caption_h: f64,
+    /// Where the caption's text sits inside its band (`s2`).
+    pub(super) caption_text_dy: f64,
+    /// Height of one share row: a `base` line plus `s3`.
+    pub(super) share_row_h: f64,
+    /// Height of one room row: an `lg` name line, `s1`, an `sm` sub-line,
+    /// and `s3` above and below.
+    pub(super) room_row_h: f64,
+    /// Gutter between room rows (`s2`).
+    pub(super) room_row_gap: f64,
+    /// Inner horizontal padding of a room row and of the add row (`s4`).
+    pub(super) row_pad: f64,
+    /// Height of the "You are here" chip: its `sm` label plus `s2`.
+    pub(super) chip_h: f64,
+    /// Gutter between preview tiles, and above their row (`s3`).
+    pub(super) window_gap: f64,
+    /// Air between a preview well and its title (`s1`).
+    pub(super) window_title_gap: f64,
+    /// Line height of a preview tile's `sm` title.
+    pub(super) window_title_lh: f64,
+    /// Corner radius of a preview well (`radii.control`).
+    pub(super) window_radius: f64,
+    /// The air closing the "you are here" block (`s6`); the preview row
+    /// takes its place.
+    pub(super) here_air: f64,
+}
+
+impl OverviewMetrics {
+    pub(super) fn for_theme(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let spacing = &tokens.spacing;
+        // The single-line height of a role: the resolved style every
+        // `measure_style`/`draw_style` call in this panel paints with.
+        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
+        let s1 = f64::from(spacing.s1);
+        let s2 = f64::from(spacing.s2);
+        let s3 = f64::from(spacing.s3);
+        let s4 = f64::from(spacing.s4);
+        let s6 = f64::from(spacing.s6);
+        let name_lh = lh(TextRole::Display);
+        let access_lh = lh(TextRole::Body);
+        let caption_lh = lh(TextRole::Caption);
+        let body_lh = lh(TextRole::Body);
+        let row_name_lh = lh(TextRole::Heading);
+        let row_sub_lh = lh(TextRole::Caption);
+        Self {
+            margin: f64::from(spacing.s12),
+            pad: s4,
+            section_gap: s4,
+            panel_radius: f64::from(tokens.radii.panel),
+            row_radius: f64::from(tokens.radii.control),
+            name_lh,
+            here_h: name_lh + s1 + access_lh + s6,
+            caption_h: s2 + caption_lh + s1,
+            caption_text_dy: s2,
+            share_row_h: body_lh + s3,
+            room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
+            room_row_gap: s2,
+            row_pad: s4,
+            chip_h: lh(TextRole::Caption) + s2,
+            window_gap: s3,
+            window_title_gap: s1,
+            window_title_lh: lh(TextRole::Caption),
+            window_radius: f64::from(tokens.radii.control),
+            here_air: s6,
+        }
+    }
+}
+
+impl Default for OverviewMetrics {
+    /// The default theme's density, for a host that has not laid out yet.
+    fn default() -> Self {
+        Self::for_theme(&Theme::default())
+    }
+}
+
+/// Radius of an avatar in a face stack.
+pub(super) const OVERVIEW_FACE_RADIUS_PX: f64 = 12.0;
+
+/// Horizontal step between overlapping faces.
+pub(super) const OVERVIEW_FACE_STEP_PX: f64 = 18.0;
+
+/// How much of their own colour an away member's face keeps, the rest
+/// being the panel behind it. At a third it vanished against a light
+/// ground and lost the member altogether.
+pub(super) const OVERVIEW_FACE_AWAY_ALPHA: f32 = 0.55;
+
+/// Most faces drawn before the rest collapse into a "+N" disc.
+pub(super) const OVERVIEW_FACES_MAX: usize = 4;
+
+/// How far the panel rises as it opens, matching the workspace-settings
+/// modal so the shell's floating surfaces arrive the same way.
+pub(super) const OVERVIEW_PANEL_RISE_PX: f64 = 20.0;
+
+/// Scale the panel starts its entrance at.
+pub(super) const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
+
+/// Height of the fade over the bottom of an overflowing room list, so a
+/// clipped row reads as "there is more" rather than unfinished.
+pub(super) const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
+
+/// `(alpha, dy, scale)` for the panel of workspaces at the overview zoom's
+/// `progress` (already on the zoom's spring, so the exit is the same motion
+/// reversed): it rises the last 20px and settles from 0.97 as the windows
+/// arrive in the picture beside it.
+pub(super) fn overview_panel_curve(progress: f32) -> (f32, f64, f64) {
+    let o = f64::from(progress.clamp(0.0, 1.0));
+    let alpha = f32_of_f64(o);
+    let dy = OVERVIEW_PANEL_RISE_PX * (1.0 - o);
+    let scale = OVERVIEW_PANEL_START_SCALE + (1.0 - OVERVIEW_PANEL_START_SCALE) * o;
+    (alpha, dy, scale)
+}

@@ -207,3 +207,61 @@ impl ShellOverlayHost {
         self.permission_prompt.as_mut()
     }
 }
+
+/// Map the prompt widget's choice onto the portal's outcome vocabulary.
+/// Two enums for one decision because they belong to different layers;
+/// keeping the mapping in one place stops them drifting.
+pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
+    use crate::portal::PromptOutcome;
+    match choice {
+        PromptChoice::Allow => PromptOutcome::AllowOnce,
+        PromptChoice::Session => PromptOutcome::AllowSession,
+        PromptChoice::Always => PromptOutcome::AllowAlways,
+        PromptChoice::Deny => PromptOutcome::Deny,
+    }
+}
+
+/// Human-readable label for the inline permission prompt from a
+/// [`Capability`] payload.
+/// What a pending prompt asks, as the person reads it.
+pub(crate) fn prompt_label(request: &crate::shell::chrome_state::PromptRequest) -> String {
+    match request {
+        crate::shell::chrome_state::PromptRequest::Capability(capability) => {
+            capability_label(capability)
+        }
+        crate::shell::chrome_state::PromptRequest::AgentAdmission(admission) => admission.label(),
+    }
+}
+
+pub(crate) fn capability_label(cap: &Capability) -> String {
+    match cap {
+        Capability::Filesystem { path, mode, .. } => {
+            let path = path.display().to_string();
+            match mode {
+                crate::shell::state::FsMode::Read => {
+                    t_args("capability-filesystem-read", &[("path", path.into())])
+                }
+                crate::shell::state::FsMode::ReadWrite => {
+                    t_args("capability-filesystem-read-write", &[("path", path.into())])
+                }
+            }
+        }
+        Capability::Camera { .. } => t("capability-camera"),
+        Capability::Microphone { .. } => t("capability-microphone"),
+        Capability::Screencast { .. } => t("capability-screencast"),
+        Capability::RemoteDesktop { .. } => t("capability-remote-desktop"),
+        Capability::Print { .. } => t("capability-print"),
+        Capability::HostShell { .. } => t("capability-host-shell"),
+        Capability::SystemInfo { .. } => t("capability-system-info"),
+        Capability::Processes { .. } => t("capability-processes"),
+        Capability::ProcessCommands { .. } => t("capability-process-commands"),
+        Capability::IoUring { .. } => t("capability-io-uring"),
+        Capability::Network { hosts, .. } => match hosts {
+            Some(h) if !h.is_empty() => t_args(
+                "capability-network-hosts",
+                &[("hosts", h.join(", ").into())],
+            ),
+            _ => t("capability-network"),
+        },
+    }
+}
