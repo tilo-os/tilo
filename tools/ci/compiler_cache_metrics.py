@@ -75,7 +75,7 @@ def snapshot():
         if process is not None:
             if process.poll() is None:
                 process.kill()  # This owned stats reader only; never stop the cache server.
-                process.wait(timeout=0.1)
+                process.wait()
             process.stdout.close()
 
 

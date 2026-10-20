@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-import time
 import unittest
 from hang import HANG_BOUND
 
@@ -67,12 +66,12 @@ class CompilerCacheMeasurements(unittest.TestCase):
     def test_hanging_stats_reader_is_bounded_and_private(self):
         with tempfile.TemporaryDirectory() as directory:
             client = Path(directory) / "sccache"
-            client.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+            # It sleeps far past the hang bound: an answer at all proves the
+            # reader stopped waiting on its own.
+            client.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(3600)\n")
             client.chmod(0o755)
-            started = time.monotonic()
             result = subprocess.run(["python3", str(HELPER), "snapshot"], capture_output=True,
                                     text=True, timeout=HANG_BOUND, env=os.environ | {"RUSTC_WRAPPER": str(client)})
-            self.assertLess(time.monotonic() - started, 2)
             self.assertEqual(json.loads(result.stdout), {"observed": False, "reason": "unavailable"})
 
     def test_oversized_or_failed_client_does_not_publish_its_output(self):

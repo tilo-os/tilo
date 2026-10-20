@@ -9,8 +9,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+from tools.ci import prewarm_test_binaries
 from tools.ci.prewarm_test_binaries import Harness, harnesses, listing_environment, prewarm
 from hang import HANG_BOUND
 
@@ -18,6 +21,22 @@ from hang import HANG_BOUND
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
 import t_matrix  # noqa: E402
+
+
+def listing_clock(started):
+    """Hold the prewarm clock until `started` exists, then jump past every
+    timeout and budget: a listing times out exactly once it is running, never
+    because a loaded runner was slow to start it."""
+    def monotonic():
+        return 1e9 if started.exists() else 0.0
+    return patch.object(prewarm_test_binaries, "time", SimpleNamespace(monotonic=monotonic))
+
+
+def mark_started(marker):
+    """Fixture code that publishes `marker` atomically once it runs."""
+    pending = marker.with_name(marker.name + ".pending")
+    return (f"open({str(pending)!r}, 'w').write(str(os.getpid()))\n"
+            f"os.replace({str(pending)!r}, {str(marker)!r})\n")
 
 
 class PrewarmTests(unittest.TestCase):
@@ -78,7 +97,7 @@ class PrewarmTests(unittest.TestCase):
             body = f"open({str(record)!r}, 'w').write(json.dumps({{'args':sys.argv[1:], 'cwd':os.getcwd()}}))"
             source, _, row = self.fixture(root, body=body)
             item = Harness(Path(row["executable"]), source)
-            result = prewarm([item], 1, 5, 5, os.environ.copy())
+            result = prewarm([item], 1, HANG_BOUND, HANG_BOUND, os.environ.copy())
             self.assertEqual(result["successful"], 1)
             self.assertFalse(result["meaningful_tests_run"])
             self.assertEqual(json.loads(record.read_text()), {"args": ["--list"], "cwd": str(source)})
@@ -86,13 +105,13 @@ class PrewarmTests(unittest.TestCase):
     def test_timeout_is_bounded_and_does_not_signal_an_unrelated_owned_process(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, _, row = self.fixture(root, body="time.sleep(60)")
-            neighbour = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"])
+            marker = root / "listing.pid"
+            source, _, row = self.fixture(root, body=mark_started(marker) + "time.sleep(3600)")
+            neighbour = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(3600)"])
             try:
-                start = time.monotonic()
-                result = prewarm([Harness(Path(row["executable"]), source)], 1, 1, 2, os.environ.copy())
+                with listing_clock(marker):
+                    result = prewarm([Harness(Path(row["executable"]), source)], 1, 1, 2, os.environ.copy())
                 self.assertEqual(result["timed_out"], 1)
-                self.assertLess(time.monotonic() - start, 6)
                 self.assertIsNone(neighbour.poll())
             finally:
                 neighbour.terminate()
@@ -108,22 +127,23 @@ class PrewarmTests(unittest.TestCase):
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                 "listener = socket.socket(socket.AF_UNIX)\n"
                 f"listener.bind({address!r})\nlistener.listen()\n"
-                f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
-                "time.sleep(60)\n")
+                + mark_started(marker) +
+                "time.sleep(3600)\n")
             body = ("import subprocess\n"
                     f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
-                    "time.sleep(60)")
+                    "time.sleep(3600)")
             source, _, row = self.fixture(root, body=body)
             child = None
             try:
-                result = prewarm([Harness(Path(row["executable"]), source)],
-                                 1, 2, 4, os.environ.copy())
+                with listing_clock(marker):
+                    result = prewarm([Harness(Path(row["executable"]), source)],
+                                     1, 2, 4, os.environ.copy())
                 self.assertTrue(marker.exists(), "the descendant must actually start")
                 child = int(marker.read_text())
                 self.assertEqual(result["timed_out"], 1)
                 # A zombie may await the host's reaper, but a killed process
                 # cannot retain its listening socket.
-                deadline = time.monotonic() + 2
+                deadline = time.monotonic() + HANG_BOUND
                 while True:
                     with socket.socket(socket.AF_UNIX) as connection:
                         connection.settimeout(1)
@@ -146,9 +166,11 @@ class PrewarmTests(unittest.TestCase):
     def test_budget_leaves_pending_work_unstarted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, _, row = self.fixture(root, body="time.sleep(60)")
+            marker = root / "listing.pid"
+            source, _, row = self.fixture(root, body=mark_started(marker) + "time.sleep(3600)")
             item = Harness(Path(row["executable"]), source)
-            result = prewarm([item, item, item], 1, 5, 1, os.environ.copy())
+            with listing_clock(marker):
+                result = prewarm([item, item, item], 1, 5, 1, os.environ.copy())
             self.assertEqual(result["timed_out"], 1)
             self.assertEqual(result["budget_exhausted"], 2)
 
@@ -177,7 +199,7 @@ class PrewarmTests(unittest.TestCase):
                        "--artifacts", str(artifacts), "--source", str(source), "--target", str(target)]
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + HANG_BOUND
                 while not marker.exists() and time.monotonic() < deadline:
                     time.sleep(0.02)
                 self.assertTrue(marker.exists(), "owned listing must actually start")

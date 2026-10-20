@@ -80,7 +80,7 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         return self.process
 
     def wait(self, name):
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_BOUND
         while not (self.root / name).exists():
             if self.process.poll() is not None or time.monotonic() >= deadline:
                 raise AssertionError(f'driver did not reach {name}')
@@ -278,15 +278,16 @@ if child == 0:
     grandchild = os.fork()
     if grandchild != 0:
         pathlib.Path(sys.argv[1]).write_text(f'{os.getppid()} {os.getpid()} {grandchild}')
-# A failsafe bounds the fixture's life even if supervision is broken.
-time.sleep(15)
+# A failsafe bounds the fixture's life even if supervision is broken; it
+# outlasts the test's own waits, so it never stands in for the supervisor.
+time.sleep(float(sys.argv[2]))
 '''
             process = subprocess.Popen(
                 [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
-                 sys.executable, '-c', script, str(ready)],
+                 sys.executable, '-c', script, str(ready), str(2 * HANG_BOUND)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + HANG_BOUND
                 while not ready.exists():
                     self.assertIsNone(process.poll(), 'supervisor exited before fixture startup')
                     self.assertLess(time.monotonic(), deadline, 'owned tree did not start')
