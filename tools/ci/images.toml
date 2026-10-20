@@ -24,6 +24,6 @@ builder = "tilo-builder"
 # ci-control: ci-fast plus the Docker client (os/Containerfile.ci-control).
 # tilo-release-tools: release signing and publication tools.
 [pins]
-ci-fast = "sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a"
+ci-fast = "sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
 ci-control = "sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde"
 tilo-release-tools = "sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa"

@@ -749,7 +749,7 @@ default = false
 
 [[matrix.check]]
 name = "publish-desktop-payload"
-image = "registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a"
+image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 needs = ["desktop-package-amd64", "desktop-package-arm64"]

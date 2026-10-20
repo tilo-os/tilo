@@ -80,7 +80,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
+      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     outputs:
       mode: ${{ steps.select.outputs.mode }}
       ab_groups: ${{ steps.select.outputs.ab_groups }}
@@ -312,7 +312,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 25
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
+      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -386,7 +386,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
+      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
       # History, for the update from main's previous build: the image of the
       # newest earlier first-parent commit that has one (Build / OS dev builds
@@ -1097,7 +1097,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:e2d8ed58b06103e01cc9010c58989d07d3a966f0599774911a5c23bc9065844a
+      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
