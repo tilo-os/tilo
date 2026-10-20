@@ -11,6 +11,7 @@
 //! The transport lives in a small dedicated crate rather than linking the
 //! whole installer backend into the compositor.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 pub(crate) use tilo_handoff::Received;
@@ -69,7 +70,6 @@ impl Peer {
         // The package's importer later creates its custody in the real
         // identity directory, so that directory must already be private.
         std::fs::create_dir_all(identity_dir)?;
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700))?;
         // The joined member identity is staged privately while the package is
         // being received. The package's own canonical importer then installs
@@ -178,7 +178,6 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         std::fs::write(state.join(FILE), b"{\"schema\":1}").unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(state.join(FILE), std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(Peer::pending_at(temporary.path()));
         assert!(Peer::open_at(temporary.path(), temporary.path(), temporary.path()).is_err());

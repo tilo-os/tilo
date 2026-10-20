@@ -158,7 +158,7 @@
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10000
 "crates/session/shell/src/network/actor.rs" = 8500
-"crates/session/shell/src/onboarding_view.rs" = 10500
+"crates/session/shell/src/onboarding_view.rs" = 10000
 "crates/session/shell/src/shell/chrome_state.rs" = 5500
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000
