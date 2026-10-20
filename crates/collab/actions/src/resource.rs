@@ -664,6 +664,17 @@ impl Resource {
         self
     }
 
+    /// Keep the actions `keep` admits, and only the views still opened by
+    /// one of them: a view whose open action is not offered cannot be
+    /// offered either, and the action contract refuses the whole surface
+    /// that carries one.
+    pub fn retain_actions(&mut self, keep: impl FnMut(&ActionSpec) -> bool) {
+        self.actions.retain(keep);
+        let actions = &self.actions;
+        self.views
+            .retain(|view| actions.iter().any(|action| action.id == view.open_action));
+    }
+
     #[must_use]
     pub fn with_child(mut self, child: Resource) -> Self {
         self.children.push(child);
@@ -2090,6 +2101,47 @@ mod tests {
     #[derive(Debug, Serialize, Deserialize)]
     struct OpenPath {
         path: String,
+    }
+
+    /// Filtering a resource's actions (by the viewer's permissions, say)
+    /// takes the views they open with them: a view whose open action is not
+    /// offered fails the action contract, which then refuses the whole
+    /// surface.
+    #[test]
+    fn retaining_actions_keeps_only_the_views_still_opened() {
+        let open = |id: &str| {
+            ActionSpec::operation(
+                id,
+                id,
+                OperationKind::View,
+                "test.open",
+                &OpenPath { path: id.into() },
+            )
+            .expect("view payload encodes")
+        };
+        let mut resource = Resource::new("thing", "test.thing", "Thing")
+            .with_action(open("reveal"))
+            .with_action(open("show"))
+            .with_view(ResourceViewSpec::new("revealed", "Revealed", "reveal"))
+            .with_view(ResourceViewSpec::new("shown", "Shown", "show"));
+        resource.retain_actions(|action| action.id != "reveal");
+        assert_eq!(
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            ["show"]
+        );
+        assert_eq!(
+            resource
+                .views
+                .iter()
+                .map(|view| view.id.as_str())
+                .collect::<Vec<_>>(),
+            ["shown"],
+            "the view opened by the dropped action goes with it"
+        );
     }
 
     /// A non-document operation needs no fake action implementation, an operation builder cannot
