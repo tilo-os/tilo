@@ -2314,7 +2314,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             });
         assert_eq!(
             h.host.search_results[idx].subtitle.as_deref(),
-            Some(format!("In {there_name} · field-guide").as_str()),
+            Some(format!("In {there_name}, field-guide").as_str()),
             "the row has to say where the record lives — without it, two \
              rooms' records are indistinguishable rows"
         );

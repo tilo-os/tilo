@@ -2608,22 +2608,35 @@ mod tests {
     fn named_invites_bind_role_and_verified_identity_before_review() {
         /// HIG §9.5: the invite card's rows and mini pills rest on the lift
         /// floor with an edge derived from it; that edge must register on every
-        /// shipped palette, and the card's Panel border on its Panel ground.
+        /// shipped palette, and the card's Panel border on its Panel ground:
+        /// as a hairline in high contrast, where it alone separates the panel,
+        /// and as the quieter floating edge elsewhere.
         fn invite_rows_and_panel_edge_register_on_every_palette() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let ground = ui::chrome::shell::panel_ground(&theme);
                 let floor = rest_floor(&theme);
-                for (what, edge, fill) in [
+                let panel_min = if theme.tokens.colors.palette.high_contrast {
+                    ui::tokens::colors::HAIRLINE_MIN_DELTA
+                } else {
+                    ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+                };
+                for (what, edge, fill, min) in [
                     (
                         "panel border",
                         ui::chrome::shell::panel_border(&theme),
                         ground,
+                        panel_min,
                     ),
-                    ("row card", ui::surface::edge_on(floor), floor),
+                    (
+                        "row card",
+                        ui::surface::edge_on(floor),
+                        floor,
+                        ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    ),
                 ] {
                     let delta = ui::surface::edge_delta(edge, fill);
                     assert!(
-                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        delta >= min,
                         "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
                         theme.name
                     );

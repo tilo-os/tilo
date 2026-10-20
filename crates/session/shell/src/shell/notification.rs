@@ -1605,9 +1605,11 @@ mod tests {
                 },
             );
             let ch = chrome.borrow();
+            // Until a clock is chosen, the time reads as the desktop's
+            // language reads clocks: English on a 12-hour one.
             assert_eq!(
                 ch.quiet_status(23 * 60, 2).as_deref(),
-                Some("Focus until 07:30")
+                Some("Focus until 7:30 AM")
             );
             assert_eq!(ch.quiet_status(12 * 60, 2), None);
         }
