@@ -1465,6 +1465,83 @@ async fn prune_idle(
 /// How often the operator's roles file is looked at for a change.
 const ROLES_FILE_EVERY_SECS: u64 = 2;
 
+/// What the room last said about who is online, and when it last wrote
+/// down when each member was last seen.
+struct OnlineWatch {
+    last_online: Option<(u32, u32, Vec<tilo_relay_protocol::directory::Face>, u32)>,
+    last_seen_written: tokio::time::Instant,
+}
+
+impl OnlineWatch {
+    /// Say who is online when it changed, note everyone online as seen now,
+    /// and write the last-seen times down at most once a minute.
+    async fn observe(
+        &mut self,
+        context: &PersistentRoom,
+        governance: &Governance,
+        spectator: [u8; 32],
+        last_seen: &mut BTreeMap<[u8; 32], u64>,
+    ) -> anyhow::Result<()> {
+        let sessions = context.web.online_users();
+        let people = sessions.keys().filter(|user| **user != spectator).count();
+        // Seated ones only: a page refused for want of a seat keeps
+        // its web session open while it waits, but watches nothing.
+        let spectators = context
+            .rooms
+            .seated_spectators(&context.room)
+            .await
+            .unwrap_or(0);
+        // Who of the members is here, for the site's directory.
+        let here: std::collections::BTreeSet<[u8; 32]> = sessions
+            .keys()
+            .filter(|user| **user != spectator)
+            .copied()
+            .collect();
+        let (faces, _, members) = context
+            .rooms
+            .presence(&context.room, &here)
+            .await
+            .unwrap_or_default();
+        let online = (
+            u32::try_from(people).unwrap_or(u32::MAX),
+            u32::try_from(spectators).unwrap_or(u32::MAX),
+            faces,
+            // The spectator person is a member nobody counts.
+            members.saturating_sub(1),
+        );
+        if self.last_online.as_ref() != Some(&online) {
+            println!(
+                "{}",
+                RoomEvent::Online {
+                    people: online.0,
+                    spectators: online.1,
+                    here: online.2.clone(),
+                    members: online.3,
+                }
+                .to_line()
+            );
+            self.last_online = Some(online);
+        }
+        let now = tilo_clock::unix_now_ms();
+        for user in sessions.keys() {
+            last_seen.insert(*user, now);
+        }
+        if self.last_seen_written.elapsed() >= Duration::from_secs(60) {
+            for member in summary(context)
+                .await?
+                .members
+                .iter()
+                .filter(|member| !member.removed)
+            {
+                last_seen.entry(member.user_public_key).or_insert(now);
+            }
+            governance.write_last_seen(last_seen)?;
+            self.last_seen_written = tokio::time::Instant::now();
+        }
+        Ok(())
+    }
+}
+
 async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
@@ -1481,7 +1558,10 @@ async fn serve_operator(
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
-    let mut last_seen_written = tokio::time::Instant::now();
+    let mut presence = OnlineWatch {
+        last_online: None,
+        last_seen_written: tokio::time::Instant::now(),
+    };
     let mut online_tick =
         tokio::time::interval(Duration::from_secs(room_operator::ONLINE_EVERY_SECS));
     // A quarter of the horizon, so nobody stays much past it, and not more
@@ -1493,7 +1573,6 @@ async fn serve_operator(
             .clamp(60, 3600),
     ));
     let mut reset_tick = reset_interval(governance.reset_every);
-    let mut last_online = None;
     // The operator's roles file, looked at every few seconds: a role it
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
@@ -1508,54 +1587,7 @@ async fn serve_operator(
                 }
             }
             _ = online_tick.tick() => {
-                let sessions = context.web.online_users();
-                let people = sessions.keys().filter(|user| **user != spectator).count();
-                // Seated ones only: a page refused for want of a seat keeps
-                // its web session open while it waits, but watches nothing.
-                let spectators = context
-                    .rooms
-                    .seated_spectators(&context.room)
-                    .await
-                    .unwrap_or(0);
-                // Who of the members is here, for the site's directory.
-                let here: std::collections::BTreeSet<[u8; 32]> =
-                    sessions.keys().filter(|user| **user != spectator).copied().collect();
-                let (faces, _, members) = context
-                    .rooms
-                    .presence(&context.room, &here)
-                    .await
-                    .unwrap_or_default();
-                let online = (
-                    u32::try_from(people).unwrap_or(u32::MAX),
-                    u32::try_from(spectators).unwrap_or(u32::MAX),
-                    faces,
-                    // The spectator person is a member nobody counts.
-                    members.saturating_sub(1),
-                );
-                if last_online.as_ref() != Some(&online) {
-                    println!(
-                        "{}",
-                        RoomEvent::Online {
-                            people: online.0,
-                            spectators: online.1,
-                            here: online.2.clone(),
-                            members: online.3,
-                        }
-                        .to_line()
-                    );
-                    last_online = Some(online);
-                }
-                let now = tilo_clock::unix_now_ms();
-                for user in sessions.keys() {
-                    last_seen.insert(*user, now);
-                }
-                if last_seen_written.elapsed() >= Duration::from_secs(60) {
-                    for member in summary(context).await?.members.iter().filter(|member| !member.removed) {
-                        last_seen.entry(member.user_public_key).or_insert(now);
-                    }
-                    governance.write_last_seen(&last_seen)?;
-                    last_seen_written = tokio::time::Instant::now();
-                }
+                presence.observe(context, governance, spectator, &mut last_seen).await?;
             }
             _ = prune_tick.tick() => prune_idle(context, governance, spectator, &mut removed, &mut last_seen).await?,
             _ = reset_tick.tick(), if governance.reset_every > 0 => reset_now(context, governance).await,

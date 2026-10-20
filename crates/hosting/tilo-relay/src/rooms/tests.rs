@@ -2033,13 +2033,37 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     relay.shutdown().await;
 }
 
+/// One window, a Chat tab, on one strip, with ids in the namespace `salt`.
+fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    [Strip {
+        id: StripId(own(1)),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: own(2),
+            tabs: vec![Tab {
+                id: own(3),
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.chat".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: own(3),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }]
+}
+
 /// A window a member opens after joining is a change to the room document in
 /// that device's own topology namespace. The governor takes it in as the
 /// room's next generation, so every other member sees the window; before,
 /// only record writes were taken in and the window reached nobody.
 #[tokio::test]
 async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
-    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = view_read_relay(dir.path(), &key, &cert).await;
@@ -2067,26 +2091,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
         .await
         .unwrap();
 
-    let own = |counter: u64| (u64::from(salt) << 48) | counter;
-    let windows = [Strip {
-        id: StripId(own(1)),
-        name: "Main".into(),
-        window_groups: vec![WindowGroup {
-            id: own(2),
-            tabs: vec![Tab {
-                id: own(3),
-                title: "Chat".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.chat".into(),
-                    surface_id: 7,
-                },
-            }],
-            active_tab: own(3),
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        }],
-    }];
+    let windows = one_chat_window(salt);
     let (generation, mut doc) = {
         let state = rooms.room(&created.room).await.unwrap();
         let room = state.lock().await;
@@ -2112,7 +2117,7 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     assert!(!changes.is_empty(), "opening a window changes the room");
     let hashes = changes
         .iter()
-        .map(|change| change.hash())
+        .map(automerge::Change::hash)
         .collect::<Vec<_>>();
     let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
         room: created.room.clone(),

@@ -568,12 +568,14 @@ mod door_tests {
         owner: &DeviceCert,
         request: InvokeRequest,
     ) -> serde_json::Value {
-        let host = HostRoomActions::new();
-        host.attach(rooms.clone());
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key);
-        let receipt = settled(host.in_workspace(workspace).invoke(&caller, request))
-            .await
-            .unwrap();
+        let receipt = {
+            let host = HostRoomActions::new();
+            host.attach(rooms.clone());
+            settled(host.in_workspace(workspace).invoke(&caller, request))
+                .await
+                .unwrap()
+        };
         match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             other => panic!("governance completes at once: {other:?}"),
