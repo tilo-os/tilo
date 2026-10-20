@@ -713,6 +713,17 @@ struct RunArgs {
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
 
+    /// Open the app in a room other people join, each from their own
+    /// browser window as a person of their own (`--platform web`). The SDK's
+    /// room host runs on this machine and admits everyone who opens the
+    /// printed join page.
+    #[arg(long)]
+    share: bool,
+
+    /// With `--share`, start an empty room instead of reopening the last.
+    #[arg(long, requires = "share")]
+    fresh: bool,
+
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
     /// connected.
@@ -828,6 +839,17 @@ struct DevArgs {
     /// Address the web page is served on (`--platform web`).
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
+
+    /// Open the app in a room other people join, each from their own
+    /// browser window as a person of their own (`--platform web`). The SDK's
+    /// room host runs on this machine and admits everyone who opens the
+    /// printed join page.
+    #[arg(long)]
+    share: bool,
+
+    /// With `--share`, start an empty room instead of reopening the last.
+    #[arg(long, requires = "share")]
+    fresh: bool,
 
     /// The `adb` serial of the device or emulator to install on
     /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
@@ -1874,7 +1896,11 @@ fn run_run(args: RunArgs) -> Result<Value> {
         if platform == tilo_app_cli::PackagePlatform::Web {
             tilo_app_cli::web::run_web(
                 &path,
-                &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+                &tilo_app_cli::web::WebDevOptions {
+                    bind: args.bind,
+                    share: args.share,
+                    fresh: args.fresh,
+                },
             )?;
             return Ok(json!({"stopped": true}));
         }
@@ -1981,7 +2007,11 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         tilo_app_cli::web::dev_web(
             &path,
             &request,
-            &tilo_app_cli::web::WebDevOptions { bind: args.bind },
+            &tilo_app_cli::web::WebDevOptions {
+                bind: args.bind,
+                share: args.share,
+                fresh: args.fresh,
+            },
         )?;
     } else if platform == tilo_app_cli::PackagePlatform::Android {
         tilo_app_cli::android::dev_on_device(

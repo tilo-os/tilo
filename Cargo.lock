@@ -16614,6 +16614,7 @@ dependencies = [
  "clap",
  "fluent",
  "fluent-syntax",
+ "getrandom 0.4.3",
  "hex",
  "image",
  "launcher",
