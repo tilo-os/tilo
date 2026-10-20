@@ -835,12 +835,12 @@ fn root_replacement_never_replays_an_exclusion_onto_a_different_folder() {
         .unwrap()
         .id
         .clone();
-    assert!(
+    assert_ne!(
         named(replaced.sources.as_slice(), "Documents")
             .unwrap()
             .children[0]
-            .id
-            != old_alpha
+            .id,
+        old_alpha
     );
     let mut selection = replaced.clone().selection();
     selection.adopt(&previous);

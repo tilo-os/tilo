@@ -468,6 +468,14 @@ impl Selection {
         counts
     }
 
+    /// Whether the selected part is known to contain no entries. Only a
+    /// completed inventory with no counts and no facts that may hide content
+    /// is empty: a coverage gap, an unavailable node or an unreadable source is
+    /// unknown, never zero.
+    pub fn selected_is_known_empty(&self) -> bool {
+        self.counts().is_empty() && !selected_unknown(&self.tree.sources, &self.excluded)
+    }
+
     /// Turn the selection into the root-relative exclusions the existing copy
     /// producers enforce. Whole-source exclusions stay explicit decisions.
     pub fn exclusions(&self) -> Exclusions {
@@ -661,6 +669,24 @@ fn collect_selected(nodes: &[Node], excluded: &BTreeSet<String>, out: &mut Count
         out.add(node.own);
         collect_selected(&node.children, excluded, out);
     }
+}
+
+/// Whether any selected node leaves part of its content unaccounted for. A
+/// fact such as a coverage gap, a provider-side unknown or an unavailable node
+/// means an empty count is not proof of an empty source.
+fn selected_unknown(nodes: &[Node], excluded: &BTreeSet<String>) -> bool {
+    for node in nodes {
+        if excluded.contains(&node.id) {
+            continue;
+        }
+        if !node.selectable || node.kind == NodeKind::Unavailable || !node.facts.is_empty() {
+            return true;
+        }
+        if selected_unknown(&node.children, excluded) {
+            return true;
+        }
+    }
+    false
 }
 
 /// A leaf node that owns the entries under `own_paths`.

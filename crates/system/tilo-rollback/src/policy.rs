@@ -668,6 +668,129 @@ fn verify_prediction_signature(
     Ok(Some(PredictionTicket { approved, ticket }))
 }
 
+/// The policy session stage 2 drives and the files it needs from stage 1.
+struct PolicySession {
+    context: PathBuf,
+    key_name: PathBuf,
+    policy_ref: PathBuf,
+    operand: Option<PathBuf>,
+    index: Option<String>,
+}
+
+impl PolicySession {
+    /// Start the policy session and write every input the policy steps read.
+    fn start(runner: &dyn Runner, ws: &Workspace, policy: &PolicySpec<'_>) -> Result<Self> {
+        let context = ws.path("policy.ctx");
+        require(
+            runner,
+            "tpm2_startauthsession",
+            &argv!["--policy-session", "-S", context.as_os_str()],
+            "starting the unseal policy session",
+        )?;
+        Ok(Self {
+            key_name: ws.put("signkey.name", policy.key_name)?,
+            policy_ref: ws.put("policyref.bin", &generation::policy_ref(policy.generation))?,
+            operand: policy
+                .nv
+                .as_ref()
+                .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
+                .transpose()?,
+            index: policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index)),
+            context,
+        })
+    }
+
+    fn flush(&self, runner: &dyn Runner) {
+        let _ = runner.run("tpm2_flushcontext", &argv![self.context.as_os_str()], None);
+    }
+}
+
+/// Every step that must hold before this session may authorise an unseal.
+fn apply_policy_steps(
+    runner: &dyn Runner,
+    session: &PolicySession,
+    policy: &PolicySpec<'_>,
+    prediction_ticket: &PredictionTicket,
+) -> Result<Option<()>> {
+    let gen_num = policy.generation;
+    let selection = policy.selection();
+    let platform_selection = policy.platform_selection();
+    // Live PCRs.
+    let pcr = runner.run(
+        "tpm2_policypcr",
+        &argv!["-S", session.context.as_os_str(), "-l", &selection],
+        None,
+    )?;
+    if !pcr.ok() {
+        bail!(
+            "reading live PCRs for the policy session failed: {}",
+            pcr.last_error_line()
+        );
+    }
+    // Does the live state match what was signed?
+    let auth_args = argv![
+        "-S",
+        session.context.as_os_str(),
+        "-i",
+        prediction_ticket.approved.as_os_str(),
+        "-n",
+        session.key_name.as_os_str(),
+        "-q",
+        session.policy_ref.as_os_str(),
+        "-t",
+        prediction_ticket.ticket.as_os_str(),
+    ];
+    let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
+    if !auth.ok() {
+        trace_failure("tpm2_policyauthorize", &auth_args, &auth);
+        return Ok(None); // wrong prediction for the current state
+    }
+    let platform = runner.run(
+        "tpm2_policypcr",
+        &argv!["-S", session.context.as_os_str(), "-l", &platform_selection,],
+        None,
+    )?;
+    if !platform.ok() {
+        bail!(
+            "reading device-local platform PCRs failed: {}",
+            platform.last_error_line()
+        );
+    }
+    // Rollback floor, when this policy has one.
+    if let (Some(operand_file), Some(idx)) = (&session.operand, &session.index) {
+        let nv = runner.run(
+            "tpm2_policynv",
+            &argv![
+                "-S",
+                session.context.as_os_str(),
+                "-i",
+                operand_file.as_os_str(),
+                idx,
+                "ule",
+                "-C",
+                idx,
+            ],
+            None,
+        )?;
+        if !nv.ok() {
+            bail!(
+                "the rollback floor refuses generation {gen_num}: this image is older than the oldest \
+                 generation this machine still permits ({})",
+                nv.last_error_line()
+            );
+        }
+    }
+    if policy.pin {
+        require(
+            runner,
+            "tpm2_policyauthvalue",
+            &argv!["-S", session.context.as_os_str()],
+            "adding the PIN authorisation to the policy session",
+        )?;
+    }
+    Ok(Some(()))
+}
+
 /// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
 fn drive_policy_session(
     runner: &dyn Runner,
@@ -675,110 +798,17 @@ fn drive_policy_session(
     policy: &PolicySpec<'_>,
     prediction_ticket: &PredictionTicket,
 ) -> Result<Option<SatisfiedSession>> {
-    let gen_num = policy.generation;
-    let selection = policy.selection();
-    let platform_selection = policy.platform_selection();
-    let sess = ws.path("policy.ctx");
-    require(
-        runner,
-        "tpm2_startauthsession",
-        &argv!["--policy-session", "-S", sess.as_os_str()],
-        "starting the unseal policy session",
-    )?;
-    let name_file = ws.put("signkey.name", policy.key_name)?;
-    let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = policy
-        .nv
-        .as_ref()
-        .map(|nv| ws.put("operand.bin", &nv.operand.to_be_bytes()))
-        .transpose()?;
-    let idx = policy.nv.as_ref().map(|nv| format!("0x{:08X}", nv.index));
-
-    let drive = || -> Result<Option<()>> {
-        // Live PCRs.
-        let pcr = runner.run(
-            "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", &selection],
-            None,
-        )?;
-        if !pcr.ok() {
-            bail!(
-                "reading live PCRs for the policy session failed: {}",
-                pcr.last_error_line()
-            );
-        }
-        // Does the live state match what was signed?
-        let auth_args = argv![
-            "-S",
-            sess.as_os_str(),
-            "-i",
-            prediction_ticket.approved.as_os_str(),
-            "-n",
-            name_file.as_os_str(),
-            "-q",
-            ref_file.as_os_str(),
-            "-t",
-            prediction_ticket.ticket.as_os_str(),
-        ];
-        let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
-        if !auth.ok() {
-            trace_failure("tpm2_policyauthorize", &auth_args, &auth);
-            return Ok(None); // wrong prediction for the current state
-        }
-        let platform = runner.run(
-            "tpm2_policypcr",
-            &argv!["-S", sess.as_os_str(), "-l", &platform_selection],
-            None,
-        )?;
-        if !platform.ok() {
-            bail!(
-                "reading device-local platform PCRs failed: {}",
-                platform.last_error_line()
-            );
-        }
-        // Rollback floor, when this policy has one.
-        if let (Some(operand_file), Some(idx)) = (&operand_file, &idx) {
-            let nv = runner.run(
-                "tpm2_policynv",
-                &argv![
-                    "-S",
-                    sess.as_os_str(),
-                    "-i",
-                    operand_file.as_os_str(),
-                    idx,
-                    "ule",
-                    "-C",
-                    idx,
-                ],
-                None,
-            )?;
-            if !nv.ok() {
-                bail!(
-                    "the rollback floor refuses generation {gen_num}: this image is older than the oldest \
-                     generation this machine still permits ({})",
-                    nv.last_error_line()
-                );
-            }
-        }
-        if policy.pin {
-            require(
-                runner,
-                "tpm2_policyauthvalue",
-                &argv!["-S", sess.as_os_str()],
-                "adding the PIN authorisation to the policy session",
-            )?;
-        }
-        Ok(Some(()))
-    };
-
-    match drive() {
-        Ok(Some(())) => Ok(Some(SatisfiedSession { context: sess })),
+    let session = PolicySession::start(runner, ws, policy)?;
+    match apply_policy_steps(runner, &session, policy, prediction_ticket) {
+        Ok(Some(())) => Ok(Some(SatisfiedSession {
+            context: session.context,
+        })),
         Ok(None) => {
-            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            session.flush(runner);
             Ok(None)
         }
         Err(e) => {
-            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            session.flush(runner);
             Err(e)
         }
     }

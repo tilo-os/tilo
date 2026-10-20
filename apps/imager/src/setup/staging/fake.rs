@@ -62,6 +62,10 @@ impl FakePlatform {
     }
 
     /// After a mutation took effect: maybe crash.
+    #[allow(
+        clippy::panic,
+        reason = "the fake's injected crash is the behaviour under test"
+    )]
     fn after(&mut self) {
         self.mutations += 1;
         if self.faults.crash_after == Some(self.mutations) {

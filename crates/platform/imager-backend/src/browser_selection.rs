@@ -789,7 +789,7 @@ mod tests {
         );
         selection.set(Domain::Bookmarks, false);
         assert!(selection.selected().profiles().is_empty());
-        assert!(!fs::read(&firefox.join("places.sqlite")).unwrap().is_empty());
+        assert!(!fs::read(firefox.join("places.sqlite")).unwrap().is_empty());
     }
     #[cfg(target_os = "linux")]
     #[test]

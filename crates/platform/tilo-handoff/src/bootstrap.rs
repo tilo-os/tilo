@@ -18,7 +18,7 @@
 use super::invalid;
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
-use std::{io, path::Path, sync::Arc};
+use std::{io, os::unix::fs::PermissionsExt as _, path::Path, sync::Arc};
 use tilo_seal::Label;
 use tilo_user_identity::{
     CertificationRequest, DeviceCapabilities, DeviceCert, IdentityPaths,
@@ -29,6 +29,11 @@ const PROJECTION_SCHEMA: u32 = 1;
 const MAX_PROJECTION: u64 = 1024 * 1024;
 const MAX_HOME_PEERS: usize = 128;
 const ISSUANCE_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
+const RECORD_ID_HEX_CHARS: usize = 55;
+
+/// Signs one canonical digest with the person's root. The prepared-identity
+/// vault remains the only holder of the root secret.
+type SourceSigner = Arc<dyn Fn(&[u8]) -> io::Result<[u8; 64]> + Send + Sync>;
 
 /// The preparing computer's root capability and the public identity it
 /// exports. The signer is a callback so the prepared-identity vault remains
@@ -42,7 +47,7 @@ pub struct SourceIdentity {
     pub certificates: Vec<DeviceCert>,
     /// The person's home-peer registry as JSON, filtered to this identity.
     pub home_peers: Vec<u8>,
-    pub signer: Arc<dyn Fn(&[u8]) -> io::Result<[u8; 64]> + Send + Sync>,
+    pub signer: SourceSigner,
 }
 
 impl SourceIdentity {
@@ -424,9 +429,12 @@ pub(crate) fn install(
     tilo_user_identity::persist::install_device_cert(&paths, &certificate, now_ns)
         .map_err(|_| invalid("The device certificate could not be installed"))?;
     std::fs::create_dir_all(identity_dir)?;
-    use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700))?;
-    let record_id = format!("identity-{}", &hex::encode(request.user_public_key)[..55]);
+    let record_hex: String = hex::encode(request.user_public_key)
+        .chars()
+        .take(RECORD_ID_HEX_CHARS)
+        .collect();
+    let record_id = format!("identity-{record_hex}");
     tilo_files::native::atomic::write_with_mode(
         &identity_dir.join(format!("{record_id}.json")),
         &record,
@@ -434,7 +442,7 @@ pub(crate) fn install(
     )?;
     runtime_identity::set_active_identity(identity_dir, &record_id)
         .map_err(|_| invalid("The joined identity could not be selected"))?;
-    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone());
+    let store = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity_dir, paths);
     for known in fleet.certificates {
         store
             .remember_certificate(&fleet.identity_id, known)
@@ -466,7 +474,7 @@ fn decode_b64(value: &str) -> io::Result<Vec<u8>> {
 }
 
 fn home_peer_array(bytes: &[u8]) -> io::Result<()> {
-    if bytes.len() > MAX_PROJECTION as usize {
+    if usize::try_from(MAX_PROJECTION).is_ok_and(|limit| bytes.len() > limit) {
         return Err(invalid("The home peers are too large"));
     }
     let value: serde_json::Value =

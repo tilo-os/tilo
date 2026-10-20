@@ -4,12 +4,18 @@
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
+use std::path::Path;
+use std::time::{Duration, Instant};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 fn signer(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "the fixture root always signs its own device certificate"
+)]
 fn cert(root: &SigningKey, device: &SigningKey, now: u64, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -33,6 +39,10 @@ fn identity() -> HandoffIdentity {
     }
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "the fixture proof is a fixed, serialisable shape"
+)]
 fn request(
     identity: &HandoffIdentity,
     package_sha256: &str,
@@ -302,66 +312,33 @@ fn the_private_descriptor_reader_refuses_links_and_public_files() {
     assert!(read_descriptor(fixture.path()).is_err());
 }
 
-#[test]
-fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
-    use std::os::unix::fs::PermissionsExt as _;
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture identity that cannot be created fails the test"
+)]
+fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
     use std::sync::Arc;
 
-    let fixture = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let home = fixture.path().join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-    struct Env(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Env {
-        fn set(&mut self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
-            self.0.push((key, std::env::var_os(key)));
-            // SAFETY: this test owns the process environment for the keys it
-            // sets and restores them when it ends.
-            unsafe { std::env::set_var(key, value) };
-        }
-    }
-    impl Drop for Env {
-        fn drop(&mut self) {
-            for (key, previous) in self.0.drain(..) {
-                // SAFETY: as above.
-                unsafe {
-                    match previous {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
-                    }
-                }
-            }
-        }
-    }
-    let mut env = Env(Vec::new());
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    env.set("HOME", &home);
-    env.set("XDG_CONFIG_HOME", home.join(".config"));
-    env.set("XDG_STATE_HOME", home.join(".local/state"));
-
-    let source_dir = fixture.path().join("source-identity");
-    std::fs::create_dir_all(&source_dir).unwrap();
-    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     tilo_identity_host::provisioning::create_primary_identity(
-        &source_dir,
+        source_dir,
         "Source person",
         [10, 20, 30],
         tilo_identity_host::provisioning::IdentityStorage::Files,
     )
-    .unwrap();
-    let source_signer = runtime_identity::load_from_path(source_dir.join("primary.json")).unwrap();
+    .expect("the source identity is created");
+    let signer_path = source_dir.join("primary.json");
+    let source_signer =
+        runtime_identity::load_from_path(signer_path.clone()).expect("the source identity loads");
     let person = source_signer.group_public_key();
     let metadata =
-        runtime_identity::load_metadata_from_path(&source_dir.join("primary.json")).unwrap();
+        runtime_identity::load_metadata_from_path(&signer_path).expect("the source metadata loads");
     let record = public_identity_record(
         &metadata.display_name,
         metadata.avatar_color,
         person,
         metadata.profile_photo,
     )
-    .unwrap();
-    let signer_path = source_dir.join("primary.json");
+    .expect("the source record encodes");
     let authority = SourceIdentity {
         identity_public_key: person,
         identity_record: record,
@@ -375,6 +352,88 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
                 .map_err(|error| io::Error::other(error.to_string()))
         }),
     };
+    (authority, person)
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the wait loop only leaves after it recorded the approval token"
+)]
+fn wait_for_join_offer(source: &Source, deadline: Instant) -> String {
+    let mut approval = None;
+    while approval.is_none() {
+        assert!(Instant::now() < deadline, "join was not offered");
+        while let Some(state) = source.poll() {
+            if let SourceState::JoinRequested {
+                approval: token, ..
+            } = state
+            {
+                approval = Some(token);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    approval.expect("the join approval token is offered")
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the receiver returns a package before the wait loop leaves"
+)]
+fn wait_for_package(
+    source: &Source,
+    receiver: &Receiver,
+    deadline: Instant,
+    target_identity: &Path,
+) -> Received {
+    let mut delivered = None;
+    let mut states = Vec::new();
+    while delivered.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "package did not arrive after the join; source states {states:?}; active {:?}",
+            runtime_identity::resolve_active_identity(target_identity)
+        );
+        while let Some(state) = source.poll() {
+            let ended = matches!(&state, SourceState::Failed | SourceState::Rejected);
+            states.push(format!("{state:?}"));
+            assert!(!ended, "source ended after the join: {state:?}");
+        }
+        if let Some(result) = receiver.poll() {
+            delivered = Some(result.expect("the receiver accepts the package"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    delivered.expect("the package arrives before the deadline")
+}
+
+fn wait_for_package_import(source: &Source, deadline: Instant) {
+    let mut complete = false;
+    while !complete {
+        assert!(Instant::now() < deadline, "source saw no receipt");
+        while let Some(state) = source.poll() {
+            if let SourceState::PackageImported { .. } = state {
+                complete = true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut test_home = tilo_test_env::TestHome::new().unwrap();
+    let home = test_home.home().to_path_buf();
+    test_home.env().set(runtime_identity::FILE_SECRETS_ENV, "1");
+
+    let source_dir = fixture.path().join("source-identity");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    std::fs::set_permissions(&source_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (authority, person) = source_authority(&source_dir);
     let source = Source::bind_with_identity(uuid::Uuid::new_v4().to_string(), authority).unwrap();
     let package = b"prepared ciphertext for the joining destination, with enough bytes".to_vec();
     let package_sha256 = digest(&package);
@@ -393,7 +452,7 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
 
     let target_system = fixture.path().join("target-system");
     let target_identity = fixture.path().join("target-identity");
-    env.set("TILO_IDENTITY_ROOT", &target_system);
+    test_home.env().set("TILO_IDENTITY_ROOT", &target_system);
     let receiver = Receiver::join(
         handoff,
         ReceiverIdentity {
@@ -404,46 +463,15 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
         "Fresh destination".into(),
     )
     .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut approval = None;
-    while approval.is_none() {
-        assert!(std::time::Instant::now() < deadline, "join was not offered");
-        while let Some(state) = source.poll() {
-            if let SourceState::JoinRequested {
-                approval: token, ..
-            } = state
-            {
-                approval = Some(token);
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let approval = wait_for_join_offer(&source, deadline);
     source.approve(&uuid::Uuid::new_v4().to_string()).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(Duration::from_millis(400));
     assert!(runtime_identity::resolve_active_identity(&target_identity).is_none());
-    source.approve(&approval.unwrap()).unwrap();
-    let mut received = None;
-    let mut states = Vec::new();
-    while received.is_none() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "package did not arrive after the join; source states {states:?}; active {:?}",
-            runtime_identity::resolve_active_identity(&target_identity)
-        );
-        while let Some(state) = source.poll() {
-            states.push(format!("{state:?}"));
-            if matches!(state, SourceState::Failed | SourceState::Rejected) {
-                panic!("source ended after the join: {state:?}");
-            }
-        }
-        if let Some(result) = receiver.poll() {
-            received = Some(result.unwrap());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let received = received.unwrap();
-    assert_eq!(received.package_sha256, package_sha256);
-    assert_eq!(std::fs::read(&received.package_path).unwrap(), package);
+    source.approve(&approval).unwrap();
+    let delivered = wait_for_package(&source, &receiver, deadline, &target_identity);
+    assert_eq!(delivered.package_sha256, package_sha256);
+    assert_eq!(std::fs::read(&delivered.package_path).unwrap(), package);
     let joined = runtime_identity::resolve_active_identity(&target_identity).unwrap();
     assert_eq!(
         runtime_identity::load_metadata_from_path(&joined)
@@ -457,22 +485,10 @@ fn a_fresh_destination_joins_its_person_before_the_package_is_released() {
             .exists(),
         "the destination joins as a member, never with the source root"
     );
-    receiver.acknowledge(&received).unwrap();
+    receiver.acknowledge(&delivered).unwrap();
     drop(receiver);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut complete = false;
-    while !complete {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "source saw no receipt"
-        );
-        while let Some(state) = source.poll() {
-            if let SourceState::PackageImported { .. } = state {
-                complete = true;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    wait_for_package_import(&source, deadline);
 }
 
 #[test]

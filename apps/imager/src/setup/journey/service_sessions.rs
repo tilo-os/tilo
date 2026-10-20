@@ -139,7 +139,7 @@ impl Selection {
                 .any(|(prior, kind)| prior == &id && *kind == service);
             let _ = self.set(&id, service, included);
         }
-        self.decided = previous.decided.clone();
+        self.decided.clone_from(&previous.decided);
     }
     /// Describe selected material, never authenticated accounts or working logins.
     pub(super) fn overview(&self, accounts_enabled: bool) -> String {

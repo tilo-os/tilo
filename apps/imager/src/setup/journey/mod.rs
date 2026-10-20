@@ -664,6 +664,10 @@ pub struct InstallerPreview {
     composition_replaced: bool,
     dirty: bool,
     rect: Rect,
+    /// The last pointer position in logical coordinates. A page rebuilt
+    /// between wheel events seeds it into its scroller, because the wheel
+    /// itself carries no position.
+    cursor: ui::kurbo::Point,
     error: Option<&'static str>,
     validation_focus: Option<String>,
     password_next_focus: Rc<Cell<bool>>,
@@ -815,6 +819,7 @@ impl Default for InstallerPreview {
             composition_replaced: false,
             dirty: true,
             rect: Rect::ZERO,
+            cursor: ui::kurbo::Point::ZERO,
             error: None,
             validation_focus: None,
             password_next_focus: Rc::default(),
@@ -1157,8 +1162,9 @@ impl InstallerPreview {
                 page == Page::Devices
                     || (page == Page::Connect && self.journey.transfer.as_deref() == Some("device"))
             }
-            "set-target-identity-field" | "set-target-architecture" => page == Page::Target,
-            "choose-target-hardware-report"
+            "set-target-identity-field"
+            | "set-target-architecture"
+            | "choose-target-hardware-report"
             | "import-target-hardware-report"
             | "clear-target-hardware-report"
             | "recheck-target-hardware" => page == Page::Target,
@@ -1779,13 +1785,14 @@ impl InstallerPreview {
                 #[cfg(target_os = "linux")]
                 {
                     let (home, refs) = self.migration_sources()?;
+                    let capture_files = self.selected_files()?;
                     if self.journey.destination == Some(Destination::Another) {
                         let selected_applications = self.selected_applications();
                         self.portable_source.start_with_choices(
                             source.into(),
                             home,
                             portable_source::Choices {
-                                home: self.journey.categories[0],
+                                home: capture_files,
                                 applications: selected_applications,
                                 accounts: self.journey.categories[2],
                                 system_refs: refs,
@@ -1794,14 +1801,18 @@ impl InstallerPreview {
                                         .prepared_handle()
                                         .ok_or("installer-preview-identity-not-prepared")?,
                                 ),
-                                exclusions: self.migration_exclusions()?,
+                                exclusions: if capture_files {
+                                    self.migration_exclusions()?
+                                } else {
+                                    Vec::new()
+                                },
                             },
                         )?;
                     } else {
                         self.migration_selection.start_selected(
                             source.into(),
                             home,
-                            self.migration_categories(),
+                            self.capture_categories()?,
                             refs,
                             self.migration_exclusions()?,
                         );
@@ -2218,8 +2229,18 @@ impl InstallerPreview {
                 } else if let Some(error) = self.journey.validation() {
                     return Err(error);
                 }
+                let (capture_files, capture_applications, capture_account_anchor) =
+                    if page == Page::Belongings {
+                        (
+                            self.selected_files()?,
+                            self.selected_applications(),
+                            self.selected_source_anchor(),
+                        )
+                    } else {
+                        (false, false, false)
+                    };
                 if page == Page::Belongings
-                    && !(self.journey.categories[0] || self.selected_applications())
+                    && !(capture_files || capture_applications || capture_account_anchor)
                 {
                     self.invalidate_migration_preparation();
                 }
@@ -2227,20 +2248,17 @@ impl InstallerPreview {
                 if page == Page::Belongings
                     && self.live
                     && self.journey.destination == Some(Destination::Another)
-                    && (self.journey.categories[0] || self.selected_applications())
+                    && (capture_files || capture_applications)
                 {
-                    if self.journey.categories[0]
-                        && self.portable_source.mounted_permission_active()
-                    {
+                    if capture_files && self.portable_source.mounted_permission_active() {
                         return Err("installer-mounted-home-grants-required");
                     }
                     let (home, system_refs) = self.migration_sources()?;
-                    let selected_applications = self.selected_applications();
                     self.portable_source.request_with_choices(
                         home,
                         portable_source::Choices {
-                            home: self.journey.categories[0],
-                            applications: selected_applications,
+                            home: capture_files,
+                            applications: capture_applications,
                             accounts: self.journey.categories[2],
                             system_refs,
                             preparation: Some(
@@ -2248,7 +2266,11 @@ impl InstallerPreview {
                                     .prepared_handle()
                                     .ok_or("installer-preview-identity-not-prepared")?,
                             ),
-                            exclusions: self.migration_exclusions()?,
+                            exclusions: if capture_files {
+                                self.migration_exclusions()?
+                            } else {
+                                Vec::new()
+                            },
                         },
                     )?;
                     self.dirty = true;
@@ -2257,12 +2279,12 @@ impl InstallerPreview {
                 if page == Page::Belongings
                     && self.live
                     && self.journey.destination == Some(Destination::Computer)
-                    && (self.journey.categories[0] || self.selected_applications())
+                    && (capture_files || capture_applications || capture_account_anchor)
                 {
                     let (home, refs) = self.migration_sources()?;
                     self.migration_selection.request_selected(
                         home,
-                        self.migration_categories(),
+                        self.capture_categories()?,
                         refs,
                         self.migration_exclusions()?,
                     );
@@ -2339,6 +2361,9 @@ impl InstallerPreview {
                 {
                     // The changed route needs new source consent: sharing
                     // local files and packaging them for another device differ.
+                    // Keep the new destination: an edit's own Back would restore
+                    // the snapshot, sending the person back to the old route.
+                    self.journey.keep_edit();
                     while self.journey.page != Page::Belongings {
                         self.journey.back()?;
                     }
@@ -2642,8 +2667,10 @@ impl InstallerPreview {
                         && self.journey.categories[2])
                         .then(|| self.accounts.prepared_handle())
                         .flatten();
+                    let capture_files = self.selected_files()?;
+                    let capture_account_anchor = self.selected_source_anchor();
                     let home = if self.journey.migrate == Some(true)
-                        && self.journey.categories[0]
+                        && capture_files
                         && self.journey.destination == Some(Destination::Another)
                     {
                         Some(
@@ -2655,7 +2682,7 @@ impl InstallerPreview {
                         None
                     };
                     let retained = if self.journey.migrate == Some(true)
-                        && (self.journey.categories[0] || self.selected_applications())
+                        && (capture_files || self.selected_applications() || capture_account_anchor)
                         && self.journey.destination == Some(Destination::Computer)
                     {
                         Some(
@@ -2676,14 +2703,14 @@ impl InstallerPreview {
                         && self.journey.destination == Some(Destination::Another)
                     {
                         let requires_package =
-                            !self.journey.categories[0] || !self.migration_sources()?.1.is_empty();
+                            !capture_files || !self.migration_sources()?.1.is_empty();
                         let source = self.portable_source.reviewed_applications();
                         if requires_package && source.is_none() {
                             return Err("installer-preview-flatpak-unavailable");
                         }
                         source.map(|source| prepared_media::PortableAppsSelection {
                             source,
-                            include_user_state: !self.journey.categories[0],
+                            include_user_state: !capture_files,
                         })
                     } else {
                         None
@@ -3893,6 +3920,57 @@ impl InstallerPreview {
                 || self.flatpak_apps().iter().any(|app| app.with_home))
     }
 
+    /// Whether the Files category selects real content. A completed discovery
+    /// that selects nothing means there is no Home to capture; a refused or
+    /// unfinished discovery is not emptiness. A source without a tree keeps the
+    /// existing capture behaviour for older fixtures and Windows reviews.
+    fn selected_files(&self) -> Result<bool, &'static str> {
+        if !self.journey.categories[0] {
+            return Ok(false);
+        }
+        if self.belongings.windows.is_some() {
+            return Ok(true);
+        }
+        match self.belongings.source_selection.selected_files() {
+            Some(has_files) => Ok(has_files),
+            None if self.belongings.source_selection.state() == "idle" => Ok(true),
+            None => Err("installer-your-data-changed"),
+        }
+    }
+
+    /// Whether selected mail, browser profiles or accounts need a retained
+    /// source journal even when no files or applications are copied. The
+    /// canonical account/source-only plan then anchors that data without
+    /// claiming any Home content.
+    fn selected_source_anchor(&self) -> bool {
+        if self.journey.migrate != Some(true) {
+            return false;
+        }
+        if self.journey.categories[2]
+            && (!self
+                .accounts
+                .selected_source_accounts(&self.belongings.accounts)
+                .is_empty()
+                || self
+                    .belongings
+                    .sessions
+                    .selected_for_accounts(true)
+                    .is_some())
+        {
+            return true;
+        }
+        if self.belongings.browser.available()
+            && !self.belongings.browser.selected().profiles().is_empty()
+        {
+            return true;
+        }
+        self.belongings.thunderbird_profiles().any(|profile| {
+            self.belongings
+                .thunderbird_export(&profile.source_id)
+                .is_some()
+        })
+    }
+
     /// Exactly the reviewed mail children the preparation seals. A profile
     /// with nothing selected is not an empty artifact; it is simply absent.
     fn selected_mail(&self) -> Result<Option<prepared_media::MailSelection>, &'static str> {
@@ -3917,6 +3995,21 @@ impl InstallerPreview {
             self.selected_applications(),
             self.journey.categories[2],
         ]
+    }
+
+    /// The categories the capture actually claims. A known-empty Files
+    /// selection is left out instead of binding an empty Home; a source whose
+    /// state cannot be known refuses rather than being treated as empty.
+    fn capture_categories(&self) -> Result<[bool; 3], &'static str> {
+        let files = self.selected_files()?;
+        let applications = self.selected_applications();
+        // Mail and browser selections are independent of the Accounts step, so
+        // a source-only anchor can exist with that step switched off. The plan
+        // then needs its one non-file category to describe the journal it
+        // carries, without claiming any Home content.
+        let accounts = self.journey.categories[2]
+            || (self.selected_source_anchor() && !files && !applications);
+        Ok([files, applications, accounts])
     }
 
     /// The nested Home subtrees the person excluded, in the root-relative form
@@ -3985,7 +4078,8 @@ impl InstallerPreview {
         if self.belongings_worker.is_some() {
             return Err("installer-preview-transfer-busy");
         }
-        if !self.journey.categories[0] && !self.journey.categories[1] {
+        if !self.journey.categories[0] && !self.journey.categories[1] && !self.journey.categories[2]
+        {
             return Err("installer-preview-transfer-needs-review");
         }
         let home = self
@@ -5626,6 +5720,9 @@ impl Widget for InstallerPreview {
         self.last_frame = Some(current);
     }
     fn handle_event(&mut self, event: &WindowEvent, cx: &mut ui::widget::EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = cx.logical(position);
+        }
         // Pointer geometry becomes actionable when the new page reaches its position.
         if (self.pending_slide.is_some() || self.slide.is_some())
             && matches!(
@@ -6021,30 +6118,6 @@ mod tests {
         operations
     }
 
-    /// Feed the same read-only compatibility facts the production planner
-    /// fixture returns, so a live destination Computer Continue can advance
-    /// without opening a desktop surface the journey test does not exercise.
-    fn accept_compatibility_fixture(app: &mut TestApp<ImagerShell>) {
-        app.with_widget::<InstallerPreview, _>(|preview| {
-            let mut storage = super::storage::Storage::default();
-            storage.stage();
-            preview.compatibility.accept_read_only_check_for_test(
-                crate::setup::view::FullOsCheck {
-                    facts: storage.facts.clone().unwrap(),
-                    plan: storage.plan.unwrap().unwrap(),
-                },
-            );
-        })
-        .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while status(app)["page"] == "destination" {
-            app.settle();
-            assert!(
-                std::time::Instant::now() < deadline,
-                "read-only compatibility facts must advance the route"
-            );
-        }
-    }
     fn choose(app: &mut TestApp<ImagerShell>, choice: &str) {
         app.effect(&InstallerPreviewEffect::ChoosePreview {
             choice: choice.into(),
@@ -6052,6 +6125,27 @@ mod tests {
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
+    }
+    /// Another computer is identified on its own page before media review. The
+    /// tests here only need a declared model, which is never component evidence.
+    #[cfg(target_os = "linux")]
+    fn choose_destination_and_name_target(app: &mut TestApp<ImagerShell>, choice: &str) {
+        choose(app, choice);
+        if status(app)["page"] == "target" {
+            for (field, value) in [
+                ("manufacturer", "Prepared Vendor"),
+                ("model", "Prepared Laptop 14"),
+                ("variant", "PREPARED-BOARD"),
+            ] {
+                app.effect(&InstallerPreviewEffect::SetTargetIdentityField {
+                    field: field.into(),
+                    value: value.into(),
+                })
+                .unwrap();
+            }
+            app.effect(&InstallerPreviewEffect::ContinuePreview)
+                .unwrap();
+        }
     }
     /// Identity Continue refuses while the saved preparation is still being
     /// written ("please wait"); a person waits for that, and so do the tests.
@@ -6094,6 +6188,16 @@ mod tests {
         .unwrap();
     }
     fn password(app: &mut TestApp<ImagerShell>) {
+        // Profile Continue creates the prepared identity asynchronously. The
+        // retained password is a legacy handoff question, not the interactive
+        // preparation step, so let custody finish before touching that field.
+        #[cfg(unix)]
+        if app
+            .with_widget::<InstallerPreview, _>(|preview| preview.personal.busy())
+            .unwrap()
+        {
+            wait_for_personal(app);
+        }
         retained_password(app, "preview-secret-only");
     }
     fn status(app: &mut TestApp<ImagerShell>) -> serde_json::Value {
@@ -6227,7 +6331,7 @@ mod tests {
             preview.dirty = true;
         })
         .unwrap();
-        for _ in 0..3 {
+        for _ in 0..2 {
             app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         }
         assert_eq!(status(&mut app)["page"], "identity");
@@ -6400,9 +6504,10 @@ mod tests {
                 })
                 .unwrap();
                 app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
-                // A details toggle is not a Back stop while an edit owns the
-                // trail; Back returns to the edit's start and keeps custody.
-                assert_eq!(status(&mut app)["page"], "migration");
+                // Details are their own navigation stop, in a Review edit too:
+                // the first Back closes them and keeps the edit, its custody
+                // and the persisted consent untouched.
+                assert_eq!(status(&mut app)["page"], "belongings");
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert!(!preview.journey.details);
                     assert_eq!(
@@ -6419,6 +6524,10 @@ mod tests {
                     );
                 })
                 .unwrap();
+                // From the edit's overview, Back retreats to where the edit
+                // began; only the next one cancels it.
+                app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+                assert_eq!(status(&mut app)["page"], "migration");
             }
             app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
             assert_eq!(status(&mut app)["page"], "review");
@@ -6747,9 +6856,27 @@ mod tests {
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, true, true];
             preview.accounts = accounts;
-            preview.belongings.home = Some(root.path().join("source"));
-            // The source fixture contains user app data, with no system refs.
-            preview.belongings.flatpak = Some(super::super::flatpak_transfer::Inventory::default());
+            // Anchor the source to the fixture Home, so discovery of the
+            // process Home cannot decide how much this source has to capture.
+            preview.belongings_worker = None;
+            let source_home = root.path().join("source");
+            let roots = super::super::account_transfer::SourceRoots {
+                home: source_home.clone(),
+                config: source_home.join(".config"),
+            };
+            let mut belongings = super::belongings::Belongings {
+                home: Some(source_home.clone()),
+                roots: Some(roots.clone()),
+                accounts: super::super::account_transfer::discover(&roots),
+                // The source fixture contains user app data, with no system refs.
+                flatpak: Some(super::super::flatpak_transfer::Inventory::default()),
+                ..Default::default()
+            };
+            belongings.source_selection = super::source_selection::SourceSelection::discover(
+                &belongings,
+                &super::source_selection::SourceSet::Home(source_home.clone()),
+            );
+            preview.belongings = belongings;
             preview.storage.set_application_minimum(minimum);
             preview.storage.stage();
             preview
@@ -7296,9 +7423,9 @@ mod tests {
         assert_eq!(std::fs::read(&source).unwrap(), original);
         // A later original edit cannot change the already reviewed pixels.
         std::fs::write(&source, b"changed after selection").unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
+            .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         password(&mut app);
         let accepted = wait_for_personal(&mut app);
@@ -7333,7 +7460,6 @@ mod tests {
                 .profile_photo(),
             Some(&expected)
         );
-        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
         // Selecting the same path again explicitly consumes a new grant and
         // refuses the now-invalid file, without modifying the accepted identity.
@@ -7386,13 +7512,12 @@ mod tests {
             value: "Ada".into(),
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
             .unwrap();
-        password(&mut app);
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
         let failed = wait_for_personal(&mut app);
-        assert_eq!(failed["page"], "password");
+        assert_eq!(failed["page"], "profile");
         assert_eq!(failed["prepared_identity"]["state"], "failed");
         assert!(failed["prepared_identity"]["public_key"].is_null());
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
@@ -7567,39 +7692,76 @@ mod tests {
             included: false,
         })
         .unwrap();
+        // The bookmarks and history rows live under the browser's own source
+        // and its reviewed profile; opening both is the same disclosure a
+        // person uses, and only then are the two decisions painted.
+        let (source_id, profile_id) = app
+            .with_widget::<InstallerPreview, _>(|preview| {
+                let view = preview.your_data();
+                let source_id = view
+                    .sources
+                    .iter()
+                    .find(|source| source.id.starts_with("browser|"))
+                    .expect("a reviewed browser source")
+                    .id
+                    .clone();
+                let profile_id = view
+                    .source(&source_id)
+                    .and_then(|source| {
+                        source
+                            .groups
+                            .iter()
+                            .find(|group| group.id.starts_with("profile|"))
+                    })
+                    .expect("a reviewed browser profile group")
+                    .id
+                    .clone();
+                (source_id, profile_id)
+            })
+            .unwrap();
+        for id in [source_id, profile_id] {
+            app.effect(&InstallerPreviewEffect::ExpandYourDataSource {
+                source: id,
+                expanded: true,
+            })
+            .unwrap();
+        }
+        let (bookmarks, history) = app
+            .with_widget::<InstallerPreview, _>(|preview| {
+                let view = preview.your_data();
+                let source = view
+                    .sources
+                    .iter()
+                    .find(|source| source.id.starts_with("browser|"))
+                    .expect("a reviewed browser source");
+                let group = source
+                    .groups
+                    .iter()
+                    .find(|group| group.id.starts_with("profile|"))
+                    .expect("a reviewed browser profile group");
+                let item = |label: &str| {
+                    group
+                        .items
+                        .iter()
+                        .find(|item| item.label == label)
+                        .unwrap_or_else(|| panic!("missing {label}"))
+                        .test_id
+                        .clone()
+                };
+                (
+                    item(&t("installer-your-data-bookmarks")),
+                    item(&t("installer-your-data-history")),
+                )
+            })
+            .unwrap();
         for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
             for (viewport, scale) in [((480, 800), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
                 app.harness()
                     .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
                 app.harness().resize(viewport).unwrap();
-                let (bookmarks, history) = app
-                    .with_widget::<InstallerPreview, _>(|preview| {
-                        let view = preview.your_data();
-                        let source = view
-                            .sources
-                            .iter()
-                            .find(|source| source.id.starts_with("browser|"))
-                            .expect("a reviewed browser source");
-                        let group = source
-                            .groups
-                            .iter()
-                            .find(|group| group.id.starts_with("profile|"))
-                            .expect("a reviewed browser profile group");
-                        let item = |label: &str| {
-                            group
-                                .items
-                                .iter()
-                                .find(|item| item.label == label)
-                                .unwrap_or_else(|| panic!("missing {label}"))
-                                .test_id
-                                .clone()
-                        };
-                        (
-                            item(&t("installer-your-data-bookmarks")),
-                            item(&t("installer-your-data-history")),
-                        )
-                    })
-                    .unwrap();
+                // The profile's two decisions come after the overview, so the
+                // real body scrolls them into reach on a short window.
+                visual_tests::scroll_into_view(&mut app, &history);
                 visual_tests::paint_app(
                     &mut app,
                     "installer-browser-selection",
@@ -8987,7 +9149,10 @@ mod tests {
                     viewport,
                     tag,
                 );
-                visual_tests::scroll_into_view(&mut app, "installer.category.accounts");
+                // The account choice is the Your data row now, not a
+                // category of its own; the aggregate row is what skips the
+                // optional step when no app identity was discovered.
+                visual_tests::scroll_into_view(&mut app, "installer.your-data.source.accounts");
                 visual_tests::scroll_into_view(&mut app, "installer.details");
             }
         }
@@ -9288,12 +9453,16 @@ mod tests {
             value: "Portable consent person".into(),
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
+        // A live Profile Continue starts the real prepared identity, which the
+        // source handoff needs before it can seal anything. Waiting on that
+        // preparation is what keeps this test off the order it happens in.
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
             .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        let prepared = wait_for_personal(&mut app);
+        assert_eq!(prepared["prepared_identity"]["state"], "prepared");
         password(&mut app);
-        wait_for_personal(&mut app);
         app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         assert_eq!(status(&mut app)["page"], "purpose");
@@ -9305,7 +9474,25 @@ mod tests {
             preview.journey.destination = Some(Destination::Another);
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, false, false];
-            preview.belongings.home = Some(home.clone());
+            // Anchor the source to the fixture Home. The earlier arrive-on-
+            // Belongings check inspected the process Home, and its result must
+            // not decide whether this source has content to capture.
+            preview.belongings_worker = None;
+            let roots = super::super::account_transfer::SourceRoots {
+                home: home.clone(),
+                config: home.join(".config"),
+            };
+            let mut belongings = super::belongings::Belongings {
+                home: Some(home.clone()),
+                roots: Some(roots.clone()),
+                accounts: super::super::account_transfer::discover(&roots),
+                ..Default::default()
+            };
+            belongings.source_selection = super::source_selection::SourceSelection::discover(
+                &belongings,
+                &super::source_selection::SourceSet::Home(home.clone()),
+            );
+            preview.belongings = belongings;
         })
         .unwrap();
         assert_eq!(status(&mut app)["portable_preparation"]["prepared"], false);
@@ -9744,7 +9931,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         choose(&mut app, "computer");
-        accept_compatibility_fixture(&mut app);
         choose(&mut app, "fresh");
         choose(&mut app, "new");
         app.effect(&InstallerPreviewEffect::SetPreviewName {
@@ -9909,8 +10095,6 @@ mod tests {
             value: "Ada".into(),
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             assert!(
@@ -9919,6 +10103,8 @@ mod tests {
             );
         })
         .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
         password(&mut app);
         let prepared = wait_for_personal(&mut app);
         let key = prepared["prepared_identity"]["public_key"].clone();
@@ -9977,7 +10163,7 @@ mod tests {
                 section: "destination".into(),
             })
             .unwrap();
-            choose(&mut app, destination);
+            choose_destination_and_name_target(&mut app, destination);
             assert_eq!(status(&mut app)["page"], "review");
             assert_eq!(status(&mut app)["destination"], destination);
             assert_eq!(status(&mut app)["prepared_identity"]["public_key"], key);
@@ -10037,7 +10223,7 @@ mod tests {
                 section: "destination".into(),
             })
             .unwrap();
-            choose(&mut app, "another");
+            choose_destination_and_name_target(&mut app, "another");
             assert_eq!(status(&mut app)["page"], "review");
             app.settle();
             let inspection = app.harness().inspection_json().unwrap();
@@ -10054,7 +10240,7 @@ mod tests {
                 section: "destination".into(),
             })
             .unwrap();
-            choose(&mut app, "computer");
+            choose_destination_and_name_target(&mut app, "computer");
             assert_eq!(status(&mut app)["page"], "review");
         }
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -10067,7 +10253,7 @@ mod tests {
             section: "destination".into(),
         })
         .unwrap();
-        choose(&mut app, "another");
+        choose_destination_and_name_target(&mut app, "another");
         app.settle();
         let inspection = app.harness().inspection_json().unwrap();
         assert!(!inspection.contains(&t("installer-review-installation-unavailable")));
@@ -10124,9 +10310,9 @@ mod tests {
             wait_for_personal(&mut app)["prepared_identity"]["state"],
             "photo-selected"
         );
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
+            .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         password(&mut app);
         assert_eq!(wait_for_personal(&mut app)["page"], "devices");
@@ -10309,9 +10495,9 @@ mod tests {
             value: "Ada".into(),
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
+            .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         password(&mut app);
         let created = wait_for_personal(&mut app);
@@ -11222,12 +11408,11 @@ mod tests {
         }
         let resources = app.harness().resources();
         assert!(catalog_availability(&mut app, "choose-preview").is_available());
-        for id in ["continue-preview"] {
-            assert!(
-                unavailable(&resources, id),
-                "{id} must match painted admission"
-            );
-        }
+        let id = "continue-preview";
+        assert!(
+            unavailable(&resources, id),
+            "{id} must match painted admission"
+        );
         let view = app.harness().inspection_json().unwrap();
         assert!(view.contains(&t("installer-guided-host-unavailable")));
         assert!(!view.contains("installer.choice.another"));
@@ -11384,7 +11569,7 @@ mod tests {
             section: "destination".into(),
         })
         .unwrap();
-        choose(app, choice);
+        choose_destination_and_name_target(app, choice);
         assert_eq!(status(app)["page"], "review");
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert!(!preview.journey.history.contains(&Page::Storage));
@@ -11437,9 +11622,9 @@ mod tests {
             value: "Ada".into(),
         })
         .unwrap();
-        app.effect(&InstallerPreviewEffect::ContinuePreview)
-            .unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| preview.live = true)
+            .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
             .unwrap();
         password(&mut app);
         let prepared = wait_for_personal(&mut app);

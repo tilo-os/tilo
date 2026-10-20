@@ -329,8 +329,7 @@ impl Journey {
                 {
                     Page::Target
                 }
-                (ReviewSection::Destination, Page::Destination) => Page::Storage,
-                (ReviewSection::Destination, Page::Target) => Page::Storage,
+                (ReviewSection::Destination, Page::Destination | Page::Target) => Page::Storage,
                 (ReviewSection::Profile, Page::Profile)
                 | (ReviewSection::Password, Page::Password)
                 | (ReviewSection::Identity | ReviewSection::Devices, Page::Devices)
@@ -500,6 +499,12 @@ impl Journey {
             let after = self.migrate == Some(true) && self.categories[2];
             (before != after).then_some(after)
         })
+    }
+
+    /// Keep the choices the current edit has made and end it, so navigating
+    /// away cannot restore the snapshot the edit started from.
+    pub fn keep_edit(&mut self) {
+        self.editing = None;
     }
 
     pub fn destination_edit_changed(&self) -> bool {

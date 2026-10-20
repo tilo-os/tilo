@@ -228,7 +228,7 @@ impl PreparedSetupDelivery {
             &mut self.package,
             &directory,
             &grant.pin,
-            Path::new(DIRECTORY).join("other-device"),
+            Path::new(DIRECTORY).join("other-device").join(FILE),
             cancel,
             &mut |_| Ok(()),
         )?;
@@ -286,7 +286,7 @@ fn deliver_ciphertext_reporting(
         package,
         &directory,
         root,
-        Path::new(DIRECTORY).to_path_buf(),
+        Path::new(DIRECTORY).join(FILE),
         cancel,
         observer,
     )

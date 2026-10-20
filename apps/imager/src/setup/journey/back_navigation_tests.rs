@@ -234,6 +234,7 @@ fn source_permission_back_retires_the_grant_without_leaving_details() {
     }
     let source = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(source.path().join(".config")).unwrap();
+    std::fs::write(source.path().join("document"), b"original").unwrap();
     let (reply, receiver) = std::sync::mpsc::channel();
     app.with_widget::<InstallerPreview, _>(|view| {
         view.live = true;

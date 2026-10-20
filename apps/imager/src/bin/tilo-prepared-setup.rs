@@ -139,112 +139,162 @@ fn main() -> std::process::ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn dispatch(mode: Option<&str>, arguments: impl Iterator<Item = std::ffi::OsString>) -> bool {
+fn dispatch(mode: Option<&str>, mut arguments: impl Iterator<Item = std::ffi::OsString>) -> bool {
     let mut output = std::io::stdout().lock();
-    match mode {
-        Some("--retained-home-consumer") => {
+    if let Some(succeeded) = dispatch_capabilities(mode, &mut arguments, &mut output) {
+        return succeeded;
+    }
+    if let Some(succeeded) = dispatch_installed_access(mode, &mut arguments, &mut output) {
+        return succeeded;
+    }
+    if let Some(succeeded) = dispatch_portable_consumers(mode, &mut arguments, &mut output) {
+        return succeeded;
+    }
+    if let Some(succeeded) = dispatch_prepared_handoff(mode, &mut arguments, &mut output) {
+        return succeeded;
+    }
+    default_setup(arguments, &mut output)
+}
+
+#[cfg(target_os = "linux")]
+fn dispatch_capabilities(
+    mode: Option<&str>,
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+    output: &mut impl std::io::Write,
+) -> Option<bool> {
+    let succeeded = match mode? {
+        "--retained-home-consumer" => {
             imager::setup::prepared_setup_helper::retained_home_consumer(arguments).is_ok()
         }
-        Some("--applications-consumer-capability") => {
+        "--applications-consumer-capability" => {
             imager::setup::prepared_setup_helper::original_reattest::qualify_applications(
-                arguments,
-                &mut output,
+                arguments, output,
             )
             .is_ok()
         }
-        Some("--applications-consumer-qualification-child") => {
+        "--applications-consumer-qualification-child" => {
             imager::setup::prepared_setup_helper::applications_consumer_qualification_child(
-                arguments,
-                &mut output,
+                arguments, output,
             )
             .is_ok()
         }
-        Some("--original-source-consumer-capability") => {
-            imager::setup::prepared_setup_helper::original_reattest::qualify(arguments, &mut output)
+        "--original-source-consumer-capability" => {
+            imager::setup::prepared_setup_helper::original_reattest::qualify(arguments, output)
                 .is_ok()
         }
-        Some("--reattest-original-source-consumer-capability") => {
-            imager::setup::prepared_setup_helper::original_reattest::run(arguments, &mut output)
+        "--reattest-original-source-consumer-capability" => {
+            imager::setup::prepared_setup_helper::original_reattest::run(arguments, output).is_ok()
+        }
+        "--selected-install-generation" => {
+            imager::setup::prepared_setup_helper::completed::selected(arguments, output).is_ok()
+        }
+        "--stream-completed-payload" => {
+            imager::setup::prepared_setup_helper::completed::payload(arguments, output).is_ok()
+        }
+        "--home-consumer-capability" => {
+            imager::setup::prepared_setup_helper::home_consumer_capability(arguments, output)
                 .is_ok()
         }
-        Some("--selected-install-generation") => {
-            imager::setup::prepared_setup_helper::completed::selected(arguments, &mut output)
-                .is_ok()
-        }
-        Some("--stream-completed-payload") => {
-            imager::setup::prepared_setup_helper::completed::payload(arguments, &mut output).is_ok()
-        }
-        Some("--home-consumer-capability") => {
-            imager::setup::prepared_setup_helper::home_consumer_capability(arguments, &mut output)
-                .is_ok()
-        }
-        Some("--install-enrolled-device") => imager::setup::prepared_setup_helper::enrolled::run(
+        _ => return None,
+    };
+    Some(succeeded)
+}
+
+#[cfg(target_os = "linux")]
+fn dispatch_installed_access(
+    mode: Option<&str>,
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+    output: &mut impl std::io::Write,
+) -> Option<bool> {
+    let succeeded = match mode? {
+        "--install-enrolled-device" => imager::setup::prepared_setup_helper::enrolled::run(
             arguments,
             &mut std::io::stdin().lock(),
-            &mut output,
+            output,
         )
         .is_ok(),
-        Some("--authenticate-install") => imager::setup::prepared_setup_helper::authenticate::run(
+        "--authenticate-install" => imager::setup::prepared_setup_helper::authenticate::run(
             arguments,
             &mut std::io::stdin().lock(),
-            &mut output,
+            output,
         )
         .is_ok(),
-        Some("--unseal-prepared-handoff") => {
-            imager::setup::prepared_setup_helper::unseal_handoff(arguments, &mut output).is_ok()
-        }
-        Some("--seal-prepared-handoff") => imager_backend::setup::prepared_tpm::seal_from_reader(
-            std::io::stdin().lock(),
-            &mut output,
-        )
-        .is_ok(),
-        Some("--access-shared-files") => {
-            imager::setup::installed_migration_helper::run_shared_access(
-                arguments,
-                std::io::stdin(),
-                &mut output,
-            )
-            .is_ok()
-        }
-        Some("--access-existing") => imager::setup::installed_migration_helper::run_access(
+        "--access-shared-files" => imager::setup::installed_migration_helper::run_shared_access(
             arguments,
             std::io::stdin(),
-            &mut output,
+            output,
         )
         .is_ok(),
-        Some("--portable-home") => imager::setup::portable_home_helper::run(
+        "--access-existing" => imager::setup::installed_migration_helper::run_access(
             arguments,
-            &mut std::io::stdin().lock(),
-            &mut output,
+            std::io::stdin(),
+            output,
         )
         .is_ok(),
-        Some("--portable-applications") => imager::setup::portable_applications_helper::run(
+        "--installed-applications" => imager::setup::installed_migration_helper::run_applications(
             arguments,
-            &mut std::io::stdin().lock(),
-            &mut output,
+            std::io::stdin(),
+            output,
         )
         .is_ok(),
-        Some("--browser-transfer") => imager::setup::browser_transfer_helper::run(
-            arguments,
-            &mut std::io::stdin().lock(),
-            &mut output,
-        )
-        .is_ok(),
-        Some("--installed-applications") => {
-            imager::setup::installed_migration_helper::run_applications(
-                arguments,
-                std::io::stdin(),
-                &mut output,
-            )
-            .is_ok()
-        }
-        Some("--migration") => {
-            imager::setup::installed_migration_helper::run(arguments, std::io::stdin(), &mut output)
+        "--migration" => {
+            imager::setup::installed_migration_helper::run(arguments, std::io::stdin(), output)
                 .is_ok()
         }
-        _ => default_setup(arguments, &mut output),
-    }
+        _ => return None,
+    };
+    Some(succeeded)
 }
+
+#[cfg(target_os = "linux")]
+fn dispatch_portable_consumers(
+    mode: Option<&str>,
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+    output: &mut impl std::io::Write,
+) -> Option<bool> {
+    let succeeded = match mode? {
+        "--portable-home" => imager::setup::portable_home_helper::run(
+            arguments,
+            &mut std::io::stdin().lock(),
+            output,
+        )
+        .is_ok(),
+        "--portable-applications" => imager::setup::portable_applications_helper::run(
+            arguments,
+            &mut std::io::stdin().lock(),
+            output,
+        )
+        .is_ok(),
+        "--browser-transfer" => imager::setup::browser_transfer_helper::run(
+            arguments,
+            &mut std::io::stdin().lock(),
+            output,
+        )
+        .is_ok(),
+        _ => return None,
+    };
+    Some(succeeded)
+}
+
+#[cfg(target_os = "linux")]
+fn dispatch_prepared_handoff(
+    mode: Option<&str>,
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+    output: &mut impl std::io::Write,
+) -> Option<bool> {
+    let succeeded = match mode? {
+        "--unseal-prepared-handoff" => {
+            imager::setup::prepared_setup_helper::unseal_handoff(arguments, output).is_ok()
+        }
+        "--seal-prepared-handoff" => {
+            imager_backend::setup::prepared_tpm::seal_from_reader(std::io::stdin().lock(), output)
+                .is_ok()
+        }
+        _ => return None,
+    };
+    Some(succeeded)
+}
+
 #[cfg(target_os = "linux")]
 fn default_setup(
     arguments: impl Iterator<Item = std::ffi::OsString>,

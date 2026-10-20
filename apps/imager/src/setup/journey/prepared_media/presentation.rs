@@ -569,13 +569,13 @@ impl Delivery {
     pub fn with_artifact(artifact: Arc<PreparedMedia>) -> Self {
         #[cfg(target_os = "linux")]
         {
-            return Self {
+            Self {
                 native: Actor::new(
                     Box::new(super::prepared_media_native::Delivery::with_artifact(
                         artifact,
                     )) as Box<dyn DeliveryState>,
                 ),
-            };
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {

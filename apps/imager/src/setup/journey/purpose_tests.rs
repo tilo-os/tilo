@@ -18,8 +18,10 @@ fn purpose_is_not_asked_and_the_safe_default_is_retained() {
     );
     assert!(journey.edit("purpose").is_err());
 
-    let mut preview = InstallerPreview::default();
-    preview.journey = journey;
+    let mut preview = InstallerPreview {
+        journey,
+        ..Default::default()
+    };
     preview.journey.page = Page::Review;
     let profile = preview.public_install_profile().unwrap();
     assert_eq!(profile.purpose, install_profile_model::default_purpose());

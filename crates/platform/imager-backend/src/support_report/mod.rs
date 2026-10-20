@@ -70,22 +70,22 @@ impl DestinationIdentity {
     /// variant, board or SKU. A model family alone is not a destination.
     #[must_use]
     pub fn is_specific(&self) -> bool {
-        nonempty(&self.manufacturer).is_some()
-            && nonempty(&self.model).is_some()
-            && (nonempty(&self.variant).is_some()
-                || nonempty(&self.board).is_some()
-                || nonempty(&self.sku).is_some())
+        trimmed(self.manufacturer.as_deref()).is_some()
+            && trimmed(self.model.as_deref()).is_some()
+            && (trimmed(self.variant.as_deref()).is_some()
+                || trimmed(self.board.as_deref()).is_some()
+                || trimmed(self.sku.as_deref()).is_some())
     }
 
     /// A person-readable identification without claiming a scan.
     #[must_use]
     pub fn label(&self) -> String {
-        let manufacturer = nonempty(&self.manufacturer);
-        let model = nonempty(&self.model);
+        let manufacturer = trimmed(self.manufacturer.as_deref());
+        let model = trimmed(self.model.as_deref());
         match (manufacturer, model) {
             (Some(manufacturer), Some(model)) => {
                 let mut label = format!("{manufacturer} {model}");
-                if let Some(variant) = nonempty(&self.variant) {
+                if let Some(variant) = trimmed(self.variant.as_deref()) {
                     label.push_str(" (");
                     label.push_str(variant);
                     label.push(')');
@@ -700,13 +700,6 @@ impl SupportReport {
             .iter()
             .filter(|component| component.state == SupportState::Supported)
     }
-}
-
-fn nonempty(value: &Option<String>) -> Option<&str> {
-    value
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn trimmed(value: Option<&str>) -> Option<&str> {

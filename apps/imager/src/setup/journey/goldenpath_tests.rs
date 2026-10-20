@@ -124,9 +124,11 @@ fn assert_prepared_draft(app: &mut App, target_model: Option<&str>) {
         .unwrap()
         .review()
         .unwrap();
-    let super::draft::DraftStatus::Ready(saved) = status else {
-        panic!("the prepared identity must have a ready restart record");
-    };
+    let saved = match status {
+        super::draft::DraftStatus::Ready(saved) => Some(saved),
+        _ => None,
+    }
+    .expect("the prepared identity must have a ready restart record");
     assert_eq!(saved.kind(), super::draft::IdentityKind::New);
     assert!(saved.choices().deferred);
     let target = saved
@@ -211,7 +213,7 @@ fn live_another_new_identity_prepares_before_your_data_and_review() {
     wait(&mut app, |value| value["page"] == "review");
     let review = state(&mut app);
     assert_eq!(review["prepared_identity"]["state"], "prepared");
-    assert_eq!(review["prepared_identity"]["public_key"].is_string(), true);
+    assert!(review["prepared_identity"]["public_key"].is_string());
     app.with_widget::<InstallerPreview, _>(|preview| {
         assert!(preview.personal.prepared_handle().is_some());
         assert!(!preview.journey.history.contains(&Page::Storage));
@@ -337,6 +339,11 @@ fn live_computer_new_identity_keeps_storage_and_review_after_profile() {
         );
         assert!(preview.personal.ready());
         assert!(preview.your_data().source("files").is_some());
+        assert!(
+            preview.migration_selection.reviewed_intent().is_none()
+                && !preview.migration_selection.busy(),
+            "a complete source with no eligible files needs no Home capture"
+        );
     })
     .unwrap();
 }

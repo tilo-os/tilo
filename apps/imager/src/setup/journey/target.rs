@@ -194,17 +194,14 @@ impl Target {
             Ok(metadata) if metadata.len() <= MAX_REPORT_BYTES as u64 => std::fs::read(path),
             _ => Err(std::io::Error::other("report is too large")),
         };
-        match bytes {
-            Ok(bytes) => {
-                let name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned());
-                self.import_bytes(name, &bytes)
-            }
-            Err(_) => {
-                self.error = Some(t("installer-preview-target-report-unreadable"));
-                Err("installer-preview-target-report-unreadable")
-            }
+        if let Ok(bytes) = bytes {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            self.import_bytes(name, &bytes)
+        } else {
+            self.error = Some(t("installer-preview-target-report-unreadable"));
+            Err("installer-preview-target-report-unreadable")
         }
     }
 
@@ -295,8 +292,8 @@ impl Target {
         self.variant.set(draft.variant.clone());
         self.board.set(draft.board.clone());
         self.sku.set(draft.sku.clone());
-        self.architecture = draft.architecture.clone();
-        self.report = draft.report.clone();
+        self.architecture.clone_from(&draft.architecture);
+        self.report.clone_from(&draft.report);
         self.error = draft
             .report_omitted
             .then(|| t("installer-preview-target-report-too-large-to-resume"));
@@ -337,17 +334,12 @@ impl Target {
                 self.picker = None;
                 true
             }
-            Ok(ContentsOutcome::Failed(_)) => {
+            Ok(ContentsOutcome::Failed(_)) | Err(TryRecvError::Disconnected) => {
                 self.picker = None;
                 self.error = Some(t("installer-preview-target-report-unreadable"));
                 true
             }
             Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => {
-                self.picker = None;
-                self.error = Some(t("installer-preview-target-report-unreadable"));
-                true
-            }
         }
     }
 
@@ -555,7 +547,7 @@ impl Target {
                 .dimmed()
                 .with_id("installer.target.scan-hint"),
         ));
-        Section::titled(&t("installer-preview-target-identity-heading"), rows)
+        Section::titled(t("installer-preview-target-identity-heading"), rows)
     }
 
     fn field_state(&self, field: &str) -> &ui::LocalState<String> {
@@ -661,7 +653,7 @@ impl Target {
                 .with_id("installer.target.check.note"),
         ) as Box<dyn Widget>))
         .collect::<Vec<_>>();
-        Section::new(rows).with_header(SectionHeader::heading(&t(
+        Section::new(rows).with_header(SectionHeader::heading(t(
             "installer-preview-target-check-heading",
         )))
     }

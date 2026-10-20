@@ -562,7 +562,7 @@ pub(super) fn size_text(bytes: u64) -> Option<String> {
     } else {
         let tenths = bytes.saturating_mul(10) / scale;
         let whole = tenths / 10;
-        if tenths % 10 == 0 {
+        if tenths.is_multiple_of(10) {
             format!("{whole}")
         } else {
             let fraction = tenths % 10;
