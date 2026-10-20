@@ -418,9 +418,11 @@ pub fn for_desktop_id(desktop_id: &str) -> Option<AppImage> {
     })
 }
 
-/// The artwork for a window announcing `app_id`: its desktop entry's icon,
-/// else a theme icon named like the `app_id` itself — what most Wayland
-/// applications with no desktop entry of their own install.
+/// The artwork for a window announcing `app_id`: the icon the installed
+/// Tilo package of that id signed (`[package] icon`, a file in its payload),
+/// else its desktop entry's icon, else a theme icon named like the `app_id`
+/// itself — what most Wayland applications with no desktop entry of their
+/// own install.
 pub fn for_window_app_id(app_id: &str) -> Option<AppImage> {
     let app_id = app_id.trim();
     if app_id.is_empty() {
@@ -428,10 +430,19 @@ pub fn for_window_app_id(app_id: &str) -> Option<AppImage> {
     }
     let id = app_id.to_string();
     resolver().named(format!("window:{app_id}"), move || {
-        host_apps::app_for_window_id(&id)
-            .and_then(|app| app.icon)
+        installed_icon(&id)
+            .or_else(|| host_apps::app_for_window_id(&id).and_then(|app| app.icon))
             .or(Some(id))
     })
+}
+
+/// The absolute path of the icon the installed package `app_id` signed.
+fn installed_icon(app_id: &str) -> Option<String> {
+    tilo_installed_apps::read_one_from_env(app_id)
+        .ok()
+        .flatten()
+        .and_then(|app| app.icon_path())
+        .and_then(|path| path.to_str().map(str::to_owned))
 }
 
 /// The artwork for window `surface_id`: the icon it set for itself through
