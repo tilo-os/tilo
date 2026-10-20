@@ -15,6 +15,7 @@ use ui::widget::{AppModel, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
+use crate::prefs::AppearancePrefs;
 use crate::widgets::{Item, note, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
@@ -55,6 +56,8 @@ fn weekday_label(day: FirstDayOfWeek) -> String {
 pub struct RegionPane {
     cx: PaneCx,
     locale: Followed<Locale>,
+    /// The interface language is the appearance section's.
+    appearance: Followed<AppearancePrefs>,
     composed: ui::widget::Composed,
 }
 
@@ -63,6 +66,7 @@ impl RegionPane {
     pub fn new(cx: PaneCx) -> Self {
         Self {
             locale: cx.follow::<Locale>(),
+            appearance: cx.follow::<AppearancePrefs>(),
             cx,
             composed: ui::widget::Composed::default(),
         }
@@ -80,6 +84,28 @@ impl RegionPane {
         let loc = *self.locale.get();
         let paths = Locale::paths();
         let row = |label: &str, id: &str| self.cx.row(t(label)).id(id);
+        // The languages installed, and the device's own as the default.
+        let languages = std::iter::once(None)
+            .chain(
+                crate::i18n::languages()
+                    .into_iter()
+                    .map(|language| Some(language.to_owned())),
+            )
+            .collect::<Vec<_>>();
+        let language = section(
+            &t("settings-region-language-card"),
+            rows(vec![
+                row("settings-region-language", "region.language")
+                    .of(&self.appearance, AppearancePrefs::paths().language)
+                    .menu(languages, |language: &Option<String>| {
+                        language.as_deref().map_or_else(
+                            || t("settings-region-language-device"),
+                            ui::i18n::language_name,
+                        )
+                    }),
+                note(&t("settings-region-language-body")),
+            ]),
+        );
         let formats = section(
             &t("settings-region-formats-card"),
             rows(vec![
@@ -146,13 +172,13 @@ impl RegionPane {
             rows(vec![note(&t("settings-region-shared-body"))]),
         );
 
-        crate::widgets::page(vec![formats, preview, explainer])
+        crate::widgets::page(vec![language, formats, preview, explainer])
     }
 }
 
 impl Widget for RegionPane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        if self.locale.refresh() {
+        if self.locale.refresh() | self.appearance.refresh() {
             // The preview card follows the values.
             self.composed.invalidate();
         }
@@ -204,6 +230,40 @@ mod tests {
 
         assert!(locale_field(&mut app, "currency", "not-a-currency").is_err());
         assert_eq!(app.settings::<Locale>().get(), locale);
+    }
+
+    /// The interface language is chosen here, among the languages the
+    /// desktop has installed, and written where every app and the shell
+    /// read it (`appearance.language`); unset, the pane shows the device's
+    /// language as the choice.
+    #[test]
+    fn the_language_is_chosen_among_the_installed_ones() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let pane = RegionPane::new(cx);
+        let language = AppearancePrefs::paths().language;
+        let label = |language: &Option<String>| {
+            language.as_deref().map_or_else(
+                || t("settings-region-language-device"),
+                ui::i18n::language_name,
+            )
+        };
+        assert_eq!(
+            pane.appearance.shown(&language, label).get(),
+            t("settings-region-language-device")
+        );
+        assert!(crate::i18n::languages().contains(&"en-US"));
+        assert!(crate::i18n::languages().contains(&"de-DE"));
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::host::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE")
+            .unwrap();
+        let settings = app.settings::<AppearancePrefs>();
+        assert_eq!(settings.get().language.as_deref(), Some("de-DE"));
+        assert_eq!(
+            settings.document().section("appearance")["language"],
+            "de-DE"
+        );
     }
 
     /// With no date format or clock chosen the pane shows "Follow language"

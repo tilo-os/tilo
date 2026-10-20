@@ -38,6 +38,12 @@ pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     }
 }
 
+/// The languages Settings, and so the desktop, can show: English and every
+/// language with an installed pack.
+pub fn languages() -> Vec<&'static str> {
+    CATALOG.languages()
+}
+
 /// The English names of a `(label, value)` table, as an effect's or verb's
 /// choices.
 pub fn english<T>(table: &'static [(&'static str, T)]) -> impl Iterator<Item = &'static str> {
