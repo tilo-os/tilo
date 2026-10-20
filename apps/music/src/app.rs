@@ -203,6 +203,7 @@ enum Action {
         save: bool,
     },
     SpotifyEffect(crate::actions::MusicEffect),
+    OpenPlaylistMenu(String),
     OpenSpotifyPlaylistMenu(String),
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
@@ -846,12 +847,7 @@ impl MusicApp {
             new_playlist_track: None,
             rect: Rect::ZERO,
             body_rect: Rect::ZERO,
-            body_scroll: {
-                let mut region = ui::widget::ScrollRegion::vertical();
-                // The page is the window's content: its keys scroll it.
-                region.set_focused(true);
-                region
-            },
+            body_scroll: ui::widget::ScrollRegion::vertical(),
             scroll_target: None,
             frame_theme: None,
             content_height: 0.0,
@@ -2416,6 +2412,7 @@ impl MusicApp {
             }
             Action::BeginNewPlaylistFor(track) => self.on_begin_new_playlist(Some(track)),
             Action::CreatePlaylist => self.on_create_playlist(state),
+            Action::OpenPlaylistMenu(id) => self.open_playlist_menu(&id),
             Action::BeginRenamePlaylist(id) => self.on_begin_rename_playlist(id),
             Action::CommitRename(id) => self.on_commit_rename(&id, state),
             Action::DeletePlaylist(id) => self.on_delete_playlist(id, state),
@@ -4184,19 +4181,16 @@ impl MusicApp {
         (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
     }
 
-    /// The sidebar's on-screen rect (from the drawer's last `resolve`). Spans
-    /// the full window height; the now-playing transport is inset to its right
-    /// (see `nowplaying_rect`) so the two never overlap.
+    /// The sidebar's on-screen rect, ending above the persistent transport.
     fn sidebar_rect(&self) -> Rect {
         self.drawer.sidebar_rect()
     }
 
-    /// The now-playing transport's on-screen rect: it starts at the content
-    /// column's left edge (right of the docked sidebar; full-width in overlay,
-    /// where the floating sidebar draws above it) and spans to the right edge.
+    /// Playback belongs to every destination, so its transport spans the
+    /// window rather than competing with the sidebar for the song's width.
     fn nowplaying_rect(&self) -> Rect {
         let r = self.rect;
-        Rect::new(self.drawer.content_rect().x0, r.y1 - self.bar_h, r.x1, r.y1)
+        Rect::new(r.x0, r.y1 - self.bar_h, r.x1, r.y1)
     }
 
     /// Whether the sidebar toggle sits in the window's header row rather
@@ -4656,10 +4650,82 @@ impl MusicApp {
     fn push_menu(&mut self, label: impl Into<String>, action: Action) {
         let idx = self.menu_actions.len() as i64;
         let pending = self.pending.clone();
-        self.context.push(MenuItem::action(label, move || {
-            pending.store(idx, Ordering::SeqCst);
-        }));
+        let select = move || pending.store(idx, Ordering::SeqCst);
+        let item = if matches!(action, Action::DeletePlaylist(_)) {
+            MenuItem::destructive_action(label, select)
+        } else {
+            MenuItem::action(label, select)
+        };
+        self.context.push(item);
         self.menu_actions.push(action);
+    }
+
+    /// Playlist management uses the shared keyboard-accessible popup.
+    fn open_playlist_menu(&mut self, id: &str) {
+        self.context = ContextMenu::new();
+        self.menu_actions.clear();
+        self.ctx_track = None;
+        self.ctx_in_playlist = None;
+        self.ctx_queue_index = None;
+        self.menu_anchor_row = None;
+        self.push_menu("Rename", Action::BeginRenamePlaylist(id.to_owned()));
+        self.push_menu("Set cover", Action::PickPlaylistCover(id.to_owned()));
+        self.push_menu("Delete playlist", Action::DeletePlaylist(id.to_owned()));
+        self.open_context_menu_at_pointer();
+    }
+
+    /// Keep list editing and offline management available without row clutter.
+    fn push_track_management(
+        &mut self,
+        track: &str,
+        playlist: Option<&str>,
+        queue_index: Option<usize>,
+    ) {
+        let position = if let Some(id) = playlist {
+            self.lib.playlist(id).and_then(|list| {
+                let ids = list.track_ids();
+                ids.iter()
+                    .position(|id| id == track)
+                    .map(|i| (i, ids.len()))
+            })
+        } else {
+            queue_index.map(|i| (i, self.pb.queue.len()))
+        };
+        if let Some((from, len)) = position {
+            for (label, to) in [
+                ("Move up", from.checked_sub(1)),
+                ("Move down", (from + 1 < len).then_some(from + 1)),
+            ] {
+                if let Some(to) = to {
+                    let action = playlist.map_or(Action::MoveQueueItem { from, to }, |id| {
+                        Action::MovePlaylistItem {
+                            playlist: id.to_owned(),
+                            from,
+                            to,
+                        }
+                    });
+                    self.push_menu(label, action);
+                }
+            }
+        }
+        let (label, keep) = if self.offline_errors.contains_key(track) {
+            ("Retry download", true)
+        } else {
+            match self.cache_state(track) {
+                CacheState::Streamed => ("Keep offline", true),
+                CacheState::Cached => ("Remove download", false),
+                CacheState::Downloading(_) => ("Cancel download", false),
+            }
+        };
+        if !self.is_local_file(track) {
+            self.push_menu(
+                label,
+                Action::SetOffline {
+                    track: track.to_owned(),
+                    keep,
+                },
+            );
+        }
     }
 
     /// Build + open the per-track context menu at the cursor.
@@ -4675,6 +4741,7 @@ impl MusicApp {
         self.ctx_in_playlist = in_playlist.map(ToString::to_string);
         self.ctx_queue_index = queue_index;
 
+        self.push_track_management(&track, in_playlist, queue_index);
         let liked = self.lib.is_liked(&track);
         let album_id = self.lib.track(&track).map(|t| t.album_id.clone());
         let artist_id = self.lib.track(&track).map(|t| t.artist_id.clone());
