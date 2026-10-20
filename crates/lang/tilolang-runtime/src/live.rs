@@ -8,6 +8,7 @@
 //! diffs only its subtree, and a view call inside it whose view and arguments are unchanged
 //! keeps its subtree without running again (memoized by key, view and arguments).
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -135,6 +136,11 @@ pub(crate) struct Live {
     /// Action references of trees replaced during the current re-render: released once the
     /// diff no longer compares against them.
     to_release: Vec<Retained>,
+    /// The rows of each list (by its key) rendered because the host showed them.
+    shown: HashMap<String, HashSet<BoundId>>,
+    /// Where each list the host asked about was last found: checked before use, searched for
+    /// again when the tree moved it.
+    list_paths: RefCell<HashMap<String, Vec<usize>>>,
     /// The view-state clock last checked.
     state_clock: u64,
 }
@@ -177,6 +183,8 @@ impl Live {
             renders: 0,
             reused: HashSet::new(),
             to_release: Vec::new(),
+            shown: HashMap::new(),
+            list_paths: RefCell::default(),
             state_clock: core.view_states.borrow().clock(),
         };
         let tree = live.render(core, ROOT)?;
@@ -456,6 +464,9 @@ impl Live {
         };
         self.index.remove(id, &b);
         self.dirty.remove(&id);
+        for rows in self.shown.values_mut() {
+            rows.remove(&id);
+        }
         self.to_release.append(&mut b.retained);
         if self.by_key.get(&b.key) == Some(&id) {
             self.by_key.remove(&b.key);
@@ -650,6 +661,16 @@ impl Live {
     /// The node with `key`: searched within the boundary whose key prefixes it, so a press in
     /// one row of a long list does not walk the whole tree.
     pub fn find(&self, key: &str) -> Option<&UiNode> {
+        // A view call's own node is where its boundary is.
+        if let Some(node) = self
+            .by_key
+            .get(key)
+            .and_then(|id| self.bound(*id))
+            .and_then(|b| self.node_at(&b.path))
+            .filter(|n| n.key == key)
+        {
+            return Some(node);
+        }
         let mut at = key.len();
         while let Some(cut) = key[..at].rfind('~') {
             if let Some(b) = self.by_key.get(&key[..cut]).and_then(|id| self.bound(*id))
@@ -665,8 +686,19 @@ impl Live {
         self.tree.find(key)
     }
 
+    /// The list with key `list`. A host asks for its rows one by one as they scroll into
+    /// view, so the list's place is kept rather than searched for in the whole tree each time.
     fn list_node(&self, list: &str) -> Option<&UiNode> {
-        self.find(list).filter(|n| n.kind == "list")
+        let is_it = |n: &&UiNode| n.key == list && n.kind == "list";
+        let cached = self.list_paths.borrow().get(list).cloned();
+        if let Some(node) = cached.and_then(|path| self.node_at(&path)).filter(is_it) {
+            return Some(node);
+        }
+        let node = self.find(list).filter(|n| n.kind == "list")?;
+        if let Some(path) = path_to(&self.tree, node) {
+            self.list_paths.borrow_mut().insert(list.to_owned(), path);
+        }
+        Some(node)
     }
 
     pub fn list_len(&self, list: &str) -> Option<usize> {
@@ -712,6 +744,7 @@ impl Live {
             fragment.children = vec![content];
         }
         self.refresh_paths(id);
+        self.shown.entry(list.to_owned()).or_default().insert(id);
         self.release(core);
         Ok(Some(key))
     }
@@ -727,15 +760,26 @@ impl Live {
         let Some(node) = self.list_node(list) else {
             return Vec::new();
         };
-        let rows: Vec<(usize, String)> = node
+        let kept: HashSet<&str> = node
             .children
+            .get(keep.start.min(node.children.len())..keep.end.min(node.children.len()))
+            .unwrap_or_default()
             .iter()
-            .enumerate()
-            .filter(|(i, _)| !keep.contains(i))
-            .map(|(i, row)| (i, row.key.clone()))
+            .map(|row| row.key.as_str())
+            .collect();
+        // Only the rows the host showed can be hidden: the work is in the rows on screen, not in
+        // the length of the list.
+        let rows: Vec<String> = self
+            .shown
+            .get(list)
+            .into_iter()
+            .flatten()
+            .filter_map(|&id| self.bound(id))
+            .filter(|b| !kept.contains(b.key.as_str()))
+            .map(|b| b.key.clone())
             .collect();
         let mut patches = Vec::new();
-        for (_, key) in rows {
+        for key in rows {
             let Some(&id) = self.by_key.get(&key) else {
                 continue;
             };
@@ -753,6 +797,9 @@ impl Live {
                 }
             }
             self.unrender(id);
+            if let Some(rows) = self.shown.get_mut(list) {
+                rows.remove(&id);
+            }
         }
         self.release(core);
         patches
@@ -822,6 +869,20 @@ impl Boundaries for Builder<'_> {
 
 /// Find the `fragment`s of boundaries below `node` (at `at`) and where they are. The walk does
 /// not stop at a boundary: the ones inside it move with it.
+/// The child indexes from `root` down to `node` (found by address).
+fn path_to(root: &UiNode, node: &UiNode) -> Option<Vec<usize>> {
+    if std::ptr::eq(root, node) {
+        return Some(Vec::new());
+    }
+    for (i, child) in root.children.iter().enumerate() {
+        if let Some(mut path) = path_to(child, node) {
+            path.insert(0, i);
+            return Some(path);
+        }
+    }
+    None
+}
+
 fn collect_paths(
     by_key: &HashMap<String, BoundId>,
     node: &UiNode,
