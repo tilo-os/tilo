@@ -61,8 +61,8 @@ jobs:
           bash scripts/ci-run.sh "room service build" -- \
             cargo build --locked --release -p tilo-room-service
 
-      # No browser and no bundle: the persistent room's caps, join windows,
-      # restart and snapshot bound over plain HTTP, with the same binaries.
+      # No browser and no bundle: the persistent room's caps, join windows
+      # and restart over plain HTTP, with the same binaries.
       - name: Enabled limits and kept state of the persistent room
         run: |
           set -euo pipefail

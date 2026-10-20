@@ -42,7 +42,7 @@ mod persistent_moderation;
 #[cfg(feature = "agents")]
 mod persistent_room_cli;
 #[cfg(feature = "agents")]
-mod room_seed;
+mod room_chat;
 #[cfg(feature = "agents")]
 mod room_strips;
 #[cfg(feature = "web")]

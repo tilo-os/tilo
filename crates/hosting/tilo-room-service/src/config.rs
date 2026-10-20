@@ -86,8 +86,6 @@ pub struct PersistentConfig {
     /// the room offers its visitors. `none`, none, and the room is
     /// read-only to its guests whatever their role.
     pub author_apps: Vec<String>,
-    /// Seconds between resets of the seeded non-chat content; 0 never.
-    pub reset_secs: u64,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -442,8 +440,6 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
     let token = PathBuf::from("/run/secrets/discord-bot-token");
     let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = moderation_model(var)?;
-    // Unset: chat, a welcome note and a canvas, so a visitor has something
-    // to do at once.
     let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
         list("TILO_ROOMS_SEED_APPS", ',')
     } else {
@@ -474,7 +470,6 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         bots: list("TILO_ROOMS_BOTS", ';'),
         author_apps: author_apps(var, &seed_apps)?,
         seed_apps,
-        reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
         inactive_after_days: inactive_after_days(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
@@ -857,14 +852,13 @@ mod tests {
     }
 
     #[test]
-    fn a_persistent_room_seeds_chat_notes_and_canvas_and_resets_every_six_hours_by_default() {
+    fn a_persistent_room_has_chat_notes_and_canvas_by_default() {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_LOCAL", "1"),
         ];
         let defaults = config(&base).unwrap().persistent.unwrap();
         assert_eq!(defaults.seed_apps, DEFAULT_SEED_APPS);
-        assert_eq!(defaults.reset_secs, 21_600);
         assert_eq!(defaults.shown_name, None);
         let named = config(&[base[0], base[1], ("TILO_ROOMS_NAME", " Town Square ")]).unwrap();
         assert_eq!(
@@ -906,8 +900,6 @@ mod tests {
                 "{bad}"
             );
         }
-        let off = config(&[base[0], base[1], ("TILO_ROOMS_RESET_SECS", "0")]).unwrap();
-        assert_eq!(off.persistent.unwrap().reset_secs, 0);
     }
 
     // USER REQUIREMENT (2026-10-19): "Membership in a public room persists. A person who joined stays a member until they leave, are removed by the host, or have been inactive for 30 days (configurable on the host). Going offline for an hour must never remove anyone."

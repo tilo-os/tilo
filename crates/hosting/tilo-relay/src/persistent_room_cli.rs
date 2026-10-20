@@ -69,7 +69,7 @@ pub struct PersistentArgs {
         long = "chat-channel",
         value_name = "NAME",
         requires = "persistent",
-        value_parser = crate::room_seed::channel_name
+        value_parser = crate::room_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
     /// A strip, by name, the room's shared desktop has in its first
@@ -118,10 +118,6 @@ pub struct PersistentArgs {
     /// start: an app named here no longer stops authoring the room.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
-    /// Every this many seconds, snapshot each seeded app with starting
-    /// content (not chat) and reset it to that content; 0 never resets.
-    #[arg(long = "reset-every", value_name = "SECS", default_value_t = 0)]
-    pub reset_every: u64,
     /// A member with no session for this many days stops being one; they
     /// join again through the door as the same person. Membership persists:
     /// a person stays a member until they leave, the host removes them, or
@@ -737,16 +733,6 @@ pub(crate) async fn seed_apps(
             .prepare_application(room, cert, &catalogue, app, &record)
             .await
             .map_err(|error| anyhow::anyhow!("seed {app}: {error}"))?;
-        // Written before the app counts as seeded: a start interrupted
-        // here writes it again, and writing the seed twice changes nothing.
-        if crate::room_seed::has_seed(app) {
-            rooms
-                .author_application(room, cert, &catalogue, app, &record, |doc| {
-                    crate::room_seed::write_seed(app, doc)
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("write the starting content of {app}: {error}"))?;
-        }
         seeded.insert(app.clone());
         write_json(seeded_file, &seeded)?;
     }
@@ -764,19 +750,19 @@ pub(crate) async fn settle_chat(
     apps: &[String],
     channels: &[String],
 ) -> anyhow::Result<()> {
-    if !apps.iter().any(|app| app == crate::room_seed::CHAT_APP) {
+    if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
         return Ok(());
     }
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let record = tilo_relay::room_bots::room_record(&catalogue, crate::room_seed::CHAT_APP);
+    let record = tilo_relay::room_bots::room_record(&catalogue, crate::room_chat::CHAT_APP);
     rooms
         .author_application(
             room,
             cert,
             &catalogue,
-            crate::room_seed::CHAT_APP,
+            crate::room_chat::CHAT_APP,
             &record,
-            |doc| crate::room_seed::settle_chat(doc, channels),
+            |doc| crate::room_chat::settle_chat(doc, channels),
         )
         .await
         .map_err(|error| anyhow::anyhow!("open the chat's channels: {error}"))
@@ -800,39 +786,6 @@ pub(crate) async fn settle_strips(
         .await
         .map(drop)
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
-}
-
-/// Snapshot each seeded app with starting content under
-/// `<state>/snapshots/<app>/`, then reset it to that content. Chat has no
-/// starting content and is never touched.
-pub(crate) async fn reset_seeded(
-    rooms: &Rooms,
-    room: &str,
-    cert: &DeviceCert,
-    apps: &[String],
-    state: &Path,
-) -> anyhow::Result<()> {
-    let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let seeded: BTreeSet<String> = read_json(&state.join("seeded.json"))?;
-    let now = tilo_clock::unix_now_ms() / 1000;
-    for app in apps
-        .iter()
-        .filter(|app| seeded.contains(*app) && crate::room_seed::has_seed(app))
-    {
-        let dir = state.join("snapshots").join(app);
-        let record = tilo_relay::room_bots::room_record(&catalogue, app);
-        rooms
-            .author_application(room, cert, &catalogue, app, &record, |doc| {
-                // The snapshot is taken under the same lock as the reset, so
-                // it is exactly what the reset replaced.
-                crate::room_seed::keep_snapshot(&dir, now, &doc.save())
-                    .map_err(|error| format!("snapshot: {error}"))?;
-                crate::room_seed::write_seed(app, doc)
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("reset {app}: {error}"))?;
-    }
-    Ok(())
 }
 
 /// Make exactly the operator's `apps` authors of the room, so its members
@@ -1103,8 +1056,6 @@ pub(crate) async fn run(
         roles_file: persistent.roles_file.clone(),
         inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
-        seed_apps: persistent.seed_apps.clone(),
-        reset_every: persistent.reset_every,
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1279,9 +1230,6 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    seed_apps: Vec<String>,
-    /// Seconds between resets of seeded content; 0 never resets.
-    reset_every: u64,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1388,30 +1336,6 @@ async fn reconcile_roles(
     Ok(())
 }
 
-/// Ticks every `secs`, the first one period after the start, not at it: a
-/// restart must not wipe what visitors just made.
-fn reset_interval(secs: u64) -> tokio::time::Interval {
-    let period = Duration::from_secs(secs.max(1));
-    let now = tokio::time::Instant::now();
-    tokio::time::interval_at(now.checked_add(period).unwrap_or(now), period)
-}
-
-/// Reset the seeded content. A failed reset leaves the content as it is
-/// until the next one; the room keeps serving.
-async fn reset_now(context: &PersistentRoom, governance: &Governance) {
-    if let Err(error) = reset_seeded(
-        &context.rooms,
-        &context.room,
-        &context.host_cert,
-        &governance.seed_apps,
-        &governance.state,
-    )
-    .await
-    {
-        tracing::warn!("resetting the room's content failed: {error:#}");
-    }
-}
-
 /// Removes guests idle past the horizon, in batches. A batch the room
 /// refuses stays seated until the next call.
 async fn prune_idle(
@@ -1453,9 +1377,9 @@ async fn prune_idle(
             .await
         {
             // They keep their seats until the next tick tries again, and
-            // the room goes on serving, as after a failed reset: ending
-            // here dropped every visitor's session and turned each new one
-            // away while the room service restarted it.
+            // the room goes on serving: ending here dropped every visitor's
+            // session and turned each new one away while the room service
+            // restarted it.
             for key in &batch {
                 removed.remove(key);
             }
@@ -1579,7 +1503,6 @@ async fn serve_operator(
             .saturating_mul(15)
             .clamp(60, 3600),
     ));
-    let mut reset_tick = reset_interval(governance.reset_every);
     // The operator's roles file, looked at every few seconds: a role it
     // grants or takes back reaches the room without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
@@ -1597,7 +1520,6 @@ async fn serve_operator(
                 presence.observe(context, governance, spectator, &mut last_seen).await?;
             }
             _ = prune_tick.tick() => prune_idle(context, governance, spectator, &mut removed, &mut last_seen).await?,
-            _ = reset_tick.tick(), if governance.reset_every > 0 => reset_now(context, governance).await,
             changed = changes.recv() => {
                 match changed {
                     Ok(room) if room != context.room => continue,
