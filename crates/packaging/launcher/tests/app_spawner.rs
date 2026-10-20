@@ -21,7 +21,7 @@
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::process::ExitStatusExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use launcher::app_cgroup::{self, AppKind};
@@ -52,15 +52,14 @@ impl Tree {
             eprintln!("skipped: no cgroup of this test's to write below: {error}");
             return None;
         }
-        let spawner =
-            match Spawner::start(Path::new(env!("CARGO_BIN_EXE_tilo-launcher")), Some(&dir)) {
-                Ok(spawner) => spawner,
-                Err(reason) => {
-                    let _ = std::fs::remove_dir(&dir);
-                    eprintln!("skipped: the spawner cannot adopt a scratch cgroup here: {reason}");
-                    return None;
-                }
-            };
+        let spawner = match Spawner::start(&crate::support::launcher_binary(), Some(&dir)) {
+            Ok(spawner) => spawner,
+            Err(reason) => {
+                let _ = std::fs::remove_dir(&dir);
+                eprintln!("skipped: the spawner cannot adopt a scratch cgroup here: {reason}");
+                return None;
+            }
+        };
         assert_eq!(spawner.tree(), dir);
         Some(Self {
             dir,
