@@ -13,6 +13,8 @@ RECIPE = ROOT / "os/Containerfile.dev"
 EXPECTED_COPIES = (
     "COPY Cargo.toml Cargo.lock rust-toolchain.toml /build/",
     "COPY .cargo /build/.cargo",
+    # The prepared-handoff helper embeds the pinned public release authority.
+    "COPY keys/tpm2-pcr-signing.public.pem /build/keys/",
     "COPY crates /build/crates",
     "COPY apps /build/apps",
     "COPY examples /build/examples",
@@ -32,6 +34,9 @@ EXPECTED_COPIES = (
     "/build/tools/policy/app_portability_rules.toml",
     "COPY tools/policy/app_capability_usage.toml "
     "/build/tools/policy/app_capability_usage.toml",
+    # tilo-app-cli embeds the system's service versions from it.
+    "COPY os/usr/share/tilo/system-interfaces.toml "
+    "/build/os/usr/share/tilo/system-interfaces.toml",
     "COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py",
     "COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs",
     "COPY tools/test-assets.py /build/tools/test-assets.py",
