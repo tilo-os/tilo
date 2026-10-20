@@ -5811,7 +5811,6 @@ needs = ["os-assets"]
 env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled/**"]
 requires = ["arch=x86_64"]
-writable_sources = true
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 10800
@@ -6015,7 +6014,6 @@ needs = ["os-assets"]
 env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled/**"]
 requires = ["arch=arm64"]
-writable_sources = true
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 10800
