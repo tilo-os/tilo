@@ -110,7 +110,11 @@ fn a_view_reaches_the_actions_its_buttons_apply() {
 #[test]
 fn a_flow_reaches_foreign_actions_with_their_class() {
     let todo = todo_meta();
-    let c = compile_with(&crate::common::fixture("cleanup.tl"), &[todo.clone()]).expect("compiles");
+    let c = compile_with(
+        &crate::common::fixture("cleanup.tl"),
+        std::slice::from_ref(&todo),
+    )
+    .expect("compiles");
     let flow = &c.meta.flows[0];
     let remove = todo
         .actions

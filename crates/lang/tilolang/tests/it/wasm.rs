@@ -167,15 +167,11 @@ fn keys_inside_for_combine_the_call_id_with_the_item() {
         "app t.y \"Y\"\nview v(l: List<Int>) {\n    for x in l {\n        text(x)\n    }\n}\n",
     );
     assert_shape(&plain);
-    let names: Vec<String> = shape(&plain.wasm)
+    let keyed_by_index = shape(&plain.wasm)
         .imports
-        .into_iter()
-        .map(|(_, n)| n)
-        .collect();
-    assert!(
-        names.contains(&"int_to_str".to_string()),
-        "plain lists key by index"
-    );
+        .iter()
+        .any(|(_, n)| n == "int_to_str");
+    assert!(keyed_by_index, "plain lists key by index");
 }
 
 #[test]

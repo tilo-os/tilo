@@ -7,7 +7,7 @@ use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
 use crate::ir::{Ek, LocalId, Stmt};
 use crate::prims::{self, Prim};
-use crate::resolve::{CKind, Callable};
+use crate::resolve::{CKind, Callable, TypeInfo};
 use crate::types::Ty;
 
 impl Checker<'_> {
@@ -329,12 +329,10 @@ impl Checker<'_> {
             lhs,
             rhs,
         } = &e.kind
+            && let (ExprKind::Int(a), ExprKind::Int(b)) = (&lhs.kind, &rhs.kind)
+            && *b != 0
         {
-            if let (ExprKind::Int(a), ExprKind::Int(b)) = (&lhs.kind, &rhs.kind) {
-                if *b != 0 {
-                    return Ex::new(Ek::Float(*a as f64 / *b as f64), Ty::Float);
-                }
-            }
+            return Ex::new(Ek::Float(*a as f64 / *b as f64), Ty::Float);
         }
         let v = self.expr(e, None);
         match &v.ty {
@@ -505,7 +503,7 @@ impl Checker<'_> {
         let Some(f) = env.type_info(&key).and_then(|t| t.field(&name.name)) else {
             let names = env
                 .type_info(&key)
-                .map(|t| t.field_names())
+                .map(TypeInfo::field_names)
                 .unwrap_or_default();
             self.err(
                 "E021",

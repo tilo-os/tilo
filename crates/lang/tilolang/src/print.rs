@@ -376,7 +376,7 @@ impl Printer {
     fn ui_stmt(&mut self, s: &UiStmt) {
         match &s.kind {
             UiKind::Let { name, value } => {
-                self.line(&format!("let {} = {}", name.name, print_expr(value)))
+                self.line(&format!("let {} = {}", name.name, print_expr(value)));
             }
             UiKind::For { var, iter, body } => {
                 self.line(&format!("for {} in {} {{", var.name, print_expr(iter)));

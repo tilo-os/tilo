@@ -120,7 +120,7 @@ fn every_declaration_and_ui_call_has_an_id_and_a_span() {
                 }
             }
             tilolang::ast::Item::Action(a) => {
-                assert!(ids.insert(a.node) && a.span.end > a.span.start)
+                assert!(ids.insert(a.node) && a.span.end > a.span.start);
             }
             tilolang::ast::Item::Fn(f) => assert!(ids.insert(f.node)),
             tilolang::ast::Item::View(v) => assert!(ids.insert(v.node)),
