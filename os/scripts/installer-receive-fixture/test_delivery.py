@@ -18,9 +18,9 @@ class DeliveryCommands(unittest.TestCase):
             source = Path(scratch) / 'source'
             source.mkdir(mode=0o700)
             target = Path(scratch) / 'target'
-            account = SimpleNamespace(pw_uid=1000, pw_dir='/var/home/native_fixture')
+            account = SimpleNamespace(pw_uid=1000, pw_dir='/var/home/alice')
             reviewed = {'retained_home': True, 'pending_computer_applications_scope': {'schema': 1},
-                        'install_profile': {'username': 'native_fixture', 'full_name': 'Native Fixture'}}
+                        'install_profile': {'username': 'alice', 'full_name': 'Alice'}}
             authenticated = json.dumps(reviewed).encode()
             calls = []
 

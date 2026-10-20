@@ -18,7 +18,7 @@ mod tests {
 
     const OPERATION: &str = "49b48a8c-9dd0-46ad-b1d2-abc241d8e002";
     const TARGET: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const USER: &str = "native_person";
+    const USER: &str = "alice";
     const CREDENTIAL: &str = "native handoff fixture credential";
     const CHILD: &str = "TILO_ACCOUNTS_NATIVE_NAMESPACE";
 
@@ -64,7 +64,7 @@ mod tests {
                 "dev",
                 "etc/tilo",
                 "root",
-                "var/home/native_person",
+                "var/home/alice",
                 "source",
             ] {
                 fs::create_dir_all(fixture.path(path)).unwrap();
@@ -89,7 +89,7 @@ mod tests {
             )
             .unwrap();
             fixture.passwd(1000);
-            fixture.chown("var/home/native_person", 1000);
+            fixture.chown("var/home/alice", 1000);
             fixture
         }
         fn path(&self, path: &str) -> PathBuf {
@@ -120,7 +120,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            fs::write(self.path("etc/group"), "root:x:0:\nnative_person:x:1000:\n").unwrap();
+            fs::write(self.path("etc/group"), "root:x:0:\nalice:x:1000:\n").unwrap();
         }
         fn run(&self, args: &[&str], frame: &[u8], uid: u32, success: bool) -> Output {
             let root = std::ffi::CString::new(self.directory.path().as_os_str().as_encoded_bytes())
@@ -194,11 +194,7 @@ mod tests {
             self.run(&["--accounts-adopt", USER], &[], 0, success);
         }
         fn absent_destination(&self) {
-            assert!(
-                !self
-                    .path("var/home/native_person/.config/tilo/accounts")
-                    .exists()
-            );
+            assert!(!self.path("var/home/alice/.config/tilo/accounts").exists());
             self.no_root_vault();
         }
         fn no_root_vault(&self) {
@@ -243,7 +239,7 @@ mod tests {
     fn production_stage_adopt_accounts() {
         if std::env::var(CHILD).as_deref() == Ok("verify") {
             assert_eq!(rustix::process::getuid().as_raw(), 1000);
-            let destination = Path::new("/var/home/native_person/.config/tilo");
+            let destination = Path::new("/var/home/alice/.config/tilo");
             assert_eq!(AccountStore::load_in(destination).len(), 1);
             let vault = SecretVault::open_read_only_in(destination);
             assert_eq!(
@@ -386,9 +382,9 @@ mod tests {
         fs::write(&transport, frame).unwrap();
 
         // A migrated custody alias must not redirect writes into source credentials.
-        let config = fixture.path("var/home/native_person/.config");
+        let config = fixture.path("var/home/alice/.config");
         fs::create_dir(&config).unwrap();
-        fixture.chown("var/home/native_person/.config", 1000);
+        fixture.chown("var/home/alice/.config", 1000);
         std::os::unix::fs::symlink("/source", config.join("tilo")).unwrap();
         fixture.adopt(false);
         assert_eq!(snapshot(source), before);

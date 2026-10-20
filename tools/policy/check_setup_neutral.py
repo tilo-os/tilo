@@ -95,6 +95,10 @@ def tracked_files(root: Path = ROOT) -> list[str]:
 def check(root: Path = ROOT) -> list[Violation]:
     found = []
     for name in tracked_files(root):
+        # Vendored crates are upstream's sources, kept as they ship
+        # (check_vendor_provenance.py); their examples are nobody's machine here.
+        if name.startswith("vendor/"):
+            continue
         path = root / name
         if path.is_file() and not path.is_symlink():
             found.extend(file_violations(path, name))
