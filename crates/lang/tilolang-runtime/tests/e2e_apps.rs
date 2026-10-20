@@ -210,6 +210,8 @@ mod cases {
         of_kind(tree, "text")
             .into_iter()
             .filter(|t| t.props.get("role") == Some(&Value::text("caption")))
+            // A message's time is a caption too; the authors are the captions that are no date.
+            .filter(|t| !t.props.contains_key("value:as"))
             .map(|t| text_prop(t, "value"))
             .collect()
     }
@@ -1042,10 +1044,11 @@ mod cases {
     }
 
     #[test]
-    fn the_boards_cards_apply_other_packages_views() {
+    fn the_boards_cards_show_other_packages_resources_as_rows_with_a_count() {
         let apps = apps();
         let m = morning(&apps);
         add_todo(&m, &apps, "milk", false);
+        add_todo(&m, &apps, "bins", true);
         m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
         let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let tree = view.tree();
@@ -1064,19 +1067,21 @@ mod cases {
             "a card per resource the board points at"
         );
         assert_eq!(
-            of_kind(tree, "section")
-                .iter()
-                .map(|s| text_prop(s, "title"))
-                .collect::<Vec<_>>(),
-            ["Todo (1 open)", "Notes", "Chats"],
-            "{}",
+            cards[0].props.get("count"),
+            Some(&Value::Int(1)),
+            "the todo card counts the open items: {}",
             dump(tree)
         );
-        let checkbox = of_kind(tree, "checkbox")[0];
+        let rows: Vec<&UiNode> = of_kind(cards[0], "list_row");
+        assert_eq!(rows.len(), 1, "{}", dump(tree));
+        match rows[0].props.get("resource") {
+            Some(Value::Ref(r)) => assert_eq!(r.target.doc, m.list.doc, "an item of the list"),
+            other => panic!("a row of the todo card shows an item, not {other:?}"),
+        }
         assert_eq!(
-            checkbox.binding.as_ref().map(|b| &b.author),
-            Some(m.w.id_of(1)),
-            "the todo card is the todo package's code"
+            cards[1].props.get("count"),
+            Some(&Value::Int(0)),
+            "the notes card counts the pinned notes, none yet"
         );
     }
 

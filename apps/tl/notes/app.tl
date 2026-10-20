@@ -24,9 +24,9 @@ enum NoteOrder {
 /// Which notes a notebook lists.
 enum NoteFilter {
     /// All notes
-    all
+    all (icon: .file_text)
     /// Pinned
-    pinned
+    pinned (icon: .pin)
 }
 
 root Notebook
@@ -43,7 +43,7 @@ primary action new_note(nb: Notebook) -> Note (icon: .plus) {
 }
 
 /// Pins or unpins a note.
-action toggle_pin(n: Note) (icon: .pin) {
+action toggle_pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, icon: .pin, on: n.pinned) {
     n.pinned = not n.pinned
 }
 
@@ -92,17 +92,6 @@ view note_editor(n: Note) {
     document {
         input(bind: n.title, placeholder: "Title")
         input(bind: n.body, placeholder: "Write something", lines: 8)
-    }
-}
-
-/// The pinned notes' titles, for showing inside another app's view.
-view summary(nb: Notebook) {
-    section("Notes") {
-        stack(gap: .related) {
-            for n in listed(nb, .created, .pinned) {
-                button(n.title, on: open(n))
-            }
-        }
     }
 }
 

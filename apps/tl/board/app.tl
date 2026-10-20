@@ -39,7 +39,8 @@ flow morning_cleanup(list: todo.TodoList, nb: notes.Notebook) -> Int {
     n
 }
 
-/// The board's window: a card per app it points at, each drawn by that app's own view.
+/// The board's window: a card per app it points at, holding that app's resources as rows that
+/// open them: the open todos, the pinned notes, the conversations.
 view board(b: Board) {
     canvas {
         match b.todos {
@@ -51,20 +52,26 @@ view board(b: Board) {
         }
         grid(min: 22rem) {
             match b.todos {
-                .some(todos) => card(todos) {
-                    todo.summary(todos)
+                .some(todos) => card(todos, count: todos.items.count(item -> not item.done)) {
+                    list(todos.items.filter(item -> not item.done)) { item ->
+                        row(item)
+                    }
                 },
                 .none => {}
             }
             match b.notebook {
-                .some(nb) => card(nb) {
-                    notes.summary(nb)
+                .some(nb) => card(nb, count: nb.notes.count(n -> n.pinned)) {
+                    list(nb.notes.filter(n -> n.pinned)) { n ->
+                        row(n)
+                    }
                 },
                 .none => {}
             }
             match b.chats {
-                .some(c) => card(c) {
-                    chat.conversation_list(c)
+                .some(c) => card(c, count: c.conversations.count(x -> true)) {
+                    list(c.conversations) { x ->
+                        row(x)
+                    }
                 },
                 .none => {}
             }
