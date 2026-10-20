@@ -602,24 +602,9 @@ fn commit_personal_device(
     fleet: &[u8],
 ) -> anyhow::Result<()> {
     let path = fleet_path(identity_dir, user);
-    #[cfg(unix)]
-    let owner = {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::metadata(&path)
-            .or_else(|_| std::fs::metadata(identity_dir))
-            .map(|metadata| (metadata.uid(), metadata.gid()))?
-    };
-    tilo_files::native::atomic::write_creating_parent(&path, fleet)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: `path` is NUL-terminated and owner comes from the existing
-        // user-owned fleet file or identity directory.
-        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("restore fleet ownership");
-        }
-    }
+    tilo_identity_host::person_files::as_owner_of(identity_dir, || {
+        tilo_files::native::atomic::write_creating_parent(&path, fleet)
+    })?;
     Ok(())
 }
 
@@ -978,20 +963,21 @@ fn commit_staged_personal_enrollment(
     // it before even creating the user identity directory so a compositor
     // that died while approval was in flight causes no publication mutation.
     checkpoint(PersonalCommitCheckpoint::Record)?;
-    std::fs::create_dir_all(&marker.identity_dir)?;
-    restore_owner_from_parent(&marker.identity_dir)?;
+    // The identity directory is the person's: a root-run (headless) join
+    // writes there as the person, never as root.
+    let as_person = |write: &dyn Fn() -> std::io::Result<()>| {
+        tilo_identity_host::person_files::as_owner_of(&marker.identity_dir, write)
+    };
     let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
-    tilo_files::native::atomic::write_with_mode(
-        &record,
-        &std::fs::read(staged(&stage_dir, "record.json"))?,
-        0o600,
-    )?;
+    let record_json = std::fs::read(staged(&stage_dir, "record.json"))?;
+    as_person(&|| {
+        std::fs::create_dir_all(&marker.identity_dir)?;
+        tilo_files::native::atomic::write_with_mode(&record, &record_json, 0o600)
+    })?;
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
-    tilo_files::native::atomic::write_creating_parent(
-        &fleet,
-        &std::fs::read(staged(&stage_dir, "fleet.json"))?,
-    )?;
+    let fleet_json = std::fs::read(staged(&stage_dir, "fleet.json"))?;
+    as_person(&|| tilo_files::native::atomic::write_creating_parent(&fleet, &fleet_json))?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
     tilo_files::native::atomic::write_creating_parent_with_mode(
         &tilo_relay::home_peer_registry_path(identity_root),
@@ -999,11 +985,14 @@ fn commit_staged_personal_enrollment(
         0o644,
     )?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
-    tilo_files::native::atomic::write_with_mode(
-        &marker.identity_dir.join("registry.json"),
-        &std::fs::read(staged(&stage_dir, "registry.json"))?,
-        0o600,
-    )?;
+    let registry_json = std::fs::read(staged(&stage_dir, "registry.json"))?;
+    as_person(&|| {
+        tilo_files::native::atomic::write_with_mode(
+            &marker.identity_dir.join("registry.json"),
+            &registry_json,
+            0o600,
+        )
+    })?;
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
@@ -1048,15 +1037,11 @@ fn commit_staged_personal_enrollment(
         runtime_identity::set_active_identity(&marker.identity_dir, record_id)
             .context("select the joined identity")?;
     }
-    // A root-run (headless) enrollment wrote these as root. Restore each
-    // one's directory owner and group before the marker is cleared, so
-    // recovery repeats this step if it is interrupted. Parents come before
-    // their children.
+    // A root-run (headless) enrollment wrote these, under the identity root,
+    // as root. Restore each one's directory owner and group before the marker
+    // is cleared, so recovery repeats this step if it is interrupted. Parents
+    // come before their children.
     for path in [
-        marker.identity_dir.join("fleets"),
-        record.clone(),
-        fleet,
-        marker.identity_dir.join("registry.json"),
         tilo_relay::home_peer_registry_path(identity_root),
         personal_peers,
         paths.user_pubkey.clone(),
