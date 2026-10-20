@@ -14,6 +14,27 @@ use std::{
     time::Duration,
 };
 
+/// A daemon a launch helper admitted on the session's behalf, proved again
+/// against the peer on the proof stream. The launcher mints it; the session
+/// only asks it to check, so it stays below the launcher.
+pub(crate) trait RetainedProofRecipient {
+    fn check(
+        &self,
+        peer: &process_binding::ExecutingPeer,
+        binding: &RetainedLaunchBinding,
+    ) -> io::Result<()>;
+}
+
+impl<T: RetainedProofRecipient + ?Sized> RetainedProofRecipient for Arc<T> {
+    fn check(
+        &self,
+        peer: &process_binding::ExecutingPeer,
+        binding: &RetainedLaunchBinding,
+    ) -> io::Result<()> {
+        (**self).check(peer, binding)
+    }
+}
+
 fn refused() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -55,10 +76,15 @@ impl NativePersonalSession {
         self: Arc<Self>,
         stream: UnixStream,
         binding: &RetainedLaunchBinding,
-        recipient: &Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>,
+        recipient: &impl RetainedProofRecipient,
         selection: impl Fn() -> io::Result<()>,
     ) -> io::Result<()> {
-        self.serve_retained_launch_proof_recipient(stream, binding, selection, Some(recipient))
+        self.serve_retained_launch_proof_recipient(
+            stream,
+            binding,
+            selection,
+            Some(recipient as &dyn RetainedProofRecipient),
+        )
     }
 
     fn serve_retained_launch_proof_recipient(
@@ -66,7 +92,7 @@ impl NativePersonalSession {
         mut stream: UnixStream,
         binding: &RetainedLaunchBinding,
         selection: impl Fn() -> io::Result<()>,
-        recipient: Option<&Arc<crate::shell::launcher::retained_home::DelegatedDaemonRecipient>>,
+        recipient: Option<&dyn RetainedProofRecipient>,
     ) -> io::Result<()> {
         let check_recipient = |peer: &process_binding::ExecutingPeer| match recipient {
             Some(recipient) => recipient.check(peer, binding),

@@ -30,7 +30,9 @@ use crate::shell::network::{
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 mod personal_session;
-pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
+pub(crate) use personal_session::{
+    NativePersonalSession, NativePersonalSource, RetainedProofRecipient,
+};
 
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as

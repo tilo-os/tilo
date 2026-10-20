@@ -866,8 +866,8 @@ pub(crate) struct DelegatedDaemonRecipient {
     start: u64,
     program: ProtectedProgram,
 }
-impl DelegatedDaemonRecipient {
-    pub(crate) fn check(
+impl crate::shell::collab_broker::RetainedProofRecipient for DelegatedDaemonRecipient {
+    fn check(
         &self,
         peer: &process_binding::ExecutingPeer,
         binding: &runtime_collab::retained_person::RetainedLaunchBinding,

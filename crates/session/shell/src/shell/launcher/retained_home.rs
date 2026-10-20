@@ -3,7 +3,6 @@
 //! installed-helper admission. Nothing here creates source filesystem rights.
 mod bootstrap;
 pub(crate) mod retirement;
-pub(crate) use bootstrap::DelegatedDaemonRecipient;
 pub(crate) use bootstrap::OriginalCopyBootstrapCustody;
 pub(crate) mod discovery;
 pub(crate) mod open_selected;
