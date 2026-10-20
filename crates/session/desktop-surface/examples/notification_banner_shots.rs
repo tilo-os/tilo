@@ -41,6 +41,10 @@ impl NotificationHost for Fixture {
     fn clear_history(&self) {}
     fn undo_clear(&self) {}
 }
+/// A shot's name, the theme it is taken in (built when it is taken) and its
+/// width.
+type Shot = (&'static str, fn() -> Theme, u32);
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     let out = std::env::args().nth(1).map_or_else(
@@ -49,24 +53,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     std::fs::create_dir_all(&out)?;
     let variant = std::env::args().nth(2);
-    // Boxed: six themes are too large to build on the stack.
-    for (name, theme, width) in vec![
-        ("dark", Theme::dark(), 440_u32),
-        ("light", Theme::light(), 440),
-        ("large-text", Theme::dark().with_text_scale(2.0), 440),
+    // Each theme is built when its shot is taken: six built themes outgrow
+    // what a local array may hold.
+    let shots: [Shot; 6] = [
+        ("dark", Theme::dark, 440),
+        ("light", Theme::light, 440),
+        ("large-text", || Theme::dark().with_text_scale(2.0), 440),
         (
             "high-contrast",
-            Theme::high_contrast().with_text_scale(2.0),
+            || Theme::high_contrast().with_text_scale(2.0),
             440,
         ),
         (
             "ui-text",
-            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            || Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
             640,
         ),
-        ("narrow", Theme::light().with_text_scale(2.0), 320),
-    ] {
-        let theme = theme.with_reduce_motion(true);
+        ("narrow", || Theme::light().with_text_scale(2.0), 320),
+    ];
+    for (name, theme, width) in shots {
+        let theme = theme().with_reduce_motion(true);
         let host = Fixture::default();
         // What a person meets: something a collaborator did, an ask that
         // waits for an answer, and a failure they did not cause.
