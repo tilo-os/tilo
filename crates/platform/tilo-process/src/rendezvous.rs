@@ -466,17 +466,19 @@ mod tests {
         let resource = dir.path().join("profile");
         std::fs::create_dir(&resource).unwrap();
         let rendezvous = Rendezvous::beside(&resource).unwrap();
-        let Joined::Owner(owner) = rendezvous.join(Duration::from_secs(5), greet).unwrap() else {
+        let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+        else {
             panic!("nobody owned the resource");
         };
         let listener = owner.listen().unwrap();
         let socket = dir.path().canonicalize().unwrap().join("profile.sock");
         assert!(socket.exists());
-        let Joined::Peer(peer) = rendezvous.join(Duration::from_secs(5), greet).unwrap() else {
+        let Joined::Peer(peer) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+        else {
             panic!("the owner was not reached");
         };
         let accepted = listener
-            .accept_within(Duration::from_secs(5))
+            .accept_within(tilo_test_env::hang_bound())
             .unwrap()
             .unwrap();
         (&peer).write_all(b"hello").unwrap();
@@ -502,7 +504,8 @@ mod tests {
         let socket = dir.path().canonicalize().unwrap().join("profile.sock");
         drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
         let rendezvous = Rendezvous::beside(&resource).unwrap();
-        let Joined::Owner(owner) = rendezvous.join(Duration::from_secs(5), greet).unwrap() else {
+        let Joined::Owner(owner) = rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap()
+        else {
             panic!("a dead owner's socket answered");
         };
         assert!(!socket.exists(), "the stale socket is removed");
@@ -513,7 +516,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         drop(owner);
         assert!(matches!(
-            rendezvous.join(Duration::from_secs(5), greet).unwrap(),
+            rendezvous.join(tilo_test_env::hang_bound(), greet).unwrap(),
             Joined::Owner(_)
         ));
     }
