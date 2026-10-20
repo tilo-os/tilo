@@ -631,8 +631,7 @@ mod tests {
     use super::*;
     use crate::model::Engine;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    use tilo_test_env::hang_bound;
 
     /// Sessions start empty, open `SQLite` for real, load tables and report unreachable servers honestly.
     #[test]
@@ -818,7 +817,7 @@ mod tests {
              SELECT sum(x) FROM n",
         );
             let mut requested = false;
-            let deadline = ui::time::now() + HANG_BOUND;
+            let deadline = ui::time::now() + hang_bound();
             while ui::time::now() < deadline {
                 if s.cancel_in_flight_query() {
                     requested = true;
