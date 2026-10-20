@@ -121,21 +121,21 @@ Each step lands on `main` on its own, green, and deletes the copy it
 replaces. Pre-alpha: old paths are removed, not kept beside the new ones;
 state of an older shape is refused and fetched again, not migrated.
 
-1. **The shell governs its own rooms with `StatePeer`.** A room this device
-   mints is a governed `StatePeer` (`StatePeer::new` with this device as
-   authority, then `seed_room` and `install_seed`), kept in the shell's
-   owner store the way the runtime keeps its profile room
-   (`tilo-runtime`'s `standalone/owner.rs`); layout is written under the
-   `contents` registry instead of salted ownership. `requires_native_owner`
-   is true for every room, and `room_docs`, `sync_room_doc`,
+1. **The shell governs its own rooms with `StatePeer`.** The pieces are
+   in place: the engine follows a revoked governor's root-named successor
+   (`StatePeer::follow_successions`) and the device's owner keeps the
+   successions with the room; the owner holds rooms this device governs
+   beside joined ones (`NativeWorkspaceOwner::create_governed`, seeded by
+   `tilo_peer_state::workspace_seed`, no host custody of its writes); and
+   the shell admits the windows it opens into such a room under its own
+   registered namespace. What remains is creating new workspaces that way,
+   then moving existing ones, after which `room_docs`, `sync_room_doc`,
    `apply_room_changes`, `try_sync_room_doc` and `ContentOwnership::Salted`
-   go. Can land rooms nobody else is in first, then shared ones. The
-   engine learns governor succession first: a room whose governor's device
-   is revoked follows the successor a root-signed `GovernorSuccession`
-   names (`current_governor`, today applied by the shell's own pinning,
-   [`collaboration.md`](collaboration.md), "Revoking a device"), and the
-   successor is persisted with the room, so moving rooms onto the engine
-   does not bring back a room frozen by its revoked governor.
+   go. Doing so before steps 2 and 3 would cost two things the shell's own
+   engine does today: a person's other devices hold their own workspaces as
+   co-governors over gossip, and a room is shared without a home relay with
+   a direct invitation. So new workspaces move once a governed room can be
+   carried to the person's other devices and to an invited person.
 2. **Direct peers on the same engine.** Gossip becomes a carrier for
    `StatePeer` (`SyncResp` and `AppDocument` from an authenticated device,
    like a relay delta). A direct invitation is a workspace-join invitation
@@ -164,9 +164,10 @@ state of an older shape is refused and fetched again, not migrated.
    keeps the workspace list and presentation; Activity and Replay read
    the room documents' history for everything else.
 
-1 comes before 2 and 3; 4, 5 and 6 are independent of them. When 3 has
-landed, `tilo-peer-state` is the room core and `tilo-joined-room` its
-carriers; renaming them is then mechanical and optional.
+Steps 2 and 3 come before workspaces move onto the engine (the rest of
+step 1); 4, 5 and 6 are independent of them. When 3 has landed,
+`tilo-peer-state` is the room core and `tilo-joined-room` its carriers;
+renaming them is then mechanical and optional.
 
 ## Records that outgrow a snapshot
 
