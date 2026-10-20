@@ -51,6 +51,8 @@ struct FnState {
     view_id: String,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
+    /// Set while checking the operand of `try`: the next `invoke` reports failure.
+    try_invoke: bool,
 }
 
 pub(crate) struct Checker<'a> {

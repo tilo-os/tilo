@@ -332,6 +332,8 @@ pub enum ExprKind {
         args: Vec<Arg>,
     },
     Do(Box<Expr>),
+    /// `try act(args)`: invokes in a flow and says whether it worked.
+    Try(Box<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

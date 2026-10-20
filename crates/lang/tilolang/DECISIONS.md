@@ -13,7 +13,7 @@ departs from them. The runtime agent should mirror the ABI additions.
   literal handle, like record fields. The host records each read for the read recorder.
 - **Reading a container field** (`res_get_h` on a `Collection`, `Set` or `List` field) returns a
   list handle that `list_len` and `list_get_h` accept: the item references of a Collection, the
-  elements of a Set. Reading a `Map` field is a compile error (E080) because the ABI has no map read.
+  elements of a Set. A `Map` field is not read as a whole (E080); it is read with `.get(key)` (`map_get_h`, an `Option` of the value, scalars boxed like `some_i`) and `.keys()` (`map_keys`, a `List<Text>`).
 - **Scalars through handles.** Booleans use the `_i` imports (0/1 as i64). `invoke` returns a handle;
   a scalar action result is unboxed with `unwrap_i`/`unwrap_f`, so the host must box scalar results
   like `some_i`/`some_f` (`Option<Int>`). A unit result is any handle (dropped).
@@ -54,7 +54,20 @@ departs from them. The runtime agent should mirror the ABI additions.
 - `fn`s may read resources through their parameters.
 - A flow can only invoke actions. In a view or a block, applying a flow (or an action) yields an
   `Action` value (`act_ref`), so a flow can be exposed as an action. Flows cannot call flows.
-- Sorting (`sort_by`) is rejected (E080): the ABI has no `list_set` or sort.
+- `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
+  `list_sort_by_key(items, keys) -> list`: ascending and stable, keys Int, Float, Text or Bool
+  (E020 otherwise). There is no descending order and no `list_set`.
+- `try act(args)` (flows only, E044 elsewhere) invokes an action and reports whether it worked:
+  a `Bool` for an action without a result, an `Option` of the result otherwise (`none` when the
+  invocation was denied, declined or trapped). It compiles to `invoke` then `is_error(h) -> i32`;
+  a scalar result is already boxed by the host, so the `Option` is that handle. Without `try`, a
+  failed `do act(..)` yields an error value that traps when its scalar is unwrapped.
+- Sets and maps of Int and Float take their elements and values boxed with `some_i`/`some_f`
+  through the existing `set_add`, `set_remove` and `map_put`. Set elements of Int or Float are
+  stored under their text form, so a set iterates in text order.
+- A record-typed field must be `Option<T>` unless every value is always set: reading an unset
+  reference traps (there is no value to return). A removed target stays a readable reference
+  (it compares equal); reading its fields fails.
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.

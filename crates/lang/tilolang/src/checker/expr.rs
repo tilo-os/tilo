@@ -138,7 +138,45 @@ impl Checker<'_> {
                 }
                 self.expr(inner, exp)
             }
+            ExprKind::Try(inner) => self.try_expr(inner, e.span),
         }
+    }
+
+    /// `try act(args)`: a `Bool` for an action with no result, otherwise an `Option` of the
+    /// result. It is `false` / `none` when the invocation was denied, declined or failed.
+    fn try_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
+        if self.st.ctx != Ctx::Flow {
+            let who = self.st.ctx.word();
+            self.err(
+                "E044",
+                span,
+                format!("`try` invokes an action and only a flow may do that; {who} cannot"),
+            );
+            return Ex::error();
+        }
+        let call = match &inner.kind {
+            ExprKind::Do(x) => x.as_ref(),
+            _ => inner,
+        };
+        if !matches!(call.kind, ExprKind::Call { .. }) {
+            self.err(
+                "E044",
+                span,
+                "`try` must be followed by an action call, such as `try archive(m)`",
+            );
+            return Ex::error();
+        }
+        self.st.try_invoke = true;
+        let ex = self.expr(call, None);
+        if std::mem::take(&mut self.st.try_invoke) {
+            self.err(
+                "E044",
+                span,
+                "`try` must be followed by a call of an action, not of a fn",
+            );
+            return Ex::error();
+        }
+        ex
     }
 
     /// Whether `e` is a dotted path naming an imported package (and not a variable).
@@ -572,7 +610,7 @@ impl Checker<'_> {
                     return Ex::error();
                 };
                 if matches!(f.ty, Ty::Map(_)) {
-                    self.err("E080", name.span, format!("reading the Map field `{}` is not supported in v1; change it with `.put` and `.remove`", f.name));
+                    self.err("E080", name.span, format!("the Map field `{}` is not read as a whole; read it with `.get(key)` or `.keys()`, change it with `.put` and `.remove`", f.name));
                     return Ex::error();
                 }
                 let (imp, c) = load_op(&f.ty, Imp::ResGetI, Imp::ResGetF, Imp::ResGetH);
