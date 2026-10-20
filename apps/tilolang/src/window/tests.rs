@@ -388,8 +388,8 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
         .cloned()
         .unwrap_or_default();
     assert!(
-        header.starts_with(&title),
-        "the content's title is the note's: {header}"
+        header.starts_with('\u{1f}'),
+        "the note shows {title} as its own title, which the header does not repeat: {header}"
     );
     // Editing the title changes the row.
     let input = first_input(&detail).unwrap().key.clone();
@@ -993,4 +993,26 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
         .find(|row| row.item == shown)
         .map(|row| row.key.clone());
     assert_eq!(selected, row, "and its row is the selected one");
+}
+
+#[test]
+fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_repeat_it() {
+    let room = Room::seeded("notes");
+    assert!(room.window.detail.is_some(), "the scenario's note is shown");
+    let header = room
+        .window
+        .headers
+        .get("content")
+        .map(|header| header.split('\u{1f}').next().unwrap_or_default().to_owned());
+    assert_eq!(
+        header.as_deref(),
+        Some(""),
+        "the note's title is its own, not the header's"
+    );
+    let host = room.window.current_host().unwrap();
+    let mut page = content_page(room.window.detail_tree().and_then(frame_of).unwrap());
+    assert!(
+        mark_field_roles(&host, &mut page),
+        "the editor binds the title"
+    );
 }
