@@ -5,7 +5,7 @@ to trust its sender. The harnesses live in `fuzz/` and run daily under
 libFuzzer's sanitizer instrumentation:
 
 - `tapp_ingress`: signed tapp roots plus manifest syntax and semantic policy;
-- `collab_invite_chain`: signatures, delegation links, attenuation and expiry;
+- `workspace_invitation`: signed workspace invitations, in bytes and as text;
 - `identity_wire`: device certificates, revocations and enrollment tokens.
 
 Run one locally with:

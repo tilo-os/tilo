@@ -1914,7 +1914,7 @@ export RUSTUP_HOME=$TMPDIR/rustup
 rustup toolchain install nightly-2026-08-25 --profile minimal --no-self-update
 cargo +nightly-2026-08-25 install cargo-fuzz --locked --version 0.13.2 --root "$TMPDIR/cargo-fuzz"
 export PATH=$TMPDIR/cargo-fuzz/bin:$PATH
-for target in tapp_ingress collab_invite_chain identity_wire sandbox_policy render_scene; do
+for target in tapp_ingress workspace_invitation identity_wire sandbox_policy render_scene; do
   cargo +nightly-2026-08-25 fuzz run "$target" -- -max_total_time=900 -timeout=10
 done
 """

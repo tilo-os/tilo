@@ -17,6 +17,7 @@ collab-types = { path = "../crates/collab/collab-types" }
 tilo-app-package = { path = "../crates/packaging/tilo-app-package" }
 launcher = { path = "../crates/packaging/launcher" }
 tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }
+tilo-workspace-join = { path = "../crates/collab/workspace-join" }
 tilo-render-protocol = { path = "../crates/platform/tilo-render-protocol" }
 tilo-font-catalog = { path = "../crates/sdk/font-catalog" }
 vello_encoding = { package = "tilo-vello-encoding", path = "../vendor/vello_encoding" }
@@ -30,8 +31,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "collab_invite_chain"
-path = "fuzz_targets/collab_invite_chain.rs"
+name = "workspace_invitation"
+path = "fuzz_targets/workspace_invitation.rs"
 test = false
 doc = false
 bench = false

@@ -14,8 +14,6 @@
 //!   make which change is decided by `tilo-action-policy` grants (step 5).
 //! - [`caps`] — the app sandbox: `(subject × scope × access)` capabilities
 //!   over paths, file records, devices and network hosts.
-//! - [`invite`] — attenuable capability invite tokens
-//!   ([`invite::InviteToken`]): a signed, delegable grant that can only narrow.
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
@@ -56,7 +54,6 @@ pub mod document_transfer;
 pub mod event;
 pub mod history;
 pub mod identity;
-pub mod invite;
 pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
@@ -111,9 +108,6 @@ pub use document_transfer::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
-pub use invite::{
-    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
-};
 pub use mls_governance::{
     Admission, ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MLS_ACCESS_VERSION,
     MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
