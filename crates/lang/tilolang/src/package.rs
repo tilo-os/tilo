@@ -3,7 +3,7 @@
 use crate::ast::{self, Item};
 use crate::checker;
 use crate::codegen;
-use crate::diag::{Diagnostic, finish};
+use crate::diag::{Diagnostic, Placed, finish, finish_files};
 use crate::effects::{self, Effects};
 use crate::hash::sha256_hex;
 use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
@@ -12,9 +12,10 @@ use crate::meta::{
     ActionMeta, AnchorMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta, ParamMeta, ProposalMeta,
     TypeMeta, ViewMeta,
 };
-use crate::parser::{parse_expr_source, parse_module, parse_ui_source};
+use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
 use crate::resolve::{CKind, Env, ParamInfo, default_alias, resolve};
+use crate::source::PackageSource;
 use crate::types::Ty;
 
 /// A compiled app package.
@@ -67,6 +68,16 @@ fn analyze(
     rng: &mut dyn Entropy,
 ) -> Result<Analysis, Vec<Diagnostic>> {
     let module = parse(source)?;
+    analyze_module(module, ids, imports, rng).map_err(|diags| finish(diags, source))
+}
+
+/// Resolves and checks a parsed module; the diagnostics are not yet located.
+fn analyze_module(
+    module: ast::Module,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+    rng: &mut dyn Entropy,
+) -> Result<Analysis, Vec<Diagnostic>> {
     let mut lock = ids.clone();
     lock.sync(&declared_names(&module), rng);
     let mut diags = Vec::new();
@@ -80,7 +91,171 @@ fn analyze(
             ids: lock,
         })
     } else {
-        Err(finish(diags, source))
+        Err(diags)
+    }
+}
+
+/// The files of a package in path order, each placed in the shared span space.
+fn placed(source: &PackageSource) -> Vec<Placed<'_>> {
+    let mut files: Vec<_> = source.files.iter().collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut base = 0;
+    files
+        .into_iter()
+        .map(|f| {
+            let p = Placed {
+                path: &f.path,
+                text: &f.text,
+                base,
+            };
+            // One position past the end, so a file's end-of-input span stays inside it.
+            base += f.text.len() + 1;
+            p
+        })
+        .collect()
+}
+
+/// Parses every file of a package, in path order, with spans in the shared span space.
+fn parse_placed(files: &[Placed<'_>]) -> (Vec<ParsedFile>, Vec<Diagnostic>) {
+    let mut out = Vec::new();
+    let mut diags = Vec::new();
+    let mut node = 0;
+    for f in files {
+        let (parsed, mut d) = parse_file_at(f.text, f.base, node);
+        node = parsed.next_node;
+        diags.append(&mut d);
+        out.push(parsed);
+    }
+    (out, diags)
+}
+
+/// Joins the files of a package into one module: exactly one of them names the app.
+fn join_files(
+    files: &[Placed<'_>],
+    parsed: Vec<ParsedFile>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ast::Module> {
+    let mut header: Option<(ast::AppHeader, &str)> = None;
+    let mut items = Vec::new();
+    for (f, p) in files.iter().zip(parsed) {
+        if let Some(h) = p.header {
+            match &header {
+                None => header = Some((h, f.path)),
+                Some((_, first)) => diags.push(Diagnostic::new(
+                    "E017",
+                    h.span,
+                    format!(
+                        "the app is already named in `{first}`; a package names its app in exactly one file"
+                    ),
+                )),
+            }
+        }
+        items.extend(p.items);
+    }
+    let Some((app, _)) = header else {
+        let at = files.first().map_or(0, |f| f.base);
+        diags.push(Diagnostic::new(
+            "E010",
+            crate::diag::Span::new(at, at),
+            "one file of the package starts with `app <app id> \"<title>\"`, for example `app so.tilo.counter \"Counter\"`",
+        ));
+        return None;
+    };
+    Some(ast::Module { app, items })
+}
+
+/// Parses a package of one or more files into one module. Diagnostics name their file.
+pub fn parse_package(source: &PackageSource) -> Result<ast::Module, Vec<Diagnostic>> {
+    let files = placed(source);
+    let (parsed, mut diags) = parse_placed(&files);
+    let module = join_files(&files, parsed, &mut diags);
+    match module {
+        Some(m) if diags.is_empty() => Ok(m),
+        _ => Err(finish_files(diags, &files)),
+    }
+}
+
+/// One file of a package, parsed on its own, for printing it back: `path`, its header when it
+/// has one, and its items.
+#[derive(Clone, Debug)]
+pub struct FileSyntax {
+    pub path: String,
+    pub header: Option<ast::AppHeader>,
+    pub items: Vec<ast::Item>,
+}
+
+/// Parses each file of a package for the canonical printer (`tilolang fmt`). Syntax errors in
+/// any file fail the whole package, as the printer would otherwise drop what it could not read.
+pub fn parse_package_files(source: &PackageSource) -> Result<Vec<FileSyntax>, Vec<Diagnostic>> {
+    let files = placed(source);
+    let (parsed, diags) = parse_placed(&files);
+    if !diags.is_empty() {
+        return Err(finish_files(diags, &files));
+    }
+    Ok(files
+        .iter()
+        .zip(parsed)
+        .map(|(f, p)| FileSyntax {
+            path: f.path.to_string(),
+            header: p.header,
+            items: p.items,
+        })
+        .collect())
+}
+
+fn analyze_package(
+    source: &PackageSource,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+    rng: &mut dyn Entropy,
+) -> Result<Analysis, Vec<Diagnostic>> {
+    let module = parse_package(source)?;
+    let files = placed(source);
+    analyze_module(module, ids, imports, rng).map_err(|diags| finish_files(diags, &files))
+}
+
+/// Compiles a package of one or more files with ids drawn from the operating system's
+/// randomness. Every `.tl` file is part of the one module; diagnostics name their file.
+pub fn compile_package_source(
+    source: &PackageSource,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+) -> Result<Compiled, Vec<Diagnostic>> {
+    compile_package_source_with(source, ids, imports, &mut OsEntropy::default())
+}
+
+/// [`compile_package_source`]; new ids come from `rng`.
+pub fn compile_package_source_with(
+    source: &PackageSource,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+    rng: &mut dyn Entropy,
+) -> Result<Compiled, Vec<Diagnostic>> {
+    let a = analyze_package(source, ids, imports, rng)?;
+    Ok(emit_package(a))
+}
+
+/// Reports every error of a package of one or more files, or an empty list when it is fine.
+pub fn check_package(
+    source: &PackageSource,
+    ids: &IdsLock,
+    imports: &[PackageMeta],
+) -> Vec<Diagnostic> {
+    analyze_package(source, ids, imports, &mut SeededEntropy(0))
+        .err()
+        .unwrap_or_default()
+}
+
+fn emit_package(a: Analysis) -> Compiled {
+    let fx = effects::analyze(&a.ir, &a.env.app);
+    let mut meta = build_meta(&a.module, &a.env, &fx);
+    let bare = codegen::emit(&a.ir, None);
+    meta.module_hash = sha256_hex(&bare);
+    let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
+    Compiled {
+        wasm,
+        meta,
+        ids: a.ids,
     }
 }
 
@@ -101,16 +276,7 @@ pub fn compile_package_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze(source, ids, imports, rng)?;
-    let fx = effects::analyze(&a.ir, &a.env.app);
-    let mut meta = build_meta(&a.module, &a.env, &fx);
-    let bare = codegen::emit(&a.ir, None);
-    meta.module_hash = sha256_hex(&bare);
-    let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
-    Ok(Compiled {
-        wasm,
-        meta,
-        ids: a.ids,
-    })
+    Ok(emit_package(a))
 }
 
 /// Reports every error of a package, or an empty list when it is fine.

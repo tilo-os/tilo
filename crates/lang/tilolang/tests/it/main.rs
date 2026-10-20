@@ -12,6 +12,7 @@ mod common;
 mod errors;
 mod ids_lock;
 mod layout;
+mod multifile;
 mod principal;
 mod roundtrip;
 mod semantics;

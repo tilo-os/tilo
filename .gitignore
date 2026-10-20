@@ -92,3 +92,6 @@ __pycache__/
 /docs/verification/android-arity/
 /docs/verification/android-mediation/
 /docs/verification/android-integration/
+
+# `tilolang build` output next to a package's sources.
+/apps/tl/*/app.wasm
