@@ -148,6 +148,22 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
     );
 }
 
+/// The next line typed at the session's shell. The terminal types a line
+/// `run` asked for only on a frame after it saw the shell's prompt mark,
+/// and that mark arrives from the reader thread whenever it does, so
+/// keep settling until the shell reads the line.
+fn typed_line(app: &mut App, lines: &Receiver<String>) -> String {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
+        app.settle();
+        if let Ok(line) = lines.try_recv() {
+            return line;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the shell never got a line: {:#?}", app.state());
+}
+
 /// A failing `cargo test` the person ran is a run with its output and one
 /// item per test; an agent reruns the failing one by its name, and the
 /// request settles with the run it became, by the agent.
@@ -197,7 +213,7 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
     )
     .expect("the agent's rerun runs and settles");
     assert_eq!(
-        lines.recv_timeout(HANG_BOUND).unwrap(),
+        typed_line(&mut app, &lines),
         format!("cargo test -p terminal -- --exact {test}"),
         "typed at the prompt, once"
     );
@@ -257,7 +273,7 @@ fn run_takes_one_command_line_for_a_running_session() {
     assert!(app.state().requests.entries().next().is_none());
     app.call("run", serde_json::json!({ "command": "ls -la" }))
         .expect("runs");
-    assert_eq!(lines.recv_timeout(HANG_BOUND).unwrap(), "ls -la");
+    assert_eq!(typed_line(&mut app, &lines), "ls -la");
     settle_until(&mut app, |state| state.runs.len() == 1);
 }
 
