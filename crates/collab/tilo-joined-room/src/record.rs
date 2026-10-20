@@ -71,6 +71,33 @@ pub(crate) struct StoredRoom {
     /// Content-addressed cold UUID index, also anchored in signed public room history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_history_root: Option<[u8; 32]>,
+    /// Root-signed statements naming who governs in place of a revoked
+    /// governor: [`Self::governor`] is the governor the invitation named,
+    /// these say who governs the room now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successions: Vec<tilo_user_identity::GovernorSuccession>,
+}
+
+impl StoredRoom {
+    /// Who governs the room now, and the revocations of the governors it
+    /// passed on the way: the invitation's governor unless a succession
+    /// names another ([`tilo_peer_state::succeeded_authority`]).
+    pub(crate) fn current_governor(
+        &self,
+        now: std::time::SystemTime,
+    ) -> (DeviceCert, tilo_user_identity::RevocationList) {
+        let mut revoked = tilo_user_identity::RevocationList::new();
+        let Some((governor, revocations)) =
+            tilo_peer_state::succeeded_authority(&self.governor, &self.successions, now)
+        else {
+            return (self.governor.clone(), revoked);
+        };
+        for revocation in revocations {
+            // Each verified with its succession.
+            let _ = revoked.insert(revocation);
+        }
+        (governor, revoked)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {

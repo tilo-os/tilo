@@ -152,9 +152,11 @@ impl NativeCommittedView {
     pub fn peer(&self) -> &StatePeer {
         &self.peer
     }
+    /// Who governs the room now: the invitation's governor, or the device
+    /// its root named in its place.
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
-        &self.record.governor
+        self.peer.authority()
     }
     #[must_use]
     pub fn enrollment_invitation(&self) -> &[u8] {
@@ -499,6 +501,59 @@ impl NativeWorkspaceOwner {
         self.0.notify(room, continuity);
         drop(current);
         tilo_identity_host::policy_change::announce();
+    }
+    /// Move every room whose governor its root revoked to the device the
+    /// root named in its place ([`StatePeer::follow_successions`]), and keep
+    /// the statements with the room so it is restored under the successor.
+    /// Returns the rooms that moved.
+    ///
+    /// # Errors
+    /// A room is fenced, refuses the successor, or cannot be published.
+    pub fn follow_successions(
+        &self,
+        successions: &[tilo_user_identity::GovernorSuccession],
+        now: SystemTime,
+    ) -> Result<Vec<RoomId>, String> {
+        if successions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _turn = self.0.mutation.lock();
+        let rooms: Vec<RoomId> = self
+            .0
+            .current
+            .read()
+            .rooms
+            .iter()
+            .filter(|(_, view)| {
+                tilo_peer_state::succeeded_authority(view.peer.authority(), successions, now)
+                    .is_some()
+            })
+            .map(|(room, _)| *room)
+            .collect();
+        let mut moved = Vec::new();
+        for room in rooms {
+            let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+            if !candidate.peer.follow_successions(successions, now)? {
+                continue;
+            }
+            let root = candidate.record.governor.user_public_key;
+            for succession in successions {
+                if succession.previous.user_public_key == root
+                    && !candidate.record.successions.contains(succession)
+                {
+                    candidate.record.successions.push(succession.clone());
+                }
+            }
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_room(room, candidate, None)?;
+            moved.push(room);
+        }
+        Ok(moved)
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///

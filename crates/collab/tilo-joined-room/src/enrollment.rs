@@ -69,12 +69,13 @@ pub(crate) fn restore(
             return Err("native persisted descriptor/floor mismatch".into());
         }
     }
+    let (governor, revocations) = record.current_governor(now);
     let peer = StatePeer::restore(
         &record.peer,
         &room.to_string(),
-        record.governor.clone(),
+        governor,
         vec![record.device.clone()],
-        RevocationList::new(),
+        revocations,
         now,
     )?;
     if !peer.admission_v5_selected() {
@@ -433,6 +434,7 @@ impl NativeWorkspaceOwner {
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
+            successions: Vec::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }

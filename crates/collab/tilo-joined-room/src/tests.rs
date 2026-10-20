@@ -1966,3 +1966,101 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
+
+/// A governed change outside what media authorization covers: a sandbox
+/// row named `name`.
+fn governed_change(owner: &NativeWorkspaceOwner, room: RoomId, name: &str) -> NeighbourMsg {
+    let mut doc = owner
+        .with_current(room, |view| {
+            Ok(view.peer().admitted_room().ok_or("no room")?.clone())
+        })
+        .unwrap();
+    let before = doc.get_heads();
+    let sandbox = match doc.get(ROOT, "sandbox").unwrap() {
+        Some((automerge::Value::Object(_), sandbox)) => sandbox,
+        _ => doc
+            .put_object(ROOT, "sandbox", automerge::ObjType::Map)
+            .unwrap(),
+    };
+    doc.put(
+        &sandbox,
+        name,
+        automerge::ScalarValue::Bytes(b"{}".to_vec()),
+    )
+    .unwrap();
+    doc.commit();
+    NeighbourMsg::SyncResp {
+        room: room.to_string(),
+        changes: doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+    }
+}
+
+#[test]
+fn a_joined_room_follows_its_revoked_governors_successor_and_reopens_under_it() {
+    use tilo_user_identity::{DeviceCert, GovernorSuccession, RevocationEntry, RevocationReason};
+    let joined = enrolled();
+    let root = SigningKey::from_bytes(&[62; 32]);
+    let previous_key = SigningKey::from_bytes(&[61; 32]);
+    let previous = crate::testing::certificate(&root, &previous_key, "Governor");
+    let successor_key = SigningKey::from_bytes(&[70; 32]);
+    let successor = crate::testing::certificate(&root, &successor_key, "Successor");
+    let mut revocation = RevocationEntry {
+        user_public_key: root.verifying_key().to_bytes(),
+        revoked_device_public_key: previous.device_public_key,
+        revoked_at_ns: 2,
+        reason: RevocationReason::Stolen,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+    let succession =
+        GovernorSuccession::sign(previous.clone(), revocation, successor.clone(), &root).unwrap();
+    let governor = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(joined.room, |view| Ok(view.governor().clone()))
+            .unwrap()
+    };
+    assert_eq!(governor(&joined.owner), previous);
+    let from = |device: &DeviceCert| {
+        joined.owner.receive(
+            joined.room,
+            TransportOrigin::RelayDelta(device.device_public_key),
+            governed_change(&joined.owner, joined.room, &device.device_label),
+            SystemTime::now(),
+        )
+    };
+    from(&previous).unwrap();
+
+    assert_eq!(
+        joined
+            .owner
+            .follow_successions(std::slice::from_ref(&succession), joined.now)
+            .unwrap(),
+        vec![joined.room]
+    );
+    assert_eq!(governor(&joined.owner), successor);
+    assert!(
+        joined
+            .owner
+            .follow_successions(&[succession], joined.now)
+            .unwrap()
+            .is_empty(),
+        "a room follows a succession once"
+    );
+    assert!(
+        from(&previous).is_err(),
+        "the revoked governor's governance is refused"
+    );
+    from(&successor).unwrap();
+
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(
+        governor(&reopened),
+        successor,
+        "restored under the successor"
+    );
+}

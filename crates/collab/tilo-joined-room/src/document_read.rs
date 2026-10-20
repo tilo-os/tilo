@@ -28,7 +28,6 @@
 use crate::NativeCommittedView;
 use std::time::SystemTime;
 use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
-use tilo_user_identity::RevocationList;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
@@ -200,12 +199,13 @@ impl NativeCommittedView {
         let limits = PeerLimits::default();
         #[cfg(test)]
         ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
+        let (governor, revocations) = self.record.current_governor(now);
         let restored = BoundedStatePeer::restore(
             &self.record.peer,
             &self.record.room.to_string(),
-            &self.record.governor,
+            &governor,
             std::slice::from_ref(&self.record.device),
-            &RevocationList::new(),
+            &revocations,
             now,
             &limits,
         )

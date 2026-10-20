@@ -2,17 +2,62 @@
 //! named in its place.
 use super::{StatePeer, SystemTime, VerifiedCertificate, now_ns};
 use std::collections::BTreeSet;
-use tilo_user_identity::GovernorSuccession;
+use tilo_user_identity::{DeviceCert, GovernorSuccession, RevocationEntry};
+
+/// The device governing in place of `authority` by the root-signed
+/// `successions` that verify at `now` and are `authority`'s own root's,
+/// following [`tilo_user_identity::current_governor`]'s rule: where one
+/// device has two successors the lowest key governs, and a chain stops at a
+/// device seen before. Returns the successor's certificate and the
+/// revocation of every device the chain passed, or `None` when no
+/// succession names `authority`.
+#[must_use]
+pub fn succeeded_authority(
+    authority: &DeviceCert,
+    successions: &[GovernorSuccession],
+    now: SystemTime,
+) -> Option<(DeviceCert, Vec<RevocationEntry>)> {
+    let at = now_ns(now);
+    let verified: Vec<&GovernorSuccession> = successions
+        .iter()
+        .filter(|succession| {
+            succession.previous.user_public_key == authority.user_public_key
+                && succession.verify_at(at).is_ok()
+        })
+        .collect();
+    let mut current = authority.device_public_key;
+    let mut seen = BTreeSet::from([current]);
+    let mut chain = Vec::new();
+    for _ in 0..tilo_user_identity::MAX_SUCCESSIONS {
+        let Some(next) = verified
+            .iter()
+            .filter(|succession| succession.previous.device_public_key == current)
+            .min_by_key(|succession| succession.successor.device_public_key)
+        else {
+            break;
+        };
+        if !seen.insert(next.successor.device_public_key) {
+            break;
+        }
+        current = next.successor.device_public_key;
+        chain.push(*next);
+    }
+    let successor = chain.last()?.successor.clone();
+    Some((
+        successor,
+        chain
+            .into_iter()
+            .map(|succession| succession.revocation.clone())
+            .collect(),
+    ))
+}
 
 impl StatePeer {
     /// Move this room's governance to the device its governor's root named in
-    /// the revoked governor's place, following `successions` from the current
-    /// authority by [`tilo_user_identity::current_governor`]'s rule: every
-    /// statement verifies now and is the authority's own root's; where one
-    /// device has two successors the lowest key governs; a chain stops at a
-    /// device seen before. Each revocation on the way is recorded, so the
-    /// revoked devices' governance is refused from then on, and the
-    /// successor's admitted. Returns whether the authority moved.
+    /// the revoked governor's place ([`succeeded_authority`]). Each
+    /// revocation on the way is recorded, so the revoked devices' governance
+    /// is refused from then on, and the successor's admitted. Returns whether
+    /// the authority moved.
     ///
     /// The authority is an input of [`Self::restore`], not part of the
     /// durable state: whoever keeps this peer keeps the successions too.
@@ -28,43 +73,19 @@ impl StatePeer {
         successions: &[GovernorSuccession],
         now: SystemTime,
     ) -> Result<bool, String> {
-        let at = now_ns(now);
-        let root = self.core.authority.user_public_key;
-        let verified: Vec<&GovernorSuccession> = successions
-            .iter()
-            .filter(|succession| {
-                succession.previous.user_public_key == root && succession.verify_at(at).is_ok()
-            })
-            .collect();
-        let mut current = self.core.authority.device_public_key;
-        let mut seen = BTreeSet::from([current]);
-        let mut chain = Vec::new();
-        for _ in 0..tilo_user_identity::MAX_SUCCESSIONS {
-            let Some(next) = verified
-                .iter()
-                .filter(|succession| succession.previous.device_public_key == current)
-                .min_by_key(|succession| succession.successor.device_public_key)
-            else {
-                break;
-            };
-            if !seen.insert(next.successor.device_public_key) {
-                break;
-            }
-            current = next.successor.device_public_key;
-            chain.push(*next);
-        }
-        let Some(last) = chain.last() else {
+        let Some((successor, revocations)) =
+            succeeded_authority(&self.core.authority, successions, now)
+        else {
             return Ok(false);
         };
         let mut candidate = self.clone();
-        for succession in &chain {
+        for revocation in revocations {
             candidate
                 .core
                 .revocations
-                .insert(succession.revocation.clone())
+                .insert(revocation)
                 .map_err(|error| error.to_string())?;
         }
-        let successor = last.successor.clone();
         if candidate
             .core
             .revocations
@@ -74,7 +95,7 @@ impl StatePeer {
         }
         candidate.core.certificates.insert(
             successor.device_public_key,
-            VerifiedCertificate::new(successor.clone(), at)?,
+            VerifiedCertificate::new(successor.clone(), now_ns(now))?,
         );
         candidate.core.authority = successor;
         *self = candidate;

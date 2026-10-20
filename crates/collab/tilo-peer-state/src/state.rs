@@ -57,6 +57,7 @@ mod native_publication;
 mod room_name;
 mod succession;
 pub use native_publication::NativePublicationCut;
+pub use succession::succeeded_authority;
 mod resources;
 mod sealed_compaction;
 mod sealed_history;
@@ -1607,9 +1608,11 @@ impl StatePeer {
         let cert = self.certificate(&source, now)?;
         let person = cert.user_public_key;
         let foreign = backend::member::foreign(cert, &self.core.authority);
-        // Bootstrap: the invite's authority device supplies the first
-        // governance before any roster exists to resolve it against.
-        if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
+        // The pinned authority writes governance on its certificate alone:
+        // the invite's authority supplies the first governance before any
+        // roster exists, and a successor its root named in a revoked
+        // governor's place is on no roster until it writes itself there.
+        if source != self.core.authority.device_public_key {
             self.role(&source, now)?;
         }
         let pinned = hex::encode(self.core.authority.device_public_key);

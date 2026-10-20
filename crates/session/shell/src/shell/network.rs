@@ -6546,6 +6546,13 @@ impl ShellNetwork {
                 tree.write()
                     .follow_governor_successions(&successions, &local);
             }
+            let owner = tree.read().installed_native_owner();
+            if let Some(owner) = owner
+                && let Err(error) =
+                    owner.follow_successions(&successions, std::time::SystemTime::now())
+            {
+                tracing::warn!(%error, "a room could not follow its revoked governor's successor");
+            }
         }
     }
 
