@@ -2,7 +2,7 @@
 //!
 //! One rhythm for every page (HIG §7b, §9.6) and one Control-role painter
 //! (§9.1, §9.5) that the root page and the Wi-Fi, Bluetooth and VPN
-//! drill-ins paint their tiles, cards, slider block and rows with. This
+//! drill-ins paint their tiles, cards and rows with. This
 //! deliberately stops at structure common to every page: header/back, row
 //! placement and the calm list-row visual language. Device-specific glyphs,
 //! state and actions stay in their owning panes.
@@ -84,7 +84,7 @@ pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
 /// Paint one Control-role surface (HIG §9.1 / §9.5): its fill with the
 /// derived rest edge (`ui::surface::card`) at the Control radius, and the
 /// toolkit `Button`'s 2 px focus ring on top when `focused`. One painter for
-/// every tile, card, slider block, power row, edit row and list row in the
+/// every tile, card, power row, edit row and list row in the
 /// panel, so they cannot drift apart again.
 pub fn paint_control(
     scene: &mut Scene,

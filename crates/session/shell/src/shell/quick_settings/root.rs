@@ -904,7 +904,7 @@ impl QuickSettingsRoot {
     fn sliders_height_at(&self, scale: f64) -> f64 {
         let count = self.slider_count();
         let captions: f64 = (0..count).map(|i| self.slider_caption_height(i)).sum();
-        (2.0 * CONTROL_PAD + f64_of_usize(count.saturating_sub(1)) * RELATED_GAP) * scale
+        f64_of_usize(count.saturating_sub(1)) * RELATED_GAP * scale
             + f64_of_usize(count) * Self::target_at(scale)
             + captions
     }
@@ -1268,13 +1268,12 @@ impl QuickSettingsRoot {
     }
     /// Slider `i`'s face: after the leading glyph slot, the rest of the
     /// block's width, at least one minimum pointer target tall (HIG §9.6). The
-    /// two faces sit one related step apart inside the control padding, so
-    /// neither touches the other or the block's edge. One helper feeds
+    /// faces sit one related step apart, the first on the block's top edge
+    /// (the panel padding above it). One helper feeds
     /// paint, hit-testing and the accessibility tree.
     fn slider_face_rect(&self, block: Rect, i: usize) -> Rect {
         let above: f64 = (0..i).map(|j| self.slider_caption_height(j)).sum();
         let y = block.y0
-            + self.scaled(CONTROL_PAD)
             + f64_of_usize(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
             + above
             + self.slider_caption_height(i);
@@ -2451,8 +2450,10 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// The slider block: one Control surface holding a band per slider,
-    /// each with its glyph on the leading inset of the band.
+    /// The slider block: a band per slider straight on the panel, each with
+    /// its glyph on the leading inset, in the tiles' glyph column. No Control
+    /// surface of its own: the panel is already the surface, and a card in it
+    /// read as a card in a card. The list rows below sit on the panel too.
     fn draw_sliders(&self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
         let (state, cursor) = (frame.state, frame.cursor);
         let (scene, transform, text, theme) =
@@ -2461,7 +2462,6 @@ impl QuickSettingsRoot {
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
         let sliders = layout.sliders;
-        paint_control(scene, transform, theme, sliders, false, false);
         let caption_style = theme.text(TextRole::Caption);
         for i in 0..self.slider_count() {
             let face = self.slider_face_rect(sliders, i);
@@ -4279,6 +4279,81 @@ mod tests {
         assert_eq!(
             root.slider_commit(&state, 1),
             SliderCommit::DisplayBrightness(1, 75.0)
+        );
+    }
+
+    // USER REQUIREMENT (2026-10-21): "get rid of the double card layout for
+    // the brightness/volume in the quick settings, it looks bad"
+    /// The sliders sit straight on the panel: rendered through the production
+    /// `draw` onto the panel ground, the air around and between the slider
+    /// bands is that ground, never a Control surface of its own. An off tile
+    /// in the same render still shows its card, so the probe can see one.
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "pixel probes inside a small, positive render"
+    )]
+    fn the_sliders_sit_on_the_panel_not_in_a_card_of_their_own() {
+        let state = laptop();
+        let mut root = laid_out(&state);
+        let theme = Theme::dark();
+        let ground = ui::chrome::shell::panel_ground(&theme);
+        let (w, h) = (PANEL.width() as u32, PANEL.height() as u32);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        root.draw(
+            &mut scene,
+            Affine::translate(-PANEL.origin().to_vec2()),
+            &mut text,
+            &theme,
+            PANEL,
+            None,
+            &state,
+        );
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4).unwrap();
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            ground,
+        );
+        let at = |p: Point| {
+            let (x, y) = ((p.x - PANEL.x0) as usize, (p.y - PANEL.y0) as usize);
+            let i = (y * w as usize + x) * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        let bare = at(Point::new(PANEL.x0 + 4.0, PANEL.y0 + 4.0));
+
+        let layout = root.page_layout(&state);
+        let sliders = layout.sliders;
+        let first = root.slider_face_rect(sliders, 0);
+        let second = root.slider_face_rect(sliders, 1);
+        for probe in [
+            // The block's leading edge, beside each band's glyph.
+            Point::new(sliders.x0 + 3.0, first.center().y),
+            Point::new(sliders.x0 + 3.0, second.center().y),
+            // Between the two bands.
+            Point::new(
+                first.x0 + 4.0,
+                f64::midpoint(first.y1, second.y0).min(second.y0 - 1.0),
+            ),
+            // Over the first track, clear of it and of the knob.
+            Point::new(first.x0 + 2.0, first.y0 + 2.0),
+        ] {
+            assert_eq!(
+                at(probe),
+                bare,
+                "the panel ground shows at {probe:?}: no card under the sliders"
+            );
+        }
+
+        let off = tile(&root, &state, QuickSettingsControl::DoNotDisturb);
+        assert_ne!(
+            at(Point::new(off.x0 + 3.0, off.center().y)),
+            bare,
+            "an off tile keeps its Control card, so the probe sees cards"
         );
     }
 }
