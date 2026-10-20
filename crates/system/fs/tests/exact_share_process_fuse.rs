@@ -1167,8 +1167,13 @@ fn idle_serve_mount_stays_asleep() {
         std::fs::create_dir_all(path).unwrap();
     }
     std::fs::write(seed.join("idle.txt"), PAYLOAD).unwrap();
-    // The list the image ships, at the path `fs.service` names it by.
-    let capabilities = temp.path().join("fs-capabilities.json");
+    // The list the image ships, at the path `fs.service` names it by. The
+    // daemon watches the list's directory, and every file opened there
+    // wakes that watch; the fixture's clock file, which the daemon opens on
+    // each clock read, must not share it, or the idle daemon is measured
+    // waking for the fixture's own clock.
+    let capabilities = temp.path().join("acl").join("fs-capabilities.json");
+    std::fs::create_dir_all(temp.path().join("acl")).unwrap();
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../os/usr/share/tilo/fs-capabilities.json"),
