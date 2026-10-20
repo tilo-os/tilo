@@ -21,7 +21,7 @@ bash "$run" "$fast" bash -euo pipefail -c '
   for tool in git python3 jq rg node gpg curl diff which; do
     command -v "$tool"
   done
-  for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match bwrap mkfs.vfat; do
+  for tool in cc modinfo clang ld.lld rpmbuild rpmkeys systemd-escape fc-match bwrap mkfs.vfat udevadm sfdisk partx blkid blockdev findmnt flock lsblk losetup; do
     command -v "$tool"
   done
   bwrap --version
