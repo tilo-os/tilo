@@ -5,9 +5,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 # The extractor unpacks the handoff with the compiled installer helper; run
-# this checkout's build of it.
-cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-install-helpers --bin tilo-staging-handoff
-export TILO_STAGING_HANDOFF="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-staging-handoff"
+# this checkout's build of it, or the one TILO_STAGING_HANDOFF_BIN names.
+if [ -n "${TILO_STAGING_HANDOFF_BIN:-}" ]; then
+  export TILO_STAGING_HANDOFF="$TILO_STAGING_HANDOFF_BIN"
+else
+  cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-install-helpers --bin tilo-staging-handoff
+  export TILO_STAGING_HANDOFF="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-staging-handoff"
+fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 media="$work/media.img"
