@@ -257,8 +257,7 @@ impl super::ShellOverlayHost {
     pub(super) fn active_room(&self) -> Option<RoomId> {
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        let room = state.tree().desktop.active_workspace().map(|w| w.room);
-        room
+        state.tree().desktop.active_workspace().map(|w| w.room)
     }
 
     /// Tell the network what every workspace's people may see, and the
@@ -286,7 +285,13 @@ impl super::ShellOverlayHost {
                         None => 0,
                         Some(PublicationState::Asking) => 1,
                         Some(PublicationState::Unavailable(_)) => 2,
-                        Some(PublicationState::Known(known)) => 3 + u8::from(known.public),
+                        Some(PublicationState::Known(known)) => {
+                            if known.public {
+                                4
+                            } else {
+                                3
+                            }
+                        }
                     };
                     (
                         *room,
@@ -365,7 +370,7 @@ impl super::ShellOverlayHost {
         let sites = self.site_rooms();
         let mut sent = false;
         for room in rooms {
-            if self.self_presence.visibility.get(room).is_none()
+            if !self.self_presence.visibility.contains_key(room)
                 && !sites.iter().any(|site| site.room == *room)
                 && chrome.borrow().publication(*room).is_none()
             {
@@ -460,6 +465,46 @@ impl super::ShellOverlayHost {
     }
 }
 
+#[cfg(feature = "hosted-test-control")]
+impl super::ShellOverlayHost {
+    /// Follow `id` as the roster names them, for captures.
+    pub fn follow_for_shots(&mut self, id: Option<&str>) {
+        self.set_followed_peer(id.map(str::to_owned));
+    }
+
+    /// Open the roster row of `id`, for captures.
+    pub fn expand_collaborator_for_shots(&mut self, id: &str) {
+        self.expanded_collaborator = Some(id.to_owned());
+    }
+
+    /// The person's own input ended following, for captures.
+    pub fn stop_following_by_input_for_shots(&mut self) {
+        self.stop_following_for_local_input();
+    }
+
+    /// `from` waved at this person, for captures.
+    pub fn wave_from_for_shots(&mut self, from: &str) {
+        self.receive_waves([from.to_owned()]);
+        self.refresh_presence_notices();
+    }
+
+    /// Show the arrival line for the workspace on screen as if just arrived,
+    /// for captures; `public` tells the person what its people see.
+    pub fn arrive_for_shots(&mut self, public: bool) {
+        self.presence_notices = super::arrival::PresenceNotices::default();
+        if !public && let Some(room) = self.active_room() {
+            self.presence_notices.introduced.insert(room);
+        }
+        self.public_for_shots = public;
+        self.refresh_presence_notices();
+    }
+
+    /// Open cursor chat with `text` typed, for captures.
+    pub fn open_cursor_chat_for_shots(&mut self, text: &str) {
+        self.cursor_chat_open_for_shots(text);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,7 +538,7 @@ mod tests {
             site: None,
             community: false,
             public: false,
-            ..lounge.clone()
+            ..lounge
         };
         assert_eq!(visibility_of(None, Some(&lounge), None), ThatImHere);
         assert_eq!(visibility_of(None, Some(&listed), None), ThatImHere);
@@ -610,45 +655,5 @@ mod tests {
         assert!(!me.receive_wave("peer@3", now + Duration::from_secs(10)));
         assert!(me.receive_wave("peer@3", now + WAVE_EVERY));
         assert_eq!(me.notices.len(), 2);
-    }
-}
-
-#[cfg(feature = "hosted-test-control")]
-impl super::ShellOverlayHost {
-    /// Follow `id` as the roster names them, for captures.
-    pub fn follow_for_shots(&mut self, id: Option<&str>) {
-        self.set_followed_peer(id.map(str::to_owned));
-    }
-
-    /// Open the roster row of `id`, for captures.
-    pub fn expand_collaborator_for_shots(&mut self, id: &str) {
-        self.expanded_collaborator = Some(id.to_owned());
-    }
-
-    /// The person's own input ended following, for captures.
-    pub fn stop_following_by_input_for_shots(&mut self) {
-        self.stop_following_for_local_input();
-    }
-
-    /// `from` waved at this person, for captures.
-    pub fn wave_from_for_shots(&mut self, from: &str) {
-        self.receive_waves([from.to_owned()]);
-        self.refresh_presence_notices();
-    }
-
-    /// Show the arrival line for the workspace on screen as if just arrived,
-    /// for captures; `public` tells the person what its people see.
-    pub fn arrive_for_shots(&mut self, public: bool) {
-        self.presence_notices = super::arrival::PresenceNotices::default();
-        if !public && let Some(room) = self.active_room() {
-            self.presence_notices.introduced.insert(room);
-        }
-        self.public_for_shots = public;
-        self.refresh_presence_notices();
-    }
-
-    /// Open cursor chat with `text` typed, for captures.
-    pub fn open_cursor_chat_for_shots(&mut self, text: &str) {
-        self.cursor_chat_open_for_shots(text);
     }
 }

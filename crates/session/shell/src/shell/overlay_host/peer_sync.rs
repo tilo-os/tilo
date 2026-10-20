@@ -478,7 +478,7 @@ impl ShellOverlayHost {
                             state.set_publication(publication.room, Ok(publication));
                         }
                         Ok(_) => {
-                            state.set_publication(*room, Err(t("peer-sync-unexpected-response")))
+                            state.set_publication(*room, Err(t("peer-sync-unexpected-response")));
                         }
                         Err(error) => state.set_publication(*room, Err(error)),
                     }

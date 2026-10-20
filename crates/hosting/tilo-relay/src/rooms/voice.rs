@@ -1181,7 +1181,7 @@ mod tests {
                     seen: Instant::now(),
                     outbound,
                     token: id,
-                    token_expires: Instant::now() + GRANT_TTL,
+                    token_expires: Instant::now().checked_add(GRANT_TTL).unwrap(),
                     token_expires_ns: 0,
                 },
             );

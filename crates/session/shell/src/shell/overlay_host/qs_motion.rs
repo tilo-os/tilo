@@ -171,7 +171,7 @@ mod tests {
     use ui::time::Duration;
     use ui::tokens::Motion;
 
-    fn frame<'a>(open: bool, stack: &'a [QsLevel], height: f64, now: Instant) -> QsFrame<'a> {
+    fn frame(open: bool, stack: &[QsLevel], height: f64, now: Instant) -> QsFrame<'_> {
         QsFrame {
             open,
             stack,

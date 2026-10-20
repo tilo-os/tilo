@@ -724,14 +724,8 @@ impl ShellOverlayHost {
         true
     }
 
-    /// How many copies the Clipboard section shows at once; typing
-    /// searches the rest, and the arrows page through them.
-    pub(super) fn qs_clipboard_visible_rows(&self) -> usize {
-        QS_CLIPBOARD_ROWS
-    }
-
     pub(super) fn clamp_qs_clipboard_history_start(&mut self, history_len: usize) -> bool {
-        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let max_start = history_len.saturating_sub(QS_CLIPBOARD_ROWS);
         let next = self.qs_clipboard_history_start.min(max_start);
         let changed = next != self.qs_clipboard_history_start;
         self.qs_clipboard_history_start = next;
@@ -748,7 +742,7 @@ impl ShellOverlayHost {
             return;
         };
         self.qs_selected_clipboard = Some(item.id);
-        let visible = self.qs_clipboard_visible_rows();
+        let visible = QS_CLIPBOARD_ROWS;
         if index < self.qs_clipboard_history_start {
             self.qs_clipboard_history_start = index;
         } else if index >= self.qs_clipboard_history_start.saturating_add(visible) {
@@ -759,7 +753,7 @@ impl ShellOverlayHost {
 
     pub(super) fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
         let history_len = self.filtered_clipboard_history().len();
-        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let max_start = history_len.saturating_sub(QS_CLIPBOARD_ROWS);
         let current = self.qs_clipboard_history_start.min(max_start);
         let next = if movement.is_negative() {
             current.saturating_sub(movement.unsigned_abs())
@@ -903,7 +897,7 @@ impl ShellOverlayHost {
             .qs_selected_clipboard
             .and_then(|id| history.iter().position(|item| item.id == id))
             .unwrap_or(0);
-        let page = self.qs_clipboard_visible_rows().max(1);
+        let page = QS_CLIPBOARD_ROWS.max(1);
         let target = match logical_key {
             Key::Named(NamedKey::ArrowDown) => current.saturating_add(1),
             Key::Named(NamedKey::ArrowUp) => current.saturating_sub(1),
@@ -1100,7 +1094,7 @@ impl ShellOverlayHost {
                     )
                 })
             }
-            _ => Vec::new(),
+            crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => Vec::new(),
         }
     }
 

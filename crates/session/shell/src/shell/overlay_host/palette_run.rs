@@ -339,6 +339,10 @@ impl ShellOverlayHost {
         }
         // The row an app prepared, picked from the search it opened: its
         // arguments, never the person's confirmation, which they give here.
+        #[allow(
+            clippy::suspicious_operation_groupings,
+            reason = "an action row's id is the action an offer names; an offer has no id of its own"
+        )]
         if let Some((offer, label)) = self.palette_offer.take()
             && result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
             && result.id == offer.action

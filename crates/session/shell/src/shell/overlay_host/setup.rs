@@ -10,6 +10,10 @@ impl ShellOverlayHost {
     /// Attach the session's live application action directory after the
     /// collaboration broker has bound. Kept explicit so bare/headless hosts
     /// do not fabricate a broker.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each provider is moved at its last use, into the live actions provider and into the host; neither is held past it"
+    )]
     pub fn attach_app_action_broker(
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
@@ -557,7 +561,7 @@ impl ShellOverlayHost {
                 ..presence_self::SelfPresence::default()
             },
             presence_notices: arrival::PresenceNotices {
-                introduced: collaboration_preferences.introduced.clone(),
+                introduced: collaboration_preferences.introduced,
                 ..arrival::PresenceNotices::default()
             },
             presence_notice_press: false,

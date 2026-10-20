@@ -400,72 +400,82 @@ impl ShellOverlayHost {
                     Some((tab, row.initial, row.color))
                 })
                 .collect();
-        workspace
-            .strips
-            .iter()
-            .map(|strip| {
-                let row = self.group_row_ptrs.get(&strip.id).map(|&ptr| {
-                    // SAFETY: see the field doc on `group_row_ptrs`; this is
-                    // a read-only query under `&self`.
-                    let row: &ui::widget::GroupRow = unsafe { &*ptr };
-                    row
-                });
-                let mut windows = Vec::new();
-                let mut sizes = Vec::new();
-                let mut faces = Vec::new();
-                let mut joined = Vec::new();
-                let mut front = Vec::new();
-                for group in
-                    tilo_desktop::composition::display_ordered(&tree.desktop.outputs, strip)
-                {
-                    // The whole window, its bar included, as its picture
-                    // shows it. Its other tabs stand beside it, narrower: they
-                    // are the same window, not windows of their own.
-                    let laid_out = row
-                        .and_then(|row| row.groups.iter().find(|g| g.id == group.id))
-                        .map(|g| g.get_rect())
-                        .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
-                    let size = laid_out.map_or(fallback, |rect| rect.size());
-                    let behind = Size::new(
-                        (size.height * BEHIND_TAB_ASPECT).min(size.width),
-                        size.height,
+        self.overview_strips_of(&tree, workspace, focused, (&listed, &people), fallback)
+    }
+
+    /// Each strip of `workspace` as the overview pictures it: its windows
+    /// in display order (`listed` names them), how big each is drawn, and
+    /// who of the `people` is on which.
+    fn overview_strips_of(
+        &self,
+        tree: &crate::shell::state::WorkspaceTree,
+        workspace: &tilo_desktop_model::Workspace,
+        focused: Option<StripId>,
+        (listed, people): (&HashMap<u64, SwitcherWindow>, &[(u64, char, Color)]),
+        fallback: Size,
+    ) -> Vec<OverviewStrip> {
+        let mut strips = Vec::with_capacity(workspace.strips.len());
+        for strip in &workspace.strips {
+            let row = self.group_row_ptrs.get(&strip.id).map(|&ptr| {
+                // SAFETY: see the field doc on `group_row_ptrs`; this is
+                // a read-only query under `&self`.
+                let row: &ui::widget::GroupRow = unsafe { &*ptr };
+                row
+            });
+            let mut windows = Vec::new();
+            let mut sizes = Vec::new();
+            let mut faces = Vec::new();
+            let mut joined = Vec::new();
+            let mut front = Vec::new();
+            for group in tilo_desktop::composition::display_ordered(&tree.desktop.outputs, strip) {
+                // The whole window, its bar included, as its picture
+                // shows it. Its other tabs stand beside it, narrower: they
+                // are the same window, not windows of their own.
+                let laid_out = row
+                    .and_then(|row| row.groups.iter().find(|g| g.id == group.id))
+                    .map(ui::widget::Widget::get_rect)
+                    .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+                let size = laid_out.map_or(fallback, |rect| rect.size());
+                let behind = Size::new(
+                    (size.height * BEHIND_TAB_ASPECT).min(size.width),
+                    size.height,
+                );
+                let mut first = true;
+                for tab in &group.tabs {
+                    let Some(window) = listed.get(&tab.id).cloned() else {
+                        continue;
+                    };
+                    sizes.push(if tab.id == group.active_tab {
+                        size
+                    } else {
+                        behind
+                    });
+                    faces.push(
+                        people
+                            .iter()
+                            .filter(|(on, _, _)| *on == tab.id)
+                            .map(|(_, initial, color)| (*initial, *color))
+                            .collect(),
                     );
-                    let mut first = true;
-                    for tab in &group.tabs {
-                        let Some(window) = listed.get(&tab.id).cloned() else {
-                            continue;
-                        };
-                        sizes.push(if tab.id == group.active_tab {
-                            size
-                        } else {
-                            behind
-                        });
-                        faces.push(
-                            people
-                                .iter()
-                                .filter(|(on, _, _)| *on == tab.id)
-                                .map(|(_, initial, color)| (*initial, *color))
-                                .collect(),
-                        );
-                        joined.push(!first);
-                        front.push(tab.id == group.active_tab);
-                        windows.push(window);
-                        first = false;
-                    }
+                    joined.push(!first);
+                    front.push(tab.id == group.active_tab);
+                    windows.push(window);
+                    first = false;
                 }
-                OverviewStrip {
-                    id: strip.id,
-                    name: strip.name.clone(),
-                    renamable: tree.may_rename_strip(strip.id),
-                    focused: Some(strip.id) == focused,
-                    windows,
-                    sizes,
-                    joined,
-                    front,
-                    faces,
-                }
-            })
-            .collect()
+            }
+            strips.push(OverviewStrip {
+                id: strip.id,
+                name: strip.name.clone(),
+                renamable: tree.may_rename_strip(strip.id),
+                focused: Some(strip.id) == focused,
+                windows,
+                sizes,
+                joined,
+                front,
+                faces,
+            });
+        }
+        strips
     }
 
     /// Where the picture lies: beside the panel, or in the current
@@ -632,7 +642,7 @@ impl ShellOverlayHost {
                 } else {
                     group
                         .active_host()
-                        .map_or_else(|| group.get_rect(), |host| host.get_rect())
+                        .map_or_else(|| group.get_rect(), ui::widget::Widget::get_rect)
                 };
                 Some(rect)
             })
@@ -811,14 +821,15 @@ impl ShellOverlayHost {
                 );
             }
             for (wi, window) in strip.windows.iter().enumerate() {
-                let (Some(well), Some(title)) = (place.wells.get(wi), place.titles.get(wi)) else {
+                let (Some(well), Some(caption)) = (place.wells.get(wi), place.titles.get(wi))
+                else {
                     continue;
                 };
                 let tile = Tile {
                     window,
                     front: strip.front.get(wi).copied().unwrap_or(true),
                     well: *well,
-                    title: *title,
+                    title: *caption,
                     faces: strip.faces.get(wi).map_or(&[][..], Vec::as_slice),
                 };
                 let live = self.draw_overview_tile(
@@ -937,7 +948,7 @@ impl ShellOverlayHost {
             thumbnails,
         );
         if chrome > 0.0 {
-            self.draw_overview_tile_title(
+            Self::draw_overview_tile_title(
                 &mut ui::paint::PaintCtx::new(scene, transform, &mut *ctx.text, theme),
                 tile,
                 rect,
@@ -953,7 +964,6 @@ impl ShellOverlayHost {
     /// A pictured window's title under its picture at `rect`, and the faces
     /// of the people in it at the title's end.
     fn draw_overview_tile_title(
-        &self,
         ctx: &mut ui::paint::PaintCtx<'_>,
         tile: &Tile<'_>,
         rect: Rect,
@@ -984,12 +994,12 @@ impl ShellOverlayHost {
             face * (1.0 + 0.6 * f64_of_usize(shown.saturating_sub(1)))
         };
         let text_w = (line.width() - faces_w - f64::from(theme.tokens.spacing.s1)).max(0.0);
-        let title =
+        let shown_title =
             ctx.text
                 .elide_to_width_style(&tile.window.title, ui::num::f32_of_f64(text_w), &style);
         ctx.text.draw_style(
             scene,
-            &title,
+            &shown_title,
             if active {
                 colors.text_primary
             } else {

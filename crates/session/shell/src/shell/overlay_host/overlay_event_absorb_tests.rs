@@ -3725,8 +3725,8 @@ fn capture_banner_pointer_state(
     assert!(path.is_file(), "the banner capture must exist");
 }
 
-fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
-    [
+fn banner_pointer_capture_variants() -> Vec<(&'static str, Theme, f64, u32)> {
+    vec![
         ("dark", Theme::dark(), 640.0, 440),
         ("light", Theme::light(), 640.0, 440),
         ("large-text", Theme::dark().with_text_scale(2.0), 640.0, 440),

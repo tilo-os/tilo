@@ -205,6 +205,56 @@ impl ShellOverlayHost {
         }
     }
 
+    /// A key on a portal sheet that takes no typed text: move between its
+    /// rows, page its review, confirm, cancel or edit the row in focus.
+    fn portal_dialog_key(
+        &mut self,
+        logical_key: &Key,
+        physical_key: &winit::keyboard::PhysicalKey,
+        modifiers: winit::event::Modifiers,
+    ) {
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
+                self.portal_dialogs.select_next(false);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.portal_dialogs.select_next(true);
+            }
+            Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp)
+                if self.portal_dialogs.review_pages().is_some() =>
+            {
+                self.portal_dialogs.review_back();
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::PageDown)
+                if self.portal_dialogs.reviewing_more() =>
+            {
+                self.portal_dialogs.confirm();
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.portal_dialogs.confirm();
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.portal_dialogs.cancel();
+            }
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
+                if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                    self.portal_dialogs.clear_selected_shortcut();
+                }
+            }
+            Key::Named(NamedKey::Space) if self.portal_dialogs.is_usb_device_selector() => {
+                self.portal_dialogs.toggle_selected_usb_device();
+            }
+            Key::Named(NamedKey::Space) if self.portal_dialogs.remember_label().is_some() => {
+                self.portal_dialogs.toggle_remember();
+            }
+            _ => {
+                if !self.portal_dialogs.edit_launcher_name(logical_key) {
+                    self.portal_dialogs.key(physical_key, modifiers);
+                }
+            }
+        }
+    }
+
     /// Portal sheets are modal: the keyboard and pointer remain in shell
     /// chrome until the person explicitly confirms or cancels.
     pub(super) fn route_portal_dialog_event(
@@ -281,50 +331,7 @@ impl ShellOverlayHost {
                 } else if capture_chord {
                     self.portal_dialogs.key(physical_key, modifiers);
                 } else {
-                    match logical_key {
-                        Key::Named(NamedKey::ArrowDown | NamedKey::Tab) => {
-                            self.portal_dialogs.select_next(false);
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            self.portal_dialogs.select_next(true);
-                        }
-                        Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp)
-                            if self.portal_dialogs.review_pages().is_some() =>
-                        {
-                            self.portal_dialogs.review_back();
-                        }
-                        Key::Named(NamedKey::ArrowRight | NamedKey::PageDown)
-                            if self.portal_dialogs.reviewing_more() =>
-                        {
-                            self.portal_dialogs.confirm();
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            self.portal_dialogs.confirm();
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.portal_dialogs.cancel();
-                        }
-                        Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
-                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
-                                self.portal_dialogs.clear_selected_shortcut();
-                            }
-                        }
-                        Key::Named(NamedKey::Space)
-                            if self.portal_dialogs.is_usb_device_selector() =>
-                        {
-                            self.portal_dialogs.toggle_selected_usb_device();
-                        }
-                        Key::Named(NamedKey::Space)
-                            if self.portal_dialogs.remember_label().is_some() =>
-                        {
-                            self.portal_dialogs.toggle_remember();
-                        }
-                        _ => {
-                            if !self.portal_dialogs.edit_launcher_name(logical_key) {
-                                self.portal_dialogs.key(physical_key, modifiers);
-                            }
-                        }
-                    }
+                    self.portal_dialog_key(logical_key, physical_key, modifiers);
                 }
             }
             WindowEvent::Ime(_) if self.portal_dialogs.is_text_entry() => {

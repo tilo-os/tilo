@@ -49,6 +49,15 @@ pub(crate) struct Notice {
     hand: ui::motion::Attention,
 }
 
+impl Notice {
+    /// When this line goes on its own.
+    pub(crate) fn expires(&self) -> Instant {
+        self.shown
+            .checked_add(super::presence_self::NOTICE_FOR)
+            .unwrap_or(self.shown)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PresenceNotices {
     pub(crate) current: Option<Notice>,
@@ -142,9 +151,7 @@ impl PresenceNotices {
 
     /// When the line up now goes on its own.
     pub(crate) fn expires(&self) -> Option<Instant> {
-        self.current
-            .as_ref()
-            .map(|notice| notice.shown + super::presence_self::NOTICE_FOR)
+        self.current.as_ref().map(Notice::expires)
     }
 
     /// Take the line away once it has been up its while. Returns whether
@@ -185,12 +192,14 @@ impl super::ShellOverlayHost {
             let Some(active) = tree.desktop.active_workspace() else {
                 return changed;
             };
-            let rows: Vec<RosterRow> =
+            (
+                active.room,
+                active.name.clone(),
                 tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local)
                     .into_iter()
                     .filter(|row| !row.invited)
-                    .collect();
-            (active.room, active.name.clone(), rows)
+                    .collect::<Vec<RosterRow>>(),
+            )
         };
         let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
         let intro =
@@ -261,7 +270,7 @@ impl super::ShellOverlayHost {
         let Some(notice) = &self.presence_notices.current else {
             return false;
         };
-        let expires = notice.shown + super::presence_self::NOTICE_FOR;
+        let expires = notice.expires();
         ui::motion::Transient::is_moving(
             ui::motion::Transient::READOUT,
             (notice.shown, expires),
@@ -284,7 +293,7 @@ impl super::ShellOverlayHost {
         };
         let now = Instant::now();
         let motion = self.motion.get();
-        let expires = notice.shown + super::presence_self::NOTICE_FOR;
+        let expires = notice.expires();
         let opacity = ui::motion::Transient::opacity(
             ui::motion::Transient::READOUT,
             (notice.shown, expires),
@@ -444,38 +453,7 @@ impl<'a> NoticeContent<'a> {
         let mut x = rect.x0 + pad_x;
         let mut ctx = ui::paint::PaintCtx::new(scene, Affine::IDENTITY, text, theme);
         // Their face, waving, then who it is.
-        if faces_w > 0.0 {
-            let faces: Vec<ui::presence::Face<'_>> = self
-                .faces
-                .iter()
-                .map(|row| {
-                    let mut face = ui::presence::Face::new(&row.label, &row.id, row.color);
-                    face.is_agent = row.is_agent;
-                    face
-                })
-                .collect();
-            stack.paint(
-                &mut ctx,
-                (x + faces_w, center_y),
-                (&faces, 0),
-                ui::widget::floating_surface::card_ground(theme),
-            );
-            x += faces_w;
-        }
-        if self.wave {
-            // The hand waves once beside their face.
-            let side = 16.0 * notice.hand.scale(now);
-            let hand = Rect::from_center_size(Point::new(x + 2.0 + 8.0, center_y), (side, side));
-            ui::icons::draw_icon(
-                ctx.scene,
-                Affine::IDENTITY,
-                hand,
-                ui::icons::Icon::Hand,
-                theme.tokens.colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            x += hand_w;
-        }
+        x = self.paint_lead(&mut ctx, x, center_y, notice, now);
         x += gap;
         ctx.text(
             &self.title,
@@ -495,34 +473,101 @@ impl<'a> NoticeContent<'a> {
                 None,
             );
         }
-        let mut change = Rect::ZERO;
-        if let (Some(intro_text), Some((_, h, cw))) = (&self.intro, intro) {
-            let top = rect.y0 + pad_y + line_h + f64::from(spacing.s2);
-            let row_h = h.max(28.0);
-            ctx.text(
-                intro_text,
-                &caption,
-                theme.tokens.colors.text_dim,
-                Point::new(rect.x0 + pad_x, top + (row_h - h) / 2.0),
-                Some(INTRO_WRAP),
-            );
-            let x1 = rect.x1 - pad_x;
-            change = Rect::new(
-                x1 - cw,
-                top + (row_h - 28.0) / 2.0,
-                x1,
-                top + (row_h + 28.0) / 2.0,
-            );
-            ui::widget::Button::paint(
+        let change = match (&self.intro, intro) {
+            (Some(intro_text), Some((_, h, cw))) => {
+                let top = rect.y0 + pad_y + line_h + f64::from(spacing.s2);
+                Self::paint_intro(
+                    &mut ctx,
+                    (intro_text.as_str(), h, cw),
+                    &change_label,
+                    rect,
+                    pad_x,
+                    top,
+                )
+            }
+            _ => Rect::ZERO,
+        };
+        (rect, change)
+    }
+
+    /// Their faces and, for a wave, the hand, from `x` on the line centred
+    /// at `center_y`; returns where the line goes on.
+    fn paint_lead(
+        &self,
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        mut x: f64,
+        center_y: f64,
+        notice: &Notice,
+        now: Instant,
+    ) -> f64 {
+        let stack = ui::presence::FaceStack::WINDOW;
+        let faces_w = stack.width_of(self.faces.len(), 0);
+        let hand_w = if self.wave { 20.0 } else { 0.0 };
+        if faces_w > 0.0 {
+            let faces: Vec<ui::presence::Face<'_>> = self
+                .faces
+                .iter()
+                .map(|row| {
+                    let mut face = ui::presence::Face::new(&row.label, &row.id, row.color);
+                    face.is_agent = row.is_agent;
+                    face
+                })
+                .collect();
+            let ground = ui::widget::floating_surface::card_ground(ctx.theme);
+            stack.paint(ctx, (x + faces_w, center_y), (&faces, 0), ground);
+            x += faces_w;
+        }
+        if self.wave {
+            // The hand waves once beside their face.
+            let side = 16.0 * notice.hand.scale(now);
+            let hand = Rect::from_center_size(Point::new(x + 2.0 + 8.0, center_y), (side, side));
+            ui::icons::draw_icon(
                 ctx.scene,
                 Affine::IDENTITY,
-                ctx.text,
-                theme,
-                &ui::widget::ButtonFace::new(change, &change_label)
-                    .role(ui::widget::ButtonRole::Plain),
+                hand,
+                ui::icons::Icon::Hand,
+                ctx.theme.tokens.colors.text_primary,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
+            x += hand_w;
         }
-        (rect, change)
+        x
+    }
+
+    /// The introduction under the line and its "Change" button, in the row
+    /// from `top`; returns the button.
+    fn paint_intro(
+        ctx: &mut ui::paint::PaintCtx<'_>,
+        (intro_text, h, cw): (&str, f64, f64),
+        change_label: &str,
+        rect: Rect,
+        pad_x: f64,
+        top: f64,
+    ) -> Rect {
+        let caption = ctx.theme.text(ui::TextRole::Caption);
+        let row_h = h.max(28.0);
+        ctx.text(
+            intro_text,
+            &caption,
+            ctx.theme.tokens.colors.text_dim,
+            Point::new(rect.x0 + pad_x, top + (row_h - h) / 2.0),
+            Some(INTRO_WRAP),
+        );
+        let x1 = rect.x1 - pad_x;
+        let change = Rect::new(
+            x1 - cw,
+            top + (row_h - 28.0) / 2.0,
+            x1,
+            top + f64::midpoint(row_h, 28.0),
+        );
+        ui::widget::Button::paint(
+            ctx.scene,
+            Affine::IDENTITY,
+            ctx.text,
+            ctx.theme,
+            &ui::widget::ButtonFace::new(change, change_label).role(ui::widget::ButtonRole::Plain),
+        );
+        change
     }
 }
 

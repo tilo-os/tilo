@@ -107,57 +107,7 @@ impl ShellOverlayHost {
             });
         }
 
-        // The state of the whole machine is on every display. Banners about
-        // the machine (critical battery) repeat, at rest, on the displays
-        // other than the one in use, where the stack takes clicks and keys;
-        // a ringing call, whose card is on the display in use, gives the
-        // others a quiet edge. Steady, so a ringing call keeps the loop idle.
-        let others: Vec<Rect> = if self.is_partitioned() {
-            self.layer_outputs()
-                .into_iter()
-                .filter(|display| *display != area)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.machine_banners.clear();
-        self.call_edges.clear();
-        if let Some(chrome) = self.chrome.as_ref()
-            && !others.is_empty()
-        {
-            let host = ChromeNotifications::new(chrome);
-            let ringing = NotificationStack::call_ringing(&host);
-            let top = f64::from(self.chrome_top_y);
-            let banners = &mut self.machine_banners;
-            let edges = &mut self.call_edges;
-            overlay_part(scene, "shell.machine-notices", desktop, |scene| {
-                for display in &others {
-                    let viewport = Rect::new(display.x0, display.y0 + top, display.x1, display.y1);
-                    let banner = NotificationStack::draw_machine_wide(
-                        &host,
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        viewport,
-                    );
-                    if !banner.is_zero_area() {
-                        banners.push(banner);
-                    }
-                    if ringing {
-                        edges.push(*display);
-                        ui::chrome::shell::paint_display_edge(
-                            scene,
-                            transform,
-                            *display,
-                            ui::chrome::shell::DisplayEdge::Ringing,
-                            theme,
-                        );
-                    }
-                }
-                None
-            });
-        }
+        self.draw_machine_notices(scene, transform, text_renderer, theme, desktop);
 
         // A visual alert is deliberately an edge treatment rather than a
         // full-screen luminance flash: it stays obvious without obscuring
@@ -185,6 +135,69 @@ impl ShellOverlayHost {
             }
             None
         });
+    }
+
+    /// The machine's banners and a ringing call's edge on the displays
+    /// other than the one in use.
+    fn draw_machine_notices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        desktop: Rect,
+    ) {
+        // The state of the whole machine is on every display. Banners about
+        // the machine (critical battery) repeat, at rest, on the displays
+        // other than the one in use, where the stack takes clicks and keys;
+        // a ringing call, whose card is on the display in use, gives the
+        // others a quiet edge. Steady, so a ringing call keeps the loop idle.
+        let area = self.overlay_area();
+        let others: Vec<Rect> = if self.is_partitioned() {
+            self.layer_outputs()
+                .into_iter()
+                .filter(|display| *display != area)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.machine_banners.clear();
+        self.call_edges.clear();
+        if let Some(chrome) = self.chrome.as_ref()
+            && !others.is_empty()
+        {
+            let ringing = NotificationStack::call_ringing(&ChromeNotifications::new(chrome));
+            let top = f64::from(self.chrome_top_y);
+            let banners = &mut self.machine_banners;
+            let edges = &mut self.call_edges;
+            overlay_part(scene, "shell.machine-notices", desktop, |scene| {
+                for display in &others {
+                    let viewport = Rect::new(display.x0, display.y0 + top, display.x1, display.y1);
+                    let banner = NotificationStack::draw_machine_wide(
+                        &ChromeNotifications::new(chrome),
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        viewport,
+                    );
+                    if !banner.is_zero_area() {
+                        banners.push(banner);
+                    }
+                    if ringing {
+                        edges.push(*display);
+                        ui::chrome::shell::paint_display_edge(
+                            scene,
+                            transform,
+                            *display,
+                            ui::chrome::shell::DisplayEdge::Ringing,
+                            theme,
+                        );
+                    }
+                }
+                None
+            });
+        }
     }
 
     /// The production root has no painting container of its own, so its three typed children

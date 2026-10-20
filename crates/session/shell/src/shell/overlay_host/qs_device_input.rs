@@ -697,27 +697,30 @@ impl ShellOverlayHost {
     /// A press on row `index` of the Devices section. From the keyboard a
     /// request is allowed and any other row does what its press does.
     pub(super) fn press_qs_device_row(&mut self, index: usize, point: Option<Point>) {
-        let point = match point {
-            Some(point) => point,
-            None => {
-                let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
-                    return;
-                };
-                let realtime = self
-                    .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-                    .unwrap_or_default();
-                let rows = device_fabric_pane_rows(&view, &realtime);
-                let row = self.qs_devices_row_rect(index);
-                match rows.get(index) {
-                    Some(item) if Self::qs_device_row_asks(item) => {
-                        Self::qs_realtime_consent_actions(row).0.center()
-                    }
-                    _ => row.center(),
-                }
-            }
+        let Some(point) = point.or_else(|| self.qs_device_row_key_point(index)) else {
+            return;
         };
         self.handle_qs_device_fabric_click(point);
         self.refresh_qs_hosted_rows();
+    }
+
+    /// Where a key press on row `index` of the Devices section lands: on
+    /// Allow when the row asks, else on the row.
+    fn qs_device_row_key_point(&self, index: usize) -> Option<Point> {
+        let view = self
+            .device_fabric_call(DeviceFabricUiAction::Snapshot)
+            .ok()?;
+        let realtime = self
+            .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
+            .unwrap_or_default();
+        let rows = device_fabric_pane_rows(&view, &realtime);
+        let row = self.qs_devices_row_rect(index);
+        Some(match rows.get(index) {
+            Some(item) if Self::qs_device_row_asks(item) => {
+                Self::qs_realtime_consent_actions(row).0.center()
+            }
+            _ => row.center(),
+        })
     }
 
     /// Whether a Devices row is a request to allow or decline.
@@ -856,7 +859,7 @@ impl ShellOverlayHost {
         use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
         let history = self.filtered_clipboard_history();
         let _ = self.clamp_qs_clipboard_history_start(history.len());
-        let visible = self.qs_clipboard_visible_rows();
+        let visible = QS_CLIPBOARD_ROWS;
         let start = self.qs_clipboard_history_start;
         let shown = visible.min(history.len().saturating_sub(start));
         let caption = if history.is_empty() && !self.qs_clipboard_query.is_empty() {

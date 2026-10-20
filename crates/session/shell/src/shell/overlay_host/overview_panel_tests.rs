@@ -1359,6 +1359,17 @@ fn the_workspace_overview_offers_join_a_workspace_beside_new_workspace_and_opens
 fn the_overview_pictures_every_strip_of_this_workspace_and_renames_and_moves_them() {
     use winit::event::Modifiers;
     use winit::keyboard::ModifiersState;
+    fn press(h: &mut ShellOverlayHost, key: &Key, modifiers: Modifiers) -> bool {
+        let mut handled = false;
+        h.handle_shell_keyboard_event(
+            key,
+            modifiers,
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        )
+    }
     let mut h = host();
     let chrome = h.chrome.as_ref().expect("chrome").clone();
     let second = chrome
@@ -1421,36 +1432,17 @@ fn the_overview_pictures_every_strip_of_this_workspace_and_renames_and_moves_the
     }
 
     // F2 names the strip the keyboard is in; Enter keeps the name.
-    let doc = AutoCommit::new();
-    let mut handled = false;
     h.select_overview_window(0);
-    assert!(h.handle_shell_keyboard_event(
+    assert!(press(
+        &mut h,
         &Key::Named(NamedKey::F2),
-        Modifiers::default(),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
+        Modifiers::default()
     ));
     assert!(h.overview_naming.is_some());
     for c in ["S", "t", "u", "d", "i", "o"] {
-        h.handle_shell_keyboard_event(
-            &Key::Character(c.into()),
-            Modifiers::default(),
-            false,
-            &doc,
-            &automerge::ROOT,
-            &mut handled,
-        );
+        press(&mut h, &Key::Character(c.into()), Modifiers::default());
     }
-    h.handle_shell_keyboard_event(
-        &Key::Named(NamedKey::Enter),
-        Modifiers::default(),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
-    );
+    press(&mut h, &Key::Named(NamedKey::Enter), Modifiers::default());
     assert!(h.overview_naming.is_none());
     assert_eq!(
         strips(&chrome).first().map(|(_, n)| n.as_str()),
@@ -1459,13 +1451,10 @@ fn the_overview_pictures_every_strip_of_this_workspace_and_renames_and_moves_the
 
     // Alt+Down moves it below the next strip, for the switcher too.
     let first = strips(&chrome).first().map(|(id, _)| *id).expect("a strip");
-    assert!(h.handle_shell_keyboard_event(
+    assert!(press(
+        &mut h,
         &Key::Named(NamedKey::ArrowDown),
         Modifiers::from(ModifiersState::ALT),
-        false,
-        &doc,
-        &automerge::ROOT,
-        &mut handled,
     ));
     let moved = strips(&chrome);
     assert_eq!(moved.get(1).map(|(id, _)| *id), Some(first), "{moved:?}");

@@ -55,6 +55,45 @@ impl ShellOverlayHost {
         true
     }
 
+    /// A press at `p` on the search filters: "All", "More" or one kind's
+    /// chip. Returns whether it hit one.
+    fn click_palette_filter(
+        &mut self,
+        p: vello::kurbo::Point,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        // A direct way to reach "nothing selected", not just
+        // untick every chip one at a time. Targets are the pointer
+        // rects (`selector_hit_rect`), the same ones the semantic
+        // nodes publish.
+        let all_hit = self.search_filters.search_all_chip_hit_rect();
+        if all_hit.area() > 0.0 && all_hit.contains(p) {
+            if !self.active_kind_filter.is_empty() {
+                self.active_kind_filter.clear();
+                self.last_search_query.clear(); // force a refresh
+                self.refresh_search_results(&ctx.state, ctx.path);
+            }
+            return true;
+        }
+        let more_hit = self.search_filters.search_more_hit_rect();
+        if more_hit.area() > 0.0 && more_hit.contains(p) {
+            self.search_filters.more_open = !self.search_filters.more_open;
+            return true;
+        }
+        let kinds: Vec<_> = self.search_filters.kinds().cloned().collect();
+        for idx in 0..self.search_filters.search_chip_rects.len() {
+            if self.search_filters.search_chip_hit_rect(idx).contains(p) {
+                if let Some(kind) = kinds.get(idx).cloned() {
+                    toggle_kind(&mut self.active_kind_filter, kind);
+                    self.last_search_query.clear(); // force a refresh
+                    self.refresh_search_results(&ctx.state, ctx.path);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     /// Palette-owned input, ahead of the switcher/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
@@ -80,39 +119,10 @@ impl ShellOverlayHost {
             ..
         } = event
             && let Some(p) = self.last_cursor
+            && self.click_palette_filter(p, ctx)
         {
-            // A direct way to reach "nothing selected", not just
-            // untick every chip one at a time. Targets are the pointer
-            // rects (`selector_hit_rect`), the same ones the semantic
-            // nodes publish.
-            let all_hit = self.search_filters.search_all_chip_hit_rect();
-            if all_hit.area() > 0.0 && all_hit.contains(p) {
-                if !self.active_kind_filter.is_empty() {
-                    self.active_kind_filter.clear();
-                    self.last_search_query.clear(); // force a refresh
-                    self.refresh_search_results(&ctx.state, ctx.path);
-                }
-                *ctx.handled = true;
-                return true;
-            }
-            let more_hit = self.search_filters.search_more_hit_rect();
-            if more_hit.area() > 0.0 && more_hit.contains(p) {
-                self.search_filters.more_open = !self.search_filters.more_open;
-                *ctx.handled = true;
-                return true;
-            }
-            let kinds: Vec<_> = self.search_filters.kinds().cloned().collect();
-            for idx in 0..self.search_filters.search_chip_rects.len() {
-                if self.search_filters.search_chip_hit_rect(idx).contains(p) {
-                    if let Some(kind) = kinds.get(idx).cloned() {
-                        toggle_kind(&mut self.active_kind_filter, kind);
-                        self.last_search_query.clear(); // force a refresh
-                        self.refresh_search_results(&ctx.state, ctx.path);
-                    }
-                    *ctx.handled = true;
-                    return true;
-                }
-            }
+            *ctx.handled = true;
+            return true;
         }
         // The selected row previews what a held modifier would do.
         let held = ctx.modifiers.state();

@@ -165,10 +165,10 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let now = ui::time::now();
-        let rest = self.quick_settings_rect();
+        let settled = self.quick_settings_rect();
         // The card's height follows the page on the expand/collapse motion;
         // each page is laid out at its own height and clipped by the card.
-        let rect = self.qs_motion.drawn_rect(rest, now);
+        let rect = self.qs_motion.drawn_rect(settled, now);
         Self::draw_quick_settings_card_background(scene, transform, theme, rect);
 
         // Every page paints inside the Panel: a discovery list taller than
@@ -188,7 +188,7 @@ impl ShellOverlayHost {
         // A drill in or back: the page being left is drawn first, at its
         // own depth (`ui::motion::Drill`); the page on top is drawn last, so
         // the hit targets it records are the ones input reaches.
-        if let Some((leaving, pose)) = self.qs_motion.leaving(now, rest.width(), motion) {
+        if let Some((leaving, pose)) = self.qs_motion.leaving(now, settled.width(), motion) {
             let leaving = leaving.to_vec();
             let shown = self.swap_quick_settings_stack(leaving);
             let leaving_rect = self.quick_settings_rect();
@@ -197,9 +197,9 @@ impl ShellOverlayHost {
             });
             self.swap_quick_settings_stack(shown);
         }
-        let pose = self.qs_motion.current(now, rest.width(), motion);
-        pose.paint(scene, transform, rest, |scene, xform| {
-            self.draw_quick_settings_page(scene, xform, text_renderer, theme, rest);
+        let pose = self.qs_motion.current(now, settled.width(), motion);
+        pose.paint(scene, transform, settled, |scene, xform| {
+            self.draw_quick_settings_page(scene, xform, text_renderer, theme, settled);
         });
         scene.pop_layer();
     }
@@ -263,7 +263,7 @@ impl ShellOverlayHost {
     /// return the stack it replaced. Input never sees the swap: it happens
     /// and is undone within one draw.
     pub(super) fn swap_quick_settings_stack(
-        &mut self,
+        &self,
         stack: Vec<crate::shell::quick_settings::QsLevel>,
     ) -> Vec<crate::shell::quick_settings::QsLevel> {
         self.chrome.as_ref().map_or_else(Vec::new, |chrome| {

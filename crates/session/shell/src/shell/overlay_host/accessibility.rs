@@ -12,7 +12,7 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "The accessibility tree is kept as one ordered overlay projection so assistive focus order matches retained visual overlay order."
     )]
-    pub(super) fn host_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    pub(super) fn host_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name(t("a11y-workspace"));
@@ -126,14 +126,14 @@ impl ShellOverlayHost {
                             )),
                     );
                     let site_rooms = self.site_rooms();
-                    for idx in 0..cards.len() {
+                    for (idx, card) in cards.iter().enumerate() {
                         let leave = self.overview_leave_rect(idx, &site_rooms);
                         if leave.area() > 0.0 {
                             overview.children.push(
                                 AccessNode::new(Role::Button)
                                     .with_name(t_args(
                                         "a11y-leave-workspace",
-                                        &[("name", cards[idx].name.clone().into())],
+                                        &[("name", card.name.clone().into())],
                                     ))
                                     .with_bounds(leave),
                             );
@@ -383,13 +383,9 @@ impl ShellOverlayHost {
         root.children.extend(self.live_status_accessibility());
         // Last, so the overlay indices above keep their paths.
         root.children.extend(self.strip_switcher_accessibility());
-        Some(root)
+        root
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match maps every accessible overlay to its hit rect"
-    )]
     pub(super) fn host_synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         let overlay = *self.accessible_overlay_order().get(overlay_index)?;

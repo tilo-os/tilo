@@ -177,7 +177,7 @@ impl ShellOverlayHost {
             (SuperGesture::Tap, surface) if surface.is_some() || self.palette_visible => {
                 self.close_super_surface();
             }
-            (SuperGesture::Tap, None) => {
+            (SuperGesture::Tap, None) | (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (SuperGesture::Peek, None) if !self.palette_visible => {
@@ -185,9 +185,6 @@ impl ShellOverlayHost {
             }
             (SuperGesture::PeekFull, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Peek, doc, root);
-            }
-            (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
-                self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (
                 SuperGesture::PeekReleased | SuperGesture::PeekCancelled,

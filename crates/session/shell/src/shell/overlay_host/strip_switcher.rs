@@ -228,13 +228,13 @@ pub(crate) enum Target {
 /// What the host does for the switcher.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Command {
-    FocusStrip(StripId),
+    Focus(StripId),
     /// Move this many strips down (positive) or up (negative).
-    StepStrip(i32),
+    Step(i32),
     /// Make a strip with this name and move to it; the switcher then puts
     /// its name in place for typing.
-    CreateStrip(String),
-    RenameStrip(StripId, String),
+    Create(String),
+    Rename(StripId, String),
 }
 
 /// The answer to a press.
@@ -548,9 +548,7 @@ impl StripSwitcher {
     /// The strip whose mark the pointer or the keyboard is on, so the ribbon
     /// lights that mark too.
     pub(crate) fn lit_strip(&self) -> Option<usize> {
-        if self.open.is_none() {
-            return None;
-        }
+        self.open?;
         match (self.hover, self.selected) {
             (Some(Target::Row(Row::Strip(i))), _) | (_, Some(Row::Strip(i))) => Some(i),
             _ => None,
@@ -747,15 +745,15 @@ impl StripSwitcher {
 
     fn activate(&mut self, row: Row) -> Press {
         match row {
-            Row::Strip(i) => self.model.strips.get(i).map_or(Press::Consumed, |s| {
-                Press::Command(Command::FocusStrip(s.id))
-            }),
+            Row::Strip(i) => self
+                .model
+                .strips
+                .get(i)
+                .map_or(Press::Consumed, |s| Press::Command(Command::Focus(s.id))),
             Row::NewStrip => {
                 self.name_when_listed = true;
                 self.selected = Some(Row::NewStrip);
-                Press::Command(Command::CreateStrip(default_strip_name(
-                    self.model.strips.len(),
-                )))
+                Press::Command(Command::Create(default_strip_name(self.model.strips.len())))
             }
         }
     }
@@ -824,8 +822,8 @@ impl StripSwitcher {
             clippy::cast_possible_truncation,
             reason = "a handful of notches per event, far inside i32"
         )]
-        let steps = -(whole as i32);
-        Some(Command::StepStrip(steps))
+        let steps = (-whole) as i32;
+        Some(Command::Step(steps))
     }
 
     /// Every label in keyboard order.
@@ -904,9 +902,7 @@ impl StripSwitcher {
                 };
                 match self.activate(row) {
                     // A new strip stays open for its name.
-                    Press::Command(command @ Command::CreateStrip(_)) => {
-                        KeyAnswer::Command(command)
-                    }
+                    Press::Command(command @ Command::Create(_)) => KeyAnswer::Command(command),
                     Press::Command(command) => {
                         self.close();
                         KeyAnswer::Command(command)
@@ -948,7 +944,7 @@ impl StripSwitcher {
                 .any(|s| s.id == id && s.name == name)
         };
         let command = match name {
-            Some(name) if !unchanged(&name) => Some(Command::RenameStrip(id, name)),
+            Some(name) if !unchanged(&name) => Some(Command::Rename(id, name)),
             _ => None,
         };
         if by_keyboard {
@@ -1696,15 +1692,15 @@ impl super::ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let created = matches!(command, Command::CreateStrip(_));
+        let created = matches!(command, Command::Create(_));
         let refused = {
             let mut state = chrome.borrow_mut();
             let refused = match command {
-                Command::FocusStrip(strip) => {
+                Command::Focus(strip) => {
                     state.focus_strip(strip);
                     None
                 }
-                Command::StepStrip(steps) => {
+                Command::Step(steps) => {
                     for _ in 0..steps.unsigned_abs() {
                         if !state.switch_strip(steps.signum()) {
                             break;
@@ -1712,8 +1708,8 @@ impl super::ShellOverlayHost {
                     }
                     None
                 }
-                Command::CreateStrip(name) => state.create_strip(&name).err(),
-                Command::RenameStrip(strip, name) => state.rename_strip(strip, &name).err(),
+                Command::Create(name) => state.create_strip(&name).err(),
+                Command::Rename(strip, name) => state.rename_strip(strip, &name).err(),
             };
             if let Some(message) = &refused {
                 state.push_warning_notification(t("strip-switcher-refused"), message);
@@ -1953,7 +1949,7 @@ mod tests {
         let p = s.layout().label_rect(Row::Strip(1)).unwrap().center();
         assert_eq!(
             s.press(p, now),
-            Press::Command(Command::FocusStrip(StripId(101)))
+            Press::Command(Command::Focus(StripId(101)))
         );
         // Between two short labels, left of them, is not a label.
         let label = s.layout().label_rect(Row::Strip(1)).unwrap();
@@ -1971,7 +1967,7 @@ mod tests {
         let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
         assert_eq!(
             s.press(new, now),
-            Press::Command(Command::CreateStrip("Strip 2".into())),
+            Press::Command(Command::Create("Strip 2".into())),
             "a click makes the strip at once"
         );
         // The host makes it and moves to it; the model lists it.
@@ -1989,7 +1985,7 @@ mod tests {
         typed(&mut s, "Games");
         assert_eq!(
             enter(&mut s),
-            KeyAnswer::Command(Command::RenameStrip(StripId(101), "Games".into()))
+            KeyAnswer::Command(Command::Rename(StripId(101), "Games".into()))
         );
         assert!(!s.is_naming());
         // With the name done, hover rules again.
@@ -2005,14 +2001,14 @@ mod tests {
         let label = s.layout().label_rect(Row::Strip(0)).unwrap().center();
         assert_eq!(
             s.press(label, t0),
-            Press::Command(Command::FocusStrip(StripId(100)))
+            Press::Command(Command::Focus(StripId(100)))
         );
         assert_eq!(s.press(label, t0 + ms(150)), Press::Consumed);
         assert_eq!(s.naming_text(), Some("main"), "the old name, selected");
         typed(&mut s, "Lounge");
         assert_eq!(
             enter(&mut s),
-            KeyAnswer::Command(Command::RenameStrip(StripId(100), "Lounge".into()))
+            KeyAnswer::Command(Command::Rename(StripId(100), "Lounge".into()))
         );
         // Unchanged.
         let other = s.layout().label_rect(Row::Strip(1)).unwrap().center();
@@ -2047,12 +2043,12 @@ mod tests {
         let on = zone.center();
         assert_eq!(
             s.scroll(on, MouseScrollDelta::LineDelta(0.0, -1.0), t0, zone),
-            Some(Command::StepStrip(1)),
+            Some(Command::Step(1)),
             "a notch toward the person: the strip below"
         );
         assert_eq!(
             s.scroll(on, MouseScrollDelta::LineDelta(0.0, 1.0), t0 + ms(50), zone),
-            Some(Command::StepStrip(-1)),
+            Some(Command::Step(-1)),
             "away: the strip above"
         );
         // Two-finger travel adds up to a step.
@@ -2062,7 +2058,7 @@ mod tests {
         assert_eq!(s.scroll(on, px(-15.0), t1 + ms(10), zone), None);
         assert_eq!(
             s.scroll(on, px(-15.0), t1 + ms(20), zone),
-            Some(Command::StepStrip(1))
+            Some(Command::Step(1))
         );
         // Over a window, the wheel is the window's.
         assert_eq!(
@@ -2084,7 +2080,7 @@ mod tests {
                 t1 + ms(2000),
                 zone
             ),
-            Some(Command::StepStrip(1))
+            Some(Command::Step(1))
         );
     }
 
@@ -2099,7 +2095,7 @@ mod tests {
         assert_eq!(s.selected(), Some(Row::Strip(1)));
         assert_eq!(
             enter(&mut s),
-            KeyAnswer::Command(Command::FocusStrip(StripId(101)))
+            KeyAnswer::Command(Command::Focus(StripId(101)))
         );
         assert!(
             !s.is_open(),
@@ -2121,7 +2117,7 @@ mod tests {
         assert_eq!(s.selected(), Some(Row::NewStrip));
         assert_eq!(
             enter(&mut s),
-            KeyAnswer::Command(Command::CreateStrip("Strip 3".into()))
+            KeyAnswer::Command(Command::Create("Strip 3".into()))
         );
         assert!(s.is_open(), "the new strip's name comes next");
         assert_eq!(
@@ -2156,7 +2152,7 @@ mod tests {
         let name = StripSwitcher::target_name(Target::Row(Row::Strip(1)));
         assert_eq!(
             s.activate_target(&name),
-            Some(Press::Command(Command::FocusStrip(StripId(101))))
+            Some(Press::Command(Command::Focus(StripId(101))))
         );
         assert_eq!(
             s.activate_target(&StripSwitcher::rename_target_name(0)),

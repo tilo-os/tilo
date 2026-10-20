@@ -337,7 +337,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     *rect,
-                    CheckRow {
+                    &CheckRow {
                         checked: device.selected,
                         label: &device.label,
                         detail: Some(&crate::shell::i18n::t(access_key)),
@@ -403,7 +403,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     rect,
-                    CheckRow {
+                    &CheckRow {
                         checked: remember,
                         label: &remember_label,
                         detail: None,
