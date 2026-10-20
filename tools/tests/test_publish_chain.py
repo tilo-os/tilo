@@ -273,11 +273,19 @@ class GeneratorTests(unittest.TestCase):
 
     def test_the_manifest_renders(self):
         manifest = products.load()
+        # A product's own signing and publishing read only what its build produced, so they
+        # run anywhere. A hand-written `[[matrix.check]]` may do more with its credentials
+        # (the Windows signer packages again with Inno Setup, an x86_64 program) and says
+        # where it runs itself.
+        product_only = {**manifest, "matrix": []}
         names = set()
         for family in products.families(manifest):
             for c in t_matrix.expand(tomllib.loads(products.render(manifest, family)))["check"]:
                 self.assertNotIn(c["name"], names)
                 names.add(c["name"])
+                if "id_token" in c:
+                    self.assertTrue(c.get("requires"), c["name"])
+            for c in t_matrix.expand(tomllib.loads(products.render(product_only, family)))["check"]:
                 if "id_token" in c:
                     self.assertEqual(c["requires"], products.CREDENTIAL_REQUIRES, c["name"])
 
