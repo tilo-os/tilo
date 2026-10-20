@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 import unittest
 from unittest import mock
+from restart_fixture import restart_fixture
 
 
 SCRIPT = Path(__file__).parents[1] / "dev" / "open-snapshot-pr.py"
@@ -39,18 +40,6 @@ def print_pins(kind, x86_ref, arm_ref):
     with mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
         assert MODULE.main() == 0
     return out.getvalue()
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class KernelSnapshotPullRequestTests(unittest.TestCase):

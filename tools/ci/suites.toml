@@ -1517,6 +1517,10 @@ suite = "os/tests/test_require_cosign_authority.py"
 by = "os/tests/workflow_dependency_invariants.sh"
 
 [[covered]]
+suite = "os/tests/restart_fixture.py"
+by = "os/tests/test_fex_patches.py"
+
+[[covered]]
 suite = "os/tests/frozen_source_fixture.py"
 by = "os/tests/test_native_resume.py"
 

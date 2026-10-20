@@ -7,24 +7,13 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from restart_fixture import restart_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('wine_repository', ROOT / 'os/dev/development-wine-repository.py')
 wine = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(wine)
 REF = 'registry.tilo.so/tilo/wine-paired@sha256:' + '1' * 64
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class DevelopmentWineTrust(unittest.TestCase):

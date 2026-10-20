@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
 from hang import HANG_BOUND  # noqa: E402
 import signing_spool as spool
+from restart_fixture import restart_fixture
 SPEC = importlib.util.spec_from_file_location('finalizer', Path(__file__).resolve().parents[1] / 'dev/finalize-development-rootfs.py')
 finalizer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(finalizer)
@@ -33,18 +34,6 @@ def request():
             'minimum_free_bytes': 1024**3, 'stage_timeout_seconds': 600,
             'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 3600,
             'publish_repository': 'registry.tilo.so/tilo/tilo-development'}
-
-
-def restart_fixture(test):
-    """Give the next subTest phase of a merged test the fresh fixture it had
-    as its own test: tear down, run cleanups, reset instance state, set up."""
-    test.tearDown()
-    test.doCleanups()
-    fresh = type(test)(test._testMethodName).__dict__
-    keep = {key: test.__dict__[key] for key in ("_outcome", "_subtest") if key in test.__dict__}
-    test.__dict__.clear()
-    test.__dict__.update(fresh, **keep)
-    test.setUp()
 
 
 class FinalizationTests(unittest.TestCase):
