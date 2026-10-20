@@ -114,6 +114,16 @@ pub(crate) fn fill_with_ground(
     theme: &Theme,
     ground: Color,
 ) {
+    if material == Material::SeeThrough {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            see_through_fill(theme, ground),
+            None,
+            shape,
+        );
+        return;
+    }
     if blurs(material, theme)
         && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
     {
@@ -137,6 +147,18 @@ pub(crate) fn fill_with_ground(
         return;
     }
     scene.fill(Fill::NonZero, transform, ground, None, shape);
+}
+
+/// The see-through material's fill over `ground`: half of it, unblurred,
+/// opaque under reduced transparency and forced colours (and on high
+/// contrast, whose token is `1`).
+pub(crate) fn see_through_fill(theme: &Theme, ground: Color) -> Color {
+    let opacity = if theme.reduce_transparency || theme.forced_colors {
+        1.0
+    } else {
+        theme.tokens.colors.surfaces.see_through_opacity
+    };
+    ground.with_alpha(opacity)
 }
 
 /// One surface drawn in the blurred material while a recording was active,

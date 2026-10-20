@@ -101,6 +101,11 @@ pub enum Material {
     /// show through, such as a prompt for a secret over content the user
     /// does not own.
     Opaque,
+    /// `surfaces.overlay` at `surfaces.see_through_opacity` (half), over an
+    /// unblurred backdrop: chrome that must leave the exact pixels under it
+    /// visible, such as the capture bar over what is being chosen. Opaque
+    /// under reduced transparency, forced colours and high contrast.
+    SeeThrough,
 }
 
 /// Paint a floating surface's body: `shape` filled with `material`. Edges,

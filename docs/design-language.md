@@ -144,6 +144,12 @@ floating thing casts two (a tight contact layer and a wide one) and draws a
   unblurred translucency.
 - Chrome over media (video controls, photo info) uses the same material on the
   media itself.
+- The one exception is chrome over pixels the person is choosing: the capture
+  bar and its selection controls use the **see-through material**,
+  `surfaces.overlay` at `surfaces.see_through_opacity` (50 %) with no blur
+  (`floating_surface::Material::SeeThrough`), because a blur would hide the
+  very thing being selected. Reduced transparency, forced colours and high
+  contrast make it opaque.
 - The window group's docked tab strip is a floating-material surface too: one
   frosted body behind the whole strip (the desktop behind it, blurred and
   tinted), with the active tab an opaque lift on it, lighter than the strip

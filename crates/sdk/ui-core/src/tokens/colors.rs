@@ -112,6 +112,11 @@ pub const MATERIAL_ALPHA: f32 = 0.72;
 /// Stock backdrop blur of the floating material, in logical pixels.
 pub const MATERIAL_BLUR_PX: f32 = 24.0;
 
+/// Stock opacity of the see-through material ([`Surfaces::see_through_opacity`]):
+/// half. Chrome over pixels the person is choosing (the capture bar and its
+/// selection controls) must leave those pixels visible, unblurred.
+pub const SEE_THROUGH_ALPHA: f32 = 0.5;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorRamp {
     pub stops: [Color; 11],
@@ -208,6 +213,11 @@ pub struct Surfaces {
     pub material_blur_px: f32,
     /// Opacity of the [`Self::overlay`] tint over the blurred backdrop.
     pub material_opacity: f32,
+    /// Opacity of the see-through material: [`Self::overlay`] over an
+    /// unblurred backdrop, for chrome that must not hide what is under it
+    /// (the capture bar over the pixels being chosen). `1` where nothing may
+    /// be translucent.
+    pub see_through_opacity: f32,
     /// The declared edge between a window tile and the desktop. Read it
     /// through [`Colors::window_edge`], which flips its polarity if the
     /// ground would swallow it.
@@ -963,6 +973,7 @@ impl Colors {
                 },
                 material_blur_px: if opaque { 0.0 } else { MATERIAL_BLUR_PX },
                 material_opacity: if opaque { 1.0 } else { MATERIAL_ALPHA },
+                see_through_opacity: if opaque { 1.0 } else { SEE_THROUGH_ALPHA },
                 content_edge,
             },
             intent: Intents {
