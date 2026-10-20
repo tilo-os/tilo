@@ -1,8 +1,8 @@
 # Reviewed shell references
 
 `artifacts.json` pins the tab reorder and maximized decision state references
-by public immutable URL, SHA-256 and byte length. Their original bytes from
-`2a26be496c` are unchanged and retain the repository's license. Controlled
+by public immutable URL, SHA-256 and byte length. They retain the
+repository's license. Controlled
 font licenses and provenance remain in `crates/sdk/ui-core/assets/fonts`.
 
 These are required pixel comparisons, not illustrative screenshots. Tests
@@ -25,5 +25,4 @@ archived candidates but retains changed and new images. After review, publish
 approved replacements with `tools/upload_immutable_packages.sh`, verify public
 readback and update the text pins. Generated PNGs stay out of Git.
 
-The overview reference remains in Git while its current rendering mismatch is
-investigated; its original comparison and tolerance are unchanged.
+The overview reference remains in Git.
