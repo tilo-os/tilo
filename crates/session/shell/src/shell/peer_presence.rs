@@ -1143,12 +1143,22 @@ impl PeerPresence {
             let principals = tree.room_peer_principals(ws.room);
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals);
             for row in &mut rows {
-                let presence_id = presence
-                    .names
-                    .iter()
-                    .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
-                    .cloned()
-                    .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
+                // A row named by the id its presence carries is that
+                // presence; only a row named otherwise is found by its name,
+                // which two people's devices can share.
+                let own = ui::permissions::UserId(row.id.clone());
+                let presence_id = if presence.names.contains_key(&own)
+                    || presence.here.values().any(|users| users.contains(&own))
+                {
+                    own
+                } else {
+                    presence
+                        .names
+                        .iter()
+                        .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
+                        .cloned()
+                        .unwrap_or(own)
+                };
                 row.active_tab = presence.here.iter().find_map(|(key, users)| {
                     let PresenceKey::Tab { id } = key else {
                         return None;
@@ -3895,6 +3905,52 @@ mod two_sessions {
             "and finds the same people",
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two devices the room names alike (two people's "Primary device") are
+    /// still two people: where each is comes from its own presence, so
+    /// following one goes where that one is.
+    #[test]
+    fn two_peers_named_alike_are_each_where_their_own_presence_says() {
+        let (first, second) = (peer_id(61), peer_id(62));
+        let (mut host_tree, room) =
+            host_naming(&[(&first, "Primary device"), (&second, "Primary device")]);
+        looking_at_its_room(&mut host_tree);
+        let host_handle = host_tree.shared();
+        let dir = std::env::temp_dir().join(format!("tilo-roster-alike-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let (host, _host_net, _host_cmds) = session(&dir, "a.sock", &host_handle, &peer_id(60));
+        let id = |peer: &str| ui::permissions::UserId(format!("peer@{}", handle_of(peer)));
+        let mut presence = PresenceCtx::default();
+        for peer in [&first, &second] {
+            presence.names.insert(id(peer), "Primary device".into());
+        }
+        presence
+            .here
+            .insert(PresenceKey::Tab { id: "a".into() }, vec![id(&second)]);
+        presence.pointers.insert(
+            PresenceKey::Workspace {
+                id: room.to_string(),
+            },
+            vec![(id(&first), (0.0, 0.0)), (id(&second), (0.0, 0.0))],
+        );
+        assert!(host.refresh_roster(&presence));
+        let where_ = |peer: &str| {
+            host_handle
+                .read()
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace
+                        .collaborators
+                        .iter()
+                        .find(|row| row.id == id(peer).0)
+                        .map(|row| row.active_tab)
+                })
+        };
+        assert_eq!(where_(&second), Some(Some(0xa)), "the one in the window");
+        assert_eq!(where_(&first), Some(None), "the other, in none");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

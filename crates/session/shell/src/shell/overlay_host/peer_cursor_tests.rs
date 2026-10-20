@@ -608,3 +608,57 @@ fn cross_app_follow_tree() -> WorkspaceTree {
         .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
     tree
 }
+
+/// Someone followed opens a window: where they are reaches this device
+/// before the window does. The view keeps following and goes there once
+/// the window arrives, instead of letting go.
+#[test]
+fn follow_waits_for_a_window_the_followed_person_just_opened() {
+    let mut tree = one_group_seed();
+    tree.desktop.workspaces[0]
+        .collaborators
+        .push(Collaborator::with_active_tab("ada", "Ada", 201).with_session(77));
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host.set_followed_peer(Some("ada".into()));
+    host.reconcile_followed_peer();
+    assert_eq!(
+        host.followed_peer.as_deref(),
+        Some("ada"),
+        "a window not here yet is no reason to stop"
+    );
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        Some(1),
+        "nothing to go to yet"
+    );
+    {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(StateGroup {
+                id: 200,
+                width: StateWidth::Normal,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: 201,
+                    title: "Chat".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("Chat".into()),
+                        label: "Chat".into(),
+                    },
+                }],
+                active_tab: 201,
+                focus_history: Vec::new(),
+            });
+    }
+    chrome.borrow_mut().bump();
+    host.resync_strips_from_tree();
+    host.reconcile_followed_peer();
+    assert_eq!(
+        chrome.borrow().active_tab_id(),
+        Some(201),
+        "the window arrived"
+    );
+    assert_eq!(host.followed_peer.as_deref(), Some("ada"));
+}
