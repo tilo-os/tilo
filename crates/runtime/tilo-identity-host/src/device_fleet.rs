@@ -12,8 +12,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
+    DeviceCapabilities, DeviceCert, GovernorSuccession, IdentityPaths, RevocationEntry,
+    RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_revocation_entry,
 };
 
@@ -26,6 +26,11 @@ pub struct DeviceFleet {
     pub identity_id: String,
     pub certificates: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
+    /// The root's statements naming which device governs in place of each
+    /// revoked one, announced with the revocations so a room the revoked
+    /// device governed moves to its successor. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successions: Vec<GovernorSuccession>,
     /// Enrollment nonces an older build recorded here. Redeemed nonces now
     /// live in [`crate::enrollment::NonceStore`], which the nearby-pairing
     /// broker shares; the next redemption moves these there and saves the
@@ -50,6 +55,7 @@ impl DeviceFleet {
             identity_id,
             certificates: Vec::new(),
             revocations: Vec::new(),
+            successions: Vec::new(),
             consumed_enrollments: Vec::new(),
         }
     }
@@ -120,6 +126,11 @@ impl DeviceFleetStore {
         }
         for entry in &fleet.revocations {
             verify_revocation_entry(entry)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        }
+        for succession in &fleet.successions {
+            succession
+                .verify_at(succession.successor.issued_at_ns)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         }
         // Home peers are enrolled by the privileged LAN broker rather than the
@@ -412,11 +423,69 @@ impl DeviceFleetStore {
             .sign(&digest)
             .map_err(|error| io::Error::other(error.to_string()))?;
         verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
+        let succession = self.succession(&root, &fleet, &entry, revoked_at_ns)?;
+        let mut changed = false;
         if !fleet.is_revoked(&device_public_key) {
             fleet.revocations.push(entry.clone());
+            changed = true;
+        }
+        if let Some(succession) = succession
+            && !fleet
+                .successions
+                .iter()
+                .any(|known| known.previous.device_public_key == device_public_key)
+        {
+            fleet.successions.push(succession);
+            changed = true;
+        }
+        if changed {
             self.save(&fleet)?;
         }
         Ok(entry)
+    }
+
+    /// The root's statement that this device governs every room the device
+    /// `revocation` revokes governed. `None` when this device is that one,
+    /// holds no certificate of the identity, is revoked, or may not own
+    /// workspaces: then nothing succeeds it, and its rooms wait for a root
+    /// that names a successor.
+    fn succession(
+        &self,
+        root: &runtime_identity::SigningIdentity,
+        fleet: &DeviceFleet,
+        revocation: &RevocationEntry,
+        now_ns: u64,
+    ) -> io::Result<Option<GovernorSuccession>> {
+        let Ok(successor) = tilo_user_identity::persist::read_device_cert(
+            &self
+                .identity_paths
+                .device_cert_for_user(&revocation.user_public_key),
+        ) else {
+            return Ok(None);
+        };
+        let Some(previous) = fleet
+            .certificates
+            .iter()
+            .find(|cert| cert.device_public_key == revocation.revoked_device_public_key)
+        else {
+            return Ok(None);
+        };
+        if fleet.is_revoked(&successor.device_public_key) {
+            return Ok(None);
+        }
+        let mut succession = GovernorSuccession {
+            previous: previous.clone(),
+            revocation: revocation.clone(),
+            successor,
+            signature: [0; 64],
+        };
+        let digest = succession
+            .signing_digest()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        succession.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(succession.verify_at(now_ns).is_ok().then_some(succession))
     }
 
     /// The fleet of `identity_id` as a verifier sees it: every certificate

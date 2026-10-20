@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 6;
+pub const PEER_PROTOCOL_VERSION: u32 = 7;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -269,6 +269,11 @@ pub enum NeighbourMsg {
         cert: Box<tilo_user_identity::DeviceCert>,
         #[serde(default)]
         revocations: Vec<tilo_user_identity::RevocationEntry>,
+        /// The root's statements naming which device governs in place of a
+        /// revoked one, so a room its revoked governor held moves to the
+        /// successor rather than freezing.
+        #[serde(default)]
+        successions: Vec<tilo_user_identity::GovernorSuccession>,
     },
     /// One typed, signed document mutation crossing the Iroh boundary.
     /// Recipients authenticate the transport device, validate the envelope and
@@ -666,6 +671,7 @@ mod tests {
                 protocol,
                 cert: device_cert(),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             })
             .unwrap();
             assert_eq!(bytes[0], IDENTITY_HELLO_INDEX);
@@ -904,6 +910,7 @@ mod tests {
                     protocol: crate::PEER_PROTOCOL_VERSION,
                     cert: device_cert(),
                     revocations: Vec::new(),
+                    successions: Vec::new(),
                 },
             ),
             (
@@ -1151,12 +1158,14 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b06",
+                "0b07",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030300",
+                // No revocations, no successions.
+                "00",
             ),
         ),
         (

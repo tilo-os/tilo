@@ -144,6 +144,7 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.authority().clone()),
                     revocations: vec![entry],
+                    successions: Vec::new(),
                 },
                 now,
             )

@@ -56,6 +56,8 @@ pub(crate) mod device_approvals;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
+#[cfg(test)]
+mod governor_succession_tests;
 pub(crate) mod join_field;
 #[cfg(test)]
 mod node_member_tests;
@@ -6523,6 +6525,9 @@ impl ShellNetwork {
     /// room admission can let any device of a room's owner govern it. Rebuilt
     /// from the identity store, so a revoked or expired device drops out on
     /// the next refresh.
+    ///
+    /// A room whose pinned governor its root revoked and replaced moves to
+    /// the successor here too ([`WorkspaceTree::follow_governor_successions`]).
     fn refresh_authenticated_persons(&self) {
         let persons = self.peer_identities.authenticated_persons(now_unix_nanos());
         let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
@@ -6530,6 +6535,17 @@ impl ShellNetwork {
         };
         if tree.read().authenticated_persons != persons {
             tree.write().authenticated_persons = persons;
+        }
+        let successions = self.peer_identities.successions();
+        if !successions.is_empty() {
+            let local = crate::shell::state::PeerOrigin::peer(&self.local_peer_id);
+            if tree
+                .read()
+                .follows_governor_successions(&successions, &local)
+            {
+                tree.write()
+                    .follow_governor_successions(&successions, &local);
+            }
         }
     }
 
@@ -7483,6 +7499,7 @@ impl ShellNetwork {
             protocol,
             cert,
             revocations,
+            successions,
         } = &msg
         {
             // A new hello is a full replacement attempt for this exact route.
@@ -7502,7 +7519,7 @@ impl ShellNetwork {
                 );
                 return;
             }
-            self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
+            self.accept_identity_hello(ws, &origin, &peer, cert, revocations, successions);
             self.refresh_authenticated_persons();
             if self.peer_identities.get(&origin).is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
@@ -8222,16 +8239,31 @@ impl ShellNetwork {
         peer: &iroh::EndpointId,
         cert: &tilo_user_identity::DeviceCert,
         revocations: &[tilo_user_identity::RevocationEntry],
+        successions: &[tilo_user_identity::GovernorSuccession],
     ) {
-        if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
+        if cert.device_public_key != *peer.as_bytes()
+            || revocations.len() > 4096
+            || successions.len() > tilo_user_identity::MAX_SUCCESSIONS
+        {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
             self.drop_held_remote_actions(*peer);
             return;
         }
+        let now_ns = now_unix_nanos();
         let mut list = tilo_user_identity::RevocationList::new();
-        for entry in revocations {
-            if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
+        // A succession carries the revocation of the device it replaces.
+        let entries = revocations
+            .iter()
+            .chain(successions.iter().map(|succession| &succession.revocation));
+        let valid = successions.iter().all(|succession| {
+            succession.previous.user_public_key == cert.user_public_key
+                && succession.verify_at(now_ns).is_ok()
+        });
+        for entry in entries {
+            if !valid
+                || entry.user_public_key != cert.user_public_key
+                || list.insert(entry.clone()).is_err()
             {
                 tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
                 self.peer_identities.remove(origin);
@@ -8241,8 +8273,8 @@ impl ShellNetwork {
         }
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
+        self.peer_identities.add_successions(successions);
         let was_known = self.peer_identities.get(origin).is_some();
-        let now_ns = now_unix_nanos();
         if self
             .peer_identities
             .insert(origin.clone(), cert.clone(), now_ns)
@@ -10754,6 +10786,7 @@ mod tests {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
         );
     }
@@ -13293,6 +13326,7 @@ mod tests {
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(cert.clone()),
                         revocations: Vec::new(),
+                        successions: Vec::new(),
                     },
                 })
                 .expect("identity hello");
@@ -13589,6 +13623,7 @@ mod tests {
                 &device.public(),
                 &cert,
                 &[revoked],
+                &[],
             );
             assert!(net.peer_identities.get(&origin).is_none());
             assert!(
@@ -13652,7 +13687,14 @@ mod tests {
                 );
 
             let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-            net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+            net.accept_identity_hello(
+                room_topic_id(room),
+                &origin,
+                &device.public(),
+                &cert,
+                &[],
+                &[],
+            );
             net.redeem_invited_identity(room_topic_id(room), [2; 32], &device.public(), &cert);
             let collab_types::caps::Principal::Person(person) =
                 collab_types::caps::Principal::person_from_key(
@@ -13841,7 +13883,14 @@ mod tests {
             let origin = crate::shell::state::PeerOrigin::peer(&device.public());
             assert!(tree.pin_room_authority(room, origin.clone()));
             let (net, _commands) = shell_network_for_test(tree.shared(), 92);
-            net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+            net.accept_identity_hello(
+                room_topic_id(room),
+                &origin,
+                &device.public(),
+                &cert,
+                &[],
+                &[],
+            );
 
             assert!(
                 !net.peer_room_allows(
@@ -15165,6 +15214,7 @@ mod tests {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
+                successions: Vec::new(),
             },
         );
         phone.dispatch_neighbour_msg(
@@ -15354,6 +15404,7 @@ mod tests {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
+                    successions: Vec::new(),
                 },
             })
             .expect("queue identity proof");

@@ -3103,6 +3103,7 @@ fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(cert.clone()),
         revocations: Vec::new(),
+        successions: Vec::new(),
     };
     let (channel, _) = neighbour_wire::retention(&hello, false)?;
     let body = postcard::to_allocvec(&hello).ok()?;

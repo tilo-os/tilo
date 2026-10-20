@@ -1509,6 +1509,7 @@ impl StatePeer {
                 protocol,
                 cert,
                 revocations,
+                ..
             } => {
                 // A device at another peer protocol version is admitted to
                 // nothing: what it says is not read at this one.

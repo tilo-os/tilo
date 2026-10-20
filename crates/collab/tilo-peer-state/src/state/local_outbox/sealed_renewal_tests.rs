@@ -361,6 +361,7 @@ fn a_revoked_author_renews_nothing() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(fixture.governor.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             later,
         )

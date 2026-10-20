@@ -540,6 +540,7 @@ fn local_projection_revocation_preserves_historical_proof_and_blocks_send_and_re
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(governor.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             later,
         )
