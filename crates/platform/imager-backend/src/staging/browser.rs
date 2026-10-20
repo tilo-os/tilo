@@ -164,3 +164,49 @@ pub fn verify(bytes: &[u8], expected: &impl Expectation) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// The browser artifact a prepared medium of this host may carry: Linux
+/// captures a browser profile (`setup::browser_transfer`); elsewhere no
+/// prepared medium carries one, so its expectation cannot exist.
+#[cfg(target_os = "linux")]
+pub type HostExpectation = crate::setup::browser_transfer::Expectation;
+/// The browser artifact a prepared medium of this host may carry: none here.
+#[cfg(not(target_os = "linux"))]
+pub type HostExpectation = NoBrowserTransfer;
+
+/// No browser artifact: where no prepared medium carries one.
+#[cfg(not(target_os = "linux"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoBrowserTransfer(std::convert::Infallible);
+
+#[cfg(not(target_os = "linux"))]
+impl Serialize for NoBrowserTransfer {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {}
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl<'de> Deserialize<'de> for NoBrowserTransfer {
+    fn deserialize<D: serde::Deserializer<'de>>(_deserializer: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "a browser transfer exists only on Linux",
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Expectation for NoBrowserTransfer {
+    fn validate(&self) -> io::Result<()> {
+        match self.0 {}
+    }
+    fn filename(&self) -> &str {
+        match self.0 {}
+    }
+    fn sealed_bytes(&self) -> u64 {
+        match self.0 {}
+    }
+    fn ciphertext_sha256(&self) -> [u8; 32] {
+        match self.0 {}
+    }
+}

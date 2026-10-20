@@ -79,9 +79,10 @@ pub struct Record {
     pub profile: serde_json::Map<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_setup: Option<crate::model::PreparedSetupExpectation>,
-    #[cfg(target_os = "linux")]
+    /// The browser profile the prepared medium carries (only Linux media
+    /// carry one; elsewhere the type has no value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prepared_browser: Option<crate::setup::browser_transfer::Expectation>,
+    pub prepared_browser: Option<imager_backend::staging::browser::HostExpectation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,20 +140,14 @@ impl Record {
             migration: None,
             profile: serde_json::Map::new(),
             prepared_setup: None,
-            #[cfg(target_os = "linux")]
             prepared_browser: None,
         })
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn browser_expectation(
         &self,
-    ) -> Option<&crate::setup::browser_transfer::Expectation> {
+    ) -> Option<&imager_backend::staging::browser::HostExpectation> {
         self.prepared_browser.as_ref()
-    }
-    #[cfg(not(target_os = "linux"))]
-    pub(super) fn browser_expectation(&self) -> Option<&super::prepared_setup::NoBrowserTransfer> {
-        None
     }
     pub fn step(&self, step: Step) -> Option<&StepRecord> {
         self.steps.iter().find(|s| s.step == step)
@@ -390,9 +385,9 @@ impl Record {
         {
             return Err("invalid prepared setup custody in staging record".into());
         }
-        #[cfg(target_os = "linux")]
         if let Some(browser) = &self.prepared_browser {
-            browser.validate().map_err(|error| error.to_string())?;
+            imager_backend::staging::browser::Expectation::validate(browser)
+                .map_err(|error| error.to_string())?;
             if self.prepared_setup.is_none()
                 || self.plan.basis.host_os() != super::plan::HostOs::Linux
             {
