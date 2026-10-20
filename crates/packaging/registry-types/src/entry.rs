@@ -550,8 +550,16 @@ impl RegistryEntry {
         if self.versions.is_empty() || self.versions.len() > MAX_ENTRY_VERSIONS {
             return Err(EntryValidationError::InvalidVersionTarget);
         }
+        let language_pack = crate::target::is_language_pack_package_id(&self.package_id);
         for version in &self.versions {
             match (self.kind, &version.artifact) {
+                // A language pack is data for every architecture, and only a
+                // language pack is.
+                (EntryKind::App, VersionArtifact::Tapp(tapp))
+                    if tapp.target.is_any_architecture() != language_pack =>
+                {
+                    return Err(EntryValidationError::InvalidVersionTarget);
+                }
                 (EntryKind::App, VersionArtifact::Tapp(tapp)) => validate_tapp(tapp)?,
                 (EntryKind::Bot, VersionArtifact::Bot(bot)) => validate_bot(bot)?,
                 _ => return Err(EntryValidationError::ArtifactKindMismatch),

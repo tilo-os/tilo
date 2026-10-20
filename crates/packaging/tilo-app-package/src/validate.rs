@@ -155,6 +155,8 @@ pub enum ManifestError {
     BadImagePackage(String),
     #[error("{0}")]
     ImageTree(String),
+    #[error("a language pack {0}")]
+    LanguagePack(String),
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -231,6 +233,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
 
     validate_kind_entrypoint(m)?;
     validate_image(m)?;
+    validate_language_pack(m)?;
     validate_declarations(m)?;
 
     m.publisher
@@ -351,7 +354,95 @@ fn validate_kind_entrypoint(m: &Manifest) -> Result<(), ManifestError> {
                 return Err(ManifestError::FormatProviderMissingMime);
             }
         }
-        Kind::Service | Kind::Plugin | Kind::Runtime | Kind::EnvRuntime | Kind::Tool => {}
+        Kind::Service
+        | Kind::Plugin
+        | Kind::Runtime
+        | Kind::EnvRuntime
+        | Kind::Tool
+        | Kind::LanguagePack => {}
+    }
+    Ok(())
+}
+
+/// A language pack is one locale's catalogues: data, named by its locale,
+/// for every architecture, with nothing a launcher could start or a runtime
+/// to bind. Its id prefix is reserved for it.
+fn validate_language_pack(m: &Manifest) -> Result<(), ManifestError> {
+    let reserved = m.package.id.starts_with(crate::id::LANGUAGE_PACK_ID_PREFIX);
+    if m.package.kind != Kind::LanguagePack {
+        return if reserved {
+            Err(ManifestError::LanguagePack(format!(
+                "id prefix {} is for kind=language-pack only",
+                crate::id::LANGUAGE_PACK_ID_PREFIX
+            )))
+        } else {
+            Ok(())
+        };
+    }
+    if crate::id::language_pack_locale(&m.package.id).is_none() {
+        return Err(ManifestError::LanguagePack(format!(
+            "is named {}<locale>, the locale in lower case, not {:?}",
+            crate::id::LANGUAGE_PACK_ID_PREFIX,
+            m.package.id
+        )));
+    }
+    let present = [
+        ("[entrypoint]", m.entrypoint.is_some()),
+        ("[cli]", m.cli.is_some()),
+        ("[target]", m.target.is_some()),
+        ("package.runtime", m.package.runtime.is_some()),
+        (
+            "package.optional-runtimes",
+            !m.package.optional_runtimes.is_empty(),
+        ),
+        ("[package.isa]", !m.package.isa.is_empty()),
+        (
+            "[providers]",
+            !(m.providers.mime.is_empty()
+                && m.providers.ext.is_empty()
+                && m.providers.schemes.is_empty()),
+        ),
+    ];
+    if let Some((block, _)) = present.iter().find(|(_, present)| *present) {
+        return Err(ManifestError::LanguagePack(format!(
+            "is data for every architecture and is never launched; remove `{block}`"
+        )));
+    }
+    Ok(())
+}
+
+/// The payload of language pack `m`: only `<locale>/<catalogue>.ftl`, the
+/// locale directory naming the pack's locale (in any case).
+fn validate_language_pack_payload(
+    m: &Manifest,
+    payload_files: &[std::path::PathBuf],
+) -> Result<(), ManifestError> {
+    let Some(locale) = crate::id::language_pack_locale(&m.package.id) else {
+        return Ok(());
+    };
+    if payload_files.is_empty() {
+        return Err(ManifestError::LanguagePack("carries no catalogue".into()));
+    }
+    for path in payload_files {
+        let text = path.to_str().map(|path| path.replace('\\', "/"));
+        let fits = text
+            .as_deref()
+            .and_then(|path| path.split_once('/'))
+            .is_some_and(|(directory, file)| {
+                directory.eq_ignore_ascii_case(locale)
+                    && file.strip_suffix(".ftl").is_some_and(|name| {
+                        !name.is_empty()
+                            && name
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                    })
+            });
+        if !fits {
+            return Err(ManifestError::LanguagePack(format!(
+                "carries only `{locale}/<catalogue>.ftl`, not {}",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -873,6 +964,9 @@ pub fn validate_manifest_with_payload(
             crate::image::TREE_FILE
         )));
     }
+    if m.package.kind == Kind::LanguagePack {
+        validate_language_pack_payload(m, payload_files)?;
+    }
     if let Some(target) = &m.target
         && !payload_files.iter().any(|path| {
             path.to_str()
@@ -923,6 +1017,81 @@ mode = "off"
 "#
         );
         Manifest::from_toml_str(&src).unwrap()
+    }
+
+    fn language_pack(id: &str, extra: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+id = "{id}"
+version = "2026.10.20"
+kind = "language-pack"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+{extra}
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#
+        );
+        Manifest::from_toml_str(&src).unwrap()
+    }
+
+    /// A language pack is one locale's catalogues: named by the locale, for
+    /// every architecture, nothing in it launched; its payload is only that
+    /// locale's `.ftl` files, and its id prefix is no other kind's.
+    #[test]
+    fn a_language_pack_is_one_locales_catalogues_and_nothing_else() {
+        let pack = language_pack("so.tilo.language-pack.de-de", "");
+        assert!(validate_language_pack(&pack).is_ok());
+        assert_eq!(crate::language_pack_locale(&pack.package.id), Some("de-de"));
+        let catalogues = [
+            std::path::PathBuf::from("de-DE/settings-core.ftl"),
+            std::path::PathBuf::from("de-DE/tilo-ui.ftl"),
+        ];
+        assert!(validate_language_pack_payload(&pack, &catalogues).is_ok());
+        for wrong in [
+            "fr-FR/settings-core.ftl",
+            "de-DE/bin/tool",
+            "settings-core.ftl",
+        ] {
+            assert!(
+                validate_language_pack_payload(&pack, &[std::path::PathBuf::from(wrong)]).is_err(),
+                "{wrong}"
+            );
+        }
+        assert!(validate_language_pack_payload(&pack, &[]).is_err());
+
+        for wrong_id in [
+            "so.tilo.language-pack.",
+            "so.tilo.language-pack.de-DE",
+            "so.tilo.de-de",
+        ] {
+            assert!(
+                validate_language_pack(&language_pack(wrong_id, "")).is_err(),
+                "{wrong_id}"
+            );
+        }
+        let launched = language_pack(
+            "so.tilo.language-pack.de-de",
+            "[entrypoint]\nbin = \"bin/x\"\n",
+        );
+        assert!(validate_language_pack(&launched).is_err());
+        let arch_bound = language_pack(
+            "so.tilo.language-pack.de-de",
+            "[package.isa]\nx86_64 = \"v3\"\n",
+        );
+        assert!(validate_language_pack(&arch_bound).is_err());
+
+        let mut app = app_with_listing("");
+        app.package.id = "so.tilo.language-pack.de-de".into();
+        assert!(validate_language_pack(&app).is_err());
     }
 
     #[test]

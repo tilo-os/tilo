@@ -88,6 +88,23 @@ pub fn is_runtime_package_id(package_id: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1)
 }
 
+/// The package id prefix of a language pack: one locale's catalogues for
+/// every app (`so.tilo.language-pack.de-de`), the same as
+/// `tilo_app_package::LANGUAGE_PACK_ID_PREFIX`.
+pub const LANGUAGE_PACK_PACKAGE_PREFIX: &str = "so.tilo.language-pack.";
+
+/// Whether `package_id` names a language pack.
+#[must_use]
+pub fn is_language_pack_package_id(package_id: &str) -> bool {
+    package_id
+        .strip_prefix(LANGUAGE_PACK_PACKAGE_PREFIX)
+        .is_some_and(|locale| !locale.is_empty())
+}
+
+/// The architecture, and the ISA, of a build that is data for every
+/// architecture: a language pack's. Only `tilo-os` targets take it.
+pub const ANY_ARCHITECTURE: &str = "any";
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TargetError {
     #[error("unsupported platform {0:?}")]
@@ -207,6 +224,13 @@ impl RegistryTarget {
     /// Returns the first [`TargetError`] found.
     pub fn validate(&self) -> Result<(), TargetError> {
         self.validate_interfaces()?;
+        if self.platform == TILO_OS_PLATFORM
+            && self.architecture == ANY_ARCHITECTURE
+            && self.isa == ANY_ARCHITECTURE
+            && self.runtime.is_none()
+        {
+            return Ok(());
+        }
         match self.platform.as_str() {
             platform @ (TILO_OS_PLATFORM | LINUX_PLATFORM | WINDOWS_PLATFORM | MACOS_PLATFORM
             | ANDROID_PLATFORM) => {
@@ -250,6 +274,12 @@ impl RegistryTarget {
     /// one in canonical form. A `tilo-os` version without one cannot say
     /// which runtime it links, so a device cannot know whether it can load
     /// it.
+    /// Whether the build is data for every architecture ([`ANY_ARCHITECTURE`]).
+    #[must_use]
+    pub fn is_any_architecture(&self) -> bool {
+        self.architecture == ANY_ARCHITECTURE
+    }
+
     pub fn native_runtime(&self) -> Option<NativeRuntime<'_>> {
         if self.platform != TILO_OS_PLATFORM {
             return None;
@@ -265,6 +295,41 @@ mod tests {
     use super::*;
 
     const DIGEST: &str = "4b1d0c7e9a2f3b5c6d7e8f9012345678";
+
+    /// A language pack is built once for every architecture: `any`, only on
+    /// Tilo OS, with no runtime to bind.
+    #[test]
+    fn a_build_for_every_architecture_is_tilo_os_data() {
+        let target =
+            |platform: &str, architecture: &str, isa: &str, runtime: Option<&str>| RegistryTarget {
+                platform: platform.into(),
+                architecture: architecture.into(),
+                isa: isa.into(),
+                runtime: runtime.map(Into::into),
+                interfaces: Vec::new(),
+            };
+        let any = target(TILO_OS_PLATFORM, ANY_ARCHITECTURE, ANY_ARCHITECTURE, None);
+        assert!(any.validate().is_ok());
+        assert!(any.is_any_architecture());
+        assert!(
+            target(LINUX_PLATFORM, ANY_ARCHITECTURE, ANY_ARCHITECTURE, None)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            target(
+                TILO_OS_PLATFORM,
+                ANY_ARCHITECTURE,
+                ANY_ARCHITECTURE,
+                Some("tilo-runtime/1.0")
+            )
+            .validate()
+            .is_err()
+        );
+        assert!(is_language_pack_package_id("so.tilo.language-pack.de-de"));
+        assert!(!is_language_pack_package_id("so.tilo.language-pack."));
+        assert!(!is_language_pack_package_id("so.tilo.settings"));
+    }
 
     #[test]
     fn native_runtime_binds_release_and_build() {

@@ -9,6 +9,8 @@
 
 #[path = "image_apps.rs"]
 mod image_apps;
+#[path = "language_pack.rs"]
+mod language_pack;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[path = "runtime_cli.rs"]

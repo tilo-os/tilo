@@ -690,6 +690,40 @@ pub fn install_runtime_from_enabled(
     }))
 }
 
+/// Install the language pack for `locale` (`de-DE`) from the first enabled
+/// repository that offers it, through the verified pipeline apps and
+/// runtimes take; the caller names only the locale. Nothing is done when
+/// the newest offered version is installed already.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the locale, or the error of the install.
+pub fn install_language_pack_from_enabled(
+    locale: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    let package_id = format!(
+        "{}{}",
+        tilo_app_package::LANGUAGE_PACK_ID_PREFIX,
+        locale.to_ascii_lowercase()
+    );
+    let not_offered = || InstallError::NotOffered {
+        package_id: package_id.clone(),
+    };
+    let offers =
+        crate::language_pack_offers().map_err(|detail| InstallError::Download { detail })?;
+    let offer = offers
+        .into_iter()
+        .find(|offer| offer.offer.package_id == package_id)
+        .ok_or_else(not_offered)?
+        .offer;
+    if crate::installed_language_pack(locale).as_deref() == Some(offer.version.as_str()) {
+        return Ok(());
+    }
+    install_or_update_app_reporting(&offer, on_progress, Change::Install)
+}
+
 /// What [`install_or_update_app_reporting`] does with the verified package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
