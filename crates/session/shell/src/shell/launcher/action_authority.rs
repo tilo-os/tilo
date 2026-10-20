@@ -301,6 +301,18 @@ pub(crate) fn with_ordinary_room_current<T>(
     room: RoomId,
     operation: impl FnOnce(&crate::shell::state::Workspace) -> Result<T, String>,
 ) -> Result<T, String> {
+    // A policy the tree holds is judged once its save has published it, as a
+    // launch's grants are: a person acting right after a policy write would
+    // otherwise be refused for the save's duration. The tree is not held
+    // while waiting, so the save it waits for can read it.
+    #[cfg(target_os = "linux")]
+    {
+        let (authority, revision) = {
+            let tree = tree.read();
+            (tree.native_runtime.action_authority(), tree.policy_revision)
+        };
+        await_published(&authority, room, revision).map_err(|error| error.to_string())?;
+    }
     let tree = tree.read();
     if tree.requires_native_owner(room) {
         return Err("This room requires its current native owner.".into());
@@ -796,8 +808,9 @@ mod tests {
             )
         };
         assert!(with_ordinary_person_admin(&tree, room, "person-b", revert).is_err());
-        // Revocation before its queued publication must already fail closed;
-        // neither stale accepted cache nor a fabricated UI role grants access.
+        // Revocation fails closed while its publication is queued: custody
+        // waits for it rather than act on the stale accepted policy, and
+        // neither that cache nor a fabricated UI role grants access.
         tree.write().desktop.workspaces[0].policy.owner = None;
         assert!(with_ordinary_person_admin(&tree, room, "person-a", revert).is_err());
         tree.read().queue_save();
