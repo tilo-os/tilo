@@ -74,6 +74,7 @@ impl Core {
             (Ty::Text, Value::Text(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::Option(_), Value::Opt(_))
+            | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
             | (Ty::Tuple(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
             | (Ty::Principal, Value::Principal(_))
@@ -641,6 +642,32 @@ impl Core {
         }
     }
 
+    /// `try act(args)`: invokes like `invoke` and hands the guest a `Result`: `.ok` with the
+    /// action's result (none for a unit action), or `.err` with the reason it failed.
+    fn flow_try_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
+        let Some(Wasm::I32(raw)) = self.flow_invoke(h)? else {
+            return trap("invoke returned no handle");
+        };
+        let outcome = unboxed(self.val(raw)?);
+        let mut fields = std::collections::BTreeMap::new();
+        let variant = match outcome {
+            Value::Error(reason) => {
+                fields.insert(tilolang::RESULT_ERROR.to_owned(), Value::Text(reason));
+                tilolang::RESULT_ERR
+            }
+            Value::Unit => tilolang::RESULT_OK,
+            v => {
+                fields.insert(tilolang::RESULT_VALUE.to_owned(), v);
+                tilolang::RESULT_OK
+            }
+        };
+        self.ret_h(Value::Enum(crate::value::EnumValue {
+            ty: tilolang::RESULT_TYPE.to_owned(),
+            variant: variant.to_owned(),
+            fields,
+        }))
+    }
+
     /// Record the pending suggestion in the flow's journal and persist it.
     fn suspend_on(&self, ctx: &ExecCtx, aref: &ActionRef) -> HResult<()> {
         let (run, journal) = {
@@ -803,6 +830,7 @@ impl Core {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
             Imp::Invoke => self.flow_invoke(a.h(0)?),
+            Imp::TryInvoke => self.flow_try_invoke(a.h(0)?),
             Imp::IsError => {
                 let failed = self.with_val(a.h(0)?, |v| Ok(matches!(v, Value::Error(_))))?;
                 ret_i32(i32::from(failed))

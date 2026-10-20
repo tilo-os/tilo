@@ -7,7 +7,8 @@ use serde_json::Value as Json;
 
 use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
-    ActionMeta, FieldKind, FlowMeta, Meta, Ty, TypeKey, TypeMeta, ViewMeta, field_kind, parse_ty,
+    ActionMeta, EnumMeta, FieldKind, FlowMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
+    field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
 
@@ -300,6 +301,32 @@ impl Registry {
             [] => Err(format!("no loaded package declares a type `{name}`")),
             _ => Err(format!("type name `{name}` is ambiguous; use its id")),
         }
+    }
+
+    /// The `window` or `lens` declaration with this id.
+    pub fn state_meta(&self, id: &str) -> Option<StateMeta> {
+        self.packages().iter().find_map(|p| {
+            p.meta
+                .views
+                .iter()
+                .flat_map(|v| v.state.iter())
+                .find(|s| s.id == id)
+                .cloned()
+        })
+    }
+
+    /// The enum with this type id.
+    pub fn enum_meta(&self, id: &str) -> Option<EnumMeta> {
+        self.packages()
+            .iter()
+            .find_map(|p| p.meta.enums.iter().find(|e| e.id == id).cloned())
+    }
+
+    /// The id of the view a window of type `ty` (an id) shows unless another is asked for: the
+    /// default view the type's package declares.
+    pub fn default_view(&self, ty: &str) -> Option<ViewId> {
+        let pkg = self.package(self.types.get(ty)?)?;
+        pkg.meta.default_view(ty).map(str::to_owned)
     }
 
     /// What a new resource of this type starts out with.

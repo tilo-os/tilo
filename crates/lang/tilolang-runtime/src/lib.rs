@@ -39,6 +39,7 @@ pub mod textdiff;
 pub mod value;
 pub mod view;
 pub mod view_instance;
+pub mod view_state;
 
 pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
@@ -56,6 +57,7 @@ pub use runtime::{BlockOutput, MemorySink, Runtime, SettleReport};
 pub use settle::InvocationRecord;
 pub use space::Space;
 pub use store::{ChangeNote, ChangeSummary, Store, StoreError};
-pub use value::{ActionRef, RefValue, ResourceRef, Value};
-pub use view::{Binding, Patch, UiNode};
-pub use view_instance::{EditOutcome, ViewInstance};
+pub use value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
+pub use view::{BindTarget, Binding, Patch, UiNode};
+pub use view_instance::{EditOutcome, ViewEvent, ViewInstance};
+pub use view_state::{StateKey, StateLayer};

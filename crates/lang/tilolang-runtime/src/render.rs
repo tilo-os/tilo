@@ -12,6 +12,7 @@ use crate::registry::Package;
 use crate::space::Space;
 use crate::value::Value;
 use crate::view::{NodeBuild, UiNode};
+use crate::view_state::StateKey;
 
 /// Nested foreign views deeper than this are refused: a module that applies views in a loop
 /// would otherwise exhaust the host's stack.
@@ -38,20 +39,27 @@ pub struct Rendered {
     pub reads: Vec<(String, String)>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
+    /// The view state slots read, with their generations.
+    pub state_reads: Vec<(StateKey, u64)>,
+    /// The value each slot read had, its default included.
+    pub state_seen: Vec<(StateKey, Value)>,
 }
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
+    pub state_reads: Vec<(StateKey, u64)>,
+    pub state_seen: Vec<(StateKey, Value)>,
 }
 
-/// What a view boundary is offered: its space, the person looking at it and how deep the
-/// nesting is.
+/// What a view boundary is offered: its space, the window and the person looking at it, and
+/// how deep the nesting is.
 #[derive(Clone, Copy)]
 pub(crate) struct Offer<'a> {
     pub space: Space,
     pub viewer: &'a Principal,
+    pub window: &'a str,
     pub depth: usize,
 }
 
@@ -86,16 +94,14 @@ pub(crate) fn scope(prefix: &str, mut tree: UiNode) -> UiNode {
 }
 
 impl Acc {
-    /// Take on what a nested boundary read and retained.
-    pub fn absorb(
-        &mut self,
-        reads: Vec<(String, String)>,
-        space_reads: Vec<(String, f64)>,
-        retained: Vec<Retained>,
-    ) {
-        self.reads.extend(reads);
-        self.space_reads.extend(space_reads);
-        self.retained.extend(retained);
+    /// Take on what a nested boundary read and retained, and hand back its tree.
+    pub fn absorb(&mut self, nested: Rendered) -> UiNode {
+        self.reads.extend(nested.reads);
+        self.space_reads.extend(nested.space_reads);
+        self.retained.extend(nested.retained);
+        self.state_reads.extend(nested.state_reads);
+        self.state_seen.extend(nested.state_seen);
+        nested.root
     }
 }
 
@@ -121,21 +127,22 @@ impl Core {
         })
     }
 
-    /// Run a view and build its tree.
+    /// Run a view in `window` for `viewer` and build its tree.
     ///
     /// # Errors
     ///
     /// Arguments that do not fit, a trap, or a malformed tree.
-    pub fn render(
+    pub(crate) fn render(
         &self,
         target: &ViewTarget,
         args: &[Value],
         space: Space,
-        viewer: &Principal,
+        (viewer, window): (&Principal, &str),
     ) -> Result<Rendered, RuntimeError> {
         let offer = Offer {
             space,
             viewer,
+            window,
             depth: 0,
         };
         self.render_at(target, args, offer, None)
@@ -165,6 +172,8 @@ impl Core {
             author.unwrap_or(&pkg.hash).clone(),
             FrameKind::View(ViewState {
                 space,
+                window: offer.window.to_owned(),
+                viewer: offer.viewer.clone(),
                 ..ViewState::default()
             }),
         );
@@ -180,6 +189,8 @@ impl Core {
             reads: state.reads,
             space_reads: state.space_reads,
             retained: Vec::new(),
+            state_reads: state.state_reads,
+            state_seen: state.state_seen,
         };
         let cx = Build {
             nodes: &state.nodes,
@@ -191,6 +202,8 @@ impl Core {
             reads: acc.reads,
             space_reads: acc.space_reads,
             retained: acc.retained,
+            state_reads: acc.state_reads,
+            state_seen: acc.state_seen,
         })
     }
 
@@ -296,10 +309,10 @@ impl Core {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
-        acc.absorb(nested.reads, nested.space_reads, nested.retained);
+        let root = acc.absorb(nested);
         "fragment".clone_into(&mut node.kind);
         node.props.retain(|name, _| !name.starts_with(ARG_PREFIX));
-        node.children = vec![nested.root];
+        node.children = vec![root];
         Ok(())
     }
 

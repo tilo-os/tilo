@@ -14,6 +14,7 @@ use crate::space::Space;
 use crate::store::Txn;
 use crate::value::{ResourceRef, Value};
 use crate::view::NodeBuild;
+use crate::view_state::StateKey;
 
 /// Bits of a handle that index the frame's table.
 const INDEX_RANGE: u32 = 0x10_0000;
@@ -54,6 +55,14 @@ pub struct FlowState {
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
+    /// The window the view runs in: what its `window` and `lens` state is kept under.
+    pub window: String,
+    /// The person looking: whose `lens` state the view reads.
+    pub viewer: Principal,
+    /// Every view state slot read, with its generation at the time.
+    pub state_reads: Vec<(StateKey, u64)>,
+    /// The value each slot read had, its default included while it was never set.
+    pub state_seen: Vec<(StateKey, Value)>,
     /// Every `space` field read, with the value it had.
     pub space_reads: Vec<(String, f64)>,
     /// Every `(document, field)` read, the view's dependencies.
