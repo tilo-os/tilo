@@ -94,6 +94,9 @@ pub fn apply_configured_locale() {
     if let Some(language) =
         settings_store::str_at(&settings_store::load(), "appearance", "language")
     {
+        // The pack of a language chosen just after it was installed is read
+        // now.
+        ui::i18n::refresh_language_packs();
         CATALOG.set_locale(language);
     }
 }

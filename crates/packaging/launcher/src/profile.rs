@@ -51,9 +51,10 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/usr/share/X11/locale",
     // Language packs: every app's and the toolkit's catalogues in each
     // language other than English, which the packages leave out
-    // (`ui::i18n::LANGUAGE_PACK_ROOTS`). The same bytes for everyone; without
-    // them an app speaks only English.
-    "/var/lib/tilo/language-packs",
+    // (`ui::i18n::language_pack_roots`); without them an app speaks only
+    // English. The image's, and at `SANDBOX_LANGUAGE_PACKS` the ones the
+    // person installed (`push_system_profile` binds them there).
+    SANDBOX_LANGUAGE_PACKS,
     "/usr/share/tilo/language-packs",
     // GPU loader manifests + driver data (vendor-neutral); which device is
     // narrowed separately by `push_gpu_selection`.
@@ -133,13 +134,31 @@ pub const GPU_DEVICE_PATHS: &[&str] = &[
 /// which reads `0::/` in the cgroup namespace bwrap gives it.
 pub const HIDDEN_PATHS: &[&str] = &["/sys/fs/cgroup"];
 
+/// Where an app sees the language packs the person installed
+/// (`tilo_paths::language_packs_dir`), bound read-only: the same path as
+/// `ui::i18n::SANDBOX_LANGUAGE_PACKS`.
+pub const SANDBOX_LANGUAGE_PACKS: &str = "/var/lib/tilo/language-packs";
+
+/// What is bound at `path` of the profile: the person's installed language
+/// packs at [`SANDBOX_LANGUAGE_PACKS`] when they have any, else the path
+/// itself.
+fn bind_source(path: &str) -> String {
+    if path == SANDBOX_LANGUAGE_PACKS
+        && let Some(installed) = tilo_paths::language_packs_dir().filter(|dir| dir.is_dir())
+        && let Some(installed) = installed.to_str()
+    {
+        return installed.to_owned();
+    }
+    path.to_owned()
+}
+
 /// Push the profile's binds onto a bwrap argv.
 ///
 /// Callers must splice this in *before* the trailing entrypoint token —
 /// bwrap treats everything after it as the child's argv.
 pub fn push_system_profile(argv: &mut Vec<String>, shares_host_network: bool) {
     for path in SYSTEM_READ_PATHS {
-        push(argv, "--ro-bind-try", path, path);
+        push(argv, "--ro-bind-try", &bind_source(path), path);
     }
     for path in HIDDEN_PATHS {
         argv.extend(["--tmpfs", path, "--remount-ro", path].map(str::to_string));
@@ -270,6 +289,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The language packs a person installed are theirs, in their data
+    /// directory; every app they run reads them where the toolkit looks in
+    /// a sandbox, read-only. With none installed the image's path stands.
+    #[test]
+    fn the_persons_language_packs_are_bound_where_apps_read_them() {
+        let data = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data.path());
+        assert_eq!(bind_source(SANDBOX_LANGUAGE_PACKS), SANDBOX_LANGUAGE_PACKS);
+        let installed = data.path().join("tilo/language-packs");
+        std::fs::create_dir_all(installed.join("de-DE")).unwrap();
+        let mut argv = Vec::new();
+        push_system_profile(&mut argv, false);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == installed.to_str().unwrap()
+                && w[2] == SANDBOX_LANGUAGE_PACKS),
+            "{argv:?}"
+        );
+        assert!(landlock_ro_paths(false).contains(&PathBuf::from(SANDBOX_LANGUAGE_PACKS)));
     }
 
     #[test]
