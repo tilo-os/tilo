@@ -181,6 +181,20 @@ def prepare_runtime_fonts(repo, directory):
     return fonts
 
 
+def fetch_runtime_fonts(repo, target):
+    """Fetch the reviewed fonts into the artifact cache before the namespaces, which have no
+    network (`--unshare-all`), a home of their own and an empty /tmp: the font cache they would
+    look in is empty, or hidden, so on a builder without a warm cache of its own (a t node, whose
+    home is /tmp) their prepare could only download, and failed. Without a cache the caller names,
+    the build directory holds it, which the namespaces see; entries are verified when read."""
+    if os.environ.get('TILO_FONT_CATALOG_ROOT'):
+        return
+    if not os.environ.get('TILO_FONT_ASSET_CACHE') and not os.environ.get('TILO_TEST_CACHE_DIR'):
+        os.environ['TILO_FONT_ASSET_CACHE'] = str(target / 'font-artifacts')
+    run(['python3', str(repo / 'tools/font-catalog.py'), 'root',
+         str(repo / 'crates/sdk/ui-core/assets/fonts'), '--scope', 'product'], capture=True)
+
+
 def publish_runtime_fonts(repo, fonts, catalogs):
     """Expose the same verified bytes to image processes outside app sandboxes."""
     identity = hashlib.sha256((fonts / 'manifest.toml').read_bytes()).hexdigest()
@@ -412,6 +426,7 @@ def assemble(args):
         args.compiler_capture = (stage / 'compiler-capture'
                                  if args.compiler_interface_out is not None else None)
         prepare(args)
+        fetch_runtime_fonts(repo, target)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
                               compiler=args.compiler_capture, source_inventory=args.source_inventory))
         if args.app is None:
