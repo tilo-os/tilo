@@ -3803,6 +3803,21 @@ default = false
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
 [[check]]
+name = "engine-dev-{arch}"
+run = "bash tools/apps/t-engine-release.sh dev {arch} /target/engine-release/{arch} /target/engine-dev/{arch}"
+inputs = ["tools/apps/t-engine-release.sh", "tools/apps/release-lib.sh", "tools/apps/browser_runtime_release.py", "tools/apps/pack-runtime-package.sh", "tools/apps/publish-runtime-package.sh", "tools/upload_immutable_packages.sh", "tools/ci/python.py", "tools/ci/publish/lib.sh", "tools/ci/ensure-browser-dependencies.sh", "scripts/browser/**", "apps/browser/chromium/**", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh"]
+cargo_packages = ["tilo-app-package-cli", "runtime-bundle"]
+cargo_dev_dependencies = false
+needs = ["engine-build-{arch}"]
+outputs = ["/target/engine-dev/{arch}/**"]
+requires = ["{node}"]
+cost = "minutes"
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[check]]
 name = "sign-engine-{arch}"
 run = "bash tools/apps/t-engine-release.sh sign {arch} /target/engine-release/{arch} /target/engine-release/{arch}/signed"
 inputs = ["tools/apps/t-engine-release.sh", "tools/apps/release-lib.sh", "tools/apps/browser_runtime_release.py", "tools/apps/pack-runtime-package.sh", "tools/apps/publish-runtime-package.sh", "tools/upload_immutable_packages.sh", "tools/ci/python.py", "tools/ci/publish/lib.sh", "tools/ci/ensure-browser-dependencies.sh", "scripts/browser/**", "apps/browser/chromium/**", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh"]
@@ -3973,9 +3988,11 @@ default = false
 name = "tilo-vm-pack-apps-x86_64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-x86_64"]
+# The Browser's engine the collection pins, sealed for development layers (engine-dev-<arch>):
+# the registry doesn't have to offer it.
+needs = ["tilo-vm-binary-x86_64", "engine-dev-x86_64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=x86_64"]
 requirement = { cores = 16, memory = "32GiB" }
@@ -4021,9 +4038,11 @@ default = false
 name = "tilo-vm-pack-apps-arm64"
 run = "bash dist/dev/t-pack.sh /target/tilo-vm-bin/tilo-vm"
 # A layer to install, not a lint gate: warnings stay warnings, as in every other build of it.
-env = { CARGO_BUILD_JOBS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { CARGO_BUILD_JOBS = "16", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/aarch64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 inputs = ["**"]
-needs = ["tilo-vm-binary-arm64"]
+# The Browser's engine the collection pins, sealed for development layers (engine-dev-<arch>):
+# the registry doesn't have to offer it.
+needs = ["tilo-vm-binary-arm64", "engine-dev-aarch64"]
 outputs = ["/target/tilo-vm-pack/**"]
 requires = ["arch=arm64"]
 requirement = { cores = 16, memory = "32GiB" }
