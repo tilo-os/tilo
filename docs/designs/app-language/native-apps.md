@@ -1,0 +1,415 @@
+# Native apps by default
+
+A tilolang app has to be indistinguishable from the best Tilo apps (Notes, Contacts, Snippets):
+
+- an independent app with its own launcher entry, icon and window;
+- native chrome;
+- idle at zero CPU;
+- fast at every size.
+
+This must hold **by default**. A first-time author or an agent writing the obvious program gets
+all of it without asking.
+
+The first version failed every part of this:
+
+| Part | What went wrong | Where |
+|---|---|---|
+| Independence | All packages ran inside one host app with a home screen. `tilolang run` was a raw dev window outside Tilo's app model. | `apps/tilolang` |
+| Native look | Views built their own chrome from generic primitives. The notes list had a hand-made heading row, hand-made filter buttons and a "Show actions" button per row. The host rendered that onto generic widgets, inside a custom `AppWidget` that bypasses the framework root. | `apps/tl/notes/app.tl`, `apps/tilolang/src/page.rs` |
+| Performance | Never measured. Every change cloned the record, dirtied every view, re-ran the whole view, reindexed all search, and repainted the whole window. Each launch compiled every package twice, from source. | `store.rs:243`, `page.rs:1338-1344`, `host.rs:347`, `lib.rs:45` |
+| Empty start | The apps opened empty, and the screenshots showed placeholder data. | — |
+
+This document replaces those parts of `implementation.md` §7 and refines `layout.md`. The
+language model (`spec.md`) and the workspace model (`workspace-model.md`) stand.
+
+## 1. The rule that makes "by default" true
+
+**An author states what things are and what can be done to them. The platform decides how that
+looks and where it goes.**
+
+The first version gave authors layout primitives and widgets, and authors (and agents) assembled
+chrome out of them. Each app came out differently, all of them worse than native. Native Tilo apps
+look alike because they compose the same few semantic widgets: `NavShell`, `NavList`, `ListRow`,
+`Section`, `EmptyState`, `PropertyList`, the header row and the framework root. tilolang's
+default vocabulary is exactly those widgets, fed from the program's types and actions:
+
+- **Actions appear by themselves.** Every action whose subject is a resource is offered wherever
+  that resource is shown:
+  - on its row: context menu, swipe, keyboard;
+  - in the header of its window;
+  - in the command palette and the agent catalogue.
+
+  An author never writes a button for an action unless it belongs inside the content, such as a
+  composer's Send.
+- **Labels and icons come from declarations.** An action's label is its name in sentence case
+  (`new_note` → "New note"), or its doc comment's first line when that is shorter. `icon:` and
+  `role:` are declared on the action, not on each button.
+- **Chrome belongs to the platform.** The header row, the window title and its count, search,
+  filtering, history, undo, the save state, presence and empty states all come from the shell.
+  Views have no `heading("Notes")`.
+- **Window state becomes native controls.** An enum-typed `window` field used as a list's `sort:`
+  or `filter:` turns into the native control: a sort menu in the header, or a filter list in the
+  sidebar with counts. Its cases' doc comments become the labels.
+
+Layout primitives (`stack`, `row`, `grid`, `split`, `page`, `layers`, `scroll`) remain for
+*content*: a card's inside, a dashboard, an agent's block, a custom canvas. They are no longer how
+an app's frame is built.
+
+## 2. Independent apps
+
+A tilolang package becomes an app through the platform's ordinary app path:
+
+- signed manifest;
+- `tilo-launcher run`;
+- sandbox;
+- verified launch custody: the compositor admits the window and the broker attributes its
+  connections (`launcher.rs:618`, `compositor/native.rs:1273`);
+- a per-room app directory;
+- its own subtree in the permission tree.
+
+None of that changes. Launch and custody are already keyed by package id, so each package gets its
+own window, custody and permissions as soon as it is its own package. What changes is listed below.
+
+### 2.1 One package, one app
+
+- **Identity from declarations.**
+  - The app id is the package id.
+  - Name, other-language names, category and icon come from the `app` declaration.
+  - Root types are what the launcher opens (workspace-model §2).
+- **No hosting app.** There is no tilolang home screen and no list of tilolang apps. `apps/tilolang`
+  stops being a user-facing app and becomes the runtime binary (§2.2).
+- **Ids while this is an experiment.** The tilolang rewrites use `so.tilo.lang.<name>`, so they can
+  run next to the native Notes and Chat in one session for side-by-side review (§6). When a
+  rewrite replaces a native app, it takes the native id, with the native app's data migrated
+  under the data invariants.
+
+### 2.2 One shared runtime binary
+
+Apps don't each carry a copy of the runtime. The runtime is a runtime bundle, and app packages
+name it as their entrypoint:
+
+```toml
+# generated by `tilolang build` into the package's tilo-app.toml
+[package]
+id = "so.tilo.lang.notes"
+name = "Notes"
+category = "productivity"
+icon = "icon.svg"
+runtime = "tilo-runtime/<release>+native.<digest>"
+
+[entrypoint]
+runtime = "tilolang/<version>"      # new: exec a binary from a runtime bundle
+bin = "bin/tilolang"
+```
+
+Platform changes:
+
+1. **`Entrypoint.runtime`** (`manifest.rs:1021`).
+   - The launcher resolves the bundle like an optional runtime (`run.rs:1209`) and execs
+     `<runtime mount>/bin/tilolang` (`sandbox.rs:804`).
+   - It adds the mount to the loader preflight view (`run.rs:3276`).
+   - It sets `TILO_APP_MODULE` to the payload's bundle.
+   - Validation requires the entrypoint's runtime to be declared (`validate.rs:316`).
+2. **Signed `[package] icon`.** It is carried into `ManifestView.icon` (`view.rs:63`), which makes
+   `TILO_APP_ICON` work. The toolkit sets `xdg_toplevel_icon` from it, and `app_glyph`, the launcher
+   grid and search use the installed icon before the category glyph.
+3. **`ApplicationDefinition.app_id` becomes owned.** It is no longer `&'static`. The runtime binary
+   builds its definition from `TILO_PACKAGE_ID` and the bundle's metadata.
+
+The package payload is small:
+
+- the compiled `app.wasm`;
+- `app.ids`;
+- metadata (schema, roots, actions, scenarios);
+- `surface.toml`, generated at build time, so the shell registers its resource kinds like any
+  app's;
+- the icon.
+
+It contains no code the platform would have to trust beyond the wasm sandbox (spec §6.2).
+
+### 2.3 Data: each app owns its records, reads others live
+
+- Each app's resources live in its own records under its own route, like every native app's. One
+  shared record for all packages is gone.
+- History, undo, search and the outbox are therefore per app, exactly as the platform does them.
+- **Reading another app's types** (`use so.tilo.lang.notes` in Board, or a note embedded in a chat
+  message) is a declared, live, read-only join:
+  - The surface declares `reads = ["so.tilo.lang.notes/Note"]`.
+  - The broker admits a read-only channel join to (B, room, record) when all of these hold:
+    the reader is A's attested launch, A declares that kind, and the person has Read on B. This
+    generalizes the existing `person_record_join` (`collab_broker_capnp.rs:1389`).
+  - The runtime renders B's resource from B's metadata (schemas are data, not code).
+- **Changing another app's resource** is always an action invocation through the door, under the
+  authority rules (spec §4). It is never a write on B's route.
+  - With this change, the broker enforces *route app = attested app* for every write.
+  - The research found no such check in `join_channel` (`:8714-8800`). This is checked and fixed
+    as part of this work, whatever tilolang ends up being.
+
+### 2.4 Development and testing
+
+- **`tilolang build`** emits the `.tapp`: manifest, surface, wasm, metadata and icon.
+- **`tilolang run`** starts (or reuses) a locally built nested Tilo session, using
+  `nested-session-build.sh` with the runtime bundle added. It then installs the package with
+  `tilo-install --force` and launches it through the launcher.
+  - The app runs with the same custody, window, chrome and permissions as on a real system.
+  - On a `.tl` edit, inotify triggers a rebuild of the wasm and a re-install. No cargo build runs,
+    because the runtime is unchanged.
+  - The old dev window is removed.
+- **`--peers N`** starts N nested sessions joined to one workspace, for collaboration testing.
+- None of this has to run on the installed build. It runs on locally built sessions and VMs.
+
+## 3. Views onto native widgets
+
+### 3.1 The app frame
+
+An app's root view returns one **frame**. Frames map one-to-one onto `NavShell` configurations:
+
+| tilolang | Native |
+|---|---|
+| `list(items, ...) { item -> ... }` | `NavShell::content_kind(List)` with a `VirtualList` of `ListRow`s, or with `.overview(..)` when the window also has detail |
+| `document { ... }` | `NavShell::content_kind(Document)`: readable width, floating sidebar drawer |
+| `page { ... }` | `NavShell::content_kind(Page)` with `Container::readable()` |
+| `canvas { ... }` | `page(full)`: free content, no readable bound |
+| `sidebar { ... }` inside any frame | `NavShell::sidebar(NavList)`, docked or pushed by the shell's rules |
+| `inspector(r) { ... }` | `NavShell::inspector(..)` |
+
+The frame's header is filled by the platform:
+
+- **Title:** the root resource's title. A type's title is its first `Text` field marked `title`,
+  or the type's name. Apps never write it.
+- **Count:** the list's length, as the quiet count pill.
+- **Actions:** the resource's actions. The one declared `primary` is the Primary button; the rest
+  collapse into icons and the More menu by the shell's rules. Search is always there.
+
+### 3.2 Lists and rows
+
+```
+list(listed(nb, order, filter), sort: order, filter: filter, empty: "No notes yet") { n ->
+  row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+}
+```
+
+- `list` is a `VirtualList`.
+  - It evaluates only the visible rows (§4.2).
+  - Selection follows focus. Activation runs `open(n)`, which shows the detail window (§3.4).
+  - The platform filter (Ctrl+F) and `ListChange` motion come for free.
+- `row(...)` is `ListRow`.
+  - It accepts `title`, `secondary`, `meta`, `mark`, `avatar`/`icon`, `badge`, `value` and
+    `checkbox` (bound to a `Bool` field).
+  - Every action on `n` appears in the row's context menu automatically. A `destructive` action is
+    drawn as destructive and gets undo instead of a confirmation dialog.
+  - Presence is automatic. Other people's and agents' lenses selecting `n` show as
+    `ListRow::presence`.
+- If a type declares `row view` for itself, `list(items)` uses it, and the item block can be
+  omitted.
+- `empty:` is one sentence. The empty state's single action is the frame's primary action, so an
+  empty notebook offers "New note". This is the native empty state, and it is what a first launch
+  shows. It is correct, not a placeholder.
+
+### 3.3 Sections, facts, forms, editors
+
+| tilolang | Native |
+|---|---|
+| `section("Title") { ... }` | `Section::titled` |
+| `facts { "Due": d.due; "Owner": d.owner }` | `PropertyList` |
+| `form { field("Name") { input(bind: c.name) } }` | `FormPage` / `FormSection` / `Field` |
+| `input(bind: t)` | `TextInput`. `lines:` makes it multiline. Inside `document`, a `Text` field marked `body` gets the block editor |
+| `toggle(bind: b)`, `choice(bind: e)`, `date(bind: d)` | Native controls. A `choice` takes its cases from the enum |
+| `card(r) { ... }` in `grid` | `Card` in a `CardGrid`; media cards use `MediaCard` |
+| `button(action)` | `Button`, with label, icon and role taken from the action. Only for actions that belong inside the content |
+| `avatar(p)` | `Avatar::person` |
+
+Every name above is a widget the native apps already use. No style or size argument exists for
+colour, radius, padding or font. Text has semantic roles (`title`, `body`, `caption`, `numeric`)
+only.
+
+### 3.4 List and detail
+
+The workspace model says list and detail are two windows. Native Tilo apps show them as columns of
+one window. Both hold:
+
+- **Model.** The notebook and the note are two workspace windows. Each has its own identity,
+  window state, lenses and presence. `open(n)` creates or goes to the note's window, as before.
+- **Presentation.** Consecutive windows of the *same package* in a lane render as the columns of
+  that app's one `NavShell`: sidebar, overview, content and inspector. On a narrow screen they
+  become push navigation with Back, exactly like native apps.
+
+  A note opened from a chat (another package) gets its own app window in the lane.
+
+The app keeps no "selected note" state. Selection in the overview column is simply which note
+window follows it in the lane.
+
+### 3.5 Rendering through the framework root
+
+The host renders tilolang through the framework's `ResourceRoot`. It does not use a custom
+`AppWidget`. That brings the content ground, save status, per-author undo, History, permissions,
+the action palette, the agent door, search indexing and the unreadable-record state, as every
+framework app gets them. tilolang must not reimplement any of these.
+
+## 4. Performance by default
+
+### 4.1 Budgets
+
+These are measured in release builds and recorded as KPIs, next to the native apps' KPIs:
+
+| What | Budget | Same as |
+|---|---|---|
+| Idle | 0 wakeups/s and 0 frames, per app process | `idle.*` |
+| Warm open, request to first frame | p95 ≤ 300 ms | `app.open.warm_ms.*` |
+| Keystroke to frame (CPU), 10k items | ≤ 2 ms | `render.framework_*` (native: 1.44 ms) |
+| Peer change to frame, 10k items | ≤ 2 ms | — |
+| Scroll frame (CPU), 10k items | p50 ≤ 1 ms | native 0.52 ms |
+| Memory per app | ≤ 60 MiB anon | `memory.app_anon_mib.*` |
+| Bundle size | Budgeted like every app | `tapp-size-budget` |
+
+A tilolang app that misses a budget is a bug in the runtime, not in the app.
+
+### 4.2 What the runtime does so that apps meet them
+
+1. **Field-precise invalidation.** `TiloStore` turns Automerge patches into the set of changed
+   (object, field) pairs. A view re-runs only when a field it read changed. It does not clone the
+   record or notify whole documents.
+2. **Every view call is its own boundary.** Row views are memoized by item key and arguments. A
+   change to one note re-runs that row, not the notebook.
+3. **Lists evaluate only what is visible.** `list` hands the `VirtualList` a row count and a row
+   builder. Row views run for visible rows plus overscan.
+4. **The host applies the runtime's patches.** It does not rebuild and deep-compare trees.
+   - A property patch updates the widget in place and damages its rectangle.
+   - An insert or remove is a `StructureChange::Described`.
+   - `structure_dirty` is set only for real structure changes.
+5. **Search and publication are incremental.** Only changed records are reindexed and republished.
+6. **One engine per process, and no compiling at launch.**
+   - The bundle's wasm is loaded once into one engine.
+   - Translation is cached on disk, keyed by the module hash.
+   - Nothing compiles twice; the "surface host" is removed.
+7. **Engine choice by measurement.**
+   - wasmi stays only if a 10k-row list meets §4.1 with it.
+   - Otherwise wasmtime with on-disk AOT artifacts (RX, no RWX, already reviewed in
+     `dictation-whistle-aot-review.md`).
+   - The benchmark decides; the decision is recorded in `DECISIONS.md`.
+8. **No timers.** The host has no polling, and nothing asks for a wake deadline. Animation frames
+   come only from named motion while it plays.
+
+### 4.3 How it's measured
+
+- `tilolang bench <package>` runs these scenarios headlessly and prints the same JSON records as
+  `tools/perf/record.py`, at 10, 1k and 10k items:
+  - open;
+  - keystroke in a row;
+  - peer edit;
+  - scroll;
+  - idle for 10 s, counting context switches and frames.
+- The built-in packages run it in tests with the budgets as limits.
+- The idle check runs the real app process in the nested session and samples `/proc`, like
+  `idle-wakeups`.
+
+## 5. Scenarios: seed data and screenshots
+
+A package declares **scenarios**: named seed data for screenshots, tests and benchmarks.
+
+```
+scenario "a week of notes" {
+  let nb = root Notebook
+  nb.notes.insert(Note(title: "Q3 plan", body: "...", pinned: true))
+  ...
+}
+```
+
+- Scenarios map onto the framework's `ResourceApp::scenarios`. `--shots --scenario NAME
+  --viewport WxH` works as it does for native apps.
+- They never touch a person's data. A real first launch shows the native empty state (§3.2).
+
+## 6. Review: "as good as native" is checked, not assumed
+
+For every app, at 420×860, 1280×800 and 2560×1440, at text scale 1 and 1.5:
+
+1. Take shots of the tilolang app and of the closest native app (Notes, Contacts, Snippets or
+   Totp) at the same viewport.
+2. Review them side by side against the HIG checklist:
+   - header row: one row, title, count, actions, history glyph;
+   - sidebar width and toggle;
+   - row heights and lifts;
+   - one content edge;
+   - empty state: one sentence, at most one action;
+   - no title drawn by the app;
+   - no hand-made chrome.
+3. Every difference is a defect, fixed in the runtime or the vocabulary, not in the app.
+
+An agent's review must name each shot it looked at and what it checked. "Looks fine" is not a
+review.
+
+## 7. What changes for an author
+
+The notes app from the first version, rewritten:
+
+```
+app so.tilo.notes "Notes" (icon: .note)
+
+type Note {
+    title: Text (title)
+    body: Text (body)
+    pinned: Bool = false
+    tags: Set<Text>
+}
+
+type Notebook { notes: Collection<Note> }
+
+/// Which notes a notebook lists.
+enum NoteFilter {
+    /// All notes
+    all
+    /// Pinned
+    pinned
+}
+
+enum NoteOrder {
+    /// Date created
+    created
+    /// Title
+    title
+}
+
+root Notebook
+default view notebook for Notebook
+default view note_editor for Note
+
+primary action new_note(nb: Notebook) -> Note (icon: .plus) {
+    open(nb.notes.insert(Note(title: "")))
+}
+
+action toggle_pin(n: Note) (icon: .pin) { n.pinned = not n.pinned }
+
+destructive action delete(n: Note) { n.parent.notes.remove(n) }
+
+view notebook(nb: Notebook) {
+    window order: NoteOrder = .created
+    window filter: NoteFilter = .all
+    list(listed(nb, order, filter), sort: order, filter: filter, empty: "No notes yet") { n ->
+        row(n.title, secondary: n.body, mark: if n.pinned { .pin })
+    }
+}
+
+view note_editor(n: Note) {
+    document { input(bind: n.title); input(bind: n.body) }
+}
+```
+
+There is no heading, no button row, no "Show actions" and no hand-made filter row. The result is
+the native shell: a sidebar holding the filter, a list with a sort menu and context menus, a "New
+note" header action, a document editor in the next column, search, history and presence.
+
+## 8. Work plan
+
+1. **Platform: independent apps** (§2):
+   - `Entrypoint.runtime`, the manifest icon and an owned app id;
+   - the runtime binary and bundle;
+   - `tilolang build` emitting `.tapp`s;
+   - nested-session `tilolang run`;
+   - per-app records, the declared read-only join, and the route-app write check.
+2. **Runtime: performance** (§4.2): invalidation, row boundaries, patch application, the engine
+   cache and decision, and `tilolang bench`.
+3. **Vocabulary and host: native widgets** (§3): frames, `list`/`row`, automatic actions,
+   `ResourceRoot`, and same-package lane columns.
+4. **Apps, scenarios, review** (§5–6): rewrite the six apps and review them against native.
+
+Steps 1–3 are independent and run in parallel. Step 4 starts once 3 renders a frame.
