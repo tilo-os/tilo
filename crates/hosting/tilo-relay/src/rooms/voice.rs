@@ -323,21 +323,28 @@ impl Calls {
 
     /// The participation, call and publishing of an unexpired `token`.
     #[cfg(feature = "web")]
-    fn admission(&self, token: &[u8; 32]) -> Option<([u8; 32], [u8; 32], bool)> {
+    fn admission(&self, token: &[u8; 32]) -> Option<([u8; 32], [u8; 32], Directions)> {
         let state = self.state();
         let id = *state.tokens.get(token)?;
         state
             .participations
             .get(&id)
             .filter(|participation| Instant::now() < participation.token_expires)
-            .map(|participation| (id, participation.call, participation.directions.publish))
+            .map(|participation| (id, participation.call, participation.directions))
     }
 
     /// Whether participation `id` may use `direction` on `namespace` now.
     #[cfg(feature = "web")]
     fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
-        let state = self.state();
-        let Some(own) = state.participations.get(id) else {
+        self.state().permits(id, direction, namespace)
+    }
+}
+
+impl State {
+    /// Whether participation `id` may use `direction` on `namespace`.
+    #[cfg(feature = "web")]
+    fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
+        let Some(own) = self.participations.get(id) else {
             return false;
         };
         match direction {
@@ -349,7 +356,7 @@ impl Calls {
                     return false;
                 };
                 own.directions.subscribe
-                    && state
+                    && self
                         .participations
                         .get(&publisher)
                         .is_some_and(|other| other.call == own.call && other.directions.publish)
@@ -679,7 +686,49 @@ struct Session {
     calls: std::sync::Weak<Calls>,
     participation: [u8; 32],
     publication: Option<String>,
-    prefix: String,
+    prefix: Option<String>,
+}
+
+#[cfg(feature = "web")]
+impl Session {
+    /// Whether this session still holds every direction it was admitted with.
+    fn status(&self, state: &State) -> AuthorizationStatus {
+        let Some(own) = state.participations.get(&self.participation) else {
+            return AuthorizationStatus::Denied;
+        };
+        let subscribes = self.prefix.is_none() || own.directions.subscribe;
+        let publishes = self
+            .publication
+            .as_deref()
+            .is_none_or(|name| state.permits(&self.participation, Direction::Publish, name));
+        if subscribes && publishes {
+            AuthorizationStatus::Current
+        } else {
+            AuthorizationStatus::Denied
+        }
+    }
+
+    /// Its status and, while current, the `offered` publications it may no
+    /// longer hear, read from one `state`: a lapse of this session's own
+    /// authority must never be reported as its publishers' lapse, which
+    /// would close their publications.
+    fn status_offered_in(
+        &self,
+        state: &State,
+        offered: &[&str],
+        lapsed: &mut Vec<String>,
+    ) -> AuthorizationStatus {
+        let status = self.status(state);
+        if matches!(status, AuthorizationStatus::Current) {
+            lapsed.extend(
+                offered
+                    .iter()
+                    .filter(|name| !state.permits(&self.participation, Direction::Subscribe, name))
+                    .map(|name| (*name).to_owned()),
+            );
+        }
+        status
+    }
 }
 
 #[cfg(feature = "web")]
@@ -693,7 +742,7 @@ impl SessionAuthorization for Session {
     }
 
     fn subscription_prefix(&self) -> Option<&str> {
-        Some(&self.prefix)
+        self.prefix.as_deref()
     }
 
     fn current(&self, direction: Direction, namespace: &str) -> bool {
@@ -703,35 +752,19 @@ impl SessionAuthorization for Session {
     }
 
     fn status_all(&self) -> AuthorizationStatus {
-        let Some(calls) = self.calls.upgrade() else {
-            return AuthorizationStatus::Denied;
-        };
-        let current = calls
-            .state()
-            .participations
-            .contains_key(&self.participation);
-        let publishes = self
-            .publication
-            .as_deref()
-            .is_none_or(|name| calls.permits(&self.participation, Direction::Publish, name));
-        if current && publishes {
-            AuthorizationStatus::Current
-        } else {
-            AuthorizationStatus::Denied
-        }
+        self.calls
+            .upgrade()
+            .map_or(AuthorizationStatus::Denied, |calls| {
+                self.status(&calls.state())
+            })
     }
 
     fn status_offered(&self, offered: &[&str], lapsed: &mut Vec<String>) -> AuthorizationStatus {
-        let status = self.status_all();
-        if matches!(status, AuthorizationStatus::Current) {
-            lapsed.extend(
-                offered
-                    .iter()
-                    .filter(|name| !self.current(Direction::Subscribe, name))
-                    .map(|name| (*name).to_owned()),
-            );
-        }
-        status
+        self.calls
+            .upgrade()
+            .map_or(AuthorizationStatus::Denied, |calls| {
+                self.status_offered_in(&calls.state(), offered, lapsed)
+            })
     }
 }
 
@@ -744,12 +777,12 @@ impl RelayAuthority for Authority {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let calls = self.0.upgrade().ok_or(Denied)?;
         let token: [u8; 32] = proof.try_into().map_err(|_| Denied)?;
-        let (id, call, publishes) = calls.admission(&token).ok_or(Denied)?;
+        let (id, call, directions) = calls.admission(&token).ok_or(Denied)?;
         Ok(Arc::new(Session {
             calls: Arc::downgrade(&calls),
             participation: id,
-            publication: publishes.then(|| protocol::namespace(&call, &id)),
-            prefix: hex::encode(call),
+            publication: directions.publish.then(|| protocol::namespace(&call, &id)),
+            prefix: directions.subscribe.then(|| hex::encode(call)),
         }))
     }
 }
@@ -1116,6 +1149,136 @@ impl Rooms {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two participations of one call, both publishing and subscribing,
+    /// admitted as carrier sessions.
+    #[cfg(feature = "web")]
+    fn two_in_a_call() -> (Arc<Calls>, Arc<dyn SessionAuthorization>, String) {
+        let calls = Arc::new(Calls::default());
+        let call = [3; 32];
+        for id in [[4; 32], [5; 32]] {
+            let (outbound, _) = mpsc::channel(1);
+            let mut state = calls.state();
+            state.participations.insert(
+                id,
+                Participation {
+                    room: "room".into(),
+                    workspace_id: 1,
+                    call,
+                    epoch: 1,
+                    device: id,
+                    user: id,
+                    directions: Directions {
+                        publish: true,
+                        subscribe: true,
+                    },
+                    showing: Showing::default(),
+                    seen: Instant::now(),
+                    outbound,
+                    token: id,
+                    token_expires: Instant::now() + GRANT_TTL,
+                    token_expires_ns: 0,
+                },
+            );
+            state.tokens.insert(id, id);
+        }
+        let subscriber = Authority(Arc::downgrade(&calls)).admit(&[4; 32]).unwrap();
+        (calls, subscriber, protocol::namespace(&call, &[5; 32]))
+    }
+
+    #[cfg(feature = "web")]
+    fn directions(calls: &Calls, id: [u8; 32], directions: Directions) {
+        calls
+            .state()
+            .participations
+            .get_mut(&id)
+            .unwrap()
+            .directions = directions;
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn only_a_removed_publisher_lapses() {
+        let (calls, subscriber, publisher) = two_in_a_call();
+        let mut lapsed = Vec::new();
+        assert!(matches!(
+            subscriber.status_offered(&[&publisher], &mut lapsed),
+            AuthorizationStatus::Current
+        ));
+        assert!(lapsed.is_empty());
+        calls.state().remove(&[5; 32]);
+        assert!(matches!(
+            subscriber.status_offered(&[&publisher], &mut lapsed),
+            AuthorizationStatus::Current
+        ));
+        assert_eq!(lapsed, [publisher]);
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn losing_its_own_authority_never_lapses_its_publishers() {
+        let (calls, subscriber, publisher) = two_in_a_call();
+        for (publish, subscribe) in [(true, false), (false, true), (false, false)] {
+            directions(&calls, [4; 32], Directions { publish, subscribe });
+            let mut lapsed = Vec::new();
+            assert!(matches!(
+                subscriber.status_offered(&[&publisher], &mut lapsed),
+                AuthorizationStatus::Denied
+            ));
+            assert!(lapsed.is_empty(), "{publish} {subscribe}: {lapsed:?}");
+        }
+        calls.state().remove(&[4; 32]);
+        let mut lapsed = Vec::new();
+        assert!(matches!(
+            subscriber.status_offered(&[&publisher], &mut lapsed),
+            AuthorizationStatus::Denied
+        ));
+        assert!(lapsed.is_empty());
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn a_session_is_scoped_to_the_directions_it_was_admitted_with() {
+        let (calls, _, publisher) = two_in_a_call();
+        let authority = Authority(Arc::downgrade(&calls));
+
+        directions(
+            &calls,
+            [4; 32],
+            Directions {
+                publish: true,
+                subscribe: false,
+            },
+        );
+        let publishing = authority.admit(&[4; 32]).unwrap();
+        assert!(publishing.subscription_prefix().is_none());
+        assert!(publishing.publication().is_some());
+        assert!(matches!(
+            publishing.status_all(),
+            AuthorizationStatus::Current
+        ));
+
+        directions(
+            &calls,
+            [4; 32],
+            Directions {
+                publish: false,
+                subscribe: true,
+            },
+        );
+        let hearing = authority.admit(&[4; 32]).unwrap();
+        assert!(hearing.publication().is_none());
+        let mut lapsed = Vec::new();
+        assert!(matches!(
+            hearing.status_offered(&[&publisher], &mut lapsed),
+            AuthorizationStatus::Current
+        ));
+        assert!(lapsed.is_empty());
+        assert!(matches!(
+            publishing.status_all(),
+            AuthorizationStatus::Denied
+        ));
+    }
 
     #[test]
     fn namespaces_name_their_call_and_participation() {
