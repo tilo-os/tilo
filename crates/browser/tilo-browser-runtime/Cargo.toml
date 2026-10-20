@@ -29,6 +29,9 @@ tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The content windows' records reference (pictures, attachments), kept in
+# the page's memory and asked of the room when missing.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # The one link grammar, exported to the page as parseLink/formatLink.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }

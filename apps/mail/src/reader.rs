@@ -269,17 +269,28 @@ impl Flow<'_, '_> {
 
     /// Paint `text` wrapped to the column and move below it.
     fn paragraph(&mut self, text: &str, style: &TextStyle, dim: bool) {
-        let width = ui::num::f32_of_f64(self.width.max(1.0));
-        let (_, h) = self.ctx.text.measure_style(text, Some(width), style);
         let theme = self.ctx.theme;
         let ink = if dim {
             theme.text_dim
         } else {
             theme.text_primary
         };
-        self.ctx
-            .text(text, style, ink, Point::new(self.x, self.y), Some(width));
-        self.y += f64::from(h);
+        self.y += self.wrapped_at(text, style, ink, Point::new(self.x, self.y), self.width);
+    }
+
+    /// `text` wrapped to `width` at `at`; returns how tall it is.
+    fn wrapped_at(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        ink: vello::peniko::Color,
+        at: Point,
+        width: f64,
+    ) -> f64 {
+        let width = ui::num::f32_of_f64(width.max(1.0));
+        let (_, height) = self.ctx.text.measure_style(text, Some(width), style);
+        self.ctx.text(text, style, ink, at, Some(width));
+        f64::from(height)
     }
 
     /// One line elided into `width` at `x`, top at `y`.
@@ -322,29 +333,45 @@ impl Flow<'_, '_> {
 
         let text_x = self.x + side + f64::from(spacing.s3);
         let right = self.x + self.width;
+        let full_w = (right - text_x).max(1.0);
         let date = format_absolute(local_minutes(message.timestamp_min));
         let (date_w, _) = self.ctx.text.measure_style(&date, None, &date_style);
-        let date_x = right - f64::from(date_w);
+        let (name_w, _) = self.ctx.text.measure_style(&name, None, &name_style);
         let gap = f64::from(spacing.s3);
-        let name_w = (date_x - gap - text_x).max(0.0);
+        // The date sits on the name's line box while both fit; otherwise it
+        // takes a line of its own rather than the sender's name.
+        let date_inline = f64::from(name_w + date_w) + gap <= full_w;
         let mut y = self.y;
         self.line_at(
             &name,
             &name_style,
             theme.text_primary,
             Point::new(text_x, y),
-            name_w,
+            if date_inline {
+                full_w - f64::from(date_w) - gap
+            } else {
+                full_w
+            },
         );
-        // The date sits on the name's line box.
-        self.ctx.text(
-            &date,
-            &date_style,
-            theme.text_dim,
-            Point::new(date_x, y + (name_h - caption_h) / 2.0),
-            None,
-        );
+        if date_inline {
+            self.ctx.text(
+                &date,
+                &date_style,
+                theme.text_dim,
+                Point::new(right - f64::from(date_w), y + (name_h - caption_h) / 2.0),
+                None,
+            );
+        }
         y += name_h;
-        let full_w = (right - text_x).max(0.0);
+        if !date_inline {
+            y += self.wrapped_at(
+                &date,
+                &date_style,
+                theme.text_dim,
+                Point::new(text_x, y),
+                full_w,
+            );
+        }
         self.line_at(
             &message.from.email,
             &address_style,
@@ -353,10 +380,10 @@ impl Flow<'_, '_> {
             full_w,
         );
         y += caption_h;
+        // Every recipient shows: the line wraps rather than eliding names.
         let to = recipients_line(message);
         if !to.is_empty() {
-            self.line_at(&to, &caption, theme.text_dim, Point::new(text_x, y), full_w);
-            y += caption_h;
+            y += self.wrapped_at(&to, &caption, theme.text_dim, Point::new(text_x, y), full_w);
         }
         self.y = y.max(self.y + side);
     }
@@ -1385,6 +1412,114 @@ mod tests {
             &mut TextRenderer::new(),
             &Theme::dark(),
             &PresenceCtx::empty(),
+        );
+    }
+
+    fn draw_themed(reader: &mut MessageReader, theme: &Theme) {
+        let mut scene = Scene::new();
+        reader.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// The message body, plain or HTML, grows once with the text size and
+    /// the UI scale: as tall as the theme's body type, never scaled twice.
+    #[test]
+    fn message_bodies_grow_once_at_enlarged_scales() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let base = Theme::dark();
+        for html in [None, Some("<h1>A heading</h1><p>A message.</p>")] {
+            {
+                let mut state = shared.borrow_mut();
+                let message = state.mailbox.messages.get_mut(&id).unwrap();
+                message.body = "A message.".to_owned();
+                message.html_body = html.map(str::to_owned);
+            }
+            let mut reader = reader_for(&shared, id, 960.0, 1200.0);
+            draw_themed(&mut reader, &base);
+            let base_height = reader.bodies[&id].input.caret_rect(&base, 0).height();
+            for theme in [
+                Theme::dark().with_text_scale(1.5),
+                Theme::dark().with_ui_scale(1.5),
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+            ] {
+                draw_themed(&mut reader, &theme);
+                let body = &reader.bodies[&id];
+                let expected = theme.text(TextRole::Body);
+                assert!(
+                    (body.style.font_px - expected.size).abs() < 0.01,
+                    "{html:?}: the document style is the theme's body type"
+                );
+                let growth = f64::from(expected.size / base.text(TextRole::Body).size);
+                let height = body.input.caret_rect(&theme, 0).height();
+                assert!(
+                    (height - base_height * growth).abs() < 0.1,
+                    "{html:?}: grows once with the theme: {height} vs {base_height} x {growth}"
+                );
+            }
+        }
+    }
+
+    /// At a large text size a long sender name keeps its line: the date
+    /// moves below it, and every recipient shows, wrapped, above the body.
+    #[test]
+    fn sender_details_reflow_rather_than_elide_at_large_text() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let theme = Theme::dark().with_text_scale(1.5);
+        {
+            let mut state = shared.borrow_mut();
+            let message = state.mailbox.messages.get_mut(&id).unwrap();
+            message.html_body = None;
+            message.from.name = Some("A".to_owned());
+            message.to.clear();
+            message.cc.clear();
+        }
+        let mut reader = reader_for(&shared, id, 420.0, 1400.0);
+        let body_top = |reader: &mut MessageReader| {
+            draw_themed(reader, &theme);
+            reader.bodies[&id].input.get_rect().y0
+        };
+        let inline = body_top(&mut reader);
+        shared
+            .borrow_mut()
+            .mailbox
+            .messages
+            .get_mut(&id)
+            .unwrap()
+            .from
+            .name = Some("Alexandria from the community garden planning group".to_owned());
+        let stacked = body_top(&mut reader);
+        let caption = theme.text(TextRole::Caption);
+        let mut text = TextRenderer::new();
+        let caption_h = f64::from(text.measure_style("Ag", None, &caption).1);
+        assert!(
+            (stacked - inline - caption_h).abs() < 0.1,
+            "a crowded date takes its own line: {inline} then {stacked}"
+        );
+
+        let recipients = {
+            let mut state = shared.borrow_mut();
+            let message = state.mailbox.messages.get_mut(&id).unwrap();
+            message.to = vec![crate::model::Addr::new(
+                "The community garden volunteer coordinators",
+                "volunteers@garden.example",
+            )];
+            message.cc = vec![crate::model::Addr::new(
+                "The neighbourhood planning and maintenance group",
+                "planning@garden.example",
+            )];
+            recipients_line(message)
+        };
+        let wrapped = body_top(&mut reader);
+        assert!(
+            wrapped - stacked > 2.0 * caption_h,
+            "every recipient shows, wrapped over lines of their own: {stacked} then {wrapped} for {recipients}"
         );
     }
 

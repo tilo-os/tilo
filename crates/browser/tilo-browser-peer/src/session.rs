@@ -336,6 +336,17 @@ pub enum PeerEvent {
         /// Opaque frame.
         frame: Vec<u8>,
     },
+    /// A piece of content a room's records reference, sent to this device
+    /// alone by a member that keeps it (the host's own device included),
+    /// in answer to [`PeerHandle::want_content`].
+    RecordContent {
+        /// The room's workspace.
+        workspace_id: u64,
+        /// Host-stamped sending device.
+        from: [u8; 32],
+        /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
+        frame: Vec<u8>,
+    },
     /// The host could not deliver a remote-action frame this device sent.
     RemoteActionUndeliverable {
         /// The room's workspace.
@@ -380,6 +391,53 @@ pub enum PeerEvent {
     },
 }
 
+/// What the host addressed to this device that it only passes on: an
+/// action frame or what became of one, a piece of content, a member's
+/// coming or going.
+fn addressed(envelope: Envelope) -> Option<PeerEvent> {
+    match envelope {
+        Envelope::RemoteAction {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::RemoteAction {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        }),
+        Envelope::RecordContent {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::RecordContent {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        }),
+        Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key,
+            reason,
+        } => Some(PeerEvent::RemoteActionUndeliverable {
+            workspace_id,
+            to: to_device_public_key,
+            reason,
+        }),
+        Envelope::LiveMember {
+            workspace_id,
+            device_public_key,
+            active,
+        } => Some(PeerEvent::LiveMember {
+            workspace_id,
+            device: device_public_key,
+            active,
+        }),
+        _ => None,
+    }
+}
+
 enum Command {
     Join(u64),
     OpenRecord(u64, DocumentRoute),
@@ -393,6 +451,7 @@ enum Command {
     SealLive(u64, Vec<u8>, LiveCompletion),
     OpenLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
+    WantContent(u64, Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
     VoiceCalls(u64),
@@ -817,6 +876,20 @@ impl PeerHandle {
         frame: Vec<u8>,
     ) -> Result<(), String> {
         self.send(Command::RemoteAction(workspace_id, to, frame))
+    }
+
+    /// Ask room `workspace_id` for content its records reference: `request`
+    /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. It rides
+    /// the room's presence, which the host fans out to every member and
+    /// answers itself from what it keeps; the pieces come back to this
+    /// device alone as [`PeerEvent::RecordContent`]. Dropped while
+    /// disconnected: the caller asks again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
+        self.send(Command::WantContent(workspace_id, request))
     }
 
     /// A receipt that completes once every document published before this
@@ -1711,6 +1784,50 @@ impl Task {
         }
     }
 
+    /// Send a remote-action frame to device `to`, or say it cannot go.
+    fn remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
+        }
+    }
+
+    /// Ask the room for content on its presence ([`PeerHandle::want_content`]);
+    /// nothing while disconnected.
+    fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&Link>) {
+        let Some(client) = client else {
+            return;
+        };
+        let presence = tilo_relay_client::coedit::AttributedPresence {
+            author: self.config.cert.device_public_key,
+            body: request,
+        };
+        if let Ok(payload) = presence.encode() {
+            let _ = client.send(Envelope::Presence {
+                workspace_id,
+                payload,
+            });
+        }
+    }
+
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
@@ -1731,22 +1848,11 @@ impl Task {
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        from_user_public_key: self.config.cert.user_public_key,
-                        frame,
-                    });
-                } else {
-                    self.emit(&PeerEvent::RemoteActionUndeliverable {
-                        workspace_id,
-                        to,
-                        reason: "not connected to the host".into(),
-                    });
-                }
+                self.remote_action(workspace_id, to, frame, client);
+                true
+            }
+            Command::WantContent(workspace_id, request) => {
+                self.want_content(workspace_id, request, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -1854,10 +1960,13 @@ impl Task {
             return Some(command);
         }
         match command {
+            // A watching page asks the room for no content: the host
+            // answers none to it.
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
-            | Command::Compact(..) => {}
+            | Command::Compact(..)
+            | Command::WantContent(..) => {}
             Command::RemoteAction(workspace_id, to, _) => {
                 self.emit(&PeerEvent::RemoteActionUndeliverable {
                     workspace_id,
@@ -2525,35 +2634,11 @@ impl Task {
                 None,
                 true,
             ),
-            Envelope::RemoteAction {
-                workspace_id,
-                from_device_public_key,
-                frame,
-                ..
-            } => self.emit(&PeerEvent::RemoteAction {
-                workspace_id,
-                from: from_device_public_key,
-                frame,
-            }),
-            Envelope::RemoteActionUndeliverable {
-                workspace_id,
-                to_device_public_key,
-                reason,
-            } => self.emit(&PeerEvent::RemoteActionUndeliverable {
-                workspace_id,
-                to: to_device_public_key,
-                reason,
-            }),
-            Envelope::LiveMember {
-                workspace_id,
-                device_public_key,
-                active,
-            } => self.emit(&PeerEvent::LiveMember {
-                workspace_id,
-                device: device_public_key,
-                active,
-            }),
-            _ => {}
+            envelope => {
+                if let Some(event) = addressed(envelope) {
+                    self.emit(&event);
+                }
+            }
         }
     }
 

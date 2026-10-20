@@ -71,6 +71,26 @@ impl SecretStore for MemoryStore {
             .retain(|(entry, _), _| entry != uuid);
         Ok(())
     }
+
+    fn rejected(&self, key: &StoreKey) -> Option<SettingSecrets> {
+        self.get(&key.uuid, &format!("rejected:{}", key.setting))
+    }
+
+    fn reject(&self, key: &StoreKey, secrets: &SettingSecrets) -> Result<(), String> {
+        self.put(
+            &key.uuid,
+            &format!("rejected:{}", key.setting),
+            secrets.clone(),
+        );
+        Ok(())
+    }
+
+    fn clear_rejected(&self, key: &StoreKey) -> Result<(), String> {
+        self.entries
+            .lock_recover()
+            .remove(&(key.uuid.clone(), format!("rejected:{}", key.setting)));
+        Ok(())
+    }
 }
 
 /// `NetworkManager`'s agent manager, recording registrations.

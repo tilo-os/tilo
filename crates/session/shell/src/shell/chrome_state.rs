@@ -540,6 +540,9 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// The primary link the status poller last observed: what Wi-Fi is
+    /// connected to even when discovery failed or has not answered yet.
+    pub link: Option<os_actions::LinkStatus>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -655,6 +658,7 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -706,6 +710,7 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -886,6 +891,9 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    /// A window chosen explicitly, to reveal even when it already was the
+    /// selected one and the strip was panned away from it.
+    tab_reveal_request: Option<(WorkspaceId, StripId, GroupId)>,
     /// A paused action the person asked to see from its notification: the
     /// composer following that run shows it, else Task Center does.
     task_draft_request: Option<String>,
@@ -1201,6 +1209,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            tab_reveal_request: None,
             task_draft_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -2340,6 +2349,24 @@ impl ChromeState {
         self.bump();
     }
 
+    /// Focus a window the person chose (the palette, an action, the window
+    /// switcher) and bring it into view, even when it already had focus.
+    pub fn select_tab(&mut self, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: u64) {
+        self.tab_reveal_request = Some((workspace, strip, group));
+        self.focus_tab(workspace, strip, group, tab);
+    }
+
+    /// The strip to reveal for [`Self::select_tab`], once, while that window
+    /// is still the selected one.
+    pub(crate) fn take_tab_reveal_request(&mut self) -> Option<StripId> {
+        let (workspace, strip, group) = self.tab_reveal_request.take()?;
+        let tree = self.tree();
+        (tree.desktop.active == workspace
+            && tree.desktop.active_strip.get(&workspace) == Some(&strip)
+            && tree.desktop.active_group_for(strip) == Some(group))
+        .then_some(strip)
+    }
+
     /// Replace what personal continuity knows about other devices' focus.
     pub fn set_continuity_feed(
         &mut self,
@@ -2367,7 +2394,7 @@ impl ChromeState {
     ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
         let suggestion = self.continuity_suggestion(now)?;
         self.continuity_suggestions.dismiss(&suggestion);
-        self.focus_tab(
+        self.select_tab(
             suggestion.workspace,
             suggestion.strip,
             suggestion.group,
@@ -3458,6 +3485,21 @@ impl ChromeState {
                 == Some(crate::shell::system_update::RESTART_ACTION)
         {
             self.request_session_action(os_actions::SessionAction::Restart);
+            self.record_history(removed);
+            self.bump();
+            return true;
+        }
+        // The desktop's own "Couldn't join <network>": join it as the person,
+        // which asks for its password in a sheet.
+        if removed.sender_id.is_none()
+            && removed.remote_route.is_none()
+            && removed.app_id.is_none()
+            && let Some(path) = removed.default_action_key().as_deref().and_then(|key| {
+                key.strip_prefix(crate::network_secrets::JOIN_ACTION_PREFIX)
+                    .map(str::to_owned)
+            })
+        {
+            crate::network_secrets::join(&path);
             self.record_history(removed);
             self.bump();
             return true;

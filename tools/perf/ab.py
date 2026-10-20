@@ -449,8 +449,8 @@ def run_wakeups(ctx: RunContext) -> list[record.Record]:
 
 def run_fs(ctx: RunContext) -> list[record.Record]:
     log = ctx.dir / "fs-gate.log"
-    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["performance_gate"], "--nocapture",
-          "--test-threads=1"], log, ctx.cwd["performance_gate"], {"TILO_FS_PERF_GATE": "1"}, check=False)
+    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["performance_timing"], "--nocapture",
+          "--test-threads=1"], log, ctx.cwd["performance_timing"], {"TILO_FS_PERF_GATE": "1"}, check=False)
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
@@ -534,8 +534,8 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"shell": "target/debug/shell", "idle-wakeups": "target/debug/examples/idle-wakeups"},
           {}, {"shell": "target/debug/shell"}, run_wakeups),
     Group("fs", "dev", "none", (),
-          {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
-                                     "--no-run"), "performance_gate")},
+          {}, {"performance_timing": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test",
+                                       "performance_timing", "--no-run"), "performance_timing")},
           {}, run_fs),
     Group("search", "dev", "none", (),
           {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
@@ -575,7 +575,12 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
 
 
 def side_group(group: Group, repo: Path) -> Group:
-    """Keep A/B comparisons with refs before the idle executable migration usable."""
+    """Keep A/B comparisons with refs before a benchmark moved usable."""
+    if group.name == "fs" and not (repo / "crates/system/fs/tests/performance_timing.rs").is_file():
+        # The latency scenarios were the performance gate until it counted work.
+        return dataclasses.replace(group, tests={"performance_timing": (
+            ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate", "--no-run"),
+            "performance_gate")})
     if group.name != "wakeups" or (repo / "crates/session/shell/examples/idle-wakeups.rs").is_file():
         return group
     return dataclasses.replace(

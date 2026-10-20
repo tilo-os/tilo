@@ -1091,10 +1091,15 @@ fn team_card_height(people: usize) -> f64 {
 /// How widget `id` comes and goes. The Team widget's faces are people, and
 /// a person shown faintly reads as a ghost: it appears with the standard
 /// Appear motion, whole within its first moments, and is otherwise hidden,
-/// never resting in between. The others arrive as ambient chrome does.
+/// never resting in between; it goes at once, as the others do, so a chord
+/// that cancels a held Super leaves no face fading out behind it. The others
+/// arrive as ambient chrome does.
 fn shown_spec(id: WidgetId, asked: bool) -> ui::motion::MotionSpec {
     match id {
-        WidgetId::Team => ui::motion::Appear::SPEC,
+        WidgetId::Team => ui::motion::MotionSpec {
+            exit: ui::motion::Pace::Instant,
+            ..ui::motion::Appear::SPEC
+        },
         _ => ui::motion::Ambient::spec(asked),
     }
 }

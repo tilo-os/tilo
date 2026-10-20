@@ -1611,3 +1611,62 @@ fn group_actions_target_exactly_their_group_or_surface() {
     a_deferred_close_click_keeps_the_window_and_animates_once_at_exit();
     group_plus_is_a_workspace_scoped_app_picker_targeting_that_group();
 }
+
+/// Choosing a window explicitly brings it back into view even when it was
+/// already the selected one and the strip was panned away; panning after
+/// that is left alone again.
+#[test]
+fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (mut tree, strip, first) = one_group_seed();
+    for id in 201..=206 {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(id, &format!("Window-{id}")));
+    }
+    tree.desktop.set_active_group(strip, first);
+    tree.seed_doc_from_cache();
+    let workspace = tree.desktop.workspaces[0].id;
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let settle = |host: &mut ShellOverlayHost| {
+        for _ in 0..3 {
+            layout_close_fixture(host, &theme);
+            host.tick_scroll_active_into_view_for_tests();
+        }
+        layout_close_fixture(host, &theme);
+    };
+    let pan_away = |host: &mut ShellOverlayHost| {
+        let row = host.group_row_mut_for_tests(strip).expect("a live row");
+        row.set_scroll_x_for_test(row.max_scroll_x());
+    };
+    let first_visible = |host: &mut ShellOverlayHost| {
+        let row = host.group_row_mut_for_tests(strip).expect("a live row");
+        let x1 = row
+            .group_canvas_spans()
+            .iter()
+            .find(|(group, _, _)| *group == first)
+            .map(|(_, _, x1)| *x1)
+            .expect("group laid out");
+        x1 > row.scroll_x()
+    };
+    settle(&mut host);
+    assert!(first_visible(&mut host));
+    pan_away(&mut host);
+    settle(&mut host);
+    assert!(!first_visible(&mut host), "fixture: panned past the window");
+
+    chrome.borrow_mut().focus_tab(workspace, strip, first, 1);
+    settle(&mut host);
+    assert!(
+        !first_visible(&mut host),
+        "focus that does not change keeps the person's pan"
+    );
+
+    chrome.borrow_mut().select_tab(workspace, strip, first, 1);
+    settle(&mut host);
+    assert!(first_visible(&mut host), "an explicit choice is revealed");
+
+    pan_away(&mut host);
+    settle(&mut host);
+    assert!(!first_visible(&mut host), "the reveal happens once");
+}

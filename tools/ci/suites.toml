@@ -386,6 +386,7 @@ requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
   "crates/session/shell/src/portal/", "crates/system/os-actions/", "crates/system/sandbox-core/",
+  "crates/platform/tilo-capture/src/scanner.rs",
 ]
 suites = ["os/tests/printing_isolation.sh"]
 
@@ -525,7 +526,7 @@ inputs = [
   ".forgejo/workflows/perf-scheduled.yml", ".forgejo/workflows/vm-acceptance.yml",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
-  "crates/system/fs/tests/performance_gate.rs",
+  "crates/system/fs/tests/performance_timing.rs",
   "crates/session/shell/src/compositor/switch_latency.rs",
   # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
   "crates/session/shell/src/shell/search/providers/files.rs",

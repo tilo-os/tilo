@@ -348,14 +348,15 @@ fn track_rows_play_and_act_through_the_shared_table() {
         "the whole list is queued behind it"
     );
 
-    // Phase `the_queue_rows_reorder_and_remove_with_their_buttons`.
+    // Queue editing remains available through the compact row menu.
     app.view = View::Queue;
     draw_once(&mut app, &mut doc);
     draw_once(&mut app, &mut doc);
     let next = app.pb.queue[app.pb.queue_index + 1].clone();
     let after = app.pb.queue[app.pb.queue_index + 2].clone();
-    let down = track_control(&mut app, &mut doc, &next, "down", draw_once);
-    hosted_click(&mut app, &mut doc, down.center());
+    let more = track_control(&mut app, &mut doc, &next, "more", draw_once);
+    hosted_click(&mut app, &mut doc, more.center());
+    choose_menu(&mut app, &mut doc, "Move down");
     assert_eq!(
         app.pb.queue[app.pb.queue_index + 1],
         after,
@@ -368,8 +369,9 @@ fn track_rows_play_and_act_through_the_shared_table() {
     );
     let before = app.pb.queue.len();
     draw_once(&mut app, &mut doc);
-    let remove = track_control(&mut app, &mut doc, &after, "remove", draw_once);
-    hosted_click(&mut app, &mut doc, remove.center());
+    let more = track_control(&mut app, &mut doc, &after, "more", draw_once);
+    hosted_click(&mut app, &mut doc, more.center());
+    choose_menu(&mut app, &mut doc, "Remove from queue");
     assert_eq!(
         app.pb.queue.len(),
         before - 1,
@@ -2121,6 +2123,14 @@ fn sized(app: &mut MusicApp, w: f64) {
 // ---- 2. context menu --------------------------------------------------
 
 /// Open a track's context menu, returning the action index for a label.
+/// Select a shared popup item through ordinary pointer handling.
+fn choose_menu(app: &mut MusicApp, doc: &mut AutoCommit, label: &str) {
+    let index = menu_index(app, label).expect("menu action");
+    draw_once(app, doc);
+    let rect = app.context.item_rect(index).expect("visible menu item");
+    hosted_click(app, doc, rect.center());
+}
+
 fn menu_index(app: &MusicApp, label: &str) -> Option<usize> {
     app.context.items().iter().enumerate().find_map(|(i, it)| {
         if it.label() == Some(label) {
@@ -4428,6 +4438,162 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let theme = Theme::dark();
     let mut scene = Scene::new();
     app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+}
+
+#[test]
+fn playlist_numbers_follow_the_playlist_not_the_source_album() {
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Playlist("pl_drive".into());
+    draw_at(&mut app, &mut doc, 1440.0, 810.0);
+    let numbers: Vec<_> = app.track_tables[0]
+        .table
+        .rows()
+        .iter()
+        .map(|row| row.number)
+        .collect();
+    assert_eq!(numbers, [1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn scaled_player_and_detail_keep_content_above_the_fold() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let theme = theme.with_ui_scale(1.5);
+        let (mut app, doc) = app_with_doc();
+        app.disconnect();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        app.view = View::Album("al_glasslight".into());
+        app.rect = Rect::new(0.0, 0.0, 1440.0, 810.0);
+        app.sync(&doc, &automerge::ROOT);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let bar = app.nowplaying_rect();
+        assert_eq!(bar.x0, app.rect.x0, "the sidebar cannot squeeze the song");
+        assert!(app.sidebar_rect().y1 <= bar.y0);
+        assert!(app.body_rect.y1 <= bar.y0);
+        assert_eq!(
+            app.body_rect.y0,
+            f64::from(theme.tokens.metrics.header_height)
+        );
+        let rows = app.track_tables.first().expect("album tracks");
+        let first = rows.table.row_rect(0).expect("first track");
+        let third = rows.table.row_rect(2).expect("third track");
+        assert!(third.y1 <= bar.y0, "three complete rows fit below the hero");
+        let art = app
+            .hits
+            .iter()
+            .find(|hit| {
+                matches!(
+                    &hit.action, Action::Nav(View::Album(id)) if id == "al_glasslight"
+                )
+            })
+            .expect("player artwork")
+            .rect;
+        assert!(art.y0 >= bar.y0 && art.y1 <= bar.y1);
+        assert!(
+            art.height() < bar.height(),
+            "art must not consume the whole bar"
+        );
+        let lyrics = app
+            .hits
+            .iter()
+            .find(|hit| hit.action == Action::Nav(View::Lyrics))
+            .expect("lyrics shortcut")
+            .rect;
+        assert!(lyrics.x1 < app.scrubber_rect.x0);
+        assert!(app.scrubber_rect.width() > 2.0 * art.width());
+        assert!(first.y0 > app.body_rect.y0);
+    }
+}
+
+#[test]
+fn playlist_header_and_rows_keep_management_in_compact_menus() {
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Playlist("pl_drive".into());
+    draw_once(&mut app, &mut doc);
+    let button = app
+        .page_parts
+        .iter()
+        .find_map(|part| {
+            ui::widget::find_test_id(part.host.visible()?, "music.page.Playlist actions")
+        })
+        .expect("compact playlist management button")
+        .get_rect();
+    assert!(button.width() <= button.height() * 1.5);
+    hosted_click(&mut app, &mut doc, button.center());
+    assert_eq!(
+        app.context
+            .items()
+            .iter()
+            .filter_map(ui::widget::MenuItem::label)
+            .collect::<Vec<_>>(),
+        ["Rename", "Set cover", "Delete playlist"]
+    );
+    choose_menu(&mut app, &mut doc, "Rename");
+    assert!(
+        app.name_prompt.is_some(),
+        "Rename still opens the name editor"
+    );
+    app.dispatch(
+        Action::CloseNamePrompt,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    draw_once(&mut app, &mut doc);
+
+    let track = app.lib.playlist("pl_drive").unwrap().track_ids()[1].clone();
+    let more = track_control(&mut app, &mut doc, &track, "more", draw_once);
+    for slot in &app.track_tables {
+        for name in ["up", "down", "remove", "offline"] {
+            assert!(
+                slot.table.control_rect(1, name).is_none(),
+                "no cluttered {name} button"
+            );
+        }
+    }
+    hosted_click(&mut app, &mut doc, more.center());
+    for label in [
+        "Move up",
+        "Move down",
+        "Remove from this playlist",
+        "Keep offline",
+    ] {
+        assert!(
+            menu_index(&app, label).is_some(),
+            "management retains {label}"
+        );
+    }
+    choose_menu(&mut app, &mut doc, "Move up");
+    assert_eq!(app.lib.playlist("pl_drive").unwrap().track_ids()[0], track);
+}
+
+#[test]
+fn scaled_playlist_shows_four_complete_rows_with_transport_padding() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let theme = theme.with_ui_scale(1.5);
+        let (mut app, doc) = app_with_doc();
+        app.view = View::Playlist("pl_drive".into());
+        app.rect = Rect::new(0.0, 0.0, 1440.0, 810.0);
+        app.sync(&doc, &automerge::ROOT);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        for _ in 0..2 {
+            app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        }
+        let table = &app.track_tables.first().expect("playlist tracks").table;
+        assert!(table.row_rect(3).is_some(), "four complete tracks fit");
+        for i in 0..table.rows().len() {
+            if let Some(rect) = table.row_rect(i) {
+                assert!(
+                    rect.y1
+                        <= app.nowplaying_rect().y0
+                            - f64::from(theme.tokens.spacing.rhythm.related),
+                    "visible row {i} must fit completely with bottom padding: {rect:?}"
+                );
+            }
+        }
+    }
 }
 
 // ---- 20. lyrics: synced load + moving highlight ------------------------

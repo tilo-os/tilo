@@ -351,7 +351,16 @@ fn a_lone_strips_ribbon_rests_hidden_and_shows_when_reached_for() {
             .active_workspace()
             .map_or(0, |workspace| workspace.strips.len())
     };
-    assert!(strips(&chrome) > 1, "the demo desk has several strips");
+    // The demo's Home has one strip; a second one makes it several.
+    if let Some(workspace) = chrome.borrow().tree_mut().desktop.active_workspace_mut() {
+        workspace.strips.push(crate::shell::state::Strip {
+            id: <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+            name: "Research".into(),
+            window_groups: Vec::new(),
+        });
+    }
+    chrome.borrow_mut().bump();
+    assert!(strips(&chrome) > 1, "the desk has several strips");
     assert!(
         resting(&mut host) >= super::super::strip_switcher::RIBBON_REST_ALPHA,
         "several strips: the ribbon rests visible"

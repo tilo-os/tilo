@@ -4084,7 +4084,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         let room_sync = room_sync_json(&chrome.tree());
-        serde_json::json!({
+        let mut dump = serde_json::json!({
             // Where each workspace's room stands with its host, what its
             // apps are told (`ui::room_sync`), and which apps it lets write.
             "room_sync": room_sync,
@@ -4269,7 +4269,12 @@ impl ControlState for FrameBuilderControlState<'_> {
             // Maximize is a different field (`workspace_tree` group.maximized).
             "fullscreen_group": chrome.fullscreen_group(),
             "fullscreen": chrome.is_fullscreen(),
-        })
+        });
+        // Construction work counted at the workspace's factories, and the
+        // workspace whose content those factories last reconciled.
+        dump["workspace_work"] = serde_json::json!(crate::shell::work_accounting::snapshot());
+        dump["workspace_content"] = serde_json::json!(self.fb.host().workspace_content_id());
+        dump
     }
 }
 
@@ -4709,6 +4714,9 @@ fn post_system_update_asks(frame_builder: &mut FrameBuilder, session: &SessionMa
     crate::shell::held_layers::start();
     let mut asks = crate::shell::system_update::drain();
     asks.extend(crate::shell::held_layers::drain());
+    // Networks NetworkManager could not join on its own for want of a
+    // password the person can give.
+    asks.extend(crate::network_secrets::drain_cannot_join());
     if asks.is_empty() {
         return false;
     }
@@ -6898,6 +6906,22 @@ fn apply_session_transition(
             | SessionTransition::Woke
             | SessionTransition::Suspend => {}
         }
+    }
+    // The flight record of every power transition, with the backlight as
+    // the kernel holds it: a screen that stays dark after a wake must say
+    // whether its backlight, its CRTC (the presenter's own line) or its
+    // input is what did not come back.
+    if matches!(
+        transition,
+        SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+    ) {
+        eprintln!(
+            "tilo compositor: session power {transition:?} backlight={}",
+            os_actions::display::backlight_state().unwrap_or_else(|| "none".into())
+        );
     }
     match transition {
         SessionTransition::Dimmed => dimmer.dim(),

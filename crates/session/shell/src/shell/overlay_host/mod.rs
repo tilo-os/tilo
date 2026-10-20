@@ -4127,6 +4127,7 @@ impl ShellOverlayHost {
             {
                 st.quick_settings.volume = volume.level;
             }
+            st.quick_settings.link.clone_from(&next.link);
             st.status = next;
             st.bump();
         }
@@ -5613,6 +5614,12 @@ impl ShellOverlayHost {
                 );
             }
         }
+    }
+
+    /// Workspace whose content has actually been reconciled, as opposed to
+    /// the navigation target that may still be awaiting the next layout.
+    pub(crate) fn workspace_content_id(&self) -> Option<u64> {
+        self.content_built_for_ws
     }
 
     /// The workspaces whose content is kept while another one is shown,
@@ -7200,9 +7207,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let reveal = chrome.borrow_mut().take_tab_reveal_request();
         let st = chrome.borrow();
         let tree = st.tree();
         if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(strip) = reveal {
+                surface.reveal_on_next_layout(strip);
+            }
             surface.sync_navigation(&tree.desktop);
         }
     }
@@ -8463,7 +8474,7 @@ impl ShellOverlayHost {
         let _ = self.focus_window_widget(address.strip, address.group, address.tab);
         chrome
             .borrow_mut()
-            .focus_tab(workspace, address.strip, address.group, address.tab);
+            .select_tab(workspace, address.strip, address.group, address.tab);
         self.observe_window_focus();
         true
     }
@@ -21825,6 +21836,10 @@ impl Widget for ShellOverlayHost {
         // The windows' bars put their menus and tooltips over the windows.
         self.draw_window_bar_popups(scene, transform, text_renderer, theme, presence);
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
+        // The bar's presence follows what this frame shows, as the retained
+        // sections bring it up to date: a single-scene paint (captures,
+        // shots, the frame tests) hides it over a maximized window too.
+        self.sync_top_bar_presence(Instant::now());
         // The top bar goes over all of that, as the retained sections
         // compose it: their workspace section holds everything above.
         if let Some(surface) = self.desktop_surface_mut() {

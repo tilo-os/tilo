@@ -226,6 +226,8 @@ pub struct FileArea {
     /// Distinguishes the staging files of concurrent adoptions.
     staging: AtomicU64,
     budget: AtomicU64,
+    /// Bytes [`Self::read_at`] has read.
+    read_bytes: AtomicU64,
     /// Which cached entries the budget gives up first; `None` is plain
     /// least-recently-used.
     held_elsewhere: std::sync::RwLock<Option<HeldElsewhere>>,
@@ -316,6 +318,7 @@ impl FileArea {
             create: Mutex::new(()),
             staging: AtomicU64::new(0),
             budget: AtomicU64::new(budget),
+            read_bytes: AtomicU64::new(0),
             held_elsewhere: std::sync::RwLock::new(None),
             durable,
         };
@@ -785,7 +788,13 @@ impl FileArea {
         let len = len.min(size.saturating_sub(offset));
         let mut out = vec![0_u8; usize::try_from(len).map_err(io::Error::other)?];
         self.file(key)?.read_exact_at(&mut out, offset)?;
+        self.read_bytes.fetch_add(len, Ordering::Relaxed);
         Ok(out)
+    }
+
+    /// Bytes [`Self::read_at`] has read so far.
+    pub fn read_bytes(&self) -> u64 {
+        self.read_bytes.load(Ordering::Relaxed)
     }
 
     /// Marks `key` as used now, for least-recently-used eviction.

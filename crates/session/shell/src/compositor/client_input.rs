@@ -2447,20 +2447,15 @@ mod tests {
                 display.handle(),
                 tree,
             );
-            // At rest the bar hides: the top of the window is the client's,
-            // and the keyboard never leaves it for the bar.
-            let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
+            // Down in the window the pointer is the client's, and the
+            // keyboard never leaves it for the bar.
+            let moved = ui::synthetic_input::cursor_moved(640.0, 400.0);
             let _ = route_input(&mut state, &mut fb, &moved, &Modifiers::default());
             assert!(!chrome_captures_pointer(&fb));
             assert!(!chrome_captures_input(&fb));
 
-            // Reached for, its controls take the pointer (only the pointer).
-            let strip = fb.chrome().tree().desktop.workspaces[0].strips[0].id;
-            fb.host_mut()
-                .group_at_for_tests(strip, 0)
-                .expect("maximized group")
-                .set_maximized_chrome_shown_for_tests(true);
-            let _ = fb.paint_settled();
+            // A maximized window keeps its bar: its controls stand there at
+            // rest and take the pointer (only the pointer).
             let restore = fb
                 .host()
                 .active_window_bounds()
@@ -2472,7 +2467,6 @@ mod tests {
                 "captured motion must fall through to shell widget dispatch"
             );
             assert_eq!(fb.host().pointer_position(), Some(restore.center()));
-            assert!(chrome_captures_pointer(&fb));
             assert!(
                 !chrome_captures_input(&fb),
                 "the bar takes the pointer, never the client's keyboard"

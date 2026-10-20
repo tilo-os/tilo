@@ -663,10 +663,18 @@ fn scan_interfaces() -> Vec<WakeRoute> {
         } else {
             WakeInterfaceKind::Ethernet
         };
+        // Wi-Fi drivers answer the wake query through their radio, not ethtool.
+        let magic_packet = match std::fs::read_link(path.join("phy80211")) {
+            Ok(radio) => os_actions::network_wake::wifi_magic_packet_enabled(
+                &radio.file_name().unwrap_or_default().to_string_lossy(),
+            )
+            .unwrap_or(false),
+            Err(_) => magic_packet_enabled(&name),
+        };
         let route = WakeRoute {
             mac,
             kind,
-            magic_packet: magic_packet_enabled(&name),
+            magic_packet,
             subnet: subnets.get(&name).copied(),
         };
         if routes.len() < crate::shell::device_fabric::MAX_WAKE_ROUTES
