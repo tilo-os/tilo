@@ -64,11 +64,11 @@ impl MapsApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         match key {
             Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
-                self.zoom_by(1.0, self.view_center());
+                self.zoom_by(1.0, self.visible_map_area().center());
                 true
             }
             Key::Character(s) if s.as_str() == "-" || s.as_str() == "_" => {
-                self.zoom_by(-1.0, self.view_center());
+                self.zoom_by(-1.0, self.visible_map_area().center());
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("d") => {

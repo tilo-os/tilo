@@ -143,6 +143,22 @@ fn divergent_route_acceptances_converge_without_torn_context() {
     assert_eq!(state.mode, TravelMode::Transit);
     assert_eq!(state.endpoints().unwrap().3, "There");
     assert!(state.route().is_some(), "the road route stays accepted");
+    let mut shown = crate::model::MapModel::default();
+    state.show_in(&mut shown);
+    assert!(
+        shown.route.is_none(),
+        "Transit must not paint the retained road plan"
+    );
+    ours.apply(Invoke::edit(&Workspace::paths().mode.set(TravelMode::Car)).unwrap())
+        .unwrap();
+    let driving = ours.state().unwrap();
+    driving.show_in(&mut shown);
+    assert_eq!(
+        shown.route.as_ref().unwrap().distance_m,
+        distance,
+        "switching back restores the accepted road route, not a replacement"
+    );
+    assert_eq!(shown.origin_name, driving.endpoints().unwrap().1);
     ours.apply(Workspace::CLEAR_TRANSIT.invoke()).unwrap();
     ours.apply(Workspace::CLEAR_ROUTE.invoke()).unwrap();
     assert!(ours.apply(Workspace::CLEAR_ROUTE.invoke()).is_err());

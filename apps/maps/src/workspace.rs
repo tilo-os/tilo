@@ -245,7 +245,15 @@ impl Workspace {
         model.recents.clone_from(&self.recents);
         model.mode = self.mode;
         model.transit_time = self.transit_time;
-        model.route = self.route().cloned();
+        // Keep the accepted road plan in the document for switching back,
+        // but never paint it (or its turn card) beneath a transit itinerary.
+        model.route = if self.mode.is_transit() {
+            None
+        } else {
+            self.route()
+                .filter(|route| route.mode == self.mode)
+                .cloned()
+        };
         model.transit = self.transit().to_vec();
         if let Some((origin, origin_name, dest, dest_name)) = self.endpoints() {
             model.origin = origin;
