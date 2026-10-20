@@ -21267,6 +21267,11 @@ impl Widget for ShellOverlayHost {
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
         // so freshly-spliced groups join this frame's sync pass.
+        // A split or transfer the rows made from this frame's input reaches
+        // the tree first: the resync below rebuilds the rows from the tree
+        // whenever anything else bumped the chrome since the gesture, and
+        // would otherwise put the dragged tab back where it came from.
+        self.harvest_pending_group_topology();
         let ws_swapped = self.resync_workspace_content();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
@@ -23198,6 +23203,7 @@ impl Widget for ShellOverlayHost {
             return onboarding.take_structure_dirty();
         }
         // Before resync, or it sees "widget has X, tree doesn't" and evicts X.
+        self.harvest_pending_group_topology();
         self.harvest_widget_only_groups_into_tree();
         // Pumped here too since the shots driver's relayout path skips
         // `update()`; `last_chrome_revision` makes both call sites idempotent.
