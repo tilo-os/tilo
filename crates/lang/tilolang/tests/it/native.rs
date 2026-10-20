@@ -192,6 +192,82 @@ fn enum_variants_carry_their_icon() {
     assert!(imported.is_ok(), "{:?}", imported.err());
 }
 
+const PIN: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\n/// Pin the note.\naction toggle_pin(n: Note) (label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {\n    n.pinned = not n.pinned\n}";
+
+// An action's label and icon may follow its subject, and `on:` says it is pressed: the parts
+// that depend on the subject become a hidden view of it, one `present` node; the static label
+// and icon are the `else` branch, what a menu shows without evaluating anything.
+#[test]
+fn an_action_presents_its_state_through_a_hidden_view() {
+    let c = compile_body(PIN);
+    let pin = action(&c.meta, "toggle_pin");
+    assert_eq!(pin.label, "Pin", "the else branch is the static label");
+    assert_eq!(pin.icon.as_deref(), Some("pin"));
+    let id = c.ids.get("toggle_pin~present").expect("an id in the lock");
+    assert_eq!(pin.present.as_deref(), Some(id));
+    let view = c
+        .meta
+        .views
+        .iter()
+        .find(|v| v.id == id)
+        .expect("the view is in the metadata, for the host to run");
+    assert_eq!(view.presents.as_deref(), Some(pin.id.as_str()));
+    assert_eq!(view.params.len(), 1, "it takes the subject");
+    assert_eq!(view.params[0].name, "n");
+    assert!(
+        c.meta.offered_views().all(|v| v.id != id),
+        "it is never offered as a view"
+    );
+    assert!(c.meta.default_views.is_empty() && c.meta.row_views.is_empty());
+    let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has(&format!("v_{id}")), "the view is exported");
+    assert!(has("present"), "its node is a `present` node");
+    crate::common::validate(&c.wasm);
+    // A package using this one does not see it as a view.
+    let other = crate::common::compile_with(
+        "app t.y \"Y\"\nuse t.x as x\nview v(n: x.Note) {\n    text(n.title)\n}\n",
+        std::slice::from_ref(&c.meta),
+    );
+    assert!(other.is_ok(), "{:?}", other.err());
+    // Static options need no view.
+    let plain = compile_body(
+        "type T {\n    n: Int\n}\naction a(x: T) (label: \"Go\", icon: .plus) {\n    x.n = 1\n}",
+    );
+    assert!(plain.meta.views.is_empty() && plain.meta.actions[0].present.is_none());
+    let printed = tilolang::print_module(
+        &tilolang::parse(&format!("app t.x \"X\"\n{PIN}\n")).expect("parses"),
+    );
+    assert!(
+        printed.contains("(label: if n.pinned { \"Unpin\" } else { \"Pin\" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned)"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_presented_state_is_typed_and_reads_only_the_subject() {
+    let head = "type Note {\n    title: Text\n    pinned: Bool = false\n    n: Int\n}\n";
+    let act = |opts: &str| format!("{head}action a(x: Note, y: Note) ({opts}) {{\n    x.n = 1\n}}");
+    expect("E020", &act("on: x.n"));
+    expect("E020", &act("label: if x.pinned { 1 } else { 2 }"));
+    expect("E097", &act("icon: if x.pinned { \"pin\" } else { .pin }"));
+    expect("E091", &act("icon: if x.pinned { .pinn } else { .pin }"));
+    expect("E090", &act("on: y.pinned"));
+    expect("E090", &act("label: if y.pinned { \"a\" } else { \"b\" }"));
+    expect("E049", &act("on: invoker == invoker"));
+    expect("E090", "action a() (on: true) {\n    return\n}");
+    expect("E090", &act("label: x.title"));
+    ok(&act(
+        "label: if x.pinned { \"Unpin {x.title}\" } else if x.n > 1 { \"Pin\" } else { \"Pin it\" }, on: x.pinned and x.n > 0",
+    ));
+    let c = compile_body(&act(
+        "label: if x.pinned { \"A\" } else if x.n > 1 { \"B\" } else { \"C\" }",
+    ));
+    assert_eq!(
+        c.meta.actions[0].label, "C",
+        "the last else is the static label"
+    );
+}
+
 #[test]
 fn row_views_are_in_the_metadata() {
     let c = notes();

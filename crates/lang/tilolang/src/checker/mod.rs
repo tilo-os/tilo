@@ -120,6 +120,19 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         };
         funcs.push(f);
     }
+    // The presentation views of actions, in the order the resolver numbered them.
+    for item in &module.items {
+        let Item::Action(a) = item else { continue };
+        let idx = funcs.len();
+        let Some(view) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
+            continue;
+        };
+        if view.name != crate::ids::present_key(&a.name.name) {
+            continue;
+        }
+        let params: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
+        funcs.push(c.run_present(&view, &a.opts, &params));
+    }
     c.check_proposals(module);
     ir::Module { funcs }
 }
@@ -774,7 +787,7 @@ impl Checker<'_> {
                 let views: Vec<&str> = env
                     .callables
                     .iter()
-                    .filter(|c| c.own && c.kind == CKind::View)
+                    .filter(|c| c.own && c.kind == CKind::View && !c.hidden())
                     .map(|c| c.name.as_str())
                     .collect();
                 self.err(

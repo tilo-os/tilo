@@ -169,6 +169,13 @@ pub struct ActionMeta {
     /// The hidden action of a scenario: never offered, run only to seed a workspace.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub scenario: bool,
+    /// The id of the view that presents the action's state for a subject, when its `label:` or
+    /// `icon:` follows the subject or it declares `on:`. The view takes the action's first
+    /// parameter and builds one node of kind `present` with the props given dynamically:
+    /// `label` (Text), `icon` (Text, a kebab-case icon name) and `on` (Bool). `label` and `icon`
+    /// above are what shows without evaluating it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub present: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +194,10 @@ pub struct ViewMeta {
     pub reaches: Vec<Reach>,
     #[serde(default)]
     pub state: Vec<StateMeta>,
+    /// The id of the action this view presents (see [`ActionMeta::present`]): a hidden view,
+    /// never offered or listed as a view of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presents: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -229,6 +240,12 @@ impl PackageMeta {
     /// The actions the platform offers: every action but the hidden ones of scenarios.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions.iter().filter(|a| !a.scenario)
+    }
+
+    /// The views a person or an agent can open or apply: every view but the hidden ones that
+    /// present an action's state.
+    pub fn offered_views(&self) -> impl Iterator<Item = &ViewMeta> {
+        self.views.iter().filter(|v| v.presents.is_none())
     }
 
     /// The JSON bytes embedded in the `tilolang.meta` section.

@@ -326,7 +326,7 @@ impl Checker<'_> {
                     let mut views: Vec<&str> = env
                         .callables
                         .iter()
-                        .filter(|x| x.kind == CKind::View)
+                        .filter(|x| x.kind == CKind::View && !x.hidden())
                         .map(|x| x.name.as_str())
                         .collect();
                     views.sort_unstable();
