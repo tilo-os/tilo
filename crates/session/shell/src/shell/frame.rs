@@ -2071,6 +2071,7 @@ impl FrameBuilder {
         }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
+        let host_update_done = std::time::Instant::now();
         let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
         if before_settle != (doc.base_heads(), doc.pending_ops()) {
@@ -2085,6 +2086,7 @@ impl FrameBuilder {
         // loop reads the focused node through the map on every iteration
         // (`focused_ime_requires_deferred_ack`), which then called through a
         // freed widget and ended the session.
+        let settle_done = std::time::Instant::now();
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
             self.relayout();
@@ -2096,6 +2098,18 @@ impl FrameBuilder {
             ("widget-pump/rooms", rooms_done.duration_since(records_done)),
             ("widget-pump/sync", sync_done.duration_since(rooms_done)),
             ("widget-pump/update", update_done.duration_since(sync_done)),
+            (
+                "widget-pump/update/host",
+                host_update_done.duration_since(sync_done),
+            ),
+            (
+                "widget-pump/update/settle",
+                settle_done.duration_since(host_update_done),
+            ),
+            (
+                "widget-pump/update/structure",
+                update_done.duration_since(settle_done),
+            ),
         ] {
             crate::compositor::metrics::profile::record_phase(phase, took, None);
         }
