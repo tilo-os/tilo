@@ -504,9 +504,10 @@ mod tests {
                 .unwrap()
         );
         let told = files.notice_line().expect("a refused open is said");
-        assert!(
-            told.contains(&file_explorer::i18n::t("files-open-unavailable")),
-            "{told}"
-        );
+        // The notice comes from Files' catalogue, not the shell's: naming the
+        // key apart from the call keeps the shell's catalogue check from
+        // claiming it.
+        let files_key = "files-open-unavailable";
+        assert!(told.contains(&file_explorer::i18n::t(files_key)), "{told}");
     }
 }
