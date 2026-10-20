@@ -60,7 +60,9 @@ SUITE_IMAGE = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba
 GROUP_FIELDS = {
     "os": {"why": "writes fixtures next to its sources and reads Git history, and as root builds bubblewrap "
                   "namespaces and gives fixtures other owners, which the capability-less job sandbox cannot",
-           "writable_sources": True, "git": True, "isolation": "vm"},
+           "writable_sources": True, "git": True, "isolation": "vm",
+           # The installer helper its scripts run, compiled outside the VM (see vm-test-binaries).
+           "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"}},
     "dist": {"why": "writes under target/ in the source tree and reads Git history",
              "writable_sources": True, "git": True},
     "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
@@ -108,13 +110,15 @@ def suite_checks(manifest: suites.Manifest) -> str:
             f'name = "suite-{group.name}"',
             f"run = {json.dumps(run)}",
             f"image = {json.dumps(SUITE_IMAGE)}",
-            f"env = {{ PATH = {json.dumps(SUITE_PATH)} }}",
+            "env = { " + ", ".join(f"{key} = {json.dumps(value)}" for key, value in
+                                    {"PATH": SUITE_PATH, **fields.get("env", {})}.items()) + " }",
             'requires = ["arch=x86_64"]',
             *([f"requirement = {{ cores = {group.requirement[0]}, memory = {json.dumps(group.requirement[1])} }}"]
               if group.requirement else []),
             *(["writable_sources = true"] if fields.get("writable_sources") else []),
             *(["git = true"] if fields.get("git") else []),
             *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
+            *([f"needs = {array(fields['needs'])}"] if "needs" in fields else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
@@ -323,6 +327,13 @@ CARGO_CHECKS: dict[str, dict] = {
     # check that runs it as real root (real-fuse-privileged).
     "real-fuse-privileged-build": {
         "packages": lambda packages, root: {"tilo-relay"},
+        "inputs": [],
+    },
+    # The compiled helpers the micro-VM checks' scripts run, built for them.
+    "vm-test-binaries": {
+        "packages": lambda packages, root: {"tilo-image-policy-check", "tilo-crypto", "tilo-esp-write",
+                                            "tilo-board-successor", "tilo-install-helpers"},
+        "dev": False,
         "inputs": [],
     },
 }

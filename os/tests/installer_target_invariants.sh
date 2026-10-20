@@ -234,10 +234,14 @@ else
 fi
 
 # The backend resolves its update origin with the compiled hardware-profile
-# reader; the fixture runs this checkout's build of it.
-cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-board-successor \
-  || bad "could not build tilo-board-successor"
-board_successor="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-board-successor"
+# reader; the fixture runs this checkout's build of it, or the one
+# TILO_BOARD_SUCCESSOR_BIN names.
+board_successor="${TILO_BOARD_SUCCESSOR_BIN:-}"
+if [ -z "$board_successor" ]; then
+  cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-board-successor \
+    || bad "could not build tilo-board-successor"
+  board_successor="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-board-successor"
+fi
 
 installer_identity_fixture() (
   id() { printf 0; }
@@ -447,9 +451,10 @@ else
   bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
 fi
 
-if ! python3 -B "$repo_root/os/tests/test_installer_firstboot_runtime.py"; then
-  bad "installer does not provision firstboot accounts on older signed targets"
-fi
+# That the installer provisions firstboot accounts on older signed targets is
+# os/tests/test_installer_firstboot_runtime.py, which copies the compiled
+# firstboot helpers into its fixture; tilo-install-helpers' native_python test
+# builds them and runs it.
 
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
 for policy in \
