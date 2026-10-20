@@ -57,16 +57,17 @@ impl DocumentStyle {
     #[must_use]
     pub fn from_theme(theme: &Theme) -> Self {
         let colors = &theme.tokens.colors;
+        // The theme's body type already carries the text size and the UI
+        // scale: applying the text size again would grow it twice.
         let body = theme.text(TextRole::Body);
-        let scale = theme.text_scale;
         Self {
             ground: to_hex(colors.surfaces.content),
             ink: to_hex(colors.text_primary),
             quiet_ink: to_hex(colors.text_dim),
             rule: to_hex(colors.text_tertiary),
             rule_px: theme.tokens.metrics.chrome_rule_px,
-            font_px: body.size * scale,
-            line_px: body.line_height_px() * scale,
+            font_px: body.size,
+            line_px: body.line_height_px(),
             indent_px: theme.tokens.spacing.s3,
         }
     }
