@@ -126,6 +126,9 @@ if a[:2] == ['key', 'generate']:
     pathlib.Path(a[a.index('--out')+1]).write_text('PRIVATE_TEST_IDENTITY')
 elif a[:2] == ['key', 'pubkey']:
     print('ab'*32)
+elif a[0] == 'font-index':
+    # What the bake records of a catalog's faces, beside its fonts.
+    (pathlib.Path(a[1])/'face-index.json').write_text('{}')
 elif a[0] == 'build':
     version = a[a.index('--release')+1] + '+native.' + 'ab'*16
     out = pathlib.Path(a[a.index('--out-root')+1]) / version; out.mkdir(parents=True)
