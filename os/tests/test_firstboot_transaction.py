@@ -7,10 +7,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 SOURCE = ROOT / 'os/usr/libexec/tilo-firstboot-user'
 FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 HASH = '$6$fixture$' + 'A' * 86
@@ -128,8 +131,12 @@ else:
     def run_boot(self, fail='', terminate=False):
         env = dict(os.environ, FIXTURE_ROOT=str(self.root), FAIL_STAGE=fail,
                    TERMINATE=str(int(terminate)), PATH=f"{self.root}/bin:{os.environ['PATH']}")
+        # A boot spawns a dozen Python tool stand-ins and fsyncs its intent;
+        # on a loaded runner that took longer than a 10 s guess. The bound
+        # only catches a hang: a timed-out boot leaves the fixture between
+        # stages, which turned one slow boot into every later case failing.
         result = subprocess.run(['bash', str(self.root / 'firstboot')], env=env,
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertNotIn(HASH, result.stdout + result.stderr)
         return result
 
