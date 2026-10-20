@@ -1,5 +1,7 @@
 //! SHA-256, for the content hash of a module.
 
+use std::fmt::Write;
+
 const K: [u32; 64] = [
     0x428a_2f98,
     0x7137_4491,
@@ -127,5 +129,8 @@ pub fn sha256_hex(data: &[u8]) -> String {
     for block in msg.chunks(64) {
         compress(&mut h, block);
     }
-    h.iter().map(|w| format!("{w:08x}")).collect()
+    h.iter().fold(String::new(), |mut out, w| {
+        let _ = write!(out, "{w:08x}");
+        out
+    })
 }

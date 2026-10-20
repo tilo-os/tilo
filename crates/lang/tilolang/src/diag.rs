@@ -18,6 +18,7 @@ impl Span {
     }
 
     /// The span from the start of `self` to the end of `other`.
+    #[must_use]
     pub const fn to(self, other: Self) -> Self {
         Self {
             start: self.start,

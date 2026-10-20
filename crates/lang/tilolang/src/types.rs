@@ -60,13 +60,14 @@ pub struct TypeKey {
 }
 
 /// A value type of the language.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Ty {
     Int,
     Float,
     Bool,
     Text,
     /// No value.
+    #[default]
     Unit,
     Record(TypeKey),
     List(Box<Ty>),

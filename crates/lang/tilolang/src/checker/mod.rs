@@ -53,12 +53,6 @@ struct FnState {
     keys: Vec<LocalId>,
 }
 
-impl Default for Ty {
-    fn default() -> Self {
-        Self::Unit
-    }
-}
-
 pub(crate) struct Checker<'a> {
     env: &'a Env,
     diags: &'a mut Vec<Diagnostic>,

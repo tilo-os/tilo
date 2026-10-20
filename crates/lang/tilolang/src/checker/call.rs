@@ -202,7 +202,7 @@ impl Checker<'_> {
             .collect()
     }
 
-    fn action_ref(&self, c: &Callable) -> ActionRef {
+    fn action_ref(c: &Callable) -> ActionRef {
         ActionRef {
             app: c.app.clone(),
             id: c.id.clone(),
@@ -279,13 +279,13 @@ impl Checker<'_> {
     }
 
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
-        self.st.facts.action_values.insert(self.action_ref(c));
+        self.st.facts.action_values.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }
 
     fn invoke(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
-        self.st.facts.invokes.insert(self.action_ref(c));
+        self.st.facts.invokes.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
         match &c.result {
@@ -463,15 +463,15 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         // `a.items.insert(x)` needs the record and the field, not the field's value.
-        if let ExprKind::Field { base, name: fname } = &recv.kind {
-            if !self.names_import(base) {
-                let b = self.expr(base, None);
-                if let Some((key, f)) = self.container_field(&b, fname) {
-                    return self.container_method(b, &key, &f, name, args, span);
-                }
-                let r = self.field_read(b, fname);
-                return self.value_method(r, name, args, span);
+        if let ExprKind::Field { base, name: fname } = &recv.kind
+            && !self.names_import(base)
+        {
+            let b = self.expr(base, None);
+            if let Some((key, f)) = self.container_field(&b, fname) {
+                return self.container_method(b, &key, &f, name, args, span);
             }
+            let r = self.field_read(b, fname);
+            return self.value_method(r, name, args, span);
         }
         let r = self.expr(recv, None);
         self.value_method(r, name, args, span)
@@ -649,7 +649,7 @@ impl Checker<'_> {
             (Ty::Float, "to_int") if args.is_empty() => {
                 Ex::new(Ek::Conv(Conv::FloatToInt, Box::new(r)), Ty::Int)
             }
-            (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.to_text(r, span),
+            (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             (Ty::Option(_), "is_some") if args.is_empty() => {
                 Ex::host(Imp::IsSome, vec![r], Ty::Bool)

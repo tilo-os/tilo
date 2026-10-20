@@ -17,6 +17,10 @@
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
     clippy::indexing_slicing,
+    clippy::cast_precision_loss,
+    clippy::many_single_char_names,
+    clippy::format_push_string,
+    clippy::single_match_else,
     reason = "a compiler over source text and wasm indices: offsets are bounded by the source length, \
               the wasm widths are fixed by the ABI, and every path that can fail on user input is a diagnostic"
 )]

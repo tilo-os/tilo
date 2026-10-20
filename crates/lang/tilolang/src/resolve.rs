@@ -509,7 +509,7 @@ impl Resolver<'_> {
             (Some(t), want) => t.same(want),
         };
         if !ok {
-            let found = lt.map_or("none".to_string(), |t| t.to_string());
+            let found = lt.map_or_else(|| "none".to_string(), |t| t.to_string());
             self.err(
                 "E020",
                 e.span,
@@ -724,26 +724,6 @@ impl Resolver<'_> {
             let id = id_of(lock, &key);
             self.env.anchors.insert(key, id);
         }
-        fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
-            for s in stmts {
-                match &s.kind {
-                    ast::UiKind::Call(c) => {
-                        out.extend(c.anchor.clone());
-                        if let Some(b) = &c.block {
-                            collect(b, out);
-                        }
-                    }
-                    ast::UiKind::For { body, .. } => collect(body, out),
-                    ast::UiKind::If { then, els, .. } => {
-                        collect(then, out);
-                        if let Some(e) = els {
-                            collect(e, out);
-                        }
-                    }
-                    ast::UiKind::Let { .. } => {}
-                }
-            }
-        }
     }
 }
 
@@ -761,4 +741,25 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
         own_types,
     };
     r.resolve_type(te, false)
+}
+
+fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
+    for s in stmts {
+        match &s.kind {
+            ast::UiKind::Call(c) => {
+                out.extend(c.anchor.clone());
+                if let Some(b) = &c.block {
+                    collect(b, out);
+                }
+            }
+            ast::UiKind::For { body, .. } => collect(body, out),
+            ast::UiKind::If { then, els, .. } => {
+                collect(then, out);
+                if let Some(e) = els {
+                    collect(e, out);
+                }
+            }
+            ast::UiKind::Let { .. } => {}
+        }
+    }
 }

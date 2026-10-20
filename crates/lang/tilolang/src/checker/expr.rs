@@ -23,10 +23,10 @@ impl Checker<'_> {
         if ex.ty.is_error() || want.is_error() || ex.ty.same(want) {
             return ex;
         }
-        if let Ty::Option(inner) = want {
-            if ex.ty.same(inner) {
-                return Self::some(ex, want);
-            }
+        if let Ty::Option(inner) = want
+            && ex.ty.same(inner)
+        {
+            return Self::some(ex, want);
         }
         let (w, f) = (self.show(want), self.show(&ex.ty));
         let hint = match (want, &ex.ty) {
@@ -265,7 +265,7 @@ impl Checker<'_> {
                 StrPart::Lit(s) => Ex::str(s),
                 StrPart::Interp(x) => {
                     let v = self.expr(x, None);
-                    self.to_text(v, x.span)
+                    self.text_of(v, x.span)
                 }
             };
             acc = Some(match acc {
@@ -276,7 +276,7 @@ impl Checker<'_> {
         acc.unwrap_or_else(|| Ex::str(""))
     }
 
-    pub(super) fn to_text(&mut self, v: Ex, span: Span) -> Ex {
+    pub(super) fn text_of(&mut self, v: Ex, span: Span) -> Ex {
         match &v.ty {
             Ty::Text | Ty::Error => v,
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
@@ -469,7 +469,7 @@ impl Checker<'_> {
             let some = Ex::host(Imp::IsSome, vec![l], Ty::Bool);
             return if eq { negate(some) } else { some };
         }
-        let r = self.coerce(r, &l.ty.clone(), span);
+        let r = self.coerce(r, &l.ty, span);
         let (lt, base) = (l.ty.clone(), if eq { ir::BinOp::Eq } else { ir::BinOp::Ne });
         match lt {
             Ty::Int | Ty::Float | Ty::Bool | Ty::Enum(_) => {
@@ -499,7 +499,7 @@ impl Checker<'_> {
             BinOp::Gt => ir::BinOp::Gt,
             _ => ir::BinOp::Ge,
         };
-        let r = self.coerce(r, &l.ty.clone(), span);
+        let r = self.coerce(r, &l.ty, span);
         match l.ty.clone() {
             Ty::Int | Ty::Float => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool),
             Ty::Text => {

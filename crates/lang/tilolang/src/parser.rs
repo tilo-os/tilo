@@ -124,7 +124,7 @@ impl<'a> Parser<'a> {
     }
 
     fn bump(&mut self) -> Token {
-        let t = self.toks.get(self.pos).cloned().unwrap_or(Token {
+        let t = self.toks.get(self.pos).cloned().unwrap_or_else(|| Token {
             tok: Tok::Eof,
             span: Span::default(),
         });
@@ -683,7 +683,7 @@ impl<'a> Parser<'a> {
                 match op {
                     Some(op) => {
                         self.bump();
-                        let place = self.to_place(&e)?;
+                        let place = self.place_of(&e)?;
                         let value = self.expr()?;
                         StmtKind::Assign { place, op, value }
                     }
@@ -716,7 +716,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn to_place(&mut self, e: &Expr) -> PResult<Place> {
+    fn place_of(&mut self, e: &Expr) -> PResult<Place> {
         fn walk(e: &Expr, out: &mut Vec<Ident>) -> bool {
             match &e.kind {
                 ExprKind::Ident(name) => {
