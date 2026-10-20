@@ -1,0 +1,29 @@
+[package]
+name = "tilo-system-info"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "An app's connection to the system information service on every desktop platform: the Tilo session's on Linux, an in-process one reading the platform's own interfaces elsewhere."
+
+[lib]
+name = "tilo_system_info"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-system-stats = { path = "../../system/system-stats" }
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+# The in-process service where no Tilo session serves one (macOS): the
+# platform's process table and counters, and signals to the person's own
+# processes. Compiled on every Unix so a Linux build checks it too.
+[target.'cfg(unix)'.dependencies]
+sysinfo.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[lints]
+workspace = true

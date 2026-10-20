@@ -495,12 +495,14 @@ mod tests {
                 .expect("a stat line")
                 .started_at
         };
+        // Elsewhere, as the service in this process reads it.
         #[cfg(not(target_os = "linux"))]
         let started_at = {
-            let mut system = sysinfo::System::new();
-            let target = sysinfo::Pid::from_u32(pid);
-            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
-            system.process(target).expect("the child runs").start_time()
+            use tilo_system_stats::probe::Probe as _;
+            tilo_system_info::local::SysinfoProbe::new()
+                .process(pid)
+                .expect("the child runs")
+                .started_at
         };
         format!("process:{pid}:started:{started_at}")
     }
