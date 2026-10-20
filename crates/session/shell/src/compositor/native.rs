@@ -2459,6 +2459,11 @@ fn pump_floating_surface_service(
                         .receive_window_bar_message(connection, &app_id, &message)
                         .unwrap_or(false);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::DescribeHistory { changes } => {
+                    frame_builder
+                        .host_mut()
+                        .request_history_descriptions(connection, changes);
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
                     // The app id is the launcher's, so an app can only ever
                     // offer its own windows' pages.
@@ -2503,6 +2508,9 @@ fn pump_floating_surface_service(
                     .host_mut()
                     .forget_selection_capable(connection);
                 frame_builder.host_mut().forget_app_toolbars(connection);
+                frame_builder
+                    .host_mut()
+                    .forget_history_descriptions(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
@@ -2546,6 +2554,13 @@ fn pump_floating_surface_service(
         service.send(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event },
+        );
+    }
+    // What apps' changes did, for their History.
+    for (connection, described) in frame_builder.host_mut().take_history_descriptions() {
+        service.send(
+            connection,
+            &ui::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions { described },
         );
     }
     // Apps whose pages someone started or stopped watching.
@@ -9844,6 +9859,21 @@ pub fn run() {
         },
         Err(error) => {
             tracing::warn!(%error, "could not create the peer picture wake source; peer streams poll for decoded pictures");
+        }
+    }
+    // An app's History descriptions come from a worker thread; this wakes
+    // the loop to send them.
+    match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => frame_builder
+                .host_mut()
+                .set_history_describer_wake(Arc::new(move || ping.ping())),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the history description wake source; descriptions are sent on the next wake");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the history description wake source; descriptions are sent on the next wake");
         }
     }
     let clipboard_store = state.selection_store();

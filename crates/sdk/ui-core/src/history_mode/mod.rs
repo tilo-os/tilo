@@ -181,6 +181,8 @@ pub struct HistoryController {
     entries: Vec<HistoryEntry>,
     /// The named runs of changes the document carries, as the timeline bands them.
     named: Vec<NamedRange>,
+    /// What members' devices wrote that changes did, by change.
+    descriptions: HashMap<HistoryEntryId, String>,
     projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
     selected: Option<SelectedPreview>,
@@ -258,6 +260,7 @@ impl HistoryController {
             source: source.with_max_entries(HISTORY_PAGE),
             entries: Vec::new(),
             named: Vec::new(),
+            descriptions: HashMap::new(),
             projected_heads: None,
             observed_live_heads: sorted_heads(live_heads),
             selected: None,
@@ -299,6 +302,10 @@ impl HistoryController {
 
     pub fn named_ranges(&self) -> &[NamedRange] {
         &self.named
+    }
+
+    pub fn descriptions(&self) -> &HashMap<HistoryEntryId, String> {
+        &self.descriptions
     }
 
     /// Committed activity at `live`'s frontier, in causal order, leaving
@@ -366,6 +373,7 @@ impl HistoryController {
         }
         let entries = self.source.entries(&mut projection);
         let named = read_named_ranges(&projection, self.source.authors());
+        self.descriptions = crate::history_source::descriptions::read_descriptions(&projection);
 
         self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
         self.projected_heads = Some(live_heads);

@@ -126,20 +126,29 @@ What the panel adds on top of the log, and where each piece lives:
   with the content and is neither a row nor an undo step of its own.
   `history.name` does the same for agents and scripts.
 - **Generated prose.** A model may rewrite deterministic facts into a sentence;
-  it never decides grouping, attribution or counts, and its output is accepted
-  only when it cites ids from the request. Prose is generated on the member's
-  own device, off the UI thread, by the provider that runs there (a loopback
+  it never decides grouping, attribution or counts. It runs on a member's own
+  device, off the UI thread, through the provider that runs there (a loopback
   profile from the provider settings, such as the local model service's). A
   provider off the device never sees workspace evidence; a server can only
   take part as an explicit member of the workspace, like any other member.
+- **What each change did.** While History is open, the app asks the shell,
+  over its shell-ui connection, to describe a few of the newest undescribed
+  changes: each change's summary, the item and purpose it named, and a few
+  words of what it wrote, never who made it. The app holds no model. The
+  answer shows in place of the change's own summary, which stays the
+  fallback, and the owner writes it into the resource's document as a
+  `tilo:describe:*` record keyed by the change (when no edit is open, through
+  the restore door), so it syncs end to end and no other member's device asks
+  again. Like a name, it is neither a row nor an undo step. A member without
+  write permission sees what it was told while History is open.
 - **Coming back.** Entering a workspace with others' changes since the private
   seen frontier opens Catch up: outcome cards per work group, the people and
   agents involved, and a summary sentence when a local model is available.
 
 Not there yet: a resource's History does not include its child resources
-(the highlights inside an ebook live in their own records); prose describes
-the workspace digest and status, not individual rows or bands, and is not yet
-kept beyond the session; Catch up summarises per work group, not per resource.
+(the highlights inside an ebook live in their own records); bands are not
+described, only changes; Catch up summarises per work group, not per
+resource.
 
 ## The action record
 

@@ -291,10 +291,8 @@ fn later_writers(
         };
         let hi = tilo_resource::history::prefix_heads(doc, i);
         let patches = doc.diff(&lo, &hi);
-        // A change that only wrote a group or run marker did not touch content.
-        if crate::history_source::groups::is_group_marker(&patches)
-            || crate::history_source::runs::is_run_marker(&patches)
-        {
+        // A change that only wrote history's metadata did not touch content.
+        if crate::history_source::is_history_metadata(&patches) {
             continue;
         }
         for p in &patches {

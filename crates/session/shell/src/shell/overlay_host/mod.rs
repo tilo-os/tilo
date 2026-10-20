@@ -367,6 +367,7 @@ struct OverlayInputs {
     projection_overlay: ProjectionOverlay,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    history_describer: crate::shell::history_narrative::HistoryDescriber,
     portal_dialogs: PortalDialogController,
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
@@ -920,6 +921,8 @@ pub struct ShellOverlayHost {
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    /// Describes apps' changes for their History, with the model on this device.
+    history_describer: crate::shell::history_narrative::HistoryDescriber,
     status_narrative_request: Option<ui::NarrativeRequest>,
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.

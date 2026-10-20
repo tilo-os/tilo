@@ -240,6 +240,7 @@ impl ShellOverlayHost {
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 ),
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                history_describer: crate::shell::history_narrative::HistoryDescriber::default(),
                 session_action_policy,
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::MprisSource),
             },
@@ -304,6 +305,7 @@ impl ShellOverlayHost {
                 ),
                 history_narrator: None,
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                history_describer: crate::shell::history_narrative::HistoryDescriber::disabled(),
                 portal_dialogs: PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
                 ),
@@ -515,6 +517,7 @@ impl ShellOverlayHost {
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,
+            history_describer: inputs.history_describer,
             status_narrative_request: None,
             room_activity_was_open: false,
             activity_awareness_workspace: None,

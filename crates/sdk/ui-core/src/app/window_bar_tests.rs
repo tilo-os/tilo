@@ -318,3 +318,102 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
         Some(HistoryControl::Open)
     );
 }
+
+// USER REQUIREMENT (2026-10-19): "Local LLM / LLM-backend based automatic
+// descriptions of actions" -- generated on a member's device, shared with
+// the workspace, for an app that holds no model.
+#[test]
+fn an_apps_history_has_the_shell_describe_its_changes_and_keeps_the_answer_in_the_document() {
+    use crate::floating_surface::HistoryChangeDescription;
+    use automerge::transaction::Transactable as _;
+    let (app_side, shell_side) = UnixStream::pair().unwrap();
+    shell_side.set_nonblocking(true).unwrap();
+    let mut shell = ShellEnd {
+        socket: shell_side,
+        pending: Vec::new(),
+    };
+    let mut state = crate::State::new();
+    let body = state
+        .doc
+        .put_object(automerge::ROOT, "body", automerge::ObjType::Text)
+        .unwrap();
+    state.commit_action(None, None);
+    state
+        .doc
+        .splice_text(&body, 0, 0, "Costs rose in March")
+        .unwrap();
+    state.commit_action(None, None);
+    let mut app =
+        super::super::framework_history_tests::app_with_root(state, Box::new(Note::default()));
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    // The write is admitted at the policy's time, which a controlled test
+    // app does not read from the machine.
+    app.history
+        .as_mut()
+        .expect("the app registers History")
+        .set_clock(|| Some(1_800_000_000));
+    app.pump_floating_surface_service();
+    let _ = shell.read();
+
+    // History opens; the app asks the shell about its changes, with what
+    // each wrote.
+    shell.send(&FloatingSurfaceHostMessage::ToolbarEvent {
+        event: ToolbarEvent::History,
+    });
+    app.pump_floating_surface_service();
+    super::super::framework_history_tests::layout(&mut app);
+    app.pump_floating_surface_service();
+    let asked: Vec<_> = shell
+        .read()
+        .into_iter()
+        .filter_map(|message| match message {
+            FloatingSurfaceClientMessage::DescribeHistory { changes } => Some(changes),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let typed = asked
+        .iter()
+        .find(|change| change.wrote.contains("Costs rose in March"))
+        .expect("the typing is asked about, with what it wrote")
+        .clone();
+
+    // The shell's answer reaches the document as one change.
+    let changes = app.state.doc.get_changes(&[]).len();
+    shell.send(&FloatingSurfaceHostMessage::HistoryDescriptions {
+        described: vec![
+            HistoryChangeDescription {
+                change: typed.change.clone(),
+                text: "Noted that costs rose in March".into(),
+                generator: "local:test".into(),
+            },
+            HistoryChangeDescription {
+                change: "00".repeat(16),
+                text: "A change nobody asked about".into(),
+                generator: "local:test".into(),
+            },
+        ],
+    });
+    app.pump_floating_surface_service();
+    super::super::framework_history_tests::layout(&mut app);
+    let written = crate::history_source::descriptions::read_descriptions(&app.state.doc);
+    assert_eq!(
+        written.values().map(String::as_str).collect::<Vec<_>>(),
+        ["Noted that costs rose in March"],
+        "only what was asked about is kept"
+    );
+    assert_eq!(
+        app.state.doc.get_changes(&[]).len(),
+        changes + 1,
+        "one change carries the description"
+    );
+
+    // A described change is not asked about again.
+    super::super::framework_history_tests::layout(&mut app);
+    app.pump_floating_surface_service();
+    assert!(shell.read().iter().all(|message| !matches!(
+        message,
+        FloatingSurfaceClientMessage::DescribeHistory { changes }
+            if changes.iter().any(|change| change.change == typed.change)
+    )));
+}
