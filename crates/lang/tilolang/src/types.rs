@@ -66,6 +66,9 @@ pub enum Ty {
     Float,
     Bool,
     Text,
+    /// Who did something: a person or an agent task. Values come only from the host, never
+    /// from `Text`.
+    Principal,
     /// No value.
     #[default]
     Unit,
@@ -156,6 +159,7 @@ impl Ty {
             Self::Float => "Float".into(),
             Self::Bool => "Bool".into(),
             Self::Text => "Text".into(),
+            Self::Principal => "Principal".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -258,6 +262,7 @@ impl MetaTy<'_> {
             "Float" => Some(Ty::Float),
             "Bool" => Some(Ty::Bool),
             "Text" => Some(Ty::Text),
+            "Principal" => Some(Ty::Principal),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "List" | "Set" | "Map" | "Collection" | "Option" => {

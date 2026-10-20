@@ -58,6 +58,9 @@ pub const PRIMS: &[Prim] = &[
     prim_of("image", &["src"], &["alt", "width", "height"]),
     prim_of("progress", &["value"], &[]),
     prim_of("divider", &[], &[]),
+    // A block's source rendered inline (implementation.md 7.8). `source` is `Text`, `author` a
+    // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
+    prim_of("embed", &["source"], &["author", "invocation"]),
 ];
 
 /// Sizing and placement arguments accepted by every UI call, including view calls.
@@ -95,7 +98,7 @@ pub const TOKENS: &[&str] = &[
 ];
 
 /// Free functions of the language itself.
-pub const BUILTINS: &[&str] = &["outside", "model_call"];
+pub const BUILTINS: &[&str] = &["outside", "model_call", "run_block", "invoker"];
 
 /// The variants of the enums that `space` exposes, in the order of their integer values.
 pub fn enum_variants(kind: &str) -> &'static [&'static str] {

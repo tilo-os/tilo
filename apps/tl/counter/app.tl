@@ -1,14 +1,40 @@
 app so.tilo.counter "Counter"
 
-/// A number everyone can count up together.
-type Counter { value: Int merge counter }
+/// A counter that several people can bump at once.
+type Counter {
+    /// The current value.
+    value: Int merge counter
+}
 
-/// Count one up.
-action increment(c: Counter) { c.value += 1 }
+/// Add one to the counter.
+action increment(c: Counter) {
+    c.value += 1
+}
+
+/// Take one away from the counter.
+action decrement(c: Counter) {
+    c.value -= 1
+}
 
 view main(c: Counter) {
-  column {
-    text(c.value)
-    button("+1", on: increment(c)) #plus
-  }
+    page {
+        if space.compact {
+            stack(gap: section) {
+                heading("{c.value}")
+                controls(c)
+            }
+        } else {
+            row(gap: section, distribute: center) {
+                heading("{c.value}")
+                controls(c)
+            }
+        }
+    }
+}
+
+view controls(c: Counter) {
+    row(gap: related) {
+        button("-1", on: decrement(c)) #minus
+        button("+1", on: increment(c)) #plus
+    }
 }

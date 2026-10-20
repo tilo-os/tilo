@@ -192,6 +192,17 @@ impl Checker<'_> {
         if let Some((id, ty)) = self.lookup(name) {
             return Ex::local(id, ty);
         }
+        if name == "invoker" {
+            if self.st.ctx == Ctx::Action {
+                return Ex::host(Imp::Invoker, vec![], Ty::Principal);
+            }
+            self.err(
+                "E049",
+                span,
+                "`invoker` is the principal the runtime authenticated for this invocation; only an action can read it",
+            );
+            return Ex::error();
+        }
         if name == "space" {
             self.err(
                 "E064",
@@ -328,9 +339,10 @@ impl Checker<'_> {
                 Ty::Text,
             ),
             Ty::Record(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
+            Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
             other => {
                 let t = self.show(other);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool or a record"));
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Principal or a record"));
                 Ex::error()
             }
         }
@@ -515,6 +527,10 @@ impl Checker<'_> {
             }
             Ty::Text => {
                 let e = Ex::host(Imp::StrEq, vec![l, r], Ty::Bool);
+                if eq { e } else { negate(e) }
+            }
+            Ty::Principal => {
+                let e = Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool);
                 if eq { e } else { negate(e) }
             }
             Ty::Record(_) => {

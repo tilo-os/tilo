@@ -85,11 +85,16 @@ imports! {
     (RefEq, "ref_eq", "ii", "i"),
     (RefId, "ref_id", "i", "i"),
 
+    (Invoker, "invoker", "", "i"),
+    (PrincipalEq, "principal_eq", "ii", "i"),
+    (PrincipalName, "principal_name", "i", "i"),
+
     (ActRef, "act_ref", "ii", "i"),
     (Invoke, "invoke", "i", "i"),
     (IsError, "is_error", "i", "i"),
     (Outside, "outside", "ii", "i"),
     (ModelCall, "model_call", "ii", "i"),
+    (QueueBlock, "queue_block", "iii", ""),
 
     (UiNode, "ui_node", "ii", "i"),
     (UiPropH, "ui_prop_h", "iii", ""),

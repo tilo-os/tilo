@@ -41,6 +41,11 @@ action delete(nb: Notebook, n: Note) {
     }
 }
 
+/// Renames a note.
+action retitle(n: Note, title: Text) {
+    n.title = title
+}
+
 /// Gives a note a tag.
 action tag(n: Note, t: Text) {
     n.tags.add(t)

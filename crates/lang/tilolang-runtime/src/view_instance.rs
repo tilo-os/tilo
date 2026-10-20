@@ -58,7 +58,7 @@ impl ViewInstance {
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
         let space = Space::default();
-        let rendered = core.render(&target, &args, space)?;
+        let rendered = core.render(&target, &args, space, &viewer)?;
         let mut me = Self {
             core,
             viewer,
@@ -158,7 +158,9 @@ impl ViewInstance {
             return Ok(Vec::new());
         }
         self.watch.borrow_mut().dirty = false;
-        let rendered = self.core.render(&self.target, &self.args, self.space)?;
+        let rendered = self
+            .core
+            .render(&self.target, &self.args, self.space, &self.viewer)?;
         let core = Rc::clone(&self.core);
         let same = move |a: Retained, b: Retained| {
             let frames = core.frames.borrow();

@@ -4,11 +4,11 @@ use serde_json::Value as Json;
 
 use crate::abi::Imp;
 use crate::authority::{ActionInfo, Decision};
-use crate::core::{Args, Core, HResult, ret_i32, trap};
+use crate::core::{Args, Core, HResult, ret_i32, ret_void, trap};
 use crate::engine::{CallError, Host, HostFail, Wasm};
 use crate::error::RuntimeError;
 use crate::flow::{FlowOutcome, Journal, JournalEntry, Resolution, Suggestion};
-use crate::handles::{ActionState, FlowState, FrameKind};
+use crate::handles::{ActionState, FlowState, FrameKind, QueuedBlock};
 use crate::host_res::unboxed;
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
@@ -76,6 +76,7 @@ impl Core {
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Tuple(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
+            | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,
             _ => false,
         };
@@ -265,6 +266,8 @@ impl Core {
                 txn,
                 action: aref.action.clone(),
                 primary,
+                invoker: ctx.invoker.clone(),
+                queued: Vec::new(),
             }),
         );
         let result = self.call_in_frame(
@@ -274,11 +277,16 @@ impl Core {
             &aref.args,
             meta.result.as_deref(),
         );
-        self.frames.borrow_mut().pop();
+        let frame = self.frames.borrow_mut().pop();
+        let queued = match frame.map(|f| f.kind) {
+            Some(FrameKind::Action(a)) => a.queued,
+            _ => Vec::new(),
+        };
         match result {
             Ok(v) => {
                 let note = Self::note(ctx, &pkg, aref);
                 self.store.borrow_mut().commit(txn, &note)?;
+                self.settle_blocks(&ctx.invoker, queued)?;
                 Ok(ActionOutcome::Done(v))
             }
             Err(RuntimeError::BadArgs(m)) => {
@@ -447,6 +455,15 @@ impl Core {
     ///
     /// `NotPending` when nothing waits on this run.
     pub fn resolve(
+        &self,
+        run: &RunId,
+        approver: &Principal,
+        resolution: Resolution,
+    ) -> Result<FlowOutcome, RuntimeError> {
+        self.resolve_run(run, approver, resolution)
+    }
+
+    fn resolve_run(
         &self,
         run: &RunId,
         approver: &Principal,
@@ -683,7 +700,7 @@ impl Core {
 
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
-        let payload = to_json(&unboxed(self.val(payload_h)?))?;
+        let payload = outside_json(&unboxed(self.val(payload_h)?))?;
         if capability != "post" {
             return trap(format!("unknown outside capability `{capability}`"));
         }
@@ -752,6 +769,36 @@ impl Core {
         }))
     }
 
+    fn principal_arg(&self, h: i32) -> HResult<Principal> {
+        self.with_val(h, |v| match v {
+            Value::Principal(p) => Ok(p.clone()),
+            other => trap(format!("expected a principal, got {}", other.kind_name())),
+        })
+    }
+
+    fn queue_block(&self, part_h: i32, field_h: i32, source_h: i32) -> HResult<Option<Wasm>> {
+        let part = self.ref_arg(part_h)?.target;
+        let (field, source) = (self.text(field_h)?, self.text(source_h)?);
+        let known = self
+            .registry
+            .borrow()
+            .type_info(&part.ty)
+            .is_some_and(|(_, info)| info.field(&field).is_some());
+        if !known {
+            return trap(format!("`{}` has no field `{field}`", part.ty));
+        }
+        let mut frames = self.frames.borrow_mut();
+        let FrameKind::Action(state) = &mut frames.top_mut()?.kind else {
+            return trap("run_block is only available in actions");
+        };
+        state.queued.push(QueuedBlock {
+            part,
+            field,
+            source,
+        });
+        ret_void()
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -762,9 +809,47 @@ impl Core {
             }
             Imp::Outside => self.outside(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
+            Imp::Invoker => {
+                let frames = self.frames.borrow();
+                let FrameKind::Action(state) = &frames.top()?.kind else {
+                    return trap("invoker is only available in actions");
+                };
+                let who = Value::Principal(state.invoker.clone());
+                drop(frames);
+                self.ret_h(who)
+            }
+            Imp::PrincipalEq => {
+                let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);
+                ret_i32(i32::from(x == y))
+            }
+            Imp::PrincipalName => {
+                let p = self.principal_arg(a.h(0)?)?;
+                self.ret_h(Value::Text(p.0))
+            }
+            Imp::QueueBlock => self.queue_block(a.h(0)?, a.h(1)?, a.h(2)?),
             _ => trap("not an effect import"),
         }
     }
+}
+
+/// A payload as the outside world reads it: plain JSON, with lists and tuples as arrays and
+/// a resource as `{ref, type}`, rather than the tagged form journals and registers store.
+fn outside_json(v: &Value) -> Result<Json, String> {
+    Ok(match v {
+        Value::List(items) | Value::Tuple(items) => Json::Array(
+            items
+                .iter()
+                .map(outside_json)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Opt(Some(inner)) => outside_json(inner)?,
+        Value::Opt(None) => Json::Null,
+        Value::Ref(r) => serde_json::json!({
+            "ref": r.target.id_string(),
+            "type": r.target.ty,
+        }),
+        other => to_json(other)?,
+    })
 }
 
 fn entry_value(entry: &JournalEntry) -> Value {

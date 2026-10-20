@@ -103,3 +103,33 @@ fn unknown_layout_arguments_list_the_valid_ones() {
 fn min_and_max_need_a_unit() {
     assert_eq!(codes("view v() {\n    grid(min: 11)\n}"), vec!["E063"]);
 }
+
+#[test]
+fn embed_takes_text_source_a_principal_author_and_emits_one_node() {
+    let c = compile_body(
+        "type M {\n    who: Principal\n    src: Text\n    n: Int\n    run: Option<host.Invocation>\n}\nview v(m: M) {\n    embed(m.src, author: m.who, invocation: m.run)\n}",
+    );
+    validate(&c.wasm);
+    for want in ["embed", "source", "author", "invocation"] {
+        assert!(contains(&c.wasm, want), "{want} is not in the module");
+    }
+    let head = "type M {\n    who: Principal\n    src: Text\n    n: Int\n}\n";
+    assert!(
+        codes(&format!("{head}view v(m: M) {{\n    embed(m.src)\n}}"))
+            .contains(&"E022".to_string()),
+        "an embed without an author is refused"
+    );
+    assert_eq!(
+        codes(&format!(
+            "{head}view v(m: M) {{\n    embed(m.n, author: m.who)\n}}"
+        )),
+        vec!["E020"]
+    );
+    assert_eq!(
+        codes(&format!(
+            "{head}view v(m: M) {{\n    embed(m.src, author: m.src)\n}}"
+        )),
+        vec!["E020"],
+        "text is not a principal"
+    );
+}
