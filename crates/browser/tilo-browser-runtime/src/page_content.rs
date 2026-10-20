@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use tilo_content::{ContentLimits, ContentStore, MemoryBackend};
 use ui::collaboration::record_content::{ContentLane, RecordContent};
+use ui::record::RecordId;
 
 /// How an app names an image by its content address.
 const BLOB_SCHEME: &str = "tilo-blob://";
@@ -33,13 +34,18 @@ pub(crate) fn page_content() -> ContentStore {
 
 /// The window (app and record) each image loader of a mount draws for, by
 /// the loader's place in the mount's list.
-pub(crate) type ImageOwners = Rc<RefCell<HashMap<usize, (String, String)>>>;
+pub(crate) type ImageOwners = Rc<RefCell<HashMap<usize, (String, RecordId)>>>;
 
 /// The loaders at `loaders` draw for record `record` of app `app`.
-pub(crate) fn own_loaders(owners: &ImageOwners, loaders: Range<usize>, app: &str, record: &str) {
+pub(crate) fn own_loaders(
+    owners: &ImageOwners,
+    loaders: Range<usize>,
+    app: &str,
+    record: &RecordId,
+) {
     let mut owners = owners.borrow_mut();
     for loader in loaders {
-        owners.insert(loader, (app.to_owned(), record.to_owned()));
+        owners.insert(loader, (app.to_owned(), record.clone()));
     }
 }
 
@@ -49,7 +55,7 @@ fn blob(owners: &ImageOwners, loader: usize, url: &str) -> Option<(ContentStore,
     let hash = url.strip_prefix(BLOB_SCHEME)?;
     let owners = owners.borrow();
     let (app, record) = owners.get(&loader)?;
-    let store = RecordContent::store(page_content(), ContentLane::of(app, record));
+    let store = RecordContent::store(page_content(), ContentLane::of_record(app, record));
     Some((store, hash.to_owned()))
 }
 
@@ -71,11 +77,6 @@ pub(crate) fn image_ready(owners: &ImageOwners, loader: usize, url: &str) -> boo
     }
     // Opening content the store lacks asks the record's route for it.
     let _ = store.read(&hash);
-    if let Some((app, record)) = owners.borrow().get(&loader) {
-        web_sys::console::debug_1(
-            &format!("content image {hash}: asked on {app} record {record}").into(),
-        );
-    }
     false
 }
 

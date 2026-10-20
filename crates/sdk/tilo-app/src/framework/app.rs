@@ -964,9 +964,9 @@ fn record_content(context: &mut HostContext) {
     let Some(local) = context.content().cloned() else {
         return;
     };
-    let lane = ui_core::collaboration::record_content::ContentLane::of(
+    let lane = ui_core::collaboration::record_content::ContentLane::of_record(
         context.app_id(),
-        context.record().id.as_str(),
+        &context.record().id,
     );
     context
         .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));

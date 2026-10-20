@@ -1248,7 +1248,7 @@ fn present_component(
         &image_owners,
         0..loaders.borrow().len(),
         definition.app_id,
-        checkout.id.as_str(),
+        &checkout.id,
     );
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
