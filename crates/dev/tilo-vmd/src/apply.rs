@@ -383,13 +383,19 @@ pub struct Restarts {
     /// User units of changed VM or session components, which a login that keeps
     /// its user manager restarts one by one.
     pub user_units: Vec<String>,
+    /// A changed VM-wide component runs inside sessions, so a VM refresh
+    /// restarts them.
+    pub sessions: bool,
 }
 
 impl Restarts {
     /// Every unit `generation`'s components name: what re-applying it whole
     /// restarts.
     pub fn of(generation: &Generation) -> Self {
-        let mut restarts = Self::default();
+        let mut restarts = Self {
+            sessions: true,
+            ..Self::default()
+        };
         for entry in generation.components.values() {
             restarts.add(&entry.info);
         }
@@ -446,6 +452,7 @@ pub fn policy(
         };
         if !entry.info.reboot {
             restarts.add(&entry.info);
+            restarts.sessions |= !(entry.info.scope == Scope::Vm && entry.info.outside_sessions);
         }
         policy = policy.max(needed);
     }

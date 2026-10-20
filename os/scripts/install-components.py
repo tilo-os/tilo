@@ -251,7 +251,7 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
     destinations: dict[str, str] = {}
     allowed = {"name", "kind", "scope", "scenario", "profile", "packages", "bins", "features",
                "dev_features", "units", "user_units", "app_manifests", "optional", "layer", "files",
-               "dev_swap", "dev_build"}
+               "dev_swap", "dev_build", "outside_sessions"}
     for raw in raw_components:
         name = raw.get("name")
         if not isinstance(name, str) or not NAME_RE.match(name):
@@ -307,6 +307,8 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
         optional = raw.get("optional", False)
         if not isinstance(optional, bool):
             raise ManifestError(f"{where}: `optional` must be true or false")
+        if "outside_sessions" in raw and (scope != "vm" or not isinstance(raw["outside_sessions"], bool)):
+            raise ManifestError(f"{where}: `outside_sessions` is true or false, for scope = \"vm\" only")
         layer = raw.get("layer")
         raw_files = raw.get("files", [])
         if not isinstance(raw_files, list) or (not raw_files and kind != "boot"):

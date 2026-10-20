@@ -76,6 +76,11 @@ pub struct ComponentInfo {
     /// reboots the VM.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reboot: bool,
+    /// VM-wide files no session runs (`outside_sessions = true`, such as
+    /// tilo-vmd itself): a swap refreshes the VM's `/usr` and restarts
+    /// `units`, but leaves running sessions as they are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside_sessions: bool,
     /// Opt-in phase CPU recording for a stand-in slot's shell generation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub frame_cpu_trace: bool,
@@ -89,6 +94,7 @@ impl ComponentInfo {
             units,
             user_units: Vec::new(),
             reboot: false,
+            outside_sessions: false,
             frame_cpu_trace: false,
         }
     }
@@ -339,6 +345,10 @@ fn component(name: &str, entry: &toml::Table) -> Component {
             units: strings(entry, "units"),
             user_units: strings(entry, "user_units"),
             reboot: boot && text("dev_swap").as_deref() == Some("reboot") && dev_build.is_some(),
+            outside_sessions: entry
+                .get("outside_sessions")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             frame_cpu_trace: false,
         },
         dev_build,
@@ -599,6 +609,8 @@ mod tests {
                 .expect("os/components.toml exists");
             assert_eq!(m.get("shell").unwrap().info.scope, Scope::Session);
             assert_eq!(m.get("fs").unwrap().info.scope, Scope::Vm);
+            assert!(!m.get("fs").unwrap().info.outside_sessions);
+            assert!(m.get("vmd").unwrap().info.outside_sessions);
             let kernel = m.get("kernel").unwrap();
             assert!(kernel.boot && kernel.info.reboot);
             for scenario_only in ["installer", "rollback", "initramfs", "uki", "bootloader"] {
