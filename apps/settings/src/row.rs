@@ -2,13 +2,23 @@
 //! that changes the setting — a field of a section, a verb of one, or one
 //! of the app's effects. Every pane builds its rows this way, so a row looks,
 //! reads to assistive technology and binds the same everywhere.
+//!
+//! A setting that is a field of a section the pane follows is one call:
+//! [`Row::of`] names the field, and the stock control its value wants
+//! ([`SettingRow::toggle`], [`SettingRow::choose`], ...) shows the field as
+//! it is now and changes it through the section's published field edit.
+//! That edit, not the row, is the setting: the palette, agents and scripts
+//! change it the same way, and the settings index finds it by the row's id.
+//! So a pane is free to draw any setting its own way
+//! ([`SettingRow::custom`], or a whole card of its own) without losing
+//! either.
 
 use ui::LocalState;
 use ui::tilo_resource::{Binds, Model, Path, Settable};
 use ui::widget::{Button, Dropdown, Segment, Slider, Toggle, ToggleGroup};
 
 use crate::effects::SettingsEffect;
-use crate::host::{PaneCx, Section};
+use crate::host::{Followed, PaneCx, Section};
 use crate::widgets::{
     El, Item, choice_row_stacked, field_row_described, setting_row, setting_row_described,
 };
@@ -328,6 +338,142 @@ impl Row<'_> {
             None => slider,
         }
     }
+}
+
+impl<'a> Row<'a> {
+    /// The row of the field at `path` of `followed`: its control shows the
+    /// field and sets it through the section's field edit.
+    pub fn of<T: Section, V>(
+        self,
+        followed: &'a Followed<T>,
+        path: Path<T, V>,
+    ) -> SettingRow<'a, T, V> {
+        SettingRow {
+            row: self,
+            followed,
+            path,
+        }
+    }
+}
+
+/// The row of one field of a followed section ([`Row::of`]).
+#[must_use]
+pub struct SettingRow<'a, T, V> {
+    row: Row<'a>,
+    followed: &'a Followed<T>,
+    path: Path<T, V>,
+}
+
+impl<T: Section> SettingRow<'_, T, bool> {
+    /// A toggle.
+    pub fn toggle(self) -> Item {
+        let on = self.followed.shown(&self.path, bool::clone);
+        self.row.toggle(&on, self.path)
+    }
+}
+
+impl<T: Section> SettingRow<'_, T, f64> {
+    /// A slider.
+    pub fn slider(self) -> Item {
+        let value = self.followed.shown(&self.path, f64::clone);
+        self.row.slider(&value, self.path)
+    }
+}
+
+impl<T, V> SettingRow<'_, T, V>
+where
+    T: Section,
+    V: Model + Settable + 'static,
+{
+    /// A chooser of `options`, showing the field as `label` names it and
+    /// setting it to what `value` makes of the chosen option.
+    pub fn choice(
+        self,
+        options: impl IntoIterator<Item = impl Into<String>>,
+        label: impl Fn(&V) -> String + 'static,
+        value: impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
+    ) -> Item {
+        let current = self.followed.shown(&self.path, label);
+        self.row.choice(options, &current, self.path, value)
+    }
+
+    /// A chooser of `values`, each offered as `label` names it.
+    pub fn among(
+        self,
+        values: impl IntoIterator<Item = V>,
+        label: impl Fn(&V) -> String + Clone + Send + Sync + 'static,
+    ) -> Item
+    where
+        V: Clone + Send + Sync,
+    {
+        let (options, value) = labelled(values, label.clone());
+        self.choice(options, label, value)
+    }
+
+    /// A menu of `values`, each offered as `label` names it, however few:
+    /// for a card of choices that read as one list (formats, units).
+    pub fn menu(
+        self,
+        values: impl IntoIterator<Item = V>,
+        label: impl Fn(&V) -> String + Clone + Send + Sync + 'static,
+    ) -> Item
+    where
+        V: Clone + Send + Sync,
+    {
+        let (options, value) = labelled(values, label.clone());
+        let current = self.followed.shown(&self.path, label);
+        let menu =
+            self.row
+                .cx
+                .bind_field_with(self.row.chooser(options, &current), self.path, value);
+        self.row.control(Box::new(menu))
+    }
+
+    /// A chooser of every value the field's type offers, by its label.
+    pub fn choose(self) -> Item
+    where
+        V: settings_store::Labelled + Send + Sync,
+    {
+        self.among(V::CHOICES.iter().copied(), |choice: &V| {
+            settings_store::Labelled::label(*choice).to_owned()
+        })
+    }
+
+    /// The row around a control of the pane's own: `build` makes it of the
+    /// field as `show` makes it, kept current, and binds it to the field
+    /// ([`PaneCx::bind_field`]) or a verb that changes it.
+    pub fn custom<S>(
+        self,
+        show: impl Fn(&V) -> S + 'static,
+        build: impl FnOnce(&LocalState<S>, Path<T, V>) -> El,
+    ) -> Item
+    where
+        S: Clone + Default + PartialEq + 'static,
+    {
+        let shown = self.followed.shown(&self.path, show);
+        let control = build(&shown, self.path);
+        self.row.control(control)
+    }
+}
+
+/// The labels of `values`, and the value a chosen label stands for.
+fn labelled<V: Clone + Send + Sync + 'static>(
+    values: impl IntoIterator<Item = V>,
+    label: impl Fn(&V) -> String + Send + Sync + 'static,
+) -> (
+    Vec<String>,
+    impl Fn(String) -> Result<V, String> + Send + Sync + 'static,
+) {
+    let values: Vec<V> = values.into_iter().collect();
+    let options = values.iter().map(&label).collect();
+    let value = move |chosen: String| {
+        values
+            .iter()
+            .find(|value| label(value) == chosen)
+            .cloned()
+            .ok_or_else(|| format!("`{chosen}` is not offered"))
+    };
+    (options, value)
 }
 
 /// The most options a row shows as segments rather than a menu.

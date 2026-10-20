@@ -122,6 +122,7 @@ pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use accessibility::Labelled;
 pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};

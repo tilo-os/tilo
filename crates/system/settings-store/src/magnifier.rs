@@ -87,6 +87,14 @@ impl MagnifierView {
     }
 }
 
+impl crate::Labelled for MagnifierView {
+    const CHOICES: &'static [Self] = &Self::ALL;
+
+    fn label(self) -> &'static str {
+        Self::label(self)
+    }
+}
+
 impl From<String> for MagnifierView {
     fn from(value: String) -> Self {
         Self::parse(&value)
