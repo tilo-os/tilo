@@ -174,15 +174,13 @@ pub fn lookup(id: &str) -> Option<&'static TypeSchema> {
         .copied()
 }
 
-/// The first registered type named `name` (the last segment of a qualified name), when the type
-/// belongs to another package than the one being registered.
+/// The registered type `name` of the app `app`.
 #[must_use]
-pub fn lookup_named(name: &str) -> Option<&'static TypeSchema> {
-    let last = name.rsplit('.').next().unwrap_or(name);
+pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
     registry()
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .values()
         .copied()
-        .find(|schema| schema.name == last)
+        .find(|schema| schema.app == app && schema.name == name)
 }

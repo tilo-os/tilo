@@ -135,7 +135,11 @@ pub fn action_spec(
                 payload: message.into_bytes(),
             })
     };
-    let placeholder = action.doc.clone().unwrap_or_else(|| action.name.clone());
+    let placeholder = if action.doc.is_empty() {
+        action.name.clone()
+    } else {
+        action.doc.clone()
+    };
     let mut spec = ActionSpec::typed(
         action.id.clone(),
         action.name.clone(),
@@ -145,8 +149,8 @@ pub fn action_spec(
         build,
     )
     .of_kind(action_kind(action.class));
-    if let Some(doc) = &action.doc {
-        spec = spec.with_description(doc.clone());
+    if !action.doc.is_empty() {
+        spec = spec.with_description(action.doc.clone());
     }
     spec
 }

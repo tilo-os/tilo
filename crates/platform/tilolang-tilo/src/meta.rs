@@ -4,9 +4,12 @@
 //! platform derives from them: the record schemas, the resource kinds and the subject of an
 //! action.
 
-use tilolang_runtime::meta::{EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, Ty, TypeMeta};
+use tilolang_runtime::meta::{
+    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, Ty, TypeMeta, element_record, field_kind,
+    parse_ty,
+};
 
-use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_named};
+use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_in};
 
 /// The contract kind an effect class stands for.
 #[must_use]
@@ -41,26 +44,24 @@ pub trait MetaExt {
 }
 
 fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
-    let Ok((ty, kind)) = field.resolve() else {
+    let Ok(ty) = parse_ty(&field.ty, &meta.app) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
-    let mut schema = match kind {
+    let mut schema = match field_kind(field, &ty) {
         FieldKind::Counter => FieldSchema::new(&field.id, MergeKind::Counter),
         FieldKind::Text => FieldSchema::new(&field.id, MergeKind::Text),
         FieldKind::Set => FieldSchema::new(&field.id, MergeKind::Set),
         FieldKind::Map => FieldSchema::new(&field.id, MergeKind::Map),
         FieldKind::Collection => {
             let schema = FieldSchema::new(&field.id, MergeKind::Collection);
-            let item = match &ty {
-                Ty::Collection(inner) => match inner.as_ref() {
-                    Ty::Named(name) => meta
-                        .type_named(name)
+            let item = element_record(&ty).and_then(|key| {
+                if key.app == meta.app {
+                    meta.type_named(&key.name)
                         .map(|declared| declared.id.clone())
-                        .or_else(|| lookup_named(name).map(|found| found.id.clone())),
-                    _ => None,
-                },
-                _ => None,
-            };
+                } else {
+                    lookup_in(&key.app, &key.name).map(|found| found.id.clone())
+                }
+            });
             match item {
                 Some(id) => schema.of_record(id),
                 None => schema,
@@ -68,7 +69,7 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
         }
         FieldKind::Register => {
             let schema = FieldSchema::new(&field.id, MergeKind::Register);
-            if matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text) {
+            if matches!(ty, Ty::Int | Ty::Float | Ty::Bool | Ty::Text | Ty::Enum(_)) {
                 schema
             } else {
                 schema.composite()
@@ -83,10 +84,17 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
 
 impl MetaExt for Meta {
     fn type_named(&self, name: &str) -> Option<&TypeMeta> {
-        let last = name.rsplit('.').next().unwrap_or(name);
-        self.types
-            .iter()
-            .find(|ty| ty.name == last || ty.id == name)
+        if let Some(found) = self.types.iter().find(|ty| ty.id == name) {
+            return Some(found);
+        }
+        // A qualified name (`so.tilo.todo.Item`) names a type of another app.
+        let (app, last) = name
+            .rsplit_once('.')
+            .map_or((None, name), |(app, last)| (Some(app), last));
+        if app.is_some_and(|app| app != self.app) {
+            return None;
+        }
+        self.types.iter().find(|ty| ty.name == last)
     }
 
     fn schemas(&self) -> Vec<TypeSchema> {
