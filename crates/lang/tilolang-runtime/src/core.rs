@@ -68,7 +68,13 @@ pub struct Core {
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The `window` and `lens` state of every view.
     pub view_states: RefCell<crate::view_state::ViewStates>,
+    /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
+    /// once per outermost invocation; until the host sets one, it is the epoch.
+    pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
 }
+
+/// What `now` reads while the host has set no clock.
+pub const EPOCH: &str = "1970-01-01T00:00:00Z";
 
 /// Typed access to the wasm arguments of one import call.
 pub struct Args<'a>(&'a [Wasm]);
@@ -158,6 +164,7 @@ impl Core {
             sink: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
+            clock: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -224,7 +231,7 @@ impl Core {
             EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
             Invoker, IsError, IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
             ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall,
-            NoneV, Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH,
+            NoneV, Now, Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH,
             RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
             ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI,
             StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH,
@@ -246,7 +253,7 @@ impl Core {
             | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
             | RefEq | RefId => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
-            | PrincipalName | QueueBlock => self.effect_import(imp, a),
+            | PrincipalName | QueueBlock | Now => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
             Abort => {

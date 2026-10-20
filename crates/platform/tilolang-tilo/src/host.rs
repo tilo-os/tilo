@@ -353,6 +353,7 @@ impl Host {
             crate::authority::stricter(platform, answer)
         });
         let runtime = Runtime::new(store.clone(), authority.clone())?;
+        runtime.set_clock(system_time);
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let inner = Rc::new(HostInner {
             handle,
@@ -368,6 +369,12 @@ impl Host {
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
+    }
+
+    /// Replace what `now` reads (the system time until then): tests and captures fix it. The
+    /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
+        self.inner.runtime.set_clock(clock);
     }
 
     /// The handle the door's closures hold.
@@ -717,4 +724,49 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
     crate::surface::surface_toml(&refs).unwrap_or_default()
+}
+
+/// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.
+#[must_use]
+pub fn system_time() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    iso_utc(secs)
+}
+
+/// Seconds since the Unix epoch as ISO-8601 UTC text.
+#[must_use]
+pub fn iso_utc(secs: u64) -> String {
+    let days = secs / 86_400;
+    let rest = secs % 86_400;
+    let (h, m, s) = (rest / 3600, rest % 3600 / 60, rest % 60);
+    // Days to a civil date (proleptic Gregorian), after Howard Hinnant's `civil_from_days`.
+    // Every step stays far inside `u64` for any time a clock reports.
+    let z = days.wrapping_add(719_468);
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = doe
+        .wrapping_sub(doe / 1460)
+        .wrapping_add(doe / 36_524)
+        .wrapping_sub(doe / 146_096)
+        / 365;
+    let doy = doe.wrapping_sub(
+        yoe.wrapping_mul(365)
+            .wrapping_add(yoe / 4)
+            .wrapping_sub(yoe / 100),
+    );
+    let mp = doy.wrapping_mul(5).wrapping_add(2) / 153;
+    let day = doy
+        .wrapping_sub(mp.wrapping_mul(153).wrapping_add(2) / 5)
+        .wrapping_add(1);
+    let month = if mp < 10 {
+        mp.wrapping_add(3)
+    } else {
+        mp.wrapping_sub(9)
+    };
+    let year = yoe
+        .wrapping_add(era.wrapping_mul(400))
+        .wrapping_add(u64::from(month <= 2));
+    format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
 }

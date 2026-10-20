@@ -685,7 +685,58 @@ impl Checker<'_> {
         )));
     }
 
+    /// A Date or a Time, or an Option of one, as the ISO text a UI prop holds (empty for
+    /// `.none`), and `"date"` or `"time"`; `None` for any other value.
+    pub(super) fn dated(&mut self, v: Ex) -> Result<(Ex, &'static str), Ex> {
+        let kind = |t: &Ty| match t {
+            Ty::Date => Some("date"),
+            Ty::Time => Some("time"),
+            _ => None,
+        };
+        if let Some(k) = kind(&v.ty) {
+            return Ok((v.typed(Ty::Text), k));
+        }
+        let Ty::Option(inner) = &v.ty else {
+            return Err(v);
+        };
+        let Some(k) = kind(inner) else {
+            return Err(v);
+        };
+        Ok((self.text_or_empty(v), k))
+    }
+
+    /// An `Option<Text>` (or of a Date or Time) as its text, or the empty text for `.none`.
+    pub(super) fn text_or_empty(&mut self, v: Ex) -> Ex {
+        let tmp = self.fresh(v.ty.clone());
+        let opt = Ex::local(tmp, v.ty.clone());
+        let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
+        let value = Ex::host(Imp::UnwrapH, vec![opt], Ty::Text);
+        let pick = Ex::new(
+            Ek::If(Box::new(test), Box::new(value), Box::new(Ex::str(""))),
+            Ty::Text,
+        );
+        Ex::new(Ek::Seq(vec![Stmt::Set(tmp, v)], Box::new(pick)), Ty::Text)
+    }
+
+    /// Sets the prop `name`. A Date or a Time is its ISO text, and the sibling prop
+    /// `<name>:as` says which (`"date"` or `"time"`), for the host to format it.
     pub(super) fn prop(&mut self, node: Ex, name: &str, v: Ex, span: Span) {
+        let v = match self.dated(v) {
+            Ok((text, kind)) => {
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropH,
+                    vec![node.clone(), Ex::str(name), text],
+                    Ty::Unit,
+                )));
+                self.emit(Stmt::Eval(Ex::host(
+                    Imp::UiPropH,
+                    vec![node, Ex::str(&format!("{name}:as")), Ex::str(kind)],
+                    Ty::Unit,
+                )));
+                return;
+            }
+            Err(v) => v,
+        };
         match &v.ty {
             Ty::Error => {}
             Ty::Length(u) => {

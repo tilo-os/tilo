@@ -478,6 +478,13 @@ impl Runtime {
         *self.core.names.borrow_mut() = Some(Box::new(host));
     }
 
+    /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The
+    /// runtime reads it once per outermost invocation, so the actions one invocation runs see
+    /// one time. Until it is set, `now` is `1970-01-01T00:00:00Z`.
+    pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
+        *self.core.clock.borrow_mut() = Some(Box::new(clock));
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));

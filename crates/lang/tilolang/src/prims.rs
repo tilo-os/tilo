@@ -39,6 +39,7 @@ pub const PRIMS: &[Prim] = &[
     prim_of("field", &["label"], &[]),
     prim_of("toggle", &["label"], &["bind", "enabled"]),
     prim_of("choice", &[], &["bind"]),
+    prim_of("date", &[], &["bind"]),
     prim_of("card", &["item"], &[]),
     prim_of("avatar", &["who"], &[]),
     // Layout for content.
@@ -189,6 +190,7 @@ pub const BUILTINS: &[&str] = &[
     "model_call",
     "run_block",
     "invoker",
+    "now",
     "open",
     "set",
 ];

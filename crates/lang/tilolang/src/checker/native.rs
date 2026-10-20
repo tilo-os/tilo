@@ -36,6 +36,21 @@ impl Checker<'_> {
                 Some(self.action_button(&callee, c, args))
             }
             "choice" => Some(self.choice(c, args)),
+            "date"
+                if !args
+                    .iter()
+                    .any(|a| a.name.as_ref().is_some_and(|n| n.name == "bind")) =>
+            {
+                self.err(
+                    "E022",
+                    c.call.span,
+                    "`date` needs the Date it picks: `date(bind: task.due)`, a Date or Option<Date> field or view state",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Some(self.dead_node())
+            }
             "page"
                 if args.iter().any(|a| {
                     a.name.is_none() && matches!(&a.value.kind, ExprKind::Ident(n) if n == "full")
@@ -78,6 +93,11 @@ impl Checker<'_> {
         let want = match (prim, name) {
             ("toggle", "bind") => {
                 self.bind_typed(&node, value, &[Ty::Bool]);
+                return true;
+            }
+            ("date", "bind") => {
+                let day = [Ty::Date, Ty::Option(Box::new(Ty::Date))];
+                self.bind_typed(&node, value, &day);
                 return true;
             }
             ("inspector" | "card", "item") => {
@@ -441,16 +461,14 @@ impl Checker<'_> {
                 None if self.is_flag(None, value) => self.flag_arg(n, value),
                 None if !titled => {
                     titled = true;
-                    let v = self.expr_as(value, &Ty::Text);
-                    self.prop(node.clone(), "title", v, value.span);
+                    self.text_arg(&node, "title", value);
                 }
                 None => {
                     self.err("E022", value.span, format!("a list row takes one positional argument, its title; name the others: {ROW_ARGS_TEXT}"));
                     let _ = self.expr(value, None);
                 }
                 Some(name @ ("secondary" | "meta" | "badge")) => {
-                    let v = self.expr_as(value, &Ty::Text);
-                    self.prop(node.clone(), name, v, value.span);
+                    self.text_arg(&node, name, value);
                 }
                 Some("value") => {
                     let v = self.expr(value, None);
@@ -489,6 +507,29 @@ impl Checker<'_> {
             }
         }
         n
+    }
+
+    /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
+    /// A Date or a Time is marked for the host to format (see `prop`).
+    fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
+        let v = self.expr(value, Some(&Ty::Text));
+        let v = match &v.ty {
+            Ty::Text | Ty::Date | Ty::Time | Ty::Error => v,
+            Ty::Option(inner) if **inner == Ty::Text => self.text_or_empty(v),
+            Ty::Option(inner) if matches!(**inner, Ty::Date | Ty::Time) => v,
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    value.span,
+                    format!(
+                        "a row's `{name}` is Text, a Date or a Time, or an Option of one; found {t}"
+                    ),
+                );
+                return;
+            }
+        };
+        self.prop(node.clone(), name, v, value.span);
     }
 
     /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set
@@ -749,14 +790,24 @@ impl Checker<'_> {
         let l = self.expr_as(label, &Ty::Text);
         self.prop(Ex::local(n, Ty::View), "label", l, label.span);
         let v = self.expr(value, None);
-        if matches!(
-            v.ty,
-            Ty::Text | Ty::Int | Ty::Float | Ty::Bool | Ty::Principal | Ty::Error
-        ) {
+        let shown = match &v.ty {
+            Ty::Text
+            | Ty::Int
+            | Ty::Float
+            | Ty::Bool
+            | Ty::Principal
+            | Ty::Date
+            | Ty::Time
+            | Ty::Error => true,
+            Ty::Option(inner) => matches!(**inner, Ty::Date | Ty::Time),
+            _ => false,
+        };
+        if shown {
+            // A Date or a Time also sets `value:as` (see `prop`).
             self.prop(Ex::local(n, Ty::View), "value", v, value.span);
         } else {
             let t = self.show(&v.ty);
-            self.err("E098", value.span, format!("a fact's value is Text, a number, a Bool or a Principal, and this is {t}; show it as text with `\"{{...}}\"`"));
+            self.err("E098", value.span, format!("a fact's value is Text, a number, a Bool, a Principal, a Date or a Time, and this is {t}; show it as text with `\"{{...}}\"`"));
         }
         self.emit(host(
             Imp::UiChild,

@@ -57,6 +57,15 @@ impl Checker<'_> {
             let key = t.key.clone();
             return self.construct(&key, args);
         }
+        if matches!(name, "Date" | "Time") {
+            return match crate::resolve::date_value(name, args) {
+                Ok((ty, text)) => Ex::str(&text).typed(ty),
+                Err(msg) => {
+                    self.err("E099", span, msg);
+                    Ex::error()
+                }
+            };
+        }
         match name {
             "outside" => return self.builtin_outside(args, span),
             "model_call" => return self.builtin_model(args, span),

@@ -82,6 +82,8 @@ pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
         "Float" => json!({"type": "number"}),
         "Bool" => json!({"type": "boolean"}),
         "Text" => json!({"type": "string"}),
+        "Date" => json!({"type": "string", "format": "date"}),
+        "Time" => json!({"type": "string", "format": "date-time"}),
         other => match meta.type_named(other) {
             Some(declared) => json!({
                 "type": "string",

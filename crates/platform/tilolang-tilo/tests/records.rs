@@ -174,3 +174,94 @@ fn the_registry_decodes_the_recorded_action() {
     let registry = ActionRegistry::with(register_actions);
     assert!(registry.decode(&recorded).is_ok());
 }
+
+const DATED: &str = r#"app so.tilo.dated "Dated"
+
+type Day {
+    title: Text (title)
+    start: Date = Date("2026-10-24")
+    due: Option<Date> = .none
+    done_at: Option<Time> = .none
+}
+
+root Day
+
+default view day for Day
+
+action finish(d: Day) {
+    d.done_at = now
+    d.start = Date("2026-10-25")
+    d.due = .some(Date("2026-11-01"))
+}
+
+view day(d: Day) {
+    page {
+        text(d.title)
+    }
+}
+"#;
+
+// A Date or a Time is text in the record: a plain register for one, a structured one for an
+// option; both read and write through the host, and `now` is the host's clock.
+#[test]
+fn dates_and_times_are_text_fields_and_now_is_the_hosts_clock() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(DATED, "")]);
+    let meta = packages[0].meta.clone();
+    let start = lookup(&meta.types[0].id)
+        .unwrap()
+        .field(&field_id(&meta, "Day", "start"))
+        .unwrap()
+        .clone();
+    assert_eq!(start.kind, tilolang_tilo::MergeKind::Register);
+    assert!(!start.composite, "a Date is stored as plain text");
+    ada.host.set_clock(|| "2026-10-21T09:30:00Z".to_owned());
+    let day = ada.host.root_of(&meta.app).unwrap();
+    ada.commit();
+    let read = |r: &Replica, f: &str| r.host.runtime().read(&day, f).unwrap();
+    assert_eq!(
+        read(&ada, "start"),
+        tilolang_runtime::Value::text("2026-10-24")
+    );
+    let finish = meta.actions.iter().find(|a| a.name == "finish").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                finish.id.as_str(),
+                vec![tilolang_runtime::Value::resource(&day)],
+            ),
+        )
+        .unwrap();
+    ada.commit();
+    let ids = packages[0].ids.clone();
+    let bo = ada.fork("bo", &[(DATED, ids.as_str())]);
+    for replica in [&ada, &bo] {
+        assert_eq!(
+            read(replica, "start"),
+            tilolang_runtime::Value::text("2026-10-25")
+        );
+        assert_eq!(
+            read(replica, "due"),
+            tilolang_runtime::Value::some(tilolang_runtime::Value::text("2026-11-01"))
+        );
+        assert_eq!(
+            read(replica, "done_at"),
+            tilolang_runtime::Value::some(tilolang_runtime::Value::text("2026-10-21T09:30:00Z"))
+        );
+    }
+}
+
+#[test]
+fn the_system_clock_answers_iso_utc() {
+    assert_eq!(tilolang_tilo::host::iso_utc(0), "1970-01-01T00:00:00Z");
+    assert_eq!(
+        tilolang_tilo::host::iso_utc(951_782_400),
+        "2000-02-29T00:00:00Z"
+    );
+    assert_eq!(
+        tilolang_tilo::host::iso_utc(1_792_575_000),
+        "2026-10-21T09:30:00Z"
+    );
+    assert!(tilolang::types::check_time(&tilolang_tilo::host::system_time()).is_ok());
+}

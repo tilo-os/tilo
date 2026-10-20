@@ -74,7 +74,7 @@ impl Core {
                 let want = self.registry.borrow().type_for(key);
                 want.as_deref() == Some(r.target.ty.as_str())
             }
-            (Ty::Text, Value::Text(_))
+            (Ty::Text | Ty::Date | Ty::Time, Value::Text(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
@@ -836,6 +836,29 @@ impl Core {
         ret_void()
     }
 
+    /// `now`: the invocation's time, read from the host's clock once per outermost invocation.
+    fn now(&self) -> HResult<Option<Wasm>> {
+        let cached = {
+            let frames = self.frames.borrow();
+            if !matches!(frames.top()?.kind, FrameKind::Action(_)) {
+                return trap("now is only available in actions");
+            }
+            frames.now.clone()
+        };
+        if let Some(time) = cached {
+            return self.ret_h(Value::Text(time));
+        }
+        let time = self
+            .clock
+            .borrow()
+            .as_ref()
+            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+        tilolang::types::check_time(&time)
+            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
+        self.frames.borrow_mut().now = Some(time.clone());
+        self.ret_h(Value::Text(time))
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -870,6 +893,7 @@ impl Core {
                 self.ret_h(Value::Text(name))
             }
             Imp::QueueBlock => self.queue_block(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::Now => self.now(),
             _ => trap("not an effect import"),
         }
     }
