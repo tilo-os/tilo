@@ -307,6 +307,20 @@ impl MediaEngine {
         }
     }
 
+    /// Have the synthesized backend answer its next seek with a picture
+    /// stamped `pts_ms`, as a pipeline still running when the seek arrived
+    /// can hand over the frame it decoded for where it was.
+    #[cfg(test)]
+    pub(crate) fn offer_stale_on_next_seek(&mut self, pts_ms: u64) {
+        match &mut self.backend {
+            Backend::Synth(s) => s.stale_on_seek = Some(pts_ms),
+            #[cfg(gst_decode)]
+            Backend::Gst(_) | Backend::Unavailable(_) => {}
+            #[cfg(web_page)]
+            Backend::Web(_) => {}
+        }
+    }
+
     /// Force the synthesized backend regardless of build features. Used by the
     /// hermetic engine tests so event ordering and transport application are
     /// exercised deterministically without the decode backend.
@@ -971,6 +985,11 @@ struct SynthState {
     /// Prefetch progress for a file source.
     prefetch: Option<PrefetchProgress>,
     last_buffering: Option<u8>,
+    /// A test's stand-in for a running pipeline that, after the next seek,
+    /// hands over the picture it decoded for its old position: the timestamp
+    /// that picture carries.
+    #[cfg(test)]
+    stale_on_seek: Option<u64>,
 }
 
 impl SynthState {
@@ -989,6 +1008,8 @@ impl SynthState {
             last_frame_pos: None,
             prefetch: None,
             last_buffering: None,
+            #[cfg(test)]
+            stale_on_seek: None,
         }
     }
 
@@ -1046,6 +1067,12 @@ impl SynthState {
         self.last_tick = None;
         if self.opened {
             self.render_frame();
+            #[cfg(test)]
+            if let Some(stale) = self.stale_on_seek.take()
+                && let Some(frame) = &mut self.latest_native
+            {
+                frame.pts_ms = stale;
+            }
         }
     }
 

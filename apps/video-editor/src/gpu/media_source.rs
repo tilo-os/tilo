@@ -491,8 +491,14 @@ impl FrameSource for MediaFrameSource {
                     } else {
                         // Either a jump, or the roll did not reach the
                         // target in time — fall back to the exact seek,
-                        // which always lands on the right picture.
-                        self.rolling.remove(&media);
+                        // which lands on the right picture. Stop the roll
+                        // first: a running pipeline keeps delivering frames
+                        // decoded for where it was, and the seek wants the
+                        // one picture a paused pipeline prerolls. The next
+                        // step ahead starts it again.
+                        if self.rolling.remove(&media) {
+                            s.engine().pause();
+                        }
                         s.frame_at(target_ms, timeout)
                     }
                 }

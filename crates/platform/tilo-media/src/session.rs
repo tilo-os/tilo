@@ -111,11 +111,39 @@ impl EngineSession {
     /// Blocks for up to `timeout`. Returns `None` when the pipeline could not
     /// produce a picture in time — the caller shows whatever it had rather
     /// than stalling the UI.
+    ///
+    /// Never answers with a picture from before the seek. A pipeline that
+    /// was running when the seek arrived can still hand over a frame it
+    /// decoded for the old position, and the seek's own bookkeeping counts it
+    /// as new; served, it would be a repeated frame in an export. So the
+    /// picture has to land on `time_ms` by its own timestamp, measured from
+    /// the stream's start ([`Self::lands_on`]), or else be the picture a
+    /// second seek lands on too (a frame rate the bucket does not describe
+    /// closely). Anything else is sought again until `timeout`, and only the
+    /// picture that landed is cached.
     pub fn frame_at(&mut self, time_ms: u64, timeout: Duration) -> Option<Arc<Frame>> {
         if let Some(f) = self.cached_frame_at(time_ms) {
             return Some(f);
         }
+        let deadline = Instant::now().checked_add(timeout);
+        let left = || deadline.map_or(timeout, |d| d.saturating_duration_since(Instant::now()));
         self.engine.seek_and_wait(time_ms, timeout).ok()?;
+        let mut offered = self.engine.latest()?.pts_ms;
+        while !self.lands_on(offered, time_ms) {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                tracing::debug!(
+                    "media: seek to {time_ms}ms kept answering the picture at {offered}ms"
+                );
+                return None;
+            }
+            self.engine.seek_and_wait(time_ms, left()).ok()?;
+            let again = self.engine.latest()?.pts_ms;
+            if again == offered {
+                // Two seeks agree: `time_ms` falls inside this picture.
+                break;
+            }
+            offered = again;
+        }
         let frame = Arc::new(self.engine.latest()?.clone());
         // Key the entry by the picture's own timestamp as well as the
         // requested time: an accurate seek lands on the frame covering
@@ -127,6 +155,18 @@ impl EngineSession {
             self.cache.insert(pts_key, frame.clone());
         }
         Some(frame)
+    }
+
+    /// Whether a picture at `pts_ms` is the one showing at `time_ms`: it
+    /// starts there, give or take the millisecond both lost to truncation,
+    /// or `time_ms` falls inside it. A frame lasts at least the bucket width
+    /// (the frame interval rounded down), so a picture that ends by then is
+    /// the one before; with no frame rate known only the first case counts.
+    fn lands_on(&self, pts_ms: u64, time_ms: u64) -> bool {
+        pts_ms.abs_diff(time_ms) <= 1
+            || (self.bucket_ms > 1
+                && pts_ms < time_ms
+                && time_ms < pts_ms.saturating_add(self.bucket_ms))
     }
 
     /// Pump the pipeline and file whatever frame arrived into the cache.
@@ -282,6 +322,45 @@ mod tests {
         let p = dir.join("clip.mp4");
         std::fs::write(&p, b"not really a video, but a real path").unwrap();
         p
+    }
+
+    /// An export rolls the decoder forward and, when the roll does not
+    /// reach the next frame in time, seeks for it instead. A pipeline still
+    /// running then can hand over the picture it decoded for its old
+    /// position, and the seek counts it as new: the seek must go on to the
+    /// picture asked for, and never file the stale one under the request.
+    #[test]
+    fn a_seek_never_answers_with_a_picture_from_before_it() {
+        let p = scratch("stale");
+        let key: SourceKey = Arc::from(session_key(&Source::LocalFile(p.clone())).as_str());
+        let mut s = EngineSession {
+            engine: MediaEngine::new_synthesized(),
+            cache: FrameCache::for_preview(),
+            key,
+            bucket_ms: 1,
+            last_used: Instant::now(),
+        };
+        s.engine.open(Source::LocalFile(p.clone()));
+        s.set_fps(30.0);
+        // The roll: running, and polled before it got to the frame wanted.
+        s.engine.play();
+        s.poll_into_cache();
+        assert!(
+            s.cached_frame_at(567).is_none(),
+            "the roll is still short of it"
+        );
+        // The frame before the one asked for, decoded before the seek.
+        s.engine.offer_stale_on_next_seek(533);
+        let frame = s
+            .frame_at(567, Duration::from_secs(5))
+            .expect("the picture asked for");
+        assert_eq!(frame.pts_ms, 567, "not the picture from before the seek");
+        assert_eq!(
+            s.cached_frame_at(567).map(|f| f.pts_ms),
+            Some(567),
+            "the stale picture is not filed under the request"
+        );
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
     #[test]
