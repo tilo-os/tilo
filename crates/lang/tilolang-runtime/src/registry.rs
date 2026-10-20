@@ -159,6 +159,58 @@ impl Registry {
         Ok(rc)
     }
 
+    /// Add a new version of a package: every package of the same app is removed first, so the
+    /// new version takes over their declaration ids. Resources keep their state: they are stored
+    /// by those ids, not by module.
+    ///
+    /// # Errors
+    ///
+    /// As [`Registry::add`]; the old versions stay when the new one is refused.
+    pub fn replace(&mut self, pkg: Package) -> Result<Rc<Package>, String> {
+        let old: Vec<ModuleHash> = self
+            .order
+            .iter()
+            .filter(|h| {
+                **h != pkg.hash
+                    && self
+                        .packages
+                        .get(*h)
+                        .is_some_and(|p| p.meta.app == pkg.meta.app)
+            })
+            .cloned()
+            .collect();
+        let saved = (
+            self.packages.clone(),
+            self.order.clone(),
+            self.types.clone(),
+            self.actions.clone(),
+            self.views.clone(),
+            self.flows.clone(),
+        );
+        for hash in &old {
+            self.packages.remove(hash);
+            self.order.retain(|h| h != hash);
+            for map in [
+                &mut self.types,
+                &mut self.actions,
+                &mut self.views,
+                &mut self.flows,
+            ] {
+                map.retain(|_, owner| owner != hash);
+            }
+        }
+        self.add(pkg).inspect_err(|_| {
+            (
+                self.packages,
+                self.order,
+                self.types,
+                self.actions,
+                self.views,
+                self.flows,
+            ) = saved;
+        })
+    }
+
     fn claim(
         map: &mut HashMap<String, ModuleHash>,
         id: &str,

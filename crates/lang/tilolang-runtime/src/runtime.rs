@@ -104,7 +104,40 @@ impl Runtime {
     /// package's declaration ids.
     pub fn load_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
-        let exports = self.core.engine.exports(&hash);
+        self.check_exports(&hash, &meta)?;
+        let pkg =
+            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .add(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(hash)
+    }
+
+    /// Load a new version of a package, replacing every loaded version of the same app: what a
+    /// development reload does after the sources changed. Resources keep their state, since they
+    /// are stored by declaration id; views opened over the old version keep running it until
+    /// they are opened again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::load_package`]; the old version stays loaded when the new one is refused.
+    pub fn reload_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
+        let hash = self.core.engine.compile(wasm)?;
+        self.check_exports(&hash, &meta)?;
+        let pkg =
+            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        self.core
+            .registry
+            .borrow_mut()
+            .replace(pkg)
+            .map_err(RuntimeError::Package)?;
+        Ok(hash)
+    }
+
+    fn check_exports(&self, hash: &ModuleHash, meta: &Meta) -> Result<(), RuntimeError> {
+        let exports = self.core.engine.exports(hash);
         let wanted = meta
             .actions
             .iter()
@@ -119,14 +152,7 @@ impl Runtime {
                 )));
             }
         }
-        let pkg =
-            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
-        self.core
-            .registry
-            .borrow_mut()
-            .add(pkg)
-            .map_err(RuntimeError::Package)?;
-        Ok(hash)
+        Ok(())
     }
 
     /// Load a package the compiler produced.
