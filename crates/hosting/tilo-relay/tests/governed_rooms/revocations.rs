@@ -25,6 +25,7 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(device.cert.clone()),
         revocations,
+        successions: Vec::new(),
     }
 }
 
