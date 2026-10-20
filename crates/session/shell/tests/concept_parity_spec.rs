@@ -286,6 +286,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Members;
             st.editing_workspace_name = None;
         }
+        settle_host(&mut host_a);
         let scene_a = render_host_to_scene(&mut host_a);
         let fills_a = collect_solid_colors(&scene_a).len();
 
@@ -298,6 +299,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Members;
             st.editing_workspace_name = Some("__files_tab__".into());
         }
+        settle_host(&mut host_b);
         let scene_b = render_host_to_scene(&mut host_b);
         let fills_b = collect_solid_colors(&scene_b).len();
 
@@ -327,6 +329,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Permissions;
             st.editing_workspace_name = None;
         }
+        settle_host(&mut host_a);
         let scene_a = render_host_to_scene(&mut host_a);
         let fills_a = collect_solid_colors(&scene_a).len();
 
@@ -339,6 +342,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
             st.ws_settings_tab = WsTab::Permissions;
             st.editing_workspace_name = Some("Press Esc to close".into());
         }
+        settle_host(&mut host_b);
         let scene_b = render_host_to_scene(&mut host_b);
         let fills_b = collect_solid_colors(&scene_b).len();
 
@@ -368,6 +372,7 @@ fn workspace_settings_invariance_fixture_keeps_its_scene_across_row_transitions(
         state.overlays.ws_settings = true;
         state.ws_settings_tab = WsTab::Members;
     }
+    settle_host(&mut host);
     let first = collect_solid_colors(&render_host_to_scene(&mut host));
     std::thread::sleep(ui::time::Duration::from_millis(2300));
     let later = collect_solid_colors(&render_host_to_scene(&mut host));
@@ -385,12 +390,20 @@ fn build_settled_workspace_settings_host(
     tree: &WorkspaceTree,
 ) -> (shell::shell::overlay_host::ShellOverlayHost, Chrome) {
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
+    settle_host(&mut host);
+    (host, chrome)
+}
+
+/// Draw `host` until it rests. Call it again after changing what the host
+/// shows (opening the settings pane, picking a tab): the first frames after
+/// a change mount and load what it shows, so only a rested frame compares.
+fn settle_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) {
     host.set_motion_reduced(true);
-    let _ = render_host_to_scene(&mut host);
+    let _ = render_host_to_scene(host);
     // The first layout can mount embedded apps. Apply the real preference to
     // those new children before measuring the settled pane, then draw again.
     host.set_motion_reduced(true);
-    let _ = render_host_to_scene(&mut host);
+    let _ = render_host_to_scene(host);
     // Initial fixture record writes can finish asynchronously and show a Saved
     // bubble. Reduced motion removes its fade, not its finite lifetime. Wait
     // for the production hosts to report rest before comparing settled panes.
@@ -406,18 +419,17 @@ fn build_settled_workspace_settings_host(
             &automerge::ROOT,
         );
         host.set_motion_reduced(true);
-        let _ = render_host_to_scene(&mut host);
+        let _ = render_host_to_scene(host);
         if !host.has_pending_visual_work() && !host.has_transient_feedback() {
             break;
         }
         assert!(
             ui::time::now() < deadline,
             "workspace settings fixture did not settle: {:?}",
-            pending_visual_names(&host)
+            pending_visual_names(host)
         );
         std::thread::sleep(ui::time::Duration::from_millis(16));
     }
-    (host, chrome)
 }
 
 fn pending_visual_names(widget: &dyn Widget) -> Vec<String> {
