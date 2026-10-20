@@ -77,6 +77,12 @@ pub struct Slot {
 }
 
 impl Slot {
+    /// The child, out of its slot.
+    #[must_use]
+    pub fn into_element(self) -> Element {
+        self.element
+    }
+
     #[must_use]
     pub fn new(element: Element) -> Self {
         Self {
@@ -388,6 +394,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {

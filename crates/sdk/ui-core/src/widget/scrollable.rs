@@ -285,6 +285,10 @@ impl Scrollable {
     pub fn new_horizontal() -> Self {
         Self::new(ScrollAxis::Horizontal)
     }
+    /// The content, to change it in place and keep the scroll position.
+    pub fn child_mut(&mut self) -> Option<&mut Element> {
+        self.child.as_mut()
+    }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
         self.child = Some(match &self.content_min_viewport_height {
