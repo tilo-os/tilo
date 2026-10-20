@@ -9,6 +9,8 @@ import time
 import tempfile
 import unittest
 
+from hang import HANG_BOUND
+
 
 SCRIPT = Path(__file__).resolve().parents[1] / "web" / "run_smoke_shards.sh"
 ENTRY = Path(__file__).resolve().parents[2] / "crates/browser/tilo-web-desktop/scripts/smoke.mjs"
@@ -35,7 +37,8 @@ class SmokeShards(unittest.TestCase):
                 "if os.environ['ORPHAN_WRITER']=='1':\n"
                 " child=os.fork()\n"
                 " if child:signal.signal(signal.SIGTERM,lambda *args:sys.exit(0))\n"
-                "deadline=time.monotonic()+2\n"
+                # Runs until the driver stops it; the bound only ends a forgotten fixture.
+                "deadline=time.monotonic()+float(os.environ['FIXTURE_HANG_BOUND'])\n"
                 "while time.monotonic()<deadline:time.sleep(.01)\n"
                 "stop()\n"
             )
@@ -83,20 +86,31 @@ class SmokeShards(unittest.TestCase):
                 CLEANUP_FAILURES=str(cleanup_failures),
                 TILO_WEB_SMOKE_SHARDS=shards,
                 CDP_PORT="9333",
+                FIXTURE_HANG_BOUND=str(HANG_BOUND),
                 PATH=f"{directory}:{os.environ['PATH']}",
             )
-            result = subprocess.run(
+            # Its own session, so a hung driver is stopped with every browser,
+            # supervisor and worker it started before the directory goes.
+            process = subprocess.Popen(
                 ["bash", str(SCRIPT), "http://fixture", *apps],
                 env=environment,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=5,
+                start_new_session=True,
             )
+            try:
+                stdout, stderr = process.communicate(timeout=HANG_BOUND)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+            result = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
             workers = [json.loads(p.read_text()) for p in root.glob("worker-*.json")]
             browsers = [json.loads(p.read_text()) for p in root.glob("chrome-*.json")]
             self.assertFalse((root / "cleanup-race").exists(), "profile removed before browser exit")
             if cleanup_failures < 100:
-                self.assertEqual(list(root.glob("smoke-browsers.*")), [])
+                self.assertEqual(list(root.glob("smoke-browsers.*")), [], result.stderr)
             else:
                 self.assertTrue(list(root.glob("smoke-browsers.*")), "permanent removal failure must remain observable")
             return result, workers, browsers
@@ -115,7 +129,8 @@ class SmokeShards(unittest.TestCase):
             environment = dict(os.environ, CI=ci, CHROME="fixture", RUNNER_TEMP=directory,
                                TILO_WEB_SMOKE_WORKER=worker, CDP_PORT="0")
             result = subprocess.run([node, str(ENTRY), "http://fixture", "calculator", "desktop"],
-                                    cwd=root, env=environment, capture_output=True, text=True, timeout=5)
+                                    cwd=root, env=environment, capture_output=True, text=True,
+                                    timeout=HANG_BOUND)
             entry = (root / "entry").read_text().splitlines() if (root / "entry").exists() else None
             return result, entry
 
@@ -156,7 +171,7 @@ class SmokeShards(unittest.TestCase):
                 "const spawn=childProcess.spawn;\n"
                 "childProcess.spawn=(...args)=>{\n"
                 " const child=spawn(...args);\n"
-                " const deadline=performance.now()+1000;\n"
+                " const deadline=performance.now()+Number(process.env.FIXTURE_HANG_BOUND)*1000;\n"
                 " while(!existsSync(`${process.env.RUNNER_TEMP}/ready`)){\n"
                 "  if(performance.now()>=deadline)throw Error('driver never started');\n"
                 " }\n"
@@ -166,20 +181,20 @@ class SmokeShards(unittest.TestCase):
                 "syncBuiltinESMExports();\n"
             )
             environment = dict(os.environ, CI="true", CHROME="fixture", RUNNER_TEMP=directory,
-                               TILO_WEB_SMOKE_WORKER="", CDP_PORT="9333")
+                               TILO_WEB_SMOKE_WORKER="", CDP_PORT="9333",
+                               FIXTURE_HANG_BOUND=str(HANG_BOUND))
             environment["NODE_OPTIONS"] = (
                 f"{environment.get('NODE_OPTIONS', '')} --import {preload.as_uri()}"
             ).strip()
             process = subprocess.Popen([shutil.which("node"), str(ENTRY), "http://fixture", "desktop"],
                                        cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
-                for _ in range(100):
-                    if (root / "ready").exists():
-                        break
+                deadline = time.monotonic() + HANG_BOUND
+                while not (root / "ready").exists() and time.monotonic() < deadline:
                     time.sleep(.01)
                 self.assertTrue((root / "ready").exists(), "driver never started")
                 process.terminate()
-                process.communicate(timeout=3)
+                process.communicate(timeout=HANG_BOUND)
                 self.assertEqual(process.returncode, 143)
                 self.assertTrue((root / "stopped").exists())
             finally:
