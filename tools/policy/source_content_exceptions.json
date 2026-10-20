@@ -1,8 +1,8 @@
 [
   {
     "path": "crates/session/shell/tests/snapshots/e2e/e2e-open-close-overview-settled.png",
-    "oid": "8b91a8af8e2d1b405be22ebe581c5015cccd4791",
-    "reason": "Visual regression reference for the overview open/close settle. Re-pinned to the baseline 34e213ca0f recorded for the intentional workspace-menu and person-controls redesign; refresh it only for an intended UI change, never to silence a mismatch."
+    "oid": "5ecbd4ce2fbdab0d3693e0a214b2a7818702e013",
+    "reason": "Visual regression reference for the overview open/close settle. Re-pinned to the overview reference 5d33fc7f3e refreshed; refresh it only for an intended UI change, never to silence a mismatch."
   },
   {
     "path": "crates/browser/tilo-browser-runtime/web/apple-touch-icon.png",
