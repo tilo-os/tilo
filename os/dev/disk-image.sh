@@ -562,6 +562,31 @@ start_registry() {
   return 1
 }
 
+# A container policy for the one bootc invocation that installs from a source
+# the image's own policy does not admit (an unsigned transport mirror, the
+# scratch registry this step publishes to): reject everything but REPOSITORY.
+# It is bind-mounted over the running container's policy only; the installed
+# system keeps the policy shipped in the image.
+write_source_policy() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+path, repository = sys.argv[1:]
+policy = {
+    "default": [{"type": "reject"}],
+    "transports": {
+        "docker": {
+            repository: [{"type": "insecureAcceptAnything"}],
+        },
+    },
+}
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(policy, output, separators=(",", ":"))
+    output.write("\n")
+PY
+}
+
 if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
   SRC_REF="docker://$RUNREF"
@@ -580,23 +605,7 @@ if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   # mirror repository. This file is bind-mounted over the running container's
   # policy only; the installed system retains the policy shipped in the image.
   SOURCE_POLICY="$OUTDIR/.source-policy.json"
-  python3 - "$SOURCE_POLICY" "$source_repository" <<'PY'
-import json
-import sys
-
-path, repository = sys.argv[1:]
-policy = {
-    "default": [{"type": "reject"}],
-    "transports": {
-        "docker": {
-            repository: [{"type": "insecureAcceptAnything"}],
-        },
-    },
-}
-with open(path, "w", encoding="utf-8") as output:
-    json.dump(policy, output, separators=(",", ":"))
-    output.write("\n")
-PY
+  write_source_policy "$SOURCE_POLICY" "$source_repository"
   fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
@@ -626,6 +635,10 @@ elif [ "$COMPOSEFS" = yes ]; then
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  # The image's policy rejects what it does not name (its default is reject), and
+  # bootc checks the scratch registry's copy against it before installing.
+  SOURCE_POLICY="$OUTDIR/.source-policy.json"
+  write_source_policy "$SOURCE_POLICY" "$REG/$repo"
 elif ! root_podman image exists "$IMAGE" 2>/dev/null; then
   msg "transfer $IMAGE into root container storage"
   podman save "$IMAGE" | root_podman load

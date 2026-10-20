@@ -146,3 +146,10 @@ grep -Fxq -- '--enforce-container-sigpolicy' "$work/podman-argv"
 ! grep -Fq -- '/etc/containers/policy.json:ro' "$work/podman-argv"
 grep -Fxq 'insecure = false' "$work/direct-registries.conf"
 printf 'ok: sealed mirror scope retained; authoritative source keeps TLS and signature enforcement\n' 
+# The scratch registry the composefs path publishes a local image to is admitted
+# the same way: the image's own policy rejects it (default reject), and bootc
+# checks the source against it before installing.
+script="$repo/os/dev/disk-image.sh"
+grep -Fq 'write_source_policy "$SOURCE_POLICY" "$REG/$repo"' "$script"
+[ "$(grep -c 'write_source_policy "$SOURCE_POLICY"' "$script")" -eq 2 ]
+echo 'ok: the scratch registry install source is admitted for the install only'
