@@ -7,7 +7,8 @@
 //!
 //! No networking here — the toolkit stays HTTP-free, and a no-op fetcher
 //! keeps tests and hermetic offline builds deterministic. Decoding uses the
-//! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
+//! toolkit's decoders ([`crate::image_decoders`]); cloning a returned
+//! `ImageData` only bumps an `Arc`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -39,6 +40,9 @@ enum Slot {
     Ready(PenikoImage),
     /// Fetch or decode failed; won't retry.
     Failed,
+    /// Fetched before the decoders were in (they are fetched on first use
+    /// where the program defers them): loaded again once they are.
+    Undecoded,
 }
 
 struct SlotEntry {
@@ -98,7 +102,7 @@ fn slot_bytes(slot: &Slot) -> u64 {
         Slot::Ready(image) => u64::from(image.width)
             .saturating_mul(u64::from(image.height))
             .saturating_mul(4),
-        Slot::Loading(_) | Slot::Failed => 0,
+        Slot::Loading(_) | Slot::Failed | Slot::Undecoded => 0,
     }
 }
 
@@ -306,6 +310,14 @@ impl HostImageLoader {
         )
     }
 
+    /// Settle an exact reservation with a slot the toolkit decoded itself.
+    fn complete_slot(&mut self, ticket: &ImageCompletionTicket, slot: Slot) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(&ticket.url, &ticket.request, slot)
+    }
+
     /// Cancel one exact reservation. A late result or later ticket drop is inert.
     /// Closed-owner cleanup releases custody but returns `false` without publication.
     pub fn cancel(&mut self, ticket: &ImageCompletionTicket) -> bool {
@@ -465,17 +477,10 @@ impl NativeLoader {
             let this = Arc::clone(self);
             let job_url = ticket.url.clone();
             let spawned = self.background.spawn("ui-image", move || {
-                let decoded = (this.fetch)(&job_url).as_deref().and_then(|encoded| {
-                    tilo_image_codec::DecodeImage {
-                        encoded,
-                        max_dimension: ticket.max_dimension(),
-                    }
-                    .decode_native()
-                    .ok()
-                });
+                let slot = decoded_slot((this.fetch)(&job_url).as_deref(), ticket.max_dimension());
                 {
                     let mut state = this.state();
-                    state.loader.complete_decoded(&ticket, decoded);
+                    state.loader.complete_slot(&ticket, slot);
                     state.running = state.running.saturating_sub(1);
                 }
                 this.start_queued();
@@ -591,10 +596,14 @@ impl ImageStore {
         let last_used = slots.next_tick();
         if let Some(entry) = slots.slots.get_mut(url) {
             entry.last_used = last_used;
-            return match &entry.slot {
-                Slot::Ready(img) => Some(img.clone()),
-                _ => None,
-            };
+            match &entry.slot {
+                Slot::Ready(img) => return Some(img.clone()),
+                // The decoders arrived since: load it again, below.
+                Slot::Undecoded if crate::image_decoders::decoders_in() => {
+                    slots.slots.remove(url);
+                }
+                _ => return None,
+            }
         }
         if slots.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT && !evict_one_settled(&mut slots) {
             // Every slot is still loading. Avoid an unbounded work queue; a
@@ -724,17 +733,13 @@ fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension
 }
 
 fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
-    validated_slot(
-        bytes.and_then(|encoded| {
-            tilo_image_codec::DecodeImage {
-                encoded,
-                max_dimension,
-            }
-            .decode_native()
-            .ok()
-        }),
-        max_dimension,
-    )
+    let Some(encoded) = bytes else {
+        return Slot::Failed;
+    };
+    let Some(decoders) = crate::image_decoders::decoders() else {
+        return Slot::Undecoded;
+    };
+    validated_slot((decoders.bounded)(encoded, max_dimension), max_dimension)
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.

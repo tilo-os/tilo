@@ -3,7 +3,7 @@
 //! spelling dictionaries (the embedded English list and Hunspell), which
 //! the first text field that checks spelling asks for, the hyphenation
 //! patterns, which the first hyphenated paragraph asks for, and the image
-//! decoders, which the first web page image asks for.
+//! decoders, which the first web page image or decoded picture asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -37,7 +37,7 @@ unsafe extern "C" {
     #[link_name = "__wasm_split_load_page_images_90894fa21934d3a4_decoder"]
     fn load_page_images(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___page_images___00_import_90894fa21934d3a4_decoder"]
-    fn page_image_decoder() -> tilo_ui::webview::paint::MakePageImageDecoder;
+    fn image_decoders() -> tilo_ui::image_decoders::MakeImageDecoders;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -72,8 +72,8 @@ extern "C" fn export_hyphenation_patterns() -> tilo_ui::MakeHyphenation {
     improper_ctypes_definitions,
     reason = "the function pointer only passes between Rust"
 )]
-extern "C" fn export_page_image_decoder() -> tilo_ui::webview::paint::MakePageImageDecoder {
-    tilo_ui::webview::paint::builtin_page_image_decoder
+extern "C" fn export_image_decoders() -> tilo_ui::image_decoders::MakeImageDecoders {
+    tilo_ui::image_decoders::builtin_image_decoders
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -121,11 +121,11 @@ fn fetch_hyphenation() {
 fn fetch_page_images() {
     wasm_bindgen_futures::spawn_local(async {
         if crate::split::load(load_page_images).await {
-            // SAFETY: the module that defines `page_image_decoder` is loaded.
-            tilo_ui::webview::paint::install_page_image_decoder(unsafe { page_image_decoder() });
+            // SAFETY: the module that defines `image_decoders` is loaded.
+            tilo_ui::image_decoders::install_image_decoders(unsafe { image_decoders() });
             tilo_browser_runtime::refresh_mounts();
         } else {
-            tilo_ui::webview::paint::page_image_decoder_load_failed();
+            tilo_ui::image_decoders::image_decoders_load_failed();
         }
     });
 }
@@ -134,5 +134,5 @@ pub(crate) fn register() {
     tilo_search::defer_engine(fetch_search);
     spellcheck::defer_dictionaries(fetch_spelling);
     tilo_ui::defer_hyphenation(fetch_hyphenation);
-    tilo_ui::webview::paint::defer_page_image_decoder(fetch_page_images);
+    tilo_ui::image_decoders::defer_image_decoders(fetch_page_images);
 }

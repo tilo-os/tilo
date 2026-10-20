@@ -775,7 +775,7 @@ impl PageRenderer {
     /// the page's first frame arrives rather than after its first image.
     #[must_use]
     pub fn new() -> Self {
-        let _ = image_decoder::decoder();
+        let _ = crate::image_decoders::decoders();
         Self::default()
     }
 
@@ -1038,83 +1038,13 @@ impl PageRenderer {
         }
         // Not cached while the decoder is still to come: the page is drawn
         // again once it is in.
-        let decode = image_decoder::decoder()?;
+        let decoders = crate::image_decoders::decoders()?;
         let bytes = blobs.blob(hash)?;
-        let decoded = decode(&bytes);
+        let decoded = (decoders.page)(&bytes);
         self.images.insert(*hash, decoded.clone());
         decoded
     }
 }
-
-/// Decodes a page image's encoded bytes (PNG, JPEG, WebP) to RGBA.
-pub type DecodePageImage = fn(&[u8]) -> Option<ImageData>;
-
-/// Hands over the decoder's [`DecodePageImage`], for
-/// [`install_page_image_decoder`].
-pub type MakePageImageDecoder = fn() -> DecodePageImage;
-
-/// The `image` crate's decoders.
-#[must_use]
-pub fn builtin_page_image_decoder() -> DecodePageImage {
-    fn decode(bytes: &[u8]) -> Option<ImageData> {
-        let img = image::load_from_memory(bytes).ok()?.to_rgba8();
-        let (width, height) = img.dimensions();
-        Some(crate::raster::rgba8(img.into_raw(), width, height))
-    }
-    decode
-}
-
-#[cfg(not(feature = "lazy-image-decode"))]
-mod image_decoder {
-    use super::DecodePageImage;
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "the lazy-image-decode build has none until it is fetched"
-    )]
-    pub(super) fn decoder() -> Option<DecodePageImage> {
-        Some(super::builtin_page_image_decoder())
-    }
-}
-
-/// The decoder is fetched the first time a page draws an image: the program
-/// hands over a loader ([`defer_page_image_decoder`]) that fetches its code
-/// and passes back [`builtin_page_image_decoder`]
-/// ([`install_page_image_decoder`]). Until then images are left out and the
-/// program draws again once the decoder is in.
-#[cfg(feature = "lazy-image-decode")]
-mod image_decoder {
-    use super::{DecodePageImage, MakePageImageDecoder};
-    use crate::deferred::Deferred;
-
-    static DECODER: Deferred<DecodePageImage> = Deferred::new();
-
-    pub(super) fn decoder() -> Option<DecodePageImage> {
-        DECODER.get()
-    }
-
-    /// How the program fetches the decoder's code: `load` starts the fetch
-    /// and, once the code is in, calls [`install_page_image_decoder`] (or
-    /// [`page_image_decoder_load_failed`]).
-    pub fn defer_page_image_decoder(load: fn()) {
-        DECODER.defer(load);
-    }
-
-    /// The decoder's code is in: pages draw their images from now on.
-    pub fn install_page_image_decoder(make: MakePageImageDecoder) {
-        DECODER.install(make());
-    }
-
-    /// The fetch failed: the next page image fetches again.
-    pub fn page_image_decoder_load_failed() {
-        DECODER.load_failed();
-    }
-}
-
-#[cfg(feature = "lazy-image-decode")]
-pub use image_decoder::{
-    defer_page_image_decoder, install_page_image_decoder, page_image_decoder_load_failed,
-};
 
 fn draw_border(
     scene: &mut Scene,
@@ -1234,7 +1164,7 @@ mod tests {
 
         let hash = [7_u8; 32];
         let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
-        defer_page_image_decoder(load);
+        crate::image_decoders::defer_image_decoders(load);
         let mut renderer = PageRenderer::new();
         assert_eq!(
             LOADS.load(Ordering::SeqCst),
@@ -1243,7 +1173,9 @@ mod tests {
         );
         assert!(renderer.image(&blobs, &hash).is_none());
         assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
-        install_page_image_decoder(builtin_page_image_decoder);
+        crate::image_decoders::install_image_decoders(
+            crate::image_decoders::builtin_image_decoders,
+        );
         let image = renderer
             .image(&blobs, &hash)
             .expect("decoded once it is in");
