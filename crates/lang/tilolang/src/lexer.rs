@@ -118,9 +118,27 @@ pub fn lex_at(src: &str, base: usize) -> (Vec<Token>, Vec<Diagnostic>) {
         depth: 0,
         toks: Vec::new(),
         diags: Vec::new(),
+        comments: Vec::new(),
     };
     lx.run();
     (lx.toks, lx.diags)
+}
+
+/// The plain `//` comments of `src` (not `///` doc comments): what printing the canonical form
+/// would drop.
+pub fn plain_comments(src: &str) -> Vec<Span> {
+    let mut lx = Lexer {
+        src,
+        bytes: src.as_bytes(),
+        pos: 0,
+        base: 0,
+        depth: 0,
+        toks: Vec::new(),
+        diags: Vec::new(),
+        comments: Vec::new(),
+    };
+    lx.run();
+    lx.comments
 }
 
 /// Lexes a whole file.
@@ -137,6 +155,8 @@ struct Lexer<'a> {
     depth: usize,
     toks: Vec<Token>,
     diags: Vec<Diagnostic>,
+    /// Plain `//` comments, which the canonical form does not keep.
+    comments: Vec<Span>,
 }
 
 const fn is_ident_start(b: u8) -> bool {
@@ -238,6 +258,10 @@ impl Lexer<'_> {
         let doc = self.at(2) == Some(b'/') && self.at(3) != Some(b'/');
         while self.at(0).is_some_and(|b| b != b'\n') {
             self.pos += 1;
+        }
+        if !doc {
+            let span = self.span(start, self.pos);
+            self.comments.push(span);
         }
         if doc {
             let text = self.slice(start + 3, self.pos);

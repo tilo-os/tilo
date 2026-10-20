@@ -1,21 +1,29 @@
 //! The canonical printer: syntax tree to the one fixed text projection.
 
 use crate::ast::{
-    Block, Else, Expr, ExprKind, FieldDecl, Item, Module, Param, Stmt, StmtKind, StrPart, TypeExpr,
-    TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
+    AppHeader, Block, Else, Expr, ExprKind, FieldDecl, Item, Module, Param, Stmt, StmtKind,
+    StrPart, TypeExpr, TypeExprKind, UiCall, UiKind, UiStmt, UnOp,
 };
 
 /// Prints a module in canonical form.
 pub fn print_module(m: &Module) -> String {
+    print_file(Some(&m.app), &m.items)
+}
+
+/// Prints one file of a package in canonical form: the `app` header when the file has it, then
+/// its items, a blank line between items (consecutive `use`s stay together).
+pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
     let mut p = Printer {
         out: String::new(),
         level: 0,
     };
-    p.line(&format!("app {} {}", m.app.id, quote(&m.app.title)));
+    if let Some(app) = header {
+        p.line(&format!("app {} {}", app.id, quote(&app.title)));
+    }
     let mut prev_use = false;
-    for item in &m.items {
+    for (index, item) in items.iter().enumerate() {
         let is_use = matches!(item, Item::Use(_));
-        if !(is_use && prev_use) {
+        if !(is_use && prev_use) && (header.is_some() || index > 0) {
             p.out.push('\n');
         }
         prev_use = is_use;
