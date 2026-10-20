@@ -279,6 +279,19 @@ def channel_reader(session: Session) -> tuple[dict, str]:
     return wait_for(f"{session.name}: a channel of the Lounge's Chat to read", find)
 
 
+def reads_message(session: Session, channel: str, text: str) -> bool:
+    """Whether `session`'s Chat shows a message reading `text` in `channel`.
+    Messages live in the parts of Chat's message chain; the chat's
+    `read-room` reads a channel's latest messages from them (the channel's
+    `read-messages` reads only the chat record, which holds none)."""
+    for row in session.catalogue():
+        if (row.get("application") == CHAT and row.get("room") == session.room
+                and row.get("operation") == "read-room"):
+            room = session.invoke(row, {"channel": channel})
+            return room is not Stale and text in json.dumps(room or {})
+    return False
+
+
 def check_document(a: Session, b: Session):
     text = f"Hello from A at {time.strftime('%H.%M.%S')}"
     _, channel = channel_reader(a)
@@ -293,14 +306,7 @@ def check_document(a: Session, b: Session):
         ok(a.control, {"op": "type", "text": text + "\n"})
         how = "typed into Chat"
 
-    def read():
-        row, _ = channel_reader(b)
-        page = b.invoke(row, {"pageSize": 32})
-        if page is Stale:
-            return False
-        messages = ((page or {}).get("content") or {}).get("messages") or []
-        return any(m.get("text") == text for m in messages)
-    wait_for("A's message to be readable on B", read)
+    wait_for("A's message to be readable on B", lambda: reads_message(b, channel, text))
     print(f"ok document: B reads {text!r} ({how}) in channel {channel}")
 
 
@@ -354,15 +360,13 @@ def check_follow(a: Session, b: Session, a_on_b: dict):
     wait_for("B to follow A", lambda: (b.state()["chrome"].get("presence") or {}).get("following")
              == a_on_b["id"])
     wait_for(f"B's view at A's window (tab {where})", lambda: active_tab(b) == where)
-    # A goes to another window of the Lounge: the next one, or a new one.
-    others = [tab["id"] for strip in a.lounge().get("strips", [])
-              for group in strip.get("window_groups", []) for tab in group.get("tabs", [])
-              if tab["id"] != where]
-    if others:
-        a.shell_action("strip.focus-next")
-    else:
-        a.chat("open-workspace")
+    # A opens another Chat window: a window of the Lounge, which A is in.
+    a.invoke(a.action(lambda row: row.get("provider") == "applications"
+                      and row.get("id") == CHAT, "Chat to open", "Chat"))
     moved = wait_for("A in another window", lambda: (t := active_tab(a)) is not None and t != where and t)
+    # Where A is, is where A's pointer is: A moves it onto the new window.
+    x, y, w, h = wait_for(f"A's tab {moved} on screen", lambda: a.tiles().get(moved))
+    wiggle(a, x + w / 2, y + h / 2)
     try:
         wait_for(f"B's view to go with A to tab {moved}", lambda: active_tab(b) == moved, 30)
     finally:
@@ -437,8 +441,9 @@ def main() -> int:
             arrive(session)
         a_on_b = check_roster(a, b)
         for name, check in (("layout", check_layout), ("document", check_document),
-                            ("pointer", check_pointer),
-                            ("follow", check_follow), ("chat", check_cursor_chat)):
+                            ("pointer", check_pointer), ("chat", check_cursor_chat),
+                            # Last: it opens a second window of the Lounge.
+                            ("follow", check_follow)):
             try:
                 if name in ("layout", "document"):
                     check(a, b)
