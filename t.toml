@@ -2412,7 +2412,9 @@ memory_gib = "22"
 # project's image. The per-user runtime (`tilo-runtime`) is the Tilo host on stock macOS, and
 # every app that runs there (tools/ci/macos_apps.py reads the manifests) must keep building and
 # passing its tests there, which no Linux check observes. One Mac serves all of them: the runtime
-# is checked on every head of main, the SDK and the apps, which take it over an hour, nightly.
+# and the VM tool are checked on every head of main; the SDK and the apps, which take it over an
+# hour, on main's newest head whenever the Mac has room, so a break is bisected to its commit.
+# All four count for `stable`: a candidate that doesn't build and pass on the Mac doesn't ship.
 # None holds a secret.
 
 # The native UTM adapter belongs to the existing VM tool. Compile its macOS paths and
@@ -2429,7 +2431,7 @@ cargo test --locked -p tilo-vm --lib hypervisor::tests::
 """
 cargo_packages = ["tilo-vm"]
 cost = "minutes"
-on = ["main"]
+on = ["main", "stable"]
 default = false
 
 [[check]]
@@ -2440,7 +2442,7 @@ requirement = { cores = 4, memory = "12GiB" }
 run = "cargo check -p tilo-runtime --all-targets --locked"
 cargo_packages = ["tilo-runtime"]
 cost = "minutes"
-on = ["main"]
+on = ["main", "stable"]
 default = false
 
 # The generated template outside the repository taken from `new` to a signed macOS .tapp waiting
@@ -2486,7 +2488,7 @@ git = true
 # It may commit the tree into a repository of its own (above).
 writable_sources = true
 cost = "heavy"
-on = ["schedule:17 1 * * *"]
+on = ["stable", "dispatch", "idle"]
 default = false
 
 [[check]]
@@ -2511,7 +2513,7 @@ exit $status
 """
 inputs = ["apps/**", "crates/**", "vendor/**", "tools/ci/macos_apps.py", "tools/font-catalog.py", ".config/nextest.toml", "Cargo.toml", "Cargo.lock"]
 cost = "heavy"
-on = ["schedule:17 1 * * *"]
+on = ["stable", "dispatch", "idle"]
 default = false
 
 # ---------------------------------------------------------------------------

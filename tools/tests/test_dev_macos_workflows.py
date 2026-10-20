@@ -33,14 +33,19 @@ class DevMacosCheckTests(unittest.TestCase):
                 self.assertIn("TILO_FONT_ASSETS_OFFLINE=1", CHECKS[name]["run"])
 
     def test_runtime_check_follows_main(self) -> None:
-        self.assertEqual(CHECKS["runtime-macos"]["on"], ["main"])
+        self.assertEqual(CHECKS["runtime-macos"]["on"], ["main", "stable"])
 
-    def test_whole_app_build_is_scheduled_not_per_change(self) -> None:
+    def test_whole_app_build_runs_when_the_mac_is_free_not_per_change(self) -> None:
         for name in ("sdk-macos", "apps-macos"):
             with self.subTest(name):
                 on = CHECKS[name]["on"]
-                self.assertEqual(len(on), 1)
-                self.assertTrue(on[0].startswith("schedule:"))
+                self.assertIn("idle", on)
+                self.assertNotIn("main", on)
+
+    def test_stable_needs_every_mac_check(self) -> None:
+        for name in (*MACOS, "vm-macos"):
+            with self.subTest(name):
+                self.assertIn("stable", CHECKS[name]["on"])
 
 
 class MacosAppsTests(unittest.TestCase):
