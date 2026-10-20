@@ -36,6 +36,18 @@ pub fn is_regular_file(path: &std::path::Path) -> std::io::Result<bool> {
     std::fs::symlink_metadata(path).map(|metadata| metadata.is_file())
 }
 
+/// The names of the entries directly in the native directory `dir`, in no
+/// particular order.
+///
+/// # Errors
+/// Preserves the native filesystem's error, including a missing directory
+/// or denied access; an entry that cannot be read is an error too.
+pub fn entry_names(dir: &std::path::Path) -> std::io::Result<Vec<std::ffi::OsString>> {
+    std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect()
+}
+
 /// Create the parents of a native path shared with another program.
 /// Unlike private-directory provisioning this retains existing modes and
 /// the standard recursive creation contract.
