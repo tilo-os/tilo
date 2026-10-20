@@ -4,7 +4,7 @@ Contract: settled normal Network pane, wide visible sidebar, empty initial
 search. Warmup may focus by clicking the actual field or hover it. All edits
 alternate 'z'/Backspace. Results below are a fixed fixture contract sourced from
 crates/system/settings-store/src/index.rs and its Fluent catalogues, through
-apps/settings/src/sidebar.rs and NavList's word-start search.
+apps/settings-core/src/sidebar.rs and NavList's word-start search.
 Changing the catalogue requires explicitly reviewing this contract.
 """
 import json

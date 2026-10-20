@@ -44,6 +44,23 @@ use crate::widgets::{
     note, row, rows, setting_row, setting_row_described, value_row,
 };
 
+crate::effects::effect_family!(NetworkEffect => answer);
+
+crate::area::pane_area! {
+    NetworkArea;
+    fn poll(&self) {
+        NetworkArea::poll(self);
+    }
+    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        NetworkArea::statuses(self)
+    }
+}
+
+/// The window's [`NetworkArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
+    app.areas().find()
+}
+
 // Ask the authenticated host: this app intentionally has an isolated network
 // namespace and cannot inspect the host's nl80211 interface by spawning iw.
 fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
@@ -292,18 +309,29 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     if effect == NetworkEffect::InspectNetworkState {
-        return app.network().inspection().map(Effected::value);
+        return crate::panes::network::area(app)
+            .ok_or_else(crate::area::missing)?
+            .inspection()
+            .map(Effected::value);
     }
     if effect == NetworkEffect::RefreshNetworks {
         // A dongle plugged in a moment ago is seen without waiting.
         app.host().radios().look_again();
     }
-    let begun = app.network().model().borrow_mut().begin(effect)?;
+    let begun = crate::panes::network::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model()
+        .borrow_mut()
+        .begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
         Begun::Work(work) => {
             crate::device_read::job(cx, work, |app: &mut SettingsApp, landed: Landed, _| {
-                app.network().model().borrow_mut().land(landed)
+                crate::panes::network::area(app)
+                    .ok_or_else(crate::area::missing)?
+                    .model()
+                    .borrow_mut()
+                    .land(landed)
             })
         }
     })
@@ -1147,7 +1175,7 @@ impl NetworkArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.model.get().is_some()
     }
@@ -4140,7 +4168,10 @@ mod tests {
         observed: NetworkModel,
     ) -> Option<()> {
         app.with_surface::<SettingsApp, _>(|settings| {
-            *settings.network().model().borrow_mut() = observed;
+            *crate::panes::network::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut() = observed;
         })
     }
 
@@ -4172,7 +4203,9 @@ mod tests {
         let row_ids = app
             .surface::<SettingsApp, _>(|settings| {
                 settings
-                    .network()
+                    .areas()
+                    .find::<crate::panes::network::NetworkArea>()
+                    .unwrap()
                     .rows()
                     .into_iter()
                     .map(|row| row.id().to_owned())

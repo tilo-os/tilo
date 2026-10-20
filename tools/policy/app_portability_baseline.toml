@@ -114,8 +114,8 @@ D1 = 1
 D2 = 3
 
 [apps.settings]
-D1 = 4
-D2 = 18
+D1 = 3
+D2 = 13
 
 [apps.sheets]
 D2 = 3

@@ -41,6 +41,8 @@ use crate::widgets::{Item, SettingsSection, block, note, rows, section, value_ro
 mod theme_tiles;
 use theme_tiles::ThemeTiles;
 
+crate::effects::effect_family!(AppearanceEffect => answer);
+
 /// The shape of the wallpaper thumbnails: the laptop panel's 16:10.
 const WALLPAPER_ASPECT: f64 = 16.0 / 10.0;
 
@@ -77,15 +79,7 @@ fn values(table: &[(&str, &str)]) -> impl Iterator<Item = String> {
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
-/// `(label, persisted value)` of which workspaces a new wallpaper covers.
-pub const WALLPAPER_SCOPES: [(&str, &str); 2] =
-    [("This workspace", "workspace"), ("Every workspace", "all")];
-/// `(label, persisted value)` of where a new wallpaper shows.
-pub const WALLPAPER_TARGETS: [(&str, &str); 3] = [
-    ("Desktop", "background"),
-    ("Lock screen", "lockscreen"),
-    ("Desktop and lock screen", "both"),
-];
+pub use crate::prefs::{WALLPAPER_SCOPES, WALLPAPER_TARGETS};
 /// The offered custom sunrise and sunset times.
 pub const TIMES: [&str; 48] = [
     "00:00", "00:30", "01:00", "01:30", "02:00", "02:30", "03:00", "03:30", "04:00", "04:30",
@@ -1001,8 +995,14 @@ mod tests {
     #[test]
     fn every_shipped_wallpaper_has_a_name_in_every_language() {
         for (locale, text) in [
-            ("en-US", include_str!("../../locales/en-US.ftl")),
-            ("de-DE", include_str!("../../locales/de-DE.ftl")),
+            (
+                "en-US",
+                include_str!("../../../settings-core/locales/en-US.ftl"),
+            ),
+            (
+                "de-DE",
+                include_str!("../../../settings-core/locales/de-DE.ftl"),
+            ),
         ] {
             for wallpaper in tilo_wallpapers::all() {
                 let key = format!("settings-wallpaper-{} = ", wallpaper.id);

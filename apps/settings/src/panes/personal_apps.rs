@@ -23,6 +23,15 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{note, rows, section, setting_row, setting_row_described, untitled};
 
+crate::effects::effect_family!(DefaultAppsEffect => answer);
+
+crate::area::pane_area!(DefaultAppsArea);
+
+/// The window's [`DefaultAppsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DefaultAppsArea> {
+    app.areas().find()
+}
+
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
 /// The most apps one kind lists.
@@ -101,7 +110,7 @@ pub(crate) fn answer(
     };
     let resource =
         parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
-    let area = app.default_apps();
+    let area = crate::panes::personal_apps::area(app).ok_or_else(crate::area::missing)?;
     let resolver = DefaultAppResolver::new(area.candidates());
     PersonalDefaults::default()
         .set(resource, package.clone(), &resolver)
@@ -191,7 +200,7 @@ impl DefaultAppsArea {
 
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
-    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    /// its first frame ([`crate::panes::LIVE_AREAS`]).
     pub(crate) fn is_open(&self) -> bool {
         self.candidates.get().is_some()
     }

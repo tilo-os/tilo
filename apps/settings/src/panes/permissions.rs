@@ -39,6 +39,15 @@ use crate::host::PaneCx;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
+crate::effects::effect_family!(PermissionsEffect => answer);
+
+crate::area::pane_area!(PermissionsArea);
+
+/// The window's [`PermissionsArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> {
+    app.areas().find()
+}
+
 /// Where Privacy & Security sends the person to change what it reports.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
@@ -77,17 +86,11 @@ pub(crate) fn answer(
     match effect {
         PermissionsEffect::SetSecretsAccess { app: id, allowed } => {
             let verb = if allowed { "allow" } else { "revoke" };
-            Ok(secret_command(
-                app,
-                cx,
-                vec!["apps".into(), verb.into(), id],
-            ))
+            secret_command(app, cx, vec!["apps".into(), verb.into(), id])
         }
-        PermissionsEffect::ForgetSecrets { app: id } => Ok(secret_command(
-            app,
-            cx,
-            vec!["apps".into(), "forget".into(), id],
-        )),
+        PermissionsEffect::ForgetSecrets { app: id } => {
+            secret_command(app, cx, vec!["apps".into(), "forget".into(), id])
+        }
         PermissionsEffect::OpenWorkspacePrivacy => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
@@ -117,16 +120,23 @@ fn secret_command(
     app: &SettingsApp,
     cx: &mut EffectCx<Settings, SettingsApp>,
     args: Vec<String>,
-) -> Effected {
-    let reader = Arc::clone(&app.permissions().reader);
-    crate::device_read::job(
+) -> EffectAnswer {
+    let reader = Arc::clone(
+        &crate::panes::permissions::area(app)
+            .ok_or_else(crate::area::missing)?
+            .reader,
+    );
+    Ok(crate::device_read::job(
         cx,
         move || reader.secret_command(&args),
         |app: &mut SettingsApp, done: Result<(), String>, _| {
-            app.permissions().reading.refresh();
+            crate::panes::permissions::area(app)
+                .ok_or_else(crate::area::missing)?
+                .reading
+                .refresh();
             done.map(|()| Effected::done())
         },
-    )
+    ))
 }
 
 /// What Privacy & Security reads of the device and the secret store. Every
@@ -1179,7 +1189,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let stalled = Arc::clone(&gate);
         app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.set_permissions(PermissionsArea::over(Arc::new(StalledReader(stalled))));
+            settings.replace_area(PermissionsArea::over(Arc::new(StalledReader(stalled))));
         })
         .expect("the Settings window is mounted");
         // Tall enough that every card of the pane is laid out and inspected.

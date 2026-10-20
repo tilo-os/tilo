@@ -44,6 +44,46 @@ use crate::widgets::{
     Item, caption, error_caption, field_row, rows, section, setting_row, setting_row_described,
 };
 
+crate::effects::effect_family!(InputEffect => answer);
+
+crate::area::pane_area! {
+    InputArea;
+    fn warm(&self) {
+        self.prefetch_catalog();
+    }
+    fn partial(&self) -> bool {
+        self.catalog_pending()
+    }
+}
+
+/// The Keyboard, Pointing or Spelling page, as `category` asks.
+pub(crate) fn build(
+    app: &crate::settings_app::SettingsApp,
+    category: crate::categories::Category,
+) -> Box<dyn Widget> {
+    use crate::categories::Category;
+    let Some(input) = area(app) else {
+        return crate::widgets::page(Vec::new());
+    };
+    let map_input = app.keyboard_map_input();
+    let map_cache = std::rc::Rc::clone(&input.map_cache);
+    Box::new(
+        MouseKeyboardPane::new(app.host().clone(), input)
+            .with_page(match category {
+                Category::Pointing => InputPage::Pointing,
+                Category::Spelling => InputPage::Spelling,
+                _ => InputPage::Keyboard,
+            })
+            .with_map_input(map_input)
+            .with_map_cache(map_cache),
+    )
+}
+
+/// The window's [`InputArea`].
+pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&InputArea> {
+    app.areas().find()
+}
+
 /// The compose-key choice that turns it off.
 const COMPOSE_DISABLED: &str = "disabled";
 /// The Caps Lock choice that keeps it Caps Lock.
@@ -1306,7 +1346,11 @@ pub(crate) fn answer(
     let settings = host.settings::<InputPrefs>();
     let mut input = settings.get();
     input.normalise_keyboard_sources();
-    keyboard_editor::apply_scoped(&mut input, effect, app.input())?;
+    keyboard_editor::apply_scoped(
+        &mut input,
+        effect,
+        crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?,
+    )?;
     input.normalise_keyboard_sources();
     settings
         .set(&input)
@@ -1346,7 +1390,7 @@ fn inspect_input_sources(
     }
     let query = query.to_lowercase();
     let prefs = app.host().settings::<InputPrefs>().get();
-    let area = app.input();
+    let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
     let matches: Vec<_> = area
         .catalog()
         .iter()
@@ -1390,6 +1434,8 @@ pub struct InputArea {
     editor: ui::LocalState<keyboard_editor::EditorState>,
     osk_always: bool,
     document: ui::storage::SettingsDocument,
+    /// The keyboard drawing last compiled, kept across rebuilds of the page.
+    map_cache: KeyboardPreviewCacheHandle,
 }
 
 impl InputArea {
@@ -1423,6 +1469,7 @@ impl InputArea {
                 .get()
                 .on_screen_keyboard
                 == tilo_accessibility_settings::OnScreenKeyboard::Always,
+            map_cache: std::rc::Rc::default(),
         }
     }
 
@@ -2797,7 +2844,7 @@ mod tests {
             reader.snapshot().unwrap().hints("en").collect::<Vec<_>>(),
             ["Tilo"]
         );
-        app.effect(&SettingsEffect::Input(InputEffect::EditDictionaryWord {
+        app.effect(&SettingsEffect::from(InputEffect::EditDictionaryWord {
             old_word: "Tilo".into(),
             old_language: String::new(),
             word: "TiLo".into(),
@@ -2824,7 +2871,7 @@ mod tests {
         host.flush().unwrap();
         app.settle();
         assert!(reader.snapshot().unwrap().words.is_empty());
-        app.effect(&SettingsEffect::Input(InputEffect::AddDictionaryWord {
+        app.effect(&SettingsEffect::from(InputEffect::AddDictionaryWord {
             word: "Élodie".into(),
             language: "fr".into(),
             revision: 3,
@@ -2911,7 +2958,9 @@ mod tests {
         tilo_test_env::wait_until("the device's layouts are read", || {
             app.settle();
             app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| {
-                !settings.input().catalog_pending()
+                !crate::panes::mouse_keyboard::area(settings)
+                    .unwrap()
+                    .catalog_pending()
             }) == Some(true)
         });
         for _ in 0..5 {
@@ -3058,6 +3107,7 @@ mod tests {
             }),
             osk_always: false,
             document: cx.storage().settings_document().clone(),
+            map_cache: std::rc::Rc::default(),
         };
         MouseKeyboardPane::new(cx, &area)
     }
@@ -3116,6 +3166,7 @@ mod tests {
             editor: ui::LocalState::new(keyboard_editor::EditorState::default()),
             osk_always: false,
             document: pane.cx.storage().settings_document().clone(),
+            map_cache: std::rc::Rc::default(),
         };
         let watch = area.follow().expect("a live area follows its devices");
         assert!(watch.is_complete());

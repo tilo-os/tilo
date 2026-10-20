@@ -692,7 +692,11 @@ mod tests {
         )
         .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = devices();
+            crate::panes::display::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = devices();
         });
         app.settle();
         let address = "settings.shared-display:offline-peer:edid:panel-1";
@@ -742,12 +746,23 @@ mod tests {
         observed[0].online = true;
         observed[0].outputs[0].enabled = false;
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = observed;
+            settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = observed;
         });
         app.settle();
         let mut captions = Vec::new();
         app.surface::<SettingsApp, _>(|settings| {
-            let model = settings.displays().model().borrow();
+            let model = settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow();
             let card = model.build_shared_displays_card().unwrap().into_section();
             names(&card, &mut captions);
         });
@@ -769,7 +784,15 @@ mod tests {
         assert!(!offered(&mut app, "order-shared-display"));
 
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices[0].outputs[0].enabled = true;
+            settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices[0]
+                .outputs[0]
+                .enabled = true;
         });
         app.settle();
         assert!(offered(&mut app, "order-shared-display"));
@@ -874,7 +897,11 @@ mod tests {
         )
         .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = devices();
+            crate::panes::display::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = devices();
         });
         app.settle();
         let before = app
@@ -917,7 +944,9 @@ mod tests {
         assert_eq!(after["automatic_input"], true);
         app.surface::<SettingsApp, _>(|settings| {
             let privacy = settings
-                .displays()
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
                 .model()
                 .borrow()
                 .cx

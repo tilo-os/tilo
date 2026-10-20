@@ -9,7 +9,7 @@ glyph-icon 1 apps/diffmerge/src/doc.rs
 glyph-icon 3 apps/file-explorer/src/files_app.rs
 glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
-glyph-icon 2 apps/settings/src/panes/updates.rs
+glyph-icon 2 apps/settings-rare/src/panes/updates.rs
 glyph-icon 1 apps/terminal/src/target_ui.rs
 glyph-icon 1 apps/video-editor/src/app.rs
 glyph-icon 7 apps/vpn/src/app.rs
