@@ -61,6 +61,8 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
         scope.read_all(&untouched.to_hex()).unwrap(),
         ReadOutcome::Unavailable
     );
+    drop(host);
+    drop(session);
 }
 
 fn request(room: &str, hash: &str) -> InvokeRequest {
@@ -91,6 +93,16 @@ fn finish(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Result<InvocationState, ActionHostError> {
+    admission(host, caller, request).expect("workspace admission must not be abandoned")?;
+    Ok(wait_for_terminal(host, caller, request.invocation))
+}
+
+/// The host's answer to the request, or `None` if it abandoned it.
+fn admission(
+    host: &RuntimeActionHost,
+    caller: &Caller,
+    request: &InvokeRequest,
+) -> Option<Result<InvocationReceipt, ActionHostError>> {
     let runtime = tilo_rt::try_app().unwrap();
     let _entered = runtime.handle().enter();
     host.invoke(caller, request.clone())
@@ -98,8 +110,6 @@ fn finish(
             tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now()),
         )
         .unwrap_or_else(|_| panic!("workspace admission must finish"))
-        .expect("workspace admission must not be abandoned")?;
-    Ok(wait_for_terminal(host, caller, request.invocation))
 }
 
 fn wait_for_terminal(

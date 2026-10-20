@@ -82,15 +82,17 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     if crate::standalone::tests::isolated_signing_identity("standalone::joined::admission_tests::admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retired_run").is_none() {
         return;
     }
-    let (joined, _directory) = Joined::test_empty().await;
+    let (joined, directory) = Joined::test_empty().await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
         tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
     let mut workspace = TestWorkspace::new(TestWorkspaceId(42), "Runtime doors");
     workspace.set_owner(actor.clone());
     let room = workspace.room.to_string();
-    let mut tree = WorkspaceTree::default();
-    tree.persist_path = Some(_directory.path().join("workspace.json"));
+    let mut tree = WorkspaceTree {
+        persist_path: Some(directory.path().join("workspace.json")),
+        ..WorkspaceTree::default()
+    };
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let origin = OwnerPolicyClock::new().unwrap().new_origin();

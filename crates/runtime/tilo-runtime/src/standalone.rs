@@ -346,9 +346,10 @@ impl AdmittedRuntimeSession {
     /// The run's caller as the broker admits it: the agent, for the person.
     fn acting(&self) -> Caller {
         let caller = self.admission.caller().clone();
-        self.agent
-            .as_ref()
-            .map_or(caller.clone(), |agent| caller.delegated_to(agent.clone()))
+        match &self.agent {
+            Some(agent) => caller.delegated_to(agent.clone()),
+            None => caller,
+        }
     }
 
     fn check(&self, caller: &Caller, joined: &Joined) -> Result<(), ActionHostError> {
@@ -358,7 +359,11 @@ impl AdmittedRuntimeSession {
             .map_err(|_| ActionHostError::NotPermitted)?;
         tilo_user_identity::verify_device_cert_at(self.admission.certificate(), now)
             .map_err(|_| ActionHostError::NotPermitted)?;
-        if caller != self.projection.as_ref().unwrap_or(self.admission.caller())
+        if caller
+            != self
+                .projection
+                .as_ref()
+                .unwrap_or_else(|| self.admission.caller())
             || self.admission.check(joined).is_err()
         {
             return Err(ActionHostError::NotPermitted);
@@ -456,7 +461,7 @@ impl ActionHost for RuntimeActionHost {
                 == session
                     .projection
                     .as_ref()
-                    .unwrap_or(session.admission.caller())
+                    .unwrap_or_else(|| session.admission.caller())
             {
                 self.broker
                     .state()

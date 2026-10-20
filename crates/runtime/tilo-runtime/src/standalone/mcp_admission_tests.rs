@@ -55,6 +55,7 @@ async fn an_execution_ending_after_the_snapshot_does_not_refuse_the_room() {
         fixture.ended.check(&fixture.joined).is_err(),
         "the ended execution stays refused"
     );
+    drop(fixture);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -74,4 +75,5 @@ async fn an_execution_ending_after_the_snapshot_cannot_hide_changed_custody() {
         !fixture.ended.caller().execution_is_live(),
         "restoring the certificate does not revive the ended run"
     );
+    drop(fixture);
 }
