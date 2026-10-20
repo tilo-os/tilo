@@ -39,6 +39,13 @@ python3 tools/dev/install-git-hooks.py
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.
+- **Heavy checks on `main`.** The heavy checks that matter for `main`'s health (the SDK builds,
+  the web and Android builds, the goldens, FUSE, render counters, examples: `on = [..., "idle"]`
+  in `t.toml`) run on `main`'s newest head whenever t has room left after the default checks and
+  everyone's own runs, at a priority that never delays either. Each commit's key is recorded, so
+  when one fails t bisects it to the commit that broke it and tells that commit's session, as for
+  a default check; `t main` and the notice mark it as heavy. The per-app size checks aren't among
+  them (there are too many): their aggregate runs on `stable`.
 - **`stable`** is the release branch. The stabilizer (usually an agent) picks a recent `main`
   commit and runs the heavy checks there too (images, VM and FUSE suites, size budgets, the goldens:
   `on = ["stable"]` in `t.toml`). For each failure it commits a fix (brought back to `main`) or an
@@ -61,13 +68,15 @@ merged manifests require is added, and no locked version moves.
 t test <check|package|family|glob>      # exactly that, on your working tree
 t test test/tilo-fs --test parser::empty   # one test
 t test                                  # what failed for you last time
-t suggest                               # what your change reaches, with estimates
+t suggest                               # what your change reaches, and the heavy checks it touches
 t fix                                   # apply the `fix` of what fails (fmt, hakari, lockfile, …)
 ```
 
 Test what you changed before pushing: the packages you touched (`t test clippy/<package>
-test/<package>`) and anything heavy your change reaches. Heavy checks run only when named: `t test
-<check>`, as `t suggest` proposes them. Results nobody's change could have affected come back at
+test/<package>`) and anything heavy your change reaches. Heavy checks run for you only when named:
+`t suggest` lists those your change touches (their key differs from your base commit's), with the
+`t test <check>` that runs each. Skip one and `main` still runs it when it has room, and tells you
+if your commit broke it. Results nobody's change could have affected come back at
 once from the cache.
 
 Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also
@@ -105,8 +114,9 @@ inputs = ["docs/codemap.md", "tools/docs/codemap.py", "**/Cargo.toml"]
 `inputs` are the files the result depends on: a change to any of them runs the check again,
 and nothing else does. List too few and a stale result is reused; list too many and it reruns
 for nothing. `default = false` keeps a check out of `all` and out of `main`'s CI: it runs when named, or where
-its `on` says (`on = ["stable"]`, `on = ["schedule:…"]`). Image builds, VM end-to-end tests and
-long suites are declared this way.
+its `on` says (`on = ["stable"]`, `on = ["schedule:…"]`, or `on = ["idle"]`: `main`'s newest
+head when t has room, bisected and attributed when it fails). Image builds, VM end-to-end tests
+and long suites are declared this way.
 
 The cargo families (`test/<package>`, `clippy/<package>`, `check/<package>`) need no globs for
 Rust code: t derives what each package reads from the manifests and `Cargo.lock`, the way cargo
