@@ -1754,6 +1754,10 @@ mod tests {
             std::path::PathBuf::from,
         );
         std::fs::create_dir_all(&out).expect("capture output");
+        #[allow(
+            clippy::useless_vec,
+            reason = "the themes are too large to sit on the stack as an array"
+        )]
         for (name, theme, width, height) in vec![
             ("dark", Theme::dark(), 960_u32, 540_u32),
             ("light", Theme::light(), 960, 540),

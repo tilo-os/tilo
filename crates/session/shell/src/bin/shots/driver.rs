@@ -222,7 +222,7 @@ impl ShellDriver {
             .filter(|(w, h)| *w > 0 && *h > 0)
             .unwrap_or((800, 600));
         // Connection ids the shots never give a real client.
-        let connection = 0x5107_0000 + self.own_process.len() as u64;
+        let connection = 0x5107_0000_u64.saturating_add(self.own_process.len() as u64);
         let app = crate::own_process::OwnProcessApp::new(
             app,
             app_id,

@@ -80,6 +80,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("provide output directory")?;
     let out = Path::new(&directory);
     std::fs::create_dir_all(out)?;
+    #[allow(
+        clippy::useless_vec,
+        reason = "seven themes are too large to sit on the stack as an array"
+    )]
     for (name, width, height, theme) in vec![
         ("dark", 800, 700, Theme::dark()),
         ("light", 800, 700, Theme::light()),

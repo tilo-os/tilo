@@ -574,7 +574,11 @@ fn a_paused_step_resumes_through_the_window_that_publishes_it_now() {
     );
     let arguments = serde_json::Map::from_iter([("text".to_owned(), Value::from("Kind regards"))]);
     let descriptor = drafted(&mut f);
-    let hex: String = DOC.bytes().map(|byte| format!("{byte:02x}")).collect();
+    let hex = DOC.bytes().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
     f.run.paused = Some(runtime_collab::TaskRunPausedStep {
         app: "so.tilo.word-processor".into(),
         resource: format!(

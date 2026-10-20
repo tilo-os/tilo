@@ -321,6 +321,10 @@ where
 
 /// How a test's bridge is set up.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent way a test's server and room start"
+)]
 struct Setup {
     /// Bridge only this Discord channel.
     only: Option<&'static str>,
@@ -1175,7 +1179,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
 /// `#chat` and `#voice` a room opens with.
 fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
-    for channel in chat.channels.ids().cloned().collect::<Vec<_>>() {
+    for channel in chat.channels.ids().cloned() {
         chat::demo::apply_as(
             doc,
             owner,
@@ -1183,7 +1187,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         )
         .map_err(|error| error.to_string())?;
     }
-    for category in chat.categories.ids().cloned().collect::<Vec<_>>() {
+    for category in chat.categories.ids().cloned() {
         chat::demo::apply_as(
             doc,
             owner,
