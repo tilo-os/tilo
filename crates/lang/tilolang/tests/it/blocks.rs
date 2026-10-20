@@ -62,3 +62,14 @@ fn the_block_module_is_authored_as_an_agent_block() {
     let b = tilolang::compile_block_for("run1", "1", &[]).expect("compiles");
     assert_eq!(b.meta.app, "agent.block.run1");
 }
+
+#[test]
+fn a_reference_to_a_nested_resource_is_written_with_its_steps() {
+    let b = block("todo.toggle(@todo.Todo:d1-1/f3a:i1-5)").expect("compiles");
+    validate(&b.wasm);
+    assert_eq!(b.kind, BlockKind::Action);
+    assert!(
+        b.wasm.windows(13).any(|w| w == "d1-1/f3a:i1-5".as_bytes()),
+        "the whole id reaches the module's strings"
+    );
+}

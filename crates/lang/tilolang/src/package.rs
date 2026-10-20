@@ -287,7 +287,8 @@ pub fn compile_block_for(
         app: app.clone(),
         ..Env::default()
     };
-    for m in visible {
+    env.add_import("host", &crate::host::host_meta());
+    for m in visible.iter().filter(|m| m.app != crate::host::HOST_APP) {
         let alias = default_alias(&m.app);
         let alias = if env.imports.iter().any(|i| i.alias == alias) {
             m.app.clone()

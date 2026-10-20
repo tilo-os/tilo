@@ -259,10 +259,36 @@ impl Checker<'_> {
                 pos += 1;
             }
         }
+        if p.name == "embed" {
+            self.embed_complete(c, args);
+        }
         if let Some(block) = &c.block {
             self.ui_stmts(block, n);
         }
         n
+    }
+
+    /// `embed` renders a block with its author as the code author, so both are required.
+    fn embed_complete(&mut self, c: &UiCall, args: &[ast::Arg]) {
+        let named = |want: &str| {
+            args.iter()
+                .any(|a| a.name.as_ref().is_some_and(|n| n.name == want))
+        };
+        let unnamed = args.iter().filter(|a| a.name.is_none()).count();
+        if !named("source") && unnamed == 0 {
+            self.err(
+                "E022",
+                c.call.span,
+                "`embed` needs the block's source: `embed(source, author: who)`",
+            );
+        }
+        if !named("author") {
+            self.err(
+                "E022",
+                c.call.span,
+                "`embed` needs the code author of the block, a Principal: `embed(source, author: who)`",
+            );
+        }
     }
 
     /// Whether an unnamed argument is a bare flag: `truncate`, `fill`, `fill(2)`, or one of
@@ -388,6 +414,19 @@ impl Checker<'_> {
                 ),
             );
             let _ = self.expr(&a.value, None);
+            return;
+        }
+        if p.name == "embed" && matches!(name.as_str(), "source" | "author" | "invocation") {
+            let want = match name.as_str() {
+                "source" => Ty::Text,
+                "author" => Ty::Principal,
+                _ => Ty::Option(Box::new(Ty::Record(crate::types::TypeKey {
+                    app: crate::host::HOST_APP.to_string(),
+                    name: "Invocation".to_string(),
+                }))),
+            };
+            let v = self.expr_as(&a.value, &want);
+            self.prop(Ex::local(n, Ty::View), &name, v, a.value.span);
             return;
         }
         self.apply_arg(n, &name, &a.value);

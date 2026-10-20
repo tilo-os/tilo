@@ -17,6 +17,8 @@ pub enum RuntimeError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Engine(#[from] CallError),
+    #[error("denied: {0}")]
+    Denied(String),
     #[error("no suggestion is pending for run {0}")]
     NotPending(String),
 }

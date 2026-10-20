@@ -298,10 +298,22 @@ pub fn resolve(
         diags,
         own_types: HashSet::new(),
     };
+    r.env.add_import("host", &crate::host::host_meta());
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
     r.env
+}
+
+fn mentions_principal(ty: &Ty) -> bool {
+    match ty {
+        Ty::Principal => true,
+        Ty::List(t) | Ty::Set(t) | Ty::Map(t) | Ty::Collection(t) | Ty::Option(t) => {
+            mentions_principal(t)
+        }
+        Ty::Tuple(ts) => ts.iter().any(mentions_principal),
+        _ => false,
+    }
 }
 
 fn id_of(lock: &IdsLock, name: &str) -> String {
@@ -568,6 +580,7 @@ impl Resolver<'_> {
                 "Float" => return Ty::Float,
                 "Bool" => return Ty::Bool,
                 "Text" => return Ty::Text,
+                "Principal" => return Ty::Principal,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
                 name if self.own_types.contains(name) => {
@@ -585,7 +598,7 @@ impl Resolver<'_> {
             } else {
                 known.join(", ")
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Action, View and {known}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Principal, Action, View and {known}"));
             return Ty::Error;
         }
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
@@ -682,6 +695,11 @@ impl Resolver<'_> {
                 );
             }
             let params = self.params(params);
+            if matches!(kind, CKind::Action | CKind::Flow)
+                && params.iter().any(|p| mentions_principal(&p.ty))
+            {
+                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; actions and flows are what callers invoke, and a caller could pass anyone. Read `invoker` inside the action instead", kind.word(), name.name));
+            }
             let result = match (kind, result) {
                 (CKind::View, _) => Ty::View,
                 (_, Some(t)) => self.resolve_type(t, false),

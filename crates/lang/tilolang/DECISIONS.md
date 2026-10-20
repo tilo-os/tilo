@@ -40,6 +40,34 @@ departs from them. The runtime agent should mirror the ABI additions.
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `column` stays as an older name of `stack`. `;` separates statements on one line.
+- **`embed(source, author: p, invocation: i)`** (implementation.md 7.8) is a UI primitive:
+  `source` is `Text`, `author` a `Principal` and `invocation` an
+  `Option<host.Invocation>`. `source` and `author` are required (E022; E020 for a wrong
+  type). It emits `ui_node("embed", key)` with props `source`, `author` and `invocation`.
+  The host fills in the node's children (see the runtime's DECISIONS).
+- **`Principal`** (spec deviation, replaces "model the principal as a Text id"): a type whose
+  values come only from the host. It can be a field (register), a `fn` or view parameter, and
+  compared with `==`; `.name()` and string interpolation give its id as `Text`. There is no
+  constructor and no conversion from `Text`. Actions and flows may not take one as a
+  parameter (E048): they are what callers invoke, and a caller could pass anyone.
+- **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
+  running invocation: for a person's press, that person; for a call through the door, the
+  caller; for an approved suggestion, the principal who first invoked it.
+- **`run_block(part, source)`** (actions only, E047 elsewhere): queues a host step that runs
+  after the action commits. `part` must be one of the module's own records with a field
+  `invocation: Option<host.Invocation>` (E020, E045). The host evaluates `source` as a block
+  written by the invoker and, when it applies an action, records an `Invocation` and stores
+  it in that field.
+- **The `host` package** (`tilo.host`, `tilolang::host_meta()`) is imported implicitly by
+  every module and block as `host`. It declares `Invocation` with the register fields
+  `action`, `name`, `app`, `args` (JSON text), `author` (Principal), `state`
+  (`done|suggested|declined|failed|denied`), `result` and `run`. Only the host writes them.
+- **New imports:** `invoker() -> h`, `principal_eq(a, b) -> i32`, `principal_name(p) -> h`,
+  `queue_block(part, field, source)`.
+- **Nested resource references.** A reference literal may carry the steps of a nested
+  resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
+  block could not name a note or a draft, which live inside a collection. Ids still use only
+  letters, digits, `_` and `-` between the separators.
 - **`list(items) { x -> ... }`** (spec example) is parsed as `column { for x in items { ... } }`.
 
 ## Language choices

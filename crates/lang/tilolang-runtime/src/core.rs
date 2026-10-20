@@ -56,6 +56,8 @@ pub struct Core {
     pub authority: Box<dyn Authority>,
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
+    /// Compiled embedded blocks.
+    pub embeds: RefCell<crate::embed::EmbedState>,
 }
 
 /// Typed access to the wasm arguments of one import call.
@@ -134,7 +136,7 @@ impl Core {
         limits: EngineLimits,
     ) -> Result<Rc<Self>, String> {
         let engine = Engine::new(limits)?;
-        Ok(Rc::new_cyclic(|me| Self {
+        let core = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             engine,
             registry: RefCell::new(Registry::default()),
@@ -143,7 +145,15 @@ impl Core {
             authority,
             models: RefCell::new(None),
             sink: RefCell::new(None),
-        }))
+            embeds: RefCell::new(crate::embed::EmbedState::default()),
+        });
+        // The types the host provides to every module, such as `Invocation`.
+        let host = crate::registry::Package::new(
+            crate::ids::ModuleHash("host".to_owned()),
+            tilolang::host_meta(),
+        )?;
+        core.registry.borrow_mut().add(host)?;
+        Ok(core)
     }
 
     /// A strong handle to this core, for passing to the engine as the host.
@@ -198,14 +208,15 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActRef, CollInsert, CollMove, CollRemove, FloatToStr, IntToStr, Invoke, IsError,
-            IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
+            Abort, ActRef, CollInsert, CollMove, CollRemove, FloatToStr, IntToStr, Invoke, Invoker,
+            IsError, IsSome, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
             ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV,
-            Outside, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI,
-            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove,
-            SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp, StrConcat, StrEq, StrLen, StrLit,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor,
-            UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI,
+            Outside, PrincipalEq, PrincipalName, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI,
+            RefEq, RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH,
+            ResSetI, ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+            TupleSetH, TupleSetI, UiAnchor, UiBind, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UnwrapF, UnwrapH, UnwrapI,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -219,7 +230,8 @@ impl Core {
             | ResTextSet | CollInsert | CollRemove | CollMove | SetAdd | SetRemove | MapPut
             | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
             | RefEq | RefId => self.resource_import(imp, a),
-            ActRef | Invoke | IsError | Outside | ModelCall => self.effect_import(imp, a),
+            ActRef | Invoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
+            | PrincipalName | QueueBlock => self.effect_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF => self.ui_import(imp, a),
             Abort => {

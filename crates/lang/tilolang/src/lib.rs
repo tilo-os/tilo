@@ -32,6 +32,7 @@ mod codegen;
 pub mod diag;
 mod effects;
 mod hash;
+pub mod host;
 pub mod ids;
 pub mod ir;
 pub mod lexer;
@@ -44,6 +45,7 @@ pub mod resolve;
 pub mod types;
 
 pub use diag::{Diagnostic, Span, diagnostics_json};
+pub use host::{HOST_APP, INVOCATION_TYPE, host_meta};
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
 pub use meta::{PackageMeta, custom_section};
 pub use package::{

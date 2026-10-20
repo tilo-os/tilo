@@ -45,7 +45,13 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
         Ty::Unit => Value::Unit,
-        Ty::Record(_) | Ty::Action | Ty::View | Ty::Length(_) | Ty::Enum(_) | Ty::Error => {
+        Ty::Record(_)
+        | Ty::Principal
+        | Ty::Action
+        | Ty::View
+        | Ty::Length(_)
+        | Ty::Enum(_)
+        | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
     })

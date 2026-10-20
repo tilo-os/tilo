@@ -15,6 +15,7 @@ use crate::flow::{FlowOutcome, Resolution};
 use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
+use crate::settle::InvocationRecord;
 use crate::store::{ChangeNote, OutboxEntry, Store};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
@@ -180,7 +181,8 @@ impl Runtime {
                 Ok(BlockOutput::View(Box::new(view)))
             }
             BlockKind::Action => {
-                let Value::Action(aref) = self.core.eval_block(&pkg, &block.value_type)? else {
+                let Value::Action(aref) = self.core.eval_block(&pkg, &block.value_type, None)?
+                else {
                     return Err(RuntimeError::Package(
                         "the block did not produce an action".into(),
                     ));
@@ -189,10 +191,42 @@ impl Runtime {
                     self.core.invoke_direct(principal, &aref)?,
                 ))
             }
-            BlockKind::Data => Ok(BlockOutput::Data(
-                self.core.eval_block(&pkg, &block.value_type)?,
-            )),
+            BlockKind::Data => Ok(BlockOutput::Data(self.core.eval_block(
+                &pkg,
+                &block.value_type,
+                None,
+            )?)),
         }
+    }
+
+    /// Decide the suggestion an `Invocation` resource holds (see `Core::resolve_invocation`):
+    /// approving runs the action once, on this replica, and records the outcome in the
+    /// resource so every replica shows it after sync. Returns the invocation's new state.
+    ///
+    /// # Errors
+    ///
+    /// `NotPending` when it is not a suggestion, `Denied` when the authority gives `approver`
+    /// no say, otherwise as running the action.
+    pub fn resolve_invocation(
+        &self,
+        invocation: &ResourceRef,
+        approver: &Principal,
+        resolution: Resolution,
+    ) -> Result<String, RuntimeError> {
+        self.core
+            .resolve_invocation(invocation, approver, resolution)
+    }
+
+    /// What the host recorded for an `Invocation` resource.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the resource is not an invocation.
+    pub fn read_invocation(
+        &self,
+        invocation: &ResourceRef,
+    ) -> Result<InvocationRecord, RuntimeError> {
+        self.core.read_invocation(invocation)
     }
 
     /// Create a resource of a type, by id or by a name one loaded package declares.

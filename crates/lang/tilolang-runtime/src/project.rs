@@ -59,6 +59,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             "action": a.action,
             "args": a.args.iter().map(|x| project(core, x, opts)).collect::<Vec<_>>(),
         }),
+        Value::Principal(p) => json!({ "principal": p.0 }),
         Value::Error(msg) => json!({ "error": msg }),
         Value::Node(_) | Value::Rec(_) => json!({ "kind": v.kind_name() }),
     }

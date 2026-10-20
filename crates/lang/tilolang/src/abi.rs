@@ -88,11 +88,16 @@ imports! {
     RefEq = "ref_eq" ([H, H] -> [I32]);
     RefId = "ref_id" ([H] -> [H]);
 
+    Invoker = "invoker" ([] -> [H]);
+    PrincipalEq = "principal_eq" ([H, H] -> [I32]);
+    PrincipalName = "principal_name" ([H] -> [H]);
+
     ActRef = "act_ref" ([H, H] -> [H]);
     Invoke = "invoke" ([H] -> [H]);
     IsError = "is_error" ([H] -> [I32]);
     Outside = "outside" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
+    QueueBlock = "queue_block" ([H, H, H] -> []);
 
     UiNode = "ui_node" ([H, H] -> [H]);
     UiPropH = "ui_prop_h" ([H, H, H] -> []);

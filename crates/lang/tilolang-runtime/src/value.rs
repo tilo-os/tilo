@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value as Json};
 
-use crate::ids::{ActionId, DocId, FieldId, ItemId, ModuleHash, TypeId};
+use crate::ids::{ActionId, DocId, FieldId, ItemId, ModuleHash, Principal, TypeId};
 
 /// One step into a nested record: the collection field and the item inside it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -130,6 +130,9 @@ pub enum Value {
     Tuple(Vec<Value>),
     Opt(Option<Box<Value>>),
     Ref(RefValue),
+    /// Who did something. Only the host makes one (`invoker`, or read back from a field it
+    /// wrote); the language has no way to build one from text.
+    Principal(Principal),
     Action(ActionRef),
     /// A UI node under construction in the current view invocation (host-internal).
     Node(usize),
@@ -187,6 +190,7 @@ impl Value {
             Self::Tuple(_) => "tuple",
             Self::Opt(_) => "option",
             Self::Ref(_) => "resource reference",
+            Self::Principal(_) => "principal",
             Self::Action(_) => "action reference",
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
@@ -231,6 +235,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             }
             Json::Object(m)
         }
+        Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
         Value::Node(_) | Value::Rec(_) => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
@@ -297,6 +302,9 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     }
     if m.contains_key("none") {
         return Ok(Value::none());
+    }
+    if let Some(Json::String(id)) = m.get("principal") {
+        return Ok(Value::Principal(Principal(id.clone())));
     }
     if let Some(Json::String(msg)) = m.get("error") {
         return Ok(Value::Error(msg.clone()));

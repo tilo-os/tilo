@@ -29,6 +29,18 @@ pub struct ActionState {
     pub action: String,
     /// The first resource passed in; the home of the action's outbox entries.
     pub primary: Option<ResourceRef>,
+    /// The principal the runtime authenticated for this invocation: what `invoker` reads.
+    pub invoker: Principal,
+    /// Blocks to evaluate once the action has committed (`run_block`).
+    pub queued: Vec<QueuedBlock>,
+}
+
+/// A block an action asked the host to run after it commits.
+pub struct QueuedBlock {
+    /// The resource whose `invocation` field records the outcome.
+    pub part: ResourceRef,
+    pub field: String,
+    pub source: String,
 }
 
 pub struct FlowState {
