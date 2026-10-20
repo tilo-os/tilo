@@ -102,6 +102,11 @@ where
 /// the `#chat` and `#voice` every room opens with, beside them. Nothing is
 /// ever removed: messages, people and channels are left as they are, so
 /// this runs at every start and never resets.
+///
+/// The channels are written as they stand, not as field edits: the chat
+/// keeps its layout to its moderators' actions and refuses every generic
+/// edit of it, and those actions mint their own ids where these are
+/// derived from the names.
 pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
@@ -109,7 +114,9 @@ pub(crate) fn settle_chat(
     use chat::record::{CHAT_CHANNEL, Category, Channel, VOICE_CHANNEL};
     use tilo_resource::Id;
 
-    let current = tilo_relay::room_bots::opened::<chat::Chat>(doc)
+    tilo_relay::room_bots::opened::<chat::Chat>(doc)
+        .map_err(|error| format!("read the chat: {error}"))?;
+    let current = chat::Chat::read_fields(doc, &automerge::ROOT)
         .map_err(|error| format!("read the chat: {error}"))?;
     let mut target = current.clone();
     let opened_with = |id: &Id| id.as_str() == CHAT_CHANNEL || id.as_str() == VOICE_CHANNEL;
@@ -140,11 +147,14 @@ pub(crate) fn settle_chat(
             );
         }
     }
-    for edit in tilo_resource::Path::<chat::Chat, chat::Chat>::root().edits(&current, &target) {
-        edit.apply_local(doc)
-            .map_err(|error| format!("write the chat: {error}"))?;
-    }
-    Ok(())
+    target
+        .write_changed_fields(
+            &current,
+            doc,
+            &automerge::ROOT,
+            &tilo_resource::Delta::default(),
+        )
+        .map_err(|error| format!("write the chat: {error}"))
 }
 
 fn welcome() -> Result<notes::Notebook, String> {
@@ -412,12 +422,9 @@ mod tests {
         chat::demo::apply_as(
             &mut doc,
             "host",
-            tilo_resource::Invoke::edit(
-                &chat::Chat::paths()
-                    .channels
-                    .remove(&tilo_resource::Id::from_raw("c_help")),
-            )
-            .unwrap(),
+            chat::Chat::DELETE_CHANNEL.with(chat::record::chat::DeleteChannel {
+                channel: tilo_resource::Id::from_raw("c_help"),
+            }),
         )
         .unwrap();
         settle_chat(&mut doc, &channels).unwrap();
@@ -436,25 +443,17 @@ mod tests {
         let mut doc = prepared_chat();
         let channels = names(&["general"]);
         settle_chat(&mut doc, &channels).unwrap();
-        let current = chat::Chat::read(&doc).unwrap();
-        let mut adopted = current.clone();
-        adopted.categories.push(
-            Id::from_raw("k_chat"),
-            chat::record::Category {
-                name: "chat".into(),
-            },
-        );
-        adopted.channels.push(
-            Id::from_raw("c_goal"),
-            chat::record::Channel {
-                name: "goal".into(),
-                ..chat::record::Channel::default()
-            },
-        );
-        for edit in tilo_resource::Path::<chat::Chat, chat::Chat>::root().edits(&current, &adopted)
-        {
-            edit.apply_local(&mut doc).unwrap();
-        }
+        // The server's category and channel, under the ids the bridge maps
+        // them to.
+        chat::demo::insert_category(&mut doc, "k_chat", "chat").unwrap();
+        chat::demo::insert_channel(
+            &mut doc,
+            "c_goal",
+            "",
+            "goal",
+            chat::model::ChannelKind::Text,
+        )
+        .unwrap();
         chat::demo::apply_as(
             &mut doc,
             "host",

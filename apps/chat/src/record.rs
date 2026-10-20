@@ -208,9 +208,16 @@ fn open_room(channels: &mut Collection<Channel>) {
 /// The room's chat. See the module docs.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Chat {
-    /// The room's channel categories, in sidebar order.
+    /// The room's channel categories, in sidebar order: made, ordered and
+    /// removed only by the record's actions, which keep them to those who
+    /// keep the room's layout. A generic insert, move or removal would let
+    /// anyone who may edit the room (a public room's visitor) rearrange it.
+    #[model(readonly)]
     pub categories: Collection<Category>,
-    /// The room's channels, in sidebar order within their category.
+    /// The room's channels, in sidebar order within their category: made,
+    /// ordered and removed only by the record's actions, for the same
+    /// reason as [`Self::categories`].
+    #[model(readonly)]
     pub channels: Collection<Channel>,
     /// The people and agents in the room, by their participant id.
     pub people: Keyed<Person>,

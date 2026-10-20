@@ -782,6 +782,51 @@ impl<P: Chained> Chain<P> {
         self.state.apply_as(&action, &ActionInvoker::actor(author))
     }
 
+    /// Write `state` into part `index` directly, as what the part starts
+    /// with: a capture's or a test's fixture (items under fixed ids,
+    /// written by several people) in fields the parts keep to their own
+    /// actions (`#[model(readonly)]`), which refuse every generic edit.
+    /// Not an action: nothing checks who may, nobody is its author, and it
+    /// is committed as the part's genesis, so only a fixture writes it.
+    ///
+    /// # Errors
+    /// The part could not be opened or started, or `state` does not fit it.
+    pub fn write_start(&self, index: u64, state: &P::State) -> Result<(), String>
+    where
+        P::State: tilo_resource::Fields,
+    {
+        use tilo_resource::Fields as _;
+        self.state.start(index)?;
+        let id = P::chain().part(index);
+        self.state
+            .room
+            .store
+            .with_history(&id, |doc, history| {
+                let root = ui_core::automerge::ROOT;
+                let written = <P::State as tilo_resource::Fields>::read_fields(doc, &root)
+                    .and_then(|before| {
+                        state.write_changed_fields(
+                            &before,
+                            doc,
+                            &root,
+                            &tilo_resource::Delta::default(),
+                        )
+                    })
+                    .map_err(|error| error.to_string());
+                doc.commit_with(
+                    ui_core::automerge::transaction::CommitOptions::default()
+                        .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+                );
+                history.rebase(doc);
+                written
+            })
+            .ok_or("the part is not open here")??;
+        self.state.room.store.schedule_committed_history(&id);
+        self.state.refresh();
+        self.state.moved();
+        Ok(())
+    }
+
     /// Whether the chain takes a change now: not while a frame reads the
     /// app's records (a view's sync), when [`Self::stage_as`] waits for a
     /// later pass (an event, a settle pass).

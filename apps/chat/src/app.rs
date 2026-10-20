@@ -854,6 +854,9 @@ pub struct ChatApp {
     pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatPart>>,
     /// The chain's revision the window last read its messages at.
     pub(crate) chain_seen: Option<u64>,
+    /// The first part a screenshot scenario starts with, until written:
+    /// messages by several people under the ids the scenario names.
+    pub(crate) staged_start: Option<crate::parts::ChatPart>,
     /// A screenshot scenario's messages still to stage, each with who
     /// wrote it: staged once the room's records take a write (a frame's
     /// read of the record holds them).
@@ -1169,6 +1172,7 @@ impl ChatApp {
             dispatch: None,
             chain: None,
             chain_seen: None,
+            staged_start: None,
             staged_parts: std::collections::VecDeque::new(),
             staged_scenario: None,
             #[cfg(test)]
@@ -1363,8 +1367,9 @@ impl ChatApp {
     }
 
     /// Stage the messages a screenshot of `scenario` shows in the chat's
-    /// parts, each written by its author, once: a chain that holds messages
-    /// already is left as it is.
+    /// parts, once: the first part as the scenario starts it, then what is
+    /// done with its messages, each by its author. A chain that holds
+    /// messages already is left as it is.
     pub(crate) fn stage_parts(&mut self, scenario: Option<&str>) {
         let Some(chain) = &self.chain else {
             return;
@@ -1372,7 +1377,9 @@ impl ChatApp {
         if chain.head().is_some() {
             return;
         }
-        self.staged_parts = crate::resource::part_scenario(scenario).into();
+        let (start, steps) = crate::resource::part_scenario(scenario);
+        self.staged_start = start;
+        self.staged_parts = steps.into();
         self.staged_scenario = scenario.map(str::to_owned);
         self.flush_staged_parts();
     }
@@ -1384,6 +1391,13 @@ impl ChatApp {
             return;
         };
         let mut staged = false;
+        if chain.takes_changes()
+            && let Some(start) = self.staged_start.take()
+        {
+            // Missing messages show in the picture's comparison.
+            let _ = chain.write_start(0, &start);
+            staged = true;
+        }
         while chain.takes_changes()
             && let Some((author, invoke)) = self.staged_parts.pop_front()
         {

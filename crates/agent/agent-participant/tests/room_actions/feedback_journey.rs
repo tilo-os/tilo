@@ -28,10 +28,9 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
         !chat::projection::read(&doc).channel_rows().is_empty(),
         "the production seed opens the room's channels"
     );
-    chat::demo::insert_category(&mut doc, "fixture", "feedback-category", "Feedback").unwrap();
+    chat::demo::insert_category(&mut doc, "feedback-category", "Feedback").unwrap();
     chat::demo::insert_channel(
         &mut doc,
-        "fixture",
         "feedback",
         "feedback-category",
         "Feedback",

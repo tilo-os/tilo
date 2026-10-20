@@ -260,16 +260,10 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                 }
                 chat::demo::start(&mut document, &person, "Fixture", "F")
                     .map_err(|error| error.to_string())?;
-                chat::demo::insert_category(
-                    &mut document,
-                    &person,
-                    "feedback-category",
-                    "Feedback",
-                )
-                .map_err(|error| error.to_string())?;
+                chat::demo::insert_category(&mut document, "feedback-category", "Feedback")
+                    .map_err(|error| error.to_string())?;
                 chat::demo::insert_channel(
                     &mut document,
-                    &person,
                     "feedback",
                     "feedback-category",
                     "Feedback",

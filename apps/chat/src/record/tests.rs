@@ -847,6 +847,60 @@ fn plain_changes_are_field_edits_at_their_paths() {
 }
 
 #[test]
+fn messages_channels_and_categories_change_only_through_their_actions() {
+    let mut talk = Talk::new();
+    // A generic insert naming someone else as the author is refused: only
+    // a post, which takes its author from whoever signed it, makes one.
+    let forged = Message {
+        channel: id("c_chat"),
+        author: ui::tilo_resource::Atom(BO.into()),
+        text: "I never said this".into(),
+        ..Message::default()
+    };
+    let insert = ChatPart::paths()
+        .messages
+        .insert_as(&id("m_forged"), 0, &forged);
+    assert!(talk.part.apply(Invoke::edit(&insert).unwrap()).is_err());
+    assert!(talk.messages().get(&id("m_forged")).is_none());
+    talk.apply(post("my own words")).unwrap();
+    let said = talk.said("my own words");
+    assert_eq!(talk.messages().get(&said).unwrap().author.0, ADA);
+    for edit in [
+        ChatPart::paths().messages.remove(&said),
+        ChatPart::paths().messages.move_to(&said, 0),
+    ] {
+        assert!(talk.part.apply(Invoke::edit(&edit).unwrap()).is_err());
+    }
+
+    // The room's layout is the moderators' to change, through its actions:
+    // no generic insert, removal or move of a channel or a category.
+    let mut chat = talk.chat;
+    let before = chat.state().unwrap();
+    let channels = Chat::paths().channels;
+    let categories = Chat::paths().categories;
+    let channel = Channel {
+        name: "sneaky".into(),
+        ..Channel::default()
+    };
+    let category = Category {
+        name: "Sneaky".into(),
+    };
+    for edit in [
+        channels.insert_as(&id("c_sneaky"), 0, &channel),
+        channels.remove(&id("c_chat")),
+        channels.move_to(&id("c_voice"), 0),
+        categories.insert_as(&id("cat_sneaky"), 0, &category),
+    ] {
+        assert!(
+            chat.apply(Invoke::edit(&edit).unwrap()).is_err(),
+            "{:?} changed the room's layout",
+            edit.op()
+        );
+    }
+    assert_eq!(chat.state().unwrap(), before);
+}
+
+#[test]
 fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     let mut ada = Talk::new();
     ada.apply(post("base")).unwrap();

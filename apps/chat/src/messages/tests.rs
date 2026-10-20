@@ -127,9 +127,9 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let chat = Rc::new(crate::demo::demo(crate::model::ME));
     let chain: Chain<ChatPart> =
         Chain::detached("so.tilo.chat", crate::model::ME, move || Rc::clone(&chat)).unwrap();
-    for invoke in crate::resource::demo_part_invokes() {
-        chain.invoke(&invoke).unwrap();
-    }
+    chain
+        .write_start(0, &crate::demo::demo_part(crate::model::ME))
+        .unwrap();
     assert_eq!(chain.head(), Some(0));
     let mut next = 0;
     for n in 0..=PART_TEXT_BYTES / long_post(0).len() + 1 {

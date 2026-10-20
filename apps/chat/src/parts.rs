@@ -75,7 +75,11 @@ pub const fn post_part(head: u64, head_messages: usize, head_text_bytes: usize) 
 /// replies in their threads, which stay with the message they answer).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ChatPart {
-    /// The messages, oldest first.
+    /// The messages, oldest first: made, ordered and removed only by the
+    /// part's actions. A post takes its author from whoever signed it; a
+    /// generic insert could name anyone as a message's author, and a
+    /// replica replaying it would reproduce the forgery.
+    #[model(readonly)]
     pub messages: Collection<Message>,
 }
 
